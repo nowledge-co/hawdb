@@ -19,6 +19,9 @@ use std::collections::BTreeMap;
 #[doc(hidden)]
 pub mod artifact;
 
+pub(crate) mod predicate_checkpoint;
+mod predicate_decode;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedGraphDefinition {
     pub node_labels: Vec<String>,
@@ -34,6 +37,15 @@ pub enum ProjectedRelationshipPredicate {
 }
 
 impl ProjectedRelationshipPredicate {
+    #[doc(hidden)]
+    pub fn matches_with_work_context(
+        &self,
+        properties: &BTreeMap<String, Value>,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> crate::Result<bool> {
+        predicate_checkpoint::evaluate::matches(self, properties, work)
+    }
+
     pub fn matches(&self, properties: &BTreeMap<String, Value>) -> bool {
         match self {
             Self::And(predicates) => predicates
@@ -109,43 +121,27 @@ fn projected_relationship_predicate_to_value(predicate: &ProjectedRelationshipPr
     }
 }
 
+struct OrdinaryPredicateDecoder;
+
+impl predicate_decode::Decoder for OrdinaryPredicateDecoder {
+    fn visit(&self) -> crate::Result<()> {
+        Ok(())
+    }
+
+    fn push(
+        &self,
+        values: &mut Vec<ProjectedRelationshipPredicate>,
+        value: ProjectedRelationshipPredicate,
+    ) -> crate::Result<()> {
+        values.push(value);
+        Ok(())
+    }
+}
+
 fn projected_relationship_predicate_from_value(
     value: Value,
 ) -> crate::Result<ProjectedRelationshipPredicate> {
-    let Value::List(mut fields) = value else {
-        return Err(crate::HawDBError::Storage(
-            "projected relationship predicate must decode to a list".to_string(),
-        ));
-    };
-    if fields.is_empty() {
-        return Err(crate::HawDBError::Storage(
-            "projected relationship predicate is missing its operator".to_string(),
-        ));
-    }
-    let Value::String(operator) = fields.remove(0) else {
-        return Err(crate::HawDBError::Storage(
-            "projected relationship predicate operator must be a string".to_string(),
-        ));
-    };
-    match (operator.as_str(), fields.as_slice()) {
-        ("and", [Value::List(predicates)]) if !predicates.is_empty() => predicates
-            .iter()
-            .cloned()
-            .map(projected_relationship_predicate_from_value)
-            .collect::<crate::Result<Vec<_>>>()
-            .map(ProjectedRelationshipPredicate::And),
-        ("eq", [Value::String(property), value]) => Ok(ProjectedRelationshipPredicate::Eq {
-            property: property.clone(),
-            value: value.clone(),
-        }),
-        ("gte", [Value::String(property), value]) => Ok(ProjectedRelationshipPredicate::Gte {
-            property: property.clone(),
-            value: value.clone(),
-        }),
-        _ => Err(crate::HawDBError::Storage(format!(
-            "invalid projected relationship predicate operator or arity: {operator}"
-        ))),
-    }
+    predicate_decode::decode(value, &OrdinaryPredicateDecoder)
 }
 
 /// Control flow a projection scan visitor returns to the scan driver.
@@ -287,13 +283,51 @@ impl ProjectedGraphArtifactData {
         csc_offsets: Vec<usize>,
         csc_sources: Vec<usize>,
     ) -> std::result::Result<Self, String> {
-        validate_offsets("csr_offsets", nodes.len(), &csr_offsets, csr_targets.len())?;
-        validate_offsets("csc_offsets", nodes.len(), &csc_offsets, csc_sources.len())?;
-        validate_indexes("csr_targets", nodes.len(), &csr_targets)?;
-        validate_indexes("csc_sources", nodes.len(), &csc_sources)?;
+        Self::new_with_work_context(
+            nodes,
+            csr_offsets,
+            csr_targets,
+            csc_offsets,
+            csc_sources,
+            &crate::background::CheckpointWorkContext::default(),
+        )
+        .map_err(|error| match error {
+            hawdb_core::HawDBError::Storage(message) => message,
+            error => error.to_string(),
+        })
+    }
+
+    pub(crate) fn new_with_work_context(
+        nodes: Vec<NodeId>,
+        csr_offsets: Vec<usize>,
+        csr_targets: Vec<usize>,
+        csc_offsets: Vec<usize>,
+        csc_sources: Vec<usize>,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> hawdb_core::Result<Self> {
+        validate_offsets(
+            "csr_offsets",
+            nodes.len(),
+            &csr_offsets,
+            csr_targets.len(),
+            work,
+        )?;
+        validate_offsets(
+            "csc_offsets",
+            nodes.len(),
+            &csc_offsets,
+            csc_sources.len(),
+            work,
+        )?;
+        validate_indexes("csr_targets", nodes.len(), &csr_targets, work)?;
+        validate_indexes("csc_sources", nodes.len(), &csc_sources, work)?;
         if csr_targets.len() != csc_sources.len() {
-            return Err("projected graph CSR and CSC edge counts differ".to_string());
+            return Err(hawdb_core::HawDBError::Storage(
+                "projected graph CSR and CSC edge counts differ".to_string(),
+            ));
         }
+        work.checkpoint()
+            .map_err(hawdb_core::HawDBError::from_storage_error)?;
         Ok(Self {
             nodes,
             csr_offsets,
@@ -316,14 +350,37 @@ fn validate_offsets(
     node_count: usize,
     offsets: &[usize],
     edge_count: usize,
-) -> std::result::Result<(), String> {
+    work: &crate::background::CheckpointWorkContext,
+) -> hawdb_core::Result<()> {
+    let unit = work
+        .start_unit()
+        .map_err(hawdb_core::HawDBError::from_storage_error)?;
     if offsets.len() != node_count.saturating_add(1)
         || offsets.first() != Some(&0)
         || offsets.last() != Some(&edge_count)
-        || offsets.windows(2).any(|pair| pair[0] > pair[1])
     {
-        return Err(format!("invalid projected graph {name}"));
+        return Err(hawdb_core::HawDBError::Storage(format!(
+            "invalid projected graph {name}"
+        )));
     }
+    unit.finish();
+    let mut previous = 0;
+    for block in offsets.chunks(1024) {
+        let unit = work
+            .start_unit()
+            .map_err(hawdb_core::HawDBError::from_storage_error)?;
+        if block.first().is_some_and(|offset| previous > *offset)
+            || block.windows(2).any(|pair| pair[0] > pair[1])
+        {
+            return Err(hawdb_core::HawDBError::Storage(format!(
+                "invalid projected graph {name}"
+            )));
+        }
+        previous = *block.last().expect("offset chunks are non-empty");
+        unit.finish();
+    }
+    work.checkpoint()
+        .map_err(hawdb_core::HawDBError::from_storage_error)?;
     Ok(())
 }
 
@@ -331,12 +388,21 @@ fn validate_indexes(
     name: &str,
     node_count: usize,
     indexes: &[usize],
-) -> std::result::Result<(), String> {
-    if indexes.iter().any(|index| *index >= node_count) {
-        return Err(format!(
-            "projected graph {name} contains an out-of-range node index"
-        ));
+    work: &crate::background::CheckpointWorkContext,
+) -> hawdb_core::Result<()> {
+    for block in indexes.chunks(1024) {
+        let unit = work
+            .start_unit()
+            .map_err(hawdb_core::HawDBError::from_storage_error)?;
+        if block.iter().any(|index| *index >= node_count) {
+            return Err(hawdb_core::HawDBError::Storage(format!(
+                "projected graph {name} contains an out-of-range node index"
+            )));
+        }
+        unit.finish();
     }
+    work.checkpoint()
+        .map_err(hawdb_core::HawDBError::from_storage_error)?;
     Ok(())
 }
 

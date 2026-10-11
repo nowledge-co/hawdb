@@ -43,7 +43,8 @@ fn knowledge_retrieval_hydrates_canonical_output_after_top_k() {
     let payload = format!("pipeline needle {}", "x".repeat(20 * 1024));
     for id in ["memory-a", "memory-b"] {
         {
-            let branch_runtime = db.runtime.get_mut().unwrap();
+            let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+            let branch_runtime = &mut *branch_runtime_access;
             branch_runtime.store.create_node(
                 &mut branch_runtime.catalog,
                 "Memory",
@@ -112,7 +113,8 @@ fn knowledge_retrieval_result_payload_budget_fails_closed() {
         ..DatabaseConfig::default()
     });
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Memory",
@@ -143,7 +145,8 @@ fn knowledge_retrieval_result_payload_budget_fails_closed() {
 fn knowledge_retrieval_graph_expansion_preserves_space_scope() {
     let mut db = Database::new();
     let memory = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Memory",
@@ -159,7 +162,8 @@ fn knowledge_retrieval_graph_expansion_preserves_space_scope() {
     }
     .unwrap();
     let allowed = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -171,7 +175,8 @@ fn knowledge_retrieval_graph_expansion_preserves_space_scope() {
     }
     .unwrap();
     let denied = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -184,7 +189,8 @@ fn knowledge_retrieval_graph_expansion_preserves_space_scope() {
     .unwrap();
     for target in [allowed, denied] {
         {
-            let branch_runtime = db.runtime.get_mut().unwrap();
+            let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+            let branch_runtime = &mut *branch_runtime_access;
             branch_runtime.store.create_relationship(
                 &mut branch_runtime.catalog,
                 memory,

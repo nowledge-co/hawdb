@@ -48,6 +48,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 mod build;
+mod checkpoint;
+pub(super) use checkpoint::relational_schema_digest_with_work_context;
 mod demand_read;
 pub(crate) use demand_read::{
     IndexReadAdmission, IndexReadCharge, IndexReadObserver, IndexReadPreflightError,
@@ -67,6 +69,9 @@ pub use recovery::{
     DEFAULT_RELATIONAL_INDEX_RECOVERY_DIRTY_ENTRIES,
     DEFAULT_RELATIONAL_INDEX_RECOVERY_MANIFEST_BYTES, DEFAULT_RELATIONAL_INDEX_RECOVERY_PAGES,
     RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE,
+};
+pub(crate) use recovery::{
+    relational_index_recovery_manifest_generation_file, relational_index_recovery_prefix_file,
 };
 
 const MANIFEST_MAGIC: &[u8; 8] = b"SKRIDXM1";

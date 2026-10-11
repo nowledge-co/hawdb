@@ -240,7 +240,7 @@ impl WireDescriptor {
         encoded
     }
 
-    fn decode(encoded: &[u8; ROOT_DESCRIPTOR_BYTES]) -> Self {
+    pub(super) fn decode(encoded: &[u8; ROOT_DESCRIPTOR_BYTES]) -> Self {
         Self {
             logical_page_id: read_u64(&encoded[0..8]),
             physical_generation: read_u64(&encoded[8..16]),

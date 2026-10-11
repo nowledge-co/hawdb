@@ -165,6 +165,7 @@ test_suite(
         "//crates/sql-syntax:hawdb_sql_alias_boundary_fuzz_tests",
         "//crates/storage:hawdb_storage_artifact_binding_fuzz_tests",
         "//crates/storage:hawdb_storage_backup_hex_fuzz_tests",
+        "//crates/storage:hawdb_storage_checkpoint_wal_verbatim_fuzz_tests",
         "//crates/storage:hawdb_storage_durable_envelope_fuzz_tests",
         "//crates/storage:hawdb_storage_durable_manifest_fuzz_tests",
         "//crates/storage:hawdb_storage_file_lock_fuzz_tests",

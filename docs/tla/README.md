@@ -122,6 +122,84 @@ artifact bytes.
 
 ## Durable WAL and Checkpoint Publication
 
+`HawDBAutomaticCheckpoint` checks one old/candidate generation handoff with
+two complete schema/data transactions and both durability policies. The base
+image is an independently defined transaction prefix. Foreground writes may
+advance after base capture; replay copies each later transaction into a private
+WAL before the checkpoint/catalog closure and suffix are synchronized and the
+prefix is sealed. Foreground writes remain enabled while that prefix is sealed.
+`ResumeReplay` extends the same pinned base if the writer advanced;
+`FreezeCompleteIdentity` enters the selection gate only when the complete
+sealed prefix matches the current writer and no transaction is pending.
+`CandidateBaseStaysPinned` checks that resealing never replaces the base.
+Frontend adoption precedes reclamation, and pinned
+readers retain their generation. Cancellation retains its lease until private
+artifact cleanup completes.
+
+The owner model now separates job-owned memory (`lease`) from execution
+admission (`execution`). A resource-denied candidate enters `pending`, retains
+its complete base/suffix prefix and memory ownership, and releases execution.
+Admission recovery resumes its recorded replay/seal phase without a frontend
+write. A selected candidate also yields execution. Adoption may come from a
+writer or a pure read; the latter requires the abstract frontend writer gate
+(`frontendBusy`) to be available. This gate represents the read path's
+`try_lock` decision, not a model of every frontend mutex interleaving.
+
+Adoption enters `retirementPending`; cleanup acquires execution only after
+admission. Further denial returns it to that state without releasing its
+job-owned memory. The additional invariants reject parked execution, loss of
+candidate ownership, active work without execution, an invalid saved resume
+phase, and a read adoption that bypasses its writer gate. Logical job ownership
+is separate from allocation leases retained by serving runtimes/readers. This
+model does not qualify actual allocation accounting, bounded drops, per-unit
+CPU/FD/disk/I/O or scheduler liveness.
+
+Power loss independently retains any subset of OS-flushed but unsynchronized
+schema/data fragments and checkpoint/catalog artifacts. This includes lost
+writes, torn transactions and reordering across files. Completed synchronization
+barriers retain all covered bytes. An interrupted selector may be uncertain;
+ordinary recovery then fails closed and retains both generations. Torn or
+noncontiguous selected WALs also fail closed. No action repairs corruption by
+silently truncating acknowledged data. The model assumes correctly validated
+artifact identities and completed file/directory synchronization; it does not
+establish those filesystem/platform assumptions or refinement by the Rust code.
+
+Cancellation enters `discarding` while private data and its job-owned lease
+still exist. Physical retirement enters `releasing` before old COW destruction;
+ordinary writes may start in either phase. `FinishRelease` and `CleanupPrivate`
+refund job admission only after destruction. An explicit manual cleanup barrier
+can complete only in a terminal phase with no job lease. This barrier models
+namespace/resource reuse, not the manual checkpoint's separate durability
+implementation. Controls reject early lease release and premature manual
+completion; witness controls demonstrate writes during both cleanup phases.
+
+The full configured safety graph and eighteen controls run through:
+
+```bash
+bazel test //docs/tla:HawDBAutomaticCheckpoint_check \
+  //docs/tla:automatic_checkpoint_controls --jobs=1 --test_output=errors
+```
+
+Nine controls omit a suffix transaction, select before synchronization, select
+a synchronized but stale prefix, split a transaction, reclaim a pinned
+generation, leak a cancelled job's lease, drop candidate memory on pause, keep
+execution while parked, or adopt from a read while its writer gate is busy.
+Five witness controls demonstrate permitted loss of relaxed acknowledged writes,
+recovery of synchronous commits whose response was lost, candidate resume,
+retirement resume after denial, and pure-read adoption. Each must produce
+its named invariant counterexample. These controls are also registered in the
+standalone mutant manifest. This bounded safety model does not prove scheduler
+liveness, build/publication time bounds, allocation accounting or p99 behavior.
+
+The Rust owner mirrors the new sealed-prefix transitions by calling
+`CheckpointCandidate::{catch_up_with_task_context,finish_catch_up}` outside the
+publication gate, retaining the same source digest and row/index builders,
+then comparing the captured and sealed `CheckpointSourceIdentity` values.
+Its publication gate prevents another writer until selector publication and
+handoff. The focused multi-prefix and real group-flush tests exercise this
+correspondence; this action mapping is not a completed Rust refinement proof
+or evidence that a filesystem meets the modeled synchronization assumptions.
+
 `HawDBStorageDurability.tla` models the default `SyncOnEveryWrite` path. A WAL
 batch becomes a durable commit decision at the WAL sync boundary. Applying that
 batch makes it visible, and returning from the mutation acknowledges it. A crash

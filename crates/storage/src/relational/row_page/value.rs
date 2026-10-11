@@ -20,59 +20,17 @@ pub(super) fn encode_row(
     column_count: usize,
     limits: RelationalRowPageLimits,
 ) -> Result<Vec<u8>, RelationalRowPageError> {
-    if row.values().len() != column_count {
-        return Err(RelationalRowPageError::Admission(format!(
-            "row contains {} values, expected {column_count}",
-            row.values().len()
-        )));
-    }
-    let directory_len = column_count.checked_mul(VALUE_SLOT_BYTES).ok_or_else(|| {
-        RelationalRowPageError::Admission("value slot directory length overflow".to_string())
-    })?;
-    let header_len = 4usize.checked_add(directory_len).ok_or_else(|| {
-        RelationalRowPageError::Admission("encoded row header length overflow".to_string())
-    })?;
-    if header_len > limits.max_row_bytes.get() {
-        return Err(RelationalRowPageError::Admission(format!(
-            "row directory contains {header_len} bytes, exceeding row limit {}",
-            limits.max_row_bytes
-        )));
-    }
-    let mut slots = Vec::with_capacity(column_count);
-    let mut payload = Vec::new();
-    for value in row.values() {
-        let offset = u32_len(payload.len(), "value offset")?;
-        let before = payload.len();
-        encode_value(&mut payload, value, limits)?;
-        let length = payload.len().checked_sub(before).ok_or_else(|| {
-            RelationalRowPageError::Admission("value length underflow".to_string())
-        })?;
-        slots.push((offset, u32_len(length, "value length")?));
-        let projected_len = header_len.checked_add(payload.len()).ok_or_else(|| {
-            RelationalRowPageError::Admission("encoded row length overflow".to_string())
-        })?;
-        if projected_len > limits.max_row_bytes.get() {
-            return Err(RelationalRowPageError::Admission(format!(
-                "encoded row would contain {projected_len} bytes, exceeding limit {}",
-                limits.max_row_bytes
-            )));
-        }
-    }
-    let mut encoded = Vec::with_capacity(header_len + payload.len());
-    encoded.extend_from_slice(&u32_len(column_count, "row value count")?.to_le_bytes());
-    for (offset, length) in slots {
-        encoded.extend_from_slice(&offset.to_le_bytes());
-        encoded.extend_from_slice(&length.to_le_bytes());
-    }
-    encoded.extend_from_slice(&payload);
-    Ok(encoded)
+    super::encoding::encode_row(row, column_count, limits, &super::encoding::NoWork)
 }
 
-fn encode_value(
+pub(super) fn encode_value_with_work<W: super::encoding::EncodeWork>(
     encoded: &mut Vec<u8>,
     value: &RelationalValue,
     limits: RelationalRowPageLimits,
+    work: &W,
 ) -> Result<(), RelationalRowPageError> {
+    use super::encoding::EncodeUnit;
+    let unit = work.start_unit()?;
     match value {
         RelationalValue::Null => encoded.push(0),
         RelationalValue::Boolean(value) => {
@@ -91,13 +49,17 @@ fn encode_value(
             validate_inline_value_len(value.len(), limits)?;
             encoded.push(4);
             encoded.extend_from_slice(&u32_len(value.len(), "TEXT length")?.to_le_bytes());
-            encoded.extend_from_slice(value.as_bytes());
+            unit.finish();
+            work.append(encoded, value.as_bytes())?;
+            return work.checkpoint();
         }
         RelationalValue::Bytea(value) => {
             validate_inline_value_len(value.len(), limits)?;
             encoded.push(5);
             encoded.extend_from_slice(&u32_len(value.len(), "BYTEA length")?.to_le_bytes());
-            encoded.extend_from_slice(value);
+            unit.finish();
+            work.append(encoded, value)?;
+            return work.checkpoint();
         }
         RelationalValue::Uuid(value) => {
             encoded.push(7);
@@ -112,7 +74,8 @@ fn encode_value(
             encoded.extend_from_slice(reference.digest.as_bytes());
         }
     }
-    Ok(())
+    unit.finish();
+    work.checkpoint()
 }
 
 pub(super) fn decode_row_fields(
@@ -468,7 +431,7 @@ fn validate_overflow_shape(
     Ok(())
 }
 
-fn validate_inline_value_len(
+pub(super) fn validate_inline_value_len(
     length: usize,
     limits: RelationalRowPageLimits,
 ) -> Result<(), RelationalRowPageError> {

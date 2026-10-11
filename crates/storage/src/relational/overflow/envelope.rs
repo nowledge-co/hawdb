@@ -22,6 +22,10 @@ use hawdb_integrity::{crc32c, integrity_digest};
 use std::io::{Cursor, Read};
 use std::sync::Arc;
 
+mod checkpoint;
+pub(crate) use checkpoint::encode_overflow_envelope_with_work_context;
+pub(crate) use checkpoint::validation::validate_overflow_envelope_with_work_context;
+
 const OVERFLOW_MAGIC: &[u8; 8] = b"SKOVFL01";
 const OVERFLOW_CODEC_RAW: u8 = 0;
 const OVERFLOW_CODEC_ZSTD: u8 = 1;
@@ -158,6 +162,16 @@ fn decode_header(
     reference: &RelationalOverflowRef,
     encoded: &[u8],
 ) -> Result<DecodedHeader, RelationalError> {
+    validate_header_prefix(encoded)?;
+    if integrity_digest(encoded).sha256 != reference.digest {
+        return Err(RelationalError::Corruption(
+            "overflow envelope digest mismatch".to_string(),
+        ));
+    }
+    decode_verified_header(reference, encoded)
+}
+
+fn validate_header_prefix(encoded: &[u8]) -> Result<(), RelationalError> {
     if encoded.len() < OVERFLOW_HEADER_BYTES || &encoded[..8] != OVERFLOW_MAGIC {
         return Err(RelationalError::Corruption(
             "invalid overflow envelope header".to_string(),
@@ -168,11 +182,14 @@ fn decode_header(
             "overflow envelope has unsupported flags".to_string(),
         ));
     }
-    if integrity_digest(encoded).sha256 != reference.digest {
-        return Err(RelationalError::Corruption(
-            "overflow envelope digest mismatch".to_string(),
-        ));
-    }
+    Ok(())
+}
+
+// Only fixed-size fields are shared with the independent ordinary decoder.
+fn decode_verified_header(
+    reference: &RelationalOverflowRef,
+    encoded: &[u8],
+) -> Result<DecodedHeader, RelationalError> {
     let codec = encoded[8];
     if !matches!(codec, OVERFLOW_CODEC_RAW | OVERFLOW_CODEC_ZSTD) {
         return Err(RelationalError::Corruption(

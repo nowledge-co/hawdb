@@ -17,14 +17,14 @@
 use super::{
     load_published_canonical_adjacency, load_published_canonical_segments,
     load_published_property_projection, CheckpointImage, CheckpointManifestArtifacts,
-    DurableArtifactMetadata, DurableManifest, DurableStore, GraphManifestOpenBudget,
+    CheckpointReplayBoundary, DurableArtifactMetadata, DurableManifest, DurableStore,
+    GraphManifestOpenBudget,
 };
 use crate::error::{HawDBError, Result};
 use crate::file_io::{self as fs, File};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, checkpoint_publish_failpoint,
-    checksum_bytes, encode_durable_text, file_checksum,
     property_projection_artifact_generation_file, property_projection_manifest_generation_file,
     property_spill_artifact_generation_file, property_spill_manifest_generation_file,
     read_durable_text_bytes_with_limit, relational_checkpoint_generation_file,
@@ -36,10 +36,13 @@ use hawdb_storage::{
     config::{DurableCompression, WalReplayConfig},
     durability::durable_replace_file,
     projection::SearchProjectionGraphChange,
-    relational::{encode_relational_checkpoint_to_writer, RelationalDecodeLimits, RelationalState},
+    relational::{
+        encode_relational_checkpoint_with_work_context, CheckpointOutputIo, RelationalDecodeLimits,
+        RelationalState,
+    },
     scan::FileSegmentRangeReader,
 };
-use std::io::Write;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -92,6 +95,7 @@ impl DurableStore {
         state: &RelationalState,
         commit_epoch: u64,
         generation: u64,
+        work: &crate::background::CheckpointWorkContext,
     ) -> Result<Option<DurableArtifactMetadata>> {
         let path = self
             .root_path
@@ -103,28 +107,55 @@ impl DurableStore {
         // hydration or produce an incomplete artifact whose retained overflow
         // segments appear unreachable.
         if state.is_empty() || state.canonical_row_metadata_only() {
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
             match fs::remove_file(&path) {
                 Ok(()) => sync_parent_dir(&path)?,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
+            unit.finish();
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
             return Ok(None);
         }
         let max_bytes = RelationalDecodeLimits::checkpoint().max_record_bytes;
         let tmp_path = path.with_extension("hawdb.tmp");
+        let mut temporary = super::artifacts::CheckpointMetadataTemporaryPath(None);
         {
-            let mut file = File::create(&tmp_path)?;
-            encode_relational_checkpoint_to_writer(&mut file, commit_epoch, state, max_bytes)
-                .map_err(HawDBError::from_storage_error)?;
+            let mut file = {
+                let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+                let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+                let file = File::options()
+                    .write(true)
+                    .create_new(true)
+                    .open(&tmp_path)?;
+                temporary.0 = Some(tmp_path.clone());
+                unit.finish();
+                file
+            };
+            encode_relational_checkpoint_with_work_context(
+                &mut file,
+                commit_epoch,
+                state,
+                max_bytes,
+                CheckpointOutputIo::File,
+                work,
+            )
+            .map_err(HawDBError::from_storage_error)?;
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
             file.sync_all()?;
+            unit.finish();
         }
-        let (encoded_len, encoded_checksum, encoded_sha256) = file_checksum(&tmp_path)?;
-        let metadata = DurableArtifactMetadata {
-            encoded_len,
-            encoded_checksum,
-            encoded_sha256,
-        };
-        durable_replace_file(&tmp_path, &path)?;
+        let metadata = checkpoint_file_integrity(&tmp_path, work)?;
+        {
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+            durable_replace_file(&tmp_path, &path)?;
+            temporary.0 = None;
+            unit.finish();
+        }
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
         Ok(Some(metadata))
     }
 
@@ -133,22 +164,32 @@ impl DurableStore {
         image: CheckpointImage<'_>,
         generation: u64,
         changes: impl Iterator<Item = &'a SearchProjectionGraphChange> + Clone,
+        work: &crate::background::CheckpointWorkContext,
     ) -> Result<DurableArtifactMetadata> {
-        let data = hawdb_storage::checkpoint::encode_checkpoint_body_with_changes(
-            &image, generation, changes,
+        let mut data = hawdb_storage::checkpoint::encode_checkpoint_body_with_work_context(
+            &image, generation, changes, work,
         )?;
-        let checksum = checksum_bytes(data.as_bytes());
-        let data = format!("{data}checksum\t{checksum}\n");
+        let checksum = work
+            .checksum(data.as_bytes())
+            .map_err(HawDBError::from_storage_error)?;
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        data.push_str(&format!("checksum\t{checksum}\n"));
+        unit.finish();
         let checkpoint_path = self.root_path.join(checkpoint_generation_file(generation));
-        let tmp_path = checkpoint_path.with_extension("hawdb.tmp");
-        let encoded = encode_durable_text(&data, DurableCompression::default())?;
-        let metadata = DurableArtifactMetadata::for_bytes(&encoded);
-        {
-            let mut file = File::create(&tmp_path)?;
-            file.write_all(&encoded)?;
-            file.sync_all()?;
-        }
-        durable_replace_file(&tmp_path, &checkpoint_path)?;
+        let encoded = crate::text::envelope::encode_durable_text_with_work_context(
+            &data,
+            DurableCompression::default(),
+            work,
+        )?;
+        let digest = work
+            .integrity(&encoded)
+            .map_err(HawDBError::from_storage_error)?;
+        let metadata = DurableArtifactMetadata {
+            encoded_len: encoded.len() as u64,
+            encoded_checksum: digest.crc32c.as_u64(),
+            encoded_sha256: digest.sha256,
+        };
+        super::artifacts::publish_checkpoint_metadata(&checkpoint_path, &encoded, work)?;
         Ok(metadata)
     }
 
@@ -259,14 +300,23 @@ impl DurableStore {
         }
     }
 
-    pub(in crate::store) fn publish_checkpoint_manifest(
-        &mut self,
+    pub(in crate::store) fn checkpoint_manifest(
+        &self,
         generation: u64,
         artifacts: CheckpointManifestArtifacts,
         checkpoint_commit_epoch: u64,
         oldest_reader_commit_epoch: Option<u64>,
         source_scan_publication: Option<source_scan::SourceScanPublication>,
-    ) -> Result<()> {
+        replay: CheckpointReplayBoundary,
+    ) -> Result<DurableManifest> {
+        if replay.next_lsn < replay.start_lsn
+            || replay.commit_epoch < checkpoint_commit_epoch
+            || replay.next_lsn - replay.start_lsn != replay.commit_epoch - checkpoint_commit_epoch
+        {
+            return Err(HawDBError::StorageIntegrity(
+                "checkpoint replay LSN interval does not cover its commit epochs".into(),
+            ));
+        }
         self.admit_graph_manifest_artifacts(&artifacts)?;
         let safe_reclaim_commit_epoch =
             safe_reclaim_commit_epoch(checkpoint_commit_epoch, oldest_reader_commit_epoch);
@@ -275,7 +325,7 @@ impl DurableStore {
             source_scan_publication.map(|value| value.descriptor_checksum());
         let CheckpointManifestArtifacts {
             checkpoint,
-            relational_checkpoint,
+            relational_checkpoint: _,
             canonical_manifest,
             canonical_adjacency,
             property_spill_manifest,
@@ -317,12 +367,35 @@ impl DurableStore {
             checkpoint_commit_epoch,
             oldest_reader_commit_epoch,
             safe_reclaim_commit_epoch,
-            wal_replay_start_lsn: self.next_lsn,
-            next_lsn: self.next_lsn,
+            wal_replay_start_lsn: replay.start_lsn,
+            next_lsn: replay.next_lsn,
             source_scan_commit_epoch,
             source_scan_descriptor_checksum,
         };
         manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub(in crate::store) fn publish_checkpoint_manifest(
+        &mut self,
+        generation: u64,
+        artifacts: CheckpointManifestArtifacts,
+        checkpoint_commit_epoch: u64,
+        oldest_reader_commit_epoch: Option<u64>,
+        source_scan_publication: Option<source_scan::SourceScanPublication>,
+    ) -> Result<()> {
+        let manifest = self.checkpoint_manifest(
+            generation,
+            artifacts,
+            checkpoint_commit_epoch,
+            oldest_reader_commit_epoch,
+            source_scan_publication,
+            CheckpointReplayBoundary {
+                start_lsn: self.next_lsn,
+                next_lsn: self.next_lsn,
+                commit_epoch: checkpoint_commit_epoch,
+            },
+        )?;
         let publication = manifest
             .write(&self.manifest_path)
             .and_then(|()| checkpoint_publish_failpoint(CheckpointPublishStage::ManifestPublished));
@@ -339,6 +412,22 @@ impl DurableStore {
             });
         }
 
+        self.adopt_checkpoint_manifest(
+            manifest,
+            artifacts.relational_checkpoint,
+            checkpoint_commit_epoch,
+        )
+    }
+
+    /// Mounts validated immutable bindings without writing a durable selector.
+    /// A private candidate can use this before replaying its captured suffix.
+    pub(in crate::store) fn adopt_checkpoint_manifest(
+        &mut self,
+        manifest: DurableManifest,
+        relational_checkpoint: Option<DurableArtifactMetadata>,
+        wal_commit_epoch: u64,
+    ) -> Result<()> {
+        let generation = manifest.checkpoint_epoch;
         self.wal_append_file = None;
         self.checkpoint_path = manifest.checkpoint_path(&self.root_path);
         self.wal_path = manifest.wal_path(&self.root_path);
@@ -378,8 +467,12 @@ impl DurableStore {
         self.oldest_reader_commit_epoch = manifest.oldest_reader_commit_epoch;
         self.safe_reclaim_commit_epoch = manifest.safe_reclaim_commit_epoch;
         self.wal_replay_start_lsn = manifest.wal_replay_start_lsn;
+        self.next_lsn = manifest.next_lsn;
         self.wal_bytes = fs::metadata(&self.wal_path)?.len();
-        self.wal_commit_epoch = manifest.checkpoint_commit_epoch;
+        if manifest.next_lsn == manifest.wal_replay_start_lsn {
+            self.wal_uncheckpointed_since = None;
+        }
+        self.wal_commit_epoch = wal_commit_epoch;
         self.wal_free_space_probe.last_available_bytes = None;
         self.wal_free_space_probe.wal_bytes_since_probe = 0;
         self.source_scan_commit_epoch = manifest.source_scan_commit_epoch;
@@ -427,4 +520,48 @@ impl DurableStore {
         );
         Ok(())
     }
+}
+
+fn checkpoint_file_integrity(
+    path: &Path,
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<DurableArtifactMetadata> {
+    let mut file = {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+        let file = File::open(path)?;
+        unit.finish();
+        file
+    };
+    let mut hasher = hawdb_integrity::IntegrityHasher::new();
+    let mut encoded_len = 0u64;
+    let mut block = {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let block = vec![0; 64 * 1024];
+        unit.finish();
+        block
+    };
+    loop {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+        let read = file.read(&mut block)?;
+        if read == 0 {
+            unit.finish();
+            break;
+        }
+        encoded_len = encoded_len
+            .checked_add(read as u64)
+            .ok_or_else(|| HawDBError::Storage("checkpoint file length overflows u64".into()))?;
+        hasher.update(&block[..read]);
+        unit.finish();
+    }
+    let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+    let digest = hasher.finish();
+    unit.finish();
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    Ok(DurableArtifactMetadata {
+        encoded_len,
+        encoded_checksum: digest.crc32c.as_u64(),
+        encoded_sha256: digest.sha256,
+    })
 }

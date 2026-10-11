@@ -24,6 +24,9 @@ use std::io::{Seek, SeekFrom, Write};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[path = "tests/checkpoint_validation.rs"]
+mod checkpoint_validation;
 use std::sync::Arc;
 
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -105,7 +108,15 @@ fn persisted_overflow_candidate_does_not_change_latest_selection() {
     let candidate = RelationalOverflowRootReader::open_generation(&directory, 1, config).unwrap();
     assert!(candidate.contains(&reference).unwrap());
 
-    assert_no_temporary_files(&directory);
+    assert_eq!(
+        fs::read(
+            directory
+                .join(RELATIONAL_OVERFLOW_MANIFEST_FILE)
+                .with_extension("hawdb.tmp")
+        )
+        .unwrap(),
+        b"abandoned latest selector"
+    );
     fs::remove_dir_all(directory).unwrap();
 }
 

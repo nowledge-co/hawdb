@@ -31,8 +31,7 @@ impl GraphStore {
             *self
                 .basic_statistics
                 .label_counts
-                .entry(*label_id)
-                .or_default() += 1;
+                .entry_or_default(*label_id) += 1;
         }
         self.refresh_basic_statistics_epoch();
     }
@@ -40,7 +39,7 @@ impl GraphStore {
     fn remove_node_from_basic_statistics(&mut self, node: &NodeRecord) {
         self.basic_statistics.node_count = self.basic_statistics.node_count.saturating_sub(1);
         for label_id in &node.labels {
-            decrement_counter(&mut self.basic_statistics.label_counts, label_id);
+            decrement_statistic_counter(&mut self.basic_statistics.label_counts, label_id);
         }
         self.refresh_basic_statistics_epoch();
     }
@@ -50,15 +49,14 @@ impl GraphStore {
         *self
             .basic_statistics
             .rel_type_counts
-            .entry(relationship.rel_type)
-            .or_default() += 1;
+            .entry_or_default(relationship.rel_type) += 1;
         self.refresh_basic_statistics_epoch();
     }
 
     fn remove_relationship_from_basic_statistics(&mut self, relationship: &RelRecord) {
         self.basic_statistics.relationship_count =
             self.basic_statistics.relationship_count.saturating_sub(1);
-        decrement_counter(
+        decrement_statistic_counter(
             &mut self.basic_statistics.rel_type_counts,
             &relationship.rel_type,
         );
@@ -249,7 +247,7 @@ impl GraphStore {
                 AdjacencyDirection::Outgoing => &mut self.outgoing,
                 AdjacencyDirection::Incoming => &mut self.incoming,
             };
-            let Some(posting) = adjacency.get_mut(&candidate.key) else {
+            let Some(mut posting) = adjacency.get_mut(&candidate.key) else {
                 continue;
             };
             if !posting.needs_consolidation() || !posting.consolidate() {
@@ -299,9 +297,25 @@ impl GraphStore {
         &mut self,
         name: String,
         definition: ProjectedGraphDefinition,
-    ) {
-        self.projected_graph_artifacts.remove(&name);
+    ) -> Result<()> {
+        self.apply_project_graph_definition_with_work_context(
+            name,
+            definition,
+            &crate::background::CheckpointWorkContext::default(),
+        )
+    }
+
+    pub(super) fn apply_project_graph_definition_with_work_context(
+        &mut self,
+        name: String,
+        definition: ProjectedGraphDefinition,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
+        self.projected_graph_artifacts.invalidate(&name, work)?;
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
         self.projected_graphs.insert(name, definition);
+        unit.finish();
+        work.checkpoint().map_err(HawDBError::from_storage_error)
     }
 
     pub(super) fn apply_set_node_property(
@@ -311,26 +325,25 @@ impl GraphStore {
         property: String,
         value: Value,
     ) {
-        if let Some(node) = self.nodes.get(&id).cloned() {
-            self.remove_node_from_composite_property_indexes(catalog, &node);
-            self.remove_node_from_full_text_property_indexes(catalog, &node);
-        }
-        let Some(node) = self.nodes.get_mut(&id) else {
+        self.remove_stored_node_from_derived_property_indexes(catalog, id, &property);
+        let Some(mut node) = self.nodes.get_mut(&id) else {
             return;
         };
         let old_value = node.properties.insert(property.clone(), value.clone());
         let labels = node.labels.clone();
+        drop(node);
         self.nodes.rebalance_key(&id);
         // Shadow dirty tracking: a property write dirties the primary table.
         self.mark_columnar_node_dirty(&labels);
         for label_id in labels {
             if let Some(old_value) = &old_value {
                 let key = (label_id, property.clone(), old_value.clone());
-                if let Some(ids) = self.property_index.get_mut(&key) {
+                let empty = self.property_index.get_mut(&key).is_some_and(|mut ids| {
                     ids.remove(&id);
-                    if ids.is_empty() {
-                        self.property_index.remove(&key);
-                    }
+                    ids.is_empty()
+                });
+                if empty {
+                    self.property_index.remove(&key);
                 }
             }
             if catalog.has_scalar_property_index(label_id, &property) {
@@ -339,10 +352,7 @@ impl GraphStore {
                     .insert(id);
             }
         }
-        if let Some(node) = self.nodes.get(&id).cloned() {
-            self.add_node_to_composite_property_indexes(catalog, &node);
-            self.add_node_to_full_text_property_indexes(catalog, &node);
-        }
+        self.add_stored_node_to_derived_property_indexes(catalog, id, &property);
     }
 
     pub(super) fn apply_set_relationship_property(
@@ -351,23 +361,28 @@ impl GraphStore {
         property: String,
         value: Value,
     ) {
-        let Some(relationship) = self.relationships.get_mut(&id) else {
+        let Some(mut relationship) = self.relationships.get_mut(&id) else {
             return;
         };
         let rel_type = relationship.rel_type;
         let old_value = relationship
             .properties
             .insert(property.clone(), value.clone());
+        drop(relationship);
         self.relationships.rebalance_key(&id);
         // Shadow dirty tracking: a property write dirties the type's table.
         self.mark_columnar_relationship_dirty(rel_type);
         if let Some(old_value) = old_value {
             let key = (rel_type, property.clone(), old_value);
-            if let Some(ids) = self.relationship_property_index.get_mut(&key) {
-                ids.remove(&id);
-                if ids.is_empty() {
-                    self.relationship_property_index.remove(&key);
-                }
+            let empty = self
+                .relationship_property_index
+                .get_mut(&key)
+                .is_some_and(|mut ids| {
+                    ids.remove(&id);
+                    ids.is_empty()
+                });
+            if empty {
+                self.relationship_property_index.remove(&key);
             }
         }
         self.relationship_property_index
@@ -388,24 +403,26 @@ impl GraphStore {
 
     fn remove_relationship_from_adjacency(&mut self, relationship: &RelRecord) {
         let outgoing_key = (relationship.source, relationship.rel_type);
-        if let Some(ids) = self.outgoing.get_mut(&outgoing_key) {
+        let empty = self.outgoing.get_mut(&outgoing_key).is_some_and(|mut ids| {
             ids.remove(&OrderedAdjacencyEntry {
                 neighbor_id: relationship.target,
                 relationship_id: relationship.id,
             });
-            if ids.is_empty() {
-                self.outgoing.remove(&outgoing_key);
-            }
+            ids.is_empty()
+        });
+        if empty {
+            self.outgoing.remove(&outgoing_key);
         }
         let incoming_key = (relationship.target, relationship.rel_type);
-        if let Some(ids) = self.incoming.get_mut(&incoming_key) {
+        let empty = self.incoming.get_mut(&incoming_key).is_some_and(|mut ids| {
             ids.remove(&OrderedAdjacencyEntry {
                 neighbor_id: relationship.source,
                 relationship_id: relationship.id,
             });
-            if ids.is_empty() {
-                self.incoming.remove(&incoming_key);
-            }
+            ids.is_empty()
+        });
+        if empty {
+            self.incoming.remove(&incoming_key);
         }
     }
 
@@ -421,11 +438,12 @@ impl GraphStore {
         for label_id in node.labels {
             for (property, value) in &node.properties {
                 let key = (label_id, property.clone(), value.clone());
-                if let Some(ids) = self.property_index.get_mut(&key) {
+                let empty = self.property_index.get_mut(&key).is_some_and(|mut ids| {
                     ids.remove(&id);
-                    if ids.is_empty() {
-                        self.property_index.remove(&key);
-                    }
+                    ids.is_empty()
+                });
+                if empty {
+                    self.property_index.remove(&key);
                 }
             }
         }
@@ -473,14 +491,23 @@ impl GraphStore {
 
     fn record_node_index_sample_updates(&mut self, affected_indexes: Vec<IndexId>) {
         for index_id in affected_indexes {
-            if let Some(sample) = self.checkpoint_statistics.index_samples.get_mut(&index_id) {
+            if let Some(mut sample) = self.checkpoint_statistics.index_samples.get_mut(&index_id) {
                 sample.updates_since_sample = sample.updates_since_sample.saturating_add(1);
             }
         }
     }
 
     pub(super) fn apply_wal_op(&mut self, catalog: &mut Catalog, op: WalOp) -> Result<()> {
-        let result = self.apply_wal_op_inner(catalog, op);
+        self.apply_wal_op_with_work_context(catalog, op, None)
+    }
+
+    pub(super) fn apply_wal_op_with_work_context(
+        &mut self,
+        catalog: &mut Catalog,
+        op: WalOp,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<()> {
+        let result = self.apply_wal_op_inner(catalog, op, work);
         if result.is_err() && self.durable.is_some() {
             self.post_wal_apply_poisoned
                 .store(true, AtomicOrdering::Release);
@@ -488,7 +515,12 @@ impl GraphStore {
         result
     }
 
-    fn apply_wal_op_inner(&mut self, catalog: &mut Catalog, op: WalOp) -> Result<()> {
+    fn apply_wal_op_inner(
+        &mut self,
+        catalog: &mut Catalog,
+        op: WalOp,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<()> {
         wal_apply_failpoint()?;
         match op {
             WalOp::CreateNodeLabel { label } => {
@@ -696,14 +728,16 @@ impl GraphStore {
                 rel_types,
                 relationship_predicates,
             } => {
-                self.apply_project_graph_definition(
-                    name,
-                    ProjectedGraphDefinition {
-                        node_labels,
-                        rel_types,
-                        relationship_predicates,
-                    },
-                );
+                let definition = ProjectedGraphDefinition {
+                    node_labels,
+                    rel_types,
+                    relationship_predicates,
+                };
+                if let Some(work) = work {
+                    self.apply_project_graph_definition_with_work_context(name, definition, work)?;
+                } else {
+                    self.apply_project_graph_definition(name, definition)?;
+                }
             }
             WalOp::MarkInitialImportSource { source_fingerprint } => {
                 self.initial_import_source_fingerprint = Some(source_fingerprint);
@@ -788,7 +822,7 @@ impl GraphStore {
             }
             WalOp::Batch(ops) => {
                 for op in ops {
-                    self.apply_wal_op(catalog, op)?;
+                    self.apply_wal_op_with_work_context(catalog, op, work)?;
                 }
             }
         }

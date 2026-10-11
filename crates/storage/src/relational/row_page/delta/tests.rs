@@ -33,6 +33,84 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[test]
+fn private_manifest_generation_preserves_existing_temporary_evidence() {
+    let directory = unique_test_dir("private-unowned-manifest");
+    let base = publish_and_open_base(&directory);
+    let config = RelationalRowDeltaConfig::default();
+    let mut builder =
+        RelationalRowDeltaBuilder::new(&directory, &base, 41, None, table_metadata(), config)
+            .unwrap();
+    builder.advance_empty(2).unwrap();
+    let manifest_path = directory.join(relational_row_delta_manifest_generation_file(
+        base.manifest().generation,
+        41,
+    ));
+    let unowned = manifest_path.with_extension("hawdb.tmp");
+    fs::write(&unowned, b"unowned manifest recovery evidence").unwrap();
+    let report = builder
+        .finish_selected_inner(
+            2,
+            super::super::super::RelationalRecoverySourceIdentity::for_test(1, 2),
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read(&unowned).unwrap(),
+        b"unowned manifest recovery evidence"
+    );
+    assert_eq!(
+        report.events[3],
+        RelationalRowDeltaPublicationPhase::PrivateManifestPrepared
+    );
+    assert!(!directory.join(RELATIONAL_ROW_DELTA_MANIFEST_FILE).exists());
+    RelationalRowDeltaReader::open_generation_with_recovery_fence(
+        &directory,
+        report.generation,
+        &base,
+        RelationalRecoveryFence::new(
+            2,
+            super::super::super::RelationalRecoverySourceIdentity::for_test(1, 2),
+        ),
+        config,
+    )
+    .unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn private_manifest_generation_rejects_existing_immutable_evidence() {
+    let directory = unique_test_dir("private-existing-manifest");
+    let base = publish_and_open_base(&directory);
+    let config = RelationalRowDeltaConfig::default();
+    let mut builder =
+        RelationalRowDeltaBuilder::new(&directory, &base, 41, None, table_metadata(), config)
+            .unwrap();
+    builder.advance_empty(2).unwrap();
+    let manifest_path = directory.join(relational_row_delta_manifest_generation_file(
+        base.manifest().generation,
+        41,
+    ));
+    fs::write(&manifest_path, b"existing immutable recovery evidence").unwrap();
+    assert!(builder
+        .finish_selected_inner(
+            2,
+            super::super::super::RelationalRecoverySourceIdentity::for_test(1, 2),
+            None,
+            None,
+            false,
+        )
+        .is_err());
+    assert_eq!(
+        fs::read(&manifest_path).unwrap(),
+        b"existing immutable recovery evidence"
+    );
+    assert!(!directory.join(RELATIONAL_ROW_DELTA_MANIFEST_FILE).exists());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn checkpoint_run_target_is_soft_but_cannot_exceed_the_hard_limit() {
     let config = RelationalRowDeltaConfig::default();
     assert!(!config.checkpoint_recommended(config.checkpoint_runs.get() - 1));

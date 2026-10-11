@@ -31,7 +31,8 @@ pub use access_control::QueryAccessControlContext;
 pub use cancellation::{
     RuntimeCancellationFuture, RuntimeCancellationReason, RuntimeCancellationToken,
     RuntimeIoWaveController, RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeIoWaveTryAcquire,
-    RuntimeMemoryReservation, RuntimeTaskContext,
+    RuntimeMemoryController, RuntimeMemoryError, RuntimeMemoryPermit, RuntimeMemoryReservation,
+    RuntimeTaskContext,
 };
 pub use capability::{RuntimeCapabilities, RuntimeCapability};
 pub use error::{HawDBError, ReadBudgetError, ReadBudgetResource, Result};

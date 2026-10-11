@@ -28,8 +28,8 @@ use crate::relational::{
 use hawdb_integrity::{IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufWriter, Write};
-use std::path::Path;
 
+pub(super) mod checkpoint;
 mod codec;
 
 pub(super) use codec::{read_descriptor, ROOT_DESCRIPTOR_BYTES};
@@ -50,14 +50,36 @@ pub(super) fn prepare_dirty_page(
     page: ImmutableRelationalRowPage,
     limits: RelationalRowPageLimits,
 ) -> Result<PreparedDirtyPage, RelationalRowPagePublicationError> {
+    prepare_dirty_page_with_work_context(page, limits, None)
+}
+
+pub(super) fn prepare_dirty_page_with_work_context(
+    page: ImmutableRelationalRowPage,
+    limits: RelationalRowPageLimits,
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<PreparedDirtyPage, RelationalRowPagePublicationError> {
+    if let Some(work) = work {
+        work.checkpoint().map_err(checkpoint::work_error)?;
+    }
     let first = page.rows.first().ok_or_else(|| {
         RelationalRowPagePublicationError::Admission("dirty row page contains no rows".to_string())
     })?;
     let last = page.rows.last().expect("dirty page has a first row");
-    let lower_bound = encode_ordered_relational_key(&first.primary_key).map_err(|error| {
+    let encode_key = |key: &crate::relational::RelationalKey| match work {
+        Some(work) => {
+            crate::relational::row_page::checkpoint::ordered_key(key, work).map_err(|error| {
+                match error {
+                    crate::relational::RelationalRowPageError::Admission(message)
+                    | crate::relational::RelationalRowPageError::Corrupt(message) => message,
+                }
+            })
+        }
+        None => encode_ordered_relational_key(key).map_err(|error| error.to_string()),
+    };
+    let lower_bound = encode_key(&first.primary_key).map_err(|error| {
         RelationalRowPagePublicationError::Admission(format!("dirty row-page lower bound: {error}"))
     })?;
-    let upper_bound = encode_ordered_relational_key(&last.primary_key).map_err(|error| {
+    let upper_bound = encode_key(&last.primary_key).map_err(|error| {
         RelationalRowPagePublicationError::Admission(format!("dirty row-page upper bound: {error}"))
     })?;
     if lower_bound.len() > limits.max_key_bytes.get()
@@ -95,20 +117,26 @@ pub(super) struct PageArtifactWriter {
     hasher: IntegrityHasher,
     page_count: u64,
     limits: RelationalRowPageLimits,
+    work: Option<crate::background::CheckpointWorkContext>,
 }
 
 impl PageArtifactWriter {
-    pub(super) fn new(
-        path: &Path,
-        limits: RelationalRowPageLimits,
-    ) -> Result<Self, RelationalRowPagePublicationError> {
-        let file = File::create(path).map_err(durability("create row-page artifact"))?;
-        Ok(Self {
+    pub(super) fn new(file: File, limits: RelationalRowPageLimits) -> Self {
+        Self {
             writer: BufWriter::new(file),
             hasher: IntegrityHasher::new(),
             page_count: 0,
             limits,
-        })
+            work: None,
+        }
+    }
+
+    pub(super) fn with_work_context(
+        mut self,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Self {
+        self.work = work.cloned();
+        self
     }
 
     pub(super) fn write(
@@ -125,7 +153,12 @@ impl PageArtifactWriter {
                     "row-page artifact length overflow".to_string(),
                 )
             })?;
-        let mut encoded_slot = page.page.encode(self.limits)?;
+        let mut encoded_slot = match &self.work {
+            Some(work) => {
+                crate::relational::row_page::checkpoint::encode(&page.page, self.limits, work)?
+            }
+            None => page.page.encode(self.limits)?,
+        };
         let encoded_page_len = u32::try_from(encoded_slot.len()).map_err(|_| {
             RelationalRowPagePublicationError::Admission(
                 "encoded row page length does not fit in u32".to_string(),
@@ -144,12 +177,26 @@ impl PageArtifactWriter {
                 page.descriptor.logical_page_id.get()
             )));
         }
-        encoded_slot.resize(self.limits.max_page_bytes.get(), 0);
-        let slot_digest = digest_bytes(&encoded_slot);
-        self.writer
-            .write_all(&encoded_slot)
-            .map_err(durability("write row-page slot"))?;
-        self.hasher.update(&encoded_slot);
+        let slot_digest = if let Some(work) = &self.work {
+            checkpoint::pad_slot(&mut encoded_slot, self.limits.max_page_bytes.get(), work)?;
+            let digest = work
+                .integrity(&encoded_slot)
+                .map_err(checkpoint::work_error)?;
+            checkpoint::write_slot(&mut self.writer, &mut self.hasher, &encoded_slot, work)?;
+            RelationalRowPageArtifactMetadata {
+                encoded_len: encoded_slot.len() as u64,
+                encoded_crc32c: digest.crc32c.get(),
+                encoded_sha256: digest.sha256,
+            }
+        } else {
+            encoded_slot.resize(self.limits.max_page_bytes.get(), 0);
+            let digest = digest_bytes(&encoded_slot);
+            self.writer
+                .write_all(&encoded_slot)
+                .map_err(durability("write row-page slot"))?;
+            self.hasher.update(&encoded_slot);
+            digest
+        };
         page.descriptor.physical_slot = self.page_count;
         page.descriptor.slot_integrity = RelationalRowPageSlotIntegrity {
             encoded_len: encoded_page_len,
@@ -163,13 +210,17 @@ impl PageArtifactWriter {
     pub(super) fn finish(
         mut self,
     ) -> Result<(RelationalRowPageArtifactMetadata, u64), RelationalRowPagePublicationError> {
-        self.writer
-            .flush()
-            .map_err(durability("flush row-page artifact"))?;
-        self.writer
-            .get_ref()
-            .sync_all()
-            .map_err(durability("sync row-page artifact"))?;
+        if let Some(work) = &self.work {
+            checkpoint::finish(&mut self.writer, work)?;
+        } else {
+            self.writer
+                .flush()
+                .map_err(durability("flush row-page artifact"))?;
+            self.writer
+                .get_ref()
+                .sync_all()
+                .map_err(durability("sync row-page artifact"))?;
+        }
         let encoded_len = self.page_count * self.limits.max_page_bytes.get() as u64;
         let digest = self.hasher.finish();
         Ok((
@@ -184,8 +235,8 @@ impl PageArtifactWriter {
 }
 
 pub(super) struct RootBuildRequest<'a> {
-    pub descriptor_path: &'a Path,
-    pub key_path: &'a Path,
+    pub descriptor_file: File,
+    pub key_file: File,
     pub base: Option<&'a RelationalRowPageRootReader>,
     pub deltas: &'a mut BTreeMap<String, PreparedTableDelta>,
     pub generation: u64,
@@ -199,17 +250,15 @@ pub(super) fn write_root_artifacts(
     rewrite: Option<RowPageRewriteControls<'_>>,
 ) -> Result<RootBuildOutput, RelationalRowPagePublicationError> {
     let RootBuildRequest {
-        descriptor_path,
-        key_path,
+        descriptor_file,
+        key_file,
         base,
         deltas,
         generation,
         source_commit_epoch,
         config,
     } = request;
-    let descriptor_file =
-        File::create(descriptor_path).map_err(durability("create row-page root descriptors"))?;
-    let key_file = File::create(key_path).map_err(durability("create row-page root keys"))?;
+
     let mut writer = RootWriter {
         descriptors: BufWriter::new(descriptor_file),
         keys: BufWriter::new(key_file),
@@ -220,6 +269,7 @@ pub(super) fn write_root_artifacts(
         generation,
         source_commit_epoch,
         config,
+        work: pages.work.clone(),
         physical_generations: Vec::with_capacity(
             base.map_or(1, |base| base.manifest.physical_generations.len() + 1),
         ),
@@ -230,16 +280,21 @@ pub(super) fn write_root_artifacts(
     // Occupancy is bounded by the selected manifest, not by the number of pages.
     // Recount live descriptors while merging, retaining each file's allocation.
     if let Some(base) = base {
-        writer
-            .physical_generations
-            .extend(base.manifest.physical_generations.iter().map(|entry| {
-                RelationalRowPagePhysicalGeneration {
+        for entry in &base.manifest.physical_generations {
+            let unit = writer.start_unit()?;
+            writer
+                .physical_generations
+                .push(RelationalRowPagePhysicalGeneration {
                     generation: entry.generation,
                     allocated_pages: entry.allocated_pages,
                     live_pages: 0,
-                }
-            }));
+                });
+            if let Some(unit) = unit {
+                unit.finish();
+            }
+        }
     }
+    let unit = writer.start_unit()?;
     writer
         .physical_generations
         .push(RelationalRowPagePhysicalGeneration {
@@ -247,11 +302,27 @@ pub(super) fn write_root_artifacts(
             allocated_pages: 0,
             live_pages: 0,
         });
-    let mut table_names = BTreeSet::new();
-    if let Some(base) = base {
-        table_names.extend(base.manifest.tables.iter().map(|table| table.table.clone()));
+    if let Some(unit) = unit {
+        unit.finish();
     }
-    table_names.extend(deltas.keys().cloned());
+    let mut table_names = BTreeSet::new();
+    for name in base
+        .into_iter()
+        .flat_map(|base| {
+            base.manifest
+                .tables
+                .iter()
+                .map(|table| table.table.as_str())
+        })
+        .chain(deltas.keys().map(String::as_str))
+    {
+        let name = writer.clone_name(name)?;
+        let unit = writer.start_unit()?;
+        table_names.insert(name);
+        if let Some(unit) = unit {
+            unit.finish();
+        }
+    }
     if table_names.len() > config.max_tables.get() {
         return Err(RelationalRowPagePublicationError::Admission(format!(
             "row-page root contains {} tables, exceeding limit {}",
@@ -263,6 +334,8 @@ pub(super) fn write_root_artifacts(
     let mut tables = Vec::with_capacity(table_names.len());
     let mut reused_page_count = 0u64;
     for table_name in table_names {
+        writer.checkpoint()?;
+        let unit = writer.start_unit()?;
         let base_table = base.and_then(|reader| {
             reader
                 .manifest
@@ -272,22 +345,36 @@ pub(super) fn write_root_artifacts(
                 .map(|index| &reader.manifest.tables[index])
         });
         let delta = deltas.remove(&table_name);
-        let schema = match (
+        if let Some(unit) = unit {
+            unit.finish();
+        }
+        let schema_source = match (
             base_table,
             delta.as_ref().and_then(|delta| delta.schema.as_ref()),
         ) {
-            (Some(base_table), Some(schema)) if base_table.schema != *schema => {
-                return Err(RelationalRowPagePublicationError::Admission(format!(
-                    "table {table_name} schema changed during incremental row-page publication"
-                )));
+            (Some(base_table), Some(schema)) => {
+                let same = match &writer.work {
+                    Some(work) => checkpoint::same_schema(&base_table.schema, schema, work)?,
+                    None => base_table.schema == *schema,
+                };
+                if !same {
+                    return Err(RelationalRowPagePublicationError::Admission(format!(
+                        "table {table_name} schema changed during incremental row-page publication"
+                    )));
+                }
+                &base_table.schema
             }
-            (Some(base_table), _) => base_table.schema.clone(),
-            (None, Some(schema)) => schema.clone(),
+            (Some(base_table), _) => &base_table.schema,
+            (None, Some(schema)) => schema,
             (None, None) => {
                 return Err(RelationalRowPagePublicationError::Admission(format!(
                     "new row-page table {table_name} is missing its schema"
                 )));
             }
+        };
+        let schema = match &writer.work {
+            Some(work) => checkpoint::clone_schema(schema_source, work)?,
+            None => schema_source.clone(),
         };
         let schema_digest = match (base_table, delta.as_ref()) {
             (Some(base_table), Some(delta)) if base_table.schema_digest != delta.schema_digest => {
@@ -343,7 +430,8 @@ pub(super) fn write_root_artifacts(
             }
             (Some(base), Some(_), None) => {
                 let relocated_before = writer.relocated_page_count;
-                base.visit_table_pages(&table_name, |descriptor| {
+                let work = writer.work.clone();
+                visit_base(base, &table_name, work.as_ref(), |descriptor| {
                     writer
                         .write_base_descriptor(base, descriptor, &mut bounds)
                         .map(|_| ())
@@ -373,6 +461,7 @@ pub(super) fn write_root_artifacts(
             _ => unreachable!("base table and delta combination was exhausted"),
         }
         let page_count = writer.descriptor_count - first_descriptor;
+        let unit = writer.start_unit()?;
         tables.push(RelationalRowPageTableRoot {
             table: table_name,
             schema,
@@ -385,6 +474,9 @@ pub(super) fn write_root_artifacts(
             lower_bound: bounds.lower.unwrap_or_default(),
             upper_bound: bounds.upper.unwrap_or_default(),
         });
+        if let Some(unit) = unit {
+            unit.finish();
+        }
     }
     if !deltas.is_empty() {
         return Err(RelationalRowPagePublicationError::Corrupt(
@@ -403,6 +495,21 @@ pub(super) fn write_root_artifacts(
     })
 }
 
+fn visit_base<F>(
+    base: &RelationalRowPageRootReader,
+    table: &str,
+    work: Option<&crate::background::CheckpointWorkContext>,
+    visitor: F,
+) -> Result<(), RelationalRowPagePublicationError>
+where
+    F: FnMut(&RelationalRowPageRootDescriptor) -> Result<(), RelationalRowPagePublicationError>,
+{
+    match work {
+        Some(work) => base.visit_table_pages_with_work_context(table, work, visitor),
+        None => base.visit_table_pages(table, visitor),
+    }
+}
+
 fn write_merged_table(
     writer: &mut RootWriter<'_>,
     base: &RelationalRowPageRootReader,
@@ -411,23 +518,33 @@ fn write_merged_table(
     bounds: &mut TableBounds,
 ) -> Result<u64, RelationalRowPagePublicationError> {
     debug_assert_eq!(delta.table, table);
-    let dirty_page_ids = delta
-        .dirty_pages
-        .iter()
-        .map(|page| page.descriptor.logical_page_id)
-        .collect::<BTreeSet<_>>();
-    let mut remaining_deleted = delta.deleted_page_ids.clone();
+    let mut dirty_page_ids = BTreeSet::new();
+    for page in &delta.dirty_pages {
+        let unit = writer.start_unit()?;
+        dirty_page_ids.insert(page.descriptor.logical_page_id);
+        if let Some(unit) = unit {
+            unit.finish();
+        }
+    }
+    let mut remaining_deleted = delta.deleted_page_ids;
     let mut dirty_index = 0usize;
     let mut reused = 0u64;
-    base.visit_table_pages(table, |base_descriptor| {
+    let work = writer.work.clone();
+    visit_base(base, table, work.as_ref(), |base_descriptor| {
         writer.checkpoint()?;
-        if remaining_deleted.remove(&base_descriptor.logical_page_id)
-            || dirty_page_ids.contains(&base_descriptor.logical_page_id)
-        {
+        let unit = writer.start_unit()?;
+        let replaced_or_deleted = remaining_deleted.remove(&base_descriptor.logical_page_id)
+            || dirty_page_ids.contains(&base_descriptor.logical_page_id);
+        if let Some(unit) = unit {
+            unit.finish();
+        }
+        if replaced_or_deleted {
             return Ok(());
         }
         while let Some(dirty) = delta.dirty_pages.get(dirty_index) {
-            if dirty.descriptor.lower_bound >= base_descriptor.lower_bound {
+            if writer.compare(&dirty.descriptor.lower_bound, &base_descriptor.lower_bound)?
+                != std::cmp::Ordering::Less
+            {
                 break;
             }
             writer.write_descriptor(&dirty.descriptor, bounds)?;
@@ -473,16 +590,56 @@ struct RootWriter<'a> {
     config: RelationalRowPagePublicationConfig,
     physical_generations: Vec<RelationalRowPagePhysicalGeneration>,
     pages: &'a mut PageArtifactWriter,
+    work: Option<crate::background::CheckpointWorkContext>,
     rewrite: Option<RowPageRewriteControls<'a>>,
     relocated_page_count: u64,
 }
 
 impl RootWriter<'_> {
     fn checkpoint(&self) -> Result<(), RelationalRowPagePublicationError> {
+        if let Some(work) = &self.work {
+            work.checkpoint().map_err(checkpoint::work_error)?;
+        }
         if let Some(rewrite) = self.rewrite {
             rewrite.checkpoint()?;
         }
         Ok(())
+    }
+
+    fn start_unit(
+        &self,
+    ) -> Result<Option<crate::background::CheckpointWorkUnit>, RelationalRowPagePublicationError>
+    {
+        self.work
+            .as_ref()
+            .map(|work| work.start_unit().map_err(checkpoint::work_error))
+            .transpose()
+    }
+
+    fn clone_name(&self, name: &str) -> Result<String, RelationalRowPagePublicationError> {
+        match &self.work {
+            Some(work) => crate::relational::codec::clone_string_with_work_context(name, work)
+                .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string())),
+            None => Ok(name.to_string()),
+        }
+    }
+
+    fn compare(
+        &self,
+        left: &[u8],
+        right: &[u8],
+    ) -> Result<std::cmp::Ordering, RelationalRowPagePublicationError> {
+        match &self.work {
+            Some(work) => checkpoint::compare(left, right, work),
+            None => Ok(left.cmp(right)),
+        }
+    }
+
+    fn clone_bound(&self, bytes: &[u8]) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
+        match &self.work {
+            Some(work) => checkpoint::clone_bytes(bytes, work),
+            None => Ok(bytes.to_vec()),
+        }
     }
 
     fn write_base_descriptor(
@@ -521,7 +678,11 @@ impl RootWriter<'_> {
         }
         let mut page = base.read_page(descriptor)?;
         page.generation = self.generation;
-        let mut page = prepare_dirty_page(page, self.config.page_limits)?;
+        let mut page = prepare_dirty_page_with_work_context(
+            page,
+            self.config.page_limits,
+            self.pages.work.as_ref(),
+        )?;
         self.pages.write(&mut page)?;
         self.write_descriptor(&page.descriptor, bounds)?;
         self.relocated_page_count = next_count;
@@ -534,12 +695,22 @@ impl RootWriter<'_> {
         table_bounds: &mut TableBounds,
     ) -> Result<(), RelationalRowPagePublicationError> {
         self.checkpoint()?;
-        validate_descriptor(
-            descriptor,
-            self.generation,
-            self.source_commit_epoch,
-            self.config,
-        )?;
+        match &self.work {
+            Some(work) => checkpoint::validate_descriptor(
+                descriptor,
+                self.generation,
+                self.source_commit_epoch,
+                self.config,
+                work,
+            )?,
+            None => validate_descriptor(
+                descriptor,
+                self.generation,
+                self.source_commit_epoch,
+                self.config,
+            )?,
+        }
+        let unit = self.start_unit()?;
         let index = self
             .physical_generations
             .binary_search_by_key(&descriptor.physical_generation, |entry| entry.generation)
@@ -563,10 +734,15 @@ impl RootWriter<'_> {
                 "row-page root exceeds the accounted physical allocation".to_string(),
             ));
         }
+        if let Some(unit) = unit {
+            unit.finish();
+        }
         if table_bounds
             .upper
             .as_ref()
-            .is_some_and(|upper| upper.as_slice() >= descriptor.lower_bound.as_slice())
+            .map(|upper| self.compare(upper, &descriptor.lower_bound))
+            .transpose()?
+            .is_some_and(|ordering| ordering != std::cmp::Ordering::Less)
         {
             return Err(RelationalRowPagePublicationError::Admission(
                 "row-page root bounds overlap or are unordered".to_string(),
@@ -582,6 +758,7 @@ impl RootWriter<'_> {
         self.write_key(&descriptor.lower_bound)?;
         let upper_offset = self.key_bytes;
         self.write_key(&descriptor.upper_bound)?;
+        let unit = self.start_unit()?;
         let wire = WireDescriptor {
             logical_page_id: descriptor.logical_page_id.get(),
             physical_generation: descriptor.physical_generation,
@@ -599,19 +776,44 @@ impl RootWriter<'_> {
             binding_sha256: Sha256Digest::from_bytes([0; SHA256_BYTES]),
         };
         let mut encoded = wire.encode();
+        if let Some(unit) = unit {
+            unit.finish();
+        }
         let mut hasher = IntegrityHasher::new();
-        hasher.update(&self.generation.to_le_bytes());
-        hasher.update(&self.descriptor_count.to_le_bytes());
-        hasher.update(&encoded[..ROOT_DESCRIPTOR_BINDING_OFFSET]);
-        hasher.update(&descriptor.lower_bound);
-        hasher.update(&descriptor.upper_bound);
+        for bytes in [
+            &self.generation.to_le_bytes()[..],
+            &self.descriptor_count.to_le_bytes()[..],
+            &encoded[..ROOT_DESCRIPTOR_BINDING_OFFSET],
+            &descriptor.lower_bound,
+            &descriptor.upper_bound,
+        ] {
+            match &self.work {
+                Some(work) => checkpoint::hash(&mut hasher, bytes, work)?,
+                None => hasher.update(bytes),
+            }
+        }
+        let unit = self.start_unit()?;
         let digest = hasher.finish();
         encoded[100..104].copy_from_slice(&digest.crc32c.get().to_le_bytes());
         encoded[104..136].copy_from_slice(digest.sha256.as_bytes());
-        self.descriptors
-            .write_all(&encoded)
-            .map_err(durability("write row-page root descriptor"))?;
-        self.descriptor_hasher.update(&encoded);
+        if let Some(unit) = unit {
+            unit.finish();
+        }
+        if let Some(work) = &self.work {
+            checkpoint::write_bytes(
+                &mut self.descriptors,
+                &mut self.descriptor_hasher,
+                &encoded,
+                "write row-page root descriptor",
+                work,
+            )?;
+        } else {
+            self.descriptors
+                .write_all(&encoded)
+                .map_err(durability("write row-page root descriptor"))?;
+            self.descriptor_hasher.update(&encoded);
+        }
+        let unit = self.start_unit()?;
         self.descriptor_count += 1;
         table_bounds.row_count = table_bounds
             .row_count
@@ -621,10 +823,13 @@ impl RootWriter<'_> {
                     "row-page table row count overflow".to_string(),
                 )
             })?;
-        table_bounds
-            .lower
-            .get_or_insert_with(|| descriptor.lower_bound.clone());
-        table_bounds.upper = Some(descriptor.upper_bound.clone());
+        if let Some(unit) = unit {
+            unit.finish();
+        }
+        if table_bounds.lower.is_none() {
+            table_bounds.lower = Some(self.clone_bound(&descriptor.lower_bound)?);
+        }
+        table_bounds.upper = Some(self.clone_bound(&descriptor.upper_bound)?);
         Ok(())
     }
 
@@ -643,31 +848,50 @@ impl RootWriter<'_> {
                 self.config.max_root_key_bytes
             )));
         }
-        self.keys
-            .write_all(key)
-            .map_err(durability("write row-page root key"))?;
-        self.key_hasher.update(key);
+        if let Some(work) = &self.work {
+            checkpoint::write_bytes(
+                &mut self.keys,
+                &mut self.key_hasher,
+                key,
+                "write row-page root key",
+                work,
+            )?;
+        } else {
+            self.keys
+                .write_all(key)
+                .map_err(durability("write row-page root key"))?;
+            self.key_hasher.update(key);
+        }
         self.key_bytes = next;
         Ok(())
     }
 
     fn finish(mut self) -> Result<FinishedRootWriter, RelationalRowPagePublicationError> {
-        self.descriptors
-            .flush()
-            .map_err(durability("flush row-page root descriptors"))?;
-        self.keys
-            .flush()
-            .map_err(durability("flush row-page root keys"))?;
-        self.descriptors
-            .get_ref()
-            .sync_all()
-            .map_err(durability("sync row-page root descriptors"))?;
-        self.keys
-            .get_ref()
-            .sync_all()
-            .map_err(durability("sync row-page root keys"))?;
-        let descriptor_digest = self.descriptor_hasher.finish();
-        let key_digest = self.key_hasher.finish();
+        if let Some(work) = &self.work {
+            checkpoint::flush(
+                &mut self.descriptors,
+                "flush row-page root descriptors",
+                work,
+            )?;
+            checkpoint::flush(&mut self.keys, "flush row-page root keys", work)?;
+            checkpoint::sync(&self.descriptors, "sync row-page root descriptors", work)?;
+            checkpoint::sync(&self.keys, "sync row-page root keys", work)?;
+        } else {
+            self.descriptors
+                .flush()
+                .map_err(durability("flush row-page root descriptors"))?;
+            self.keys
+                .flush()
+                .map_err(durability("flush row-page root keys"))?;
+            self.descriptors
+                .get_ref()
+                .sync_all()
+                .map_err(durability("sync row-page root descriptors"))?;
+            self.keys
+                .get_ref()
+                .sync_all()
+                .map_err(durability("sync row-page root keys"))?;
+        }
         let descriptor_len = self
             .descriptor_count
             .checked_mul(ROOT_DESCRIPTOR_BYTES as u64)
@@ -676,8 +900,21 @@ impl RootWriter<'_> {
                     "row-page descriptor byte count overflow".to_string(),
                 )
             })?;
-        self.physical_generations
-            .retain(|entry| entry.live_pages != 0);
+        let mut retained = 0;
+        for index in 0..self.physical_generations.len() {
+            let unit = self.start_unit()?;
+            if self.physical_generations[index].live_pages != 0 {
+                self.physical_generations.swap(retained, index);
+                retained += 1;
+            }
+            if let Some(unit) = unit {
+                unit.finish();
+            }
+        }
+        self.physical_generations.truncate(retained);
+        self.checkpoint()?;
+        let descriptor_digest = self.descriptor_hasher.finish();
+        let key_digest = self.key_hasher.finish();
         Ok(FinishedRootWriter {
             root_page_count: self.descriptor_count,
             descriptor_artifact: RelationalRowPageArtifactMetadata {

@@ -204,7 +204,7 @@ impl GraphStore {
                 "optimizer statistics refresh source epoch changed before publication".to_string(),
             ));
         }
-        self.checkpoint_statistics = statistics;
+        self.checkpoint_statistics = statistics.into();
         self.advanced_statistics_dirty = AdvancedStatisticsDirtyState::default();
 
         Ok(OptimizerStatisticsRefreshReport {
@@ -239,13 +239,13 @@ impl GraphStore {
         statistics: GraphStatistics,
         dirty_state: AdvancedStatisticsDirtyState,
     ) {
-        self.checkpoint_statistics = statistics;
+        self.checkpoint_statistics = statistics.into();
         self.advanced_statistics_dirty = dirty_state;
     }
 
     #[doc(hidden)]
     pub fn checkpoint_statistics_snapshot(&self) -> GraphStatistics {
-        self.checkpoint_statistics.clone()
+        self.checkpoint_statistics.materialize()
     }
 
     #[doc(hidden)]

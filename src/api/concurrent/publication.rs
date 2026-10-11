@@ -86,6 +86,9 @@ impl PublishedConcurrentRead {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(feature = "background-maintenance", not(target_arch = "wasm32")))]
+    mod group_completion;
+
     use super::super::{ConcurrentDatabase, WalGroupCommitConfig};
     use super::*;
     use std::num::{NonZeroU64, NonZeroUsize};

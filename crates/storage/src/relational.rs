@@ -48,8 +48,10 @@ pub use codec::{
     RelationalWalBatch,
 };
 pub(crate) use codec::{
-    decode_relational_row_payload, decode_relational_table_schema, encode_relational_row_payload,
-    encode_relational_table_schema,
+    decode_relational_checkpoint_file_with_work_context, decode_relational_row_payload,
+    decode_relational_table_schema, encode_relational_checkpoint_with_work_context,
+    encode_relational_row_payload, encode_relational_row_payload_with_work_context,
+    encode_relational_table_schema, CheckpointOutputIo,
 };
 #[doc(hidden)]
 pub use compaction::relational_row_page_compaction_publication_config;
@@ -81,18 +83,22 @@ pub use index_shadow::{
     DEFAULT_RELATIONAL_INDEX_SORT_RUNS, DEFAULT_RELATIONAL_INDEX_SORT_SPILL_BYTES,
     RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE, RELATIONAL_INDEX_SHADOW_MANIFEST_FILE,
 };
+pub(crate) use index_shadow::{
+    relational_index_recovery_manifest_generation_file, relational_index_recovery_prefix_file,
+};
 pub use overflow::{
     relational_overflow_descriptor_file, relational_overflow_extent_file,
     relational_overflow_manifest_generation_file, RelationalHydrationBudget,
     RelationalOverflowArtifactMetadata, RelationalOverflowConfig,
     RelationalOverflowExactGenerationRequest, RelationalOverflowExactPublicationReport,
     RelationalOverflowExtentDescriptor, RelationalOverflowExtentInput,
-    RelationalOverflowGenerationArtifacts, RelationalOverflowPublicationConfig,
-    RelationalOverflowPublicationError, RelationalOverflowPublicationPhase,
-    RelationalOverflowPublicationReport, RelationalOverflowPublisher, RelationalOverflowRef,
-    RelationalOverflowReferenceSet, RelationalOverflowReferenceSetBuilder,
-    RelationalOverflowReferenceSortConfig, RelationalOverflowReferenceSortReport,
-    RelationalOverflowRootBinding, RelationalOverflowRootManifest, RelationalOverflowRootReader,
+    RelationalOverflowGenerationArtifacts, RelationalOverflowInputs, RelationalOverflowInputsIter,
+    RelationalOverflowPublicationConfig, RelationalOverflowPublicationError,
+    RelationalOverflowPublicationPhase, RelationalOverflowPublicationReport,
+    RelationalOverflowPublisher, RelationalOverflowRef, RelationalOverflowReferenceSet,
+    RelationalOverflowReferenceSetBuilder, RelationalOverflowReferenceSortConfig,
+    RelationalOverflowReferenceSortReport, RelationalOverflowRootBinding,
+    RelationalOverflowRootManifest, RelationalOverflowRootReader,
     DEFAULT_MAX_RELATIONAL_HYDRATION_BYTES, DEFAULT_RELATIONAL_OVERFLOW_EXTENTS,
     DEFAULT_RELATIONAL_OVERFLOW_MANIFEST_BYTES, DEFAULT_RELATIONAL_OVERFLOW_NEW_EXTENT_BYTES,
     DEFAULT_RELATIONAL_OVERFLOW_REFERENCE_OCCURRENCES, DEFAULT_RELATIONAL_OVERFLOW_REFERENCE_RUNS,
@@ -100,10 +106,11 @@ pub use overflow::{
     DEFAULT_RELATIONAL_OVERFLOW_REFERENCE_SPILL_BYTES, DEFAULT_RELATIONAL_OVERFLOW_THRESHOLD_BYTES,
     RELATIONAL_OVERFLOW_MANIFEST_FILE,
 };
-pub(crate) use recovery::RELATIONAL_RECOVERY_SOURCE_BYTES;
+pub(crate) use recovery::{PreparedRelationalRecoverySelector, RELATIONAL_RECOVERY_SOURCE_BYTES};
 pub use recovery::{
     RelationalRecoveryFence, RelationalRecoverySourceBuilder, RelationalRecoverySourceIdentity,
 };
+pub(crate) use row_page::relational_row_delta_prefix_file;
 pub use row_page::{
     relational_row_delta_manifest_generation_file, relational_row_delta_run_file,
     relational_row_page_artifact_file, relational_row_page_manifest_generation_file,
@@ -686,6 +693,25 @@ pub fn encode_relational_primary_key(key: &RelationalKey) -> Result<Vec<u8>, Rel
         .map_err(|error| RelationalError::Corruption(error.to_string()))
 }
 
+pub(crate) fn encode_relational_primary_key_with_work_context(
+    key: &RelationalKey,
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<Vec<u8>, RelationalError> {
+    encode_relational_primary_key_with_checkpoint_work(key, work).map_err(|error| match error {
+        CheckpointKeyEncodeError::Key(error) => error,
+        CheckpointKeyEncodeError::Work(error) => RelationalError::Admission(error.to_string()),
+    })
+}
+
+pub(crate) use ordered_key::CheckpointKeyEncodeError;
+
+pub(crate) fn encode_relational_primary_key_with_checkpoint_work(
+    key: &RelationalKey,
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<Vec<u8>, CheckpointKeyEncodeError> {
+    ordered_key::encode_ordered_relational_key_with_work_context(key, work)
+}
+
 pub fn decode_relational_primary_key(encoded: &[u8]) -> Result<RelationalKey, RelationalError> {
     ordered_key::decode_ordered_relational_key(encoded)
         .map_err(|error| RelationalError::Corruption(error.to_string()))
@@ -693,7 +719,7 @@ pub fn decode_relational_primary_key(encoded: &[u8]) -> Result<RelationalKey, Re
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalRow {
-    values: Arc<[RelationalValue]>,
+    values: Arc<Vec<RelationalValue>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1239,9 +1265,19 @@ impl RelationalIndexChangeCapture {
 }
 
 impl RelationalRow {
-    pub fn new(values: Vec<RelationalValue>) -> Self {
+    pub fn new(mut values: Vec<RelationalValue>) -> Self {
+        // Do not retain arbitrary spare capacity supplied by a host caller.
+        // Private decoding already constructs the vector at its admitted size.
+        values.shrink_to_fit();
+        Self::from_checkpoint_values(values)
+    }
+
+    fn from_checkpoint_values(values: Vec<RelationalValue>) -> Self {
+        // Share the owned vector without an Arc-slice allocation and complete
+        // value-array copy. The vector's actual retained capacity still needs
+        // accounting in the checkpoint resource ledger.
         Self {
-            values: Arc::from(values),
+            values: Arc::new(values),
         }
     }
 
@@ -1400,15 +1436,25 @@ impl RelationalRowPages {
 }
 
 fn relational_row_entry_bytes(key: &RelationalKey, row: &RelationalRow) -> usize {
-    std::mem::size_of::<RelationalKey>()
+    relational_row_entry_bytes_with_visit(key, row, &mut || Ok::<_, std::convert::Infallible>(()))
+        .unwrap_or_else(|never| match never {})
+}
+
+fn relational_row_entry_bytes_with_visit<E>(
+    key: &RelationalKey,
+    row: &RelationalRow,
+    visit: &mut impl FnMut() -> std::result::Result<(), E>,
+) -> std::result::Result<usize, E> {
+    visit()?;
+    let mut payload = 0usize;
+    for value in key.0.iter().chain(row.values.iter()) {
+        visit()?;
+        payload = payload.saturating_add(value.estimated_payload_bytes());
+    }
+    Ok(std::mem::size_of::<RelationalKey>()
         .saturating_add(std::mem::size_of::<RelationalRow>())
-        .saturating_add(
-            key.0
-                .iter()
-                .map(RelationalValue::estimated_payload_bytes)
-                .sum::<usize>(),
-        )
-        .saturating_add(row.estimated_payload_bytes())
+        .saturating_add(std::mem::size_of::<Vec<RelationalValue>>())
+        .saturating_add(payload))
 }
 
 fn relational_key_payload_bytes(key: &RelationalKey) -> Option<usize> {
@@ -3723,6 +3769,39 @@ impl RelationalState {
         row_bytes.saturating_add(overflow_bytes)
     }
 
+    /// Computes both existing checkpoint admission terms in one borrowed,
+    /// cooperatively checked traversal. No row/value copies are created.
+    #[doc(hidden)]
+    pub fn estimated_checkpoint_admission_bytes_with_visit<E>(
+        &self,
+        visit: &mut impl FnMut() -> std::result::Result<(), E>,
+    ) -> std::result::Result<(u64, u64), E> {
+        let mut resident_rows = 0u64;
+        if self.materialized_rows_resident {
+            for segment in self.segments.values() {
+                visit()?;
+                for (key, row) in segment.rows.iter() {
+                    resident_rows = resident_rows.saturating_add(
+                        relational_row_entry_bytes_with_visit(key, row, visit)? as u64,
+                    );
+                }
+            }
+        }
+        let mut checkpoint = if self.materialized_rows_resident {
+            resident_rows
+        } else {
+            self.detached_row_bytes
+        };
+        for segment in self.overflow_segments.values() {
+            visit()?;
+            checkpoint = checkpoint.saturating_add(match segment {
+                RelationalOverflowSegment::Inline(value) => value.len() as u64,
+                RelationalOverflowSegment::FileRange { range, .. } => range.length.get(),
+            });
+        }
+        Ok((resident_rows, checkpoint))
+    }
+
     pub fn index_lookup(
         &self,
         table: &str,
@@ -4035,6 +4114,21 @@ impl RelationalState {
             .collect()
     }
 
+    #[doc(hidden)]
+    pub fn overflow_generation_inputs_with_work_context(
+        &self,
+        has_base_generation: bool,
+        max_materialized_bytes: usize,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<RelationalOverflowInputs, RelationalError> {
+        overflow::checkpoint::generation_inputs(
+            self,
+            has_base_generation,
+            max_materialized_bytes,
+            work,
+        )
+    }
+
     /// Collects only overflow references carried by bounded dirty row pages.
     ///
     /// The caller must publish these inputs with base retention enabled. A
@@ -4082,6 +4176,15 @@ impl RelationalState {
                 },
             )
             .collect()
+    }
+
+    #[doc(hidden)]
+    pub fn overflow_delta_generation_inputs_with_work_context(
+        &self,
+        deltas: &[RelationalRowPageTableDelta],
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<RelationalOverflowInputs, RelationalError> {
+        overflow::checkpoint::delta_inputs(self, deltas, work)
     }
 }
 

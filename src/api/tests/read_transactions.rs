@@ -103,7 +103,8 @@ fn read_transaction_keeps_parameterized_query_snapshot() {
 
     let mut read_tx = db.begin_read_transaction().unwrap();
     let leaf = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -115,7 +116,8 @@ fn read_transaction_keeps_parameterized_query_snapshot() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(0),
@@ -248,7 +250,8 @@ fn read_transaction_retrieves_knowledge_from_pinned_snapshot() {
 
     let read_tx = db.begin_read_transaction().unwrap();
     let after = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -260,7 +263,8 @@ fn read_transaction_retrieves_knowledge_from_pinned_snapshot() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(0),

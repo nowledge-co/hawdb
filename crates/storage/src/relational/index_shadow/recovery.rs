@@ -30,7 +30,7 @@ use super::{
     RelationalIndexShadowConfig, RelationalIndexShadowError, RelationalIndexShadowReader,
 };
 use super::{IndexReadAdmission, IndexReadCharge};
-use crate::file_io::{self as fs, File};
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::{
     cache::{
         ContentDigest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
@@ -58,6 +58,21 @@ const DELTA_DESCRIPTOR_LENGTH_BYTES: usize = 4;
 const DELTA_SELECTOR_FIXED_BYTES: usize = 16;
 const DELTA_ENTRY_FIXED_BYTES: usize = 17;
 static NEXT_DELTA_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn relational_index_recovery_manifest_generation_file(
+    base_generation: u64,
+    delta_generation: u64,
+) -> String {
+    format!("relational-index-recovery-{base_generation}-{delta_generation}.manifest.hawdb")
+}
+
+pub(crate) fn relational_index_recovery_prefix_file(
+    base_generation: u64,
+    delta_generation: u64,
+    recovered_commit_epoch: u64,
+) -> String {
+    format!("relational-index-recovery-{base_generation}-{delta_generation}-{recovered_commit_epoch}.prefix.hawdb")
+}
 
 pub const RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE: &str =
     "relational-index-recovery.manifest.hawdb";
@@ -662,9 +677,29 @@ impl RelationalIndexRecoveryBuilder {
     }
 
     pub fn finish_with_recovery_source(
+        self,
+        recovered_commit_epoch: u64,
+        recovery_source: RelationalRecoverySourceIdentity,
+    ) -> Result<RelationalIndexRecoveryReport, RelationalIndexShadowError> {
+        self.finish_inner(recovered_commit_epoch, recovery_source, true, false)
+    }
+
+    pub(crate) fn seal_private_with_recovery_source(
+        &mut self,
+        recovered_commit_epoch: u64,
+        recovery_source: RelationalRecoverySourceIdentity,
+    ) -> Result<RelationalIndexRecoveryReport, RelationalIndexShadowError> {
+        self.flush()?;
+        self.clone()
+            .finish_inner(recovered_commit_epoch, recovery_source, false, true)
+    }
+
+    fn finish_inner(
         mut self,
         recovered_commit_epoch: u64,
         recovery_source: RelationalRecoverySourceIdentity,
+        select_latest: bool,
+        private_prefix: bool,
     ) -> Result<RelationalIndexRecoveryReport, RelationalIndexShadowError> {
         if recovered_commit_epoch < self.base_commit_epoch {
             return Err(RelationalIndexShadowError::Corrupt(format!(
@@ -684,12 +719,50 @@ impl RelationalIndexRecoveryBuilder {
             pages,
         };
         let encoded_manifest = manifest.encode(self.config)?;
-        let manifest_path = self.directory.join(RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE);
-        let manifest_tmp = manifest_path.with_extension("hawdb.tmp");
-        write_synced(&manifest_tmp, &encoded_manifest, "write recovery manifest")?;
-        durable_replace_file(&manifest_tmp, &manifest_path).map_err(|error| {
-            RelationalIndexShadowError::from_io("publish relational index recovery manifest", error)
-        })?;
+        if select_latest {
+            let manifest_path = self.directory.join(RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE);
+            let manifest_tmp = manifest_path.with_extension("hawdb.tmp");
+            write_synced(&manifest_tmp, &encoded_manifest, "write recovery manifest")?;
+            durable_replace_file(&manifest_tmp, &manifest_path).map_err(|error| {
+                RelationalIndexShadowError::from_io(
+                    "publish relational index recovery manifest",
+                    error,
+                )
+            })?;
+        } else {
+            let filename = if private_prefix {
+                relational_index_recovery_prefix_file(
+                    manifest.base_generation,
+                    manifest.delta_generation,
+                    recovered_commit_epoch,
+                )
+            } else {
+                relational_index_recovery_manifest_generation_file(
+                    manifest.base_generation,
+                    manifest.delta_generation,
+                )
+            };
+            let manifest_path = self.directory.join(filename);
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&manifest_path)
+                .map_err(|error| {
+                    RelationalIndexShadowError::from_io(
+                        "create private index recovery manifest",
+                        error,
+                    )
+                })?;
+            file.write_all(&encoded_manifest).map_err(|error| {
+                RelationalIndexShadowError::from_io("write private index recovery manifest", error)
+            })?;
+            file.sync_all().map_err(|error| {
+                RelationalIndexShadowError::from_io("sync private index recovery manifest", error)
+            })?;
+            crate::durability::sync_directory(&self.directory).map_err(|error| {
+                RelationalIndexShadowError::from_io("sync private index recovery directory", error)
+            })?;
+        }
         Ok(RelationalIndexRecoveryReport {
             base_generation: manifest.base_generation,
             delta_generation: manifest.delta_generation,
@@ -1032,6 +1105,35 @@ impl RelationalIndexRecoveryReader {
         )
     }
 
+    pub(crate) fn open_private_bound_generation_with_cache(
+        manifest_path: &Path,
+        base_binding: RelationalIndexGenerationArtifacts,
+        expected_recovery: RelationalRecoveryFence,
+        shadow_config: RelationalIndexShadowConfig,
+        recovery_config: RelationalIndexRecoveryConfig,
+        page_cache: Arc<SegmentCache>,
+        store_id: StoreId,
+    ) -> Result<Self, RelationalIndexShadowError> {
+        let directory = manifest_path
+            .parent()
+            .ok_or_else(|| admission("recovery manifest has no parent"))?;
+        let base = RelationalIndexShadowReader::open_bound_generation_with_cache(
+            directory,
+            base_binding,
+            shadow_config,
+            Arc::clone(&page_cache),
+            store_id,
+        )?;
+        Self::open_manifest_with_base(
+            manifest_path,
+            base,
+            expected_recovery,
+            recovery_config,
+            Some(page_cache),
+            store_id,
+        )
+    }
+
     fn open_latest_inner(
         directory: &Path,
         expected_recovery: RelationalRecoveryFence,
@@ -1069,8 +1171,26 @@ impl RelationalIndexRecoveryReader {
         store_id: StoreId,
     ) -> Result<Self, RelationalIndexShadowError> {
         let manifest_path = directory.join(RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE);
-        let encoded = read_bounded_file(
+        Self::open_manifest_with_base(
             &manifest_path,
+            base,
+            expected_recovery,
+            recovery_config,
+            page_cache,
+            store_id,
+        )
+    }
+
+    fn open_manifest_with_base(
+        manifest_path: &Path,
+        base: RelationalIndexShadowReader,
+        expected_recovery: RelationalRecoveryFence,
+        recovery_config: RelationalIndexRecoveryConfig,
+        page_cache: Option<Arc<SegmentCache>>,
+        store_id: StoreId,
+    ) -> Result<Self, RelationalIndexShadowError> {
+        let encoded = read_bounded_file(
+            manifest_path,
             recovery_config.max_manifest_bytes.get(),
             "relational index recovery manifest",
         )?;

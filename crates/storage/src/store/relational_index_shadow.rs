@@ -395,6 +395,19 @@ impl GraphStore {
         expected_recovery_source: RelationalRecoverySourceIdentity,
     ) -> Result<Arc<RelationalIndexReadView>, hawdb_storage::relational::RelationalIndexShadowError>
     {
+        self.open_recovered_relational_index_view_inner(
+            recovered_commit_epoch,
+            expected_recovery_source,
+            None,
+        )
+    }
+
+    fn open_recovered_relational_index_view_inner(
+        &self,
+        recovered_commit_epoch: u64,
+        expected_recovery_source: RelationalRecoverySourceIdentity,
+        private_manifest: Option<&std::path::Path>,
+    ) -> Result<Arc<RelationalIndexReadView>, RelationalIndexShadowError> {
         let durable = self.durable.as_ref().ok_or_else(|| {
             hawdb_storage::relational::RelationalIndexShadowError::Admission(
                 "relational index read view requires a durable store".to_string(),
@@ -408,8 +421,13 @@ impl GraphStore {
                     "canonical manifest does not bind a relational index generation".to_string(),
                 )
             })?;
-        let reader = RelationalIndexRecoveryReader::open_bound_generation_with_cache(
-            durable.root_path(),
+        let open = if private_manifest.is_some() {
+            RelationalIndexRecoveryReader::open_private_bound_generation_with_cache
+        } else {
+            RelationalIndexRecoveryReader::open_bound_generation_with_cache
+        };
+        let reader = open(
+            private_manifest.unwrap_or(durable.root_path()),
             generation_artifacts,
             RelationalRecoveryFence::new(recovered_commit_epoch, expected_recovery_source),
             RelationalIndexShadowConfig::default(),
@@ -419,6 +437,67 @@ impl GraphStore {
         )?;
         reader.validate_required_roots(&self.relational_state)?;
         Ok(Arc::new(RelationalIndexReadView::from_recovered(reader)))
+    }
+
+    pub(super) fn finish_private_relational_index_recovery(
+        &mut self,
+        recovery_source: Option<RelationalRecoverySourceIdentity>,
+    ) -> super::Result<Option<crate::relational::PreparedRelationalRecoverySelector>> {
+        let Some(builder) = self.relational_index_shadow.recovery_builder.as_mut() else {
+            return Ok(None);
+        };
+        if self.commit_epoch == builder.base_commit_epoch() {
+            return Ok(None);
+        }
+        let recovery_source = recovery_source.ok_or_else(|| {
+            HawDBError::StorageIntegrity("private index recovery source is missing".into())
+        })?;
+        let report = builder
+            .seal_private_with_recovery_source(self.commit_epoch, recovery_source)
+            .map_err(|error| HawDBError::Storage(format!("private index recovery: {error}")))?;
+        let root = self
+            .durable
+            .as_ref()
+            .expect("index recovery requires durability")
+            .root_path();
+        let immutable = root.join(crate::relational::relational_index_recovery_prefix_file(
+            report.base_generation,
+            report.delta_generation,
+            report.recovered_commit_epoch,
+        ));
+        let view = self
+            .open_recovered_relational_index_view_inner(
+                report.recovered_commit_epoch,
+                recovery_source,
+                Some(&immutable),
+            )
+            .map_err(|error| HawDBError::Storage(format!("pin private index recovery: {error}")))?;
+        let selector = crate::relational::PreparedRelationalRecoverySelector::prepare(
+            &immutable,
+            root.join(crate::relational::RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE),
+        )
+        .map_err(|error| HawDBError::Storage(format!("prepare private index selector: {error}")))?
+        .with_generation_alias(
+            immutable.clone(),
+            root.join(
+                crate::relational::relational_index_recovery_manifest_generation_file(
+                    report.base_generation,
+                    report.delta_generation,
+                ),
+            ),
+        );
+        self.relational_index_shadow.read_view = Some(view);
+        self.relational_index_shadow.recovery_status =
+            RelationalIndexShadowRecoveryStatus::WalRecovered {
+                base_generation: report.base_generation,
+                base_commit_epoch: report.base_commit_epoch,
+                recovered_commit_epoch: report.recovered_commit_epoch,
+                delta_pages: report.delta_pages,
+                delta_entries: report.delta_entries,
+                peak_dirty_bytes: report.peak_dirty_bytes,
+            };
+        self.relational_index_shadow.recovery_report = Some(report);
+        Ok(Some(selector))
     }
 
     pub(super) fn relational_index_live_capture_limits(

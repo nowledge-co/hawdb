@@ -49,6 +49,20 @@ pub(crate) struct RelationalRowPageSlotRead {
 }
 
 impl RelationalRowPageRootReader {
+    pub(super) fn open_latest_with_work_context(
+        directory: &Path,
+        config: RelationalRowPagePublicationConfig,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<Option<Self>, RelationalRowPagePublicationError> {
+        let Some(work) = work else {
+            return Self::open_latest(directory, config);
+        };
+        let path = directory.join(RELATIONAL_ROW_PAGE_MANIFEST_FILE);
+        manifest::read_manifest_if_exists_with_work_context(&path, config, Some(work))?
+            .map(|manifest| Self::from_manifest_inner(directory, manifest, config, Some(work)))
+            .transpose()
+    }
+
     pub fn open_latest(
         directory: &Path,
         config: RelationalRowPagePublicationConfig,
@@ -64,15 +78,24 @@ impl RelationalRowPageRootReader {
         generation: u64,
         config: RelationalRowPagePublicationConfig,
     ) -> Result<Self, RelationalRowPagePublicationError> {
+        Self::open_generation_with_work_context(directory, generation, config, None)
+    }
+
+    pub(crate) fn open_generation_with_work_context(
+        directory: &Path,
+        generation: u64,
+        config: RelationalRowPagePublicationConfig,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<Self, RelationalRowPagePublicationError> {
         let path = directory.join(relational_row_page_manifest_generation_file(generation));
-        let manifest = manifest::read_manifest(&path, config)?;
+        let manifest = manifest::read_manifest_with_work_context(&path, config, work)?;
         if manifest.generation != generation {
             return Err(RelationalRowPagePublicationError::Corrupt(format!(
                 "generation manifest {generation} identifies generation {}",
                 manifest.generation
             )));
         }
-        Self::from_manifest(directory, manifest, config)
+        Self::from_manifest_inner(directory, manifest, config, work)
     }
 
     pub fn open_bound_generation(
@@ -80,10 +103,24 @@ impl RelationalRowPageRootReader {
         binding: super::RelationalRowPageGenerationArtifacts,
         config: RelationalRowPagePublicationConfig,
     ) -> Result<Self, RelationalRowPagePublicationError> {
+        Self::open_bound_generation_with_work_context(directory, binding, config, None)
+    }
+
+    pub(crate) fn open_bound_generation_with_work_context(
+        directory: &Path,
+        binding: super::RelationalRowPageGenerationArtifacts,
+        config: RelationalRowPagePublicationConfig,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<Self, RelationalRowPagePublicationError> {
         let path = directory.join(relational_row_page_manifest_generation_file(
             binding.generation,
         ));
-        let manifest = manifest::read_bound_manifest(&path, config, binding.manifest_artifact)?;
+        let manifest = manifest::read_bound_manifest_with_work_context(
+            &path,
+            config,
+            binding.manifest_artifact,
+            work,
+        )?;
         if manifest.generation != binding.generation
             || manifest.source_commit_epoch != binding.source_commit_epoch
             || manifest.root_set_digest != binding.root_set_digest
@@ -92,7 +129,7 @@ impl RelationalRowPageRootReader {
                 "row-page generation identity does not match its canonical binding".to_string(),
             ));
         }
-        Self::from_manifest(directory, manifest, config)
+        Self::from_manifest_inner(directory, manifest, config, work)
     }
 
     fn from_manifest(
@@ -100,23 +137,38 @@ impl RelationalRowPageRootReader {
         manifest: RelationalRowPageRootManifest,
         config: RelationalRowPagePublicationConfig,
     ) -> Result<Self, RelationalRowPagePublicationError> {
-        validate_artifact_length(
-            &directory.join(relational_row_page_artifact_file(manifest.generation)),
-            manifest.page_artifact.encoded_len,
-            "row-page artifact",
-        )?;
-        validate_artifact_length(
-            &directory.join(relational_row_page_root_descriptor_file(
-                manifest.generation,
-            )),
-            manifest.root_descriptor_artifact.encoded_len,
-            "row-page root descriptor artifact",
-        )?;
-        validate_artifact_length(
-            &directory.join(relational_row_page_root_key_file(manifest.generation)),
-            manifest.root_key_artifact.encoded_len,
-            "row-page root key artifact",
-        )?;
+        Self::from_manifest_inner(directory, manifest, config, None)
+    }
+
+    fn from_manifest_inner(
+        directory: &Path,
+        manifest: RelationalRowPageRootManifest,
+        config: RelationalRowPagePublicationConfig,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<Self, RelationalRowPagePublicationError> {
+        super::publisher::checkpoint::io(work, || {
+            validate_artifact_length(
+                &directory.join(relational_row_page_artifact_file(manifest.generation)),
+                manifest.page_artifact.encoded_len,
+                "row-page artifact",
+            )
+        })?;
+        super::publisher::checkpoint::io(work, || {
+            validate_artifact_length(
+                &directory.join(relational_row_page_root_descriptor_file(
+                    manifest.generation,
+                )),
+                manifest.root_descriptor_artifact.encoded_len,
+                "row-page root descriptor artifact",
+            )
+        })?;
+        super::publisher::checkpoint::io(work, || {
+            validate_artifact_length(
+                &directory.join(relational_row_page_root_key_file(manifest.generation)),
+                manifest.root_key_artifact.encoded_len,
+                "row-page root key artifact",
+            )
+        })?;
         Ok(Self {
             directory: directory.to_path_buf(),
             manifest: Arc::new(manifest),
@@ -488,6 +540,70 @@ impl RelationalRowPageRootReader {
             visitor(&descriptor)?;
         }
         Ok(())
+    }
+
+    pub(super) fn visit_table_pages_with_work_context<F>(
+        &self,
+        table: &str,
+        work: &crate::background::CheckpointWorkContext,
+        mut visitor: F,
+    ) -> Result<(), RelationalRowPagePublicationError>
+    where
+        F: FnMut(&RelationalRowPageRootDescriptor) -> Result<(), RelationalRowPagePublicationError>,
+    {
+        let unit = work.start_unit().map_err(root::checkpoint::work_error)?;
+        let table_root = self.table_root(table)?;
+        unit.finish();
+        let unit = work.start_unit().map_err(root::checkpoint::work_error)?;
+        let wave = work.io_wave().map_err(root::checkpoint::work_error)?;
+        let mut descriptors = File::open(self.descriptor_path())
+            .map_err(durability("open row-page root descriptor artifact"))?;
+        drop(wave);
+        unit.finish();
+        let unit = work.start_unit().map_err(root::checkpoint::work_error)?;
+        let wave = work.io_wave().map_err(root::checkpoint::work_error)?;
+        let mut keys =
+            File::open(self.key_path()).map_err(durability("open row-page root key artifact"))?;
+        drop(wave);
+        unit.finish();
+        let mut previous_upper: Option<Vec<u8>> = None;
+        for offset in 0..table_root.page_count {
+            let unit = work.start_unit().map_err(root::checkpoint::work_error)?;
+            let ordinal = table_root
+                .first_descriptor
+                .checked_add(offset)
+                .ok_or_else(|| {
+                    RelationalRowPagePublicationError::Corrupt(
+                        "row-page descriptor ordinal overflow".to_string(),
+                    )
+                })?;
+            unit.finish();
+            let descriptor = root::checkpoint::read_descriptor(
+                &mut descriptors,
+                &mut keys,
+                ordinal,
+                &self.manifest,
+                self.config,
+                work,
+            )?;
+            if previous_upper
+                .as_ref()
+                .map(|upper| root::checkpoint::compare(upper, &descriptor.lower_bound, work))
+                .transpose()?
+                .is_some_and(|ordering| ordering != std::cmp::Ordering::Less)
+            {
+                return Err(RelationalRowPagePublicationError::Corrupt(format!(
+                    "table {table} row-page bounds overlap or are unordered"
+                )));
+            }
+            previous_upper = Some(root::checkpoint::clone_bytes(
+                &descriptor.upper_bound,
+                work,
+            )?);
+            // No read, CPU or I/O lease crosses the callback into nested writers.
+            visitor(&descriptor)?;
+        }
+        work.checkpoint().map_err(root::checkpoint::work_error)
     }
 
     pub fn table_root(

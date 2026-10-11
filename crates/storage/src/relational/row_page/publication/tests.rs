@@ -35,7 +35,10 @@ fn streamed_page_relocation_preserves_rows_epochs_and_overflow_references() {
     fs::create_dir_all(&directory).unwrap();
     let config = RelationalRowPagePublicationConfig::default();
     let path = directory.join(relational_row_page_artifact_file(2));
-    let mut writer = root::PageArtifactWriter::new(&path, config.page_limits).unwrap();
+    let mut writer = root::PageArtifactWriter::new(
+        crate::file_io::File::create(&path).unwrap(),
+        config.page_limits,
+    );
     let reference = *RelationalOverflowExtentInput::encode(
         RelationalScalarType::Text,
         b"relocated overflow payload",
@@ -99,7 +102,10 @@ fn streamed_page_writer_rejects_identity_drift_before_appending() {
     fs::create_dir_all(&directory).unwrap();
     let config = RelationalRowPagePublicationConfig::default();
     let path = directory.join(relational_row_page_artifact_file(2));
-    let mut writer = root::PageArtifactWriter::new(&path, config.page_limits).unwrap();
+    let mut writer = root::PageArtifactWriter::new(
+        crate::file_io::File::create(&path).unwrap(),
+        config.page_limits,
+    );
     for field in 0..3 {
         let mut prepared =
             root::prepare_dirty_page(page(1, 2, 10, 1, 2), config.page_limits).unwrap();
@@ -229,6 +235,12 @@ fn persisted_row_candidate_does_not_change_latest_selection() {
     let candidate = RelationalRowPageRootReader::open_generation(&directory, 1, config).unwrap();
     assert_eq!(candidate.manifest().root_page_count, 1);
 
+    let evidence = directory
+        .join(RELATIONAL_ROW_PAGE_MANIFEST_FILE)
+        .with_extension("hawdb.tmp");
+    assert_eq!(fs::read(&evidence).unwrap(), b"abandoned latest selector");
+    // Only this test owns the preexisting selector evidence.
+    fs::remove_file(evidence).unwrap();
     assert_no_temporary_files(&directory);
     fs::remove_dir_all(directory).unwrap();
 }
@@ -1671,3 +1683,21 @@ fn assert_no_temporary_files(directory: &std::path::Path) {
         );
     }
 }
+
+#[path = "tests/ownership.rs"]
+mod ownership;
+
+#[path = "tests/checkpoint_page.rs"]
+mod checkpoint_page;
+
+#[path = "tests/checkpoint_root.rs"]
+mod checkpoint_root;
+
+#[path = "tests/checkpoint_manifest.rs"]
+mod checkpoint_manifest;
+
+#[path = "tests/checkpoint_preflight.rs"]
+mod checkpoint_preflight;
+
+#[path = "tests/checkpoint_reader.rs"]
+mod checkpoint_reader;

@@ -13,18 +13,22 @@
 // limitations under the License.
 
 use super::super::RelationalOverflowReferenceSet;
-use super::super::{decode_overflow_envelope, RelationalHydrationBudget, RelationalOverflowRef};
+use super::super::{
+    decode_overflow_envelope, validate_overflow_envelope_with_work_context,
+    RelationalHydrationBudget, RelationalOverflowRef,
+};
 use super::{
     durability, manifest, reader, relational_overflow_descriptor_file,
     relational_overflow_extent_file, relational_overflow_manifest_generation_file,
     RelationalOverflowArtifactMetadata, RelationalOverflowExactGenerationRequest,
     RelationalOverflowExactPublicationReport, RelationalOverflowExtentDescriptor,
-    RelationalOverflowExtentInput, RelationalOverflowPublicationConfig,
+    RelationalOverflowExtentInput, RelationalOverflowInputs, RelationalOverflowPublicationConfig,
     RelationalOverflowPublicationError, RelationalOverflowPublicationPhase,
     RelationalOverflowPublicationReport, RelationalOverflowRootManifest,
     RelationalOverflowRootReader, CANDIDATE_PUBLICATION_TRACE, COMPLETE_PUBLICATION_TRACE,
     RELATIONAL_OVERFLOW_MANIFEST_FILE, RELATIONAL_OVERFLOW_PUBLICATION_LOCK_FILE,
 };
+use crate::background::CheckpointWorkContext;
 use crate::durability::{durable_replace_file, sync_directory};
 use crate::file_io::{self as fs, File, OpenOptions};
 use crate::relational::RelationalError;
@@ -32,13 +36,25 @@ use hawdb_integrity::{integrity_digest, IntegrityHasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+pub(super) mod checkpoint;
+
 pub struct RelationalOverflowPublisher {
     config: RelationalOverflowPublicationConfig,
+    work: Option<CheckpointWorkContext>,
 }
 
 impl RelationalOverflowPublisher {
     pub const fn new(config: RelationalOverflowPublicationConfig) -> Self {
-        Self { config }
+        Self { config, work: None }
+    }
+
+    /// Binds construction/publication to the admitted checkpoint task.
+    /// Retained inputs, reference sort resources and cleanup debt
+    /// still require hard resource controls.
+    #[doc(hidden)]
+    pub fn with_work_context(mut self, work: &CheckpointWorkContext) -> Self {
+        self.work = Some(work.clone());
+        self
     }
 
     pub fn publish(
@@ -83,7 +99,7 @@ impl RelationalOverflowPublisher {
                 select_latest: false,
                 stop_after: None,
             },
-            extents,
+            extents.into(),
         )
     }
 
@@ -103,6 +119,58 @@ impl RelationalOverflowPublisher {
         base: &RelationalOverflowRootReader,
         expected_previous_generation: u64,
         extents: Vec<RelationalOverflowExtentInput>,
+    ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
+        self.persist_generation_inner(
+            GenerationPublication {
+                directory,
+                generation,
+                source_commit_epoch,
+                base: Some(base),
+                expected_previous_generation: Some(expected_previous_generation),
+                retain_unmentioned_base: true,
+                select_latest: false,
+                stop_after: None,
+            },
+            extents.into(),
+        )
+    }
+
+    /// Persists an admitted immutable input list without detaching its capacity.
+    #[doc(hidden)]
+    pub fn persist_checkpoint_generation(
+        &self,
+        directory: &Path,
+        generation: u64,
+        source_commit_epoch: u64,
+        base: Option<&RelationalOverflowRootReader>,
+        expected_previous_generation: Option<u64>,
+        extents: RelationalOverflowInputs,
+    ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
+        self.persist_generation_inner(
+            GenerationPublication {
+                directory,
+                generation,
+                source_commit_epoch,
+                base,
+                expected_previous_generation,
+                retain_unmentioned_base: false,
+                select_latest: false,
+                stop_after: None,
+            },
+            extents,
+        )
+    }
+
+    /// Retains the pinned base while persisting an admitted checkpoint list.
+    #[doc(hidden)]
+    pub fn persist_checkpoint_generation_retaining_base(
+        &self,
+        directory: &Path,
+        generation: u64,
+        source_commit_epoch: u64,
+        base: &RelationalOverflowRootReader,
+        expected_previous_generation: u64,
+        extents: RelationalOverflowInputs,
     ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
         self.persist_generation_inner(
             GenerationPublication {
@@ -151,11 +219,13 @@ impl RelationalOverflowPublisher {
             references.report().unique_references == 0,
         )?;
         validate_publication_config(self.config)?;
-        fs::create_dir_all(directory).map_err(durability("create overflow directory"))?;
-        let _lock = acquire_publication_lock(directory)?;
+        checkpoint::io(self.work.as_ref(), || {
+            fs::create_dir_all(directory).map_err(durability("create overflow directory"))
+        })?;
+        let _lock = checkpoint::lock(directory, self.work.as_ref())?;
         let paths = PublicationPaths::new(directory, generation);
-        paths.remove_temps()?;
-        paths.require_fresh_generation()?;
+        checkpoint::io(self.work.as_ref(), || paths.require_fresh_generation())?;
+        let mut temporary = OwnedTemporaryArtifacts::default();
         validate_base_identity(
             generation,
             source_commit_epoch,
@@ -163,39 +233,48 @@ impl RelationalOverflowPublisher {
             Some(expected_previous_generation),
             false,
         )?;
-        let preflight =
-            preflight_exact_references(base, references, &mut resolve_new, self.config, task)?;
+        let preflight = preflight_exact_references(
+            base,
+            references,
+            &mut resolve_new,
+            self.config,
+            task,
+            self.work.as_ref(),
+        )?;
         task.checkpoint()
             .map_err(RelationalOverflowPublicationError::Stopped)?;
 
         let result = (|| {
             maybe_stop(None, RelationalOverflowPublicationPhase::CandidateStarted)?;
-            let artifacts = write_exact_artifacts(ExactArtifactWrite {
-                extent_path: &paths.extent_tmp,
-                descriptor_path: &paths.descriptor_tmp,
-                base,
-                references,
-                resolve_new: &mut resolve_new,
-                generation,
-                config: self.config,
-                task,
-            })?;
+            let artifacts = write_exact_artifacts(
+                ExactArtifactWrite {
+                    extent_path: &paths.extent_tmp,
+                    descriptor_path: &paths.descriptor_tmp,
+                    base,
+                    references,
+                    resolve_new: &mut resolve_new,
+                    generation,
+                    config: self.config,
+                    task,
+                    work: self.work.as_ref(),
+                },
+                &mut temporary,
+            )?;
             task.checkpoint()
                 .map_err(RelationalOverflowPublicationError::Stopped)?;
-            self.finish_candidate_publication(PublicationCommit {
-                paths: &paths,
-                generation,
-                source_commit_epoch,
-                expected_previous_generation: Some(expected_previous_generation),
-                artifacts,
-                select_latest: false,
-                stop_after: None,
-            })
+            self.finish_candidate_publication(
+                PublicationCommit {
+                    paths: &paths,
+                    generation,
+                    source_commit_epoch,
+                    expected_previous_generation: Some(expected_previous_generation),
+                    artifacts,
+                    select_latest: false,
+                    stop_after: None,
+                },
+                &mut temporary,
+            )
         })();
-        // Success has durably renamed every candidate; only failure leaves temporary files.
-        if result.is_err() {
-            let _ = paths.remove_temps();
-        }
         result.map(|publication| RelationalOverflowExactPublicationReport {
             publication,
             copied_base_extent_count: preflight.copied_base_extent_count,
@@ -212,7 +291,11 @@ impl RelationalOverflowPublisher {
         extents: Vec<RelationalOverflowExtentInput>,
         stop_after: Option<RelationalOverflowPublicationPhase>,
     ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
-        let base = RelationalOverflowRootReader::open_latest(directory, self.config)?;
+        let base = RelationalOverflowRootReader::open_latest_with_work_context(
+            directory,
+            self.config,
+            self.work.as_ref(),
+        )?;
         self.persist_generation_inner(
             GenerationPublication {
                 directory,
@@ -224,14 +307,14 @@ impl RelationalOverflowPublisher {
                 select_latest: true,
                 stop_after,
             },
-            extents,
+            extents.into(),
         )
     }
 
     fn persist_generation_inner(
         &self,
         publication: GenerationPublication<'_>,
-        extents: Vec<RelationalOverflowExtentInput>,
+        extents: RelationalOverflowInputs,
     ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
         let GenerationPublication {
             directory,
@@ -245,12 +328,14 @@ impl RelationalOverflowPublisher {
         } = publication;
         validate_publication_identity(generation, source_commit_epoch, extents.is_empty())?;
         validate_publication_config(self.config)?;
-        let extents = preflight_inputs(extents, self.config)?;
-        fs::create_dir_all(directory).map_err(durability("create overflow directory"))?;
-        let _lock = acquire_publication_lock(directory)?;
+        let extents = preflight_inputs(extents, self.config, self.work.as_ref())?;
+        checkpoint::io(self.work.as_ref(), || {
+            fs::create_dir_all(directory).map_err(durability("create overflow directory"))
+        })?;
+        let _lock = checkpoint::lock(directory, self.work.as_ref())?;
         let paths = PublicationPaths::new(directory, generation);
-        paths.remove_temps()?;
-        paths.require_fresh_generation()?;
+        checkpoint::io(self.work.as_ref(), || paths.require_fresh_generation())?;
+        let mut temporary = OwnedTemporaryArtifacts::default();
 
         validate_base_identity(
             generation,
@@ -259,57 +344,58 @@ impl RelationalOverflowPublisher {
             expected_previous_generation,
             select_latest,
         )?;
-        preflight_root_capacity(base, &extents, retain_unmentioned_base, self.config)?;
-
-        let result = self.build_and_publish(PublicationBuild {
-            paths: &paths,
+        preflight_root_capacity(
             base,
-            generation,
-            source_commit_epoch,
-            expected_previous_generation,
-            extents: &extents,
+            &extents,
             retain_unmentioned_base,
-            select_latest,
-            stop_after,
-        });
-        // Success has durably renamed every candidate; only failure leaves temporary files.
-        if result.is_err() {
-            let _ = paths.remove_temps();
-        }
-        result
+            self.config,
+            self.work.as_ref(),
+        )?;
+
+        self.build_and_publish(
+            PublicationBuild {
+                paths: &paths,
+                base,
+                generation,
+                source_commit_epoch,
+                expected_previous_generation,
+                extents: &extents,
+                retain_unmentioned_base,
+                select_latest,
+                stop_after,
+            },
+            &mut temporary,
+        )
     }
 
     fn build_and_publish(
         &self,
         build: PublicationBuild<'_>,
+        temporary: &mut OwnedTemporaryArtifacts,
     ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
         maybe_stop(
             build.stop_after,
             RelationalOverflowPublicationPhase::CandidateStarted,
         )?;
-        let artifacts = write_artifacts(
-            &build.paths.extent_tmp,
-            &build.paths.descriptor_tmp,
-            build.base,
-            build.extents,
-            build.retain_unmentioned_base,
-            build.generation,
-            self.config,
-        )?;
-        self.finish_candidate_publication(PublicationCommit {
-            paths: build.paths,
-            generation: build.generation,
-            source_commit_epoch: build.source_commit_epoch,
-            expected_previous_generation: build.expected_previous_generation,
-            artifacts,
-            select_latest: build.select_latest,
-            stop_after: build.stop_after,
-        })
+        let artifacts = write_artifacts(&build, self.config, self.work.as_ref(), temporary)?;
+        self.finish_candidate_publication(
+            PublicationCommit {
+                paths: build.paths,
+                generation: build.generation,
+                source_commit_epoch: build.source_commit_epoch,
+                expected_previous_generation: build.expected_previous_generation,
+                artifacts,
+                select_latest: build.select_latest,
+                stop_after: build.stop_after,
+            },
+            temporary,
+        )
     }
 
     fn finish_candidate_publication(
         &self,
         build: PublicationCommit<'_>,
+        temporary: &mut OwnedTemporaryArtifacts,
     ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
         let PublicationCommit {
             paths,
@@ -330,29 +416,43 @@ impl RelationalOverflowPublisher {
             descriptor_artifact: artifacts.descriptor_artifact,
             root_set_digest: artifacts.root_set_digest,
         };
-        let encoded_manifest = manifest::encode_manifest(&manifest, self.config)?;
-        write_synced(&paths.generation_manifest_tmp, &encoded_manifest)?;
+        let work = self.work.as_ref();
+        let encoded_manifest =
+            checkpoint::cpu(work, || manifest::encode_manifest(&manifest, self.config))?;
+        write_synced(
+            &paths.generation_manifest_tmp,
+            &encoded_manifest,
+            temporary,
+            work,
+        )?;
 
-        durable_publish_immutable(&paths.extent_tmp, &paths.extent)?;
+        checkpoint::publish(&paths.extent_tmp, &paths.extent, work)?;
         maybe_stop(
             stop_after,
             RelationalOverflowPublicationPhase::CandidateExtentsDurable,
         )?;
-        durable_publish_immutable(&paths.descriptor_tmp, &paths.descriptor)?;
+        checkpoint::publish(&paths.descriptor_tmp, &paths.descriptor, work)?;
         maybe_stop(
             stop_after,
             RelationalOverflowPublicationPhase::CandidateRootDurable,
         )?;
-        durable_publish_immutable(&paths.generation_manifest_tmp, &paths.generation_manifest)?;
+        checkpoint::publish(
+            &paths.generation_manifest_tmp,
+            &paths.generation_manifest,
+            work,
+        )?;
         maybe_stop(
             stop_after,
             RelationalOverflowPublicationPhase::CandidateManifestDurable,
         )?;
 
         if select_latest {
-            let actual_previous =
-                manifest::read_manifest_if_exists(&paths.latest_manifest, self.config)?
-                    .map(|manifest| manifest.generation);
+            let actual_previous = manifest::read_manifest_if_exists_with_work_context(
+                &paths.latest_manifest,
+                self.config,
+                work,
+            )?
+            .map(|manifest| manifest.generation);
             if actual_previous != expected_previous_generation {
                 return Err(RelationalOverflowPublicationError::StaleGeneration {
                     expected_previous: expected_previous_generation,
@@ -365,12 +465,19 @@ impl RelationalOverflowPublisher {
             RelationalOverflowPublicationPhase::BaseRevalidated,
         )?;
         if select_latest {
-            write_synced(&paths.latest_manifest_tmp, &encoded_manifest)?;
-            durable_replace_file(&paths.latest_manifest_tmp, &paths.latest_manifest)
-                .map_err(durability("publish latest overflow manifest"))?;
+            write_synced(
+                &paths.latest_manifest_tmp,
+                &encoded_manifest,
+                temporary,
+                work,
+            )?;
+            checkpoint::io(work, || {
+                durable_replace_file(&paths.latest_manifest_tmp, &paths.latest_manifest)
+                    .map_err(durability("publish latest overflow manifest"))
+            })?;
         }
 
-        let manifest_digest = integrity_digest(&encoded_manifest);
+        let manifest_digest = checkpoint::integrity(&encoded_manifest, work)?;
 
         Ok(RelationalOverflowPublicationReport {
             generation,
@@ -491,6 +598,7 @@ fn preflight_exact_references(
     >,
     config: RelationalOverflowPublicationConfig,
     task: &hawdb_core::RuntimeTaskContext,
+    work: Option<&CheckpointWorkContext>,
 ) -> Result<ExactReferencePreflight, RelationalOverflowPublicationError> {
     let extent_count = references.report().unique_references;
     if extent_count > config.max_extents.get() {
@@ -513,18 +621,20 @@ fn preflight_exact_references(
         )));
     }
 
-    let mut base_file = File::open(base.descriptor_path())
-        .map_err(durability("open base overflow descriptor artifact"))?;
+    let mut base_file = checkpoint::io(work, || {
+        File::open(base.descriptor_path())
+            .map_err(durability("open base overflow descriptor artifact"))
+    })?;
     let mut base_ordinal = 0u64;
     let mut base_descriptor = if base.manifest().extent_count == 0 {
         None
     } else {
-        Some(base.read_descriptor_from(&mut base_file, 0)?)
+        Some(checkpoint::descriptor(base, &mut base_file, 0, work)?)
     };
     let mut new_extent_bytes = 0u64;
     let mut copied_base_extent_count = 0u64;
     let mut introduced_extent_count = 0u64;
-    references.visit(&mut |reference| {
+    references.visit_with_work_context(&mut |reference| {
         task.checkpoint()
             .map_err(RelationalOverflowPublicationError::Stopped)?;
         while base_descriptor
@@ -536,6 +646,7 @@ fn preflight_exact_references(
                 &mut base_file,
                 &mut base_ordinal,
                 &mut base_descriptor,
+                work,
             )?;
         }
         if let Some(existing) = base_descriptor
@@ -563,7 +674,7 @@ fn preflight_exact_references(
             let encoded = resolve_new(&reference)?.ok_or(
                 RelationalOverflowPublicationError::MissingExtent(reference.digest),
             )?;
-            validate_encoded_extent(&reference, &encoded, config)?;
+            validate_encoded_extent(&reference, &encoded, config, work)?;
             introduced_extent_count = introduced_extent_count.checked_add(1).ok_or_else(|| {
                 RelationalOverflowPublicationError::Admission(
                     "introduced overflow extent count overflow".to_string(),
@@ -584,7 +695,7 @@ fn preflight_exact_references(
             )));
         }
         Ok(true)
-    })?;
+    }, work)?;
     Ok(ExactReferencePreflight {
         copied_base_extent_count,
         introduced_extent_count,
@@ -605,10 +716,12 @@ struct ExactArtifactWrite<'a> {
     generation: u64,
     config: RelationalOverflowPublicationConfig,
     task: &'a hawdb_core::RuntimeTaskContext,
+    work: Option<&'a CheckpointWorkContext>,
 }
 
 fn write_exact_artifacts(
     request: ExactArtifactWrite<'_>,
+    temporary: &mut OwnedTemporaryArtifacts,
 ) -> Result<WrittenArtifacts, RelationalOverflowPublicationError> {
     let ExactArtifactWrite {
         extent_path,
@@ -619,49 +732,72 @@ fn write_exact_artifacts(
         generation,
         config,
         task,
+        work,
     } = request;
-    let mut writer = ArtifactWriter::new(extent_path, descriptor_path, generation, config)?;
-    let mut base_file = File::open(base.descriptor_path())
-        .map_err(durability("open base overflow descriptor artifact"))?;
+    let mut writer = ArtifactWriter::new(
+        extent_path,
+        descriptor_path,
+        generation,
+        config,
+        work,
+        temporary,
+    )?;
+    let mut base_file = checkpoint::io(work, || {
+        File::open(base.descriptor_path())
+            .map_err(durability("open base overflow descriptor artifact"))
+    })?;
     let mut base_ordinal = 0u64;
     let mut base_descriptor = if base.manifest().extent_count == 0 {
         None
     } else {
-        Some(base.read_descriptor_from(&mut base_file, 0)?)
+        Some(checkpoint::descriptor(base, &mut base_file, 0, work)?)
     };
-    references.visit(&mut |reference| {
-        task.checkpoint()
-            .map_err(RelationalOverflowPublicationError::Stopped)?;
-        while base_descriptor
-            .as_ref()
-            .is_some_and(|descriptor| descriptor.reference.digest < reference.digest)
-        {
-            advance_base_descriptor(
-                base,
-                &mut base_file,
-                &mut base_ordinal,
-                &mut base_descriptor,
-            )?;
-        }
-        if let Some(existing) =
-            base_descriptor.filter(|descriptor| descriptor.reference.digest == reference.digest)
-        {
-            if existing.reference != reference {
-                return Err(RelationalOverflowPublicationError::Corrupt(format!(
-                    "base overflow descriptor {} changed after exact preflight",
-                    reference.digest
-                )));
+    references.visit_with_work_context(
+        &mut |reference| {
+            task.checkpoint()
+                .map_err(RelationalOverflowPublicationError::Stopped)?;
+            while base_descriptor
+                .as_ref()
+                .is_some_and(|descriptor| descriptor.reference.digest < reference.digest)
+            {
+                advance_base_descriptor(
+                    base,
+                    &mut base_file,
+                    &mut base_ordinal,
+                    &mut base_descriptor,
+                    work,
+                )?;
             }
-            let encoded = base.read_encoded_extent(&existing)?;
-            writer.emit_input(&RelationalOverflowExtentInput::Write { reference, encoded })?;
-        } else {
-            let encoded = resolve_new(&reference)?.ok_or(
-                RelationalOverflowPublicationError::MissingExtent(reference.digest),
-            )?;
-            writer.emit_input(&RelationalOverflowExtentInput::Write { reference, encoded })?;
-        }
-        Ok(true)
-    })?;
+            if let Some(existing) =
+                base_descriptor.filter(|descriptor| descriptor.reference.digest == reference.digest)
+            {
+                if existing.reference != reference {
+                    return Err(RelationalOverflowPublicationError::Corrupt(format!(
+                        "base overflow descriptor {} changed after exact preflight",
+                        reference.digest
+                    )));
+                }
+                match work {
+                    Some(work) => {
+                        let encoded =
+                            base.read_encoded_extent_with_work_context(&existing, work)?;
+                        writer.emit_encoded(&reference, &encoded)?;
+                    }
+                    None => {
+                        let encoded = base.read_encoded_extent(&existing)?;
+                        writer.emit_encoded(&reference, &encoded)?;
+                    }
+                }
+            } else {
+                let encoded = resolve_new(&reference)?.ok_or(
+                    RelationalOverflowPublicationError::MissingExtent(reference.digest),
+                )?;
+                writer.emit_input(&RelationalOverflowExtentInput::Write { reference, encoded })?;
+            }
+            Ok(true)
+        },
+        work,
+    )?;
     writer.finish()
 }
 
@@ -671,27 +807,40 @@ struct ExactReferencePreflight {
 }
 
 fn write_artifacts(
-    extent_path: &Path,
-    descriptor_path: &Path,
-    base: Option<&RelationalOverflowRootReader>,
-    inputs: &[RelationalOverflowExtentInput],
-    retain_unmentioned_base: bool,
-    generation: u64,
+    build: &PublicationBuild<'_>,
     config: RelationalOverflowPublicationConfig,
+    work: Option<&CheckpointWorkContext>,
+    temporary: &mut OwnedTemporaryArtifacts,
 ) -> Result<WrittenArtifacts, RelationalOverflowPublicationError> {
-    let mut writer = ArtifactWriter::new(extent_path, descriptor_path, generation, config)?;
+    let base = build.base;
+    let inputs = build.extents;
+    let retain_unmentioned_base = build.retain_unmentioned_base;
+    let mut writer = ArtifactWriter::new(
+        &build.paths.extent_tmp,
+        &build.paths.descriptor_tmp,
+        build.generation,
+        config,
+        work,
+        temporary,
+    )?;
     let mut base_file = base
         .map(|reader| {
-            File::open(reader.descriptor_path())
-                .map_err(durability("open base overflow descriptor artifact"))
+            checkpoint::io(work, || {
+                File::open(reader.descriptor_path())
+                    .map_err(durability("open base overflow descriptor artifact"))
+            })
         })
         .transpose()?;
     let mut base_ordinal = 0u64;
     let mut base_descriptor = base
         .filter(|reader| reader.manifest().extent_count > 0)
         .map(|reader| {
-            reader
-                .read_descriptor_from(base_file.as_mut().expect("base descriptor file is open"), 0)
+            checkpoint::descriptor(
+                reader,
+                base_file.as_mut().expect("base descriptor file is open"),
+                0,
+                work,
+            )
         })
         .transpose()?;
     let mut input_ordinal = 0usize;
@@ -704,7 +853,7 @@ fn write_artifacts(
                         input_ordinal += 1;
                     }
                     std::cmp::Ordering::Equal => {
-                        validate_matching_input(input, &existing, config)?;
+                        validate_matching_input(input, &existing, config, work)?;
                         writer.emit_reused(existing)?;
                         input_ordinal += 1;
                         advance_base_descriptor(
@@ -712,6 +861,7 @@ fn write_artifacts(
                             base_file.as_mut().expect("base descriptor file is open"),
                             &mut base_ordinal,
                             &mut base_descriptor,
+                            work,
                         )?;
                     }
                     std::cmp::Ordering::Greater => {
@@ -723,6 +873,7 @@ fn write_artifacts(
                             base_file.as_mut().expect("base descriptor file is open"),
                             &mut base_ordinal,
                             &mut base_descriptor,
+                            work,
                         )?;
                     }
                 }
@@ -741,6 +892,7 @@ fn write_artifacts(
                     base_file.as_mut().expect("base descriptor file is open"),
                     &mut base_ordinal,
                     &mut base_descriptor,
+                    work,
                 )?;
             }
             (None, None) => break,
@@ -749,7 +901,7 @@ fn write_artifacts(
     writer.finish()
 }
 
-struct ArtifactWriter {
+struct ArtifactWriter<'a> {
     extent_file: File,
     descriptor_file: File,
     extent_hasher: IntegrityHasher,
@@ -761,20 +913,25 @@ struct ArtifactWriter {
     extent_count: u64,
     new_extent_count: u64,
     reused_extent_count: u64,
+    work: Option<&'a CheckpointWorkContext>,
 }
 
-impl ArtifactWriter {
+impl<'a> ArtifactWriter<'a> {
     fn new(
         extent_path: &Path,
         descriptor_path: &Path,
         generation: u64,
         config: RelationalOverflowPublicationConfig,
+        work: Option<&'a CheckpointWorkContext>,
+        temporary: &mut OwnedTemporaryArtifacts,
     ) -> Result<Self, RelationalOverflowPublicationError> {
         Ok(Self {
-            extent_file: File::create(extent_path)
-                .map_err(durability("create overflow extent candidate"))?,
-            descriptor_file: File::create(descriptor_path)
-                .map_err(durability("create overflow descriptor candidate"))?,
+            extent_file: checkpoint::io(work, || {
+                temporary.create(extent_path, "create overflow extent candidate")
+            })?,
+            descriptor_file: checkpoint::io(work, || {
+                temporary.create(descriptor_path, "create overflow descriptor candidate")
+            })?,
             extent_hasher: IntegrityHasher::new(),
             descriptor_hasher: IntegrityHasher::new(),
             root_hasher: IntegrityHasher::new(),
@@ -784,6 +941,7 @@ impl ArtifactWriter {
             extent_count: 0,
             new_extent_count: 0,
             reused_extent_count: 0,
+            work,
         })
     }
 
@@ -796,45 +954,58 @@ impl ArtifactWriter {
                 RelationalOverflowPublicationError::MissingExtent(reference.digest),
             ),
             RelationalOverflowExtentInput::Write { reference, encoded } => {
-                validate_encoded_extent(reference, encoded, self.config)?;
-                let encoded_len = u64::try_from(encoded.len()).map_err(|_| {
-                    RelationalOverflowPublicationError::Admission(
-                        "overflow envelope length does not fit u64".to_string(),
-                    )
-                })?;
-                let next_extent_bytes =
-                    self.extent_bytes.checked_add(encoded_len).ok_or_else(|| {
-                        RelationalOverflowPublicationError::Admission(
-                            "overflow extent artifact length overflow".to_string(),
-                        )
-                    })?;
-                if next_extent_bytes > self.config.max_new_extent_bytes.get() {
-                    return Err(RelationalOverflowPublicationError::Admission(format!(
-                        "overflow extent artifact requires {next_extent_bytes} bytes, exceeding limit {}",
-                        self.config.max_new_extent_bytes
-                    )));
-                }
-                self.extent_file
-                    .write_all(encoded)
-                    .map_err(durability("write overflow extent candidate"))?;
-                self.extent_hasher.update(encoded);
-                let digest = integrity_digest(encoded);
-                let descriptor = RelationalOverflowExtentDescriptor {
-                    reference: *reference,
-                    physical_generation: self.generation,
-                    physical_offset: self.extent_bytes,
-                    envelope_bytes: encoded_len,
-                    envelope_crc32c: digest.crc32c.get(),
-                };
-                self.extent_bytes = next_extent_bytes;
-                self.new_extent_count = self.new_extent_count.checked_add(1).ok_or_else(|| {
-                    RelationalOverflowPublicationError::Admission(
-                        "new overflow extent count overflow".to_string(),
-                    )
-                })?;
-                self.emit_descriptor(descriptor)
+                self.emit_encoded(reference, encoded)
+            }
+            RelationalOverflowExtentInput::CheckpointWrite { reference, encoded } => {
+                self.emit_encoded(reference, encoded)
             }
         }
+    }
+
+    fn emit_encoded(
+        &mut self,
+        reference: &RelationalOverflowRef,
+        encoded: &[u8],
+    ) -> Result<(), RelationalOverflowPublicationError> {
+        validate_encoded_extent(reference, encoded, self.config, self.work)?;
+        let encoded_len = u64::try_from(encoded.len()).map_err(|_| {
+            RelationalOverflowPublicationError::Admission(
+                "overflow envelope length does not fit u64".to_string(),
+            )
+        })?;
+        let next_extent_bytes = self.extent_bytes.checked_add(encoded_len).ok_or_else(|| {
+            RelationalOverflowPublicationError::Admission(
+                "overflow extent artifact length overflow".to_string(),
+            )
+        })?;
+        if next_extent_bytes > self.config.max_new_extent_bytes.get() {
+            return Err(RelationalOverflowPublicationError::Admission(format!(
+                "overflow extent artifact requires {next_extent_bytes} bytes, exceeding limit {}",
+                self.config.max_new_extent_bytes
+            )));
+        }
+        checkpoint::write(
+            &mut self.extent_file,
+            encoded,
+            "write overflow extent candidate",
+            self.work,
+        )?;
+        checkpoint::update(&mut self.extent_hasher, encoded, self.work)?;
+        let digest = checkpoint::integrity(encoded, self.work)?;
+        let descriptor = RelationalOverflowExtentDescriptor {
+            reference: *reference,
+            physical_generation: self.generation,
+            physical_offset: self.extent_bytes,
+            envelope_bytes: encoded_len,
+            envelope_crc32c: digest.crc32c.get(),
+        };
+        self.extent_bytes = next_extent_bytes;
+        self.new_extent_count = self.new_extent_count.checked_add(1).ok_or_else(|| {
+            RelationalOverflowPublicationError::Admission(
+                "new overflow extent count overflow".to_string(),
+            )
+        })?;
+        self.emit_descriptor(descriptor)
     }
 
     fn emit_reused(
@@ -853,13 +1024,20 @@ impl ArtifactWriter {
         &mut self,
         descriptor: RelationalOverflowExtentDescriptor,
     ) -> Result<(), RelationalOverflowPublicationError> {
-        let encoded_descriptor =
-            reader::encode_descriptor(descriptor, self.generation, self.extent_count, self.config)?;
-        self.descriptor_file
-            .write_all(&encoded_descriptor)
-            .map_err(durability("write overflow descriptor candidate"))?;
-        self.descriptor_hasher.update(&encoded_descriptor);
-        self.root_hasher.update(&encoded_descriptor[..88]);
+        let encoded_descriptor = checkpoint::cpu(self.work, || {
+            reader::encode_descriptor(descriptor, self.generation, self.extent_count, self.config)
+        })?;
+        checkpoint::write(
+            &mut self.descriptor_file,
+            &encoded_descriptor,
+            "write overflow descriptor candidate",
+            self.work,
+        )?;
+        checkpoint::cpu(self.work, || {
+            self.descriptor_hasher.update(&encoded_descriptor);
+            self.root_hasher.update(&encoded_descriptor[..88]);
+            Ok(())
+        })?;
         self.extent_count = self.extent_count.checked_add(1).ok_or_else(|| {
             RelationalOverflowPublicationError::Admission(
                 "overflow extent count overflow".to_string(),
@@ -869,12 +1047,16 @@ impl ArtifactWriter {
     }
 
     fn finish(self) -> Result<WrittenArtifacts, RelationalOverflowPublicationError> {
-        self.extent_file
-            .sync_all()
-            .map_err(durability("sync overflow extent candidate"))?;
-        self.descriptor_file
-            .sync_all()
-            .map_err(durability("sync overflow descriptor candidate"))?;
+        checkpoint::io(self.work, || {
+            self.extent_file
+                .sync_all()
+                .map_err(durability("sync overflow extent candidate"))
+        })?;
+        checkpoint::io(self.work, || {
+            self.descriptor_file
+                .sync_all()
+                .map_err(durability("sync overflow descriptor candidate"))
+        })?;
         let descriptor_bytes = self
             .extent_count
             .checked_mul(reader::DESCRIPTOR_BYTES as u64)
@@ -908,6 +1090,7 @@ fn validate_matching_input(
     input: &RelationalOverflowExtentInput,
     existing: &RelationalOverflowExtentDescriptor,
     config: RelationalOverflowPublicationConfig,
+    work: Option<&CheckpointWorkContext>,
 ) -> Result<(), RelationalOverflowPublicationError> {
     if existing.reference != *input.reference() {
         return Err(RelationalOverflowPublicationError::Corrupt(format!(
@@ -915,8 +1098,8 @@ fn validate_matching_input(
             input.reference().digest
         )));
     }
-    if let RelationalOverflowExtentInput::Write { reference, encoded } = input {
-        validate_encoded_extent(reference, encoded, config)?;
+    if let Some(encoded) = input.encoded_bytes() {
+        validate_encoded_extent(input.reference(), encoded, config, work)?;
     }
     Ok(())
 }
@@ -926,6 +1109,7 @@ fn advance_base_descriptor(
     file: &mut File,
     ordinal: &mut u64,
     descriptor: &mut Option<RelationalOverflowExtentDescriptor>,
+    work: Option<&CheckpointWorkContext>,
 ) -> Result<(), RelationalOverflowPublicationError> {
     *ordinal = ordinal.checked_add(1).ok_or_else(|| {
         RelationalOverflowPublicationError::Corrupt(
@@ -933,7 +1117,7 @@ fn advance_base_descriptor(
         )
     })?;
     *descriptor = if *ordinal < base.manifest().extent_count {
-        Some(base.read_descriptor_from(file, *ordinal)?)
+        Some(checkpoint::descriptor(base, file, *ordinal, work)?)
     } else {
         None
     };
@@ -944,6 +1128,7 @@ fn validate_encoded_extent(
     reference: &RelationalOverflowRef,
     encoded: &[u8],
     config: RelationalOverflowPublicationConfig,
+    work: Option<&CheckpointWorkContext>,
 ) -> Result<(), RelationalOverflowPublicationError> {
     if reference.compressed_bytes > config.max_value_bytes.get() as u64
         || reference.uncompressed_bytes > config.max_value_bytes.get() as u64
@@ -960,20 +1145,25 @@ fn validate_encoded_extent(
         max_memory_bytes: config.max_value_bytes.get(),
         ..RelationalHydrationBudget::default()
     };
-    decode_overflow_envelope(reference, encoded, &mut budget, None)
-        .map(|_| ())
-        .map_err(|error| match error {
-            RelationalError::Admission(message) => {
-                RelationalOverflowPublicationError::Admission(message)
-            }
-            error => RelationalOverflowPublicationError::Corrupt(error.to_string()),
-        })
+    match work {
+        Some(work) => {
+            validate_overflow_envelope_with_work_context(reference, encoded, &mut budget, work)
+        }
+        None => decode_overflow_envelope(reference, encoded, &mut budget, None).map(|_| ()),
+    }
+    .map_err(|error| match error {
+        RelationalError::Admission(message) => {
+            RelationalOverflowPublicationError::Admission(message)
+        }
+        error => RelationalOverflowPublicationError::Corrupt(error.to_string()),
+    })
 }
 
 fn preflight_inputs(
-    mut inputs: Vec<RelationalOverflowExtentInput>,
+    mut inputs: RelationalOverflowInputs,
     config: RelationalOverflowPublicationConfig,
-) -> Result<Vec<RelationalOverflowExtentInput>, RelationalOverflowPublicationError> {
+    work: Option<&CheckpointWorkContext>,
+) -> Result<RelationalOverflowInputs, RelationalOverflowPublicationError> {
     let input_count = u64::try_from(inputs.len()).map_err(|_| {
         RelationalOverflowPublicationError::Admission(
             "overflow extent count does not fit u64".to_string(),
@@ -998,15 +1188,26 @@ fn preflight_inputs(
             config.max_descriptor_bytes
         )));
     }
-    inputs.sort_by_key(|input| input.reference().digest);
-    if let Some(duplicate) = inputs
-        .windows(2)
-        .find(|pair| pair[0].reference().digest == pair[1].reference().digest)
-    {
-        return Err(RelationalOverflowPublicationError::Admission(format!(
-            "overflow publication contains duplicate digest {}",
-            duplicate[0].reference().digest
-        )));
+    if let Some(ordinary) = inputs.ordinary_mut() {
+        checkpoint::sort(ordinary, work)?;
+    }
+    for pair in inputs.windows(2) {
+        checkpoint::cpu(work, || {
+            // Private checkpoint lists originate in the ordered reference map.
+            // Fail closed if that immutable contract is ever violated.
+            if pair[0].reference().digest > pair[1].reference().digest {
+                return Err(RelationalOverflowPublicationError::Admission(
+                    "checkpoint overflow inputs are not sorted by digest".into(),
+                ));
+            }
+            if pair[0].reference().digest == pair[1].reference().digest {
+                return Err(RelationalOverflowPublicationError::Admission(format!(
+                    "overflow publication contains duplicate digest {}",
+                    pair[0].reference().digest
+                )));
+            }
+            Ok(())
+        })?;
     }
     Ok(inputs)
 }
@@ -1016,19 +1217,26 @@ fn preflight_root_capacity(
     inputs: &[RelationalOverflowExtentInput],
     retain_unmentioned_base: bool,
     config: RelationalOverflowPublicationConfig,
+    work: Option<&CheckpointWorkContext>,
 ) -> Result<(), RelationalOverflowPublicationError> {
     let mut base_file = base
         .map(|reader| {
-            File::open(reader.descriptor_path())
-                .map_err(durability("open base overflow descriptor artifact"))
+            checkpoint::io(work, || {
+                File::open(reader.descriptor_path())
+                    .map_err(durability("open base overflow descriptor artifact"))
+            })
         })
         .transpose()?;
     let mut base_ordinal = 0u64;
     let mut base_descriptor = base
         .filter(|reader| reader.manifest().extent_count > 0)
         .map(|reader| {
-            reader
-                .read_descriptor_from(base_file.as_mut().expect("base descriptor file is open"), 0)
+            checkpoint::descriptor(
+                reader,
+                base_file.as_mut().expect("base descriptor file is open"),
+                0,
+                work,
+            )
         })
         .transpose()?;
     let mut new_extent_bytes = 0u64;
@@ -1038,8 +1246,8 @@ fn preflight_root_capacity(
         0
     };
     for input in inputs {
-        if let RelationalOverflowExtentInput::Write { reference, encoded } = input {
-            validate_encoded_extent(reference, encoded, config)?;
+        if let Some(encoded) = input.encoded_bytes() {
+            validate_encoded_extent(input.reference(), encoded, config, work)?;
         }
         while base_descriptor
             .as_ref()
@@ -1050,6 +1258,7 @@ fn preflight_root_capacity(
                 base_file.as_mut().expect("base descriptor file is open"),
                 &mut base_ordinal,
                 &mut base_descriptor,
+                work,
             )?;
         }
         if let Some(existing) = base_descriptor
@@ -1077,6 +1286,19 @@ fn preflight_root_capacity(
                     ));
                 }
                 RelationalOverflowExtentInput::Write { encoded, .. } => {
+                    let encoded_bytes = u64::try_from(encoded.len()).map_err(|_| {
+                        RelationalOverflowPublicationError::Admission(
+                            "overflow envelope length does not fit u64".to_string(),
+                        )
+                    })?;
+                    new_extent_bytes =
+                        new_extent_bytes.checked_add(encoded_bytes).ok_or_else(|| {
+                            RelationalOverflowPublicationError::Admission(
+                                "overflow extent artifact length overflow".to_string(),
+                            )
+                        })?;
+                }
+                RelationalOverflowExtentInput::CheckpointWrite { encoded, .. } => {
                     let encoded_bytes = u64::try_from(encoded.len()).map_err(|_| {
                         RelationalOverflowPublicationError::Admission(
                             "overflow envelope length does not fit u64".to_string(),
@@ -1168,12 +1390,18 @@ fn acquire_publication_lock(directory: &Path) -> Result<File, RelationalOverflow
     Ok(lock)
 }
 
-fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), RelationalOverflowPublicationError> {
-    let mut file = File::create(path).map_err(durability("create overflow candidate"))?;
-    file.write_all(bytes)
-        .map_err(durability("write overflow candidate"))?;
-    file.sync_all()
-        .map_err(durability("sync overflow candidate"))
+fn write_synced(
+    path: &Path,
+    bytes: &[u8],
+    temporary: &mut OwnedTemporaryArtifacts,
+    work: Option<&CheckpointWorkContext>,
+) -> Result<(), RelationalOverflowPublicationError> {
+    let mut file = checkpoint::io(work, || temporary.create(path, "create overflow candidate"))?;
+    checkpoint::write(&mut file, bytes, "write overflow candidate", work)?;
+    checkpoint::io(work, || {
+        file.sync_all()
+            .map_err(durability("sync overflow candidate"))
+    })
 }
 
 fn durable_publish_immutable(
@@ -1199,6 +1427,50 @@ fn maybe_stop(
         )));
     }
     Ok(())
+}
+
+// Declared after the publication lock, so cleanup finishes before releasing
+// serialization. Only successful exclusive creates confer cleanup ownership.
+// Renamed immutable files are never removed. Cleanup failure leaves evidence;
+// accounting and retrying that retained debt remains a separate requirement.
+#[derive(Default)]
+struct OwnedTemporaryArtifacts {
+    paths: Vec<PathBuf>,
+}
+
+impl OwnedTemporaryArtifacts {
+    fn create(
+        &mut self,
+        path: &Path,
+        context: &'static str,
+    ) -> Result<File, RelationalOverflowPublicationError> {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(durability(context))?;
+        self.paths.push(path.to_path_buf());
+        Ok(file)
+    }
+}
+
+impl Drop for OwnedTemporaryArtifacts {
+    fn drop(&mut self) {
+        let mut removed = false;
+        for path in &self.paths {
+            if fs::remove_file(path).is_ok() {
+                removed = true;
+            }
+        }
+        if let Some(directory) = self
+            .paths
+            .first()
+            .filter(|_| removed)
+            .and_then(|path| path.parent())
+        {
+            let _ = sync_directory(directory);
+        }
+    }
 }
 
 struct PublicationPaths {
@@ -1231,29 +1503,6 @@ impl PublicationPaths {
         }
     }
 
-    fn remove_temps(&self) -> Result<(), RelationalOverflowPublicationError> {
-        for path in [
-            &self.extent_tmp,
-            &self.descriptor_tmp,
-            &self.generation_manifest_tmp,
-            &self.latest_manifest_tmp,
-        ] {
-            match fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(durability("remove stale overflow candidate")(error)),
-            }
-        }
-        sync_directory(
-            self.latest_manifest
-                .parent()
-                .expect("publication paths have a directory"),
-        )
-        .map_err(durability(
-            "sync overflow directory after candidate cleanup",
-        ))
-    }
-
     fn require_fresh_generation(&self) -> Result<(), RelationalOverflowPublicationError> {
         for path in [&self.extent, &self.descriptor, &self.generation_manifest] {
             if path.exists() {
@@ -1270,6 +1519,15 @@ impl PublicationPaths {
 #[cfg(test)]
 mod lock_tests {
     use super::*;
+
+    #[test]
+    fn publication_lock_release_does_not_wait_for_a_duplicated_descriptor() {
+        let work = CheckpointWorkContext::default();
+        crate::file_lock_tests::assert_owner_release_with_duplicate(
+            RELATIONAL_OVERFLOW_PUBLICATION_LOCK_FILE,
+            |directory, controlled| checkpoint::lock(directory, controlled.then_some(&work)),
+        );
+    }
 
     #[test]
     fn publication_lock_contract() {

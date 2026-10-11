@@ -16,6 +16,7 @@ use super::{
     durability, RelationalOverflowArtifactMetadata, RelationalOverflowPublicationConfig,
     RelationalOverflowPublicationError, RelationalOverflowRootManifest,
 };
+use crate::background::CheckpointWorkContext;
 use crate::file_io::{self as fs, File};
 use hawdb_integrity::{integrity_digest, Sha256Digest, SHA256_BYTES};
 use std::io::Read;
@@ -71,6 +72,62 @@ pub(super) fn read_manifest_if_exists(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(durability("read overflow manifest metadata")(error)),
     }
+}
+
+pub(super) fn read_manifest_if_exists_with_work_context(
+    path: &Path,
+    config: RelationalOverflowPublicationConfig,
+    work: Option<&CheckpointWorkContext>,
+) -> Result<Option<RelationalOverflowRootManifest>, RelationalOverflowPublicationError> {
+    let Some(work) = work else {
+        return read_manifest_if_exists(path, config);
+    };
+    let present = super::publisher::checkpoint::io(Some(work), || match fs::metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(durability("read overflow manifest metadata")(error)),
+    })?;
+    if !present {
+        return Ok(None);
+    }
+    let max = u64::try_from(config.max_manifest_bytes.get()).map_err(|_| {
+        RelationalOverflowPublicationError::Admission(
+            "overflow manifest limit overflows u64".into(),
+        )
+    })?;
+    max.checked_add(1).ok_or_else(|| {
+        RelationalOverflowPublicationError::Admission(
+            "overflow manifest read limit overflows u64".into(),
+        )
+    })?;
+    let mut file = super::publisher::checkpoint::io(Some(work), || {
+        File::open(path).map_err(durability("open overflow manifest"))
+    })?;
+    let len = super::publisher::checkpoint::io(Some(work), || {
+        file.metadata()
+            .map(|metadata| metadata.len())
+            .map_err(durability("read overflow manifest metadata"))
+    })?;
+    if len > max {
+        return Err(RelationalOverflowPublicationError::Admission(format!(
+            "overflow manifest contains {len} bytes, exceeding limit {}",
+            config.max_manifest_bytes
+        )));
+    }
+    // The format is fixed-size. Reject malformed lengths before allocation,
+    // preserving the ordinary format/budget diagnostics. A physical read
+    // failure can have different priority; both paths fail closed.
+    if len != MANIFEST_HEADER_BYTES as u64 {
+        return Err(RelationalOverflowPublicationError::Corrupt(
+            "invalid overflow manifest header".into(),
+        ));
+    }
+    let mut bytes = [0u8; MANIFEST_HEADER_BYTES];
+    super::publisher::checkpoint::io(Some(work), || {
+        file.read_exact(&mut bytes)
+            .map_err(durability("read overflow manifest"))
+    })?;
+    super::publisher::checkpoint::cpu(Some(work), || decode_manifest(&bytes, config)).map(Some)
 }
 
 pub(super) fn read_manifest(

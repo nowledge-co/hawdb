@@ -386,6 +386,12 @@ impl Database {
             }
             self.runtime.get()?.store.ensure_usable()?;
             super::reject_locking_select_without_manager(prepared.statement(), false)?;
+            if matches!(
+                prepared.statement(),
+                crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+            ) {
+                self.runtime.get_read()?;
+            }
             if hawdb_relational::system_schema::statement_writes_system_schema_registry(
                 prepared.statement(),
             ) {
@@ -403,17 +409,17 @@ impl Database {
                 let slow_queries = self.slow_query_log.borrow().snapshot();
                 let statement_summaries = self.statement_summary.borrow().snapshot();
                 return {
-                    let branch_runtime = self.runtime.get_mut()?;
+                    let branch_runtime = self.runtime.get_read()?;
                     system_sql::query_sql_with_params(
                         sql_text,
                         parameters,
                         max_rows,
                         max_payload_bytes,
                         &system_sql::SystemSqlContext {
-                            catalog: &branch_runtime.catalog,
-                            store: &branch_runtime.store,
-                            relational_state: branch_runtime.store.relational_state(),
-                            append_state: branch_runtime.store.append_state(),
+                            catalog: branch_runtime.catalog(),
+                            store: branch_runtime.store(),
+                            relational_state: branch_runtime.store().relational_state(),
+                            append_state: branch_runtime.store().append_state(),
                             runtime: super::system_runtime_snapshot(&self.config),
                             plan_cache_stats: &plan_cache_stats,
                             slow_queries: &slow_queries,
@@ -531,7 +537,8 @@ impl Database {
                     )));
                 }
                 let summary = {
-                    let branch_runtime = self.runtime.get_mut()?;
+                    let mut branch_runtime_access = self.runtime.get_mut()?;
+                    let branch_runtime = &mut *branch_runtime_access;
                     branch_runtime.store.commit_kernel_write_batch(
                         &mut branch_runtime.catalog,
                         crate::store::KernelWriteBatch {
@@ -564,7 +571,8 @@ impl Database {
                 self.runtime.get()?.store.relational_state(),
             )?;
             let summary = {
-                let branch_runtime = self.runtime.get_mut()?;
+                let mut branch_runtime_access = self.runtime.get_mut()?;
+                let branch_runtime = &mut *branch_runtime_access;
                 branch_runtime.store.commit_relational_transaction(
                     &mut branch_runtime.catalog,
                     compiled.transaction,

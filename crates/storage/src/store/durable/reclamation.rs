@@ -57,11 +57,17 @@ impl DurableStore {
         previous_checkpoint_generation: u64,
         pinned_reader_generations: Option<&BTreeSet<u64>>,
     ) {
-        self.generation_reclamation_debt = self.try_reclaim_old_generations(
+        let debt = self.try_reclaim_old_generations(
             current_generation,
             previous_checkpoint_generation,
             pinned_reader_generations,
         );
+        // Filesystem work stays outside this lock. Publish the complete debt
+        // receipt atomically to all views of this admitted runtime.
+        *self
+            .generation_reclamation_debt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = debt;
     }
 
     fn try_reclaim_old_generations(

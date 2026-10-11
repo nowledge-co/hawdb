@@ -18,13 +18,14 @@
 //! recovery fallback. This module only encodes and validates storage data.
 
 use super::{ProjectedGraphArtifact, ProjectedGraphArtifactData, ProjectedGraphDefinition};
-use crate::text::{
-    decode_string, decode_string_vec, decode_u64_vec, encode_string, encode_string_vec,
-    encode_u64_vec, parse_u64,
-};
+use crate::background::CheckpointWorkContext;
+use crate::text::parse_u64;
 use crate::NodeId;
 use hawdb_core::{HawDBError, Result};
 use std::collections::BTreeMap;
+
+mod encoded;
+pub use encoded::CheckpointProjectedGraphText;
 
 const PROJECTED_GRAPH_ARTIFACT_VERSION: u64 = 2;
 
@@ -40,223 +41,275 @@ pub fn encode_projected_graph_artifacts<'a>(
         ),
     >,
 ) -> String {
-    let mut body = String::new();
-    body.push_str("HAWDB_PROJECTED_GRAPHS_V1\n");
-    body.push_str(&format!(
-        "artifact_version\t{PROJECTED_GRAPH_ARTIFACT_VERSION}\n"
-    ));
-    body.push_str(&format!("projection_epoch\t{projection_epoch}\n"));
-    body.push_str(&format!("commit_epoch\t{commit_epoch}\n"));
-    for (name, definition, data) in artifacts {
-        body.push_str(&format!(
-            "graph\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            encode_string(name),
-            encode_string_vec(&definition.node_labels),
-            encode_string_vec(&definition.rel_types),
-            super::encode_projected_relationship_predicates(&definition.relationship_predicates),
-            data.node_count(),
-            data.edge_count()
-        ));
-        body.push_str(&format!(
-            "nodes\t{}\n",
-            encode_u64_vec(data.nodes.iter().map(|node| node.0))
-        ));
-        body.push_str(&format!(
-            "csr_offsets\t{}\n",
-            encode_usize_vec(data.csr_offsets.iter().copied())
-        ));
-        body.push_str(&format!(
-            "csr_targets\t{}\n",
-            encode_usize_vec(data.csr_targets.iter().copied())
-        ));
-        body.push_str(&format!(
-            "csc_offsets\t{}\n",
-            encode_usize_vec(data.csc_offsets.iter().copied())
-        ));
-        body.push_str(&format!(
-            "csc_sources\t{}\n",
-            encode_usize_vec(data.csc_sources.iter().copied())
-        ));
+    encode_projected_graph_artifacts_with_work_context(
+        projection_epoch,
+        commit_epoch,
+        artifacts.into_iter().map(Ok),
+        &CheckpointWorkContext::default(),
+    )
+    .expect("default projected graph encoding context cannot stop")
+    .into_unadmitted()
+}
+
+/// Encode prebuilt projection arrays in bounded numeric chunks. Constructing
+/// the projection is the producer's responsibility, not one codec work unit.
+#[doc(hidden)]
+pub fn encode_projected_graph_artifacts_with_work_context<
+    'a,
+    D: std::borrow::Borrow<ProjectedGraphArtifactData>,
+>(
+    projection_epoch: u64,
+    commit_epoch: u64,
+    artifacts: impl IntoIterator<Item = Result<(&'a str, &'a ProjectedGraphDefinition, D)>>,
+    work: &CheckpointWorkContext,
+) -> Result<CheckpointProjectedGraphText> {
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    let mut body = CheckpointProjectedGraphText::new();
+    body.append("HAWDB_PROJECTED_GRAPHS_V1\n", work)?;
+    body.fields(
+        format_args!("artifact_version\t{PROJECTED_GRAPH_ARTIFACT_VERSION}\n"),
+        work,
+    )?;
+    body.fields(format_args!("projection_epoch\t{projection_epoch}\n"), work)?;
+    body.fields(format_args!("commit_epoch\t{commit_epoch}\n"), work)?;
+    for artifact in artifacts {
+        let (name, definition, owned_data) = artifact?;
+        let data = owned_data.borrow();
+        body.append("graph\t", work)?;
+        body.hex(name, work)?;
+        body.names(&definition.node_labels, work)?;
+        body.names(&definition.rel_types, work)?;
+        body.append("\t", work)?;
+        super::predicate_checkpoint::encode_into(
+            &definition.relationship_predicates,
+            work,
+            |chunk| {
+                body.append(
+                    std::str::from_utf8(chunk).expect("predicate text is ASCII"),
+                    work,
+                )
+            },
+        )?;
+        body.fields(
+            format_args!("\t{}\t{}\n", data.node_count(), data.edge_count()),
+            work,
+        )?;
+        append_number_vector(
+            &mut body,
+            "nodes",
+            data.nodes.iter().map(|node| node.0),
+            work,
+        )?;
+        for (name, values) in [
+            ("csr_offsets", &data.csr_offsets),
+            ("csr_targets", &data.csr_targets),
+            ("csc_offsets", &data.csc_offsets),
+            ("csc_sources", &data.csc_sources),
+        ] {
+            append_number_vector(
+                &mut body,
+                name,
+                values.iter().map(|value| *value as u64),
+                work,
+            )?;
+        }
     }
-    body
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    Ok(body)
+}
+
+#[cfg(test)]
+fn append_projected_name(
+    output: &mut CheckpointProjectedGraphText,
+    name: &str,
+    work: &CheckpointWorkContext,
+) -> Result<()> {
+    output.hex(name, work)
+}
+
+#[cfg(test)]
+fn append_projected_name_list(
+    output: &mut CheckpointProjectedGraphText,
+    names: &[String],
+    work: &CheckpointWorkContext,
+) -> Result<()> {
+    output.names(names, work)
+}
+
+#[cfg(test)]
+fn decode_projected_name(input: &str, work: &CheckpointWorkContext) -> Result<String> {
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    if !input.len().is_multiple_of(2) {
+        return Err(HawDBError::Storage(format!(
+            "invalid hex string length: {}",
+            input.len()
+        )));
+    }
+    let mut bytes = Vec::new();
+    for start in (0..input.len()).step_by(128 * 1024) {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        for offset in (start..input.len().min(start.saturating_add(128 * 1024))).step_by(2) {
+            let byte = input
+                .get(offset..offset + 2)
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+                .ok_or_else(|| {
+                    HawDBError::Storage(format!("invalid hex string at byte offset {offset}"))
+                })?;
+            bytes.push(byte);
+        }
+        unit.finish();
+    }
+    let mut decoded = String::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let end = bytes.len().min(offset.saturating_add(64 * 1024));
+        match std::str::from_utf8(&bytes[offset..end]) {
+            Ok(block) => {
+                decoded.push_str(block);
+                offset = end;
+            }
+            Err(error) if error.error_len().is_none() && end < bytes.len() => {
+                // Retry the incomplete code point with the following block.
+                // A UTF-8 sequence is at most four bytes, so the preceding
+                // complete prefix advances even at a chunk boundary.
+                let valid_end = offset + error.valid_up_to();
+                decoded.push_str(
+                    std::str::from_utf8(&bytes[offset..valid_end])
+                        .expect("UTF-8 validation identified the complete prefix"),
+                );
+                offset = valid_end;
+            }
+            Err(error) => {
+                let index = offset + error.valid_up_to();
+                return Err(HawDBError::Storage(match error.error_len() {
+                    Some(length) => {
+                        format!("invalid utf-8 sequence of {length} bytes from index {index}")
+                    }
+                    None => format!("incomplete utf-8 byte sequence from index {index}"),
+                }));
+            }
+        }
+        unit.finish();
+    }
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    Ok(decoded)
+}
+
+#[cfg(test)]
+fn decode_projected_name_list(input: &str, work: &CheckpointWorkContext) -> Result<Vec<String>> {
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut names = Vec::new();
+    for encoded in input.split(':') {
+        let name = decode_projected_name(encoded, work)?;
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        names.push(name);
+        unit.finish();
+    }
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    Ok(names)
+}
+
+fn append_number_vector(
+    body: &mut CheckpointProjectedGraphText,
+    name: &str,
+    values: impl ExactSizeIterator<Item = u64>,
+    work: &CheckpointWorkContext,
+) -> Result<()> {
+    body.numbers(name, values, work)
 }
 
 pub fn decode_projected_graph_artifacts(
     body: &str,
 ) -> Result<(u64, BTreeMap<String, ProjectedGraphArtifact>)> {
-    let mut lines = body.lines();
-    match lines.next() {
-        Some("HAWDB_PROJECTED_GRAPHS_V1") => {}
-        _ => {
-            return Err(HawDBError::Storage(
-                "invalid projected graph artifact header".to_string(),
-            ));
-        }
-    }
-    let artifact_version = decode_projected_graph_u64_header(
-        lines.next(),
-        "artifact_version",
-        "projected graph artifact version",
-    )?;
-    if !matches!(artifact_version, 1 | PROJECTED_GRAPH_ARTIFACT_VERSION) {
-        return Err(HawDBError::Storage(format!(
-            "unsupported projected graph artifact version: {artifact_version}"
-        )));
-    }
-    let projection_epoch = decode_projected_graph_u64_header(
-        lines.next(),
-        "projection_epoch",
-        "projected graph artifact projection epoch",
-    )?;
-    let commit_epoch = decode_projected_graph_u64_header(
-        lines.next(),
-        "commit_epoch",
-        "projected graph artifact commit epoch",
-    )?;
+    let (epoch, artifacts) = owned::decode(body, &CheckpointWorkContext::default())?;
+    Ok((epoch, artifacts.into_unadmitted()))
+}
 
-    let mut artifacts = BTreeMap::new();
-    while let Some(line) = lines.next() {
-        let fields = line.split('\t').collect::<Vec<_>>();
-        let graph_fields = match (artifact_version, fields.as_slice()) {
-            (
-                1,
-                ["graph", raw_name, raw_node_labels, raw_rel_types, raw_node_count, raw_edge_count],
-            ) => Some((
-                *raw_name,
-                *raw_node_labels,
-                *raw_rel_types,
-                None,
-                *raw_node_count,
-                *raw_edge_count,
-            )),
-            (
-                PROJECTED_GRAPH_ARTIFACT_VERSION,
-                ["graph", raw_name, raw_node_labels, raw_rel_types, raw_relationship_predicates, raw_node_count, raw_edge_count],
-            ) => Some((
-                *raw_name,
-                *raw_node_labels,
-                *raw_rel_types,
-                Some(*raw_relationship_predicates),
-                *raw_node_count,
-                *raw_edge_count,
-            )),
-            _ => None,
-        };
-        match graph_fields {
-            Some((
-                raw_name,
-                raw_node_labels,
-                raw_rel_types,
-                raw_relationship_predicates,
-                raw_node_count,
-                raw_edge_count,
-            )) => {
-                let name = decode_string(raw_name)?;
-                let definition = ProjectedGraphDefinition {
-                    node_labels: decode_string_vec(raw_node_labels)?,
-                    rel_types: decode_string_vec(raw_rel_types)?,
-                    relationship_predicates: raw_relationship_predicates
-                        .map(super::decode_projected_relationship_predicates)
-                        .transpose()?
-                        .unwrap_or_default(),
-                };
-                let node_count = parse_u64(raw_node_count, "projected graph artifact node count")?;
-                let edge_count = parse_u64(raw_edge_count, "projected graph artifact edge count")?;
-                let nodes = decode_projected_graph_nodes_line(lines.next())?;
-                let csr_offsets = decode_projected_graph_usize_line(lines.next(), "csr_offsets")?;
-                let csr_targets = decode_projected_graph_usize_line(lines.next(), "csr_targets")?;
-                let csc_offsets = decode_projected_graph_usize_line(lines.next(), "csc_offsets")?;
-                let csc_sources = decode_projected_graph_usize_line(lines.next(), "csc_sources")?;
-                if nodes.len() as u64 != node_count {
-                    return Err(HawDBError::Storage(format!(
-                        "projected graph artifact node count mismatch for {name}"
-                    )));
+#[doc(hidden)]
+pub fn decode_projected_graph_artifacts_with_work_context(
+    body: &str,
+    work: &CheckpointWorkContext,
+) -> Result<(u64, CheckpointProjectedGraphArtifacts)> {
+    owned::decode(body, work)
+}
+
+struct ProjectedTextLines<'a> {
+    input: &'a str,
+    offset: usize,
+}
+
+impl<'a> ProjectedTextLines<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, offset: 0 }
+    }
+
+    fn next(&mut self, work: &CheckpointWorkContext) -> Result<Option<&'a str>> {
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        if self.offset == self.input.len() {
+            return Ok(None);
+        }
+        let start = self.offset;
+        while self.offset < self.input.len() {
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            let end = self.input.len().min(self.offset.saturating_add(64 * 1024));
+            if let Some(relative) = self.input.as_bytes()[self.offset..end]
+                .iter()
+                .position(|byte| *byte == b'\n')
+            {
+                let mut line_end = self.offset + relative;
+                self.offset = line_end + 1;
+                if line_end > start && self.input.as_bytes()[line_end - 1] == b'\r' {
+                    line_end -= 1;
                 }
-                if csr_targets.len() as u64 != edge_count || csc_sources.len() as u64 != edge_count
-                {
-                    return Err(HawDBError::Storage(format!(
-                        "projected graph artifact edge count mismatch for {name}"
-                    )));
-                }
-                let data = ProjectedGraphArtifactData::new(
-                    nodes,
-                    csr_offsets,
-                    csr_targets,
-                    csc_offsets,
-                    csc_sources,
-                )
-                .map_err(HawDBError::Storage)?;
-                artifacts.insert(
-                    name,
-                    ProjectedGraphArtifact {
-                        projection_epoch,
-                        commit_epoch,
-                        definition,
-                        data,
-                    },
-                );
+                unit.finish();
+                return Ok(Some(&self.input[start..line_end]));
             }
-            None if fields.as_slice() == [""] => {}
-            _ => {
-                return Err(HawDBError::Storage(format!(
-                    "invalid projected graph artifact line: {line}"
-                )));
+            self.offset = end;
+            unit.finish();
+        }
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        Ok(Some(&self.input[start..]))
+    }
+}
+
+#[cfg(test)]
+fn projected_text_fields<'a>(
+    line: &'a str,
+    max_fields: usize,
+    work: &CheckpointWorkContext,
+) -> Result<Vec<&'a str>> {
+    let mut fields = Vec::new();
+    let mut field_start = 0;
+    let mut offset = 0;
+    while offset < line.len() {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let end = line.len().min(offset.saturating_add(64 * 1024));
+        if let Some(relative) = line.as_bytes()[offset..end]
+            .iter()
+            .position(|byte| *byte == b'\t')
+        {
+            let field_end = offset + relative;
+            fields.push(&line[field_start..field_end]);
+            unit.finish();
+            if fields.len() == max_fields {
+                return Ok(fields);
             }
+            offset = field_end + 1;
+            field_start = offset;
+        } else {
+            offset = end;
+            unit.finish();
         }
     }
-    Ok((commit_epoch, artifacts))
-}
-
-fn decode_projected_graph_u64_header(
-    line: Option<&str>,
-    expected: &str,
-    name: &str,
-) -> Result<u64> {
-    let Some(line) = line else {
-        return Err(HawDBError::Storage(format!(
-            "missing projected graph artifact {expected}"
-        )));
-    };
-    let fields = line.split('\t').collect::<Vec<_>>();
-    match fields.as_slice() {
-        [field, raw] if *field == expected => parse_u64(raw, name),
-        _ => Err(HawDBError::Storage(format!(
-            "invalid projected graph artifact line: {line}"
-        ))),
-    }
-}
-
-fn decode_projected_graph_nodes_line(line: Option<&str>) -> Result<Vec<NodeId>> {
-    let Some(line) = line else {
-        return Err(HawDBError::Storage(
-            "missing projected graph artifact nodes line".to_string(),
-        ));
-    };
-    let fields = line.split('\t').collect::<Vec<_>>();
-    match fields.as_slice() {
-        ["nodes", raw_values] => decode_u64_vec(raw_values, "projected graph artifact node id")
-            .map(|nodes| nodes.into_iter().map(NodeId).collect()),
-        _ => Err(HawDBError::Storage(format!(
-            "invalid projected graph artifact line: {line}"
-        ))),
-    }
-}
-
-fn decode_projected_graph_usize_line(line: Option<&str>, expected: &str) -> Result<Vec<usize>> {
-    let Some(line) = line else {
-        return Err(HawDBError::Storage(format!(
-            "missing projected graph artifact {expected} line"
-        )));
-    };
-    let fields = line.split('\t').collect::<Vec<_>>();
-    match fields.as_slice() {
-        [name, raw_values] if *name == expected => {
-            decode_usize_vec(raw_values, "projected graph artifact index")
-        }
-        _ => Err(HawDBError::Storage(format!(
-            "invalid projected graph artifact line: {line}"
-        ))),
-    }
+    let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+    fields.push(&line[field_start..]);
+    unit.finish();
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    Ok(fields)
 }
 
 pub fn split_projected_graph_artifact_checksum(text: &str) -> Result<(&str, u64)> {
@@ -269,27 +322,38 @@ pub fn split_projected_graph_artifact_checksum(text: &str) -> Result<(&str, u64)
     Ok((body, checksum))
 }
 
-fn encode_usize_vec(values: impl IntoIterator<Item = usize>) -> String {
-    values
-        .into_iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn decode_usize_vec(input: &str, name: &str) -> Result<Vec<usize>> {
+#[cfg(test)]
+fn decode_number_vector<T>(
+    input: &str,
+    work: &CheckpointWorkContext,
+    parse: impl Fn(&str) -> Result<T>,
+) -> Result<Vec<T>> {
     if input.is_empty() {
         return Ok(Vec::new());
     }
-    input
-        .split(',')
-        .map(|value| {
-            value
-                .parse()
-                .map_err(|_| HawDBError::Storage(format!("invalid {name}: {value}")))
-        })
-        .collect()
+    let mut values = Vec::new();
+    let mut unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+    for (index, value) in input.split(',').enumerate() {
+        if index != 0 && index.is_multiple_of(1024) {
+            unit.finish();
+            unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        }
+        values.push(parse(value)?);
+    }
+    unit.finish();
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    Ok(values)
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod memory_tests;
+
+mod owned;
+pub(crate) use owned::CheckpointProjectedGraphRoot;
+pub use owned::{CheckpointProjectedGraphArtifact, CheckpointProjectedGraphArtifacts};
+
+#[cfg(test)]
+mod encode_memory_tests;

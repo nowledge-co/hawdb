@@ -21,9 +21,16 @@ use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 static NEXT_ALIAS_CANDIDATE: AtomicU64 = AtomicU64::new(0);
+
+mod checkpoint;
+pub(crate) use checkpoint::CheckpointImmutableFileError;
+
+#[cfg(test)]
+#[path = "immutable_files/checkpoint_lock_tests.rs"]
+mod checkpoint_lock_tests;
 
 struct AliasCandidate(PathBuf);
 
@@ -65,6 +72,9 @@ pub(crate) struct ImmutableFileHandles {
     access_tick: AtomicU64,
     bindings: Mutex<BTreeMap<PathBuf, ImmutableFileBinding>>,
     opening: Mutex<()>,
+    // Private checkpoint validation keeps objects protected after releasing
+    // the short cache-opening lock. Retirement can defer without waiting.
+    checkpoint_validation: RwLock<()>,
 }
 
 impl ImmutableFileHandles {
@@ -75,6 +85,7 @@ impl ImmutableFileHandles {
             access_tick: AtomicU64::new(0),
             bindings: Mutex::new(BTreeMap::new()),
             opening: Mutex::new(()),
+            checkpoint_validation: RwLock::new(()),
         }
     }
 
@@ -113,6 +124,16 @@ impl ImmutableFileHandles {
             .opening
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let _validation = match self.checkpoint_validation.try_write() {
+            Ok(validation) => validation,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "immutable checkpoint validation is active",
+                ));
+            }
+        };
         let mut handles = self
             .handles
             .lock()
@@ -421,6 +442,37 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn checkpoint_units_immutable_handle_contended_opening_defers_and_retries() {
+        use crate::background::{CheckpointWorkContext, CheckpointWorkError};
+        let fixture = Fixture::new();
+        let path = fixture.mount("checkpoint.page");
+        let handles = &fixture.project.immutable_handles;
+        let binding = handles.binding(&path).unwrap().unwrap();
+        let context = crate::file_descriptors::context_for_path(&path).unwrap();
+        let work = CheckpointWorkContext::default();
+        let opening = handles.opening.lock().unwrap();
+        assert!(matches!(
+            handles.checkpoint_get(&binding, &context, &work),
+            Err(CheckpointImmutableFileError::Work(
+                CheckpointWorkError::Contended("immutable file validation")
+            ))
+        ));
+        assert_eq!(fixture.project.metrics().open, 0);
+        drop(opening);
+        let file = handles.checkpoint_get(&binding, &context, &work).unwrap();
+        let mut borrowed = file.as_ref();
+        borrowed.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        borrowed.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, fixture.bytes);
+        assert_eq!(fixture.project.metrics().cached_handles, 1);
+        assert_eq!(handles.evict_idle(1), 0);
+        drop(file);
+        assert_eq!(handles.evict_idle(1), 1);
+        assert_eq!(fixture.project.metrics().open, 0);
     }
 
     #[test]

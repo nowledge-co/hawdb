@@ -26,7 +26,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::Barrier;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
 
 // Subprocess qualification only; absent from production control planes.
 #[cfg(test)]
@@ -53,11 +53,13 @@ pub(super) struct CommitSequencer {
     database: Mutex<Database>,
     published_read: Mutex<Option<Arc<PublishedConcurrentRead>>>,
     read_publication_failed: AtomicBool,
+    checkpoint_control: Arc<super::super::automatic_checkpoint::Control>,
     group_commit: GroupCommitCoordinator,
 }
 
 impl CommitSequencer {
     pub(super) fn new(database: Database, group_commit: WalGroupCommitConfig) -> Self {
+        let checkpoint_control = database.runtime.checkpoint_control();
         Self {
             database: Mutex::new(database),
             // Opening a concurrent project must not take main's writer lease.
@@ -65,6 +67,7 @@ impl CommitSequencer {
             // a failed admission leaves this empty and remains retryable.
             published_read: Mutex::new(None),
             read_publication_failed: AtomicBool::new(false),
+            checkpoint_control,
             group_commit: GroupCommitCoordinator::new(group_commit),
         }
     }
@@ -82,6 +85,7 @@ impl CommitSequencer {
     }
 
     pub(super) fn read_view(&self) -> Result<Arc<PublishedConcurrentRead>> {
+        self.try_adopt_read_handoff()?;
         let view = self
             .published_read
             .lock()
@@ -115,6 +119,41 @@ impl CommitSequencer {
         };
         self.ensure_read_usable(&view)?;
         Ok(view)
+    }
+
+    fn try_adopt_read_handoff(&self) -> Result<()> {
+        self.checkpoint_control.ensure_healthy()?;
+        if !self.checkpoint_control.has_pending_handoff() {
+            return Ok(());
+        }
+        // A cached read must remain available while a writer or group sync
+        // owns the sequencer. That writer adopts before its next mutation.
+        let mut database = match self.database.try_lock() {
+            Ok(database) => database,
+            Err(TryLockError::WouldBlock) => return Ok(()),
+            Err(TryLockError::Poisoned(_)) => return Err(read_publication_poisoned_error()),
+        };
+        database.runtime.get_read()?;
+        if self.checkpoint_control.has_pending_handoff() {
+            return Ok(());
+        }
+        let next = match PublishedConcurrentRead::capture(&database) {
+            Ok(next) => Arc::new(next),
+            Err(error) => {
+                self.read_publication_failed.store(true, Ordering::Release);
+                return Err(error);
+            }
+        };
+        let previous = self
+            .published_read
+            .lock()
+            .map_err(|_| read_publication_poisoned_error())?
+            .replace(next);
+        drop(database);
+        // Destruction can release generation pins and old COW maps. Keep it
+        // outside both publication and writer mutexes.
+        drop(previous);
+        Ok(())
     }
 
     pub(super) fn prepare_sql(
@@ -191,6 +230,7 @@ impl CommitSequencer {
     }
 
     fn ensure_read_usable(&self, view: &PublishedConcurrentRead) -> Result<()> {
+        self.checkpoint_control.ensure_healthy()?;
         if self.read_publication_failed.load(Ordering::Acquire)
             || self.database.is_poisoned()
             || self.published_read.is_poisoned()
@@ -1690,3 +1730,6 @@ mod lock_wait_tests {
         waiter.join().unwrap().unwrap();
     }
 }
+
+#[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+mod checkpoint_read_tests;

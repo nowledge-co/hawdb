@@ -16,7 +16,7 @@
 //! snapshots.
 
 use crate::{adjacency::AdjacencyPostingList, NodeId, NodeRecord, RelId, RelRecord};
-use hawdb_core::{LabelId, RelTypeId, Value};
+use hawdb_core::{IndexId, IndexStatisticsSample, LabelId, RelTypeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -29,7 +29,35 @@ use std::sync::Arc;
 /// the segment they modify.
 #[derive(Debug, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct CowSegment<T>(Arc<T>);
+pub struct CowSegment<T>(Arc<CowData<T>>);
+
+#[derive(Debug)]
+struct CowData<T> {
+    // Destroy the actual data before refunding its allocation ownership.
+    value: T,
+    growth: Option<Arc<checkpoint::CheckpointGrowthBudget>>,
+    _memory: crate::background::CheckpointAllocationOwner,
+}
+
+impl<T: Clone> Clone for CowData<T> {
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            growth: None,
+            // Ordinary frontend copying does not manufacture a second lease
+            // for the old allocation. Its original snapshots keep that owner.
+            _memory: Default::default(),
+        }
+    }
+}
+
+impl<T: PartialEq> PartialEq for CowData<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl<T: Eq> Eq for CowData<T> {}
 
 impl<T> Clone for CowSegment<T> {
     fn clone(&self) -> Self {
@@ -39,13 +67,17 @@ impl<T> Clone for CowSegment<T> {
 
 impl<T: Default> Default for CowSegment<T> {
     fn default() -> Self {
-        Self(Arc::new(T::default()))
+        Self::from(T::default())
     }
 }
 
 impl<T> From<T> for CowSegment<T> {
     fn from(value: T) -> Self {
-        Self(Arc::new(value))
+        Self(Arc::new(CowData {
+            value,
+            growth: None,
+            _memory: Default::default(),
+        }))
     }
 }
 
@@ -54,14 +86,14 @@ impl<T> Deref for CowSegment<T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        self.0.as_ref()
+        &self.0.value
     }
 }
 
 impl<T: Clone> DerefMut for CowSegment<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        Arc::make_mut(&mut self.0)
+        &mut Arc::make_mut(&mut self.0).value
     }
 }
 
@@ -110,6 +142,15 @@ fn estimated_relationship_record_bytes(relationship: &RelRecord) -> u64 {
 
 pub trait CowPageWeight {
     fn cow_page_bytes(&self) -> usize;
+
+    /// The existing storage-pressure estimate for a graph delta value.
+    /// This is scheduling metadata, not an allocation-capacity bound.
+    /// Implementations must not panic and must return the same weight until
+    /// the value changes through an exclusive mutable borrow. Map mutations
+    /// cache this weight; interior changes through a shared borrow are unsupported.
+    fn delta_pressure_bytes(&self) -> u64 {
+        0
+    }
 }
 
 impl CowPageWeight for NodeId {
@@ -131,6 +172,24 @@ impl CowPageWeight for LabelId {
 }
 
 impl CowPageWeight for RelTypeId {
+    fn cow_page_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl CowPageWeight for IndexId {
+    fn cow_page_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl CowPageWeight for IndexStatisticsSample {
+    fn cow_page_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl CowPageWeight for u64 {
     fn cow_page_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
     }
@@ -166,6 +225,10 @@ impl<T: CowPageWeight + Ord> CowPageWeight for BTreeSet<T> {
                 .fold(0usize, usize::saturating_add),
         )
     }
+
+    fn delta_pressure_bytes(&self) -> u64 {
+        64u64.saturating_add((self.len() as u64).saturating_mul(24))
+    }
 }
 
 impl<A: CowPageWeight, B: CowPageWeight> CowPageWeight for (A, B) {
@@ -189,11 +252,19 @@ impl CowPageWeight for NodeRecord {
     fn cow_page_bytes(&self) -> usize {
         usize::try_from(estimated_node_record_bytes(self)).unwrap_or(usize::MAX)
     }
+
+    fn delta_pressure_bytes(&self) -> u64 {
+        estimated_node_record_bytes(self)
+    }
 }
 
 impl CowPageWeight for RelRecord {
     fn cow_page_bytes(&self) -> usize {
         usize::try_from(estimated_relationship_record_bytes(self)).unwrap_or(usize::MAX)
+    }
+
+    fn delta_pressure_bytes(&self) -> u64 {
+        estimated_relationship_record_bytes(self)
     }
 }
 
@@ -201,11 +272,19 @@ impl CowPageWeight for AdjacencyPostingList {
     fn cow_page_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
     }
+
+    fn delta_pressure_bytes(&self) -> u64 {
+        48u64.saturating_add((self.len() as u64).saturating_mul(24))
+    }
 }
 
-impl<T> CowPageWeight for CowSegment<T> {
+impl<T: CowPageWeight> CowPageWeight for CowSegment<T> {
     fn cow_page_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+
+    fn delta_pressure_bytes(&self) -> u64 {
+        self.0.value.delta_pressure_bytes()
     }
 }
 
@@ -230,15 +309,19 @@ fn cow_map_segment_bytes<K: CowPageWeight, V: CowPageWeight>(segment: &BTreeMap<
 /// first write while a read snapshot is alive.
 #[derive(Debug)]
 pub struct CowSegmentedMap<K, V> {
-    segments: Arc<Vec<Arc<BTreeMap<K, V>>>>,
+    segments: CowSegment<Vec<CowSegment<BTreeMap<K, V>>>>,
     len: usize,
+    // Keep the exact sum before narrowing, so removing a large value can
+    // recover from a saturated public estimate without undercounting.
+    delta_pressure_bytes: u128,
 }
 
 impl<K, V> Clone for CowSegmentedMap<K, V> {
     fn clone(&self) -> Self {
         Self {
-            segments: Arc::clone(&self.segments),
+            segments: self.segments.clone(),
             len: self.len,
+            delta_pressure_bytes: self.delta_pressure_bytes,
         }
     }
 }
@@ -246,8 +329,9 @@ impl<K, V> Clone for CowSegmentedMap<K, V> {
 impl<K, V> Default for CowSegmentedMap<K, V> {
     fn default() -> Self {
         Self {
-            segments: Arc::new(Vec::new()),
+            segments: CowSegment::from(Vec::new()),
             len: 0,
+            delta_pressure_bytes: 0,
         }
     }
 }
@@ -258,29 +342,37 @@ impl<K: Ord + CowPageWeight, V: CowPageWeight> From<BTreeMap<K, V>> for CowSegme
         let mut segments = Vec::new();
         let mut segment = BTreeMap::new();
         let mut segment_bytes = 0usize;
+        let mut delta_pressure_bytes = 0u128;
         for (key, value) in values {
+            delta_pressure_bytes += u128::from(value.delta_pressure_bytes());
             let entry_bytes = cow_map_entry_bytes(&key, &value);
             if !segment.is_empty()
                 && (segment.len() >= COW_MAP_MAX_SEGMENT_ENTRIES
                     || segment_bytes.saturating_add(entry_bytes) > COW_MAP_TARGET_SEGMENT_BYTES)
             {
-                segments.push(Arc::new(std::mem::take(&mut segment)));
+                segments.push(CowSegment::from(std::mem::take(&mut segment)));
                 segment_bytes = 0;
             }
             segment_bytes = segment_bytes.saturating_add(entry_bytes);
             segment.insert(key, value);
         }
         if !segment.is_empty() {
-            segments.push(Arc::new(segment));
+            segments.push(CowSegment::from(segment));
         }
         Self {
-            segments: Arc::new(segments),
+            segments: CowSegment::from(segments),
             len,
+            delta_pressure_bytes,
         }
     }
 }
 
 impl<K: Ord, V> CowSegmentedMap<K, V> {
+    /// Constant-time copy of the maintained graph-delta pressure estimate.
+    pub fn delta_pressure_bytes(&self) -> u64 {
+        u64::try_from(self.delta_pressure_bytes).unwrap_or(u64::MAX)
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -347,26 +439,41 @@ impl<K: Ord, V> CowSegmentedMap<K, V> {
 
 impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K, V> {
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        let pressure = u128::from(value.delta_pressure_bytes());
         if self.segments.is_empty() {
-            self.segments = Arc::new(vec![Arc::new(BTreeMap::from([(key, value)]))]);
+            self.segments =
+                CowSegment::from(vec![CowSegment::from(BTreeMap::from([(key, value)]))]);
             self.len = 1;
+            self.delta_pressure_bytes = pressure;
             return None;
         }
         let index = self
             .segment_index(&key)
             .expect("non-empty segmented map has a target page");
-        let segments = Arc::make_mut(&mut self.segments);
-        let segment = Arc::make_mut(&mut segments[index]);
+        let segments = &mut *self.segments;
+        let segment = &mut *segments[index];
         let previous = segment.insert(key, value);
+        self.delta_pressure_bytes = self.delta_pressure_bytes
+            - previous
+                .as_ref()
+                .map_or(0, |value| u128::from(value.delta_pressure_bytes()))
+            + pressure;
         if previous.is_none() {
             self.len = self.len.saturating_add(1);
+        }
+        // Replacement records can also exceed the byte limit and split a
+        // page. Every insertion consumes its preflight allowance.
+        if let Some(growth) = &segments[index].0.growth {
+            growth.consume_insertion();
         }
         Self::split_oversized_segment(segments, index);
         previous
     }
 
-    fn split_oversized_segment(segments: &mut Vec<Arc<BTreeMap<K, V>>>, index: usize) {
-        let segment = Arc::make_mut(&mut segments[index]);
+    fn split_oversized_segment(segments: &mut Vec<CowSegment<BTreeMap<K, V>>>, index: usize) {
+        let memory = segments[index].0._memory.clone();
+        let growth = segments[index].0.growth.clone();
+        let segment = &mut *segments[index];
         let segment_bytes = cow_map_segment_bytes(segment);
         if segment.len() <= 1
             || (segment.len() <= COW_MAP_MAX_SEGMENT_ENTRIES
@@ -397,27 +504,40 @@ impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K
                     .expect("oversized segmented map page is non-empty")
             });
         let right = segment.split_off(&split_key);
-        segments.insert(index + 1, Arc::new(right));
+        segments.insert(
+            index + 1,
+            CowSegment(Arc::new(CowData {
+                value: right,
+                growth,
+                _memory: memory,
+            })),
+        );
     }
 
     pub fn rebalance_key(&mut self, key: &K) {
         let Some(index) = self.segment_index(key) else {
             return;
         };
-        let segments = Arc::make_mut(&mut self.segments);
+        let segments = &mut *self.segments;
         Self::split_oversized_segment(segments, index);
     }
 
-    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+    pub fn get_mut(&mut self, key: &K) -> Option<CowMapValueMut<'_, V>> {
         let index = self.segment_index(key)?;
         if !self.segments[index].contains_key(key) {
             return None;
         }
-        let segments = Arc::make_mut(&mut self.segments);
-        Arc::make_mut(&mut segments[index]).get_mut(key)
+        let segments = &mut *self.segments;
+        let value = segments[index].get_mut(key)?;
+        let previous = value.delta_pressure_bytes();
+        Some(CowMapValueMut {
+            value,
+            pressure: &mut self.delta_pressure_bytes,
+            previous,
+        })
     }
 
-    pub fn entry_or_default(&mut self, key: K) -> &mut V
+    pub fn entry_or_default(&mut self, key: K) -> CowMapValueMut<'_, V>
     where
         V: Default,
     {
@@ -433,11 +553,14 @@ impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K
         if !self.segments[index].contains_key(key) {
             return None;
         }
-        let segments = Arc::make_mut(&mut self.segments);
-        let removed = Arc::make_mut(&mut segments[index]).remove(key);
+        let segments = &mut *self.segments;
+        let removed = segments[index].remove(key);
         if removed.is_some() {
             self.len = self.len.saturating_sub(1);
         }
+        self.delta_pressure_bytes -= removed
+            .as_ref()
+            .map_or(0, |value| u128::from(value.delta_pressure_bytes()));
         if segments[index].is_empty() {
             segments.remove(index);
         }
@@ -445,23 +568,31 @@ impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K
     }
 
     pub fn retain(&mut self, mut keep: impl FnMut(&K, &mut V) -> bool) {
-        let segments = Arc::make_mut(&mut self.segments);
-        for segment in segments.iter_mut() {
-            let segment = Arc::make_mut(segment);
-            let previous_len = segment.len();
-            segment.retain(|key, value| keep(key, value));
-            self.len = self
-                .len
-                .saturating_sub(previous_len.saturating_sub(segment.len()));
+        let segments = &mut *self.segments;
+        let directory = RetainDirectory(segments);
+        for segment in directory.0.iter_mut() {
+            let segment = &mut **segment;
+            let before_len = segment.len();
+            let before_pressure = segment
+                .values()
+                .map(|value| u128::from(value.delta_pressure_bytes()))
+                .sum();
+            let guard = RetainPressure {
+                segment,
+                len: &mut self.len,
+                pressure: &mut self.delta_pressure_bytes,
+                before_len,
+                before_pressure,
+            };
+            guard.segment.retain(|key, value| keep(key, value));
         }
-        segments.retain(|segment| !segment.is_empty());
     }
 }
 
 #[doc(hidden)]
 impl<K, V> CowSegmentedMap<K, V> {
     pub fn shares_storage_with(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.segments, &other.segments)
+        self.segments.shares_storage_with(&other.segments)
     }
 
     pub fn segment_count(&self) -> usize {
@@ -475,11 +606,72 @@ impl<K, V> CowSegmentedMap<K, V> {
                 other
                     .segments
                     .iter()
-                    .any(|other_segment| Arc::ptr_eq(segment, other_segment))
+                    .any(|other_segment| segment.shares_storage_with(other_segment))
             })
             .count()
     }
 }
+
+/// A mutable map value whose pressure accounting follows its actual mutation.
+/// Release this guard before mutating the same map again.
+#[derive(Debug)]
+pub struct CowMapValueMut<'a, V: CowPageWeight> {
+    value: &'a mut V,
+    pressure: &'a mut u128,
+    previous: u64,
+}
+
+impl<V: CowPageWeight> Deref for CowMapValueMut<'_, V> {
+    type Target = V;
+
+    fn deref(&self) -> &V {
+        self.value
+    }
+}
+
+impl<V: CowPageWeight> DerefMut for CowMapValueMut<'_, V> {
+    fn deref_mut(&mut self) -> &mut V {
+        self.value
+    }
+}
+
+impl<V: CowPageWeight> Drop for CowMapValueMut<'_, V> {
+    fn drop(&mut self) {
+        *self.pressure = *self.pressure - u128::from(self.previous)
+            + u128::from(self.value.delta_pressure_bytes());
+    }
+}
+
+struct RetainPressure<'a, K, V: CowPageWeight> {
+    segment: &'a mut BTreeMap<K, V>,
+    len: &'a mut usize,
+    pressure: &'a mut u128,
+    before_len: usize,
+    before_pressure: u128,
+}
+
+struct RetainDirectory<'a, K, V>(&'a mut Vec<CowSegment<BTreeMap<K, V>>>);
+
+impl<K, V> Drop for RetainDirectory<'_, K, V> {
+    fn drop(&mut self) {
+        self.0.retain(|segment| !segment.is_empty());
+    }
+}
+
+impl<K, V: CowPageWeight> Drop for RetainPressure<'_, K, V> {
+    fn drop(&mut self) {
+        *self.len = *self.len - self.before_len + self.segment.len();
+        *self.pressure = *self.pressure - self.before_pressure
+            + self
+                .segment
+                .values()
+                .map(|value| u128::from(value.delta_pressure_bytes()))
+                .sum::<u128>();
+    }
+}
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 mod segmented_range_tests {
@@ -537,3 +729,5 @@ mod segmented_range_tests {
         assert_eq!(empty.range(&NodeId(0), &NodeId(u64::MAX)).count(), 0);
     }
 }
+
+mod checkpoint;

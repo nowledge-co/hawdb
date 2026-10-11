@@ -15,6 +15,9 @@
 //! Mutation transaction commit paths and out-of-core delta admission for [`GraphStore`].
 
 use super::*;
+
+#[path = "graph_commit/checkpoint_delta.rs"]
+mod checkpoint_delta;
 use hawdb_storage::version::{VersionConflict, VersionIndex, VersionKey, VersionWriteSet};
 use hawdb_storage::{
     relational::{RelationalError, RelationalWrite},

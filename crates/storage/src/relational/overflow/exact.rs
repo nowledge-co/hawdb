@@ -30,6 +30,8 @@ const RUN_HEADER: &[u8; 8] = b"SKOVRFR1";
 const RUN_RECORD_BYTES: u64 = 32 + 1 + 7 + 8 + 8 + 4;
 const MAX_RUN_IO_BUFFER_BYTES: usize = 8 * 1024;
 
+mod checkpoint;
+
 pub const DEFAULT_RELATIONAL_OVERFLOW_REFERENCE_SORT_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_RELATIONAL_OVERFLOW_REFERENCE_SPILL_BYTES: u64 = 128 * 1024 * 1024;
 pub const DEFAULT_RELATIONAL_OVERFLOW_REFERENCE_RUNS: usize = 32;
@@ -312,6 +314,19 @@ impl RelationalOverflowReferenceSet {
             ReferenceSetSource::Spilled { paths, config } => {
                 visit_merged_runs(paths, *config, visit)
             }
+        }
+    }
+
+    pub(crate) fn visit_with_work_context(
+        &self,
+        visit: &mut dyn FnMut(
+            RelationalOverflowRef,
+        ) -> Result<bool, RelationalOverflowPublicationError>,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<(), RelationalOverflowPublicationError> {
+        match work {
+            Some(work) => checkpoint::visit(self, visit, work),
+            None => self.visit(visit),
         }
     }
 }

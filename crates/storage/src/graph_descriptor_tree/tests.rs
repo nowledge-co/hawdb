@@ -20,6 +20,115 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn checkpoint_units_build_a_tree_larger_than_the_per_work_budget() {
+    use crate::background::CheckpointWorkProbe;
+    use hawdb_qos::{LocalQosPolicy, LocalQosScheduler, WorkClass, WorkRequest};
+    use std::sync::Arc;
+
+    let directory = TestDirectory::new("checkpoint-units");
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        max_background_operations: Some(1),
+        max_total_background_operations: Some(4),
+        ..LocalQosPolicy::default()
+    });
+    assert!(scheduler
+        .try_start(WorkRequest::background(WorkClass::Mutation, 2_000))
+        .is_err());
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let mut builder = GraphDescriptorTreeBuilder::create_with_work_context(
+        paths(directory.path()),
+        GraphDescriptorKind::CanonicalAdjacency,
+        7,
+        19,
+        0x534b_4744_4144_4a31,
+        tiny_config(),
+        probe.context(scheduler.clone()),
+    )
+    .unwrap();
+    for value in 0..2_000u64 {
+        builder
+            .push(value.to_be_bytes().to_vec(), vec![value as u8; 48])
+            .unwrap();
+    }
+    let output = builder.finish().unwrap().publish().unwrap();
+    probe.assert_released(&scheduler);
+    assert!(probe.completed.load(Ordering::SeqCst) > 2_000);
+    assert!(probe.peak_units.load(Ordering::SeqCst) <= 2);
+    let reader = GraphDescriptorTreeRootReader::open_bound(
+        paths(directory.path()),
+        output.generation_artifacts(),
+        tiny_config(),
+    )
+    .unwrap();
+    let reader = demand::GraphDescriptorTreeDemandReader::open(
+        reader,
+        tiny_config(),
+        std::sync::Arc::new(crate::cache::SegmentCache::new(64 * 1024)),
+        crate::cache::StoreId(7),
+    )
+    .unwrap();
+    let mut expected = 0u64;
+    reader
+        .deep_visit(|key, value| {
+            assert_eq!(key, expected.to_be_bytes());
+            assert_eq!(value, vec![expected as u8; 48]);
+            expected += 1;
+            Ok(demand::GraphDescriptorTreeScanControl::Continue)
+        })
+        .unwrap();
+    assert_eq!(expected, 2_000);
+}
+
+#[test]
+fn checkpoint_units_cancel_inside_descriptor_interior_construction() {
+    use crate::background::{CheckpointWorkError, CheckpointWorkProbe};
+    use hawdb_core::RuntimeCancellationReason;
+    use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+    use std::sync::Arc;
+
+    let directory = TestDirectory::new("checkpoint-interior-cancel");
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        max_background_operations: Some(1),
+        max_total_background_operations: Some(4),
+        ..LocalQosPolicy::default()
+    });
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let mut builder = GraphDescriptorTreeBuilder::create_with_work_context(
+        paths(directory.path()),
+        GraphDescriptorKind::CanonicalAdjacency,
+        7,
+        19,
+        0x534b_4744_4144_4a31,
+        tiny_config(),
+        probe.context(scheduler.clone()),
+    )
+    .unwrap();
+    for value in 0..2_000u64 {
+        builder
+            .push(value.to_be_bytes().to_vec(), vec![value as u8; 48])
+            .unwrap();
+    }
+    let completed = probe.completed.load(Ordering::SeqCst);
+    // Four records fit each leaf. All leaves are written; finish synchronizes
+    // level zero, opens its reader, and processes two child references before
+    // cancellation. This probes the merge loop, rather than just entry push.
+    probe.cancel_after.store(completed + 5, Ordering::SeqCst);
+    let error = match builder.finish() {
+        Ok(_) => panic!("cancelled build succeeded"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        GraphDescriptorTreeError::Work(CheckpointWorkError::Stopped(
+            RuntimeCancellationReason::Cancelled
+        ))
+    ));
+    assert_eq!(probe.completed.load(Ordering::SeqCst), completed + 5);
+    probe.assert_released(&scheduler);
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+}
+
 struct TestDirectory(PathBuf);
 
 impl TestDirectory {

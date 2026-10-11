@@ -16,6 +16,42 @@
 
 use super::*;
 
+#[cfg(test)]
+#[path = "graph_recovery/checkpoint_capture_shadow_tests.rs"]
+mod checkpoint_capture_shadow_tests;
+
+#[cfg(test)]
+#[path = "graph_recovery/checkpoint_capture_projection_tests.rs"]
+mod checkpoint_capture_projection_tests;
+
+#[cfg(test)]
+#[path = "graph_recovery/checkpoint_capture_metadata_tests.rs"]
+mod checkpoint_capture_metadata_tests;
+
+#[cfg(test)]
+#[path = "graph_recovery/checkpoint_delta_tests.rs"]
+mod checkpoint_delta_tests;
+
+#[cfg(test)]
+#[path = "graph_recovery/checkpoint_delta_related_tests.rs"]
+mod checkpoint_delta_related_tests;
+
+#[cfg(test)]
+#[path = "graph_recovery/checkpoint_native_read_tests.rs"]
+mod checkpoint_native_read_tests;
+
+#[cfg(test)]
+#[path = "graph_recovery/checkpoint_native_read_related_tests.rs"]
+mod checkpoint_native_read_related_tests;
+
+#[cfg(test)]
+#[path = "graph_recovery/checkpoint_native_decode_tests.rs"]
+mod checkpoint_native_decode_tests;
+
+#[cfg(test)]
+#[path = "graph_recovery/checkpoint_native_decode_related_tests.rs"]
+mod checkpoint_native_decode_related_tests;
+
 impl GraphStore {
     pub fn import_graph_snapshot_rows(
         &mut self,
@@ -353,15 +389,15 @@ impl GraphStore {
             .into_iter()
             .map(Arc::new)
             .collect();
-        self.basic_statistics = decoded.basic_statistics;
-        self.checkpoint_statistics = decoded.checkpoint_statistics;
+        self.basic_statistics = decoded.basic_statistics.into();
+        self.checkpoint_statistics = decoded.checkpoint_statistics.into();
         for (name, definition) in decoded.projected_graphs {
-            self.apply_project_graph_definition(name, definition);
+            self.apply_project_graph_definition(name, definition)?;
         }
         if !decoded.nodes.is_empty() || !decoded.relationships.is_empty() {
             // Applying inline records rebuilds the basic counts. The decoded
             // totals must not be counted again during that reconstruction.
-            self.basic_statistics = BasicGraphStatistics::default();
+            self.basic_statistics = BasicStatisticsState::default();
         }
         for node in decoded.nodes {
             self.apply_create_node_with_labels(catalog, node.id, node.labels, node.properties);
@@ -386,7 +422,8 @@ impl GraphStore {
             self.checkpoint_statistics.advanced_statistics_complete =
                 loaded_statistics_complete.unwrap_or(true);
             retain_supported_property_statistics(&mut self.checkpoint_statistics, Some(catalog));
-            retain_valid_index_statistics_samples(&mut self.checkpoint_statistics, catalog);
+            self.checkpoint_statistics
+                .retain_valid_index_samples(catalog);
         }
         if loaded_generation != Some(expected_generation) {
             return Err(HawDBError::Storage(format!(
@@ -484,7 +521,7 @@ impl GraphStore {
                 }
             };
             if materialize {
-                self.basic_statistics = BasicGraphStatistics::default();
+                self.basic_statistics = BasicStatisticsState::default();
                 reader
                     .scan_nodes(|node| {
                         self.apply_create_node_with_labels(
@@ -556,6 +593,13 @@ impl GraphStore {
         source: RelationalRecoverySourceBuilder,
         replayed_entries: usize,
     ) -> Result<()> {
+        if let Some(durable) = &mut self.durable
+            && self.commit_epoch > durable.checkpoint_commit_epoch
+        {
+            durable
+                .wal_uncheckpointed_since
+                .get_or_insert_with(std::time::Instant::now);
+        }
         let identity = if replayed_entries == 0 {
             None
         } else {
@@ -568,6 +612,25 @@ impl GraphStore {
         self.finish_relational_row_page_recovery(identity);
         self.finish_relational_index_recovery(identity);
         Ok(())
+    }
+
+    pub(super) fn finish_private_wal_recovery(
+        &mut self,
+        source: &RelationalRecoverySourceBuilder,
+        replayed_entries: usize,
+    ) -> Result<[Option<crate::relational::PreparedRelationalRecoverySelector>; 2]> {
+        let identity = if replayed_entries == 0 {
+            None
+        } else {
+            Some(
+                source
+                    .prefix_identity()
+                    .map_err(|reason| HawDBError::Storage(reason.to_string()))?,
+            )
+        };
+        let row = self.finish_private_relational_row_page_recovery(identity)?;
+        let index = self.finish_private_relational_index_recovery(identity)?;
+        Ok([row, index])
     }
 
     // A branch's validated WAL closure may span physical generations. Keep
@@ -751,40 +814,7 @@ impl GraphStore {
             expected_lsn = expected_lsn
                 .checked_add(1)
                 .ok_or_else(|| HawDBError::Storage("WAL LSN overflow during replay".to_string()))?;
-            match entry.op {
-                WalOp::Batch(ops) => {
-                    self.ensure_out_of_core_delta_replay_admission(&ops)?;
-                    let commit_epoch = self.commit_epoch + 1;
-                    let relational_primary_key_changes =
-                        self.relational_primary_key_changes_from_wal_ops(&ops)?;
-                    self.record_search_projection_changes_for_ops(
-                        catalog,
-                        commit_epoch,
-                        &ops,
-                        relational_primary_key_changes,
-                    );
-                    for op in ops {
-                        self.apply_wal_op(catalog, op)?;
-                    }
-                    self.commit_epoch += 1;
-                    self.advance_relational_row_recovery_epoch(self.commit_epoch);
-                }
-                op => {
-                    self.ensure_out_of_core_delta_replay_admission(std::slice::from_ref(&op))?;
-                    let commit_epoch = self.commit_epoch + 1;
-                    let relational_primary_key_changes = self
-                        .relational_primary_key_changes_from_wal_ops(std::slice::from_ref(&op))?;
-                    self.record_search_projection_changes_for_ops(
-                        catalog,
-                        commit_epoch,
-                        std::slice::from_ref(&op),
-                        relational_primary_key_changes,
-                    );
-                    self.apply_wal_op(catalog, op)?;
-                    self.commit_epoch += 1;
-                    self.advance_relational_row_recovery_epoch(self.commit_epoch);
-                }
-            }
+            self.apply_replayed_wal_transaction(catalog, entry.op)?;
         }
         if let Some(durable) = &mut self.durable {
             durable.next_lsn = expected_lsn;
@@ -813,5 +843,245 @@ impl GraphStore {
             torn_tail_reason,
             recovered_commit_epoch: self.commit_epoch,
         })
+    }
+
+    /// The same transaction/epoch boundary is used by ordinary recovery and
+    /// private checkpoint candidates. This never appends another WAL record.
+    pub(crate) fn retain_decoded_checkpoint_memory(
+        &mut self,
+        incoming: &mut crate::background::CheckpointAllocationOwner,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
+        self.checkpoint_allocations
+            .append(incoming, work)
+            .map_err(HawDBError::from_storage_error)
+    }
+
+    pub(crate) fn apply_replayed_wal_transaction(
+        &mut self,
+        catalog: &mut Catalog,
+        operation: WalOp,
+    ) -> Result<()> {
+        self.apply_replayed_wal_transaction_with_work_context(catalog, operation, None, None, None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn apply_replayed_checkpoint_wal_transaction(
+        &mut self,
+        catalog: &mut Catalog,
+        operation: WalOp,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
+        self.apply_replayed_checkpoint_wal_transaction_with_boundary(
+            catalog, operation, work, &mut false, None,
+        )
+    }
+
+    pub(crate) fn apply_replayed_checkpoint_wal_transaction_with_boundary(
+        &mut self,
+        catalog: &mut Catalog,
+        operation: WalOp,
+        work: &crate::background::CheckpointWorkContext,
+        mutation_started: &mut bool,
+        replay_memory: Option<&mut crate::background::CheckpointAllocationOwner>,
+    ) -> Result<()> {
+        self.apply_replayed_wal_transaction_with_work_context(
+            catalog,
+            operation,
+            Some(work),
+            Some(mutation_started),
+            replay_memory,
+        )
+    }
+
+    fn apply_replayed_wal_transaction_with_work_context(
+        &mut self,
+        catalog: &mut Catalog,
+        operation: WalOp,
+        work: Option<&crate::background::CheckpointWorkContext>,
+        mutation_started: Option<&mut bool>,
+        replay_memory: Option<&mut crate::background::CheckpointAllocationOwner>,
+    ) -> Result<()> {
+        let operations = match &operation {
+            WalOp::Batch(operations) => operations.as_slice(),
+            operation => std::slice::from_ref(operation),
+        };
+        if let Some(work) = work {
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        }
+        if let Some(work) = work {
+            self.ensure_checkpoint_out_of_core_delta_replay_admission(operations, work)?;
+        } else {
+            self.ensure_out_of_core_delta_replay_admission(operations)?;
+        }
+        if let Some(work) = work {
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        }
+        let epoch = self.commit_epoch.checked_add(1).ok_or_else(|| {
+            HawDBError::StorageIntegrity("commit epoch overflow during WAL replay".into())
+        })?;
+        let relational_changes = if let Some(work) = work {
+            self.relational_primary_key_changes_from_wal_ops_with_work_context(
+                operations,
+                Some(work),
+            )?
+        } else {
+            self.relational_primary_key_changes_from_wal_ops(operations)?
+        };
+        if let Some(work) = work {
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        }
+        if let Some(work) = work {
+            self.prepare_replayed_checkpoint_record_copies(operations, work)?;
+        }
+        if let Some(memory) = replay_memory {
+            self.retain_decoded_checkpoint_memory(
+                memory,
+                work.expect("decoded checkpoint memory has an admitted work context"),
+            )?;
+        }
+        // Earlier admission and preflight leave schema/data intact. Projection
+        // bookkeeping below is the first mutation, before the batch's data or
+        // catalog writes; any subsequent error makes this private runtime
+        // unsafe to reuse, even if its commit epoch has not advanced.
+        if let Some(mutation_started) = mutation_started {
+            *mutation_started = true;
+        }
+        if let Some(work) = work {
+            self.record_checkpoint_search_projection_changes_for_ops(
+                catalog,
+                epoch,
+                operations,
+                relational_changes,
+                work,
+            )?;
+            self.apply_replayed_checkpoint_operations(catalog, operation, work)?;
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        } else {
+            self.record_search_projection_changes_for_ops(
+                catalog,
+                epoch,
+                operations,
+                relational_changes,
+            );
+            match operation {
+                WalOp::Batch(operations) => {
+                    for operation in operations {
+                        self.apply_wal_op(catalog, operation)?;
+                    }
+                }
+                operation => self.apply_wal_op(catalog, operation)?,
+            }
+        }
+        self.commit_epoch = epoch;
+        self.advance_relational_row_recovery_epoch(epoch);
+        Ok(())
+    }
+
+    fn prepare_replayed_checkpoint_record_copies(
+        &mut self,
+        operations: &[WalOp],
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
+        fn count_insertions(
+            operations: &[WalOp],
+            work: &crate::background::CheckpointWorkContext,
+            count: &mut (usize, usize),
+        ) -> Result<()> {
+            for operation in operations {
+                let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+                match operation {
+                    WalOp::Batch(operations) => {
+                        unit.finish();
+                        count_insertions(operations, work, count)?;
+                        continue;
+                    }
+                    WalOp::CreateNode { .. } => count.0 += 1,
+                    WalOp::CreateRelationship { .. } => count.1 += 1,
+                    _ => {}
+                }
+                unit.finish();
+            }
+            Ok(())
+        }
+        let mut insertions = (0, 0);
+        count_insertions(operations, work, &mut insertions)?;
+        self.prepare_replayed_checkpoint_record_copies_inner(operations, insertions, work)
+    }
+
+    fn prepare_replayed_checkpoint_record_copies_inner(
+        &mut self,
+        operations: &[WalOp],
+        insertions: (usize, usize),
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
+        for operation in operations {
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
+            match operation {
+                WalOp::Batch(operations) => {
+                    self.prepare_replayed_checkpoint_record_copies_inner(
+                        operations, insertions, work,
+                    )?;
+                }
+                WalOp::CreateNode { id, .. } => {
+                    let result = if insertions.0 > 1 {
+                        self.nodes
+                            .prepare_checkpoint_insertions_for_key(id, insertions.0, work)
+                    } else {
+                        self.nodes.prepare_checkpoint_insert_copy_for_key(id, work)
+                    };
+                    result.map_err(HawDBError::from_storage_error)?;
+                }
+                WalOp::CreateRelationship { id, .. } => {
+                    let result = if insertions.1 > 1 {
+                        self.relationships.prepare_checkpoint_insertions_for_key(
+                            id,
+                            insertions.1,
+                            work,
+                        )
+                    } else {
+                        self.relationships
+                            .prepare_checkpoint_insert_copy_for_key(id, work)
+                    };
+                    result.map_err(HawDBError::from_storage_error)?;
+                }
+                WalOp::SetNodeProperty { id, .. } | WalOp::DeleteNode { id } => self
+                    .nodes
+                    .prepare_checkpoint_copy_for_key(id, work)
+                    .map_err(HawDBError::from_storage_error)?,
+                WalOp::SetRelationshipProperty { id, .. } | WalOp::DeleteRelationship { id } => {
+                    self.relationships
+                        .prepare_checkpoint_copy_for_key(id, work)
+                        .map_err(HawDBError::from_storage_error)?
+                }
+                _ => {}
+            }
+        }
+        work.checkpoint().map_err(HawDBError::from_storage_error)
+    }
+
+    fn apply_replayed_checkpoint_operations(
+        &mut self,
+        catalog: &mut Catalog,
+        operation: WalOp,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
+        match operation {
+            WalOp::Batch(operations) => {
+                for operation in operations {
+                    self.apply_replayed_checkpoint_operations(catalog, operation, work)?;
+                }
+                Ok(())
+            }
+            operation @ WalOp::ProjectGraph { .. } => {
+                self.apply_wal_op_with_work_context(catalog, operation, Some(work))
+            }
+            operation => {
+                let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+                self.apply_wal_op(catalog, operation)?;
+                unit.finish();
+                Ok(())
+            }
+        }
     }
 }

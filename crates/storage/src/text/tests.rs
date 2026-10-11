@@ -15,6 +15,59 @@
 use super::*;
 
 #[test]
+fn property_maps_preserve_internal_separators_and_following_scalar_properties() {
+    let map = Value::Map(BTreeMap::from([
+        ("body;=界".into(), Value::String("界🙂;=,".into())),
+        (
+            "list".into(),
+            Value::List(vec![
+                Value::Int(7),
+                Value::Map(BTreeMap::from([
+                    ("nested".into(), Value::Binary(vec![0, 255])),
+                    ("second".into(), Value::Null),
+                ])),
+            ]),
+        ),
+    ]));
+    for following in [
+        Value::Null,
+        Value::Bool(false),
+        Value::Int(-7),
+        Value::Float(-0.0),
+        Value::String("following;=界".into()),
+        Value::Binary(vec![0, 255]),
+        Value::Uuid(hawdb_core::Uuid::from_u128(7)),
+        Value::List(vec![map.clone()]),
+        map.clone(),
+    ] {
+        let properties = BTreeMap::from([
+            ("a".into(), Value::Int(1)),
+            ("m".into(), map.clone()),
+            ("z".into(), following),
+        ]);
+        let encoded = encode_properties(&properties);
+        assert_eq!(
+            decode_properties(&encoded).unwrap(),
+            properties,
+            "{encoded}"
+        );
+    }
+    assert_eq!(
+        decode_properties("61=m61=6931;62=6932;7a=b0").unwrap(),
+        BTreeMap::from([
+            (
+                "a".into(),
+                Value::Map(BTreeMap::from([
+                    ("a".into(), Value::Int(1)),
+                    ("b".into(), Value::Int(2)),
+                ]))
+            ),
+            ("z".into(), Value::Bool(false)),
+        ])
+    );
+}
+
+#[test]
 fn fixed_value_encodings_preserve_tags_bits_and_container_framing() {
     for (value, encoded) in [
         (Value::Null, "n"),

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 use crate::canonical::{decode_relationship, encode_relationship, CanonicalScanControl};
 use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_tree::demand::{
@@ -34,7 +35,7 @@ use crate::{
 use hawdb_core::{RelTypeId, Value};
 use hawdb_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BTreeSet, BinaryHeap};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -103,6 +104,7 @@ pub enum CanonicalAdjacencyError {
     Io(std::io::Error),
     Read(SegmentReadError),
     DescriptorTree(GraphDescriptorTreeError),
+    Work(CheckpointWorkError),
     Source(String),
     Corrupt(String),
     RecordTooLarge {
@@ -133,6 +135,7 @@ impl Display for CanonicalAdjacencyError {
             Self::Io(error) => Display::fmt(error, formatter),
             Self::Read(error) => Display::fmt(error, formatter),
             Self::DescriptorTree(error) => Display::fmt(error, formatter),
+            Self::Work(error) => Display::fmt(error, formatter),
             Self::Source(message) | Self::Corrupt(message) => formatter.write_str(message),
             Self::RecordTooLarge {
                 record_bytes,
@@ -179,6 +182,7 @@ impl Error for CanonicalAdjacencyError {
             Self::Io(error) => Some(error),
             Self::Read(error) => Some(error),
             Self::DescriptorTree(error) => Some(error),
+            Self::Work(error) => Some(error),
             _ => None,
         }
     }
@@ -199,6 +203,12 @@ impl From<SegmentReadError> for CanonicalAdjacencyError {
 impl From<GraphDescriptorTreeError> for CanonicalAdjacencyError {
     fn from(error: GraphDescriptorTreeError) -> Self {
         Self::DescriptorTree(error)
+    }
+}
+
+impl From<CheckpointWorkError> for CanonicalAdjacencyError {
+    fn from(error: CheckpointWorkError) -> Self {
+        Self::Work(error)
     }
 }
 
@@ -619,12 +629,32 @@ impl EncodedEntry {
 }
 
 pub struct CanonicalAdjacencyWriter {
+    source_admits: bool,
     config: CanonicalAdjacencyConfig,
+    work: Option<CheckpointWorkContext>,
+}
+
+struct TemporaryAdjacencyArtifact(PathBuf);
+
+impl Drop for TemporaryAdjacencyArtifact {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 impl CanonicalAdjacencyWriter {
     pub const fn new(config: CanonicalAdjacencyConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            work: None,
+            source_admits: false,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_work_context(mut self, work: CheckpointWorkContext) -> Self {
+        self.work = Some(work);
+        self
     }
 
     pub fn write_fallible<R>(
@@ -636,7 +666,12 @@ impl CanonicalAdjacencyWriter {
     where
         R: IntoIterator<Item = Result<RelRecord, CanonicalAdjacencyError>>,
     {
-        self.write_fallible_internal(path, generation, None, relationships)
+        self.write_fallible_internal(
+            path,
+            generation,
+            None,
+            relationships.into_iter().map(|record| record.map(Some)),
+        )
     }
 
     pub fn write_fallible_with_descriptor_tree<R>(
@@ -655,11 +690,83 @@ impl CanonicalAdjacencyWriter {
             path,
             generation,
             Some((descriptor_paths, source_commit_epoch, descriptor_config)),
+            relationships.into_iter().map(|record| record.map(Some)),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn write_fallible_with_descriptor_tree_steps<R>(
+        &self,
+        path: &Path,
+        descriptor_paths: GraphDescriptorTreePaths,
+        generation: ManifestGeneration,
+        source_commit_epoch: u64,
+        descriptor_config: GraphDescriptorTreeBuildConfig,
+        relationships: R,
+    ) -> Result<CanonicalAdjacencyWriteOutput, CanonicalAdjacencyError>
+    where
+        R: IntoIterator<Item = Result<Option<RelRecord>, CanonicalAdjacencyError>>,
+    {
+        self.write_borrowed_steps(
+            path,
+            descriptor_paths,
+            generation,
+            source_commit_epoch,
+            descriptor_config,
             relationships,
         )
     }
 
-    fn write_fallible_internal<R>(
+    pub(crate) fn write_checkpoint_steps<R, T>(
+        &self,
+        path: &Path,
+        descriptor_paths: GraphDescriptorTreePaths,
+        generation: ManifestGeneration,
+        source_commit_epoch: u64,
+        descriptor_config: GraphDescriptorTreeBuildConfig,
+        relationships: R,
+    ) -> Result<CanonicalAdjacencyWriteOutput, CanonicalAdjacencyError>
+    where
+        R: IntoIterator<Item = Result<Option<T>, CanonicalAdjacencyError>>,
+        T: std::borrow::Borrow<RelRecord>,
+    {
+        let writer = Self {
+            config: self.config,
+            work: self.work.clone(),
+            source_admits: true,
+        };
+        writer.write_borrowed_steps(
+            path,
+            descriptor_paths,
+            generation,
+            source_commit_epoch,
+            descriptor_config,
+            relationships,
+        )
+    }
+
+    fn write_borrowed_steps<R, T>(
+        &self,
+        path: &Path,
+        descriptor_paths: GraphDescriptorTreePaths,
+        generation: ManifestGeneration,
+        source_commit_epoch: u64,
+        descriptor_config: GraphDescriptorTreeBuildConfig,
+        relationships: R,
+    ) -> Result<CanonicalAdjacencyWriteOutput, CanonicalAdjacencyError>
+    where
+        R: IntoIterator<Item = Result<Option<T>, CanonicalAdjacencyError>>,
+        T: std::borrow::Borrow<RelRecord>,
+    {
+        self.write_fallible_internal(
+            path,
+            generation,
+            Some((descriptor_paths, source_commit_epoch, descriptor_config)),
+            relationships,
+        )
+    }
+
+    fn write_fallible_internal<R, T>(
         &self,
         path: &Path,
         generation: ManifestGeneration,
@@ -671,30 +778,48 @@ impl CanonicalAdjacencyWriter {
         relationships: R,
     ) -> Result<CanonicalAdjacencyWriteOutput, CanonicalAdjacencyError>
     where
-        R: IntoIterator<Item = Result<RelRecord, CanonicalAdjacencyError>>,
+        R: IntoIterator<Item = Result<Option<T>, CanonicalAdjacencyError>>,
+        T: std::borrow::Borrow<RelRecord>,
     {
-        reject_existing_immutable_artifact(path, "canonical adjacency data")?;
-        if let Some((paths, _, _)) = &descriptor_tree {
-            reject_existing_immutable_artifact(
-                &paths.page_artifact,
-                "canonical adjacency descriptor pages",
-            )?;
-            reject_existing_immutable_artifact(
-                &paths.root_manifest,
-                "canonical adjacency descriptor root",
-            )?;
+        let work = self.work.clone().unwrap_or_default();
+        {
+            let unit = work.start_unit()?;
+            let _wave = work.io_wave()?;
+            reject_existing_immutable_artifact(path, "canonical adjacency data")?;
+            if let Some((paths, _, _)) = &descriptor_tree {
+                reject_existing_immutable_artifact(
+                    &paths.page_artifact,
+                    "canonical adjacency descriptor pages",
+                )?;
+                reject_existing_immutable_artifact(
+                    &paths.root_manifest,
+                    "canonical adjacency descriptor root",
+                )?;
+            }
+            unit.finish();
         }
-        let mut runs = SpillRuns::new(path, generation, self.config);
+        let mut runs = SpillRuns::new(path, generation, self.config, work.clone());
         let mut chunk = Vec::new();
         let mut chunk_bytes = 0u64;
         let mut relationship_count = 0u64;
         let mut peak_resident_bytes = 0u64;
-        for relationship in relationships {
-            let relationship = relationship?;
-            let payload = if estimated_relationship_payload_bytes(&relationship)
+        let mut relationships = relationships.into_iter();
+        loop {
+            let (relationship, unit) = work.next_input(&mut relationships, self.source_admits)?;
+            let Some(relationship) = relationship else {
+                unit.finish();
+                break;
+            };
+            let Some(relationship) = relationship? else {
+                unit.finish();
+                continue;
+            };
+            let relationship = relationship.borrow();
+            work.checkpoint()?;
+            let payload = if estimated_relationship_payload_bytes(relationship)
                 <= self.config.max_record_bytes.get()
             {
-                let payload = encode_relationship(&relationship)
+                let payload = encode_relationship(relationship)
                     .map_err(|error| CanonicalAdjacencyError::Source(error.to_string()))?;
                 if payload.len() as u64 <= self.config.max_record_bytes.get() {
                     payload
@@ -748,6 +873,7 @@ impl CanonicalAdjacencyWriter {
                     "canonical adjacency relationship count overflow".to_string(),
                 )
             })?;
+            unit.finish();
         }
         if !chunk.is_empty() {
             runs.spill(&mut chunk)?;
@@ -755,22 +881,21 @@ impl CanonicalAdjacencyWriter {
         runs.compact()?;
 
         let tmp_path = path.with_extension("hawdb.tmp");
-        let result = self.merge_runs(
+        let _temporary_artifact = TemporaryAdjacencyArtifact(tmp_path.clone());
+        let (mut output, prepared_descriptor_tree) = self.merge_runs(
             &tmp_path,
             generation,
             relationship_count,
             peak_resident_bytes,
             &runs,
             descriptor_tree,
-        );
-        let (mut output, prepared_descriptor_tree) = match result {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(error);
-            }
-        };
-        durable_replace_file(&tmp_path, path)?;
+        )?;
+        {
+            let unit = work.start_unit()?;
+            let _wave = work.io_wave()?;
+            durable_replace_file(&tmp_path, path)?;
+            unit.finish();
+        }
         if let Some(prepared) = prepared_descriptor_tree {
             output.descriptor_tree = Some(prepared.publish()?);
         }
@@ -796,36 +921,55 @@ impl CanonicalAdjacencyWriter {
         ),
         CanonicalAdjacencyError,
     > {
-        let file = File::create(path)?;
+        let work = &runs.work;
+        let file = {
+            let unit = work.start_unit()?;
+            let _wave = work.io_wave()?;
+            let file = File::create(path)?;
+            unit.finish();
+            file
+        };
         let descriptor_tree = descriptor_tree
             .map(|(paths, source_commit_epoch, config)| {
-                GraphDescriptorTreeBuilder::create(
+                GraphDescriptorTreeBuilder::create_with_work_context(
                     paths,
                     GraphDescriptorKind::CanonicalAdjacency,
                     generation.0,
                     source_commit_epoch,
                     CANONICAL_ADJACENCY_DESCRIPTOR_ARTIFACT_ID,
                     config,
+                    work.clone(),
                 )
             })
             .transpose()?;
-        let mut artifact = ArtifactBuilder::new(file, generation, self.config, descriptor_tree)?;
+        let mut artifact =
+            ArtifactBuilder::new(file, generation, self.config, descriptor_tree, work.clone())?;
         let mut readers = runs
             .paths
             .iter()
-            .map(|path| RunReader::open(path))
+            .map(|path| {
+                let unit = work.start_unit()?;
+                let _wave = work.io_wave()?;
+                let reader = RunReader::open(path, self.config)?;
+                unit.finish();
+                Ok::<_, CanonicalAdjacencyError>(reader)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let mut current = Vec::with_capacity(readers.len());
         let mut heap = BinaryHeap::new();
         for (index, reader) in readers.iter_mut().enumerate() {
+            let unit = work.start_unit()?;
+            let _wave = work.io_wave()?;
             let key = reader.next_key()?;
             if let Some(key) = key {
                 heap.push(Reverse((key, index)));
             }
             current.push(key);
+            unit.finish();
         }
         let mut previous_key = None;
         while let Some(Reverse((key, run_index))) = heap.pop() {
+            let unit = work.start_unit()?;
             if previous_key.is_some_and(|previous| previous >= key) {
                 return Err(CanonicalAdjacencyError::Corrupt(
                     "canonical adjacency spill merge encountered duplicate or unordered keys"
@@ -837,13 +981,20 @@ impl CanonicalAdjacencyWriter {
                     "canonical adjacency spill heap does not match its reader".to_string(),
                 ));
             }
-            let entry = readers[run_index].take_entry()?;
+            let entry = {
+                let _wave = work.io_wave()?;
+                readers[run_index].take_entry()?
+            };
             artifact.push(entry)?;
             previous_key = Some(key);
-            current[run_index] = readers[run_index].next_key()?;
+            current[run_index] = {
+                let _wave = work.io_wave()?;
+                readers[run_index].next_key()?
+            };
             if let Some(next) = current[run_index] {
                 heap.push(Reverse((next, run_index)));
             }
+            unit.finish();
         }
         let FinishedArtifact {
             artifact,
@@ -875,27 +1026,39 @@ impl CanonicalAdjacencyWriter {
 }
 
 struct SpillRuns {
+    work: CheckpointWorkContext,
     prefix: PathBuf,
     generation: ManifestGeneration,
     config: CanonicalAdjacencyConfig,
     paths: Vec<PathBuf>,
     spill_bytes: u64,
     next_run_sequence: usize,
+    temporary_files: BTreeSet<PathBuf>,
 }
 
 impl SpillRuns {
-    fn new(path: &Path, generation: ManifestGeneration, config: CanonicalAdjacencyConfig) -> Self {
+    fn new(
+        path: &Path,
+        generation: ManifestGeneration,
+        config: CanonicalAdjacencyConfig,
+        work: CheckpointWorkContext,
+    ) -> Self {
         Self {
+            work,
             prefix: path.to_path_buf(),
             generation,
             config,
             paths: Vec::new(),
             spill_bytes: 0,
             next_run_sequence: 0,
+            temporary_files: BTreeSet::new(),
         }
     }
 
     fn spill(&mut self, entries: &mut Vec<EncodedEntry>) -> Result<(), CanonicalAdjacencyError> {
+        // The chunk is bounded by memory_budget_bytes, independent of the
+        // dataset. Sorting never stands for the complete checkpoint job.
+        let unit = self.work.start_unit()?;
         let required_runs = self.paths.len().saturating_add(1);
         if required_runs > self.config.max_spill_runs.get() {
             return Err(CanonicalAdjacencyError::SpillRunBudgetExceeded {
@@ -917,15 +1080,30 @@ impl SpillRuns {
             });
         }
         let path = self.next_path();
-        let mut writer = BufWriter::new(File::create(&path)?);
-        writer.write_all(RUN_HEADER)?;
+        unit.finish();
+        let mut writer = {
+            let unit = self.work.start_unit()?;
+            let _wave = self.work.io_wave()?;
+            let mut writer = BufWriter::new(File::create(&path)?);
+            writer.write_all(RUN_HEADER)?;
+            unit.finish();
+            writer
+        };
         for entry in entries.iter() {
+            let unit = self.work.start_unit()?;
+            let _wave = self.work.io_wave()?;
             write_entry(&mut writer, entry)?;
+            unit.finish();
         }
-        writer.flush()?;
+        let unit = self.work.start_unit()?;
+        {
+            let _wave = self.work.io_wave()?;
+            writer.flush()?;
+        }
         self.paths.push(path);
         self.spill_bytes = required_bytes;
         entries.clear();
+        unit.finish();
         Ok(())
     }
 
@@ -937,11 +1115,12 @@ impl SpillRuns {
             ));
         }
         while self.paths.len() > fan_in {
+            self.work.checkpoint()?;
             let old_paths = std::mem::take(&mut self.paths);
             let mut merged_paths = Vec::with_capacity(old_paths.len().div_ceil(fan_in));
             for group in old_paths.chunks(fan_in) {
                 let path = self.next_path();
-                let bytes = match merge_run_group(group, &path) {
+                let bytes = match merge_run_group(group, &path, self.config, &self.work) {
                     Ok(bytes) => bytes,
                     Err(error) => {
                         let _ = fs::remove_file(&path);
@@ -964,9 +1143,13 @@ impl SpillRuns {
                 }
                 self.spill_bytes = required_bytes;
                 merged_paths.push(path);
+                let unit = self.work.start_unit()?;
+                let _wave = self.work.io_wave()?;
                 for source in group {
                     fs::remove_file(source)?;
+                    self.temporary_files.remove(source);
                 }
+                unit.finish();
             }
             self.paths = merged_paths;
         }
@@ -976,16 +1159,18 @@ impl SpillRuns {
     fn next_path(&mut self) -> PathBuf {
         let sequence = self.next_run_sequence;
         self.next_run_sequence = self.next_run_sequence.saturating_add(1);
-        self.prefix.with_file_name(format!(
+        let path = self.prefix.with_file_name(format!(
             ".adjacency.{}.run.{sequence}.tmp",
             self.generation.0
-        ))
+        ));
+        self.temporary_files.insert(path.clone());
+        path
     }
 }
 
 impl Drop for SpillRuns {
     fn drop(&mut self) {
-        for path in &self.paths {
+        for path in &self.temporary_files {
             let _ = fs::remove_file(path);
         }
     }
@@ -994,10 +1179,14 @@ impl Drop for SpillRuns {
 struct RunReader {
     reader: BufReader<File>,
     pending: Option<(EntryKey, usize)>,
+    max_payload_bytes: u64,
 }
 
 impl RunReader {
-    fn open(path: &Path) -> Result<Self, CanonicalAdjacencyError> {
+    fn open(
+        path: &Path,
+        config: CanonicalAdjacencyConfig,
+    ) -> Result<Self, CanonicalAdjacencyError> {
         let mut reader = BufReader::new(File::open(path)?);
         let mut header = [0u8; 8];
         reader.read_exact(&mut header)?;
@@ -1009,6 +1198,12 @@ impl RunReader {
         Ok(Self {
             reader,
             pending: None,
+            max_payload_bytes: config.max_record_bytes.get().min(
+                config
+                    .memory_budget_bytes
+                    .get()
+                    .saturating_sub(ENTRY_FIXED_BYTES + std::mem::size_of::<EncodedEntry>() as u64),
+            ),
         })
     }
 
@@ -1030,6 +1225,12 @@ impl RunReader {
         let neighbor = read_u64(&mut self.reader)?;
         let rel_id = read_u64(&mut self.reader)?;
         let payload_len = read_u32(&mut self.reader)? as usize;
+        if payload_len as u64 > self.max_payload_bytes {
+            return Err(CanonicalAdjacencyError::Corrupt(format!(
+                "canonical adjacency spill payload {payload_len} exceeds its bound {}",
+                self.max_payload_bytes
+            )));
+        }
         let key = EntryKey {
             direction: direction[0],
             endpoint,
@@ -1056,25 +1257,44 @@ impl RunReader {
 fn merge_run_group(
     sources: &[PathBuf],
     destination: &Path,
+    config: CanonicalAdjacencyConfig,
+    work: &CheckpointWorkContext,
 ) -> Result<u64, CanonicalAdjacencyError> {
     let mut readers = sources
         .iter()
-        .map(|path| RunReader::open(path))
+        .map(|path| {
+            let unit = work.start_unit()?;
+            let _wave = work.io_wave()?;
+            let reader = RunReader::open(path, config)?;
+            unit.finish();
+            Ok::<_, CanonicalAdjacencyError>(reader)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let mut current = Vec::with_capacity(readers.len());
     let mut heap = BinaryHeap::new();
     for (index, reader) in readers.iter_mut().enumerate() {
+        let unit = work.start_unit()?;
+        let _wave = work.io_wave()?;
         let key = reader.next_key()?;
         if let Some(key) = key {
             heap.push(Reverse((key, index)));
         }
         current.push(key);
+        unit.finish();
     }
-    let mut writer = BufWriter::new(File::create(destination)?);
-    writer.write_all(RUN_HEADER)?;
+    let mut writer = {
+        let unit = work.start_unit()?;
+        let _wave = work.io_wave()?;
+        let mut writer = BufWriter::new(File::create(destination)?);
+        writer.write_all(RUN_HEADER)?;
+        unit.finish();
+        writer
+    };
     let mut bytes = RUN_HEADER.len() as u64;
     let mut previous_key = None;
     while let Some(Reverse((key, run_index))) = heap.pop() {
+        let unit = work.start_unit()?;
+        let _wave = work.io_wave()?;
         if current[run_index] != Some(key) || previous_key.is_some_and(|previous| previous >= key) {
             return Err(CanonicalAdjacencyError::Corrupt(
                 "canonical adjacency spill compaction encountered unordered keys".to_string(),
@@ -1088,12 +1308,19 @@ fn merge_run_group(
         if let Some(next) = current[run_index] {
             heap.push(Reverse((next, run_index)));
         }
+        unit.finish();
     }
-    writer.flush()?;
+    {
+        let unit = work.start_unit()?;
+        let _wave = work.io_wave()?;
+        writer.flush()?;
+        unit.finish();
+    }
     Ok(bytes)
 }
 
 struct ArtifactBuilder {
+    work: CheckpointWorkContext,
     writer: BufWriter<File>,
     digest: IntegrityHasher,
     generation: ManifestGeneration,
@@ -1123,13 +1350,18 @@ impl ArtifactBuilder {
         generation: ManifestGeneration,
         config: CanonicalAdjacencyConfig,
         descriptor_tree: Option<GraphDescriptorTreeBuilder>,
+        work: CheckpointWorkContext,
     ) -> Result<Self, CanonicalAdjacencyError> {
+        let unit = work.start_unit()?;
+        let _wave = work.io_wave()?;
         let mut writer = BufWriter::new(file);
         let mut digest = IntegrityHasher::new();
         write_hashed(&mut writer, &mut digest, ARTIFACT_HEADER)?;
         write_hashed(&mut writer, &mut digest, &generation.0.to_le_bytes())?;
         let collect_resident_manifest = descriptor_tree.is_none();
+        unit.finish();
         Ok(Self {
+            work: work.clone(),
             writer,
             digest,
             generation,
@@ -1146,6 +1378,7 @@ impl ArtifactBuilder {
     }
 
     fn push(&mut self, entry: EncodedEntry) -> Result<(), CanonicalAdjacencyError> {
+        self.work.checkpoint()?;
         let key = GroupKey::from_entry(&entry)?;
         if self.group.as_ref().is_some_and(|group| group.key != key) {
             self.finish_group()?;
@@ -1163,6 +1396,7 @@ impl ArtifactBuilder {
             if exceeds_group_budget {
                 group.dense = true;
                 for buffered in std::mem::take(&mut group.buffer) {
+                    self.work.checkpoint()?;
                     self.push_dense_entry(&mut group, buffered)?;
                 }
                 group.buffer_bytes = 0;
@@ -1173,6 +1407,7 @@ impl ArtifactBuilder {
                 if group.buffer.len() >= threshold {
                     group.dense = true;
                     for buffered in std::mem::take(&mut group.buffer) {
+                        self.work.checkpoint()?;
                         self.push_dense_entry(&mut group, buffered)?;
                     }
                     group.buffer_bytes = 0;
@@ -1237,6 +1472,7 @@ impl ArtifactBuilder {
         if group.block.is_empty() {
             return Ok(());
         }
+        let unit = self.work.start_unit()?;
         let record_count = u32::try_from(group.block.len()).map_err(|_| {
             CanonicalAdjacencyError::Corrupt(
                 "canonical adjacency block record count exceeds u32".to_string(),
@@ -1273,6 +1509,7 @@ impl ArtifactBuilder {
         );
         let length = NonZeroU64::new(block_bytes).expect("canonical adjacency block is non-empty");
         let mut block_digest = Crc32cHasher::new();
+        let _wave = self.work.io_wave()?;
         write_double_hashed(
             &mut self.writer,
             &mut self.digest,
@@ -1386,6 +1623,7 @@ impl ArtifactBuilder {
                     })?;
             }
         }
+        drop(_wave);
         if let Some(descriptor_tree) = &mut self.descriptor_tree {
             descriptor_tree.push(
                 descriptor.descriptor_tree_key().to_vec(),
@@ -1397,6 +1635,7 @@ impl ArtifactBuilder {
         }
         group.block.clear();
         group.block_bytes = 0;
+        unit.finish();
         Ok(())
     }
 
@@ -1405,8 +1644,13 @@ impl ArtifactBuilder {
         relationship_count: u64,
     ) -> Result<FinishedArtifact, CanonicalAdjacencyError> {
         self.finish_group()?;
-        self.writer.flush()?;
-        self.writer.get_ref().sync_all()?;
+        {
+            let unit = self.work.start_unit()?;
+            let _wave = self.work.io_wave()?;
+            self.writer.flush()?;
+            self.writer.get_ref().sync_all()?;
+            unit.finish();
+        }
         let artifact_integrity = self.digest.finish();
         let artifact = CanonicalAdjacencyArtifactMetadata {
             encoded_len: self.artifact_len,
@@ -2225,7 +2469,8 @@ fn error_requires_poison(error: &CanonicalAdjacencyError) -> bool {
                 | GraphDescriptorTreeError::Page(GraphDescriptorPageError::Corrupt(_))
                 | GraphDescriptorTreeError::Corrupt(_)
         ),
-        CanonicalAdjacencyError::Source(_)
+        CanonicalAdjacencyError::Work(_)
+        | CanonicalAdjacencyError::Source(_)
         | CanonicalAdjacencyError::RecordTooLarge { .. }
         | CanonicalAdjacencyError::MemoryBudgetExceeded { .. }
         | CanonicalAdjacencyError::SpillBudgetExceeded { .. }
@@ -2577,6 +2822,284 @@ mod tests {
             rel_type: RelTypeId(rel_type),
             properties: BTreeMap::new(),
         }
+    }
+
+    fn assert_cancelled_checkpoint(error: &CanonicalAdjacencyError) {
+        let mut source: &(dyn Error + 'static) = error;
+        let mut stopped = false;
+        loop {
+            if let Some(work) = source.downcast_ref::<CheckpointWorkError>() {
+                stopped |= matches!(
+                    work,
+                    CheckpointWorkError::Stopped(_)
+                        | CheckpointWorkError::Io(hawdb_core::RuntimeIoWaveError::Stopped(_))
+                );
+            }
+            let Some(next) = source.source() else { break };
+            source = next;
+        }
+        assert!(stopped, "{error}");
+    }
+
+    #[test]
+    fn checkpoint_units_adjacency_external_sort_reopens_every_direction() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+
+        let root = test_path("checkpoint-external-sort");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("adjacency.hawdb");
+        let descriptor_paths = GraphDescriptorTreePaths::new(
+            root.join("descriptors.pages.hawdb"),
+            root.join("descriptors.root.hawdb"),
+        );
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let records = (0..2_000u64).rev().map(|index| {
+            assert!(scheduler.state().running_background_operations > 0);
+            Ok(relationship(index + 1, 1, index + 10, (index % 3) as u32))
+        });
+        let descriptor_config = GraphDescriptorTreeBuildConfig::default();
+        let output = CanonicalAdjacencyWriter::new(CanonicalAdjacencyConfig {
+            memory_budget_bytes: NonZeroU64::new(2048).unwrap(),
+            target_block_bytes: NonZeroU64::new(256).unwrap(),
+            max_merge_fan_in: NonZeroUsize::new(2).unwrap(),
+            dense_degree_threshold: NonZeroUsize::new(4).unwrap(),
+            ..CanonicalAdjacencyConfig::default()
+        })
+        .with_work_context(probe.context(scheduler.clone()))
+        .write_fallible_with_descriptor_tree(
+            &path,
+            descriptor_paths.clone(),
+            ManifestGeneration(51),
+            51,
+            descriptor_config,
+            records,
+        )
+        .unwrap();
+        probe.assert_released(&scheduler);
+        assert_eq!(output.report.relationship_count, 2_000);
+        assert_eq!(output.report.entry_count, 4_000);
+        assert!(output.report.spill_run_count > 4);
+        assert!(probe.completed.load(Ordering::SeqCst) > 2_000);
+        assert!(probe.peak_units.load(Ordering::SeqCst) <= 4);
+        let root_reader = GraphDescriptorTreeRootReader::open_bound(
+            descriptor_paths,
+            output
+                .descriptor_tree
+                .as_ref()
+                .unwrap()
+                .generation_artifacts(),
+            descriptor_config,
+        )
+        .unwrap();
+        let reader = CanonicalAdjacencyReader::open_demand_paged(
+            &path,
+            output.generation_artifacts().unwrap(),
+            root_reader,
+            descriptor_config,
+            Arc::new(SegmentCache::new(128 * 1024)),
+            StoreId(51),
+            NonZeroU64::new(4096).unwrap(),
+        )
+        .unwrap();
+        for rel_type in 0..3 {
+            let mut ids = Vec::new();
+            reader
+                .scan_endpoint_control(
+                    NodeId(1),
+                    AdjacencyDirection::Outgoing,
+                    Some(RelTypeId(rel_type)),
+                    |record| {
+                        assert_eq!(record.source, NodeId(1));
+                        assert_eq!(record.target, NodeId(record.id.0 + 9));
+                        ids.push(record.id.0);
+                        Ok(CanonicalScanControl::Continue)
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                ids,
+                (0..2_000u64)
+                    .filter(|index| index % 3 == u64::from(rel_type))
+                    .map(|index| index + 1)
+                    .collect::<Vec<_>>()
+            );
+        }
+        for index in 0..2_000u64 {
+            let mut ids = Vec::new();
+            reader
+                .scan_endpoint_control(
+                    NodeId(index + 10),
+                    AdjacencyDirection::Incoming,
+                    Some(RelTypeId((index % 3) as u32)),
+                    |record| {
+                        assert_eq!(record.source, NodeId(1));
+                        ids.push(record.id.0);
+                        Ok(CanonicalScanControl::Continue)
+                    },
+                )
+                .unwrap();
+            assert_eq!(ids, vec![index + 1]);
+        }
+        assert!(fs::read_dir(&root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_units_adjacency_cancel_inside_merge_releases_all_runs() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+
+        let root = test_path("checkpoint-merge-cancel");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("adjacency.hawdb");
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let mut records = (0..128u64)
+            .rev()
+            .map(|index| Ok(relationship(index + 1, 1, index + 10, 1)));
+        let exhausted = std::cell::Cell::new(false);
+        let records = std::iter::from_fn(|| {
+            let next = records.next();
+            if next.is_none() {
+                exhausted.set(true);
+                // At most four entries remain in the final bounded chunk.
+                // Sixty-four more units necessarily enter run compaction,
+                // before its multiple levels can reach the final artifact.
+                probe.cancel_after.store(
+                    probe.completed.load(Ordering::SeqCst) + 64,
+                    Ordering::SeqCst,
+                );
+            }
+            next
+        });
+        let error = CanonicalAdjacencyWriter::new(CanonicalAdjacencyConfig {
+            memory_budget_bytes: NonZeroU64::new(512).unwrap(),
+            max_merge_fan_in: NonZeroUsize::new(2).unwrap(),
+            ..CanonicalAdjacencyConfig::default()
+        })
+        .with_work_context(probe.context(scheduler.clone()))
+        .write_fallible(&path, ManifestGeneration(52), records)
+        .unwrap_err();
+        assert!(exhausted.get());
+        assert_cancelled_checkpoint(&error);
+        probe.assert_released(&scheduler);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_units_adjacency_cancel_at_every_io_admission_cleans_temporary_files() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+
+        let mut successful_waves = 0;
+        let mut cancel_at = 0;
+        loop {
+            let root = test_path("checkpoint-io-cancel");
+            fs::create_dir_all(&root).unwrap();
+            let path = root.join("adjacency.hawdb");
+            let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+                max_background_operations: Some(1),
+                max_total_background_operations: Some(4),
+                ..LocalQosPolicy::default()
+            });
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            probe.cancel_on_io_wave.store(cancel_at, Ordering::SeqCst);
+            let result = CanonicalAdjacencyWriter::new(CanonicalAdjacencyConfig {
+                memory_budget_bytes: NonZeroU64::new(192).unwrap(),
+                target_block_bytes: NonZeroU64::new(256).unwrap(),
+                max_merge_fan_in: NonZeroUsize::new(2).unwrap(),
+                ..CanonicalAdjacencyConfig::default()
+            })
+            .with_work_context(probe.context(scheduler.clone()))
+            .write_fallible_with_descriptor_tree(
+                &path,
+                GraphDescriptorTreePaths::new(
+                    root.join("descriptors.pages.hawdb"),
+                    root.join("descriptors.root.hawdb"),
+                ),
+                ManifestGeneration(53),
+                53,
+                GraphDescriptorTreeBuildConfig::default(),
+                (0..3u64)
+                    .rev()
+                    .map(|index| Ok(relationship(index + 1, 1, index + 10, 1))),
+            );
+            if cancel_at == 0 {
+                assert_eq!(result.unwrap().report.entry_count, 6);
+                successful_waves = probe.io_waves.load(Ordering::SeqCst);
+                assert!(successful_waves > 20);
+            } else {
+                assert_cancelled_checkpoint(&result.unwrap_err());
+            }
+            probe.assert_released(&scheduler);
+            for entry in fs::read_dir(&root).unwrap() {
+                let path = entry.unwrap().path();
+                assert_ne!(
+                    path.extension().and_then(|extension| extension.to_str()),
+                    Some("tmp"),
+                    "wave {cancel_at} leaked {}",
+                    path.display()
+                );
+            }
+            fs::remove_dir_all(root).unwrap();
+            cancel_at += 1;
+            if cancel_at > successful_waves {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_units_adjacency_rejects_corrupt_spill_length_before_payload_allocation() {
+        let root = test_path("checkpoint-spill-bound");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("spill.tmp");
+        {
+            let mut file = File::create(&path).unwrap();
+            file.write_all(RUN_HEADER).unwrap();
+            write_entry(
+                &mut file,
+                &EncodedEntry {
+                    key: EntryKey {
+                        direction: direction_tag(AdjacencyDirection::Outgoing),
+                        endpoint: 1,
+                        rel_type: 1,
+                        neighbor: 2,
+                        rel_id: 1,
+                    },
+                    payload: Vec::new(),
+                },
+            )
+            .unwrap();
+            file.seek(SeekFrom::Start(
+                RUN_HEADER.len() as u64 + ENTRY_FIXED_BYTES - 4,
+            ))
+            .unwrap();
+            file.write_all(&u32::MAX.to_le_bytes()).unwrap();
+        }
+        let mut reader = RunReader::open(&path, CanonicalAdjacencyConfig::default()).unwrap();
+        assert!(matches!(
+            reader.next_key(),
+            Err(CanonicalAdjacencyError::Corrupt(_))
+        ));
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

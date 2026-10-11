@@ -502,27 +502,49 @@ pub fn remaining_mutation_operations(current: usize, limits: MutationLimits) -> 
 }
 
 pub fn estimated_properties_bytes(properties: &BTreeMap<String, Value>) -> u64 {
-    properties.iter().fold(0u64, |bytes, (key, value)| {
-        bytes
-            .saturating_add(key.len() as u64)
-            .saturating_add(estimated_value_bytes(value))
-            .saturating_add(16)
-    })
+    estimated_properties_bytes_with_visit(properties, &mut || Ok::<_, std::convert::Infallible>(()))
+        .unwrap_or_else(|never| match never {})
 }
 
 pub fn estimated_value_bytes(value: &Value) -> u64 {
-    match value {
+    estimated_value_bytes_with_visit(value, &mut || Ok::<_, std::convert::Infallible>(()))
+        .unwrap_or_else(|never| match never {})
+}
+
+/// Visits each borrowed property/value before its constant-time size step.
+/// Ordinary estimation uses the same traversal with an infallible no-op hook.
+#[doc(hidden)]
+pub fn estimated_properties_bytes_with_visit<E>(
+    properties: &BTreeMap<String, Value>,
+    visit: &mut impl FnMut() -> std::result::Result<(), E>,
+) -> std::result::Result<u64, E> {
+    properties.iter().try_fold(0u64, |bytes, (key, value)| {
+        visit()?;
+        Ok(bytes
+            .saturating_add(key.len() as u64)
+            .saturating_add(estimated_value_bytes_with_visit(value, visit)?)
+            .saturating_add(16))
+    })
+}
+
+#[doc(hidden)]
+pub fn estimated_value_bytes_with_visit<E>(
+    value: &Value,
+    visit: &mut impl FnMut() -> std::result::Result<(), E>,
+) -> std::result::Result<u64, E> {
+    visit()?;
+    Ok(match value {
         Value::Null => 1,
         Value::Bool(_) => 1,
         Value::Int(_) | Value::Float(_) => 8,
         Value::String(value) => value.len() as u64,
         Value::Binary(value) => value.len() as u64,
         Value::Uuid(_) => 16,
-        Value::List(values) => values.iter().fold(16u64, |bytes, value| {
-            bytes.saturating_add(estimated_value_bytes(value))
-        }),
-        Value::Map(values) => estimated_properties_bytes(values),
-    }
+        Value::List(values) => values.iter().try_fold(16u64, |bytes, value| {
+            Ok::<_, E>(bytes.saturating_add(estimated_value_bytes_with_visit(value, visit)?))
+        })?,
+        Value::Map(values) => estimated_properties_bytes_with_visit(values, visit)?,
+    })
 }
 
 #[cfg(test)]

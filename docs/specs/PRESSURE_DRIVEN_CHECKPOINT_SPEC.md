@@ -1,0 +1,2591 @@
+# Pressure-driven automatic checkpoints
+
+This contract implements issue #207 for the embedded Rust facade. It does not
+change the commit durability default or authorize HawDB in stable Mem builds.
+Implementation and qualification are in progress; this document is not a
+completion receipt.
+
+## Required behavior
+
+Writable persistent databases schedule checkpoint work at the existing 70%
+soft WAL/delta pressure threshold, or when uncheckpointed data exceeds a finite
+host-configured age. A host need not run a checkpoint loop. Read-only,
+in-memory, and capability-excluded compositions create no maintenance worker.
+
+Apps retain the direct, synchronous `Database::checkpoint` and
+`ConcurrentDatabase::checkpoint` APIs. These calls work below automatic
+thresholds and when background maintenance is disabled or not compiled in.
+Success follows the captured source's checkpoint publication and durability
+barrier, with existing read-only/resource errors and reader pins preserved.
+Manual calls coordinate with the automatic owner through the same writer.
+
+Age measures the lifetime of checkpoint debt using a monotonic clock. Appending
+another transaction does not reset it. Reopening starts a new finite observation
+window for existing debt; wall-clock changes do not delay a live scheduler.
+After selecting checkpoint S, age applies only to the retained post-S suffix.
+Its conservative monotonic floor is the time S was captured, which is no later
+than its first suffix commit. The earlier generation's debt age is discarded;
+a suffix-free selection clears the clock. Later suffix appends never reset it.
+
+Only one checkpoint candidate is pending or preparing for a database. Duplicate
+triggers coalesce. Work holds the existing background QoS and runtime-governor
+leases until its buffers, pinned sources, staging files, and publication work
+are released. Admission denial defers work with bounded backoff; it never
+loosens memory, disk, FD, WAL, or delta limits.
+
+Commits remain owned by one writer. Preparation performs database-sized work
+outside the writer critical section. A checkpoint must make progress despite
+commits arriving during preparation; restarting a full build whenever its
+source epoch changes is insufficient.
+
+## Snapshot and WAL suffix protocol
+
+Capture a pinned logical source at commit epoch S under the writer. Record the
+selected checkpoint generation, active WAL generation/header identity, complete
+WAL byte length B, and next LSN L. Source capture occurs after any group flush,
+not while unacknowledged group entries are still being accumulated.
+
+Prepare immutable checkpoint artifacts for S in a private future generation.
+The existing checkpoint manifest and branch head remain authoritative during
+preparation. The ordinary strict prepared-checkpoint publication path retains
+its stale-source guard; automatic publication uses a separately checked suffix
+protocol.
+
+After preparation, capture a completed source prefix at epoch C and next LSN N.
+Read exactly the byte interval from B to the captured complete length. Validate
+the same WAL header identity, contiguous LSNs [L,N), complete transaction frames,
+per-record commit epochs [S+1,C], and C-S = N-L. An append beyond the captured length is invisible to that pass.
+A missing, truncated, corrupt, or changed captured source fails closed.
+
+Reframe the suffix into the private candidate WAL with its new generation and
+start LSN L. Fragment generation tags, block positions, and checksums must be
+encoded again; copying old-generation framed bytes is invalid. Preserve the
+validated raw transaction payload, including accepted noncanonical wire encodings,
+rather than decoding and re-encoding its envelope. Reject an unexpected recorded
+epoch before writing any candidate fragment. Use a bounded
+record cursor that seeks to the captured boundary instead of rescanning the
+already checkpointed prefix. It may reread one preceding framing block.
+
+Build the candidate runtime on the new checkpoint base and replay this same
+complete suffix. This includes graph/schema, relational rows/indexes/overflow,
+append state, search change capture, and exact commit epochs. Keep MVCC history,
+transaction identities, and live reader pins from the authoritative runtime;
+recovery-style replay alone is not a replacement for conflict metadata.
+
+If commits advance while catching up, advance the candidate through another
+bounded captured suffix, rather than rebuilding its checkpoint. Publication
+revalidates the exact final writer/WAL identity. Final work in the critical
+section is bounded independently of database size. Resource backpressure must
+allow the admitted candidate to complete rather than starving it with new work.
+
+Synchronize the complete candidate WAL and checkpoint closure before selecting
+the manifest and, for an admitted branch, publishing the authoritative branch
+head. Legacy storage selects checkpoint S and a replay interval [L,N) in its
+manifest. An admitted branch publishes an immutable root anchored at S and L;
+its new private active WAL contains the complete suffix [L,N). The new head
+authenticates the generation/header prefix at L, exactly as ordinary branch
+commits authenticate a stable prefix and append later complete records. Its
+logical epoch is S, while the serving runtime and recovered WAL advance to C.
+The immutable root's disposable runtime WAL is empty, so admission replays the
+private suffix exactly once. This keeps the immutable checkpoint closure
+unchanged throughout catch-up and avoids hashing a database-sized closure or
+whole WAL under the final writer barrier. Later sealing binds the same
+checkpoint closure and seals this suffix through the ordinary branch path.
+Existing framing/manifest/branch-root fields represent both contracts; no
+format version or in-place migration is needed.
+
+Adopt the complete candidate runtime only after authoritative publication.
+Release source/candidate pins before computing reclaim eligibility. Drop old
+runtime maps after releasing the writer barrier. External
+readers retain their physical generations and logical snapshots. Reclamation
+failure is retained maintenance debt, not a failed acknowledged checkpoint.
+
+## Failure and lifecycle
+
+Before selection, cancellation or I/O/admission failure leaves the old WAL and
+head authoritative. Private artifacts are owned and cleaned only by their
+serialized job; uncertain publication evidence is retained for recovery.
+After uncertain selector publication, reject further writes until ordinary
+recovery establishes authority. A successfully committed user transaction must
+not be reported as rolled back because later maintenance failed.
+
+The current owner preserves an already prepared private candidate when suffix
+catch-up or pre-publication work stops before any partial transaction mutation.
+It retains the complete replay prefix and original admission, then retries with
+a fresh task context when resources recover, without requiring another write.
+An integrity error, partial transaction mutation, or uncertain publication
+cannot enter that retry path. Explicit manual checkpoint, backup, and compaction
+abandon the unselected candidate before reusing its generation namespace;
+destruction and resource release happen outside the publication gate. Shutdown
+also releases a parked candidate even when report observers retain the owner
+control. Ordinary and concurrent manual checkpoint calls remain available while
+background memory admission is denied.
+
+The owner preserves typed resource/cancellation failures through preparation
+and suffix replay. These deferrals do not consume its operation retry budget.
+Non-admission preparation, replay or publication failures consume a budget of
+three attempts per durable WAL generation. Exhaustion releases the unselected
+candidate and its admission, parks automatic scheduling, and sets
+`AutomaticCheckpointReport::operation_retry_exhausted`; the cumulative
+`operation_failures` counter remains observable. Additional foreground commits
+do not reset this circuit. A successful caller-triggered `checkpoint()` advances
+the durable generation and permits automatic work again. The synchronous manual
+APIs remain available while automatic scheduling is parked. Publication
+uncertainty still retains recovery evidence and fails closed.
+
+Preparation owns its original source/catalog and completed projected-graph and
+source-row plans across safe resource/cancellation deferrals. Submitting a later
+source in the same contiguous WAL generation transfers that owned state rather
+than recapturing its base. Completed candidate mounting and branch setup retain
+their stages across cooperative stops; physical or operation errors discard
+mutated private roots. A fresh task resumes the original admission and eventually
+catches up later writes. Manual suspension destroys parked preparation and its
+memory ownership before its generation can be reused, outside the Control gate.
+
+Source-row planning pins the captured graph COW root and stores sparse segment
+intervals for at most 128 Source rows each, instead of copying every property
+map. The temporary reference-array capacity is admitted before allocation.
+Payload encoding consumes a unit for each visited record, including non-Source
+records between sparse bounds. Writer changes leave the pinned records intact.
+Payload text streams the existing tagged property grammar into its owning
+admitted buffer. Nested List/Map escaping writes directly to the destination
+without whole intermediate value strings. Checkpoint metadata value vectors
+use this same owning tagged encoder rather than a duplicate recursive codec.
+Growth admits simultaneous old/new capacities before copying, and wide encoding
+checks cancellation in bounded
+units. Denial and cancellation destroy the text before refunding its lease.
+Summary/dictionary, descriptor, compressed output and native compression
+workspace accounting remain separate coverage gaps; this does not qualify the
+small automatic owner by itself.
+
+The ordinary property decoder preserves the existing text wire grammar while
+distinguishing hex-escaped map leaves from outer tagged property values. Internal
+map semicolons no longer split one property into several. Encoded bytes remain
+unchanged, including nested maps/lists and following scalar/container fields.
+
+Unfinished artifact builders still restart their private generation. The owner
+retains the existing whole-candidate reservation; fully resumable bounded
+preparation, complete allocation accounting, small fixed admission and the
+default sustained-load envelope remain completion gates.
+
+Shutdown stops admission of new work, cancels or completes the owned candidate,
+joins its worker, and releases worker-owned sources, artifacts and execution
+leases. Adopted serving runtimes and live readers retain allocation leases until
+their actual data owners close. Workers must not retain a strong ownership cycle.
+Manual checkpoints, branch selection, and schema-required
+checkpoints coordinate with the same candidate owner and publication barrier.
+Tokio integration uses the same library contract and the host's existing
+runtime admission; no nested blocking wait or helper-process control plane.
+
+## Supported sustained-load envelope
+
+Automatic progress is required when storage can persist checkpoint work faster
+than admitted writes consume the remaining WAL/delta headroom, background work
+is admitted, and disk/FD/memory budgets cover the declared working set. Preserve
+bounded backpressure while a checkpoint is catching up.
+
+Permanent background denial, insufficient disk, an oversized individual
+transaction, impossible reader-retention budgets, or sustained writes exceeding
+storage capacity can still reject with the existing explicit resource errors.
+These cases must preserve complete committed data and remain distinguishable
+from scheduler failure. Removing a limit is not an availability fix.
+
+## Qualification required before completion
+
+- Default facade/concurrent/Tokio sustained writes across multiple checkpoint
+  generations without a caller checkpoint loop.
+- Exact soft/age boundaries, duplicate triggers, admission denial and recovery,
+  cancellation/shutdown, and absence of concurrent WAL writers.
+- Manual calls below automatic thresholds, with background capability/policy
+  disabled, and in the native minimal feature profile; manual/automatic overlap
+  and resumed automatic progress through both ordinary and concurrent facades.
+- Commits during preparation and catch-up; complete graph/schema, relational,
+  append, and search-capture parity after publication and ordinary reopen.
+- Historical readers, MVCC conflict history, failed publication, torn WAL tails,
+  and generation reclamation with retained evidence.
+- A replayable seeded lifecycle/fault campaign with independent expected state;
+  controls for lost suffix commits, duplicate work, premature reclamation, and
+  leaked leases. Fuzz stays on the local Bazel surface.
+- A protocol model covering old/candidate selectors, suffix durability,
+  acknowledged writes/checkpoints, lost unsynchronized writes, torn writes,
+  and publication ordering. Report modeled filesystem/sync assumptions.
+- Paired release measurements against equivalent caller-driven cadence, with
+  all repetitions: foreground commit p99, throughput, RSS, tracked reservations,
+  temporary disk, admission, and complete durable-result verification.
+- Pinned-toolchain formatting and strict workspace Clippy, relevant ordinary
+  runtime/storage/optimizer/recovery tests, mandatory local fuzz, and affected
+  native/minimal feature profiles. CI and narrow tests do not replace these.
+
+## Current implementation boundary
+
+The storage candidate mounts one private checkpoint base, incrementally
+reframes/replays captured WAL intervals, revalidates the final writer identity,
+and selects a legacy manifest or admitted branch head. It preserves current
+conflict history, consumer acknowledgments and shared fatal-state ownership.
+The strict ordinary prepared-checkpoint path retains its stale-source guard.
+Private suffix finalization seals immutable row/index recovery prefixes
+and mounts them by their exact prefix manifest and WAL fence. It does not replace
+the shared recovery selectors used by ordinary opens. It prepares exclusively
+owned selector hard links in the same directory, then selects them only inside
+the authoritative publication attempt. Cancellation removes owned unselected
+links and preserves existing selectors; an uncertain publication retains the
+immutable closure and fails the live writer closed. This relies on same-volume
+hard links and the existing rename/directory synchronization assumptions.
+Each seal flushes the retained builder before cloning its manifest descriptors,
+so later suffixes extend run/page ordinals without rewriting a pinned prefix.
+The contiguous source digest can seal a prefix without consuming its hash
+state. Only the selected prefix receives the ordinary immutable-generation
+alias. The ordinary recovery publication and reader paths remain independently
+usable. These prefixes do not establish total memory/disk retention or a
+foreground pause bound; descriptor cloning, old prefix files and reader mounts
+still need complete admission and cleanup accounting.
+
+Focused regressions cover multiple catch-up passes, writes after a capture,
+historical snapshots, both durability policies, legacy residency modes,
+mixed graph/relational branch recovery, subsequent sealing/forking, missing
+private tail bytes, and uncertain legacy manifest publication. They do not
+replace the lifecycle, model, fuzz, platform or performance gates above.
+
+The frontend bridge now scopes mutable access with an owned publication guard.
+Storage exposes constant-time WAL debt signals and an opaque complete-prefix
+identity for worker handoff. Selected-runtime adoption validates store identity,
+commit epoch, WAL generation and LSN, restores the actual frontend pin/conflict
+ownership, and returns the old runtime for destruction outside the gate. This
+prevents a worker's captured pin from becoming a permanent writer watermark.
+Replay finalization runs before selector publication; the deferred-reclamation
+entry requires it and leaves generation scanning/version pruning out of that
+entry. The automatic owner seals and mounts captured prefixes while new commits
+remain admitted. It drains existing sync groups and compares the complete
+writer identity with the sealed prefix. If that identity advanced, it resumes
+background catch-up on the same pinned base rather than replaying or mounting
+under the final gate. A publication I/O wave is acquired outside the gate. The
+owner only tries the publication mutex while holding that wave; contention
+releases both the wave and execution before waiting for the current writer.
+A scoped publication request makes new writers yield while that sealed candidate
+acquires the mutex. The request is cleared and waiters are notified on every
+exit, including cancellation. A validated suffix of at most 32 KiB can replay
+and seal off the mutex while new writers yield; a larger suffix drops the request
+and returns to ordinary off-gate catch-up. The byte cap does not bound schema
+application, allocation, synchronization latency or total preparation time.
+Publication reacquires execution and I/O without waiting under the mutex;
+denial parks the complete candidate through the existing bounded retry path.
+It also releases the wave before waiting for an existing
+foreground sync group. After that group finishes, the same candidate seals its
+new complete prefix and retries.
+Cancelled unselected work leaves `Draining`/`Finalizing` before destroying
+private artifacts, COW data and admission. `Discarding` wakes ordinary writers
+without allowing manual generation reuse: synchronous checkpoint, backup and
+compaction still wait for `Idle`, which is reported only after private cleanup
+finishes. The admission remains alive while its owned candidate is destroyed.
+The owner serializes captured sources, selector
+publication, frontend handoff and off-gate retirement. Manual checkpoint
+sources retain a suspension through preparation and selection; branch
+switching/sealing, backup, row-page and overflow compaction coordinate with
+the same owner.
+
+Focused multi-prefix coverage retains the same immutable base bytes through
+four graph/relational suffixes in both durability policies and both Shadow and
+Authoritative index modes. It checks idempotent seals, contiguous candidate WAL
+growth, complete graph properties, every relational value and primary-key
+posting, and direct read-only recovery before writable recovery. The same test
+fails against the prior consuming finalizer. The source-digest test compares
+each reusable prefix identity with a fresh consuming digest of the complete
+same prefix. These controls do not qualify the full lifecycle campaign,
+columnar parity, hard resource ledger, or release foreground performance.
+An owner regression parks three actual sealed prefixes, admits intervening
+foreground writes, drains a real WAL sync group with one I/O slot, preserves
+the same immutable base, adopts the complete prefix and checks ordinary reopen.
+It verifies that the background I/O wave is released before waiting for that
+group. A deliberately wrong runtime retaining that wave fails the same test
+with one active background I/O slot instead of zero; its first log is preserved
+and the original source is restored before ordinary qualification.
+
+Off-gate retirement publishes its complete reclamation receipt through shared
+durable runtime state. The serving frontend observes failed deletions and their
+pending file/byte counts, and successful retry clears the same receipt. The
+receipt lock never spans filesystem work. A regression exercises selection,
+frontend adoption, injected deletion failure, retry and complete ordinary reopen.
+
+Default writable branch admission arms one library-owned worker. It consumes
+byte and monotonic age signals, coalesces sources, retries admission, drains
+in-flight WAL sync groups and joins at handle closure. Focused native Cargo
+tests exercise idle facade/concurrent/Tokio progress, old reader retention,
+manual checkpoint coordination and governor denial/restoration.
+
+Shutdown now takes parked sources, unadopted selected checkpoints, retired
+state and task ownership after joining the worker. It releases them outside
+the publication mutex, with selected/retired admission retained until storage
+and builder destruction completes. Retaining a report/control observer cannot
+keep those sources, open locks or admitted background resources alive. If disk
+authority was selected but never adopted, discarding that handoff fails the
+old frontend closed; immutable recovery evidence remains on disk.
+Two actual-owner regressions keep the control alive across stop, check all
+background task/I/O/memory reservations are released, and directly open
+read-only before writable recovery with the complete committed property.
+Both unchanged regressions fail against the former join-only implementation:
+the selected case retains a background task and the denied case retains its
+parked source. These cuts do not establish the full shutdown/fault matrix or
+complete retained-resource accounting.
+
+Explicit branch reclamation suspends the owner and releases its parked internal
+source after preparation/retirement is idle. The source's branch/snapshot leases
+must not permanently defer reclamation once external candidates and readers
+are gone. Source destruction runs outside the publication mutex. The following
+mutable frontend guard recaptures the unchanged source identity, so age-based
+work can resume without another write. Focused branch regressions retain live
+external candidates and unfinished jobs until their actual completion; an owner
+regression checks reclamation followed by admission restoration and age-driven
+checkpoint progress with no intervening foreground write.
+
+Replacing a captured source while coalescing triggers returns the superseded
+snapshot to the frontend guard. That guard releases the publication mutex
+before destroying the source's COW maps, catalog and physical pins. A regression
+keeps the actual old source alive through submission and releases it after the
+guard, with complete old/new source identities. Destruction still occurs on the
+calling thread; this narrows the publication critical section and does not
+establish a foreground p99 bound or complete retained-source admission.
+
+Captured WAL replay receives the same governor-admitted task context as its
+owner. Read/write/synchronization waves use that task's I/O reservation;
+cancellation is checked at complete-record boundaries. Selector I/O acquires
+its wave before taking the publication lock. A deterministic cancellation
+regression stops after a private suffix record has been replayed, verifies
+unchanged authoritative bytes and no leaked I/O waves, then checks candidate
+cleanup, subsequent writes and complete ordinary reopen.
+
+Checkpoint-base canonical records, property-spill blocks, descriptor leaves and
+interior pages now share the already-admitted task context. Source hydration is
+inside the record lease; bounded encoding, page construction, metadata hashing
+and metadata writes acquire actual per-unit local permits when a local scheduler
+is supplied. Each I/O wave is released before a nested builder acquires another
+wave. Focused tests construct and completely read back 2,000 records/descriptors
+with a per-work operation limit of one and a total limit of four, cancel during
+record and interior-page construction, and cancel at every I/O admission point
+in a canonical/property-spill fixture. They assert released QoS/I/O leases and
+absence of unpublished temporary data. Another storage test verifies unchanged
+authority, subsequent writes, retry and complete ordinary reopen after base
+encoding cancellation. Only the job's own unpublished temporary paths are
+removed; published private files can remain as recovery evidence.
+
+Canonical adjacency now uses the same admitted context for source hydration,
+sorting memory-budgeted chunks, spill records, bounded fan-in merge records,
+artifact blocks and descriptor pages. Chunk sorting retains the existing
+configured memory bound (32 MiB by default); a unit never represents sorting
+the complete dataset. Spill payload lengths are checked against the record and
+chunk limits before allocation. Temporary-run ownership survives merge-level
+replacement and includes partially written runs. Focused tests completely
+reopen 2,000 relationships in both directions under one-operation per-work and
+four-operation total limits, cancel inside a multi-level merge and at every I/O
+admission point, and reject a corrupt spill length before payload allocation.
+The automatic path uses demand-paged descriptor trees; the older optional
+resident-manifest API still retains its complete descriptor vector.
+
+Persistent property projections share the same context for definition
+preparation, source hydration, scalar/composite keys, streaming full-text tokens,
+memory-bounded chunk sorts, spill/merge records, artifact blocks and descriptor
+pages. Controlled definition sorting checks the raw input against the configured
+definition count/byte limits before sorting or deduplication. This prevents
+duplicate definitions from making a supposedly bounded sort unbounded; the
+older writer API without a task context retains its existing deduplication
+behavior. Metadata hashing and publication use bounded units. Temporary-run
+ownership covers partial files and all merge levels. Focused tests completely
+reopen 2,000 nodes and 2,000 relationships across all six projection kinds,
+cancel inside a multi-level merge and at every I/O admission boundary, and
+reject excess raw definitions before source hydration. Actual candidate tests
+cancel during adjacency and property-projection spilling, verify unchanged
+authority and released leases, then write again, retry and completely reopen
+all relationships.
+
+Source-scan sidecars now use the same task for source hydration, 128-row segment
+summaries, per-row/per-value text encoding, compression and CRC32C in 64 KiB
+blocks, and bounded writes with admitted I/O waves. Segment construction moves
+the collected rows instead of retaining a second complete clone. Temporary-path
+cleanup becomes armed only after this writer creates the file; it removes its
+unpublished files and retains private final files as evidence. The existing V1
+envelope/descriptor formats and public sidecar error surface are preserved.
+Focused coverage checks the old compressed bytes, all 2,000 Source rows and
+their summaries/exact cursors against the independent reference, cancellation
+during summary/compression work and every sidecar I/O admission, and actual
+candidate cancellation followed by unchanged authority, retry and complete graph
+reopen. Cancellation tests observe actual artifact creation rather than assume
+a fixed number of preceding builder operations.
+
+The automatic owner still holds its whole-candidate local permit: these units
+do not cover all projected-graph preparation, append/relational builders,
+statistics serialization/adoption, candidate reopening or replay finalization. Temporary-file cleanup is currently
+best effort and lacks a complete retained cleanup-debt/resource ledger. Metadata
+buffers and dictionaries can still scale with the dataset. Source-scan still
+retains complete projected rows/summaries and whole segment, compression and
+descriptor buffers; its work units do not establish a hard byte ledger or an
+allocation bound for a large individual row. These focused tests
+do not prove cancellation or memory bounds for the entire candidate.
+
+Projected-graph array copying, numeric encoding/decoding and structural
+validation now use at most 1,024 numeric elements per work unit. Offset checks
+include the boundary between adjacent chunks. The existing V1 text, decoded
+arrays, historical tolerances and validation errors are preserved. Compressed
+artifact publication uses the admitted task's CRC/compression blocks and I/O
+waves. Focused coverage checks complete 2,048-node/4,096-edge arrays against the
+independent text reference, cancellation inside numeric arrays, malformed
+cross-chunk offsets/indexes, every publication I/O admission, and candidate
+cancellation followed by unchanged authority, retry and complete array reopen.
+Native checkpoint projection construction now resolves definitions, captures
+and hydrates node/relationship records, allocates adjacency entries and inserts
+neighbors under actual record units. Ordered neighbor sets preserve sorted,
+deduplicated directed edges without an uninterruptible high-degree sort; CSR
+and CSC flattening copies at most 1,024 neighbors per unit. The explicit
+analytics path remains a reference. Tests compare all arrays against an
+independent edge set and analytics over 1,025 nodes with skew, parallel edges,
+self-loops and seven label/type filter combinations, including unknown names.
+They cancel capture, hydration, adjacency construction and flattening, restore
+all permits and retry. Projected names and definition lists now encode hex
+bytes in 64 KiB source chunks and decode hex/UTF-8 in 64 KiB decoded chunks,
+with cancellation between names and chunks. A split UTF-8 code point is carried
+into the next block; existing hex/UTF-8 errors, empty-name list ambiguity and V1
+bytes remain unchanged. Tests cover Unicode crossing the 64 KiB boundary,
+4,096 definition names, chunk/list cancellation and malformed input against the
+independent legacy text decoder. Locating line and field boundaries now scans
+at most 64 KiB per admitted unit and retains only the required fields plus one
+excess-field sentinel. Boundary tests match standard line/field splitting for
+empty strings, trailing separators, CRLF and Unicode around 64 KiB boundaries,
+including whole-codec CRLF compatibility; cancellation stops before a complete
+256 KiB line/field has been found. Complete arrays/text/compression retention,
+malformed numeric token/diagnostic size, reallocations/drop costs and the hard
+byte ledger remain open. The automatic owner's whole-candidate local permit and
+memory-accounting gaps remain in place; no complete build bound is claimed.
+
+Native checkpoint overlay capture now admits each live delta record before
+cloning it, with cancellation between records for canonical, adjacency and
+property-projection inputs. Tombstones remain shared COW roots and the inputs
+remain ID ordered. An actual out-of-core candidate test cancels capture before
+any I/O, preserves authoritative identity/WAL/manifest, and retries with exact
+base/delta/replacement/tombstone parity through publication and reopen. The
+complete delta vectors remain retained and individual record cloning has no
+new byte bound. Checkpoint-only overlay steps now expose each physical merge
+or tombstone decision, so canonical, adjacency, property-projection and graph
+projection builders admit and cancel skipped records individually. Ordinary
+owned iterators retain their complete-result behavior and physical errors are
+never hidden by newer deltas or tombstones. A real 512-record base/511-tombstone
+candidate cancels before encoding its survivor: the private file contains only
+the 24-byte canonical header/generation, authority is unchanged and retry/reopen
+returns exactly the survivor. Synthetic step counts, native node/relationship
+factories and physical-error checks cover the step contract. Canonical segment
+hydration still decodes a complete bounded segment per read, and retained-memory
+accounting and cleanup/drop costs remain open.
+
+Checkpoint graph statistics now admit records, labels, property collection,
+index entries and composite key components, path lookup/visits, distinct-set
+retirement and histogram sampling. Sampling consumes ordered values directly
+in at most 1,024-element chunks, preserving the existing endpoint-inclusive
+quantiles without a second complete sorted vector. Basic-count copying and
+retained out-of-core statistics copy/filter groups under admitted entries and
+values. The existing 100,000-visit global path budget and empty truncated output
+remain unchanged; cancellation returns a stopped build rather than publishing
+partial statistics. Tests compare complete results against the existing
+statistics path and independent chain counts, cover histogram thresholds,
+late unsupported groups, scalar/composite index entries, retained stale epochs,
+path-budget truncation, cancellation/permit restoration and real candidate
+retry/reopen in materialized and out-of-core modes. Full fact-set retention,
+individual key/value size, map/vector allocations and error/drop cleanup still
+lack hard byte bounds. Statistics serialization and final runtime adoption also
+remain outside these builder units. No whole-candidate bound is claimed.
+
+Live append-row capture now admits batch traversal and each row before
+copying its table/key ownership. Row payloads remain shared. Sorting uses runs
+of at most 1,024 rows, one admitted heap-merge output record, and one adjacent
+ordering check per unit, preserving table/partition/order semantics and the
+existing row-limit/duplicate/count errors. The candidate calls this controlled
+capture path. Complete captured vectors/runs remain retained; individual key
+size, allocator/drop costs, append segment encoding, compaction, manifests,
+publication and reopening still lack complete builder/resource bounds. These
+capture units do not justify releasing the owner's whole-candidate permit.
+
+Private append artifact publication now binds directory creation, exclusive
+owned temporary creation, 64 KiB writes, synchronization and durable rename to
+the admitted task's I/O waves. Cleanup arms only after creation and disarms
+once rename completes; interrupted earlier temporary evidence is preserved,
+and a lost reply after rename retains the complete published private artifact.
+Ordinary publication keeps its existing writer path and bytes. The controlled
+metadata, segment, validation and mount steps below share the same task.
+Individual schema/key codecs, compaction and retained cleanup/resource
+accounting remain incomplete; publication I/O alone does not establish a
+complete append-build bound.
+
+Append manifest preparation now copies schema/watermark entries and at most
+1,024 prior segment bindings per work unit. Payload encoding admits each schema
+record, watermark and segment entry, copies binary strings/records in 64 KiB
+chunks, and hashes/copies the manifest closure in 64 KiB chunks. The integrity
+closure hashes borrowed header/payload slices without a second complete
+integrity-input buffer. Individual schema cloning and WAL-schema encoding,
+individual schema/key codecs, compaction and reader retention still have
+uncontrolled inner work, and complete buffers lack a hard byte ledger. These metadata units do not establish whole-append-build bounds.
+
+Private append segment construction now scans each partition boundary once,
+admits individual ordering/partition/row/value/descriptor work, and encodes
+variable-width row payloads and escaped keys in 64 KiB source chunks. Overflow
+sample/compression policy and envelope bytes remain unchanged, with compression,
+copying, checksums and digests performed in 64 KiB units. Segment compression,
+payload/directory copies and integrity likewise use bounded chunks; the segment
+body digest hashes borrowed directory/payload slices instead of building a
+second complete body buffer. Ordinary segment/row/key/overflow codecs remain
+separate references. Variable-width key comparison/descriptor cloning, vector
+reallocation, full-buffer retention and Vec-to-Arc conversion still require
+hard byte/time accounting. Append compaction and complete
+schema/key codec, reader-retention and allocation accounting remain open. These operations do not authorize removing the
+whole-candidate permit or claiming a complete append-build bound. Regressions
+compare the complete 2,049-row multi-table/partition/overflow segment and its
+reopened rows against the ordinary encoder, verify large Unicode/NUL keys and
+all scalar row tags, exercise raw/compressed overflow fixtures with cancellation
+at every admitted completion, and stop/retry block/directory/compression/copy/
+integrity steps with a one-operation class limit and four-operation total limit.
+
+Private append publication validation now admits each schema, previous
+binding descriptor, live watermark update, generated watermark, partition
+maximum and row-table lookup. Generated maxima are checked directly against
+borrowed partition keys instead of cloning a singleton schema map for every
+table. Ordinary validation remains the independent result/error reference.
+The regression compares every one of 4,097 generated rows across 37 partitions,
+combines base and suffix watermarks, verifies identity/schema/unknown-table and
+missing/regressed/invalid generated-order errors, and cancels/retries with
+released permits and unchanged prior authority. Individual schema/key cloning
+and comparison, validation allocation/drop, append compaction and reader
+retention still lack complete byte/time control. This validation boundary alone
+does not prove whole-append resource bounds.
+
+Private append generation mounting now reads manifests and complete segment
+integrity in admitted 64 KiB I/O waves. Manifest integrity hashes borrowed
+header/payload slices, and decoding checks each schema/watermark/binding and
+binding pair under a work unit. Segment directories admit each descriptor and
+ordering pair; generation mounting admits each binding and partition watermark
+before validation. The checkpoint candidate uses this path, while ordinary
+readers remain result/error references. Individual schema decoding/cloning,
+variable-width key decoding/comparison, full directory/manifest allocations,
+reader retention and append compaction still lack complete byte/time accounting.
+Regressions compare complete manifest decode/state and corruption diagnostics
+against the ordinary codec, cancel at every actual mount I/O admission and
+representative descriptor/entry boundaries, preserve both published files,
+release all work/I/O leases, and retry to an exact 512-row reopen. No full
+append resource or cancellation bound is established by these mounts.
+
+
+Private append compaction now checks descriptors and payload totals per row,
+reads compressed blocks in admitted 64 KiB I/O waves, and decompresses in 64 KiB
+units. Row traversal, overflow-reference closure validation and hydration have
+separate work boundaries; sorted runs and heap outputs reuse the controlled
+capture sorter. The private path avoids populating serving reader caches.
+Compaction preserves existing row/payload deferral limits, but distinguishes
+work admission/cancellation from decoder budget rejection so a stopped candidate
+cannot silently proceed as an incremental publication. Individual row/key and
+overflow decoding, variable-value cloning, retained buffers and allocation/drop
+costs still need inner byte/time accounting. These boundaries do not establish
+a complete compaction cancellation or candidate memory bound. Full issue
+qualification remains required.
+
+Catalog capture now shares its fixed set of immutable collection roots rather
+than copying every schema name/descriptor under the publication guard. Schema
+mutation detaches only the changed collection, preserving old source and
+candidate identities. The public catalog APIs and serialization inputs remain
+unchanged. This addresses schema-size-dependent capture copying; DDL detachment,
+last-owner destruction and retained-source
+admission still need bounds and foreground release measurements. It does not
+establish a complete capture-time or commit-p99 guarantee.
+
+Store statistics capture and prepared-state adoption now share the advanced
+statistics root. Basic label/type counters and mutable index samples live in
+separate paged COW maps, so updating a sample after capture does not detach all
+histograms and path facts. Public statistics DTOs and checkpoint formats remain
+unchanged. Controlled materialization and prepared-state sealing admit each
+counter/sample and preserve cancellation or QoS rejection without mutating the
+source. Full snapshot/write isolation and out-of-core checkpoint/reopen coverage
+also preserves initial basic-only and retained advanced-statistics behavior.
+This removes database-sized statistics copying from capture/adoption, but page
+directory copies, individual DDL detachment, DTO/output buffers, allocations and
+final-owner destruction still lack complete byte/time bounds and resource
+accounting. These changes do not qualify the entire candidate or commit p99.
+
+The checkpoint V1 text path now validates borrowed search changes in bounded
+ordering runs and encodes individual catalog/statistics fields, vector values
+and captured keys with cooperative work. Hex conversion emits at most 64 KiB
+per unit; formatted fields copy at most 64 KiB through a UTF-8-safe sink without
+allocating a complete formatted line. The ordinary encoder remains an
+independent complete-byte and validation-order oracle. Body/envelope checksums,
+compression, digest calculation and metadata file writes consume controlled
+chunks. The shared metadata publisher exclusively creates its temporary file
+and arms cleanup only after successful creation. Tests cancel every actual I/O
+wave, preserve unowned evidence and old manifest/sidecars, and retry the complete
+decoded image. A cancelled reply after complete rename retains the published
+private artifact. Complete output/intermediate buffers, reallocations, recursive
+value depth, ordered-key output buffers/comparisons and cleanup debt still need hard
+resource/time bounds. This does not establish whole-candidate admission safety.
+
+The private legacy relational image encoder now traverses borrowed schemas,
+rows and overflow closure under cooperative work boundaries. Variable-width
+schema/default/row bytes and payload writes use 64 KiB chunks. File-backed
+overflow reads bypass serving caches, retain registered file identity and verify
+range CRC32C and full overflow SHA-256 in controlled chunks. File publication
+uses exclusive temporary ownership, controlled sync/readback integrity and
+rename, preserving complete private artifacts after lost responses. Captured
+relational search keys reuse the controlled ordered-key encoder, including
+wide Unicode, embedded zero bytes and escaped binary keys. The ordinary codecs
+remain independent complete-byte and error-order references. Regressions cover
+all 512 logical rows, every actual read/publication I/O admission, representative
+CPU/final boundaries, QoS rejection, unchanged source/manifest/sidecars and
+complete retry/reopen. Whole schema/row/output buffers, reallocations and map
+comparisons still need hard byte/time accounting; relational decode/mount,
+row-page/index/overflow publishers and cleanup debt remain incomplete. These
+boundaries do not qualify full candidate resources or final-writer latency.
+
+The private relational reopen path now gives the ordinary parser a controlled
+64 KiB buffered file input. Inspection, header opening and file-identity
+registration acquire I/O admission separately; payload reads/integrity and
+bounded buffer copies release their work and I/O leases between units. Logical
+positions and complete-request truncation checks remain separate from read-ahead.
+Full 512-row/schema/index-posting parity covers both index load modes. Tests
+cancel every actual mount I/O wave and representative/final input units, compare
+13 ordinary corruption/budget diagnostics, deny admission before I/O and retry
+all rows without modifying the source. Parser allocations, UTF-8 validation,
+row/schema validation, page construction, reachability/foreign-key traversal,
+index reconstruction and reader retention still require controls and accounting.
+Read-ahead may discover a physical I/O failure before an earlier malformed
+payload field; both paths must fail closed. Input control does not establish
+a complete mount cancellation, memory or time bound.
+
+The controlled relational parser now validates schema columns/defaults,
+primary/unique/foreign/index metadata and row scalar types under separate work
+boundaries. A borrowed name/position map preserves first-error precedence and
+avoids repeated linear column lookups or cloning column names. Ordinary decode,
+schema and row validators remain independent references. Complete 1025-column
+positions, all row scalar variants, 23 schema-error and six row-error priorities,
+representative/final cancellation and admission denial/retry have focused
+coverage. Variable-width comparisons/diagnostics, parser allocation and UTF-8
+validation, primary-key cloning, row-page construction, index/foreign-key and
+closure traversal, retained maps and drop still need byte/time accounting and
+controls. These validation boundaries do not qualify full mount resources.
+
+Private relational reconstruction now clones primary/index keys through
+64 KiB UTF-8/binary copy boundaries, moves owned rows and postings into capped
+pages, borrows index definitions, and traverses overflow closure and foreign
+keys under separate work boundaries. It avoids collecting all table names and
+avoids detaching/cloning a complete existing index segment before replacement.
+Ordinary decoding and index/foreign-key builders remain independent references.
+Focused coverage compares all 1025 parent and child rows, every unique/declared/
+foreign-support posting, more than one index and posting page, row byte/page
+boundaries, forward/backward ranges and exclusive bounds, nullable unique/FK
+semantics, and primary/unique/declared FK targets in both index load modes.
+Diagnostic priority, representative/final cancellation, admission denial,
+source retention and full retry have targeted coverage. Bulk posting page
+boundaries may differ from the ordinary incremental builder while preserving
+ordered logical contents and existing page caps. Whole decoder buffers and
+UTF-8 validation, map comparisons, allocation/reallocation, directory retention
+and final-owner destruction still need hard byte/time accounting. These
+controls do not qualify whole-candidate memory, time or production admission.
+
+Private relational field decoding now reads/initializes binary values and
+validates/copies UTF-8 through 64 KiB blocks. Up to three incomplete scalar
+bytes carry across blocks; the first UTF-8 failure retains the ordinary global
+byte offset. Whole-field truncation is checked before payload reads, and an
+invalid string still consumes its complete field before cumulative byte-budget
+validation and UTF-8 reporting, preserving ordinary error precedence. Nested
+schema/key/row vectors use separate capacity and per-entry push boundaries;
+overflow payload hashing and optional retention have per-block controls.
+Private row construction shares the decoded owned values vector directly,
+without an Arc-slice allocation and complete array copy. Normal construction
+shrinks host-supplied spare capacity first. Logical values, slice access,
+snapshot sharing and COW isolation remain unchanged. The extra owned-vector
+header changes resident row overhead; both page estimators now include it.
+Focused coverage compares complete fields and a 1025-column schema/row against
+the independent ordinary decoder, valid and invalid split scalars, global UTF-8
+offsets, byte-budget/truncation/input-failure precedence, every overflow hash
+unit, representative/final cancellation, admission denial and full retry.
+Pointer identity verifies owned vector transfer and retained snapshots verify
+COW isolation. Capacity allocation, actual retained capacities, collection
+comparisons, final-owner destruction and source/candidate/retention accounting
+still need the shared hard resource ledger and release RSS/latency evidence.
+These controls do not qualify whole-candidate memory/time or production QoS.
+
+Overflow publication-input validation now streams RAW payloads and Zstd
+output through 64 KiB blocks, hashes the borrowed complete envelope in blocks,
+and retains only CRC32C state plus up to three incomplete UTF-8 bytes. It does
+not construct and discard a complete hydrated value. Header, digest, admission,
+decompression/declared-length, checksum and global UTF-8 diagnostic precedence
+matches the independent ordinary decoder; caller hydration budget is committed
+only after complete validation and a final cancellation check. The checkpoint
+publisher binds validation to its existing admitted task in ordinary, retaining
+base and exact-reference publication modes. Ordinary publisher callers retain
+their independent decoder path. Focused tests compare both codecs/scalar types,
+complete generation artifacts and every reachable value in all three modes,
+corruption/budget/UTF-8 diagnostics, cancellation at each actual validation unit,
+and publication cancellation/denial with unchanged base authority and full retry.
+Zstd workspace/internal execution, retained input buffers, descriptor reads,
+sorting, publication I/O, temporary-file ownership and cleanup debt still need
+their own controls and hard resource accounting. This is validation coverage,
+not whole-publisher memory/time, power-loss or production admission qualification.
+
+Actual row-root construction now shares the same admitted task. Visit each
+base descriptor through controlled fixed-record and 64 KiB key reads, complete
+binding CRC/SHA validation, capped comparisons and copies; release every CPU and
+I/O lease before nested callbacks. Root inventory/merge bookkeeping processes
+individual entries, transfers the deletion set instead of cloning it, and
+compacts fixed-size generation accounting one entry at a time. Root key and
+136-byte descriptor writes and artifact integrity, flush and sync use separate
+controls. Binding integrity remains generation/ordinal/prefix/lower/upper exact,
+and ordinary root readers/writers remain the complete-byte/error references.
+Targeted regressions build all 1025 pages through three ordinary publications
+under the unchanged default 512 MiB dirty-publication budget, then compare all
+1025 descriptors and their complete page values,
+callback re-entry, each actual CPU/I/O cancellation and denial/retry, twelve
+corruption/range/truncation cases, wide common-prefix key reads/hash/comparisons,
+and complete incremental artifacts/all 1024 survivors and physical occupancy.
+Schema clone/equality, initial reader opening, relocation page reads/decoding,
+preflight sort/closure scans and manifest/selector publication remain separate
+work. Collection comparisons/allocations, retained capacities, destruction,
+disk/FD/cleanup debt and shared hard resource bounds remain incomplete. This
+partial binding does not authorize production per-unit admission or prove the
+whole-candidate resource, fault/platform or release-performance requirements.
+
+Row-root manifest generation now binds schema shape validation, schema encoding,
+table/occupancy accounting, key-bound comparisons, field copies and complete
+root/manifest integrity to the admitted task. The existing index-shadow schema
+identity is hashed directly from borrowed fields without a complete schema
+identity buffer; zero-escaped text/binary defaults use a reused 64 KiB scratch
+buffer, including all-zero inputs. Ordinary and controlled row-root manifest
+encoding share the header, occupancy, table and field grammar; optional work
+hooks preserve the controlled units and chunked copying/hashing. The existing
+full-byte, digest, decoded-value and diagnostic regressions exercise both APIs.
+Encoded-buffer admission and the remaining codec/range paths are still open. The canonical
+manifest binding is computed before immutable publication. Focused regressions
+cover all 1025 tables, columns, unique/foreign/index entries and scalar/default
+forms, wide Unicode/zero fields, all actual encoding/escape/hash cancellation
+points, admission denial with unchanged source and full retry, and 24 invalid
+metadata/schema/budget diagnostic cases. These synthetic metadata fixtures do
+not qualify physical page recovery; complete publisher/recovery suites provide
+separate evidence. Preparation, publication and reader controls are described
+separately below. Collection comparisons, relocation/page validation, allocator/
+retention/drop and shared hard disk/FD/cleanup bounds remain open. These controls
+are insufficient to enable production per-unit admission or close the whole
+issue's resource, lifecycle, power-loss/platform and release-performance gates.
+
+Actual row-page file creation, capped 64 KiB manifest/selector writes, file
+synchronization, immutable publication and latest selection now acquire separate
+CPU/I/O controls. An admitted publisher defers on a contended publication lock
+instead of blocking. Publication completes its existing synchronization barrier
+once started; cancellation after rename retains the complete immutable prefix,
+and cancellation after latest selection may lose the response while the complete
+generation remains selected. Every actual CPU and I/O cancellation point in all
+three publication modes verifies the selected authority, complete retained bytes,
+recoverable complete generations, exclusive temporary cleanup and full retry
+with a fresh generation whenever immutable evidence already exists. Separate
+regressions cover lock contention and loss of the selector response, then reopen
+and compare all rows and physical generation ownership. Preparation and reader
+controls are described separately below. Relocation reads/decoding, retained
+capacities, allocator/drop costs and shared
+hard disk/FD/cleanup-debt bounds require separate qualification. These file
+controls do not enable production per-unit admission or qualify the whole
+lifecycle, modeled power-loss/platform behavior or release performance.
+
+Row-page preparation also binds schema validation/digests, borrowed schema
+equality and schema copying, deletion inventory, dirty-page checks and overflow
+reference discovery to the admitted task. Schema equality retains the ordinary
+total-order semantics for float defaults, including NaN payloads and negative
+zero. An in-place heap sorts dirty-page bounds through capped comparisons and
+fixed-size swaps; equal bounds still fail the existing overlap check. Root
+resource preflight accounts each table/page entry separately. Overflow closure
+lookup admits each fixed 120-byte descriptor read and search step without
+hydrating values or holding a lease across nested work. Reference regressions
+compare all 1025 schema entries and sorted pages, scalar/default values and
+every field's negative control, rejection diagnostic priority and absence of
+candidate artifacts, actual cancellation/denial/full retry, and all 1025
+referenced values. These controls do not bound map/string comparisons, vector
+capacities, allocator/reallocation/destruction, relocation, or the shared
+retention/disk/FD/cleanup ledger. Reader controls are described separately below.
+The complete publisher
+and physical recovery suites remain separate from codec/sort fixtures; default
+availability, lifecycle/model/platform and release-performance gates stay open.
+
+Row-root reader opening and decoding bind to the admitted task. Latest, generation-specific
+and canonically bound manifest opens now pass the checkpoint task through file
+inspection, capped reads, complete integrity, table/schema decoding and artifact
+length inspection. Borrowed schema decoding reuses the ordinary field decoder
+with controlled 64 KiB reads and schema validation. UTF-8 decoding carries at
+most three scalar bytes across blocks and retains global error offsets. The
+automatic preparation path uses these controls for its captured row-page base
+and private compaction report; ordinary recovery readers remain independent
+references. New metadata fixtures exercise complete values, corruption and
+binding diagnostics, cancellation and denial with unchanged source/full retry.
+Nested schema-shape and digest validation retain typed work failures through
+the existing codec diagnostics: cancellation and QoS denial abort with admission
+errors, while ordinary invalid metadata retains its original corruption class.
+All eight reader fixtures and the complete 58-test row publication suite pass.
+Synthetic metadata does not prove
+physical page recovery; complete publisher/recovery suites provide separate
+evidence. Full manifest/schema buffers, actual capacities, allocator/drop,
+relocation/page-view decoding and
+shared memory/disk/FD/cleanup bounds remain open. This does not enable production
+per-unit admission or complete any whole-issue lifecycle, platform or benchmark
+gate.
+
+Actual automatic row-page preparation now binds page encoding and writes to
+the admitted checkpoint task. Ordered primary keys, each scalar/value directory
+entry, row/page directory entry, variable payload/bound copies and integrity
+hashing have separate controls, with at most 64 KiB per copy/hash unit. Full slot
+padding initializes in blocks after one reservation; page I/O and its artifact
+hashing, flush and sync use separately released I/O waves. Dirty-page bounds
+also use controlled keys, including relocated pages. The ordinary encoder/writer
+remain independent complete-byte and diagnostic references. Tests cover all
+1025 rows/columns, every scalar type, wide Unicode/zero bytes/common-prefix keys,
+complete artifact parity in all three modes, each actual encoding/writing CPU
+and I/O cancellation, denial, unchanged source authority and full retry.
+Allocation and growing-buffer recopy during reservation, actual retained
+capacities and destruction remain incomplete. Schema/digest, descriptor
+merge/sort and publication controls are described above. Page-view validation,
+relocation reads and cleanup debt still need controls and shared hard resources.
+This partial binding does not authorize production per-unit admission or claim
+whole-publisher memory/time, power-loss or release performance qualification.
+
+Row-page publishers now exclusively create and own their five temporary
+artifacts, cleaning only successful creates before releasing their publication
+lock. Writers receive the already owned files rather than reopening/truncating
+paths. Every preexisting required temporary fails explicitly; non-selecting
+candidates preserve an unrelated latest-selector temporary. Failure cleanup
+retains renamed immutable artifacts. Tests cover each of five temporary stages
+across ordinary persistence, compaction and latest selection, all selected base
+artifact bytes and rows, full immutable candidate hydration and retry, and every
+pre-selector fault phase with unrelated evidence retained. This local ownership
+contract does not bound row encoding/merging, allocator/drop, disk/FD usage or
+cleanup debt, and it is not a power-loss or production-admission qualification.
+
+Overflow publishers now create each temporary artifact exclusively and record
+cleanup ownership only after that create succeeds. Cleanup runs before the
+serialized publication lock is released and never removes an unowned temporary
+or a renamed immutable artifact. A non-selecting candidate also retains an
+interrupted latest-selector temporary rather than deleting unrelated evidence.
+An existing temporary causes an explicit creation failure when that path is
+required. Already renamed generation artifacts survive a later selector-create
+failure. Ordinary and controlled publication share this ownership rule; input
+validation still has an independent ordinary decoder reference. Targeted tests
+cover every temporary stage in all three candidate modes plus latest selection,
+both validation paths, base-authority bytes, unpublished cleanup, complete
+retained generation recovery and retry, and QoS denial before claiming evidence.
+Cleanup failures leave disk evidence, but shared maintenance-debt accounting,
+retry, disk/FD admission and bounded publication I/O remain incomplete.
+
+Overflow publication now binds input ordering, fixed descriptor traversal,
+artifact construction and publication to the checkpoint work context. Controlled
+ordering uses an in-place heap with at most three fixed digest comparisons and
+one input-record swap per primitive, avoiding an entire sorted-output buffer.
+Descriptor reads/encoding, exclusive file creation, 64 KiB writes and integrity,
+file synchronization and immutable publication acquire individual CPU/I/O
+boundaries; waves end before nested validation/builders. A controlled publisher
+defers on a busy publication lock instead of entering a blocking lock wait.
+Latest-selector reads admit the ordinary size budget, reject malformed lengths,
+and read/validate the fixed 208-byte manifest through controlled operations;
+physical read-error priority can differ from the ordinary decoder while both
+fail closed. A cancellation after rename retains published private evidence;
+retry uses a fresh generation. Cancellation after a completed latest selection
+can lose the response while the complete result remains selected and recoverable.
+Targeted regressions compare complete bytes/all 1025 values, first-duplicate
+diagnostics, sort cancellation, every actual I/O wave in all three candidate
+modes, unchanged base authority, cleanup and complete fresh-generation retry,
+and completed selection after a lost reply. Exact-compaction reference iteration
+now admits each in-memory entry or capped-buffer spill record independently.
+Spill merging uses an explicit heap with fixed comparisons/swaps per unit;
+visitors run after releasing CPU and I/O leases so nested builders can acquire
+the same scheduler. Ordinary iteration remains an independent full ordering,
+deduplication and corruption-error reference. Regressions cover all 1025 unique
+references with duplicates across multiple runs, nested admission, each actual
+unit and I/O-wave cancellation with unchanged source files and full retry,
+metadata conflicts and spill corruption, early-stop and callback cancellation,
+and complete exact-publication values/three artifact images for a spilled closure.
+Sort/spill construction, collection capacities, retained FDs, final-owner cleanup
+and shared resource accounting remain incomplete. The controlled encoded-extent
+read now initializes,
+reads and hashes at most 64 KiB per CPU/I/O unit and verifies the complete CRC/SHA
+before returning the owned Vec. Exact publication borrows that vector directly
+instead of converting it into an Arc slice with another whole-value copy. The
+ordinary reader remains an independent checksum/error reference. Regressions
+compare every input byte, range/metadata/CRC/SHA diagnostics, each actual read
+unit and I/O-wave cancellation with released leases and unchanged authority,
+denial before I/O and full exact-compaction values/artifact bytes. A complete
+encoded value is still retained and its allocation occurs before block reads;
+these controls do not bound allocator latency or actual retained capacity.
+Retained inputs,
+allocator/capacity costs, final-owner destruction, disk/FD/cleanup debt and the
+shared hard resource ledger remain incomplete; these primitives do not qualify
+whole-candidate resources, production per-unit admission or release performance.
+
+Ordinary and metadata-only checkpoint overflow-input collection now consume the
+admitted work context in the actual automatic preparation path. Empty tables,
+empty dirty-page lists, rows and each scalar field have separate boundaries;
+fixed-digest collection preserves conflict/reachability diagnostics and sorted,
+deduplicated input bytes. Inline inputs retain their existing shared ownership,
+while file-backed inputs with a selected base remain references without I/O.
+First-generation materialization uses the captured-identity private reader,
+bypasses serving caches, and preserves read-before-accumulated-byte-admission
+ordering. A reserved output vector avoids growing-buffer recopy during reads;
+detached shared bytes initialize at most 64 KiB per unit in a private uninitialized
+Arc and convert only after every byte is initialized. Cancellation drops the
+private representation before it can be exposed. Targeted tests compare all
+1025 ordinary/delta inputs, shared inline pointers, conflict/closure/source
+errors, every actual collection/copy/read unit and I/O cancellation, full retry,
+all file bytes and unchanged serving-cache pins/counters. Private reads can
+surface physical failures hidden by an ordinary cache hit. Map allocation and
+mutation, complete retained capacities, allocator latency, destruction and
+shared memory/disk/FD/debt accounting remain incomplete; these boundaries still
+do not authorize production per-unit admission or a whole-candidate resource
+or release-performance claim.
+
+`HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
+two schema/data transactions under both durability policies. Its complete
+configured safety graph passed TLC (34,275 distinct states). Five deliberately
+incorrect protocol controls each produce their expected counterexample; two
+additional witnesses demonstrate relaxed acknowledged-write loss and recovery
+after a lost synchronous reply. The model includes independent loss/torn/write
+reordering of unsynchronized WAL fragments and checkpoint/catalog artifacts,
+selector uncertainty, pinned readers and cancellation lease ownership. It
+assumes completed synchronization preserves covered bytes and identity checks
+detect incomplete/corrupt artifacts. This is bounded protocol evidence, not
+Rust refinement, a platform synchronization proof, liveness or runtime fault
+campaign coverage. See `docs/tla/README.md` for exact commands and assumptions.
+
+Background maintenance now carries a shared allocation controller through task
+clones and children. Explicit allocations charge their requested capacity and
+the concrete ownership lease before allocation; a smaller task ceiling does not
+reset the shared ledger. Critical memory pressure rejects new allocations.
+Closing execution rejects future allocations and releases CPU/task/I/O slots,
+while the complete original governor and process-memory reservations survive
+until the last actual allocation lease drops. This deliberately conservative
+retention does not readmit execution or create another memory reservation.
+Foreground admissions retain their existing controller construction path.
+The facade exports the typed memory-controller, lease and error contracts.
+
+Controlled manifest reads use a private byte buffer that reserves its actual
+capacity before fallible allocation and rejects allocator overgrant. Growth
+reserves the complete replacement while the old buffer remains charged, copies
+in 64 KiB units and destroys old bytes before releasing their lease. Failed
+appends restore the original byte length; all copied source bytes survive
+cancellation and a complete retry without leaking either capacity. Existing
+metadata/file-size limits and source bytes remain unchanged. The encoded input
+buffer holds its lease through decode and releases it after its bytes die.
+Allocator bookkeeping/rounding and allocation/destruction latency remain stated
+platform assumptions requiring RSS and release measurement evidence.
+
+Immutable overflow copies now keep their exact Vec capacity and concrete shared
+cell in one allocation lease. Shared input clones retain that same lease, with
+no API to detach the allocation; payload bytes are destroyed before the lease.
+The shared cell accounts the pinned standard Arc layout's two reference counters;
+its allocator metadata/layout and final deallocation remain platform assumptions.
+The controlled file-backed collector carries these owners through a dedicated
+checkpoint-write input. Borrowed inline inputs and ordinary publication remain
+independent. Logical equality compares references and complete encoded bytes,
+so ordinary and admitted inputs produce identical immutable files.
+
+Actual-governor regressions retain empty, single-byte and 64 KiB+1 copies after
+execution closes, deny empty shared ownership under a one-byte ceiling, and
+reject two overlapping complete buffers by exactly one byte before retrying
+every byte. Both original ownership regressions fail against the former untracked
+Arc copy. A file-backed collector/publication regression clones every admitted
+input, compares all three immutable artifacts with the ordinary publisher,
+closes execution, hydrates every value through ordinary generation open, and
+checks the reservation survives until the final inputs drop. Seven byte-buffer,
+six overflow-input and 32 publisher tests pass with strict workspace Clippy;
+every preceding copy cancellation/denial cut and fixture remains exercised.
+The first additional overlap probe bypassed the shared controller by exceeding
+the static task ceiling; its failure is retained, and the corrected probe uses
+the unchanged ceiling to observe shared usage. Source values, limits and the
+one-byte denial assertion are unchanged. Input vectors, reference maps and
+source ownership still require their own admission; this
+does not qualify the complete candidate or enable production per-unit work.
+
+Private file-range reads now admit both the complete return capacity and the
+simultaneous scratch capacity before fallible allocation. Scratch initialization
+and payload copying use 64 KiB work units. The read unit and I/O wave end before
+the separately admitted copy starts, including under a one-operation limit.
+Returned bytes retain their allocation lease after execution closes; the private
+legacy overflow encoder uses an owning borrowed/allocated value instead of
+detaching that lease into a raw Vec. Inline borrowing, captured file identity,
+digest diagnostics and serving-cache bypass remain unchanged. These buffers do
+not account for file-handle retention, parser/maps or the entire candidate.
+
+Two actual-governor regressions fail against the former raw range Vec: its
+reservation disappears while returned data remains alive, and scratch overlap
+is never denied when only the complete payload fits. Their byte-identical
+fixtures/assertions pass after correction. Further regressions cancel every
+completed unit of a three-chunk read and fully retry all bytes, and retain typed
+digest-mismatch/truncated-file diagnostics without leaking buffers or I/O slots.
+The initial test fixture omitted its declared I/O wave width; that failure is
+preserved separately from the corrected before/after ownership reproductions.
+Reader, buffer, overflow collector and legacy image tests and strict workspace
+Clippy pass on the recorded code snapshot. Allocator metadata/latency, complete
+resource qualification, supported-profile/full regression and release evidence
+remain separate gates; no whole-issue completion follows from these tests.
+
+Private overflow input lists now admit their complete element capacity, concrete
+shared cell and pinned Arc counters before fallible allocation. Immutable clones
+and owned iterators retain the same list allocation after execution closes;
+they cannot detach its capacity into a raw Vec. Elements retain their existing
+inline/shared-byte ownership independently. The collector produces digest order
+from its reference workspace; checkpoint publication checks that immutable order and
+duplicates before any artifact I/O. Ordinary Vec collectors/publication keep
+their existing signatures and sorting path. Two hidden checkpoint publication
+methods accept the retained list directly. Allocator layout/metadata, final Arc
+header deallocation and allocation/destruction latency remain assumptions.
+
+Two actual-governor regressions fail against the former raw input Vec and pass
+with identical bodies after correction: retained inline-only inputs lose their
+reservation after task close, and a one-byte task never denies the nonempty list.
+Additional tests retain a complete sparse-delta iterator through exhaustion and
+task closure, verify clones consume no new list capacity, and reject overlapping
+lists by exactly one byte before a full retry. Ten collector, 32 ordinary/private
+publisher, seven buffer, 24 reader and eight legacy image tests pass with strict
+workspace Clippy on the recorded code snapshot. Ordinary sort
+scratch, mounted/captured state, disk/FD and cleanup debt remain separate gaps;
+this does not enable production per-unit admission or qualify the full candidate.
+
+Controlled full and sparse-delta overflow collection now replaces its untracked
+reference BTreeMap with an admitted fixed-capacity reference vector. A bounded
+count pass determines the complete capacity including duplicate occurrences;
+allocation is fallible and rejects allocator overgrant. In-place heap sorting
+compares at most three fixed-size references and swaps one pair per work unit,
+without allocating map nodes or sort scratch. Separate bounded deduplication
+preserves complete conflicting-metadata diagnostics and ordinary digest order.
+The reference capacity remains charged through input allocation and collection,
+then dies before its lease is released. Inline/shared source bytes still have
+their independent ownership; source retention is not established by this vector.
+
+Two actual-governor regressions fail against the untracked map and pass with
+identical bodies after correction: the live reference working set is absent
+from the measured peak, and a ceiling that covers only retained inputs wrongly
+allows the complete build. A further test cancels every actual completed full
+and delta collection unit, verifies the same real reservation has no leaked
+capacity, and retries every result. The existing overlap fixture now includes
+the measured simultaneous reference capacity; its exact requested-byte/one-byte
+shortfall assertion and all source/clone/full-retry checks remain. Its initial
+failure under the new truthful peak is archived. All 13 collector tests pass,
+including 1025 distinct values, duplicate references, every former cancellation
+cut, file publication and complete ordinary diagnostics. Allocator latency,
+remaining builders/maps/source ownership and disk/FD/cleanup debt, full profiles,
+regressions/fuzz and paired release performance remain qualification gates.
+
+The controlled schema digest now admits its 64 KiB escaped text/binary scratch
+before fallible allocation, initializes it in bounded units and retains its
+lease through the final terminator. Scalar defaults admit a fixed 32-byte
+capacity before fallible allocation and use the unchanged ordinary codec; the
+buffer drops before its lease. Null, boolean, integer, floating-point and UUID
+encodings cannot grow that capacity. Unsupported overflow defaults retain the
+ordinary diagnostic even when the available memory cannot admit a scalar buffer.
+Borrowed schema fields and the ordinary identity bytes remain unchanged.
+
+Two actual-governor regressions fail against the former untracked scratch and
+scalar Vecs and pass with identical bodies after correction. Five focused tests
+cover one-byte scratch shortfall, every actual cancellation unit and full retry
+on the same reservation, critical-memory-pressure recovery without readmission,
+all scalar forms, empty and multi-chunk binary values, Unicode/zero escaping,
+source identity and unsupported-default diagnostics. Source schema/map ownership,
+allocator metadata/latency, other output buffers and complete candidate resources
+still need separate qualification. These tests do not qualify the full issue.
+
+Private checkpoint WAL catch-up now admits the complete framed output capacity
+before fallible allocation. A constant-time length calculation includes every
+fragment header, the first-block boundary and any zero trailer, including empty
+first fragments. Per-block CRC and separate bounded append units preserve the
+ordinary framing bytes without nested local permits. Output retains its memory
+lease through actual writes, which release their I/O wave between 64 KiB blocks,
+then drops before replay hashing and graph application. The ordinary encoder
+and reader remain independent full-byte/recovery references.
+
+A real candidate regression fails against the former untracked framed Vec: a
+one-byte admitted task still replays a large captured suffix. Its identical body
+passes after correction, rejects without modifying old authority and fully
+retries from the same pinned base before ordinary publication/reopen. Five
+focused tests cover all 32,768 block positions, fragment/generation/empty-record
+boundaries, exact one-byte denial, retained output after execution closes and
+every actual framing cancellation unit with full retries on the same reservation.
+A counting adapter delegates to the actual governor's I/O controller: every
+large-suffix I/O cut preserves source WAL/manifest identity and fully retries on
+the same admission, with no residual memory or I/O slots. The adapter's first
+compile failure remains archived separately. The framing correction's exact
+committed tree `e35c14c3e7ca48a25c666e159112e667b22376ab` passed strict workspace,
+minimal native and WASM profiles, 31 related tests, the complete storage suite
+(1250 passed, 29 ignored), owner/concurrent/graph/pipeline/cascades regressions
+and all 96 required fuzz tests, actually executed without cached results.
+Those checks qualify that correction rather than the complete issue. Payload decoding,
+replayed graph/schema/append state, source retention and final sealing still have
+their own resource/work-control gaps; framed output alone does not authorize
+production per-unit admission or establish whole-candidate bounds.
+
+Checkpoint suffix payload encoding now counts its exact wire length without
+allocating nested operation, property or value buffers. It admits the complete
+output before fallible allocation and writes borrowed fields directly, with
+bounded validation, metadata and 64 KiB byte-copy units. Counting visits each
+nested message once; emission may recount its descendants to write their length
+prefixes, so traversal work scales with the bounded value depth rather than
+exponentially. The ordinary encoder remains an independent complete-byte
+reference. Canonical depth/length limits and invalid-value diagnostic priority
+remain unchanged. The payload retains its allocation lease while framed output
+coexists, hashes in bounded units, and drops before applying replayed state.
+
+A genuine candidate regression demonstrates the previous unaccounted overlap:
+a reservation sufficient for the complete framed output incorrectly succeeds
+while its simultaneously live encoded payload is uncharged. The identical
+regression now rejects without changing source WAL/manifest identity and fully
+retries from the same pinned base before ordinary publication/reopen. The payload
+correction is qualified at commit `e883f9f8d8834806edaa28a631179d5d36b2f1e1`
+(tree `6e02de549cb26a482d5e19d5559d79f35b4b3f42`): all four supported lint
+profiles, complete storage/owner/concurrent/graph/pipeline/cascades regressions
+and all 96 mandatory fuzz targets passed. This evidence precedes the physical
+reader correction below. Decoded cursor values and replayed/retained runtime
+ownership are separate gaps; this payload correction does not remove the
+whole-candidate local-operation limit or qualify default sustained progress.
+
+Captured suffix reads now use an admitted physical reader with a 32 KiB input
+buffer, rather than untracked BufReader/block Vecs. Fragment chains retain their
+capacity leases across block reads and into returned records. Geometric growth
+admits simultaneous old/new capacities before bounded copying; declared record
+limits are checked before allocation. File opening, seeking and each bounded
+read use the owner's actual I/O reservation. The same validated file handle is
+retained through the captured interval, with at most one preceding block and no
+reads of later appends. CRC, sequence, stale-generation, torn-tail and corruption
+events retain the ordinary reader's diagnostics and complete byte offsets.
+
+A real candidate governor audit fails against the former reader: its first
+record-read wave still exposes the entire working reservation, before any
+payload/framing output is allocated. The identical regression passes with
+admitted input ownership and complete source identity/publication/reopen checks.
+Ordinary-reader damage/boundary parity, exact one-byte input-overlap denial,
+retained-record ownership and every actual CPU cancellation/retry unit have
+focused checks. A retained record holds the shared admission envelope after
+execution closes; released input-buffer capacity is separately observable on
+the same task, and the envelope returns when the last record drops. The first
+retention fixture incorrectly expected the envelope snapshot to show only the
+record's working bytes; its failure is archived and the corrected assertion
+also checks the actual returned input capacity. Supported-profile/full-suite/
+fuzz qualification remains required. Decoded WalOp and replayed/retained runtime
+allocations, complete sealing work and source ownership remain separate gaps;
+this reader does not authorize replacing whole-candidate QoS admission.
+
+The broader cancellation suite exposed a fixture tied to the fifth I/O
+acquisition as the boundary after one replayed transaction. The controlled
+reader adds an admitted seek and block read, so the fifth acquisition is now
+the first candidate write. The archived failure stopped before that transaction
+was applied. For this single-block fixture, the sixth acquisition is the second
+candidate write; cancellation there preserves the original requirement that
+exactly one transaction has been applied. The epoch, partial-replay rejection,
+source authority, cleanup and complete ordinary-reopen assertions remain
+unchanged. The corrected reader tree passed four supported profiles, all required
+complete regression commands and all 96 actually executed local fuzz targets.
+
+Checkpoint suffix decoding has a cooperative allocation backend, while ordinary
+decoding retains its existing allocation behavior. Both backends share operation
+dispatch, field identities, required-field order and enum conversion in
+`wal/binary/op_decode.rs`. Backend-specific allocation, field inventory, value
+and predicate decoding remain explicit; envelope/value decoding and other
+checkpoint codec copies still need consolidation or broader qualification.
+A deterministic field-order and mutation regression exercises all 28 operation
+codes in 8552 cases. It preserves repeated-field order while moving field groups,
+adds unknown varint/fixed64/byte fields, duplicates individual fields and mutates
+each body byte. Both allocation backends must agree on complete re-encoded
+records or corruption diagnostics. Existing cancellation and retained-memory
+regressions continue to exercise the controlled backend independently of this
+shared dispatch. This does not complete the broader codec/resource acceptance. Each transaction operation and field scan checks
+the admitted task. The field inventory borrows input slices instead of storing
+duplicate strings, varints and message descriptors. UTF-8 validation and owned
+string/binary copying use at most 64 KiB source chunks, carrying at most three
+incomplete UTF-8 bytes between chunks. Error offsets remain relative to the
+complete wire string. Vector growth moves values in bounded chunks rather than
+letting an implicit large reallocation copy a complete list or operation array.
+
+A genuine file-backed cursor regression observed only nine work units while
+decoding a 1057-operation transaction. Its unchanged full-byte/source/EOF and
+real-governor release assertions now pass with at least one unit per operation.
+Focused tests compare all op kinds, values, deep/wide Unicode, unknown/duplicate
+fields, truncation and complete diagnostics with ordinary decoding, and cancel
+every actual classified unit before fully retrying. Work cancellation/admission
+errors remain execution failures rather than corrupt-record events. An initial
+combined fixture incorrectly nested an existing batch; its failure is retained
+and individual batch cases remain while the combined fixture uses flat children.
+The cooperative decoder passed four supported profiles, all required complete
+regression commands and all 96 actually executed local fuzz targets on tree
+`10b0f6e4b2b81b2388f1da1b5904d58977bee973`. Internal map comparisons, standard
+Arc finalization and destruction/cleanup still require resource/work
+qualification. This decoder does not authorize production per-unit admission
+or remove the default owner's whole-candidate operation limit.
+
+Controlled decoding now admits String, binary and vector capacities before
+allocation, including retained inventory cells and pinned Arc counters. Vector
+growth and Vec-to-Arc conversion admit simultaneous old/new capacities; the old
+buffer lease returns only after the old allocation is destroyed. The concrete
+governor independently charges its permit payload. Allocator metadata/rounding,
+standard Arc conversion latency and destruction remain platform assumptions.
+
+A private decoded-record wrapper retains these leases with its owned values;
+ordinary decoding remains unchanged. Replay installs ownership in the candidate
+runtime before moving any values. Successful and partially failed replay both
+keep moved values admitted. Runtime snapshots share the persistent inventory
+without copying cells; inventory destruction is iterative, without allocating
+scratch or recursively dropping a long unshared chain. Conservative inventory
+metadata and overwritten decoded values remain charged until the last owner.
+
+The unchanged genuine real-governor regression previously observed zero admitted
+bytes after task closure while wide decoded string/binary values still lived.
+It now keeps the admission envelope until record destruction. Thirteen focused
+tests also cover exact one-byte denial and full retry on the same reservation,
+actual vector/Arc capacity release, runtime and COW-snapshot retention, injected
+partial replay failure, allocations preceding a later corrupt record, critical
+memory pressure recovery and every actual classified cancellation unit. An
+initial remaining-capacity helper exceeded the static task ceiling and bypassed
+the controller ledger; its two failures are archived. The corrected helper
+requests exactly that ceiling to reach the real controller, preserving all
+original boundary assertions. The decoded-memory and 1057-operation before-fix
+regression files remain byte-identical.
+
+The broader reader/framing/payload audits originally required all working memory to return
+immediately after catch-up, while the candidate still owned the decoded suffix.
+Four unchanged checks failed at those release checks with decoded ownership enabled;
+their sources and complete failure log/hashes are archived. The revised audits keep
+the original before-I/O charging, full data/source identity, file-authority,
+complete release and ordinary-reopen assertions. It additionally requires the
+wide decoded payload to remain charged both in the candidate and after serving
+runtime adoption, and checks returned working capacity only after both runtimes
+are destroyed. Every original I/O cancellation cut and same-reservation retry
+remains; final publication closes the adopted runtime before checking complete
+release. The full zero-slot/zero-memory checks still follow task closure, without
+changing budgets, cases or deadlines.
+
+The full owner suite also found an admission-zero assertion immediately after
+worker stop, before the adopted serving runtime was destroyed. Its complete
+failure evidence and original fixture are archived. The corrected audit requires
+zero task/CPU/I/O slots after stop while the adopted epoch-3 runtime and its three
+nodes remain live and charged; it preserves the original zero-memory check after
+closing that runtime and the full ordinary-reopen property checks. All three
+prefix seals, foreground writes, group flush, base-byte checks, budgets and
+deadlines remain unchanged.
+
+Decoded property maps and nested map values now admit standard-library node
+storage before insertion. A stack-local counter covers the pinned Rust 1.97.1
+node layout and insertion splits separately from key/value heap buffers. The
+bound includes internal child pointers, layout padding, the root and a newly
+allocated empty split node; other insertion-path nodes hold at least four keys.
+The allocation inventory keeps this coverage through record moves, replay and
+snapshots. This relies on the inspected pinned standard-library implementation;
+allocator rounding/bookkeeping and insertion/comparison latency remain platform
+assumptions. It does not change the ordinary WAL decoder or wire format.
+
+The unchanged actual-governor empty-key/int-value regression previously decoded
+a live nonempty map with no string/vector buffers and zero admission after task
+closure. It now retains the envelope until record destruction. Seventeen focused
+decoder tests pass, including exact one-byte node-capacity denial and full retry
+on the same reservation, 1057-key property/nested-map split growth with complete
+encoded-byte parity, and cancellation at every actual classified unit for both
+map routes. Full supported-profile and regression/fuzz qualification is pending.
+
+Replay-created and cloned graph/catalog/relational/append allocations, source/mounted ownership,
+complete cleanup and sealing resources remain separate gaps. These focused
+ownership checks do not establish a complete working-set bound or qualify
+default sustained progress.
+
+Checkpoint-record replay now admits each leaf WAL operation separately
+and checks cancellation between replay phases and
+before publishing the transaction epoch. Ordinary recovery retains its existing
+path. An unchanged real-governor/local-QoS regression applied all 1057 graph
+mutations but observed only 12 inventory-transfer work units before correction;
+it now requires at least one admitted replay unit per mutation. This narrows the
+replay control gap without enabling per-unit admission for the automatic owner.
+Replay pre-scans, search capture, index backfills, individual-operation copies,
+allocations and destruction still need complete resource/time qualification.
+
+The relational change-capture pre-scan now admits each visited WAL operation
+and checks cancellation before entering a relational codec. A genuine late
+corruption regression visited 1057 operations with zero admitted scan units;
+the unchanged regression now passes. Related tests cancel all 1058 actual
+visits before any graph, catalog or changefeed mutation and fully retry on the
+same governor reservation, preserving ordinary complete graph/changefeed
+results. This controls traversal between records; relational codec interior
+loops and allocations, search-neighbor traversal and delta estimation remain
+separate gaps. It does not change the production owner operation limit.
+
+Private replay search capture now traverses operations, every cached
+relationship before filtering, and output entries with cancellation checks.
+The ordinary capture path remains independent. Two unchanged regressions
+reproduce 1057 neighbors with only two work units and cancellation arriving
+after the label mutation; both now pass. Related coverage compares complete
+graph/changefeed results for both relationship directions, document-ID updates
+and relationship deletion, cancels every actual unit with same-reservation
+retry, and covers a 1057-relationship nonmatching prefix. Collection allocation,
+document-ID formatting, relational normalization, log trimming and uncached
+source coverage still need complete resource/time qualification. This traversal
+correction does not authorize production per-unit owner admission.
+
+Private checkpoint replay now admits out-of-core delta-estimation visits to
+each operation, property and nested value. Its insertion-only touched-ID trees
+reserve pinned Rust 1.97.1 node coverage before insertion and keep those leases
+until scratch destruction. Ordinary admission remains the independent reference,
+including duplicate IDs, saturating arithmetic and exact limit diagnostics.
+Two unchanged real out-of-core regressions previously estimated 1057 operations
+or 1057 nested values before rejection with zero admitted work units; both now
+pass. Related coverage cancels every actual replay unit, compares complete graph,
+relationship, catalog and changefeed results, and fully retries after cancellation
+or local-work/memory denial on the same governor reservation. Scratch availability
+returns to its measured baseline. Mounted-record hydration, allocator rounding
+and latency, cleanup latency and complete replay/candidate ownership remain
+separate gaps; these controls do not enable production per-unit owner admission.
+
+Private checkpoint canonical point reads now admit captured range input,
+scratch and I/O/copy/hash waves, and visit every framed record before ID
+filtering. Successful-read probes explicitly reserve one I/O slot, matching
+the unchanged production owner; separate zero-slot coverage requires denial
+before metadata lookup. The original zero-slot success fixture and its failed
+first correction remain archived alongside the corrected 1057-record/4096-byte
+proof and its genuine before-fix failure. Work denial/cancellation preserves
+source health and its work-error classification; physical failures retain
+ordinary shared-source poison behavior. Descriptor/cache traversal and ownership,
+FD/disk admission and cleanup still need complete controls.
+
+Private canonical record decoding now visits labels, properties and nested
+values, admits strings/bytes/list capacity and insertion-only tree coverage
+before allocation, and retains those leases with the actual temporary decoded
+record through production delta estimation. Dictionary-key copies validate and
+copy UTF-8 in bounded chunks. Property-spill reads use admitted captured input
+and scratch instead of serving-cache block/Arc value allocation; complete block
+framing is checked under per-value units. Ordinary canonical/spill decoding
+remains independent. Two genuine before-fix probes decoded 1057 dictionary
+properties in 9 work units and allowed more than 1 MiB of key copies under 128 KiB.
+The exact 5286-byte regression fixture remains unchanged. Test-only plain-record
+adapters preserve the earlier buffer/visit probes; production retains the
+private allocation-owning record. Qualification covers actual decoded-record
+retention after execution closes, cancellation and same-reservation retry,
+complete scalar/nested/spill node/relationship parity and ordinary reopen.
+Pinned BTree insertion/comparison implementation, allocation rounding/latency
+and destruction latency remain assumptions. Descriptor/cache memory, overlay
+clones, mutation/replay-created objects and the complete candidate ledger still
+need admission and qualification. These changes do not authorize production
+per-unit owner admission or establish default sustained progress.
+
+The ordinary binary format still rejects nested batches. Three initial related
+fixtures requested that unsupported encoding and failed before replay; the
+original inputs and complete failures are archived. The corrected fixtures
+flatten the identical seven leaf mutations into one accepted wire transaction
+and retain the original nested input as an explicit rejection check.
+Partially mutated private runtimes are discarded after cancellation; this does
+not claim rollback within that private runtime or prove authoritative recovery.
+
+The row-page publisher's complete cancellation matrix repeatedly recreated and
+synchronized the identical durable source for every CPU/I/O cut. Two full
+current-main commands and one unchanged isolated diagnostic reached the existing
+900-second limit; complete logs/XML and source identities remain archived. The
+fixture now publishes each immutable generation-1 source once, links its complete
+authority into each fresh case namespace and synchronizes that directory before
+opening the base. Every candidate/cancellation/retry still executes its real
+barriers, every CPU/I/O cut and all three modes remain, and every prior assertion
+is retained. Added assertions compare each case's starting authority and the
+unchanged shared source after every case. Required qualification still uses the
+original deadlines, budgets, jobs and complete commands. The complete combined
+source tree `735343c6287105eaf91648f8a9249fc6339ed1bd` passed the unchanged full
+storage command (1240 passed, 29 ignored), owner/concurrent/graph/pipeline/cascades
+regressions, all 96 actually executed mandatory fuzz targets, formatting,
+all-file hooks and minimal-native/browser-WASM Clippy. These results precede the
+schema scratch/scalar correction above, which requires its own final-source
+qualification. The first combined-tree storage run observed an overflow
+publication lock-busy failure; its unchanged isolated case and full-command
+retry passed. Original log/XML hashes are retained and the contention cause
+remains unproven. No whole-issue completion follows from the retry.
+The first linked-source fixture omitted creation of the case directory and
+failed before the first candidate attempt; its full logs/XML remain archived.
+The revised fixture creates that namespace before linking/synchronizing the base.
+
+The complete 92-test QoS suite and five storage memory tests pass, covering
+shared/narrowed/concurrent capacity, cancellation, critical-pressure recovery,
+retained bytes after execution closes, shared process-policy retention,
+replacement overlap, allocator failure and every actual growth/copy cancellation
+with full retry. Actual manifest opening rejects its encoded-buffer allocation
+one byte below the required capacity, then retries with all decoded metadata and
+all five source files unchanged. The preceding allocation-controller source
+(`a13a3f563a403c31315b4d1ea218283d213076fd`, tree
+`0b6a8fb9c429db2118db0f56f57b59e9ec56c4ac`) passed strict workspace,
+minimal-native and WASM Clippy, 162 checkpoint-unit tests, five publication
+tests, seven candidate tests, nine owner tests, 59 relational publication
+tests and the full storage harness (1205 passed, 29 ignored). Its original
+mandatory 96-target fuzz command had one original-limit timeout; the unchanged
+full-command retry passed all 96. Original logs and failure/retry receipts remain
+retained. These are scoped source checks, not full issue qualification.
+Only explicit lease users are tracked:
+remaining schema/value/manifest output buffers, maps, graph/append builders,
+pinned source/state ownership, disk/FD and cleanup debt still require binding
+and qualification. This does not authorize production per-unit admission or
+establish any whole-candidate memory, platform or release-performance bound.
+
+Checkpoint debt now reads the existing graph-delta estimate in constant time.
+Segmented COW maps maintain the same record, adjacency and posting weights
+through bulk construction, insert/replacement, removal and exclusive mutation
+guards. Snapshots copy the aggregate with their immutable page directory;
+checkpoint/replay generations own their own aggregate. An internal `u128` sum
+preserves exact subtraction after a public `u64` estimate saturates. Guard and
+retain cleanup also reconcile weights during unwinding, including empty pages
+in a partially retained directory. `get_mut` and `entry_or_default` now return
+a mutable guard rather than a bare mutable reference; callers release that
+guard before another mutation of the same map. Weight implementations must be
+stable under shared borrowing and must not panic. This changes a storage-internal
+API without changing the facade's host mutation contract or a persistent format.
+
+The automatic owner consumes either WAL or out-of-core delta debt at the exact
+70% soft threshold, alongside the existing monotonic age. The estimate is enabled
+only with an out-of-core canonical base and its configured delta cap. Reads do
+not hydrate records or enumerate map pages. Changed values still incur their
+existing logical-value estimate on mutation; this is not a hard allocation or
+latency bound. Preparing-phase backpressure checks both limits using the existing
+90% threshold and maximum-WAL-record reserve. That reserve is conservative for
+the tested small-node stream, but is not yet a proven delta expansion bound for
+base hydration, index fanout or multi-operation transactions. It does not
+establish default sustained-write availability or the final handoff latency gate.
+
+Four focused storage regressions pass: a 1057-entry mutation/snapshot sequence
+with instrumented nonhydrating reads, saturated-total recovery, partial retain
+and mutation unwinding, and ordinary persistent mutation/checkpoint/reopen parity
+against the independent preceding full-scan estimate in both residency modes.
+Two focused owner regressions pass: exact 6999/7000/7001-byte boundaries with a
+10,000-byte delta cap independently of WAL/age pressure, and 320 complete
+512-byte values across multiple automatic generations and normal reopen with
+a configured 16 KiB delta cap. These configurations are explicit fixtures, not
+default-resource qualification. Broad COW/storage, supported-profile and
+mandatory fuzz qualification of this delta-pressure source remain required.
+
+The current whole-candidate operation estimate can exceed the default local
+QoS operation limit on a large database. Remaining bounded cancellable build
+units and builder-specific memory/retention accounting remain required; the
+provisional whole-candidate memory estimate also omits append-state retention
+and compaction allowances. Full delta-pressure resource/availability coverage,
+columnar-shadow parity, the full cancellation/fault/model/platform matrix and
+paired release performance qualification are also incomplete. Whole-candidate
+memory estimates and narrow idle tests do not prove these requirements.
+No full issue completion is claimed.
+
+Checkpoint canonical and property-spill point seeks now use a separate admitted
+descriptor traversal. Captured page reads retain their input bytes and bounded
+copy scratch, bypass the serving descriptor cache, and validate both CRC32C and
+SHA256 against the selecting reference. The page codec borrows every leaf and
+interior field, admits each validation before filtering, and retains an admitted
+entry-range index instead of allocating a full second decoded page. Selected
+child bounds retain their own allocation leases through descent; canonical
+descriptor Bloom word arrays retain an encoded-size upper bound through record
+hydration. Page, byte, height and result limits remain enforced, and only physical
+damage poisons the source. Work cancellation or resource denial can retry the
+same captured source and governor reservation.
+
+The private visited-page vector has capacity bounded by the smaller of the
+selected root's page count and the caller's page limit. This admits its complete
+capacity before traversal and prevents duplicate physical pages without an
+untracked tree allocation. It can conservatively reserve for pages that a point
+seek does not visit. Recursive descent retains parent input/index allocations
+until its child completes; the admitted tree-height and page limits bound this
+overlap. Descriptor/root registration and its captured metadata, persistent
+file-handle ownership, the ordinary serving cache and its host memory budget,
+overlay/index mutation ownership, and the complete candidate/temporary/cleanup
+ledger remain separate qualification gaps. This scoped traversal does not
+authorize production per-unit whole-owner admission or complete issue #207.
+
+Cold captured immutable-object reads now validate identity in at most 64 KiB
+read and hash units, using the owner's actual I/O and working-memory admission.
+The complete length and identity digest must match before a handle enters the
+shared cache; requested-range bytes alone cannot establish object identity.
+Descriptor budget/OS-limit rejection remains a typed recoverable work failure.
+Checkpoint acquisition defers when another cold open holds the opening lock.
+The ordinary opening/retirement serialization remains intact; foreground
+waiting on that lock, cached handle/map allocations, captured registration and
+root ownership still need complete lifetime accounting and release performance
+qualification. This does not enable production per-unit whole-owner admission
+or establish the default sustained-load or complete resource gates.
+
+Canonical source/snapshot readers now share their immutable manifest rather
+than copying the property dictionary, including the durable reader cloned into
+a checkpoint source. The real eight-capture fixture previously added 17825248
+dictionary bytes for 1057 property names. Complete old-snapshot rows survive
+writer mutation and closure, and ordinary reopen retains all newer rows. This
+removes that measured metadata copy; other capture maps, shadow state, root
+registrations and retained working capacity still need complete accounting.
+
+Private cold immutable validation now releases the opening mutex before
+scratch admission, reads and hashes. A shared validation guard protects its
+source until a verified cache owner exists; retirement tries the exclusive
+guard and returns `WouldBlock` while validation is active. This guard covers
+the project's active checkpoint validations conservatively, so unrelated
+retirement can also defer. Ordinary cold reads retain their existing opening
+serialization. A foreground reader may verify the same object concurrently;
+checkpoint publication reuses that complete verified handle and closes its
+redundant native descriptor outside the cache locks. Such duplicate temporary
+opens remain subject to the shared FD budget.
+
+Paused real I/O tests prove foreground progress, retirement deferral, verified
+same-object handle reuse and actual object-sweep source retention followed by
+successful retry. They keep the actual governor's memory and I/O reservation,
+one local operation per unit, and full immutable bytes as the independent
+reference. These interleavings do not establish release commit/read p99,
+complete cache/registration/cleanup accounting, supported-platform power-loss
+qualification or default sustained checkpoint progress. Production whole-owner
+admission and the original default-progress fixture remain unchanged.
+
+Published column-group catalogs now share their immutable manifest and loaded
+table directories across public clones and captured checkpoint sources. The
+real out-of-core fixture retains 1057 streamed single-row groups; eight captures
+previously added 1827376 directory payload bytes. This measurement deduplicates
+live allocations by address and excludes spare vector/string capacity, so it
+is a physical lower bound rather than a complete allocator or admission ledger.
+The original probe assertions compare complete source rows and manifest
+identity. Lifecycle coverage verifies every old group payload and label set,
+full artifact scrub, writer mutation and closure, complete latest ordinary
+reopen, and native FD release. Sharing preserves owned public manifests,
+persisted encodings, equality and recovery validation. Dirty-table sets,
+publication builders, root registration/GC, captured range maps, retained
+capacity and complete candidate resources still need separate accounting.
+This ownership correction does not enable production per-unit owner admission
+or establish default sustained progress, power-loss or release performance.
+
+Private live append capture now returns an allocation-owning row array instead
+of detaching a raw Vec from its working reservation. Complete input/output row
+capacity, cloned table names and partition/order key arrays and variable payloads
+are admitted before fallible exact-capacity allocation. Immutable RelationalRow
+values remain shared with the source. Bounded records preserve the original
+one-row CPU unit; larger text/binary keys copy in at most 64 KiB units, align
+borrowed UTF-8 slices, and wide key arrays copy entries cooperatively. Sorting
+preallocates run/heap capacity without implicit growth, keeps input/run/output
+capacity charged during their overlap, and releases scratch only after its real
+buffers are destroyed. Returned rows retain their leases after task/source close.
+
+Two real-governor before probes failed: a one-byte allowance still captured all
+5127 rows, and task close released admission while captured allocations lived.
+Both pass after correction. The original three capture assertions, counts,
+cancellation cuts and budgets are retained; two error-only Result expressions
+add return-type adapters that never execute for their unchanged Err cases. A
+pinned formatter-equivalence receipt records this adjustment and the original
+8015-byte fixture is archived. Nine focused cases pass, including the existing
+store candidate test, exact initial array denial, measured sort overlap, typed
+memory denial and complete retry under the same actual reservation, and every
+actual CPU cancellation point across Unicode/binary and 1057-column partition
+keys. Scoped strict profiles, wrong controls and full qualification remain
+required. Compaction ownership was a separate follow-up; source/shared
+row retention, variable-width sorting/comparison, schema/segment/decode buffers,
+allocator rounding/latency and complete publication/cleanup resources remain
+separate gaps. This correction does not enable whole-owner per-unit admission
+or qualify default sustained progress or full issue acceptance.
+
+Private append compaction now retains admitted row-array capacity through block
+collection, prior-generation sorting, incoming live-row cloning, final sorting
+and segment publication. The prior sort preserves reserved room for incoming
+rows, so appending cannot silently grow the array. Run/heap/input/output capacity
+uses the same allocation-owning sorter as live capture, and decoded block arrays
+stay charged until their actual backing allocations are destroyed. Incoming
+element inventories transfer before their data, preserving ownership on failure.
+Ordinary compaction still constructs its independent rows and sorts; only the
+private plan's internal transport retains resource ownership.
+
+Compressed blocks and decoded byte buffers use admitted fallible exact capacity.
+Source read chunks reserve their complete capacity before the physical read and
+stay charged while copied into the compressed buffer. I/O grants are rechecked
+for cancellation before allocation/read. Nested decoder work errors propagate
+their typed cause to the enclosing task; only data budget failures may defer
+compaction. A memory or work rejection cannot silently publish an incremental
+candidate instead. Row/key/overflow decoder interiors, value hydration/cloning,
+reference maps, Zstd internal allocations, retained source/shared values and
+variable-width comparisons still need independent resource ownership and bounds.
+
+Two real-governor regressions genuinely fail before the correction: the unchanged
+2071-row fixture completes under a one-byte memory allowance, and its live result
+loses admission after task/source closure. Their complete corrected original test
+bodies are retained byte-for-byte. Earlier fixture setup attempts omitted the
+required I/O wave declaration and are archived separately, not counted as these
+memory regressions. Nine focused compaction cases pass, retaining all original
+data limits, CPU cuts, I/O cuts, reference publication bytes and complete reopen
+assertions. Added tests measure overlapping sort capacities, reject decoded-block
+memory after actual governor-backed I/O, return all partial working capacity and
+I/O slots on every actual I/O wave and the original representative CPU cuts, and
+fully retry each attempt on the same admitted reservation. Scoped profiles,
+deliberate wrong ownership/deferral controls and complete qualification remain
+required. This is not a complete candidate ledger and does not change production
+whole-owner admission or qualify default sustained progress, power-loss safety,
+release performance or full issue acceptance.
+
+The sorting peak also receives an independent measurement with all 2071 reference
+rows. A first actually compiled scratch-undercharge control passed the combined
+pipeline peak check because decoder buffers masked the missing sort capacity.
+That attempt is retained as an ineffective control; the isolated sort measurement
+is required in addition to complete compaction results and the existing denial,
+cancellation and retry assertions. It does not reduce any original case or budget.
+
+The unmodified 320-write delta-pressure owner case later failed during the full
+owner matrix (13 pass/1 fail) at a projected 14842 bytes under its 16 KiB cap.
+Its independent single-case rerun passed, which does not qualify that matrix.
+The publication barrier previously admitted more foreground work while a soft
+pressure trigger was pending in Idle, and while the selected generation was
+being retired outside the gate. Controlled worker pauses expose both gaps.
+The barrier now gives a pending pressure-triggered owner one attempt before
+admitting further near-limit work, and waits for off-gate retirement when new
+pressure needs its headroom. An attempt sequence releases pending waiters after
+admission denial rather than making them wait for successive unavailable
+reservations. Active sync groups and explicitly suspended/stopping idle owners
+remain able to proceed. This retains the existing soft threshold, maximum-record
+reserve and whole-owner admission, without proving a general delta expansion,
+foreground latency or default-resource progress bound.
+
+Three additional facade regressions pause the actual owner outside the
+publication mutex, exercise the original 16 KiB cap and 512-byte value shape,
+and observe the foreground wait phase. The two progress cases retain all 320
+values across automatic generations and normal reopen; the denial case requires
+a single foreground call to return after a one-byte governor rejects background
+admission. All three fail on the preceding owner (0 pass/3 fail) and the same
+complete fixture passes after correction (3 pass/0 fail, 129.30 harness seconds).
+The original full owner/concurrency/fuzz matrix and supported-profile
+qualification remain pending; the complete failed matrix and its isolated pass
+remain evidence. The original owner test module, whole-owner prepare/retire
+paths, candidate estimator and append files are unchanged by this correction.
+
+Latest-main integration is being prepared against eb4f6ef. The initial merge
+with projected-artifact v2 exposed missing relationship-predicate fields in the
+private WAL codec and added fixtures. The prototype retains both artifact v1
+reading and v2 predicates, preserves ordinary WAL field 4 and its duplicate-field
+diagnostic, and keeps all preceding name/vector/line work loops. Legacy fixture
+initializers add empty predicate maps; CRLF parity now covers both wire fixtures.
+No original case, assertion, seed, CPU/I/O cut, workload or budget is removed.
+This integration remains unpublished and does not qualify full issue acceptance.
+The private WAL path now counts the borrowed typed predicate tree without cloning
+values or materializing text, then emits through an admitted scratch allocation
+of at most 64 KiB. Its callbacks release the local unit before writing into the
+already admitted output. Nested hex expansion, scalar bit encodings, map ordering
+and the independent ordinary codec's complete bytes remain unchanged.
+
+The checkpoint WAL predicate decoder admits temporary text, leaf buffers, vector
+capacities and conservative pinned-toolchain map nodes into the record's retained
+inventory. It validates hex/UTF-8 and scans delimiters/numbers in bounded chunks,
+moves decoded leaves into typed predicates without cloning them, and releases
+temporary text only after destroying the allocation. WAL field 4 borrows the
+record after bounded UTF-8 validation instead of duplicating the whole encoded
+field. Duplicate-field and malformed-record error priority remain identical to
+the independent ordinary decoder. The returned record retains allocation leases
+through execution and source closure. Map comparisons, allocator latency, error
+strings and destruction still need whole-candidate resource/time qualification.
+
+Both encoder resource cases fail on the preceding prototype (0 pass/2 fail) and
+pass after correction (2 pass/0 fail) with the same 257 KiB binary payload and
+memory ceilings. The first scratch diagnostic assertion omitted the existing
+24-byte governor lease payload: its requested-byte expectation was corrected
+from 65536 to 65560, with no ceiling, case or other assertion change. A fresh
+corrected before build still fails both cases; the initial fixture and failed
+attempt remain archived. Two independent, freshly compiled wrong controls fail
+the same cases when counting materializes text or scratch admission is omitted.
+All ten WAL encoding cases and thirteen projected-artifact cases pass, retaining
+the existing explicitly ignored differential campaign.
+
+Both decoder resource cases genuinely fail before this change (0 pass/2 fail)
+and the byte-identical complete fixture passes afterwards (2 pass/0 fail).
+Thirty-five WAL decoder/replay cases pass, including all nine value variants,
+legacy diagnostic/tolerance parity, malformed/duplicate record priority, every
+actual cancellation unit with full retry on the same reservation, and actual
+record retention after source/task closure. Independently compiled hex-buffer
+undercharge and record-lifetime controls each fail their corresponding unchanged
+case. Formatting, native workspace/all-targets/all-features strict Clippy, minimal
+native and browser WASM strict profiles, hook installation and all-file hooks
+pass on this combined source. These scoped results do not replace the complete
+latest-main regression/fuzz matrix.
+
+Controlled projected-artifact decoding now uses the shared admitted predicate
+parser, bounded hex/UTF-8/delimiter/numeric traversal, and admitted name/vector
+capacity growth and map-node coverage. Its ownership-bearing result retains the
+inventory with all five arrays and the complete predicate. Removing one decoded
+artifact returns another ownership-bearing result. Ordinary v1/v2 decode keeps
+its original plain-map contract under the default, unadmitted context.
+
+Preparation admits and constructs nonempty shared map roots before publication.
+An empty cache uses an inline discriminant and a static empty map; preparation
+and cloning create no heap allocation or retained task memory reservation.
+PreparedCheckpoint transfers that root once into the private candidate or strict
+publication path; candidate selection transfers the prepared runtime. Captured
+sources and snapshots clone the root and its inventory without duplicating the
+payloads. Cache invalidation preserves per-name status and old snapshots through
+an immutable address-keyed bit trie. Entry addresses identify objects in the
+retained immutable map and are never dereferenced. Strictly decreasing branch
+bits bound insertion/lookup/drop depth by usize::BITS; each copied trie cell is
+admitted before allocation in controlled replay. Invalidated payloads remain
+retained and charged until the base's last owner closes. Inventory metadata and
+superseded trie coverage can remain conservatively reserved until root closure.
+Ordinary foreground registration retains its default-context behavior and does
+not independently establish a hard admission contract for its new metadata.
+
+Both original artifact resource cases genuinely fail before correction (0 pass/
+2 fail) and their byte-identical 257 KiB payload, complete-array assertions and
+memory ceilings pass afterwards (2 pass/0 fail). Twenty-one artifact cases pass
+with the original one explicitly ignored campaign, including an independent
+8193-node five-array capacity lower bound and a separate root-cell increment,
+owning removal, snapshot/invalidation lifetime, one-byte root/invalidation
+rejection, and every actual CPU cut/full same-reservation retry in the declared
+fixtures. Five candidate/framing cases and thirty-five WAL decode/replay cases
+pass. A real materialized 17-node/17-edge candidate verifies exact root address
+transfer, complete graph/array equality, status invalidation, snapshot/capture
+retention, normal reopen, and final governor release after execution closes.
+Four fresh, actually compiled controls each fail the intended unchanged case
+when array capacity, root cells or invalidation cells are uncharged, or decoded
+inventory is released early. Shared replay continues through the original WAL
+failpoint/poison entry; the first specialization bypassed it and failed one of
+35 original cases. That failed receipt remains archived separately from the
+corrected complete 35-case pass.
+
+The new lifecycle fixture initially expected a stale unrelated cache to survive
+reopen. Ordinary recovery intentionally excludes all caches at older commit
+epochs; its new reopen expectation was corrected while retaining the complete
+record, live-cache, address, snapshot and governor assertions. This does not
+change any original resource fixture or ordinary recovery behavior.
+
+The combined integration is prepared with parents df28c037 and main 0625907b,
+including main's independently merged #974 concurrent-test timeout configuration.
+Its first complete storage regression passed 1381 cases but failed three, with
+29 original ignores. Controlled metadata omitted main's relationship-predicate
+field, the overflow validator retained the older Zstd decoder backend and its
+diagnostics, and recovered projection caches were consequently absent. After
+the metadata correction, the unchanged reopen case exposed a second producer
+defect: controlled graph construction had not applied relationship predicates.
+The observed cache held two edges where the original case required one.
+
+Controlled metadata now emits the complete predicate field through the admitted
+bounded encoder. Controlled overflow compression and validation use main's
+Rust-allocator Zstd streams while retaining the existing chunk boundaries.
+Controlled projection construction evaluates borrowed predicates with a local
+permit per tree node or 64 KiB comparison, avoiding unbounded variable-width
+property, string, binary, list and map comparisons. Missing/null, float total
+ordering and mixed numeric semantics match the independent ordinary evaluator.
+The ordinary builder's existing all-label/all-type fast path remains unchanged.
+Producer maps/arrays, catalog lookup and recursion-stack coverage remain ledger
+gaps; bounded predicate evaluation does not qualify those allocations.
+
+The three unchanged failing cases pass in the targeted corrected-source rerun.
+Additional full-byte metadata/nested-predicate, complete five-array producer,
+value-semantic parity and every-actual-unit cancellation/retry cases pass. Wide
+comparison work and the complete final regression/profile/fuzz matrix remain
+required before publication. The original storage inventory is recovered from
+the compiled preceding published commit rather than inferred from interleaved
+subprocess stdout. Main renamed the frozen artifact case to cover v1 reads and
+v2 writes; its complete legacy decoding and empty/4096-node coverage remains.
+No original case, ignore, ceiling, seed or workload is removed for qualification.
+
+That first corrected storage run passed 1389 cases with all 29 original ignores,
+and its compiled inventory preserves every preceding published storage case.
+The subsequent complete owner group passed 16 cases but failed the original
+governor-recovery case: an empty cache root unnecessarily allocated an Arc and
+retained the task's whole 128 MiB reservation after suspension. Empty roots now
+allocate nothing, rather than detaching an uncharged heap object or changing
+the original zero-reservation expectation. A new one-byte empty-root fixture
+genuinely fails before correction and passes unchanged afterwards. Opt-in native
+observation counts every heap allocation in empty preparation/cloning, while
+the prior observer retains its original greater-than-64-KiB threshold. The full
+22-case artifact group passes with its original one ignored campaign. Final
+owner, complete regression/profile/fuzz and effective empty-root-control
+qualification remain required before publication.
+
+Legacy producer input copies, source/candidate/
+cache/GC/disk/FD/cleanup, allocator/map-comparison/destruction accounting, the
+unchanged default 1057-node progress case, runtime fault/power-loss qualification
+and paired release performance remain required before full #207 acceptance.
+No production whole-owner operation admission or original workload is weakened
+by this integration.
+
+The resolved df28c037/main-0625907b integration passed its final six supported
+profiles and complete original storage/root/optimizer case union: 1390 storage
+cases (29 original ignores), 17 owner, 115 concurrent (one ignore), 29 projected
+graph (three ignores), 27 pipeline and 24 cascades cases. Required local fuzz
+actually executed and passed all 96 targets with zero cached results. A fresh
+compiled uncharged empty-root control fails the unchanged zero-allocation case.
+The integration was committed with the automatic formatting/strict Clippy hooks
+and published to the same Draft PR, with #207 still open.
+
+Controlled projected-artifact text now owns its admitted String capacity until
+its final user closes. Each replacement reserves simultaneous old/new capacity
+before exact fallible allocation, copies UTF-8 in 64 KiB units, then destroys
+old storage before releasing its permit. Name hex encoding consumes 32 KiB of
+source per unit and writes at most 64 KiB directly into admitted storage. Fixed
+scalar fields use a bounded stack buffer; numeric batches reserve their worst
+case before taking a local work permit. The ordinary API still returns plain
+String using its hardwired default context, and admitted text cannot convert
+into an uncharged owning String.
+
+The byte-identical 257 KiB Unicode/NUL name fixture genuinely fails both cases
+before correction and passes afterwards: one-byte denial precedes large name
+expansion, and complete output/readback retains the task reservation after
+execution closes. Related tests verify actual final capacity, release of growth
+and predicate scratch, overlap denial before allocation with unchanged old
+bytes, complete retry on the same governor reservation, and every actual CPU
+cancellation cut. Fresh compiled controls detect omitted capacity admission,
+early release and omission of simultaneous old/new growth.
+
+Controlled projection construction now admits selector and adjacency tree
+coverage using the existing conservative pinned B-tree bound. Vector growth
+admits old/new capacity and inventory before bounded moves. Separate temporary
+and final inventories release selector/neighbor scratch after it is destroyed;
+the returned private projection owner carries all five final adjacency arrays
+and their inventory through borrowed encoding. Duplicate edges, empty/unknown
+filters, relationship predicates and the ordinary all-label/all-type fast path
+retain their original semantics. Independent 33-node duplicate/type-filter
+fixtures genuinely fail before correction (zero charge for 2560 bytes of final
+arrays) and pass unchanged after it. An 8193-node ring checks all five complete
+arrays, a capacity lower bound greater than 512 KiB and prompt scratch release.
+Every actual CPU cut/full retry and denial/recovery reuse the same governor
+reservation, retain full source records and leave zero working bytes/I/O slots
+on cancellation or final closure. Fresh compiled controls separately omit node
+array admission, detach final admission and retain temporary adjacency debt.
+
+The new producer fixture's initial requests omitted an I/O wave reservation and
+failed at the I/O precondition; those attempts are excluded from resource-before
+evidence. The corrected request adds one real I/O wave without changing memory
+ceilings, data, complete-array, denial or lifecycle assertions, and a fresh
+before run reaches both intended failures. Allocation observation uses the
+existing greater-than-64-KiB threshold; the initial all-allocation observation
+would also include the classification/diagnostic wrapper. These preparation
+failures and frozen corrected fixtures remain archived separately.
+
+Controlled checkpoint scans now borrow immutable overlay rows and retain typed
+canonical decoded-record owners. Source/catalog/container-cache ownership,
+variable-width catalog lookup, ordinary variable-width builder encoding,
+allocator/map-comparison/destruction costs, and complete disk, FD and cleanup
+debt remain resource-ledger gaps. These changes do not alter
+whole-owner operation admission or establish default sustained progress,
+complete physical power-loss/refinement safety or paired release performance.
+
+
+### Native checkpoint scan ownership
+
+The private native scanner retains each decoded node/relationship allocation
+owner through its final consumer borrow. Its fixed 17-byte descriptor cursor
+uses admitted descriptor traversal and captured physical range reads, bypassing
+the serving segment cache. A segment's admitted outer record array and each
+record's inventory have separate lifetimes; exhausted arrays are destroyed
+before the next segment is admitted. Descriptor counts, complete segment
+framing, ID ordering, delta replacements, tombstones and physical error
+precedence preserve ordinary scan semantics. Recoverable work denial and
+cancellation do not poison the source. The existing capture-unit cancellation
+boundaries are preserved without cloning wide overlay rows.
+
+Canonical, adjacency and property-projection writers accept private borrowed
+checkpoint records. They release the synthetic fetch permit before a scan
+performs its actual units and I/O waves. Materialized checkpoint sources also
+lend records to these writers; property subjects iterate borrowed labels and
+one relationship type without a temporary owning subject vector. Ordinary
+public writer APIs keep their existing concrete record contracts. Variable
+width output encoding, builder arrays, cache/catalog ownership and disk/FD
+cleanup still need their own complete admission qualification.
+
+Two unchanged scan fixtures genuinely fail before correction: materialized
+capture copies six large buffers, and a one-byte canonical budget permits an
+unadmitted scan. Related runtime fixtures check full node/relationship payloads,
+retention after iterator/execution closure, independent 8193-empty-row array
+capacity, denial/retry on the same governor, warm-cache physical corruption,
+replacement/tombstone parity and every actual cold CPU/I/O cancellation cut.
+The initial related harness confused cold and reused captured handles: the
+cold baseline has seven waves and a reused scan has five. Each enumerated cold
+cut now reopens the same read-only artifact before retry; all original bounds
+and complete-result assertions remain. A near-ceiling held lease also leaves
+64 bytes for governor permit metadata rather than failing in fixture setup.
+These preparation failures are archived and are not resource-before evidence.
+
+
+Ordinary public writer callbacks retain their existing consumer unit and I/O
+admission contract. Only the private controlled scan entry points let the
+source own admission, avoiding nested permits; complete original callback
+probes remain unchanged. The first full targeted run identified three callback
+regressions, which are archived rather than counted as qualification.
+
+Nested checkpoint classification now forwards a recorded work failure to its
+parent classification scope. An unchanged 8193-empty-row fixture first fails
+when deep admitted array growth is reported as an ordinary operation failure,
+then passes with the shared classifier correction, releases all partial state
+and retries every full record on the same real governor reservation.
+
+### Canonical manifest text ownership
+
+The controlled canonical manifest encoder returns an allocation-owning
+`CheckpointText`. It uses the same admitted text implementation as projected
+artifact encoding: exact-capacity growth reserves overlapping old/new buffers,
+UTF-8 copies use at most 64 KiB per unit, and property-key hex expansion consumes
+at most 32 KiB of source per unit. Numeric and digest displays use a fixed stack
+buffer, and the final checksum is appended without copying the complete body.
+The ordinary manifest API still returns `String` with the established wire
+layout. Controlled writes borrow the owning output through the final write.
+
+The two original frozen resource fixtures reproduce unadmitted wide-name
+expansion and detached output ownership before this correction. Related cases
+compare all encoded bytes with an independent copy of the established layout,
+including empty keys and maximum-width scalar fields, inspect actual retained
+capacity without growth debt, cancel at every observed unit with a real shared
+memory reservation and a one-unit local scheduler, and retry identical bytes.
+Invalid manifest diagnostics retain their existing priority over text admission.
+The shared text implementation retains the original frozen projection fixtures.
+
+The encoded-text cases alone do not qualify uniqueness-validation scratch or
+comparisons; those have the separate coverage below. Canonical writer dictionaries
+and payload accumulators,
+source/catalog/cache retention, allocator and destruction latency, FD/disk and
+cleanup debt remain separate resource-ledger gaps. Whole-owner admission,
+default sustained-load progress, publication parity and release-performance
+qualification remain unchanged and incomplete.
+
+### Canonical property-key uniqueness validation
+
+Controlled and ordinary canonical manifest validation now borrow key strings
+and hash them in 64 KiB units. Up to 32 fixed digest/index entries fit in bounded
+stack storage. Larger tables admit an exact-capacity temporary array before
+allocation; sorts compare only fixed-width entries in chunks of at most 1024,
+and admitted overlapping merge arrays are filled in at most 1024-entry units.
+The original property-key table and its record ids are never reordered.
+
+Digests select comparison groups rather than establish equality. Every prior
+key in a collision group receives an exact bounded byte comparison, preserving
+nonadjacent duplicates, empty strings and UTF-8 semantics. A pathological digest
+collision group can require quadratic comparisons, but each comparison remains
+cooperative and observes cancellation. Invalid binding diagnostics remain ahead
+of key validation, and the frozen small invalid-source fixture retains its
+original corruption diagnostic ahead of text admission.
+
+The original 8193-key/one-byte and 128-wide-key fixtures genuinely fail before
+correction (1365 unadmitted allocations and 129 unbounded-key units respectively)
+and pass with unchanged source, budgets and assertions. Separate cases compare
+against an independent tree oracle across inline/sort/multiple-merge boundaries,
+force digest collisions including nonadjacent repeats, cancel at every actual
+collision comparison unit, and reject second-array overlap before allocation,
+release the first array, and retry with the same reservation.
+
+These scoped scratch/CPU bounds do not establish source/candidate/cache/GC
+ownership, dictionary and writer payload accounting, allocation/free latency,
+FD/disk/cleanup debt, default sustained progress, complete publication parity,
+physical power-loss/refinement or paired release-performance qualification.
+
+### Canonical property Bloom hashing
+
+Canonical property Bloom keys now stream the existing label/name/value encoding
+through a CRC32C sink rather than concatenate a complete input buffer. The sink
+reuses the established canonical streaming value writer, preserving field tags,
+lengths, UUIDs, float bits and nested-value diagnostics. Ordinary hashing creates
+no heap allocation; controlled hashing admits at most 64 KiB per CPU unit and
+performs no physical I/O. A stopped sink returns a simple non-retry I/O error and
+retains its typed work cause across the existing streaming interface.
+
+Native node consumers finish their callback/payload unit before property hashing
+starts its child units. Callbacks keep their original active consumer admission.
+Property Bloom array insertion and the subsequent payload copy receive consumer
+units again. The array growth/copy and ordinary payload encoding are separate
+resource/CPU gaps, rather than covered by the streaming hash bounds.
+
+The original unchanged 257 KiB binary and UTF-8-name fixtures genuinely fail
+before correction (one and two large allocations respectively) and pass without
+those allocations. Each starts from a valid canonical artifact, validates full
+readback and selects its original record through the property Bloom path.
+Separate cases compare with the independent buffered codec across every value
+variant and chunk boundaries, observe every allocation in ordinary hashing,
+cancel at every actual unit with a real one-byte governor reservation and a
+one-unit local scheduler, fully retry the same input, preserve typed nested work
+failure, and compare over-depth diagnostics with the ordinary codec.
+
+This removes Bloom input scratch only. Property-key dictionaries, payload and
+segment accumulators, array growth, source/cache/GC ownership, allocation/free
+latency, FD/disk/cleanup debt, default sustained progress, full publication parity,
+physical power-loss/refinement and release-performance qualification remain open.
+
+### Borrowed canonical segment flush input
+
+Canonical segment flush now builds the existing 29-byte header on the stack and
+borrows captured record bytes, without allocating a second complete segment.
+The original unchanged 257 KiB node and relationship fixtures each observe one
+large duplicate allocation before correction (0 pass/2 fail), then pass with
+zero large flush allocations and complete byte, record, Bloom and CRC/SHA checks.
+Controlled checksum and physical write loops use 64 KiB units, each physical
+write obtains and releases its own real I/O wave, and Bloom insertion uses
+256-key units. Callback/payload consumer permits end before these child units.
+Ordinary record inputs, wire framing, hard segment-size diagnostics and callback
+admission remain unchanged.
+
+A cloned stack integrity state advances the caller's artifact digest only after
+the complete segment succeeds. Cancellation or I/O failure may leave a partial
+uncommitted output file, as before; production temporary-artifact cleanup still
+owns it. The observed prefix must match the complete reference, and an error
+must not publish a segment descriptor or advance the caller digest. Related
+fixtures enumerate every measured CPU and I/O cancellation point with a real
+one-wave governor reservation and one-unit local ceiling, release work state,
+and fully retry the same source and reservation. A separate actual zero-slot
+reservation denial preserves the initial file prefix and digest; retry explicitly
+re-admits one I/O slot. Its initial preparation mistakenly retained a wave on the
+same thread before a blocking acquire and was terminated, archived and excluded
+from passing evidence. The original two allocation fixtures remain byte-identical.
+
+This qualifies the duplicate flush scratch and the declared checksum/write and
+Bloom-insertion boundaries. Source record/key arrays, returned descriptor Bloom
+memory and leaf payload ownership, Bloom allocation/zeroing, allocator/free
+latency, FD/disk/cleanup debt and complete writer resources remain separate gaps.
+It does not establish default-owner sustained progress or permit weakening its
+whole-candidate operation admission.
+
+### Canonical writer key and value scratch ownership
+
+The private borrowed checkpoint writer now admits its property-key strings,
+replacement key-vector capacities and fixed-width digest index before allocation.
+Hashing, exact collision comparison and UTF-8 copying use bounded byte units.
+The index preserves first-seen IDs, including nonadjacent duplicates and digest
+collisions, and is destroyed before releasing its construction inventory. Its
+conservative B-tree reservation assumes the pinned Rust node layout of eleven
+key/value slots and twelve child pointers; four node bounds per distinct digest
+cover retained nodes and insertion overlap. This is a declared payload bound,
+not a portable allocator, allocation-latency or RSS proof.
+
+The private writer returns a manifest with its key allocation inventory. Key
+strings and the containing vector are destroyed before that inventory, even if
+the admitted worker has already closed. There is no private conversion that
+detaches admitted keys. Ordinary public writers retain their established return
+type and encoding; only their unadmitted manifest may be detached.
+
+Controlled value encoding first counts the established streaming wire codec,
+admits its exact byte capacity, then copies through bounded work units. Spilled
+values carry that ownership into the pending spill batch until physical flush
+or workspace destruction. Ordinary spill inputs keep their existing path. Two
+frozen, genuinely failing pre-fix fixtures exercise the actual private writer
+with a borrowed source and 64 KiB reservation: 257 KiB property names and binary
+values previously allocated complete scratch before admission. They preserve
+the ordinary artifact and full-read reference.
+
+Related fixtures exercise complete manifest encoding and node readback, retained
+key ownership after worker closure, first-seen ordering across vector/tree growth
+boundaries through 8193 keys, forced equal-length digest collisions, and denial
+while old and replacement key-vector capacities overlap. Value fixtures compare
+all wire variants and byte boundaries with the independent buffered codec, retain
+the original depth diagnostic, and observe pending spill ownership through flush
+and cancellation. Every measured value/collision CPU cancellation cut releases
+working memory before reconstructing a complete private workspace with the same
+governor reservation and one-unit local ceiling. Failed private dictionaries are
+abandoned; this does not promise resumable partial dictionary mutation.
+
+Canonical record and segment arrays, spill pending-array capacity, descriptor
+payloads, source ownership, full writer work-unit boundaries, FD/disk/cleanup
+debt, allocator/free latency and the entire candidate still need their separate
+ledger. This does not qualify the default owner progress envelope or authorize
+changing its whole-candidate operation estimate.
+
+### Canonical checkpoint record buffer ownership
+
+The private borrowed writer now computes complete node/relationship wire lengths
+without a record-sized temporary buffer and admits the exact record capacity
+before encoding. It retains that buffer's lease through the segment consumer.
+Inline values stream directly into the admitted record through the established
+value codec; spilled values retain their separately admitted pending ownership.
+The dictionary is consulted twice rather than allocating an intermediate key-ID
+array. Node labels copy through fixed 4096-byte blocks with separate bounded
+iteration and output units. The ordinary public encoder and callback path remain
+the independent wire reference. Record-size limits are checked before record
+allocation; invalid value depth retains the established codec diagnostic.
+
+Two frozen actual-writer probes use borrowed source records and a real 64 KiB
+reservation. A 65793-label source and eight inline 37 KiB binary values both
+reopen fully through the ordinary path, but genuinely fail admission assertions
+before correction: four and three large allocations occur before appropriate
+record admission. Source setup and ordinary artifact/readback precede allocation
+observation. Related fixtures compare every wire variant and size boundary,
+label-block boundaries, first-seen keys and relationship endpoints; retain buffer
+ownership after worker closure; cancel every measured direct-codec CPU unit with
+one-unit local admission and fully reconstruct the same source/reservation; and
+compare complete private/ordinary canonical and property-spill artifact bytes and
+full node/relationship readback. The original allocation fixtures are unchanged.
+
+These record buffers are one resource boundary. Segment record/key arrays,
+descriptor payload/returned Bloom ownership, spill pending-array capacities,
+source state, complete writer work units, allocator/free latency, FD/disk/cleanup
+debt and the whole candidate still need qualification. Full-writer readback uses
+its existing descriptor/spill construction admission; only the isolated record
+codec fixtures require one local unit. Default-owner sustained progress and the
+whole-candidate operation estimate remain unresolved.
+
+### Canonical checkpoint accumulator capacity ownership
+
+The private borrowed writer retains admitted segment byte capacity, source and
+target endpoint arrays, and node-property Bloom input keys in a separate owner.
+Ordinary segment accumulation retains its existing encoding and public callback
+contract. A replacement reserves its complete new capacity while the old buffer
+is still admitted; copies and payload appends use at most 64 KiB per work unit.
+The old allocation dies before its buffer lease is released. Allocation inventory
+metadata stays admitted until the segment is consumed or abandoned. Segment data
+is destroyed before its inventory after physical flush, including failure paths.
+Record-size, ordering and count checks precede new segment byte allocation.
+
+Checkpoint spill values also admit the containing pending array. Clearing a
+flushed batch releases the value buffers but preserves both array capacity and
+its admission through reuse; destruction releases the retained capacity. Array
+growth uses the existing bounded checkpoint vector primitive and admits old/new
+overlap. Ordinary spill inputs preserve their established path.
+
+Two unchanged actual-writer probes use borrowed complete inputs with a 64 KiB
+reservation. Before correction, 4097 empty nodes allocate one large segment
+buffer before proper admission, while 2049 small spilled values allocate two
+large buffers before denial. Ordinary artifacts and complete readback are built
+before allocation observation. Related fixtures compare complete wire bytes and
+all endpoint/property-key arrays, retain admission after worker closure, deny
+each key array separately before allocation, and exercise old/new capacity
+overlap. Measured payload and replacement copy counts cover the 64 KiB boundaries.
+Every measured accumulator and pending-array CPU cancellation cut releases the
+abandoned workspace before fully retrying the same input/reservation with one
+local work unit. Separate full-writer fixtures compare complete canonical and
+spill artifacts and manifests, then read every one of 257 nodes and relationships.
+Spill flush/reuse fixtures verify exact ordinary artifact bytes and both batches.
+
+A failed multi-buffer push abandons its workspace rather than resuming partial
+bytes or endpoints. These capacity fixtures do not qualify returned descriptor
+and Bloom ownership, source state, whole writer/descriptor/spill work-unit
+boundaries, FD/disk/cleanup debt, allocator/free latency or whole-candidate
+admission. Full-writer and spill-flush checks retain their existing constructor
+and descriptor units; only isolated accumulation and pending pushes require one
+local unit. Default-owner sustained progress remains unresolved, and the frozen
+whole-candidate operation estimate is unchanged.
+
+### Returned canonical segment Bloom ownership
+
+Private admitted segment flushes reserve exact Bloom word capacity, including
+allocation inventory metadata, before allocation while segment source capacity
+is still admitted. Zero initialization uses at most 64 KiB per unit, and the
+existing 256-key insertion units preserve the ordinary Bloom layout. A private
+descriptor retains all three Bloom inventories until its final consumer closes;
+its data dies before its inventory. Ordinary public flushes and descriptor types
+retain their established encoding and return contract.
+
+Two unchanged probes prepare complete ordinary framing/readback and admitted
+source records before observation. A 65537-relationship segment genuinely fails
+both assertions before correction: an exhausted reservation still permits two
+large returned Bloom allocations, and a successful flush returns Bloom bytes
+without retaining any admission after its source dies. Denial includes simultaneous
+source/Bloom ownership and leaves the caller digest unchanged. Success compares
+complete physical bytes and encoded descriptor fields, retains admission after
+worker closure, and releases it only after destroying the returned descriptor.
+
+Related fixtures compare ordinary Blooms and all inserted keys at zero, insertion,
+zeroing and maximum-word boundaries; independently observe every zeroing and
+256-key unit; and cancel every measured Bloom CPU unit before reconstructing the
+complete input with the same reservation and one local unit. Owned node and
+relationship flushes enumerate every observed CPU and physical I/O cancellation
+point, acquire a real one-wave governor lease alongside telemetry, preserve an
+exact ordinary file prefix and initial caller digest on failure, release all
+source/result memory, and fully retry each cut. Genuine zero-wave denial then
+explicitly re-admits one wave for a complete retry. The original prior flush and
+accumulator fixtures remain unchanged.
+
+This owns returned Bloom payloads, not encoded descriptor leaf values or the
+descriptor-tree writer's pending pages and run buffers. Those payloads, complete
+writer/spill/descriptor work-unit boundaries, source state, FD/disk/cleanup debt,
+allocator/free latency and whole-candidate admission remain separate gaps.
+Default-owner sustained progress and its frozen whole-candidate operation
+estimate remain unresolved.
+
+
+## Verbatim suffix transfer and streaming framing
+
+Candidate catch-up retains the original admitted payload alongside its decoded
+transaction. It validates each recorded epoch and the contiguous LSN/byte interval
+before writing. The payload length and SHA-256 from the captured record advance
+the recovery digest only after complete transaction application. An accepted
+noncanonical opcode encoding must survive byte-for-byte; a valid physical checksum
+with the wrong commit epoch fails closed without normalizing the source history.
+
+Physical framing borrows that payload and emits one at-most-32-KiB body plus a
+15-byte stack header and at most 14 bytes of first-block padding. A constant-time
+checked size calculation enforces the complete WAL budget before the first write.
+Each fragment computes its generation-bound checksum under a local work unit and
+is written under the actual I/O reservation. The ordinary replay cancellation
+check follows each write, preserving its execution-error diagnostic before the
+stream checks for another fragment. The complete attempted fragment
+boundary is recorded before any of its parts are written, so a partial write or
+cancellation remains within the existing known-tail truncation protocol. Source
+prefix counters advance only after the whole transaction applies. Payload memory
+drops before decoded application; decoded ownership follows the existing transfer
+boundary. No complete re-encoded payload or framed-output buffer is allocated.
+
+The preceding admitted payload encoder and buffered framer remain test-only
+references; their original fixtures and limits are retained. Streaming fixtures
+compare all 32,768 block positions and fragment/generation/empty-record boundaries
+with the independent ordinary framer, cancel every completed fragment unit and
+retry the same input, and write a multi-block native file under a real one-byte
+working-memory reservation. That last fixture scopes its claim to the framing
+step: borrowed input, decoding, replay state, descriptors and file ownership need
+their own ledger. A separate deterministic differential campaign is local-only
+and runs through the Bazel fuzz suite. These guards do not qualify default
+sustained progress, complete resource bounds, foreground latency, the remaining
+copied codecs, or physical power-loss behavior.
+
+
+## Bounded operation admission and paused execution
+
+The current owner supersedes the historical whole-record operation-admission
+limitations above. Planning borrows the captured source under a 64 KiB governor
+reservation and consumes bounded LocalQoS units. Candidate builders and fresh
+catch-up contexts also consume their actual bounded units rather than retaining
+one LocalQoS operation for every database record. Nested spill initialization
+finishes its parent unit before opening a descriptor-tree child. A frozen public
+configuration fixture writes 1,057 nodes with 512-byte bodies, continues writing
+every 20 ms and verifies two completed generations, every value and reopen.
+The same fixture previously deferred without completing a generation; its age,
+15-second observation windows, workload and assertions remain unchanged.
+
+Resumable maintenance uses `RuntimeGovernor::try_admit_resumable_maintenance`
+and the facade-exported `RuntimeMaintenanceWork`. Its original conservative
+memory and host process-memory reservations remain owned by the candidate.
+At a cooperative boundary, `pause()` cancels only the admitted child context
+and releases CPU and background task capacity. Actual wave-scoped I/O guards
+keep their global charges until they drop. `try_resume()` acquires execution
+capacity from the same governor with no second candidate-memory charge and
+binds a fresh child of the supplied cancellation/deadline context. Previously
+bound contexts remain cancelled. A denied resume leaves the candidate paused
+with its original memory reservation. Closing the owner follows the existing
+working-memory contract: allocations keep the complete original reservation
+until their last lease drops.
+
+The checkpoint owner parks a resumable private candidate before its admission
+retry wait. A frozen real-owner fixture first fails because a memory-denied
+candidate occupies one CPU slot; after the correction it observes zero CPU and
+background task slots, identical memory admission and base file bytes. Recovery
+completes that same candidate without another write under a 200 MiB budget that
+cannot fit two whole-candidate reservations. Old readers, all values and reopen
+are verified. A separate 32-node fixture completes two generations under the
+same fixed budget and retains no reservation after the final owner and store
+close. The small fixture already passed before this change; it is a sustained
+progress guard, not evidence of a reproduced memory leak or a speedup.
+
+Resource tests cover shared allocation capacity across fresh execution epochs,
+repeated pressure denial, occupied execution slots, parent cancellation/deadline
+and lower ceilings, conservative memory retention without tracked allocations,
+in-flight I/O ownership, and shared process-memory policy. A missing host RSS
+sample still fails closed when resuming with zero additional memory bytes.
+
+The synchronous `Database::checkpoint(&mut self)` and
+`ConcurrentDatabase::checkpoint(&self)` APIs remain available to the host below
+automatic thresholds, with automatic/background work disabled and in the
+native minimal feature profile. Their durability and successful-return contract
+are unchanged.
+
+This is a partial resource-lifetime correction. Preparation is not resumable,
+and resource retry uses the existing 100 ms bound. Whole-candidate admission
+still estimates 16 times logical bytes plus 128 MiB. Complete memory/disk/FD/cache
+and cleanup-debt ownership, bounded out-of-core scaling, shorter publication
+gates, idle adoption without another frontend call, complete shared-codec parity,
+physical power-loss qualification and paired release-profile measurements remain
+required before issue #207 and the full replacement contract can be accepted.
+
+### Selected handoff and admitted retirement
+
+After durable selection, the owner parks execution before exposing handoff.
+Waiting for a frontend call retains the original candidate memory reservation,
+but occupies no CPU, background task or physical I/O slot. Actual adoption is
+still required before retirement, so selection does not prove frontend adoption
+or completed reclamation.
+
+Background retirement resumes on the original governor and acquires one actual
+I/O wave before running the existing generation scan and destruction off the
+control gate. Denied execution or I/O admission parks the retirement object,
+releases execution capacity, and records retry-required reclamation debt on the
+shared durable runtime without scanning files. Known pending file/byte counts
+are preserved. Admission recovery retries without requiring another write or
+frontend call. This is one admitted legacy cleanup unit; per-file bounded
+cleanup and the full resource ledger remain required.
+
+Explicit synchronous checkpoint, backup and compaction scopes retain their
+caller-owned admission boundary and can finish retirement even when background
+policy or pressure denies it. Shutdown drops retained work without waiting for
+unrelated background admissions. Neither path weakens checkpoint publication,
+durability or old-reader retention. Publication identity errors in retirement
+now fail the owner closed instead of being ignored; published recovery evidence
+is retained. Physical deletion failures keep the existing observable debt and
+retry contract.
+
+Regression coverage includes the byte-identical before/after handoff fixture,
+an occupied physical I/O wave, invalid retirement ownership, debt preservation
+and both manual facades under critical background pressure. Manual return still
+proves a complete checkpoint: independent read-only reopen needs no WAL replay,
+and snapshots captured before the call keep their original values.
+
+### Foreground admission and retirement pressure waits
+
+A foreground caller can hold the only CPU admission while its mutation waits
+for deferred background retirement. Retirement cannot acquire that CPU until
+the caller completes. The owner now records a completed retirement-denial
+epoch after restoring the retained retirement object and releasing execution.
+A pressure waiter may continue after observing one such denial, allowing the
+caller to finish and return its admission. Hard mutation, WAL and delta limits
+still apply; the retained candidate, original memory and reclamation debt are
+preserved until cleanup can acquire its own execution and I/O admission.
+
+This exception applies while retirement is parked. If the worker has already
+taken the object for another admission decision or active cleanup, the caller
+continues waiting even if a previous denial woke it. Publication and active
+retirement barriers retain their original behavior.
+
+Two byte-identical before/after fixtures reproduce the original dependency
+through a governed contextual mutation and through the public
+`begin_admitted_transaction` API. A third fixture forces readmission between a
+denial wakeup and the caller's reevaluation, verifying no new commit occurs
+while cleanup owns CPU/task/I/O. All fixtures preserve the one-CPU limit,
+200 MiB candidate budget, 16 KiB out-of-core delta limit, 512-byte values,
+pinned old readers and independent reopen. Both synchronous manual checkpoint
+APIs continue to complete below thresholds and during background denial.
+
+### Incremental allocation ledger foundation
+
+`RuntimeGovernor::try_admit_incremental_maintenance` admits a fixed controller
+reservation and then admits each concrete allocation lease against the original
+governor and process-memory policy. Its working ceiling limits simultaneous
+allocation ownership rather than reserving that whole ceiling upfront. The
+existing whole-reservation maintenance API keeps its original behavior. Both
+modes share pause/resume execution ownership and retain cancellation, deadline,
+physical I/O-wave accounting and explicit caller memory ceilings.
+
+Incremental allocation admission includes the concrete lease payload. A unit
+that cannot fit even after other allocations are released, including its own
+irreducible controller reservation, returns a typed permanent denial. Competing
+allocations, critical pressure and unavailable process-memory headroom retain
+their retryable classification. Failed admission changes no existing ownership.
+Dropping an allocation refunds its own memory/process charge. Closing work
+cancels execution; closed task clones and allocation leases retain the fixed
+controller charge until their final owner drops, without retaining CPU, task or
+I/O execution. `RuntimeMaintenanceMemoryReport` exposes live and peak accounted
+allocation bytes separately from the upfront reservation. It is not an RSS
+sample or a claim that all caller allocations were accounted.
+
+A storage regression prepares a 1025-node materialized checkpoint, applies a
+controlled one-record suffix after pause/resume, publishes, preserves every old
+reader value and independently reopens every current value. On the same source,
+the legacy estimate is 143,959,328 bytes and cannot fit the 16 MiB governor. The
+incremental path starts with a 64 KiB controller reservation, observes nonzero
+scratch allocation peaks within that unchanged governor budget, releases the
+scratch buffers before handoff, and retains the controlled suffix allocations
+through publication. All governor charges reach zero after their owners drop.
+Separate resource tests cover simultaneous allocation limits, epoch reuse,
+lower parent ceilings, pressure recovery, process-policy sharing and the
+irreducible-owner permanent-denial boundary.
+
+This foundation does not yet replace the automatic owner's conservative
+whole-candidate admission. Before that switch, preparation must account its
+remaining allocations and retain resumable builder state at bounded resource
+denials. Property-projection definition vectors/strings and relationship-key
+deduplication now have allocation leases as described below. Known paths still
+requiring inspection include COW detach/growth, relational checkpoint planning
+and final serving-reader construction. Complete CPU,
+descriptor, I/O, temporary-disk, cache and cleanup ledgers and out-of-core delta
+scaling remain required. Typed preparation-denial reporting is described below;
+other owner stages still require typed denial reporting. The same synchronous
+manual API contract remains in force.
+
+Checkpoint property-index definitions now copy property strings in bounded UTF-8
+chunks after admitting exact string capacity, and grow definition arrays through
+the shared allocation inventory. Relationship-definition deduplication borrows
+source property strings and admits its BTree nodes before insertion, using the
+existing conservative node bound for the pinned Rust standard library. Ordinary
+and controlled composite-property identities share one hex grammar: size is
+checked first, controlled capacity is admitted before allocation, and encoding
+writes directly into the final string without intermediate hex strings. The
+inventory outlives the definition consumer and deduplication tree. Allocation
+rounding and standard-library tree latency remain platform assumptions.
+
+The controlled relational checkpoint file input now reserves its actual
+read-ahead buffer capacity before allocation and retains that lease until the
+buffer is destroyed. Focused regressions exercise denial before large property,
+composite-identity and input-buffer allocation, exact Unicode/wire results,
+pause without execution slots and complete charge refund. Actual negative
+controls removing each admission fail their runtime assertions; these do not
+establish complete relational reconstruction or replay/COW allocation coverage.
+
+The property-projection writer additionally admits subject-tree nodes, grouped
+array capacities and decoded composite-name bytes before allocating them. Its
+plan retains the inventory until those buffers are destroyed, including failed
+preparation and paused execution. Sorting equivalent definitions in place avoids
+stable-sort scratch; completeness and definition-key deduplication are preserved.
+The genuine published-writer baseline and four removal controls fail
+at runtime while the fixed regressions pass. Whole-sort comparisons, UTF-8
+validation and broader preparation resumption remain outside this bound.
+
+Controlled node/relationship property-update and direct create/delete replay,
+including nested WAL batches, now admits copies of pinned primary record pages
+and their directory before allocating them. The borrowed bound covers the
+pinned std B-tree/Arc layouts
+and nested record payloads. A denied single-page build installs no copied
+pointer; its buffers are destroyed before admission is refunded. Copied page
+and directory objects retain allocation ownership through snapshot sharing,
+paused execution and frontend detachment. The published production baseline
+shows three large allocations under a 4 KiB work ceiling; the fixed replay
+regression denies before those allocations. Three genuine controls catch
+missing page admission, directory admission and retained data ownership.
+Directory pointers copy in 64 KiB groups and record copies use separate units.
+Insertion preflight covers the target page even when the new key is absent;
+missing-key updates/deletes keep their shared page without copying it. Target
+page-copy denial precedes transaction mutation and preserves old snapshots.
+Wide-record traversal/copy time, property-update rebalancing, indirect relationship
+deletion, other index/schema and relational structures, decoded-record
+lifetime and complete serving-reader
+ownership remain open; this does not qualify the automatic fixed-owner switch.
+
+Node-property index maintenance borrows the stored record instead of cloning
+all properties before and after an update. Create/delete and property updates
+share the composite/full-text key maintenance routines; updates visit only
+descriptors affected by the changed property. A real unshared-page baseline
+copies a wide payload twice under a 4 KiB work ceiling. The fixed regression
+observes no large allocation across five index scenarios, verifies the changed
+composite key and retains unaffected composite/full-text entries. Removing the
+property filter fails the same test for an unrelated wide composite key;
+restoring it passes. This removes unnecessary payload copies, not the remaining
+affected-index allocation or complete fixed-owner gates.
+
+Primary record insertion now reserves capacity before creating an empty page,
+growing a unique B-tree or splitting it. Preflight counts node and relationship
+creates across the complete nested WAL transaction, then admits an exact
+pointer-directory capacity that covers every possible primary split. One shared
+allowance admits the batch's steady B-tree capacity, possible split borders and
+one transient insertion/split pillar; small batches use the tighter independent
+per-insertion bound. Every insertion consumes a credit, including existing-key replacements that
+can split a page under its byte limit. Split descendants share the remaining
+allowance. Repeated preflight does not reserve the same
+batch again. Copying a pinned page admits an independent allowance; a lower
+resumed memory ceiling cannot reuse a higher-ceiling allowance. Directory
+replacement admits peak old/new capacity; page growth extends the existing
+allocation inventory. Split right pages retain that inventory, including when
+all other pages and the task are closed. These bounds assume pinned layouts,
+allocator rounding and platform behavior; they do not bound allocator or
+destruction latency.
+
+Four real runtime baseline failures cover first-page denial/lifetime, snapshot
+copying of a logically empty page and previously uncharged unique-page growth.
+Removing page admission, insertion growth admission or right-page ownership
+fails its runtime regression, and restoration passes. Cancellation at every
+observed initial/growth unit preserves the original physical root and refunds
+failed-build buffers. A 1025-entry map preflights every insert, splits without
+directory reallocation, preserves all data and retains charges through its last
+right-page pin. Actual nested 1025-node and 1025-relationship WAL transactions
+verify every row, one complete epoch, old snapshots and final charge refund.
+
+The first full storage regression exposed overreservation in the unchanged
+1057-operation, 4 MiB decode/replay fixture. Batch sharing preserves that budget
+and operation count. Four mixed-replay tests now verify that successful primary
+allocations remain charged through data/snapshot lifetime and refund after the
+last pin, rather than expecting live data's capacity to be refunded immediately.
+Cancellation still preserves the original source and refunds tentative buffers
+when their actual owner is destroyed.
+
+This addresses primary Create replay capacity. Property-update rebalance,
+auxiliary indexes/adjacency/tombstones, decoded-payload lifetime, indirect
+deletions and schema/relational/serving-reader preparation remain separate
+allocation and resumption gaps. The automatic owner still holds its existing
+whole-candidate reservation; no default-load, complete-resource, power-loss or
+release-performance qualification follows from these insertion fixtures.
+
+### Publication lock scope and duplicated descriptors
+
+The initial full storage suite exposed a controlled overflow cancellation case
+returning a busy-lock denial after its preceding publication scope had exited.
+The isolated case passed. A deterministic duplicated-descriptor reproduction
+then failed for both overflow and row-page publication, in both ordinary and
+controlled acquisition modes: closing the original file alone leaves the lock
+held until its duplicate closes. Concurrent process creation can temporarily
+inherit the same descriptor before close-on-exec; this is consistent with the
+parallel-suite symptom, not a claim that its exact process interleaving was
+captured.
+
+Both actual publisher adapters now return the same private
+`PublicationLockGuard`, constructed only after successful acquisition. Dropping
+the publication scope explicitly unlocks before closing its original file,
+including when a controlled post-operation cancellation rejects the result.
+Failed acquisition never constructs a guard or unlocks another owner. The
+existing descriptor admission, fail-fast controlled contention, blocking
+ordinary acquisition, persistent sidecar bytes and publication/durability
+ordering are preserved. File closure remains the fallback if unlocking fails;
+this does not introduce a new unlock-error reporting guarantee.
+
+Two byte-identical before/after regressions keep a duplicated descriptor alive,
+verify contention while the publication scope is active, require immediate
+controlled reacquisition after that scope exits, and preserve every sidecar
+byte. Their baseline uses the uncommitted incremental-ledger foundation over
+`b25a086f`, with the original lock implementation. The helper releases every
+descriptor before asserting its recorded failure, without subprocess timing,
+extra retries, relaxed limits or changed cancellation assertions.
+
+### Bounded planning retry cost
+
+An automatic source retains only the completed memory-estimate scalar and the
+full source identity used to compute it. Repeated preparation admission denials
+on that unchanged snapshot reuse the scalar instead of traversing the database
+again every 100 ms. A changed source identity invalidates the estimate. Partial
+or cancelled traversal never creates a cached estimate. Every retry still
+checks its fresh cancellation context and attempts admission against current
+governor capacity, process-memory policy, pressure and competing ownership.
+The scalar cache neither admits a previously denied request nor changes the
+whole-candidate reservation or resource ceilings.
+
+`AutomaticCheckpointReport` exposes `planning_scans`, `planning_cache_hits` and
+the latest typed `preparation_admission_denial`. Its requested/available values
+and retryable classification let App distinguish temporary competition from a
+request that cannot fit current capacity. Replacing or refreshing the governor
+can change capacity; releasing competing memory can let a cached estimate be
+admitted without another source traversal or frontend write. This does not yet
+replace polling with governor events or classify private-WAL I/O retry errors.
+
+A byte-identical regression over 1025 nodes with 512-byte values and a 16 MiB
+governor starts eight full traversals before the cache fix and exactly one after
+it. All eight admission decisions preserve the same permanent denial, source
+identity and zero final resource charges. Separate tests exercise a stale
+identity, fresh cancellation, temporary competing memory and a real owner's
+recovery without frontend work; every persisted value is checked after reopen.
+These are operation-count/correctness assertions, not release latency or RSS
+measurements. Both synchronous manual checkpoint APIs retain their contracts.
+
+
+WAL operation dispatch, record envelopes/frames and value/map wire parsing now
+share statically dispatched implementations. Canonical node/relationship,
+property-map and tagged-value parsing also share one implementation; ordinary
+reads use no-work hooks while maintenance retains its original allocation and
+unit-admission strategy. The shared canonical backend campaign mutates every
+byte of nine scalar/container fixtures across both record kinds (134,144 cases),
+compares complete decoded identifiers/labels/endpoints/types and value bytes,
+and verifies released unit admission. This is backend parity evidence, not the
+remaining range-path, copied-codec or resource/scaling qualification.
+
+Predicate operator/arity and owned-tree construction share a parser between
+ordinary and maintenance decoding. Owned child values, property names and
+payloads move into their result instead of recursively cloning them; the
+ordinary regression checks exact wide allocation addresses, data and NaN bits.
+Text value tags, UUIDs, list/map framing and recursive interpretation also share
+one grammar. Allocation, temporary-text destruction, numeric parsing and
+chunked traversal remain backend hooks so maintenance keeps its existing
+admission/cancellation boundaries. Existing all-value, malformed-text, memory
+denial and per-unit cancellation campaigns remain required. Other codec and
+full resource/performance qualification remains open.
+
+Unfenced frontend reads receive a private read-access wrapper rather than a
+mutable branch runtime. It exposes immutable catalog/store references and a
+read execution method that rejects storage-writing plan nodes before handing
+mutable cache access to the executor. It does not clone a query snapshot or
+retain Control throughout read execution. Physical plan shape determines
+storage effects separately from procedure/report classification: ProjectGraph
+registers a definition in WAL and therefore uses the mutation publication guard
+even though it retains procedure execution and profiling. EXPLAIN ANALYZE
+rejects that side effect. Regressions cover publication/projection interleaving,
+rejection of nested write effects, immutable readers and complete reopen.
+
+The Tokio facade also checks whether a prepared plan can use a read snapshot.
+Procedures with WAL effects execute through the guarded live runtime while
+retaining their procedure classification and query result budget. They are
+ineligible for the read-only row-stream API; rejection happens during planning
+before executing the procedure.
+
+Generation retirement completes its physical reclamation before entering
+Releasing and notifying frontend waiters. Old COW stores, candidate metadata
+and captured sources are then destroyed outside Control. Their admission
+remains owned until destruction completes; only then does the owner enter Idle.
+Normal frontend writing can proceed during Releasing. Synchronous maintenance
+and quiescent suspension still wait for Idle and complete resource release.
+Published candidate
+destruction retains authoritative artifacts. Reclamation failure marks the
+owner unhealthy before releasing waiters. This ordering does not bound the
+physical reclamation scan or qualify the remaining whole-candidate memory and
+continuous-write performance gates.
+
+Ordinary and controlled relational field decoders share the length/limit rules
+and cumulative string byte-budget updates. Controlled inputs retain their
+whole-field truncation check before chunked reads, cooperative units and UTF-8
+validation. This removes duplicate interpretation rules; it does not establish
+complete allocation ownership for relational reconstruction.
+
+Concurrent group completion is covered by a mixed graph/SQL transaction that
+pauses before its shared durability barrier. Automatic work does not select an
+unacknowledged group. After the writer finishes, observing only the owner Control
+must see automatic publication without another frontend access. Old snapshots,
+complete reopened values and resource release remain checked. This addresses
+the idle completion notification path, not sustained-write performance.

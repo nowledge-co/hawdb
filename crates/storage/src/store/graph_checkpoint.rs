@@ -16,6 +16,131 @@
 
 use super::*;
 
+/// An owned, immutable source and its completed preparation plans.
+///
+/// A fresh execution context may continue planning after a work denial. The
+/// caller must retain the original maintenance admission until this state is
+/// destroyed. Artifact builders still restart their unfinished stage; this
+/// state does not yet provide resumable segment/file publication.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct CheckpointPreparation {
+    source: GraphStore,
+    catalog: Catalog,
+    plan: PreparationPlan,
+    finished: bool,
+    bootstrap: Option<CheckpointCandidate>,
+}
+
+#[derive(Debug, Default)]
+struct PreparationPlan {
+    projected: Option<(
+        Option<crate::projection::artifact::CheckpointProjectedGraphText>,
+        crate::projection::artifact::CheckpointProjectedGraphRoot,
+    )>,
+    source_scan: Option<Option<crate::source_scan::SourceScanProjection>>,
+    // Completed plan buffers can outlive the execution attempt. Keep its
+    // memory controller alive; this context is never executed after pause.
+    memory_owner: Option<crate::background::CheckpointWorkContext>,
+}
+
+impl CheckpointPreparation {
+    /// Identity of the immutable source captured before any preparation work.
+    pub fn source_identity(&self) -> CheckpointSourceIdentity {
+        self.source
+            .checkpoint_source_identity()
+            .expect("preparation owns a durable source")
+    }
+
+    pub fn can_continue_from(&self, source: &GraphStore) -> bool {
+        self.source.ensure_usable().is_ok()
+            && source.ensure_usable().is_ok()
+            && source
+                .durable
+                .as_ref()
+                .is_some_and(|durable| !durable.read_only)
+            && self
+                .source
+                .checkpoint_source_identity()
+                .zip(source.checkpoint_source_identity())
+                .is_some_and(|(original, latest)| original.can_advance_to(latest))
+            && self
+                .source
+                .durable
+                .as_ref()
+                .zip(source.durable.as_ref())
+                .is_some_and(|(original, latest)| original.wal_path == latest.wal_path)
+    }
+
+    pub fn prepare_candidate_with_work_context(
+        &mut self,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<CheckpointCandidate>> {
+        if self.bootstrap.is_none() {
+            let Some(prepared) = self.prepare_with_work_context(work)? else {
+                return Ok(None);
+            };
+            self.bootstrap = Some(self.source.checkpoint_candidate_from_prepared(
+                &self.catalog,
+                prepared,
+                work,
+            ));
+        }
+        let result = work.classify(|work| {
+            self.bootstrap
+                .as_mut()
+                .expect("preparation owns bootstrap")
+                .bootstrap_with_work_context(work)
+        });
+        match result {
+            Ok(()) => Ok(self.bootstrap.take()),
+            Err(crate::background::CheckpointOperationError::Work(error)) => {
+                Err(HawDBError::from_storage_error(error))
+            }
+            Err(crate::background::CheckpointOperationError::Operation(error)) => {
+                // A partial mount or physical error cannot reuse mutated roots.
+                // Discard private artifacts, then rebuild from the same source.
+                self.bootstrap = None;
+                self.finished = false;
+                Err(error)
+            }
+        }
+    }
+
+    pub fn prepare_with_work_context(
+        &mut self,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<PreparedCheckpoint>> {
+        if self.finished {
+            return Err(HawDBError::StorageIntegrity(
+                "checkpoint preparation was already consumed".into(),
+            ));
+        }
+        let result = self.source.prepare_checkpoint_with_maintenance_inner(
+            &self.catalog,
+            DerivedArtifactBuildConfig::default(),
+            None,
+            None,
+            work,
+            &mut self.plan,
+        );
+        self.source.poison_on_storage_error(&result);
+        if matches!(result, Ok(Some(_))) {
+            self.finished = true;
+        }
+        result
+    }
+}
+use crate::relational::decode_relational_checkpoint_file_with_work_context;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "graph_checkpoint/definition_memory_tests.rs"]
+mod definition_memory_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "graph_checkpoint/preparation_state_tests.rs"]
+mod preparation_state_tests;
+
 struct ExactRelationalOverflowCheckpoint<'a> {
     references: &'a hawdb_storage::relational::RelationalOverflowReferenceSet,
     scan: relational_row_pages::RelationalOverflowClosureScanReport,
@@ -74,12 +199,12 @@ fn push_property_projection_definition(
     definitions: &mut Vec<PersistentPropertyProjectionDefinition>,
     admission: &mut PersistentPropertyProjectionDefinitionAdmission,
     definition: PersistentPropertyProjectionDefinition,
+    work: &crate::background::CheckpointDecodeContext,
 ) -> Result<()> {
     admission
         .admit(&definition)
         .map_err(HawDBError::from_storage_error)?;
-    definitions.push(definition);
-    Ok(())
+    work.push(definitions, definition)
 }
 
 fn push_relationship_property_projection_definitions(
@@ -87,6 +212,7 @@ fn push_relationship_property_projection_definitions(
     admission: &mut PersistentPropertyProjectionDefinitionAdmission,
     rel_type: RelTypeId,
     property: &str,
+    work: &crate::background::CheckpointDecodeContext,
 ) -> Result<()> {
     for kind in [
         PersistentPropertyProjectionKind::RelationshipEquality,
@@ -97,16 +223,39 @@ fn push_relationship_property_projection_definitions(
             admission,
             PersistentPropertyProjectionDefinition {
                 label_id: LabelId(rel_type.0),
-                property: property.to_string(),
+                property: work.string(property)?,
                 kind,
                 complete: false,
             },
+            work,
         )?;
     }
     Ok(())
 }
 
 impl GraphStore {
+    #[doc(hidden)]
+    pub fn begin_checkpoint_preparation(
+        &self,
+        catalog: &Catalog,
+    ) -> Result<Option<CheckpointPreparation>> {
+        self.ensure_usable()?;
+        if self.durable.is_none() {
+            return Ok(None);
+        }
+        let mut source = self.checkpoint_source();
+        if let Some(captured) = self.checkpoint_capture_started {
+            source.checkpoint_capture_started = Some(captured);
+        }
+        Ok(Some(CheckpointPreparation {
+            source,
+            catalog: catalog.clone(),
+            plan: PreparationPlan::default(),
+            finished: false,
+            bootstrap: None,
+        }))
+    }
+
     pub(super) fn mount_append_generation_for_recovery(&mut self) -> Result<()> {
         let Some(durable) = self.durable.as_ref() else {
             self.append_generation_reader = None;
@@ -440,7 +589,9 @@ impl GraphStore {
 
     #[doc(hidden)]
     pub fn checkpoint_source(&self) -> Self {
+        let captured_at = std::time::Instant::now();
         let mut source = self.snapshot();
+        source.checkpoint_capture_started = Some(captured_at);
         source.durable = self.durable.clone();
         if let Some(durable) = &mut source.durable {
             durable.wal_append_file = None;
@@ -451,6 +602,23 @@ impl GraphStore {
     #[doc(hidden)]
     pub fn prepare_checkpoint(&self, catalog: &Catalog) -> Result<Option<PreparedCheckpoint>> {
         self.prepare_checkpoint_with_build_config(catalog, DerivedArtifactBuildConfig::default())
+    }
+
+    /// Captures and reframes the committed suffix into the prepared generation.
+    /// Call on a checkpoint source captured under the writer, while retaining
+    /// the checkpoint coordinator. This does not publish a selector or change
+    /// the authoritative WAL. Runtime rebasing and final identity validation
+    /// are required before publication.
+    #[doc(hidden)]
+    pub fn prepare_checkpoint_wal_tail(
+        &self,
+        prepared: &PreparedCheckpoint,
+    ) -> Result<CheckpointWalTail> {
+        self.ensure_usable()?;
+        let durable = self.durable.as_ref().ok_or_else(|| {
+            HawDBError::Storage("checkpoint WAL suffix requires durable storage".into())
+        })?;
+        durable.prepare_checkpoint_wal_tail(prepared, self.commit_epoch)
     }
 
     fn prepare_checkpoint_with_build_config(
@@ -468,11 +636,45 @@ impl GraphStore {
         exact_overflow: Option<ExactRelationalOverflowCheckpoint<'_>>,
         row_compaction: Option<RelationalRowCompactionCheckpoint<'_>>,
     ) -> Result<Option<PreparedCheckpoint>> {
+        self.prepare_checkpoint_with_maintenance_controlled(
+            catalog,
+            build_config,
+            exact_overflow,
+            row_compaction,
+            &crate::background::CheckpointWorkContext::default(),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_checkpoint_with_work_context(
+        &self,
+        catalog: &Catalog,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<PreparedCheckpoint>> {
+        self.prepare_checkpoint_with_maintenance_controlled(
+            catalog,
+            DerivedArtifactBuildConfig::default(),
+            None,
+            None,
+            work,
+        )
+    }
+
+    fn prepare_checkpoint_with_maintenance_controlled(
+        &self,
+        catalog: &Catalog,
+        build_config: DerivedArtifactBuildConfig,
+        exact_overflow: Option<ExactRelationalOverflowCheckpoint<'_>>,
+        row_compaction: Option<RelationalRowCompactionCheckpoint<'_>>,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<PreparedCheckpoint>> {
         let result = self.prepare_checkpoint_with_maintenance_inner(
             catalog,
             build_config,
             exact_overflow,
             row_compaction,
+            work,
+            &mut PreparationPlan::default(),
         );
         self.poison_on_storage_error(&result);
         result
@@ -484,10 +686,13 @@ impl GraphStore {
         build_config: DerivedArtifactBuildConfig,
         exact_overflow: Option<ExactRelationalOverflowCheckpoint<'_>>,
         row_compaction: Option<RelationalRowCompactionCheckpoint<'_>>,
+        work: &crate::background::CheckpointWorkContext,
+        plan: &mut PreparationPlan,
     ) -> Result<Option<PreparedCheckpoint>> {
         let Some(durable) = self.durable.as_ref() else {
             return Ok(None);
         };
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
         let estimated_record_bytes = self.estimated_logical_record_bytes();
         let checkpoint_out_of_core = match self.residency_mode {
             StorageResidencyMode::Materialized => false,
@@ -497,35 +702,68 @@ impl GraphStore {
                     || estimated_record_bytes > self.auto_materialize_checkpoint_bytes
             }
         };
-        let (projected_graph_artifacts, artifacts) = if checkpoint_out_of_core {
-            (None, BTreeMap::new())
-        } else {
-            let encoded =
-                encode_projected_graph_artifacts(catalog, self, self.next_projection_epoch());
-            let (_, artifacts) = decode_projected_graph_artifacts(&encoded)?;
-            (Some(encoded), artifacts)
-        };
-        let source_scan_projection = (!checkpoint_out_of_core).then(|| {
-            source_scan::build(
-                self.commit_epoch,
-                catalog.label_id("Source"),
-                self.nodes.values(),
-            )
-        });
-        let merged_nodes = self.canonical_base.as_ref().map(|_| {
-            self.node_records_owned()
-                .inspect(|record| self.poison_on_storage_error(record))
-                .map(|record| {
-                    record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
+        if plan.projected.is_none() {
+            let projected = if checkpoint_out_of_core {
+                (
+                    None,
+                    crate::projection::artifact::CheckpointProjectedGraphRoot::empty(work)?,
+                )
+            } else {
+                let encoded = encode_projected_graph_artifacts_with_work_context(
+                    catalog,
+                    self,
+                    self.next_projection_epoch(),
+                    work,
+                )?;
+                let (_, artifacts) = hawdb_storage::projection::artifact::decode_projected_graph_artifacts_with_work_context(
+                &encoded, work,
+            )?;
+                (Some(encoded), artifacts.into_root(work)?)
+            };
+            plan.memory_owner = Some(work.clone());
+            plan.projected = Some(projected);
+        }
+        if plan.source_scan.is_none() {
+            let source_scan_projection = (!checkpoint_out_of_core)
+                .then(|| {
+                    source_scan::build_with_pinned_nodes(
+                        self.commit_epoch,
+                        catalog.label_id("Source"),
+                        &self.nodes,
+                        work,
+                    )
                 })
-        });
+                .transpose()?;
+            plan.source_scan = Some(source_scan_projection);
+        }
+        let publish_projected_graph_artifacts = plan
+            .projected
+            .as_ref()
+            .expect("completed projection plan")
+            .0
+            .is_some();
+        let merged_nodes = self
+            .canonical_base
+            .as_ref()
+            .map(|_| {
+                Ok::<_, HawDBError>(
+                    self.checkpoint_node_records_owned(work)?
+                        .checkpoint_steps()
+                        .inspect(|record| self.poison_on_storage_error(record))
+                        .map(|record| {
+                            record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
+                        }),
+                )
+            })
+            .transpose()?;
         let property_projection_records = self.canonical_base.as_ref().map(|_| {
             let nodes = self
-                .node_records_owned()
+                .checkpoint_node_records_owned(work)?
+                        .checkpoint_steps()
                 .inspect(|record| self.poison_on_storage_error(record))
                 .map(|record| {
                     record
-                        .map(PersistentPropertyProjectionRecord::Node)
+                        .map(|record| record.map(crate::property_projection::CheckpointPropertyProjectionRecord::Node))
                         .map_err(|error| {
                             hawdb_storage::property_projection::PersistentPropertyProjectionError::Source(
                                 error.to_string(),
@@ -533,19 +771,27 @@ impl GraphStore {
                         })
                 });
             let relationships = self
-                .relationship_records_owned()
+                .checkpoint_relationship_records_owned(work)?
+                        .checkpoint_steps()
                 .inspect(|record| self.poison_on_storage_error(record))
                 .map(|record| {
                     record
-                        .map(PersistentPropertyProjectionRecord::Relationship)
+                        .map(|record| record.map(crate::property_projection::CheckpointPropertyProjectionRecord::Relationship))
                         .map_err(|error| {
                             hawdb_storage::property_projection::PersistentPropertyProjectionError::Source(
                                 error.to_string(),
                             )
                         })
                 });
-            nodes.chain(relationships)
-        });
+            Ok::<_, HawDBError>(nodes.chain(relationships))
+        }).transpose()?;
+        // This inventory outlives both the definitions passed to the builder
+        // and the temporary borrowed relationship-key tree. Admission precedes
+        // each exact string/vector capacity and each bounded tree insertion.
+        let definition_memory = crate::background::CheckpointDecodeContext {
+            work: work.clone(),
+            memory: std::cell::RefCell::default(),
+        };
         let mut property_projection_definitions = Vec::new();
         let mut property_projection_definition_admission =
             PersistentPropertyProjectionDefinitionAdmission::new(build_config.property_projection);
@@ -560,15 +806,18 @@ impl GraphStore {
                 &mut property_projection_definition_admission,
                 PersistentPropertyProjectionDefinition {
                     label_id: index.label_id,
-                    property: index.property.clone(),
+                    property: definition_memory.string(&index.property)?,
                     kind,
                     complete: false,
                 },
+                &definition_memory,
             )?;
         }
         for index in catalog.composite_property_indexes() {
-            let property = persistent_composite_property_identity(&index.properties)
-                .map_err(HawDBError::from_storage_error)?;
+            let property = crate::property_projection::persistent_composite_property_identity_with_work_context(
+                &index.properties,
+                &definition_memory,
+            ).map_err(HawDBError::from_storage_error)?;
             push_property_projection_definition(
                 &mut property_projection_definitions,
                 &mut property_projection_definition_admission,
@@ -578,102 +827,171 @@ impl GraphStore {
                     kind: PersistentPropertyProjectionKind::CompositeEquality,
                     complete: false,
                 },
+                &definition_memory,
             )?;
         }
         let mut relationship_property_definitions = BTreeSet::new();
+        // MapMemory's String plus RelTypeId payload conservatively covers this
+        // borrowed (RelTypeId, &str) key without duplicating property strings.
+        let mut relationship_definition_memory =
+            crate::projection::predicate_checkpoint::decode::MapMemory::<RelTypeId>::default();
         for (rel_type, property, _) in self.relationship_property_index.keys() {
-            if relationship_property_definitions.insert((*rel_type, property.clone())) {
+            let key = (*rel_type, property.as_str());
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            let new = !relationship_property_definitions.contains(&key);
+            if new {
+                relationship_definition_memory
+                    .before_insert(relationship_property_definitions.len(), &definition_memory)?;
+                relationship_property_definitions.insert(key);
+            }
+            unit.finish();
+            if new {
                 push_relationship_property_projection_definitions(
                     &mut property_projection_definitions,
                     &mut property_projection_definition_admission,
                     *rel_type,
                     property,
+                    &definition_memory,
                 )?;
             }
         }
         if let Some(projection) = &self.persistent_property_projection {
             for definition in &projection.manifest().definitions {
-                if matches!(
+                let key = (
+                    RelTypeId(definition.label_id.0),
+                    definition.property.as_str(),
+                );
+                let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+                let new = matches!(
                     definition.kind,
                     PersistentPropertyProjectionKind::RelationshipEquality
                         | PersistentPropertyProjectionKind::RelationshipRange
-                ) && relationship_property_definitions.insert((
-                    RelTypeId(definition.label_id.0),
-                    definition.property.clone(),
-                )) {
+                ) && !relationship_property_definitions.contains(&key);
+                if new {
+                    relationship_definition_memory.before_insert(
+                        relationship_property_definitions.len(),
+                        &definition_memory,
+                    )?;
+                    relationship_property_definitions.insert(key);
+                }
+                unit.finish();
+                if new {
                     push_relationship_property_projection_definitions(
                         &mut property_projection_definitions,
                         &mut property_projection_definition_admission,
                         RelTypeId(definition.label_id.0),
                         &definition.property,
+                        &definition_memory,
                     )?;
                 }
             }
         }
-        let merged_relationships = self.canonical_base.as_ref().map(|_| {
-            self.relationship_records_owned()
-                .inspect(|record| self.poison_on_storage_error(record))
-                .map(|record| {
-                    record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
-                })
-        });
-        let adjacency_relationships = self.canonical_base.as_ref().map(|_| {
-            self.relationship_records_owned()
-                .inspect(|record| self.poison_on_storage_error(record))
-                .map(|record| {
-                    record.map_err(|error| {
-                        hawdb_storage::canonical_adjacency::CanonicalAdjacencyError::Source(
-                            error.to_string(),
-                        )
-                    })
-                })
-        });
+        let merged_relationships = self
+            .canonical_base
+            .as_ref()
+            .map(|_| {
+                Ok::<_, HawDBError>(
+                    self.checkpoint_relationship_records_owned(work)?
+                        .checkpoint_steps()
+                        .inspect(|record| self.poison_on_storage_error(record))
+                        .map(|record| {
+                            record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
+                        }),
+                )
+            })
+            .transpose()?;
+        let adjacency_relationships = self
+            .canonical_base
+            .as_ref()
+            .map(|_| {
+                Ok::<_, HawDBError>(
+                    self.checkpoint_relationship_records_owned(work)?
+                        .checkpoint_steps()
+                        .inspect(|record| self.poison_on_storage_error(record))
+                        .map(|record| {
+                            record.map_err(|error| {
+                                hawdb_storage::canonical_adjacency::CanonicalAdjacencyError::Source(
+                                    error.to_string(),
+                                )
+                            })
+                        }),
+                )
+            })
+            .transpose()?;
         let commit_epoch = self.commit_epoch;
         let checkpoint_statistics = if checkpoint_out_of_core && !self.canonical_base_out_of_core {
-            let mut statistics = graph_statistics_from_basic(self.basic_statistics(), false);
-            statistics.index_samples = compute_index_statistics_samples(
-                catalog,
-                &self.property_index,
-                &self.composite_property_index,
-            );
+            let basic = self
+                .basic_statistics
+                .materialize_with_work_context(self.commit_epoch, work)
+                .map_err(HawDBError::from_storage_error)?;
+            let mut statistics = graph_statistics_from_basic(basic, false);
+            statistics.index_samples =
+                hawdb_storage::statistics::checkpoint::index_samples_with_work_context(
+                    catalog,
+                    &self.property_index,
+                    &self.composite_property_index,
+                    work,
+                )
+                .map_err(HawDBError::from_storage_error)?;
             statistics
         } else {
-            self.statistics(catalog)
+            self.checkpoint_statistics_with_work_context(catalog, work)?
         };
         let generation = durable.next_checkpoint_generation()?;
         let staging_path = durable.prepare_checkpoint_staging(generation)?;
         let prepared = (|| {
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
             let append_rows = self
                 .append_state
-                .checkpoint_rows(self.append_publication_config.segment.max_rows)
+                .checkpoint_rows_with_work_context(
+                    self.append_publication_config.segment.max_rows,
+                    work,
+                )
                 .map_err(HawDBError::from_storage_error)?;
-            let append_report = AppendPublisher::publish_candidate_with_state(
-                durable.root_path(),
-                generation,
-                commit_epoch,
-                self.append_generation_reader.as_ref(),
-                AppendPublicationState::new(
-                    self.append_state.schemas(),
-                    self.append_state.generated_order_watermarks(),
-                ),
-                &append_rows,
-                self.append_publication_config,
+            let append_report = AppendPublisher::publish_checkpoint_with_work_context(
+                hawdb_storage::append_table::AppendCheckpointPublicationRequest {
+                    directory: durable.root_path(),
+                    generation,
+                    source_commit_epoch: commit_epoch,
+                    previous: self.append_generation_reader.as_ref(),
+                    state: AppendPublicationState::new(
+                        self.append_state.schemas(),
+                        self.append_state.generated_order_watermarks(),
+                    ),
+                    rows: &append_rows,
+                    config: self.append_publication_config,
+                },
+                work,
             )
             .map_err(HawDBError::from_storage_error)?;
-            let checkpoint_append_reader = AppendGenerationReader::open_bound(
+            let checkpoint_append_reader = AppendGenerationReader::open_bound_with_work_context(
                 durable.root_path(),
                 append_report.generation_artifacts,
                 self.append_publication_config,
+                work,
             )
             .map_err(HawDBError::from_storage_error)?;
-            if let Some(encoded) = projected_graph_artifacts.as_deref() {
-                durable.write_projected_graph_artifacts_to(
+            if let Some(encoded) = plan
+                .projected
+                .as_ref()
+                .expect("completed projection plan")
+                .0
+                .as_deref()
+            {
+                durable.write_projected_graph_artifacts_to_with_work_context(
                     &staging_path.join(PROJECTED_GRAPHS_FILE),
                     encoded,
+                    work,
                 )?;
             }
-            let source_scan_publication = source_scan_projection
-                .map(|mut projection| source_scan::write(&staging_path, &mut projection))
+            let source_scan_publication = plan
+                .source_scan
+                .as_mut()
+                .expect("completed source-scan plan")
+                .as_mut()
+                .map(|projection| {
+                    source_scan::write_with_work_context(&staging_path, projection, work)
+                })
                 .transpose()?;
             let (canonical_manifest_artifact, property_spill_manifest_artifact) =
                 match (merged_nodes, merged_relationships) {
@@ -682,14 +1000,16 @@ impl GraphStore {
                         relationships,
                         generation,
                         commit_epoch,
+                        work,
                     )?,
                     (None, None) => durable.write_canonical_segments(
-                        self.nodes.values().map(|node| Ok(node.clone())),
+                        self.nodes.values().map(|node| Ok(Some(node))),
                         self.relationships
                             .values()
-                            .map(|relationship| Ok(relationship.clone())),
+                            .map(|relationship| Ok(Some(relationship))),
                         generation,
                         commit_epoch,
+                        work,
                     )?,
                     _ => unreachable!("canonical base iterators are created together"),
                 };
@@ -699,12 +1019,14 @@ impl GraphStore {
                     generation,
                     commit_epoch,
                     build_config.adjacency,
+                    work,
                 )?,
                 None => durable.write_canonical_adjacency(
-                    self.relationships.values().cloned().map(Ok),
+                    self.relationships.values().map(Some).map(Ok),
                     generation,
                     commit_epoch,
                     build_config.adjacency,
+                    work,
                 )?,
             };
             let property_projection_manifest_artifact = match property_projection_records {
@@ -714,40 +1036,46 @@ impl GraphStore {
                     generation,
                     commit_epoch,
                     build_config.property_projection,
+                    work,
                 )?,
                 None => durable.write_persistent_property_projection(
                     property_projection_definitions,
                     self.nodes
                         .values()
-                        .cloned()
-                        .map(PersistentPropertyProjectionRecord::Node)
+                        .map(|node| crate::property_projection::CheckpointPropertyProjectionRecord::Node(
+                            crate::graph_overlay::CheckpointRecordRef::Borrowed(node)))
+                        .map(Some)
                         .map(Ok)
                         .chain(
                             self.relationships
                                 .values()
-                                .cloned()
-                                .map(PersistentPropertyProjectionRecord::Relationship)
+                                .map(|relationship| crate::property_projection::CheckpointPropertyProjectionRecord::Relationship(
+                                    crate::graph_overlay::CheckpointRecordRef::Borrowed(relationship)))
+                                .map(Some)
                                 .map(Ok),
                         ),
                     generation,
                     commit_epoch,
                     build_config.property_projection,
+                    work,
                 )?,
             };
             let relational_checkpoint_artifact = durable.write_relational_checkpoint(
                 &self.relational_state,
                 commit_epoch,
                 generation,
+                work,
             )?;
             let checkpoint_relational_state = relational_checkpoint_artifact
                 .map(|_| {
                     let index_load = self.relational_checkpoint_index_load();
-                    decode_relational_checkpoint_file_with_index_load(
+                    decode_relational_checkpoint_file_with_work_context(
                         &durable
                             .root_path()
                             .join(relational_checkpoint_generation_file(generation)),
                         RelationalDecodeLimits::checkpoint(),
                         index_load,
+                        work,
                     )
                     .map(|checkpoint| checkpoint.state)
                     .map_err(HawDBError::from_storage_error)
@@ -763,7 +1091,9 @@ impl GraphStore {
                 .transpose()?;
             let previous_row = previous_overflow
                 .as_ref()
-                .map(|overflow| durable.open_bound_relational_row_pages(overflow))
+                .map(|overflow| {
+                    durable.open_bound_relational_row_pages_with_work_context(overflow, Some(work))
+                })
                 .transpose()?;
             let previous_allocated_pages = previous_row.as_ref().map_or(0, |reader| {
                 reader
@@ -796,7 +1126,8 @@ impl GraphStore {
                     "exact overflow compaction requires canonical metadata-only rows".to_string(),
                 ));
             }
-            let overflow_publisher = RelationalOverflowPublisher::new(overflow_publication_config);
+            let overflow_publisher = RelationalOverflowPublisher::new(overflow_publication_config)
+                .with_work_context(work);
             let mut copied_base_extent_count = 0u64;
             let mut introduced_extent_count = 0u64;
             let relational_overflow_report = if let Some(exact) = exact_overflow.as_ref() {
@@ -833,10 +1164,10 @@ impl GraphStore {
                 })?;
                 let overflow_inputs = self
                     .relational_state
-                    .overflow_delta_generation_inputs(&row_plan.deltas)
+                    .overflow_delta_generation_inputs_with_work_context(&row_plan.deltas, work)
                     .map_err(HawDBError::from_storage_error)?;
                 overflow_publisher
-                    .persist_generation_retaining_base(
+                    .persist_checkpoint_generation_retaining_base(
                         durable.root_path(),
                         generation,
                         commit_epoch,
@@ -848,13 +1179,14 @@ impl GraphStore {
             } else {
                 let overflow_inputs = self
                     .relational_state
-                    .overflow_generation_inputs(
+                    .overflow_generation_inputs_with_work_context(
                         previous_overflow.is_some(),
                         max_materialized_overflow_bytes,
+                        work,
                     )
                     .map_err(HawDBError::from_storage_error)?;
                 overflow_publisher
-                    .persist_generation(
+                    .persist_checkpoint_generation(
                         durable.root_path(),
                         generation,
                         commit_epoch,
@@ -920,7 +1252,8 @@ impl GraphStore {
                     .map(|binding| binding.generation),
                 overflow_root: Some(&relational_overflow_root),
             };
-            let row_publisher = RelationalRowPagePublisher::new(row_publication_config);
+            let row_publisher =
+                RelationalRowPagePublisher::new(row_publication_config).with_work_context(work);
             let relational_row_report = match row_compaction.as_ref() {
                 Some(compaction) => {
                     row_compaction_checkpoint(compaction.task)?;
@@ -941,10 +1274,11 @@ impl GraphStore {
                 .as_ref()
                 .map(|compaction| {
                     let root =
-                        hawdb_storage::relational::RelationalRowPageRootReader::open_generation(
+                        hawdb_storage::relational::RelationalRowPageRootReader::open_generation_with_work_context(
                             durable.root_path(),
                             generation,
                             row_publication_config,
+                            Some(work),
                         )
                         .map_err(row_compaction_publication_error)?;
                     Ok::<_, HawDBError>(RelationalRowPageCompactionReport {
@@ -992,21 +1326,31 @@ impl GraphStore {
                 },
                 generation,
                 self.search_projection_graph_changes.iter().map(Arc::as_ref),
+                work,
             )?;
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
             checkpoint_publish_failpoint(CheckpointPublishStage::CheckpointPersisted)?;
             durable.prepare_wal_generation(generation)?;
             checkpoint_publish_failpoint(CheckpointPublishStage::WalPrepared)?;
             if let Some(compaction) = row_compaction.as_ref() {
                 row_compaction_checkpoint(compaction.task)?;
             }
+            let checkpoint_statistics =
+                CheckpointStatisticsState::with_work_context(checkpoint_statistics, work)
+                    .map_err(HawDBError::from_storage_error)?;
+            // Move completed roots only after the last fallible preparation
+            // step. A denied step must leave its earlier plans in this state.
+            let artifacts = plan.projected.take().expect("completed projection plan").1;
             Ok(PreparedCheckpoint {
                 source_commit_epoch: commit_epoch,
                 source_checkpoint_epoch: durable.checkpoint_epoch,
                 source_next_lsn: durable.next_lsn,
+                source_wal_generation: durable.wal_generation,
+                source_wal_bytes: durable.wal_bytes,
                 generation,
                 checkpoint_out_of_core,
-                projected_graph_artifacts: artifacts,
-                publish_projected_graph_artifacts: projected_graph_artifacts.is_some(),
+                projected_graph_artifacts: Some(artifacts),
+                publish_projected_graph_artifacts,
                 source_scan_publication,
                 checkpoint_statistics,
                 checkpoint_relational_state,
@@ -1114,7 +1458,7 @@ impl GraphStore {
 
     fn publish_prepared_checkpoint_with_reclamation_inner(
         &mut self,
-        prepared: PreparedCheckpoint,
+        mut prepared: PreparedCheckpoint,
         oldest_reader_commit_epoch: Option<u64>,
         pinned_reader_generations: Option<&BTreeSet<u64>>,
         shadow_admission: Option<ColumnarShadowAdmission>,
@@ -1126,6 +1470,8 @@ impl GraphStore {
         if self.commit_epoch != prepared.source_commit_epoch
             || durable.checkpoint_epoch != prepared.source_checkpoint_epoch
             || durable.next_lsn != prepared.source_next_lsn
+            || durable.wal_generation != prepared.source_wal_generation
+            || durable.wal_bytes != prepared.source_wal_bytes
         {
             durable.discard_prepared_checkpoint(prepared.generation, &prepared.staging_path)?;
             return Err(HawDBError::Storage(format!(
@@ -1165,41 +1511,8 @@ impl GraphStore {
             })
             .transpose()?
             .flatten();
-        self.projected_graph_artifacts = prepared.projected_graph_artifacts.into();
         self.source_scan_manifest = source_scan_manifest.into();
-        self.checkpoint_statistics = prepared.checkpoint_statistics;
-        if let Some(relational_state) = prepared.checkpoint_relational_state {
-            self.relational_state = relational_state;
-        }
-        self.append_state = AppendState::from_checkpoint_with_generated_order_watermarks(
-            prepared.checkpoint_append_reader.manifest().schemas.clone(),
-            prepared.checkpoint_append_reader.watermarks(),
-            prepared
-                .checkpoint_append_reader
-                .generated_order_watermarks()
-                .clone(),
-        )
-        .map_err(HawDBError::from_storage_error)?;
-        self.append_generation_reader = Some(prepared.checkpoint_append_reader);
-        if prepared.checkpoint_out_of_core {
-            self.canonical_base = durable.canonical_segments.clone();
-            self.canonical_adjacency = durable.canonical_adjacency.clone();
-            self.persistent_property_projection = durable.persistent_property_projection.clone();
-            self.canonical_base_out_of_core = true;
-            self.nodes = CowSegmentedMap::default();
-            self.relationships = CowSegmentedMap::default();
-            self.node_tombstones = CowSegment::default();
-            self.relationship_tombstones = CowSegment::default();
-            self.outgoing = CowSegmentedMap::default();
-            self.incoming = CowSegmentedMap::default();
-            self.property_index = CowSegmentedMap::default();
-            self.composite_property_index = CowSegmentedMap::default();
-            self.full_text_property_index = CowSegmentedMap::default();
-            self.relationship_property_index = CowSegmentedMap::default();
-        }
-        self.mount_relational_row_pages_for_recovery()?;
-        self.install_prepared_relational_index_candidate(prepared.relational_index_candidate);
-        self.validate_authoritative_relational_index_open()?;
+        self.adopt_prepared_checkpoint_state(&mut prepared)?;
         // Derived shadow double-write: published after the row-oriented
         // checkpoint so its `source_commit_epoch` is the epoch this
         // checkpoint made durable. The checkpoint's Result reflects
@@ -1223,6 +1536,56 @@ impl GraphStore {
         }
         self.reclaim_version_history();
         Ok(())
+    }
+
+    /// Mount the prepared base without publishing a selector. Private suffix
+    /// replay and ordinary strict publication share exactly this adoption path.
+    pub(super) fn adopt_prepared_checkpoint_state(
+        &mut self,
+        prepared: &mut PreparedCheckpoint,
+    ) -> Result<()> {
+        self.projected_graph_artifacts =
+            prepared.projected_graph_artifacts.take().ok_or_else(|| {
+                HawDBError::Storage("prepared projection root was already adopted".into())
+            })?;
+        self.checkpoint_statistics = prepared.checkpoint_statistics.clone();
+        if let Some(relational_state) = prepared.checkpoint_relational_state.take() {
+            self.relational_state = relational_state;
+        }
+        self.append_state = AppendState::from_checkpoint_with_generated_order_watermarks(
+            prepared.checkpoint_append_reader.manifest().schemas.clone(),
+            prepared.checkpoint_append_reader.watermarks(),
+            prepared
+                .checkpoint_append_reader
+                .generated_order_watermarks()
+                .clone(),
+        )
+        .map_err(HawDBError::from_storage_error)?;
+        self.append_generation_reader = Some(prepared.checkpoint_append_reader.clone());
+        if prepared.checkpoint_out_of_core {
+            let durable = self.durable.as_ref().ok_or_else(|| {
+                HawDBError::StorageIntegrity("checkpoint base has no durable bindings".into())
+            })?;
+            self.canonical_base = durable.canonical_segments.clone();
+            self.canonical_adjacency = durable.canonical_adjacency.clone();
+            self.persistent_property_projection = durable.persistent_property_projection.clone();
+            self.canonical_base_out_of_core = true;
+            self.nodes = CowSegmentedMap::default();
+            self.relationships = CowSegmentedMap::default();
+            self.node_tombstones = CowSegment::default();
+            self.relationship_tombstones = CowSegment::default();
+            self.outgoing = CowSegmentedMap::default();
+            self.incoming = CowSegmentedMap::default();
+            self.property_index = CowSegmentedMap::default();
+            self.composite_property_index = CowSegmentedMap::default();
+            self.full_text_property_index = CowSegmentedMap::default();
+            self.relationship_property_index = CowSegmentedMap::default();
+        }
+        self.mount_relational_row_pages_for_recovery()?;
+        self.install_prepared_relational_index_candidate(
+            prepared.relational_index_candidate.take(),
+        );
+        self.validate_authoritative_relational_index_open()
     }
 
     /// Checkpoint entry that carries an explicit pre-admitted shadow
@@ -1498,10 +1861,10 @@ impl GraphStore {
 
     #[doc(hidden)]
     pub fn checkpoint_estimated_operations(&self) -> usize {
-        let statistics = self.basic_statistics();
-        let graph_operations = statistics
+        let graph_operations = self
+            .basic_statistics
             .node_count
-            .saturating_add(statistics.relationship_count);
+            .saturating_add(self.basic_statistics.relationship_count);
         usize::try_from(graph_operations)
             .unwrap_or(usize::MAX)
             .saturating_add(self.relational_state.total_row_count())
@@ -1509,6 +1872,27 @@ impl GraphStore {
     }
 
     pub(super) fn estimated_delta_resident_bytes(&self) -> u64 {
+        let tombstones = self
+            .node_tombstones
+            .len()
+            .saturating_add(self.relationship_tombstones.len()) as u64;
+        [
+            self.nodes.delta_pressure_bytes(),
+            self.relationships.delta_pressure_bytes(),
+            self.outgoing.delta_pressure_bytes(),
+            self.incoming.delta_pressure_bytes(),
+            self.property_index.delta_pressure_bytes(),
+            self.composite_property_index.delta_pressure_bytes(),
+            self.full_text_property_index.delta_pressure_bytes(),
+            self.relationship_property_index.delta_pressure_bytes(),
+            tombstones.saturating_mul(32),
+        ]
+        .into_iter()
+        .fold(0u64, u64::saturating_add)
+    }
+
+    #[cfg(test)]
+    pub(super) fn estimated_delta_resident_bytes_reference(&self) -> u64 {
         let record_bytes = self
             .nodes
             .values()

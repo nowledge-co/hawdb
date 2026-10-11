@@ -396,3 +396,90 @@ impl Generator {
         self.0 % bound
     }
 }
+
+#[test]
+fn checkpoint_units_overlay_exposes_each_skipped_physical_record() {
+    use crate::background::CheckpointWorkProbe;
+    use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        max_background_operations: Some(1),
+        max_total_background_operations: Some(4),
+        ..LocalQosPolicy::default()
+    });
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    probe.cancel_after.store(17, Ordering::SeqCst);
+    let work = probe.context(scheduler.clone());
+    let reads = AtomicUsize::new(0);
+    let input = (0..2049).map(|id| {
+        reads.fetch_add(1, Ordering::SeqCst);
+        Ok(node(id, 1))
+    });
+    let mut overlay = OverlayIterator::new(
+        Some(input),
+        Vec::new(),
+        (0..2048).map(NodeId).collect::<BTreeSet<_>>().into(),
+    );
+    for read in 1..=17 {
+        let unit = work.start_unit().unwrap();
+        let record = {
+            let _wave = work.io_wave().unwrap();
+            overlay.next_step().unwrap().unwrap()
+        };
+        assert!(record.is_none());
+        assert_eq!(reads.load(Ordering::SeqCst), read);
+        unit.finish();
+    }
+    assert!(work.start_unit().is_err());
+    assert_eq!(reads.load(Ordering::SeqCst), 17);
+    probe.assert_released(&scheduler);
+    assert_eq!(
+        overlay.collect::<Result<Vec<_>>>().unwrap(),
+        vec![node(2048, 1)]
+    );
+
+    let fixture = Fixture::new();
+    let reader = fixture.reader();
+    assert_eq!(
+        node_records(
+            Some(reader.node_records()),
+            vec![node(3, 2), node(5, 2)],
+            BTreeSet::from([NodeId(1), NodeId(3)]).into(),
+        )
+        .checkpoint_steps()
+        .collect::<Result<Vec<_>>>()
+        .unwrap(),
+        vec![None, None, Some(node(5, 2))]
+    );
+    assert_eq!(
+        relationship_records(
+            Some(reader.relationship_records()),
+            vec![relationship(3, 2), relationship(5, 2)],
+            BTreeSet::from([RelId(1), RelId(3)]).into(),
+        )
+        .checkpoint_steps()
+        .collect::<Result<Vec<_>>>()
+        .unwrap(),
+        vec![None, None, Some(relationship(5, 2))]
+    );
+}
+
+#[test]
+fn checkpoint_units_overlay_skips_never_hide_physical_errors() {
+    let input = [
+        Ok(node(1, 1)),
+        Err(CanonicalSegmentError::Corrupt("physical fault".to_string())),
+    ]
+    .into_iter();
+    let mut overlay = OverlayIterator::new(
+        Some(input),
+        vec![node(1, 2), node(2, 2)],
+        BTreeSet::from([NodeId(1), NodeId(2)]).into(),
+    );
+    assert_eq!(overlay.next_step().unwrap().unwrap(), None);
+    let error = overlay.next_step().unwrap().unwrap_err();
+    assert!(matches!(error, HawDBError::StorageIntegrity(_)));
+    assert!(error.to_string().contains("physical fault"));
+    assert_eq!(overlay.next_step().unwrap().unwrap(), None);
+    assert!(overlay.next_step().is_none());
+}

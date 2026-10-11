@@ -16,6 +16,20 @@
 
 use std::fmt::Debug;
 
+mod checkpoint;
+#[cfg(test)]
+pub(crate) use checkpoint::tests::CheckpointWorkProbe;
+pub(crate) use checkpoint::{
+    checkpoint_decode_allocation, CheckpointBytes, CheckpointDecodeContext, CheckpointWorkUnit,
+};
+pub(crate) use checkpoint::{CheckpointAllocationOwner, CheckpointAllocationToken};
+#[doc(hidden)]
+pub use checkpoint::{
+    CheckpointOperationError, CheckpointSharedBytes, CheckpointText, CheckpointWorkContext,
+    CheckpointWorkError,
+};
+pub(crate) use checkpoint::{CheckpointSharedValues, CheckpointValues};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackgroundWorkRequest {
     pub cpu_slots: usize,

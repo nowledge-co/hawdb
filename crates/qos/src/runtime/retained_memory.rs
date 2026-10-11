@@ -43,7 +43,27 @@ impl RuntimePermit {
         &self,
         bytes: u64,
     ) -> Result<RuntimeRetainedMemory, RuntimeAdmissionError> {
-        let mut state = mutex_lock(&self.governor.state);
+        self.governor
+            .reserve_retained_memory(self.request.priority, bytes)
+    }
+}
+
+impl RuntimeGovernorInner {
+    pub(super) fn reserve_retained_memory(
+        self: &Arc<Self>,
+        priority: RuntimeWorkPriority,
+        bytes: u64,
+    ) -> Result<RuntimeRetainedMemory, RuntimeAdmissionError> {
+        self.reserve_retained_memory_with_floor(priority, bytes, 0)
+    }
+
+    pub(super) fn reserve_retained_memory_with_floor(
+        self: &Arc<Self>,
+        priority: RuntimeWorkPriority,
+        bytes: u64,
+        irreducible_bytes: u64,
+    ) -> Result<RuntimeRetainedMemory, RuntimeAdmissionError> {
+        let mut state = mutex_lock(&self.state);
         let capacity = state.process_memory_policy.as_ref().map_or(
             state.limits.memory_capacity_bytes,
             |policy| {
@@ -53,6 +73,7 @@ impl RuntimePermit {
                     .min(policy.resident_limit_bytes())
             },
         );
+        let capacity = capacity.saturating_sub(irreducible_bytes);
         if bytes > capacity {
             return Err(admission_error_value(
                 RuntimeAdmissionCode::MemorySaturated,
@@ -61,7 +82,7 @@ impl RuntimePermit {
                 false,
             ));
         }
-        if self.request.priority == RuntimeWorkPriority::Background
+        if priority == RuntimeWorkPriority::Background
             && state.resources.memory.pressure == RuntimeMemoryPressure::Critical
         {
             return Err(admission_error_value(
@@ -106,7 +127,7 @@ impl RuntimePermit {
             .transpose()?;
         state.admitted_memory_bytes += bytes;
         Ok(RuntimeRetainedMemory {
-            governor: self.governor.clone(),
+            governor: self.clone(),
             bytes,
             process_memory,
         })

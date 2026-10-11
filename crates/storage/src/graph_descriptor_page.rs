@@ -25,6 +25,8 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 mod view;
 pub(crate) use view::{encode_verified_view, GraphDescriptorPageView};
+mod checkpoint;
+pub(crate) use checkpoint::CheckpointDescriptorPage;
 
 const PAGE_MAGIC: &[u8; 8] = b"SKGDPG01";
 const PAGE_VERSION: u16 = 1;

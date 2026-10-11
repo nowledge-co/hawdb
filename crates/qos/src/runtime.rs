@@ -44,7 +44,10 @@ const MOBILE_RESULT_BUDGET_BYTES: u64 = 2 * 1024 * 1024;
 const IO_WAVE_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const BACKGROUND_ADMISSION_AGING: Duration = Duration::from_millis(100);
 
+mod maintenance;
 mod retained_memory;
+mod working_memory;
+pub use maintenance::{RuntimeMaintenanceMemoryReport, RuntimeMaintenanceWork};
 pub use retained_memory::RuntimeRetainedMemory;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -561,6 +564,7 @@ pub struct RuntimePermit {
     executor_thread_limit: NonZeroUsize,
     io_wave_controller: Arc<GovernorIoWaveController>,
     process_memory_reservation: Option<ProcessMemoryReservation>,
+    memory_controller: Option<Arc<working_memory::GovernorMemoryController>>,
     released: bool,
 }
 
@@ -820,6 +824,21 @@ impl RuntimeGovernor {
                     reserve(&mut state, request);
                     state.admissions = state.admissions.saturating_add(1);
                     let governor = Arc::clone(&self.inner);
+                    let (memory_controller, process_memory_reservation) = if request.priority
+                        == RuntimeWorkPriority::Background
+                        && request.kind == RuntimeWorkKind::Maintenance
+                    {
+                        (
+                            Some(Arc::new(working_memory::GovernorMemoryController::new(
+                                governor.clone(),
+                                request,
+                                process_memory_reservation,
+                            ))),
+                            None,
+                        )
+                    } else {
+                        (None, process_memory_reservation)
+                    };
                     (
                         Ok(RuntimePermit {
                             governor: Arc::clone(&governor),
@@ -836,6 +855,7 @@ impl RuntimeGovernor {
                                 }),
                             }),
                             process_memory_reservation,
+                            memory_controller,
                             released: false,
                         }),
                         waiter
@@ -1018,13 +1038,19 @@ impl RuntimePermit {
             .map_or(permit_reservation, |parent_reservation| {
                 permit_reservation.intersect(parent_reservation)
             });
-        context
+        let context = context
             .with_admitted_parallelism(
                 NonZeroUsize::new(self.request.cpu_slots).unwrap_or(NonZeroUsize::MIN),
             )
             .with_executor_thread_limit(self.executor_thread_limit)
             .with_memory_reservation(execution_reservation)
-            .with_io_wave_controller(self.io_wave_controller.clone())
+            .with_io_wave_controller(self.io_wave_controller.clone());
+        match &self.memory_controller {
+            Some(controller) => context.with_memory_controller(Arc::new(
+                working_memory::GovernorMemoryBinding(controller.clone()),
+            )),
+            None => context,
+        }
     }
 
     pub fn release(mut self) {
@@ -1038,9 +1064,15 @@ impl RuntimePermit {
         if let Some(process_memory_reservation) = self.process_memory_reservation.take() {
             process_memory_reservation.release();
         }
+        let mut request = self.request;
+        if let Some(controller) = &self.memory_controller {
+            controller.close();
+            request.memory_bytes = 0;
+            request.result_bytes = 0;
+        }
         {
             let mut state = mutex_lock(&self.governor.state);
-            release(&mut state, self.request);
+            release(&mut state, request);
             state.completions = state.completions.saturating_add(1);
         }
         self.governor.notify_next_admission_waiter();

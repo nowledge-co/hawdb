@@ -23,6 +23,9 @@ use std::io::Read;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::Path;
 
+mod checkpoint;
+pub(super) use checkpoint::{encode_manifest_with_work_context, root_set_digest_with_work_context};
+
 const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM01";
 const MANIFEST_VERSION: u16 = 1;
 const PHYSICAL_GENERATIONS_FLAG: u16 = 1;
@@ -35,7 +38,7 @@ const ARTIFACT_METADATA_BYTES: usize = 44;
 pub(super) fn root_set_digest(
     tables: &[RelationalRowPageTableRoot],
 ) -> Result<Sha256Digest, RelationalRowPagePublicationError> {
-    let payload = encode_tables(tables)?;
+    let payload = encode_tables(tables, None)?;
     let mut hasher = IntegrityHasher::new();
     hasher.update(&payload);
     Ok(hasher.finish().sha256)
@@ -45,8 +48,17 @@ pub(super) fn encode_manifest(
     manifest: &RelationalRowPageRootManifest,
     config: RelationalRowPagePublicationConfig,
 ) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
-    validate_manifest(manifest, config, ErrorClass::Admission)?;
-    let mut payload = encode_tables(&manifest.tables)?;
+    encode_manifest_inner(manifest, config, None)
+}
+
+fn encode_manifest_inner(
+    manifest: &RelationalRowPageRootManifest,
+    config: RelationalRowPagePublicationConfig,
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
+    validate_manifest_inner(manifest, config, ErrorClass::Admission, work)?;
+    let mut payload = encode_tables(&manifest.tables, work)?;
+    let unit = start_unit(work)?;
     let occupancy_bytes = manifest
         .physical_generations
         .len()
@@ -64,11 +76,15 @@ pub(super) fn encode_manifest(
             "row-page occupancy metadata exceeds the manifest byte limit".to_string(),
         ));
     }
+    finish_unit(unit);
     for entry in &manifest.physical_generations {
+        let unit = start_unit(work)?;
         payload.extend_from_slice(&entry.generation.to_le_bytes());
         payload.extend_from_slice(&entry.allocated_pages.to_le_bytes());
         payload.extend_from_slice(&entry.live_pages.to_le_bytes());
+        finish_unit(unit);
     }
+    let unit = start_unit(work)?;
     payload.extend_from_slice(&manifest.relocated_page_count.to_le_bytes());
     payload.extend_from_slice(&(manifest.physical_generations.len() as u32).to_le_bytes());
     let payload_len = u32::try_from(payload.len()).map_err(|_| {
@@ -122,14 +138,18 @@ pub(super) fn encode_manifest(
     encoded.extend_from_slice(&0u32.to_le_bytes());
     encoded.extend_from_slice(&[0u8; SHA256_BYTES]);
     debug_assert_eq!(encoded.len(), MANIFEST_HEADER_BYTES);
-    encoded.extend_from_slice(&payload);
+    finish_unit(unit);
+    append_bytes(&mut encoded, &payload, work)?;
 
     let mut hasher = IntegrityHasher::new();
-    hasher.update(&encoded[..MANIFEST_INTEGRITY_OFFSET]);
-    hasher.update(&payload);
+    hash_bytes(&mut hasher, &encoded[..MANIFEST_INTEGRITY_OFFSET], work)?;
+    hash_bytes(&mut hasher, &payload, work)?;
+    let unit = start_unit(work)?;
     let digest = hasher.finish();
     encoded[280..284].copy_from_slice(&digest.crc32c.get().to_le_bytes());
     encoded[284..316].copy_from_slice(digest.sha256.as_bytes());
+    finish_unit(unit);
+    finish_work(work)?;
     Ok(encoded)
 }
 
@@ -139,6 +159,24 @@ pub(super) fn read_manifest_if_exists(
 ) -> Result<Option<RelationalRowPageRootManifest>, RelationalRowPagePublicationError> {
     match fs::metadata(path) {
         Ok(_) => read_manifest(path, config).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(durability("read row-page manifest metadata")(error)),
+    }
+}
+
+pub(super) fn read_manifest_if_exists_with_work_context(
+    path: &Path,
+    config: RelationalRowPagePublicationConfig,
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<Option<RelationalRowPageRootManifest>, RelationalRowPagePublicationError> {
+    let Some(work) = work else {
+        return read_manifest_if_exists(path, config);
+    };
+    match super::publisher::checkpoint::io(Some(work), || Ok(fs::metadata(path)))? {
+        Ok(_) => {
+            let encoded = checkpoint::read_encoded(path, config, work)?;
+            decode_manifest_inner(&encoded, config, Some(work)).map(Some)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(durability("read row-page manifest metadata")(error)),
     }
@@ -168,6 +206,42 @@ pub(super) fn read_bound_manifest(
         ));
     }
     decode_manifest(&encoded, config)
+}
+
+pub(super) fn read_manifest_with_work_context(
+    path: &Path,
+    config: RelationalRowPagePublicationConfig,
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<RelationalRowPageRootManifest, RelationalRowPagePublicationError> {
+    let Some(work) = work else {
+        return read_manifest(path, config);
+    };
+    let encoded = checkpoint::read_encoded(path, config, work)?;
+    decode_manifest_inner(&encoded, config, Some(work))
+}
+
+pub(super) fn read_bound_manifest_with_work_context(
+    path: &Path,
+    config: RelationalRowPagePublicationConfig,
+    expected: RelationalRowPageArtifactMetadata,
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<RelationalRowPageRootManifest, RelationalRowPagePublicationError> {
+    let Some(work) = work else {
+        return read_bound_manifest(path, config, expected);
+    };
+    let encoded = checkpoint::read_encoded(path, config, work)?;
+    let digest = work
+        .integrity(&encoded)
+        .map_err(super::root::checkpoint::work_error)?;
+    if encoded.len() as u64 != expected.encoded_len
+        || digest.crc32c.get() != expected.encoded_crc32c
+        || digest.sha256 != expected.encoded_sha256
+    {
+        return Err(RelationalRowPagePublicationError::Corrupt(
+            "row-page generation manifest does not match its canonical binding".into(),
+        ));
+    }
+    decode_manifest_inner(&encoded, config, Some(work))
 }
 
 fn read_encoded_manifest(
@@ -218,6 +292,15 @@ fn decode_manifest(
     encoded: &[u8],
     config: RelationalRowPagePublicationConfig,
 ) -> Result<RelationalRowPageRootManifest, RelationalRowPagePublicationError> {
+    decode_manifest_inner(encoded, config, None)
+}
+
+fn decode_manifest_inner(
+    encoded: &[u8],
+    config: RelationalRowPagePublicationConfig,
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<RelationalRowPageRootManifest, RelationalRowPagePublicationError> {
+    let unit = start_unit(work)?;
     if encoded.len() < MANIFEST_HEADER_BYTES || &encoded[..8] != MANIFEST_MAGIC {
         return Err(RelationalRowPagePublicationError::Corrupt(
             "invalid row-page manifest header".to_string(),
@@ -292,10 +375,24 @@ fn decode_manifest(
         })
     };
     let payload = &encoded[MANIFEST_HEADER_BYTES..];
+    finish_unit(unit);
     let mut hasher = IntegrityHasher::new();
-    hasher.update(&encoded[..MANIFEST_INTEGRITY_OFFSET]);
-    hasher.update(payload);
+    match work {
+        Some(work) => {
+            super::root::checkpoint::hash(
+                &mut hasher,
+                &encoded[..MANIFEST_INTEGRITY_OFFSET],
+                work,
+            )?;
+            super::root::checkpoint::hash(&mut hasher, payload, work)?;
+        }
+        None => {
+            hasher.update(&encoded[..MANIFEST_INTEGRITY_OFFSET]);
+            hasher.update(payload);
+        }
+    }
     let digest = hasher.finish();
+    let unit = start_unit(work)?;
     if digest.crc32c.get() != read_u32(&encoded[280..284])
         || digest.sha256.as_bytes() != &encoded[284..316]
     {
@@ -321,15 +418,19 @@ fn decode_manifest(
                 "row-page physical-generation count exceeds its manifest payload".to_string(),
             )
         })?;
-    let tables = decode_tables(&payload[..generations_offset], table_count, config)?;
-    let physical_generations = payload[generations_offset..trailer_offset]
-        .chunks_exact(PHYSICAL_GENERATION_BYTES)
-        .map(|entry| RelationalRowPagePhysicalGeneration {
+    finish_unit(unit);
+    let tables = decode_tables(&payload[..generations_offset], table_count, config, work)?;
+    let mut physical_generations = Vec::with_capacity(generation_count);
+    for entry in payload[generations_offset..trailer_offset].chunks_exact(PHYSICAL_GENERATION_BYTES)
+    {
+        let unit = start_unit(work)?;
+        physical_generations.push(RelationalRowPagePhysicalGeneration {
             generation: read_u64(&entry[..8]),
             allocated_pages: read_u64(&entry[8..16]),
             live_pages: read_u64(&entry[16..24]),
-        })
-        .collect();
+        });
+        finish_unit(unit);
+    }
     let manifest = RelationalRowPageRootManifest {
         generation,
         source_commit_epoch,
@@ -346,15 +447,21 @@ fn decode_manifest(
         tables,
         physical_generations,
     };
-    validate_manifest(&manifest, config, ErrorClass::Corrupt)?;
+    validate_manifest_inner(&manifest, config, ErrorClass::Corrupt, work)?;
+    if let Some(work) = work {
+        work.checkpoint()
+            .map_err(super::root::checkpoint::work_error)?;
+    }
     Ok(manifest)
 }
 
-fn validate_manifest(
+fn validate_manifest_inner(
     manifest: &RelationalRowPageRootManifest,
     config: RelationalRowPagePublicationConfig,
     class: ErrorClass,
+    work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<(), RelationalRowPagePublicationError> {
+    let unit = start_unit(work)?;
     let fail = |message| class.error(message);
     if manifest.generation == 0
         || (manifest.source_commit_epoch == 0
@@ -422,7 +529,9 @@ fn validate_manifest(
             manifest.root_page_count, config.max_root_pages
         )));
     }
-    validate_occupancy(manifest, config, class)?;
+    finish_unit(unit);
+    validate_occupancy(manifest, config, class, work)?;
+    let unit = start_unit(work)?;
     let expected_descriptor_bytes = manifest
         .root_page_count
         .checked_mul(super::root::ROOT_DESCRIPTOR_BYTES as u64)
@@ -448,7 +557,9 @@ fn validate_manifest(
     }
     let mut expected_descriptor = 0u64;
     let mut previous_table: Option<&str> = None;
+    finish_unit(unit);
     for table in &manifest.tables {
+        let unit = start_unit(work)?;
         if table.table.is_empty() || table.table.len() > config.max_table_name_bytes.get() {
             return Err(fail(format!(
                 "row-page table name contains {} bytes, outside admitted range",
@@ -474,14 +585,28 @@ fn validate_manifest(
                 table.table
             )));
         }
-        crate::relational::codec::validate_relational_table_schema_codec_shape(
-            &table.schema,
-            config.page_limits.max_columns.get(),
-        )
-        .map_err(|error| fail(error.to_string()))?;
-        let schema_digest =
-            crate::relational::index_shadow::relational_schema_digest(&table.schema)
-                .map_err(|error| fail(error.to_string()))?;
+        finish_unit(unit);
+        match work {
+            Some(work) => work.classify(|work| crate::relational::codec::validate_relational_table_schema_codec_shape_with_work_context(
+                &table.schema, config.page_limits.max_columns.get(), work,
+            )).map_err(|error| map_classified_error(error, class)),
+            None => crate::relational::codec::validate_relational_table_schema_codec_shape(
+                &table.schema, config.page_limits.max_columns.get(),
+            ).map_err(|error| fail(error.to_string())),
+        }?;
+        let schema_digest = match work {
+            Some(work) => work
+                .classify(|work| {
+                    crate::relational::index_shadow::relational_schema_digest_with_work_context(
+                        &table.schema,
+                        work,
+                    )
+                })
+                .map_err(|error| map_classified_error(error, class)),
+            None => crate::relational::index_shadow::relational_schema_digest(&table.schema)
+                .map_err(|error| fail(error.to_string())),
+        }?;
+        let mut unit = start_unit(work)?;
         if schema_digest != table.schema_digest {
             return Err(fail(format!(
                 "table {} row-page schema digest mismatch",
@@ -518,9 +643,17 @@ fn validate_manifest(
                     table.table, table.row_count, table.page_count
                 )));
             }
+            finish_unit(unit.take());
+            let ordering = match work {
+                Some(work) => {
+                    super::root::checkpoint::compare(&table.lower_bound, &table.upper_bound, work)?
+                }
+                None => table.lower_bound.cmp(&table.upper_bound),
+            };
+            unit = start_unit(work)?;
             if table.lower_bound.is_empty()
                 || table.upper_bound.is_empty()
-                || table.lower_bound > table.upper_bound
+                || ordering == std::cmp::Ordering::Greater
                 || table.lower_bound.len() > config.page_limits.max_key_bytes.get()
                 || table.upper_bound.len() > config.page_limits.max_key_bytes.get()
             {
@@ -531,6 +664,7 @@ fn validate_manifest(
             }
         }
         previous_table = Some(&table.table);
+        finish_unit(unit);
     }
     if expected_descriptor != manifest.root_page_count {
         return Err(fail(format!(
@@ -538,10 +672,11 @@ fn validate_manifest(
             manifest.root_page_count
         )));
     }
-    let payload = encode_tables(&manifest.tables)?;
-    let mut hasher = IntegrityHasher::new();
-    hasher.update(&payload);
-    if hasher.finish().sha256 != manifest.root_set_digest {
+    let digest = match work {
+        Some(work) => root_set_digest_with_work_context(&manifest.tables, work)?,
+        None => root_set_digest(&manifest.tables)?,
+    };
+    if digest != manifest.root_set_digest {
         return Err(fail("row-page root-set digest mismatch".to_string()));
     }
     Ok(())
@@ -551,7 +686,9 @@ fn validate_occupancy(
     manifest: &RelationalRowPageRootManifest,
     config: RelationalRowPagePublicationConfig,
     class: ErrorClass,
+    work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<(), RelationalRowPagePublicationError> {
+    let unit = start_unit(work)?;
     let fail = |message: &str| class.error(message.to_string());
     if manifest.physical_generations.len()
         > config.max_manifest_bytes.get() / PHYSICAL_GENERATION_BYTES
@@ -565,7 +702,9 @@ fn validate_occupancy(
     let mut live_pages = 0u64;
     let mut allocated_pages = 0u64;
     let mut current_allocation = 0;
+    finish_unit(unit);
     for entry in &manifest.physical_generations {
+        let unit = start_unit(work)?;
         if entry.generation <= previous || entry.generation > manifest.generation {
             return Err(fail(
                 "row-page physical generations are unordered or outside the root generation",
@@ -592,7 +731,9 @@ fn validate_occupancy(
             }
         }
         previous = entry.generation;
+        finish_unit(unit);
     }
+    let unit = start_unit(work)?;
     allocated_pages
         .checked_mul(manifest.page_bytes)
         .ok_or_else(|| fail("row-page physical allocation byte count overflow"))?;
@@ -604,27 +745,40 @@ fn validate_occupancy(
             "row-page current-generation inventory does not match written slots",
         ));
     }
+    finish_unit(unit);
     Ok(())
 }
 
 fn encode_tables(
     tables: &[RelationalRowPageTableRoot],
+    work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
     let mut encoded = Vec::new();
     for table in tables {
-        encode_bytes(&table.table, &mut encoded)?;
-        let schema = crate::relational::codec::encode_relational_table_schema(&table.schema)
-            .map_err(map_schema_encode_error)?;
-        encode_raw_bytes(&schema, &mut encoded)?;
+        encode_raw_bytes(table.table.as_bytes(), &mut encoded, work)?;
+        let schema = match work {
+            Some(work) => {
+                crate::relational::codec::encode_relational_table_schema_with_work_context(
+                    &table.schema,
+                    work,
+                )
+            }
+            None => crate::relational::codec::encode_relational_table_schema(&table.schema),
+        }
+        .map_err(map_schema_encode_error)?;
+        encode_raw_bytes(&schema, &mut encoded, work)?;
+        let unit = start_unit(work)?;
         encoded.extend_from_slice(table.schema_digest.as_bytes());
         encoded.extend_from_slice(&table.column_count.get().to_le_bytes());
         encoded.extend_from_slice(&table.row_count.to_le_bytes());
         encoded.extend_from_slice(&table.next_page_id.get().to_le_bytes());
         encoded.extend_from_slice(&table.first_descriptor.to_le_bytes());
         encoded.extend_from_slice(&table.page_count.to_le_bytes());
-        encode_raw_bytes(&table.lower_bound, &mut encoded)?;
-        encode_raw_bytes(&table.upper_bound, &mut encoded)?;
+        finish_unit(unit);
+        encode_raw_bytes(&table.lower_bound, &mut encoded, work)?;
+        encode_raw_bytes(&table.upper_bound, &mut encoded, work)?;
     }
+    finish_work(work)?;
     Ok(encoded)
 }
 
@@ -632,8 +786,11 @@ fn decode_tables(
     payload: &[u8],
     table_count: usize,
     config: RelationalRowPagePublicationConfig,
+    work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<Vec<RelationalRowPageTableRoot>, RelationalRowPagePublicationError> {
+    let unit = start_unit(work)?;
     let mut tables = Vec::with_capacity(table_count);
+    finish_unit(unit);
     let mut offset = 0usize;
     for _ in 0..table_count {
         let table = decode_utf8_bytes(
@@ -641,19 +798,32 @@ fn decode_tables(
             &mut offset,
             config.max_table_name_bytes.get(),
             "table name",
+            work,
         )?;
         let schema_bytes = decode_raw_bytes(
             payload,
             &mut offset,
             config.max_manifest_bytes.get(),
             "table schema",
+            work,
         )?;
-        let schema = crate::relational::codec::decode_relational_table_schema(
-            &schema_bytes,
-            config.max_manifest_bytes.get(),
-            config.page_limits.max_columns.get(),
-        )
+        let schema = match work {
+            Some(work) => {
+                crate::relational::codec::decode_relational_table_schema_with_work_context(
+                    &schema_bytes,
+                    config.max_manifest_bytes.get(),
+                    config.page_limits.max_columns.get(),
+                    work,
+                )
+            }
+            None => crate::relational::codec::decode_relational_table_schema(
+                &schema_bytes,
+                config.max_manifest_bytes.get(),
+                config.page_limits.max_columns.get(),
+            ),
+        }
         .map_err(map_schema_decode_error)?;
+        let unit = start_unit(work)?;
         let schema_digest = Sha256Digest::from_bytes(
             take(payload, &mut offset, SHA256_BYTES, "table schema digest")?
                 .try_into()
@@ -684,18 +854,22 @@ fn decode_tables(
         })?;
         let first_descriptor = read_u64(take(payload, &mut offset, 8, "first descriptor ordinal")?);
         let page_count = read_u64(take(payload, &mut offset, 8, "table page count")?);
+        finish_unit(unit);
         let lower_bound = decode_raw_bytes(
             payload,
             &mut offset,
             config.page_limits.max_key_bytes.get(),
             "table lower bound",
+            work,
         )?;
         let upper_bound = decode_raw_bytes(
             payload,
             &mut offset,
             config.page_limits.max_key_bytes.get(),
             "table upper bound",
+            work,
         )?;
+        let unit = start_unit(work)?;
         tables.push(RelationalRowPageTableRoot {
             table,
             schema,
@@ -708,11 +882,16 @@ fn decode_tables(
             lower_bound,
             upper_bound,
         });
+        finish_unit(unit);
     }
     if offset != payload.len() {
         return Err(RelationalRowPagePublicationError::Corrupt(
             "row-page manifest contains trailing table bytes".to_string(),
         ));
+    }
+    if let Some(work) = work {
+        work.checkpoint()
+            .map_err(super::root::checkpoint::work_error)?;
     }
     Ok(tables)
 }
@@ -778,25 +957,20 @@ fn decode_artifact(encoded: &[u8]) -> RelationalRowPageArtifactMetadata {
     }
 }
 
-fn encode_bytes(
-    value: &str,
-    encoded: &mut Vec<u8>,
-) -> Result<(), RelationalRowPagePublicationError> {
-    encode_raw_bytes(value.as_bytes(), encoded)
-}
-
 fn encode_raw_bytes(
-    value: &[u8],
+    bytes: &[u8],
     encoded: &mut Vec<u8>,
+    work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<(), RelationalRowPagePublicationError> {
-    let len = u32::try_from(value.len()).map_err(|_| {
+    let unit = start_unit(work)?;
+    let len = u32::try_from(bytes.len()).map_err(|_| {
         RelationalRowPagePublicationError::Admission(
-            "row-page manifest field does not fit in u32".to_string(),
+            "row-page manifest field does not fit in u32".into(),
         )
     })?;
     encoded.extend_from_slice(&len.to_le_bytes());
-    encoded.extend_from_slice(value);
-    Ok(())
+    finish_unit(unit);
+    append_bytes(encoded, bytes, work)
 }
 
 fn decode_utf8_bytes(
@@ -804,8 +978,19 @@ fn decode_utf8_bytes(
     offset: &mut usize,
     max_len: usize,
     context: &str,
+    work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<String, RelationalRowPagePublicationError> {
-    let bytes = decode_raw_bytes(encoded, offset, max_len, context)?;
+    if let Some(work) = work {
+        let len = read_u32(take(encoded, offset, 4, context)?) as usize;
+        if len > max_len {
+            return Err(RelationalRowPagePublicationError::Admission(format!(
+                "row-page {context} contains {len} bytes, exceeding limit {max_len}"
+            )));
+        }
+        let bytes = take(encoded, offset, len, context)?;
+        return checkpoint::decode_text(bytes, context, work);
+    }
+    let bytes = decode_raw_bytes(encoded, offset, max_len, context, None)?;
     String::from_utf8(bytes).map_err(|error| {
         RelationalRowPagePublicationError::Corrupt(format!(
             "row-page {context} is not valid UTF-8: {error}"
@@ -818,6 +1003,7 @@ fn decode_raw_bytes(
     offset: &mut usize,
     max_len: usize,
     context: &str,
+    work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
     let len = read_u32(take(encoded, offset, 4, context)?) as usize;
     if len > max_len {
@@ -825,7 +1011,11 @@ fn decode_raw_bytes(
             "row-page {context} contains {len} bytes, exceeding limit {max_len}"
         )));
     }
-    Ok(take(encoded, offset, len, context)?.to_vec())
+    let bytes = take(encoded, offset, len, context)?;
+    match work {
+        Some(work) => super::root::checkpoint::clone_bytes(bytes, work),
+        None => Ok(bytes.to_vec()),
+    }
 }
 
 fn take<'a>(
@@ -869,4 +1059,73 @@ impl ErrorClass {
             Self::Corrupt => RelationalRowPagePublicationError::Corrupt(message),
         }
     }
+}
+
+fn start_unit(
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<Option<crate::background::CheckpointWorkUnit>, RelationalRowPagePublicationError> {
+    work.map(|work| {
+        work.start_unit()
+            .map_err(super::root::checkpoint::work_error)
+    })
+    .transpose()
+}
+
+fn map_classified_error<E: std::fmt::Display>(
+    error: crate::background::CheckpointOperationError<E>,
+    class: ErrorClass,
+) -> RelationalRowPagePublicationError {
+    match error {
+        crate::background::CheckpointOperationError::Work(error) => {
+            super::root::checkpoint::work_error(error)
+        }
+        crate::background::CheckpointOperationError::Operation(error) => {
+            class.error(error.to_string())
+        }
+    }
+}
+
+fn finish_unit(unit: Option<crate::background::CheckpointWorkUnit>) {
+    if let Some(unit) = unit {
+        unit.finish();
+    }
+}
+
+fn append_bytes(
+    encoded: &mut Vec<u8>,
+    bytes: &[u8],
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<(), RelationalRowPagePublicationError> {
+    match work {
+        Some(work) => crate::relational::row_page::checkpoint::append(encoded, bytes, work)
+            .map_err(Into::into),
+        None => {
+            encoded.extend_from_slice(bytes);
+            Ok(())
+        }
+    }
+}
+
+fn hash_bytes(
+    hasher: &mut IntegrityHasher,
+    bytes: &[u8],
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<(), RelationalRowPagePublicationError> {
+    match work {
+        Some(work) => super::root::checkpoint::hash(hasher, bytes, work),
+        None => {
+            hasher.update(bytes);
+            Ok(())
+        }
+    }
+}
+
+fn finish_work(
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<(), RelationalRowPagePublicationError> {
+    if let Some(work) = work {
+        work.checkpoint()
+            .map_err(super::root::checkpoint::work_error)?;
+    }
+    Ok(())
 }

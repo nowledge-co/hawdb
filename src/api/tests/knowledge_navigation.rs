@@ -183,7 +183,8 @@ fn retrieves_knowledge_neighbors_without_search_projection() {
     )
     .unwrap();
     let leaf = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -195,7 +196,8 @@ fn retrieves_knowledge_neighbors_without_search_projection() {
     }
     .unwrap();
     let mention = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -207,7 +209,8 @@ fn retrieves_knowledge_neighbors_without_search_projection() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(1),
@@ -218,7 +221,8 @@ fn retrieves_knowledge_neighbors_without_search_projection() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             mention,
@@ -627,7 +631,8 @@ fn knowledge_neighbors_reports_limit_and_missing_seed() {
     db.query("CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS]->(:Entity {id: 'left', name: 'Left'})")
             .unwrap();
     let right = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -639,7 +644,8 @@ fn knowledge_neighbors_reports_limit_and_missing_seed() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(0),
@@ -743,7 +749,8 @@ fn typed_knowledge_navigation_reports_dense_adjacency_groups() {
         .unwrap();
     for index in 0..DENSE_ADJACENCY_DEGREE_THRESHOLD {
         let target = {
-            let branch_runtime = db.runtime.get_mut().unwrap();
+            let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+            let branch_runtime = &mut *branch_runtime_access;
             branch_runtime.store.create_node(
                 &mut branch_runtime.catalog,
                 "Entity",
@@ -755,7 +762,8 @@ fn typed_knowledge_navigation_reports_dense_adjacency_groups() {
         }
         .unwrap();
         {
-            let branch_runtime = db.runtime.get_mut().unwrap();
+            let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+            let branch_runtime = &mut *branch_runtime_access;
             branch_runtime.store.create_relationship(
                 &mut branch_runtime.catalog,
                 NodeId(0),
@@ -869,7 +877,8 @@ fn retrieves_bounded_knowledge_paths_without_search_projection() {
     )
     .unwrap();
     let leaf = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -881,7 +890,8 @@ fn retrieves_bounded_knowledge_paths_without_search_projection() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(1),
@@ -1075,7 +1085,8 @@ fn knowledge_paths_respects_direction_type_limit_and_missing_endpoint() {
     db.query("CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS]->(:Entity {id: 'left', name: 'Left'})")
             .unwrap();
     let right = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -1087,7 +1098,8 @@ fn knowledge_paths_respects_direction_type_limit_and_missing_endpoint() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(0),
@@ -1098,7 +1110,8 @@ fn knowledge_paths_respects_direction_type_limit_and_missing_endpoint() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(0),
@@ -1307,7 +1320,8 @@ fn retrieves_bounded_knowledge_subgraph_without_search_projection() {
     )
     .unwrap();
     let leaf = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -1319,7 +1333,8 @@ fn retrieves_bounded_knowledge_subgraph_without_search_projection() {
     }
     .unwrap();
     let mention = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -1331,7 +1346,8 @@ fn retrieves_bounded_knowledge_subgraph_without_search_projection() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(1),
@@ -1342,7 +1358,8 @@ fn retrieves_bounded_knowledge_subgraph_without_search_projection() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(0),
@@ -1512,7 +1529,8 @@ fn knowledge_subgraph_reports_limits_and_missing_seed() {
     db.query("CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS]->(:Entity {id: 'left', name: 'Left'})")
             .unwrap();
     let right = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -1524,7 +1542,8 @@ fn knowledge_subgraph_reports_limits_and_missing_seed() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(0),

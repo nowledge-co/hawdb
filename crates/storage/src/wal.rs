@@ -15,6 +15,8 @@
 //! Encoding, decoding, and framing of write-ahead-log records.
 
 pub mod binary;
+mod checkpoint;
+pub(crate) use checkpoint::{CheckpointWalCursorEvent, CheckpointWalRecordCursor};
 pub mod frame;
 pub mod group_commit;
 use crate::file_io::{self as fs, File, OpenOptions};
@@ -218,9 +220,9 @@ pub fn reject_corrupt_wal_record<T>(
 
 /// One decoded event from a WAL scan. Offsets are absolute
 /// file offsets; `encoded_len` covers the framed bytes of the record.
-pub enum WalCursorEvent {
+pub enum WalCursorEvent<E = WalEntry> {
     Entry {
-        entry: WalEntry,
+        entry: E,
         start_offset: u64,
         encoded_len: u64,
         payload_len: u64,
@@ -300,6 +302,51 @@ impl WalRecordCursor {
 
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Internal checkpoint reader. Header identity and both complete-record
+    /// byte boundaries are captured under the sole WAL writer; the caller
+    /// still verifies the expected contiguous LSN interval while consuming it.
+    pub(crate) fn open_range(
+        path: &Path,
+        max_record_bytes: Option<usize>,
+        generation: u64,
+        start_lsn: u64,
+        from_offset: u64,
+        to_offset: u64,
+    ) -> Result<Self> {
+        let cursor = match Self::open(path, max_record_bytes)? {
+            WalOpenOutcome::Cursor(cursor) => cursor,
+            _ => {
+                return Err(HawDBError::StorageIntegrity(
+                    "captured WAL has an invalid header".into(),
+                ))
+            }
+        };
+        if cursor.generation != generation || cursor.start_lsn != start_lsn {
+            return Err(HawDBError::StorageIntegrity(
+                "captured WAL header identity changed".into(),
+            ));
+        }
+        let reader = cursor.reader.into_reader();
+        if reader.get_ref().metadata()?.len() < to_offset {
+            return Err(HawDBError::StorageIntegrity(
+                "captured WAL interval lost previously committed bytes".into(),
+            ));
+        }
+        // Reuse the counted handle whose header was checked. A pathname reopen
+        // could select a different file after validation.
+        Ok(Self {
+            generation,
+            start_lsn,
+            reader: frame::BinaryWalReader::range(
+                reader,
+                generation,
+                max_record_bytes,
+                from_offset,
+                to_offset,
+            )?,
+        })
     }
 
     pub const fn start_lsn(&self) -> u64 {
@@ -968,7 +1015,7 @@ pub fn apply_wal_op_to_snapshot(
             property,
             value,
         } => {
-            if let Some(node) = nodes.get_mut(id) {
+            if let Some(mut node) = nodes.get_mut(id) {
                 node.properties.insert(property.clone(), value.clone());
             }
         }
@@ -977,7 +1024,7 @@ pub fn apply_wal_op_to_snapshot(
             property,
             value,
         } => {
-            if let Some(relationship) = relationships.get_mut(id) {
+            if let Some(mut relationship) = relationships.get_mut(id) {
                 relationship
                     .properties
                     .insert(property.clone(), value.clone());

@@ -97,6 +97,17 @@ mod durable;
 mod graph_apply;
 #[path = "store/graph_checkpoint.rs"]
 mod graph_checkpoint;
+#[doc(hidden)]
+pub use graph_checkpoint::CheckpointPreparation;
+#[path = "store/graph_checkpoint_candidate.rs"]
+mod graph_checkpoint_candidate;
+#[path = "store/graph_checkpoint_projection.rs"]
+mod graph_checkpoint_projection;
+#[doc(hidden)]
+pub use graph_checkpoint_candidate::{
+    CheckpointCandidate, CheckpointDebtSnapshot, CheckpointSourceIdentity,
+};
+use graph_checkpoint_projection::checkpoint_projected_graph_from_definition;
 #[path = "store/graph_columnar_shadow.rs"]
 mod graph_columnar_shadow;
 #[path = "store/graph_commit.rs"]
@@ -125,6 +136,11 @@ pub mod relational_row_pages;
 mod search_projection_change_log;
 #[path = "store/statistics_refresh.rs"]
 mod statistics_refresh;
+#[path = "store/statistics_state.rs"]
+mod statistics_state;
+use statistics_state::{
+    decrement_statistic_counter, BasicStatisticsState, CheckpointStatisticsState,
+};
 #[path = "store/wal_codec.rs"]
 mod wal_codec;
 use crate::file_io as fs;
@@ -139,13 +155,13 @@ pub use doctor::{
     DatabaseDoctor, WalDoctorOptions, WalRepairAcknowledgement, WalTailRepairPlan,
     WalTailRepairReason, WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
 };
-#[doc(hidden)]
-pub use durable::PreparedCheckpoint;
 use durable::{
     load_published_canonical_adjacency, load_published_property_projection, CheckpointImage,
     CheckpointManifestArtifacts, DerivedArtifactBuildConfig, DurableManifest, DurableOpenMode,
     DurableStore, GraphManifestOpenBudget,
 };
+#[doc(hidden)]
+pub use durable::{CheckpointWalTail, PreparedCheckpoint};
 pub use graph_columnar_shadow::ColumnarShadowAdmission;
 use graph_columnar_shadow::ColumnarShadowState;
 use hawdb_storage::artifact_files::{
@@ -208,8 +224,8 @@ pub use hawdb_storage::statistics::{
     composite_property_index_key, composite_property_index_unique_values, compute_basic_statistics,
     compute_index_statistics_samples, compute_node_property_distinct_counts_from_index,
     compute_relationship_property_distinct_counts_from_index, compute_statistics_for_catalog,
-    compute_statistics_with_basic, decrement_counter, full_text_index_tokens,
-    full_text_query_tokens, graph_statistics_from_basic, recompute_node_property_index,
+    compute_statistics_with_basic, full_text_index_tokens, full_text_query_tokens,
+    graph_statistics_from_basic, recompute_node_property_index,
     recompute_relationship_property_index, scalar_property_index_cardinality,
 };
 use hawdb_storage::statistics_refresh::{
@@ -244,10 +260,7 @@ use hawdb_storage::{
     canonical::{CanonicalEndpointDirection, CanonicalSegmentError},
     durability::sync_parent_directory,
     pressure::available_storage_space,
-    property_projection::{
-        persistent_composite_property_identity, PersistentPropertyProjectionDefinitionAdmission,
-        PersistentPropertyProjectionRecord,
-    },
+    property_projection::PersistentPropertyProjectionDefinitionAdmission,
     relational::{
         decode_relational_checkpoint_file_with_index_load,
         decode_relational_checkpoint_with_index_load, decode_relational_wal_batch,
@@ -785,13 +798,16 @@ pub struct GraphStore {
     next_node_id: u64,
     next_rel_id: u64,
     commit_epoch: u64,
+    // A maintenance capture's monotonic floor for any post-snapshot debt.
+    // Live writers normally have no capture clock; handoff restores that fact.
+    checkpoint_capture_started: Option<std::time::Instant>,
     version_index: hawdb_storage::version::VersionIndex,
     version_snapshot_pins: hawdb_storage::version::VersionSnapshotPins,
     version_snapshot_pin: Option<hawdb_storage::version::VersionSnapshotPin>,
     nodes: CowSegmentedMap<NodeId, NodeRecord>,
     relationships: CowSegmentedMap<RelId, RelRecord>,
-    basic_statistics: BasicGraphStatistics,
-    checkpoint_statistics: GraphStatistics,
+    basic_statistics: BasicStatisticsState,
+    checkpoint_statistics: CheckpointStatisticsState,
     advanced_statistics_dirty: AdvancedStatisticsDirtyState,
     outgoing: CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
     incoming: CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
@@ -800,7 +816,7 @@ pub struct GraphStore {
     full_text_property_index: FullTextPropertyIndex,
     relationship_property_index: RelationshipPropertyIndex,
     projected_graphs: CowSegment<BTreeMap<String, ProjectedGraphDefinition>>,
-    projected_graph_artifacts: CowSegment<BTreeMap<String, ProjectedGraphArtifact>>,
+    projected_graph_artifacts: crate::projection::artifact::CheckpointProjectedGraphRoot,
     stable_id_mapping: CowSegment<StoreStableIdMapping>,
     initial_import_source_fingerprint: Option<String>,
     search_projection_database_identity: Option<hawdb_core::Uuid>,
@@ -844,6 +860,8 @@ pub struct GraphStore {
     branch_runtime_owner: Option<Arc<crate::file_descriptors::AdmittedRuntimeOwner>>,
     snapshot_file_context: Option<crate::file_descriptors::FileOpenContext>,
     durable: Option<DurableStore>,
+    // Data/COW runtime owners above must drop before decoded allocation leases.
+    checkpoint_allocations: crate::background::CheckpointAllocationOwner,
 }
 
 impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
@@ -1714,13 +1732,14 @@ impl GraphStore {
             next_node_id: 0,
             next_rel_id: 0,
             commit_epoch: 0,
+            checkpoint_capture_started: None,
             version_index: hawdb_storage::version::VersionIndex::default(),
             version_snapshot_pins: Default::default(),
             version_snapshot_pin: None,
             nodes: CowSegmentedMap::default(),
             relationships: CowSegmentedMap::default(),
-            basic_statistics: BasicGraphStatistics::default(),
-            checkpoint_statistics: GraphStatistics::default(),
+            basic_statistics: BasicStatisticsState::default(),
+            checkpoint_statistics: CheckpointStatisticsState::default(),
             advanced_statistics_dirty: AdvancedStatisticsDirtyState::default(),
             outgoing: CowSegmentedMap::default(),
             incoming: CowSegmentedMap::default(),
@@ -1729,7 +1748,7 @@ impl GraphStore {
             full_text_property_index: CowSegmentedMap::default(),
             relationship_property_index: CowSegmentedMap::default(),
             projected_graphs: CowSegment::default(),
-            projected_graph_artifacts: CowSegment::default(),
+            projected_graph_artifacts: Default::default(),
             stable_id_mapping: CowSegment::default(),
             initial_import_source_fingerprint: None,
             search_projection_database_identity: None,
@@ -1771,6 +1790,7 @@ impl GraphStore {
             branch_runtime_owner: None,
             snapshot_file_context: None,
             durable: Some(durable),
+            checkpoint_allocations: Default::default(),
         };
         if replay_config
             .relational_index_mode
@@ -2177,6 +2197,7 @@ impl GraphStore {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
             commit_epoch: self.commit_epoch,
+            checkpoint_capture_started: self.checkpoint_capture_started,
             version_index: self.version_index.clone(),
             version_snapshot_pins: self.version_snapshot_pins.clone(),
             version_snapshot_pin: Some(self.version_snapshot_pins.pin(pin_epoch)),
@@ -2238,6 +2259,7 @@ impl GraphStore {
             branch_runtime_owner: self.branch_runtime_owner.clone(),
             snapshot_file_context: self.file_descriptor_context(),
             durable: None,
+            checkpoint_allocations: self.checkpoint_allocations.clone(),
         }
     }
 
@@ -2259,7 +2281,7 @@ impl GraphStore {
             rel_types: definition.rel_types.clone(),
             relationship_predicates: definition.relationship_predicates.clone(),
         })?;
-        self.apply_project_graph_definition(name.to_string(), definition);
+        self.apply_project_graph_definition(name.to_string(), definition)?;
         self.finish_non_relational_commit();
         Ok(())
     }
@@ -2449,9 +2471,27 @@ fn encode_projected_graph_artifacts(
                 graph.csc_offsets().to_vec(),
                 graph.csc_sources().to_vec(),
             )
-            .expect("fresh analytics projection is structurally valid");
+            .expect("analytics graph has valid adjacency arrays");
             (name.as_str(), definition, data)
         }),
+    )
+}
+
+fn encode_projected_graph_artifacts_with_work_context(
+    catalog: &Catalog,
+    store: &GraphStore,
+    projection_epoch: u64,
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<hawdb_storage::projection::artifact::CheckpointProjectedGraphText> {
+    hawdb_storage::projection::artifact::encode_projected_graph_artifacts_with_work_context(
+        projection_epoch,
+        store.commit_epoch,
+        store.projected_graphs.iter().map(|(name, definition)| {
+            let data =
+                checkpoint_projected_graph_from_definition(catalog, store, definition, work)?;
+            Ok((name.as_str(), definition, data))
+        }),
+        work,
     )
 }
 
@@ -3150,13 +3190,41 @@ fn elapsed_micros(started: std::time::Instant) -> u64 {
 }
 
 fn estimated_node_record_bytes(node: &NodeRecord) -> u64 {
-    32u64
+    estimated_node_record_bytes_with_visit(node, &mut || Ok::<_, std::convert::Infallible>(()))
+        .unwrap_or_else(|never| match never {})
+}
+
+fn estimated_node_record_bytes_with_visit<E>(
+    node: &NodeRecord,
+    visit: &mut impl FnMut() -> std::result::Result<(), E>,
+) -> std::result::Result<u64, E> {
+    visit()?;
+    Ok(32u64
         .saturating_add((node.labels.len() as u64).saturating_mul(4))
-        .saturating_add(estimated_properties_bytes(&node.properties))
+        .saturating_add(crate::mutation::estimated_properties_bytes_with_visit(
+            &node.properties,
+            visit,
+        )?))
 }
 
 fn estimated_relationship_record_bytes(relationship: &RelRecord) -> u64 {
-    40u64.saturating_add(estimated_properties_bytes(&relationship.properties))
+    estimated_relationship_record_bytes_with_visit(relationship, &mut || {
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .unwrap_or_else(|never| match never {})
+}
+
+fn estimated_relationship_record_bytes_with_visit<E>(
+    relationship: &RelRecord,
+    visit: &mut impl FnMut() -> std::result::Result<(), E>,
+) -> std::result::Result<u64, E> {
+    visit()?;
+    Ok(
+        40u64.saturating_add(crate::mutation::estimated_properties_bytes_with_visit(
+            &relationship.properties,
+            visit,
+        )?),
+    )
 }
 
 impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
@@ -4771,6 +4839,192 @@ mod tests {
         );
         drop(store);
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_delta_pressure_matches_full_scan_through_mutations_and_reopen() {
+        fn verify(store: &GraphStore) {
+            assert_eq!(
+                store.estimated_delta_resident_bytes(),
+                store.estimated_delta_resident_bytes_reference()
+            );
+        }
+        for mode in [
+            StorageResidencyMode::Materialized,
+            StorageResidencyMode::OutOfCore,
+        ] {
+            let path = unique_test_dir("checkpoint_delta_pressure");
+            let config = WalReplayConfig {
+                residency_mode: mode,
+                ..WalReplayConfig::default()
+            };
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open_with_durability_and_replay_config(
+                &path,
+                &mut catalog,
+                DurabilityPolicy::default(),
+                config,
+            )
+            .unwrap();
+            store
+                .create_property_index(&mut catalog, "Memory", "id")
+                .unwrap();
+            store
+                .create_composite_property_index(
+                    &mut catalog,
+                    "Memory",
+                    &["id".into(), "body".into()],
+                )
+                .unwrap();
+            store
+                .create_full_text_property_index(&mut catalog, "Memory", "body")
+                .unwrap();
+            let mut ids = Vec::new();
+            for id in 0..1057 {
+                ids.push(
+                    store
+                        .create_node(
+                            &mut catalog,
+                            "Memory",
+                            properties([
+                                ("id", Value::Int(id)),
+                                ("body", Value::String(format!("alpha beta {id}"))),
+                                (
+                                    "detail",
+                                    Value::Map(BTreeMap::from([(
+                                        "flags".into(),
+                                        Value::List(vec![
+                                            Value::Null,
+                                            Value::Bool(true),
+                                            Value::List(vec![Value::String("雪".repeat(8))]),
+                                        ]),
+                                    )])),
+                                ),
+                            ]),
+                        )
+                        .unwrap(),
+                );
+                verify(&store);
+            }
+            for target in ids.iter().take(130).skip(1) {
+                store
+                    .create_relationship(
+                        &mut catalog,
+                        ids[0],
+                        *target,
+                        "LINK",
+                        properties([("rank", Value::Int(1))]),
+                    )
+                    .unwrap();
+                verify(&store);
+            }
+            let old = store.snapshot();
+            let old_pressure = old.estimated_delta_resident_bytes();
+            for id in 0..17 {
+                store
+                    .set_node_property(
+                        &mut catalog,
+                        "Memory",
+                        Some(&PropertyFilter::Eq {
+                            property: "id".into(),
+                            value: Value::Int(id),
+                        }),
+                        "body",
+                        Value::String(format!("gamma beta {id}")),
+                    )
+                    .unwrap();
+                verify(&store);
+                assert_eq!(old.estimated_delta_resident_bytes(), old_pressure);
+            }
+            store
+                .set_relationship_property(
+                    &mut catalog,
+                    RelationshipPropertyUpdate {
+                        source_label: "Memory".into(),
+                        filter: None,
+                        rel_type: "LINK".into(),
+                        target_label: "Memory".into(),
+                        target_filter: None,
+                        rel_filter: None,
+                        property: "rank".into(),
+                        value: Value::Int(2),
+                    },
+                )
+                .unwrap();
+            verify(&store);
+            store
+                .delete_nodes(
+                    &mut catalog,
+                    "Memory",
+                    Some(&PropertyFilter::Eq {
+                        property: "id".into(),
+                        value: Value::Int(1),
+                    }),
+                    true,
+                )
+                .unwrap();
+            verify(&store);
+            store.checkpoint(&catalog).unwrap();
+            verify(&store);
+            if mode == StorageResidencyMode::OutOfCore {
+                assert_eq!(store.checkpoint_debt_snapshot().unwrap().delta_bytes, 0);
+            }
+            store
+                .set_node_property(
+                    &mut catalog,
+                    "Memory",
+                    Some(&PropertyFilter::Eq {
+                        property: "id".into(),
+                        value: Value::Int(2),
+                    }),
+                    "body",
+                    Value::String("suffix gamma".into()),
+                )
+                .unwrap();
+            verify(&store);
+            let expected_nodes = store
+                .node_records_owned()
+                .collect::<hawdb_core::Result<Vec<_>>>()
+                .unwrap();
+            let expected_relationships = store
+                .relationship_records_owned()
+                .collect::<hawdb_core::Result<Vec<_>>>()
+                .unwrap();
+            drop(old);
+            drop(store);
+            let reopened = GraphStore::open_with_durability_and_replay_config(
+                &path,
+                &mut catalog,
+                DurabilityPolicy::default(),
+                config,
+            )
+            .unwrap();
+            verify(&reopened);
+            assert_eq!(
+                reopened
+                    .node_records_owned()
+                    .collect::<hawdb_core::Result<Vec<_>>>()
+                    .unwrap(),
+                expected_nodes
+            );
+            assert_eq!(
+                reopened
+                    .relationship_records_owned()
+                    .collect::<hawdb_core::Result<Vec<_>>>()
+                    .unwrap(),
+                expected_relationships
+            );
+            if mode == StorageResidencyMode::OutOfCore {
+                let debt = reopened.checkpoint_debt_snapshot().unwrap();
+                assert_eq!(
+                    debt.delta_bytes,
+                    reopened.estimated_delta_resident_bytes_reference()
+                );
+                assert!(debt.delta_bytes > 0);
+            }
+            drop(reopened);
+            fs::remove_dir_all(path).unwrap();
+        }
     }
 
     #[test]
@@ -8391,6 +8645,2732 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_wal_tail_preserves_every_post_snapshot_transaction() {
+        use super::{wal_generation_file, WalCursorEvent, WalOpenOutcome, WalRecordCursor};
+
+        let path = unique_test_dir("checkpoint_wal_tail");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let source = store.checkpoint_source();
+        let prepared = source.prepare_checkpoint(&catalog).unwrap().unwrap();
+        let authoritative = store.durable.as_ref().unwrap().wal_path.clone();
+        for id in 2..=5 {
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    properties([
+                        ("id", Value::Int(id)),
+                        ("body", Value::String("x".repeat(48 * 1024))),
+                    ]),
+                )
+                .unwrap();
+        }
+        let captured = store.checkpoint_source();
+        let before = std::fs::read(&authoritative).unwrap();
+        let receipt = captured.prepare_checkpoint_wal_tail(&prepared).unwrap();
+        assert_eq!(receipt.entries, 4);
+        assert_eq!(receipt.captured_commit_epoch, 5);
+        assert_eq!(std::fs::read(&authoritative).unwrap(), before);
+        assert_eq!(store.durable.as_ref().unwrap().checkpoint_epoch, 0);
+        let manifest = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .checkpoint_manifest(
+                prepared.generation,
+                prepared.manifest_artifacts,
+                prepared.source_commit_epoch,
+                None,
+                prepared.source_scan_publication,
+                super::durable::CheckpointReplayBoundary {
+                    start_lsn: prepared.source_next_lsn,
+                    next_lsn: receipt.captured_next_lsn,
+                    commit_epoch: receipt.captured_commit_epoch,
+                },
+            )
+            .unwrap();
+        assert_eq!(manifest.checkpoint_commit_epoch, 1);
+        assert_eq!(manifest.wal_replay_start_lsn, 2);
+        assert_eq!(manifest.next_lsn, 6);
+        let candidate = path.join(wal_generation_file(prepared.generation));
+        let WalOpenOutcome::Cursor(mut cursor) = WalRecordCursor::open(&candidate, None).unwrap()
+        else {
+            panic!("candidate suffix has no valid header");
+        };
+        assert_eq!(cursor.generation(), prepared.generation);
+        assert_eq!(cursor.start_lsn(), prepared.source_next_lsn);
+        for lsn in prepared.source_next_lsn..receipt.captured_next_lsn {
+            let WalCursorEvent::Entry { entry, .. } = cursor.next().unwrap() else {
+                panic!("candidate lost a complete transaction");
+            };
+            assert_eq!(entry.lsn, lsn);
+        }
+        assert!(matches!(cursor.next().unwrap(), WalCursorEvent::Eof));
+        drop(cursor);
+        // Exercise the real v1 reopen path for checkpoint S plus its suffix
+        // to C. Production publication still requires candidate rebasing and
+        // writer revalidation; this controlled fixture ends all writes here.
+        store
+            .durable
+            .as_ref()
+            .unwrap()
+            .publish_checkpoint_sidecars(
+                &prepared.staging_path,
+                prepared.publish_projected_graph_artifacts,
+                prepared.source_scan_publication,
+            )
+            .unwrap();
+        manifest.write(&path.join(super::MANIFEST_FILE)).unwrap();
+        drop(captured);
+        drop(prepared);
+        drop(source);
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 5);
+        assert_eq!(
+            recovered.storage_recovery_report().checkpoint_commit_epoch,
+            Some(1)
+        );
+        assert_eq!(recovered.scan_nodes(None).count(), 5);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_candidate_private_recovery_keeps_existing_selectors_until_publication() {
+        use crate::config::RelationalIndexMode;
+        use crate::relational::{
+            RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE, RELATIONAL_ROW_DELTA_MANIFEST_FILE,
+        };
+
+        let path = unique_test_dir("checkpoint_candidate_private_selectors");
+        let replay = WalReplayConfig {
+            relational_index_mode: RelationalIndexMode::Shadow,
+            ..WalReplayConfig::default()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            replay,
+        )
+        .unwrap();
+        let row = |id: usize| {
+            RelationalRow::new(vec![
+                RelationalValue::Text(id.to_string()),
+                RelationalValue::Text(format!("complete row {id}: 雪")),
+            ])
+        };
+        let insert = |id| RelationalTransaction {
+            writes: vec![RelationalWrite::Insert {
+                table: "documents".into(),
+                mode: RelationalInsertMode::Error,
+                rows: vec![row(id)],
+            }],
+        };
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![
+                        RelationalWrite::CreateTable(RelationalTableSchema {
+                            name: "documents".into(),
+                            columns: ["id", "body"]
+                                .into_iter()
+                                .map(|name| RelationalColumnSchema {
+                                    name: name.into(),
+                                    scalar_type: RelationalScalarType::Text,
+                                    nullable: false,
+                                    default: None,
+                                })
+                                .collect(),
+                            primary_key: vec!["id".into()],
+                            unique_constraints: Vec::new(),
+                            foreign_keys: Vec::new(),
+                            indexes: Vec::new(),
+                        }),
+                        insert(0).writes.pop().unwrap(),
+                    ],
+                },
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        store
+            .commit_relational_transaction(&mut catalog, insert(1))
+            .unwrap();
+        drop(store);
+        // Ordinary writable recovery establishes exact source selectors before
+        // any private future generation exists.
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            replay,
+        )
+        .unwrap();
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        store
+            .commit_relational_transaction(&mut catalog, insert(2))
+            .unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(7))]))
+            .unwrap();
+        let before_manifest = fs::read(path.join(MANIFEST_FILE)).unwrap();
+        let before_wal = fs::read(active_wal_path(&path)).unwrap();
+        let selectors = [
+            RELATIONAL_ROW_DELTA_MANIFEST_FILE,
+            RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE,
+        ]
+        .map(|name| (name, fs::read(path.join(name)).unwrap()));
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        candidate.finish_catch_up().unwrap();
+        assert_eq!(fs::read(path.join(MANIFEST_FILE)).unwrap(), before_manifest);
+        assert_eq!(fs::read(active_wal_path(&path)).unwrap(), before_wal);
+        for (name, expected) in selectors {
+            assert_eq!(
+                fs::read(path.join(name)).unwrap(),
+                expected,
+                "private {name}"
+            );
+        }
+        drop(candidate);
+        let expected = (0..3).map(row).collect::<Vec<_>>();
+        assert_eq!(
+            store
+                .relational_state()
+                .rows("documents")
+                .map(|(_, row)| row.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        drop(store);
+        let recovered = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            replay,
+        )
+        .unwrap();
+        assert_eq!(
+            recovered
+                .relational_state()
+                .rows("documents")
+                .map(|(_, row)| row.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        drop(recovered);
+        let read_only = GraphStore::open_read_only_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            replay,
+        )
+        .unwrap();
+        assert_eq!(
+            read_only
+                .relational_state()
+                .rows("documents")
+                .map(|(_, row)| row.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        drop(read_only);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    fn private_checkpoint_recovery_publication(
+        mode: crate::config::RelationalIndexMode,
+        durability: DurabilityPolicy,
+        uncertain: bool,
+    ) {
+        use crate::relational::{
+            RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE, RELATIONAL_ROW_DELTA_MANIFEST_FILE,
+        };
+
+        let path = unique_test_dir(&format!(
+            "checkpoint_candidate_private_publish_{mode:?}_{durability:?}_{uncertain}"
+        ));
+        let replay = WalReplayConfig {
+            relational_index_mode: mode,
+            residency_mode: StorageResidencyMode::OutOfCore,
+            ..WalReplayConfig::default()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            durability,
+            WalReplayConfig {
+                // Authoritative opens require a pre-existing canonical index
+                // binding. Bootstrap it through the supported shadow path.
+                relational_index_mode: crate::config::RelationalIndexMode::Shadow,
+                ..replay
+            },
+        )
+        .unwrap();
+        let row = |id: usize| {
+            RelationalRow::new(vec![
+                RelationalValue::Text(id.to_string()),
+                RelationalValue::Text(format!("complete row {id}: 雪")),
+            ])
+        };
+        let insert = |id| RelationalTransaction {
+            writes: vec![RelationalWrite::Insert {
+                table: "documents".into(),
+                mode: RelationalInsertMode::Error,
+                rows: vec![row(id)],
+            }],
+        };
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![
+                        RelationalWrite::CreateTable(RelationalTableSchema {
+                            name: "documents".into(),
+                            columns: ["id", "body"]
+                                .into_iter()
+                                .map(|name| RelationalColumnSchema {
+                                    name: name.into(),
+                                    scalar_type: RelationalScalarType::Text,
+                                    nullable: false,
+                                    default: None,
+                                })
+                                .collect(),
+                            primary_key: vec!["id".into()],
+                            unique_constraints: Vec::new(),
+                            foreign_keys: Vec::new(),
+                            indexes: Vec::new(),
+                        }),
+                        insert(0).writes.pop().unwrap(),
+                    ],
+                },
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        store
+            .commit_relational_transaction(&mut catalog, insert(1))
+            .unwrap();
+        drop(store);
+        // Ordinary writable recovery establishes exact source selectors before
+        // any private future generation exists.
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            durability,
+            replay,
+        )
+        .unwrap();
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        store
+            .commit_relational_transaction(&mut catalog, insert(2))
+            .unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(7))]))
+            .unwrap();
+        let before_manifest = fs::read(path.join(MANIFEST_FILE)).unwrap();
+        let before_wal = fs::read(active_wal_path(&path)).unwrap();
+        let selectors = [
+            RELATIONAL_ROW_DELTA_MANIFEST_FILE,
+            RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE,
+        ]
+        .map(|name| (name, fs::read(path.join(name)).unwrap()));
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        candidate.finish_catch_up().unwrap();
+        assert_eq!(fs::read(path.join(MANIFEST_FILE)).unwrap(), before_manifest);
+        assert_eq!(fs::read(active_wal_path(&path)).unwrap(), before_wal);
+        for (name, expected) in selectors {
+            assert_eq!(
+                fs::read(path.join(name)).unwrap(),
+                expected,
+                "private {name}"
+            );
+        }
+        let epoch = store.commit_epoch();
+        let generation = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .next_checkpoint_generation()
+            .unwrap();
+        let private_wal = path.join(super::wal_generation_file(generation));
+        if uncertain {
+            super::set_checkpoint_failpoint(Some(super::CheckpointPublishStage::ManifestPublished));
+        }
+        let published =
+            store.publish_checkpoint_candidate_deferred_reclamation(&mut candidate, None);
+        super::set_checkpoint_failpoint(None);
+        if uncertain {
+            assert!(matches!(published, Err(HawDBError::StorageIntegrity(_))));
+            assert!(store.ensure_usable().is_err());
+        } else {
+            published.unwrap();
+            assert_eq!(store.commit_epoch(), epoch);
+            assert_private_checkpoint_recovery_rows(&store, epoch, &row);
+        }
+        drop(candidate);
+        assert!(private_wal.exists());
+        assert!(path
+            .join(super::checkpoint_generation_file(generation))
+            .exists());
+        drop(store);
+        // Read-only recovery must work immediately, without a writable open
+        // publishing replacement derived selectors first.
+        let read_only = GraphStore::open_read_only_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            durability,
+            replay,
+        )
+        .unwrap();
+        assert_private_checkpoint_recovery_rows(&read_only, epoch, &row);
+        drop(read_only);
+        let recovered = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            durability,
+            replay,
+        )
+        .unwrap();
+        assert_private_checkpoint_recovery_rows(&recovered, epoch, &row);
+        drop(recovered);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    fn assert_private_checkpoint_recovery_rows(
+        store: &GraphStore,
+        epoch: u64,
+        row: &impl Fn(usize) -> RelationalRow,
+    ) {
+        use crate::relational::{
+            RelationalHydrationBudget, RelationalKey, RelationalRowPageSnapshotReadLimits,
+        };
+        assert_eq!(store.commit_epoch(), epoch);
+        assert_eq!(store.node_count_for_label(None), 1);
+        assert_eq!(
+            store
+                .node_owned(NodeId(0))
+                .unwrap()
+                .unwrap()
+                .properties
+                .get("id"),
+            Some(&Value::Int(7))
+        );
+        store
+            .validate_authoritative_relational_index_open()
+            .unwrap();
+        let reader = store
+            .open_relational_row_snapshot_reader()
+            .unwrap()
+            .unwrap();
+        let mut hydration = RelationalHydrationBudget::default();
+        for id in 0..3 {
+            let (actual, report) = reader
+                .point_projected(
+                    "documents",
+                    &RelationalKey(vec![RelationalValue::Text(id.to_string())]),
+                    &[0, 1],
+                    RelationalRowPageSnapshotReadLimits::default(),
+                    &mut hydration,
+                    &hawdb_core::RuntimeTaskContext::default(),
+                )
+                .unwrap();
+            let actual = actual
+                .unwrap()
+                .fields
+                .into_iter()
+                .map(|field| field.value)
+                .collect::<Vec<_>>();
+            assert_eq!(actual.as_slice(), row(id).values());
+            assert_eq!(report.identity.visible_commit_epoch, epoch);
+            let key = RelationalKey(vec![RelationalValue::Text(id.to_string())]);
+            let mut postings = Vec::new();
+            store
+                .visit_relational_index_read_view_prefix(
+                    "documents",
+                    crate::relational::RELATIONAL_PRIMARY_INDEX_NAME,
+                    &key,
+                    crate::relational::RelationalIndexReadLimits::default(),
+                    |posting| {
+                        postings.push(posting.clone());
+                        true
+                    },
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(postings, vec![key]);
+        }
+    }
+
+    #[test]
+    fn checkpoint_candidate_seals_multiple_prefixes_on_the_same_base() {
+        use crate::config::RelationalIndexMode;
+        use crate::relational::{
+            RelationalHydrationBudget, RelationalKey, RelationalRowPageSnapshotReadLimits,
+        };
+        for mode in [
+            RelationalIndexMode::Shadow,
+            RelationalIndexMode::Authoritative,
+        ] {
+            for durability in [
+                DurabilityPolicy::SyncOnEveryWrite,
+                DurabilityPolicy::SyncOnCheckpoint,
+            ] {
+                let path = unique_test_dir("checkpoint_candidate_multiple_prefixes");
+                let replay = WalReplayConfig {
+                    residency_mode: StorageResidencyMode::OutOfCore,
+                    relational_index_mode: mode,
+                    ..WalReplayConfig::default()
+                };
+                let mut catalog = Catalog::default();
+                let mut store = GraphStore::open_with_durability_and_replay_config(
+                    &path,
+                    &mut catalog,
+                    durability,
+                    WalReplayConfig {
+                        relational_index_mode: RelationalIndexMode::Shadow,
+                        ..replay
+                    },
+                )
+                .unwrap();
+                let row = |id: usize| {
+                    RelationalRow::new(vec![
+                        RelationalValue::Text(id.to_string()),
+                        RelationalValue::Text(format!("sealed complete row {id}: 雪")),
+                    ])
+                };
+                store
+                    .commit_relational_transaction(
+                        &mut catalog,
+                        RelationalTransaction {
+                            writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
+                                name: "documents".into(),
+                                columns: ["id", "body"]
+                                    .into_iter()
+                                    .map(|name| RelationalColumnSchema {
+                                        name: name.into(),
+                                        scalar_type: RelationalScalarType::Text,
+                                        nullable: false,
+                                        default: None,
+                                    })
+                                    .collect(),
+                                primary_key: vec!["id".into()],
+                                unique_constraints: Vec::new(),
+                                foreign_keys: Vec::new(),
+                                indexes: Vec::new(),
+                            })],
+                        },
+                    )
+                    .unwrap();
+                store.checkpoint(&catalog).unwrap();
+                drop(store);
+                let mut store = GraphStore::open_with_durability_and_replay_config(
+                    &path,
+                    &mut catalog,
+                    durability,
+                    replay,
+                )
+                .unwrap();
+                let source = store.checkpoint_source();
+                let base_epoch = source.commit_epoch();
+                let generation = source
+                    .durable
+                    .as_ref()
+                    .unwrap()
+                    .next_checkpoint_generation()
+                    .unwrap();
+                let mut candidate = source
+                    .prepare_checkpoint_candidate(&catalog)
+                    .unwrap()
+                    .unwrap();
+                drop(source);
+                let base_path = path.join(super::checkpoint_generation_file(generation));
+                let base_bytes = fs::read(&base_path).unwrap();
+                let manifest_before = fs::read(path.join(MANIFEST_FILE)).unwrap();
+                let mut previous_wal = Vec::new();
+                let check = |store: &GraphStore, count: usize| {
+                    assert_eq!(store.commit_epoch(), base_epoch + 2 * count as u64);
+                    assert_eq!(store.node_count_for_label(None), count);
+                    store
+                        .validate_authoritative_relational_index_open()
+                        .unwrap();
+                    let reader = store
+                        .open_relational_row_snapshot_reader()
+                        .unwrap()
+                        .unwrap();
+                    let mut hydration = RelationalHydrationBudget::default();
+                    for id in 0..count {
+                        assert_eq!(
+                            store
+                                .node_owned(NodeId(id as u64))
+                                .unwrap()
+                                .unwrap()
+                                .properties
+                                .get("id"),
+                            Some(&Value::Int(id as i64))
+                        );
+                        let key = RelationalKey(vec![RelationalValue::Text(id.to_string())]);
+                        let (actual, report) = reader
+                            .point_projected(
+                                "documents",
+                                &key,
+                                &[0, 1],
+                                RelationalRowPageSnapshotReadLimits::default(),
+                                &mut hydration,
+                                &hawdb_core::RuntimeTaskContext::default(),
+                            )
+                            .unwrap();
+                        let actual = actual
+                            .unwrap()
+                            .fields
+                            .into_iter()
+                            .map(|field| field.value)
+                            .collect::<Vec<_>>();
+                        assert_eq!(actual.as_slice(), row(id).values());
+                        assert_eq!(report.identity.visible_commit_epoch, store.commit_epoch());
+                        let mut postings = Vec::new();
+                        store
+                            .visit_relational_index_read_view_prefix(
+                                "documents",
+                                crate::relational::RELATIONAL_PRIMARY_INDEX_NAME,
+                                &key,
+                                crate::relational::RelationalIndexReadLimits::default(),
+                                |posting| {
+                                    postings.push(posting.clone());
+                                    true
+                                },
+                            )
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(postings, vec![key]);
+                    }
+                };
+                for id in 0..4 {
+                    store
+                        .commit_relational_transaction(
+                            &mut catalog,
+                            RelationalTransaction {
+                                writes: vec![RelationalWrite::Insert {
+                                    table: "documents".into(),
+                                    mode: RelationalInsertMode::Error,
+                                    rows: vec![row(id)],
+                                }],
+                            },
+                        )
+                        .unwrap();
+                    store
+                        .create_node(
+                            &mut catalog,
+                            "Memory",
+                            properties([("id", Value::Int(id as i64))]),
+                        )
+                        .unwrap();
+                    let captured = store.checkpoint_source();
+                    let tail = candidate.catch_up(&captured).unwrap();
+                    assert_eq!(tail.entries, 2 * (id + 1) as u64);
+                    candidate.finish_catch_up().unwrap();
+                    candidate.finish_catch_up().unwrap();
+                    assert_eq!(candidate.catch_up(&captured).unwrap(), tail);
+                    drop(captured);
+                    assert_eq!(candidate.commit_epoch(), base_epoch + tail.entries);
+                    assert_eq!(fs::read(&base_path).unwrap(), base_bytes);
+                    assert_eq!(fs::read(path.join(MANIFEST_FILE)).unwrap(), manifest_before);
+                    let wal = fs::read(path.join(super::wal_generation_file(generation))).unwrap();
+                    assert!(wal.starts_with(&previous_wal));
+                    assert!(wal.len() > previous_wal.len());
+                    previous_wal = wal;
+                }
+                store
+                    .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, None)
+                    .unwrap();
+                assert!(store.relational_row_pages.recovery_builder.is_none());
+                assert!(store.relational_index_shadow.recovery_builder.is_none());
+                check(&store, 4);
+                drop(candidate);
+                drop(store);
+                let read_only = GraphStore::open_read_only_with_durability_and_replay_config(
+                    &path,
+                    &mut catalog,
+                    durability,
+                    replay,
+                )
+                .unwrap();
+                check(&read_only, 4);
+                drop(read_only);
+                let recovered = GraphStore::open_with_durability_and_replay_config(
+                    &path,
+                    &mut catalog,
+                    durability,
+                    replay,
+                )
+                .unwrap();
+                check(&recovered, 4);
+                drop(recovered);
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+    #[test]
+    fn checkpoint_candidate_private_recovery_publishes_complete_selectors() {
+        for mode in [
+            crate::config::RelationalIndexMode::Shadow,
+            crate::config::RelationalIndexMode::Authoritative,
+        ] {
+            for durability in [
+                DurabilityPolicy::SyncOnEveryWrite,
+                DurabilityPolicy::SyncOnCheckpoint,
+            ] {
+                private_checkpoint_recovery_publication(mode, durability, false);
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_candidate_private_recovery_uncertain_publication_retains_recovery() {
+        for mode in [
+            crate::config::RelationalIndexMode::Shadow,
+            crate::config::RelationalIndexMode::Authoritative,
+        ] {
+            for durability in [
+                DurabilityPolicy::SyncOnEveryWrite,
+                DurabilityPolicy::SyncOnCheckpoint,
+            ] {
+                private_checkpoint_recovery_publication(mode, durability, true);
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_candidate_advances_across_captured_suffixes_without_rebuilding() {
+        for residency in [
+            StorageResidencyMode::Auto,
+            StorageResidencyMode::Materialized,
+            StorageResidencyMode::OutOfCore,
+        ] {
+            let path = unique_test_dir("checkpoint_candidate_progress");
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open_with_durability_and_replay_config(
+                &path,
+                &mut catalog,
+                DurabilityPolicy::default(),
+                WalReplayConfig {
+                    residency_mode: residency,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            for id in 1..=3 {
+                store
+                    .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                    .unwrap();
+            }
+            let reader = store.snapshot();
+            let source = store.checkpoint_source();
+            let mut candidate = source
+                .prepare_checkpoint_candidate(&catalog)
+                .unwrap()
+                .unwrap();
+            drop(source);
+            let before = std::fs::read(path.join(super::MANIFEST_FILE)).unwrap();
+            for id in 4..=5 {
+                store
+                    .create_node(
+                        &mut catalog,
+                        "Memory",
+                        properties([
+                            ("id", Value::Int(id)),
+                            ("body", Value::String("x".repeat(48 * 1024))),
+                        ]),
+                    )
+                    .unwrap();
+            }
+            // Stale publication preserves this candidate for incremental retry.
+            assert!(store
+                .publish_checkpoint_candidate(&mut candidate, Some(3), &Default::default())
+                .is_err());
+            assert_eq!(
+                std::fs::read(path.join(super::MANIFEST_FILE)).unwrap(),
+                before
+            );
+            let captured = store.checkpoint_source();
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(6))]))
+                .unwrap();
+            let receipt = candidate.catch_up(&captured).unwrap();
+            assert_eq!(receipt.entries, 2);
+            assert_eq!(candidate.commit_epoch(), 5);
+            drop(captured);
+            assert!(store
+                .publish_checkpoint_candidate(&mut candidate, Some(3), &Default::default())
+                .is_err());
+            for id in 7..=9 {
+                store
+                    .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                    .unwrap();
+                let captured = store.checkpoint_source();
+                let receipt = candidate.catch_up(&captured).unwrap();
+                assert_eq!(receipt.entries, id as u64 - 3);
+                assert_eq!(candidate.commit_epoch(), id as u64);
+            }
+            let last_key = hawdb_storage::version::VersionKey::Database;
+            let last_stamp = store.version_index.stamp(&last_key);
+            assert!(last_stamp.is_some());
+            catalog = store
+                .publish_checkpoint_candidate(&mut candidate, Some(3), &Default::default())
+                .unwrap();
+            assert_eq!(store.commit_epoch(), 9);
+            assert_eq!(store.version_index.stamp(&last_key), last_stamp);
+            assert_eq!(
+                store
+                    .node_records_owned()
+                    .collect::<crate::error::Result<Vec<_>>>()
+                    .unwrap()
+                    .len(),
+                9
+            );
+            assert_eq!(
+                reader
+                    .node_records_owned()
+                    .collect::<crate::error::Result<Vec<_>>>()
+                    .unwrap()
+                    .len(),
+                3
+            );
+            for id in 0..9 {
+                assert_eq!(
+                    store
+                        .node_owned(NodeId(id))
+                        .unwrap()
+                        .unwrap()
+                        .properties
+                        .get("id"),
+                    Some(&Value::Int(id as i64 + 1))
+                );
+            }
+            assert_eq!(reader.commit_epoch(), 3);
+            reader.ensure_usable().unwrap();
+            assert_eq!(
+                store
+                    .storage_reclamation_watermark(Some(3))
+                    .checkpoint_commit_epoch,
+                Some(3)
+            );
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(10))]))
+                .unwrap();
+            drop(candidate);
+            drop(reader);
+            drop(store);
+            let recovered = GraphStore::open_with_durability_and_replay_config(
+                &path,
+                &mut catalog,
+                DurabilityPolicy::default(),
+                WalReplayConfig {
+                    residency_mode: residency,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(recovered.commit_epoch(), 10);
+            assert_eq!(
+                recovered
+                    .node_records_owned()
+                    .collect::<crate::error::Result<Vec<_>>>()
+                    .unwrap()
+                    .len(),
+                10
+            );
+            drop(recovered);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn checkpoint_candidate_cancellation_between_replay_records_preserves_authority() {
+        use hawdb_core::{
+            RuntimeCancellationToken, RuntimeIoWaveController, RuntimeIoWaveError,
+            RuntimeIoWavePermit, RuntimeTaskContext,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct WaveLease(Arc<AtomicUsize>);
+
+        impl Drop for WaveLease {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, AtomicOrdering::SeqCst);
+            }
+        }
+
+        #[derive(Debug)]
+        struct CancelDuringReplay {
+            acquisitions: AtomicUsize,
+            in_flight: Arc<AtomicUsize>,
+            cancellation: RuntimeCancellationToken,
+        }
+
+        impl RuntimeIoWaveController for CancelDuringReplay {
+            fn try_acquire(
+                &self,
+                slots: NonZeroUsize,
+                task: &RuntimeTaskContext,
+            ) -> std::result::Result<Option<Box<dyn RuntimeIoWavePermit>>, RuntimeIoWaveError>
+            {
+                self.acquire(slots, task).map(Some)
+            }
+
+            fn acquire(
+                &self,
+                slots: NonZeroUsize,
+                _task: &RuntimeTaskContext,
+            ) -> std::result::Result<Box<dyn RuntimeIoWavePermit>, RuntimeIoWaveError> {
+                assert_eq!(slots.get(), 1);
+                // For this single-block suffix: candidate/source open, source
+                // seek/read and the first candidate write precede the second
+                // write. Cancel there after exactly one transaction is applied.
+                // All authority/partial-replay/cleanup/reopen assertions remain.
+                if self.acquisitions.fetch_add(1, AtomicOrdering::SeqCst) + 1 == 6 {
+                    self.cancellation.cancel();
+                }
+                assert_eq!(self.in_flight.fetch_add(1, AtomicOrdering::SeqCst), 0);
+                Ok(Box::new(WaveLease(Arc::clone(&self.in_flight))))
+            }
+        }
+
+        let path = unique_test_dir("checkpoint_candidate_cancel_replay");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let generation = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .next_checkpoint_generation()
+            .unwrap();
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        for id in 2..=4 {
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                .unwrap();
+        }
+        let captured = store.checkpoint_source();
+        let manifest = std::fs::read(path.join(super::MANIFEST_FILE)).unwrap();
+        let original_wal = store.durable.as_ref().unwrap().wal_path.clone();
+        let original_bytes = std::fs::read(&original_wal).unwrap();
+        let cancellation = RuntimeCancellationToken::new();
+        let controller = Arc::new(CancelDuringReplay {
+            acquisitions: AtomicUsize::new(0),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            cancellation: cancellation.clone(),
+        });
+        let task = RuntimeTaskContext::without_deadline(cancellation)
+            .with_io_wave_controller(controller.clone());
+        let result = candidate.catch_up_with_task_context(&captured, &task);
+        assert!(matches!(result, Err(HawDBError::Execution(_))));
+        assert_eq!(candidate.commit_epoch(), 2);
+        assert_eq!(controller.acquisitions.load(AtomicOrdering::SeqCst), 6);
+        assert_eq!(controller.in_flight.load(AtomicOrdering::SeqCst), 0);
+        assert!(store
+            .publish_checkpoint_candidate(&mut candidate, None, &BTreeSet::new())
+            .is_err());
+        store.ensure_usable().unwrap();
+        assert_eq!(std::fs::read(&original_wal).unwrap(), original_bytes);
+        assert_eq!(
+            std::fs::read(path.join(super::MANIFEST_FILE)).unwrap(),
+            manifest
+        );
+        let candidate_wal = path.join(super::wal_generation_file(generation));
+        assert!(
+            std::fs::metadata(&candidate_wal).unwrap().len()
+                > super::WAL_BINARY_FILE_HEADER_BYTES as u64
+        );
+        drop(candidate);
+        drop(captured);
+        assert!(!candidate_wal.exists());
+        assert!(!path
+            .join(super::checkpoint_generation_file(generation))
+            .exists());
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(5))]))
+            .unwrap();
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 5);
+        for id in 0..5 {
+            assert_eq!(
+                recovered
+                    .node_owned(NodeId(id))
+                    .unwrap()
+                    .unwrap()
+                    .properties
+                    .get("id"),
+                Some(&Value::Int(id as i64 + 1)),
+            );
+        }
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    fn checkpoint_projection_fixture() -> (Catalog, GraphStore, Vec<(NodeId, NodeId, String)>) {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::default();
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        for id in 0..1025 {
+            nodes.push(
+                store
+                    .create_node(
+                        &mut catalog,
+                        if id % 2 == 0 { "Memory" } else { "Source" },
+                        properties([("id", Value::Int(id))]),
+                    )
+                    .unwrap(),
+            );
+        }
+        for index in 0..nodes.len() {
+            let mut add = |source, target, rel_type: &str| {
+                store
+                    .create_relationship(&mut catalog, source, target, rel_type, BTreeMap::new())
+                    .unwrap();
+                edges.push((source, target, rel_type.to_string()));
+            };
+            add(nodes[0], nodes[index], "LINKS");
+            if index % 3 == 0 {
+                add(nodes[0], nodes[index], "LINKS");
+            }
+            if index % 5 == 0 {
+                add(nodes[index], nodes[0], "BACK");
+            }
+            if index % 7 == 0 {
+                add(nodes[0], nodes[index], "OTHER");
+            }
+        }
+        (catalog, store, edges)
+    }
+
+    #[test]
+    fn checkpoint_units_projected_build_matches_independent_edges_and_analytics_filters() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::Arc;
+        let (catalog, store, edges) = checkpoint_projection_fixture();
+        let cases = [
+            (vec![], vec![]),
+            (vec!["Memory"], vec![]),
+            (vec!["Source", "Missing"], vec!["BACK", "Missing"]),
+            (vec!["Memory", "Memory", "Missing"], vec!["LINKS", "OTHER"]),
+            (vec!["Missing"], vec![]),
+            (vec![], vec!["Missing"]),
+            (vec!["Memory"], vec!["Missing"]),
+        ];
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        for (labels, rel_types) in cases {
+            let definition = ProjectedGraphDefinition {
+                node_labels: labels.iter().map(|label| (*label).to_string()).collect(),
+                rel_types: rel_types
+                    .iter()
+                    .map(|rel_type| (*rel_type).to_string())
+                    .collect(),
+                relationship_predicates: Default::default(),
+            };
+            let ids = (0..1025)
+                .filter(|id| {
+                    labels.is_empty()
+                        || labels.contains(&if id % 2 == 0 { "Memory" } else { "Source" })
+                })
+                .map(NodeId)
+                .collect::<Vec<_>>();
+            let indices = ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| (*id, index))
+                .collect::<BTreeMap<_, _>>();
+            let pairs = edges
+                .iter()
+                .filter(|(_, _, kind)| rel_types.is_empty() || rel_types.contains(&kind.as_str()))
+                .filter_map(|(source, target, _)| {
+                    Some((*indices.get(source)?, *indices.get(target)?))
+                })
+                .collect::<BTreeSet<_>>();
+            let mut outgoing = Vec::new();
+            let mut incoming = Vec::new();
+            let mut outgoing_offsets = vec![0];
+            let mut incoming_offsets = vec![0];
+            for node in 0..ids.len() {
+                outgoing.extend(
+                    pairs
+                        .iter()
+                        .filter(|(source, _)| *source == node)
+                        .map(|(_, target)| *target),
+                );
+                incoming.extend(
+                    pairs
+                        .iter()
+                        .filter(|(_, target)| *target == node)
+                        .map(|(source, _)| *source),
+                );
+                outgoing_offsets.push(outgoing.len());
+                incoming_offsets.push(incoming.len());
+            }
+            let expected = super::ProjectedGraphArtifactData::new(
+                ids,
+                outgoing_offsets,
+                outgoing,
+                incoming_offsets,
+                incoming,
+            )
+            .unwrap();
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            let actual = super::checkpoint_projected_graph_from_definition(
+                &catalog,
+                &store,
+                &definition,
+                &probe.context(scheduler.clone()),
+            )
+            .unwrap();
+            assert_eq!(actual, expected, "definition={definition:?}");
+            let analytics = super::projected_graph_from_definition(&catalog, &store, &definition);
+            assert_eq!(actual.nodes, analytics.nodes());
+            assert_eq!(actual.csr_offsets, analytics.csr_offsets());
+            assert_eq!(actual.csr_targets, analytics.csr_targets());
+            assert_eq!(actual.csc_offsets, analytics.csc_offsets());
+            assert_eq!(actual.csc_sources, analytics.csc_sources());
+            probe.assert_released(&scheduler);
+        }
+    }
+
+    #[test]
+    fn checkpoint_units_projected_build_applies_predicates_and_preserves_all_adjacency_arrays() {
+        use super::ProjectedGraphArtifactData;
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::default();
+        let nodes = (0..4)
+            .map(|_| {
+                store
+                    .create_node(&mut catalog, "Memory", BTreeMap::new())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        for (source, target, kind, confidence, tag) in [
+            (0, 1, "LINK", 0.7, "yes"),
+            (0, 2, "LINK", 0.69, "yes"),
+            (1, 3, "LINK", 0.8, "no"),
+            (3, 0, "BACK", 0.1, "no"),
+            (3, 0, "LINK", 0.9, "yes"),
+        ] {
+            store
+                .create_relationship(
+                    &mut catalog,
+                    nodes[source],
+                    nodes[target],
+                    kind,
+                    BTreeMap::from([
+                        ("confidence".into(), Value::Float(confidence)),
+                        ("tag".into(), Value::String(tag.into())),
+                    ]),
+                )
+                .unwrap();
+        }
+        let identity = store.checkpoint_source_identity();
+        let local = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(1),
+            ..LocalQosPolicy::default()
+        });
+        for (labels, kinds) in [
+            (vec!["Memory"], vec!["LINK", "BACK"]),
+            (vec![], vec!["LINK"]),
+            (vec!["Memory"], vec![]),
+            (vec![], vec![]),
+        ] {
+            let definition = ProjectedGraphDefinition {
+                node_labels: labels.iter().map(|name| (*name).into()).collect(),
+                rel_types: kinds.iter().map(|name| (*name).into()).collect(),
+                relationship_predicates: BTreeMap::from([
+                    (
+                        "LINK".into(),
+                        ProjectedRelationshipPredicate::And(vec![
+                            ProjectedRelationshipPredicate::Gte {
+                                property: "confidence".into(),
+                                value: Value::Float(0.7),
+                            },
+                            ProjectedRelationshipPredicate::Eq {
+                                property: "tag".into(),
+                                value: Value::String("yes".into()),
+                            },
+                        ]),
+                    ),
+                    (
+                        "Missing".into(),
+                        ProjectedRelationshipPredicate::Eq {
+                            property: "missing".into(),
+                            value: Value::Null,
+                        },
+                    ),
+                ]),
+            };
+            let expected = if labels.is_empty() && kinds.is_empty() {
+                // The ordinary all-label/all-type fast path ignores predicates.
+                ProjectedGraphArtifactData::new(
+                    nodes.clone(),
+                    vec![0, 2, 3, 3, 4],
+                    vec![1, 2, 3, 0],
+                    vec![0, 1, 2, 3, 4],
+                    vec![3, 0, 0, 1],
+                )
+                .unwrap()
+            } else {
+                ProjectedGraphArtifactData::new(
+                    nodes.clone(),
+                    vec![0, 1, 1, 1, 2],
+                    vec![1, 0],
+                    vec![0, 1, 2, 2, 2],
+                    vec![3, 0],
+                )
+                .unwrap()
+            };
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            let actual = super::checkpoint_projected_graph_from_definition(
+                &catalog,
+                &store,
+                &definition,
+                &probe.context(local.clone()),
+            )
+            .unwrap();
+            assert_eq!(actual, expected);
+            let ordinary = super::projected_graph_from_definition(&catalog, &store, &definition);
+            assert_eq!(actual.nodes, ordinary.nodes());
+            assert_eq!(actual.csr_offsets, ordinary.csr_offsets());
+            assert_eq!(actual.csr_targets, ordinary.csr_targets());
+            assert_eq!(actual.csc_offsets, ordinary.csc_offsets());
+            assert_eq!(actual.csc_sources, ordinary.csc_sources());
+            let total = probe.completed.load(Ordering::SeqCst);
+            probe.assert_released(&local);
+            for cut in 1..=total {
+                let cancelled = Arc::new(CheckpointWorkProbe::default());
+                cancelled.cancel_after.store(cut, Ordering::SeqCst);
+                let error = super::checkpoint_projected_graph_from_definition(
+                    &catalog,
+                    &store,
+                    &definition,
+                    &cancelled.context(local.clone()),
+                )
+                .unwrap_err();
+                assert!(error.to_string().contains("checkpoint build stopped"));
+                assert_eq!(cancelled.completed.load(Ordering::SeqCst), cut);
+                cancelled.assert_released(&local);
+                assert_eq!(store.checkpoint_source_identity(), identity);
+            }
+            let retry = Arc::new(CheckpointWorkProbe::default());
+            assert_eq!(
+                super::checkpoint_projected_graph_from_definition(
+                    &catalog,
+                    &store,
+                    &definition,
+                    &retry.context(local.clone()),
+                )
+                .unwrap(),
+                expected
+            );
+            retry.assert_released(&local);
+        }
+    }
+
+    #[test]
+    fn checkpoint_units_projected_build_cancels_capture_hydration_and_flatten_then_retries() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+        let (catalog, store, _) = checkpoint_projection_fixture();
+        let nodes = store.nodes.len();
+        let relationships = store.relationships.len();
+        let definition = ProjectedGraphDefinition {
+            node_labels: Vec::new(),
+            rel_types: Vec::new(),
+            relationship_predicates: Default::default(),
+        };
+        let identity = store.checkpoint_source_identity();
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        for cancel_after in [
+            17,
+            nodes + 17,
+            2 * nodes + 17,
+            3 * nodes + 1 + 17,
+            3 * nodes + relationships + 1 + 17,
+            3 * nodes + 2 * relationships + 2 + 17,
+        ] {
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            probe.cancel_after.store(cancel_after, Ordering::SeqCst);
+            let error = super::checkpoint_projected_graph_from_definition(
+                &catalog,
+                &store,
+                &definition,
+                &probe.context(scheduler.clone()),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("checkpoint build stopped"),
+                "cancel_after={cancel_after}: {error}"
+            );
+            assert_eq!(probe.completed.load(Ordering::SeqCst), cancel_after);
+            assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
+            probe.assert_released(&scheduler);
+            assert_eq!(store.checkpoint_source_identity(), identity);
+            store.ensure_usable().unwrap();
+        }
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let actual = super::checkpoint_projected_graph_from_definition(
+            &catalog,
+            &store,
+            &definition,
+            &retry.context(scheduler.clone()),
+        )
+        .unwrap();
+        let reference = super::projected_graph_from_definition(&catalog, &store, &definition);
+        assert_eq!(actual.nodes, reference.nodes());
+        assert_eq!(actual.csr_offsets, reference.csr_offsets());
+        assert_eq!(actual.csr_targets, reference.csr_targets());
+        assert_eq!(actual.csc_offsets, reference.csc_offsets());
+        assert_eq!(actual.csc_sources, reference.csc_sources());
+        retry.assert_released(&scheduler);
+    }
+
+    #[test]
+    fn checkpoint_units_cancel_native_overlay_capture_before_io_and_retry_complete_graph() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        let path = unique_test_dir("checkpoint_overlay_capture_cancel");
+        let open = |catalog: &mut Catalog| {
+            GraphStore::open_with_durability_and_replay_config(
+                &path,
+                catalog,
+                DurabilityPolicy::default(),
+                WalReplayConfig {
+                    residency_mode: StorageResidencyMode::OutOfCore,
+                    ..WalReplayConfig::default()
+                },
+            )
+            .unwrap()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = open(&mut catalog);
+        let mut nodes = Vec::new();
+        let mut relationships = Vec::new();
+        for id in 0..192 {
+            nodes.push(
+                store
+                    .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                    .unwrap(),
+            );
+            if id > 0 {
+                relationships.push(
+                    store
+                        .create_relationship(
+                            &mut catalog,
+                            nodes[id as usize - 1],
+                            nodes[id as usize],
+                            "LINKS",
+                            properties([("id", Value::Int(id))]),
+                        )
+                        .unwrap(),
+                );
+            }
+            if id == 63 {
+                store.checkpoint(&catalog).unwrap();
+                assert!(store.canonical_base.is_some());
+                assert!(store.nodes.is_empty());
+                assert!(store.relationships.is_empty());
+            }
+        }
+        store
+            .set_node_properties_by_ids(
+                &mut catalog,
+                &[nodes[0]],
+                &[NodeSetAssignment {
+                    property: "revision".to_string(),
+                    value: super::NodeSetValue::Value(Value::Int(2)),
+                }],
+            )
+            .unwrap();
+        store
+            .delete_node_ids_with_limits(
+                &mut catalog,
+                &[nodes[20], nodes[150]],
+                true,
+                MutationLimits::default(),
+            )
+            .unwrap();
+        assert!(!store.node_tombstones.is_empty());
+        assert!(!store.relationship_tombstones.is_empty());
+        assert!(store.nodes.len() > 17);
+        assert!(store.relationships.len() > 17);
+        let expected_nodes = nodes
+            .into_iter()
+            .filter_map(|id| store.node_owned(id).unwrap())
+            .collect::<Vec<_>>();
+        let expected_relationships = relationships
+            .into_iter()
+            .filter_map(|id| store.relationship_owned(id).unwrap())
+            .collect::<Vec<_>>();
+        let identity = store.checkpoint_source_identity();
+        let durable = store.durable.as_ref().unwrap();
+        let wal_path = durable.wal_path.clone();
+        let manifest_path = durable.manifest_path().to_path_buf();
+        let wal = std::fs::read(&wal_path).unwrap();
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+
+        // Actual candidate preparation must stop during capture, before any
+        // builder can hydrate base records or create an artifact.
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(17, Ordering::SeqCst);
+        let source = store.checkpoint_source();
+        let error = source
+            .prepare_checkpoint_candidate_with_work_context(
+                &catalog,
+                &probe.context(scheduler.clone()),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+        probe.assert_released(&scheduler);
+        source.ensure_usable().unwrap();
+        drop(source);
+
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(17, Ordering::SeqCst);
+        let error = store
+            .checkpoint_relationship_records_owned(&probe.context(scheduler.clone()))
+            .err()
+            .expect("relationship capture must also stop before collecting its delta");
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+        probe.assert_released(&scheduler);
+        assert_eq!(store.checkpoint_source_identity(), identity);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        store.ensure_usable().unwrap();
+
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let work = retry.context(scheduler.clone());
+        assert_eq!(
+            store
+                .checkpoint_node_records_owned(&work)
+                .unwrap()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_nodes,
+        );
+        assert_eq!(
+            store
+                .checkpoint_relationship_records_owned(&work)
+                .unwrap()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_relationships,
+        );
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        store
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+            .unwrap();
+        drop(candidate);
+        retry.assert_released(&scheduler);
+        drop(store);
+        let recovered = open(&mut catalog);
+        assert_eq!(
+            recovered
+                .node_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_nodes
+        );
+        assert_eq!(
+            recovered
+                .relationship_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_relationships
+        );
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_units_statistics_candidate_cancellation_preserves_authority_and_reopens() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        for residency in [
+            StorageResidencyMode::Materialized,
+            StorageResidencyMode::OutOfCore,
+        ] {
+            let path = unique_test_dir("checkpoint_statistics_cancel");
+            let open = |catalog: &mut Catalog| {
+                GraphStore::open_with_durability_and_replay_config(
+                    &path,
+                    catalog,
+                    DurabilityPolicy::default(),
+                    WalReplayConfig {
+                        residency_mode: residency,
+                        ..WalReplayConfig::default()
+                    },
+                )
+                .unwrap()
+            };
+            let mut catalog = Catalog::default();
+            let mut store = open(&mut catalog);
+            let index = store
+                .create_property_index(&mut catalog, "Memory", "rank")
+                .unwrap();
+            let mut ids = Vec::new();
+            for rank in 0..97i64 {
+                let node = store
+                    .create_node(
+                        &mut catalog,
+                        "Memory",
+                        properties([("rank", Value::Int(rank))]),
+                    )
+                    .unwrap();
+                if let Some(previous) = ids.last() {
+                    store
+                        .create_relationship(
+                            &mut catalog,
+                            *previous,
+                            node,
+                            "LINKS",
+                            properties([("rank", Value::Int(rank))]),
+                        )
+                        .unwrap();
+                }
+                ids.push(node);
+            }
+            let expected_nodes = store
+                .node_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap();
+            let expected_relationships = store
+                .relationship_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap();
+            let expected_statistics = store.statistics(&catalog);
+            let identity = store.checkpoint_source_identity();
+            let durable = store.durable.as_ref().unwrap();
+            let wal_path = durable.wal_path.clone();
+            let manifest_path = durable.manifest_path().to_path_buf();
+            let wal = std::fs::read(&wal_path).unwrap();
+            let manifest = std::fs::read(&manifest_path).unwrap();
+            let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+                max_background_operations: Some(1),
+                max_total_background_operations: Some(4),
+                ..LocalQosPolicy::default()
+            });
+            // Direct materialized statistics cancellation cannot be mistaken
+            // for stopping an earlier projection phase. The first out-of-core
+            // checkpoint instead admits basic counts and declared-index scans.
+            if residency == StorageResidencyMode::Materialized {
+                let probe = Arc::new(CheckpointWorkProbe::default());
+                probe.cancel_after.store(17, Ordering::SeqCst);
+                let error = store
+                    .checkpoint_statistics_with_work_context(
+                        &catalog,
+                        &probe.context(scheduler.clone()),
+                    )
+                    .unwrap_err();
+                assert!(error.to_string().contains("checkpoint build stopped"));
+                assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
+                probe.assert_released(&scheduler);
+            }
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            probe.cancel_after.store(17, Ordering::SeqCst);
+            let source = store.checkpoint_source();
+            let error = source
+                .prepare_checkpoint_candidate_with_work_context(
+                    &catalog,
+                    &probe.context(scheduler.clone()),
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("checkpoint build stopped"));
+            assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
+            assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+            probe.assert_released(&scheduler);
+            source.ensure_usable().unwrap();
+            drop(source);
+            assert_eq!(store.checkpoint_source_identity(), identity);
+            assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+            assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+            store.ensure_usable().unwrap();
+            let retry = Arc::new(CheckpointWorkProbe::default());
+            let source = store.checkpoint_source();
+            let mut candidate = source
+                .prepare_checkpoint_candidate_with_work_context(
+                    &catalog,
+                    &retry.context(scheduler.clone()),
+                )
+                .unwrap()
+                .unwrap();
+            drop(source);
+            let captured = store.checkpoint_source();
+            candidate.catch_up(&captured).unwrap();
+            drop(captured);
+            store
+                .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+                .unwrap();
+            drop(candidate);
+            retry.assert_released(&scheduler);
+            drop(store);
+            let recovered = open(&mut catalog);
+            assert_eq!(
+                recovered
+                    .node_records_owned()
+                    .collect::<crate::Result<Vec<_>>>()
+                    .unwrap(),
+                expected_nodes
+            );
+            assert_eq!(
+                recovered
+                    .relationship_records_owned()
+                    .collect::<crate::Result<Vec<_>>>()
+                    .unwrap(),
+                expected_relationships
+            );
+            let statistics = recovered.statistics(&catalog);
+            assert_eq!(statistics.node_count, 97);
+            assert_eq!(statistics.relationship_count, 96);
+            assert_eq!(
+                statistics.index_samples[&index],
+                hawdb_core::IndexStatisticsSample::exact(97, 97)
+            );
+            if residency == StorageResidencyMode::Materialized {
+                assert_eq!(statistics, expected_statistics);
+            } else {
+                assert!(!statistics.advanced_statistics_complete);
+            }
+            let retry = Arc::new(CheckpointWorkProbe::default());
+            assert_eq!(
+                recovered
+                    .checkpoint_statistics_with_work_context(
+                        &catalog,
+                        &retry.context(scheduler.clone())
+                    )
+                    .unwrap(),
+                statistics
+            );
+            retry.assert_released(&scheduler);
+            drop(recovered);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[derive(Debug)]
+    struct CancelCheckpointAtFile {
+        probe: std::sync::Arc<crate::background::CheckpointWorkProbe>,
+        path: std::path::PathBuf,
+        observed_file: std::sync::atomic::AtomicBool,
+        completed_after_file: std::sync::atomic::AtomicUsize,
+        cancel_after_file: usize,
+        file_bytes_at_cancellation: std::sync::atomic::AtomicU64,
+    }
+
+    impl hawdb_qos::QosTelemetrySink for CancelCheckpointAtFile {
+        fn record_qos(&self, event: hawdb_qos::QosTelemetryEvent) {
+            use std::sync::atomic::Ordering;
+            let completed = event.phase == hawdb_qos::QosTelemetryPhase::Completion;
+            self.probe.record_qos(event);
+            if completed && self.path.exists() {
+                self.observed_file.store(true, Ordering::SeqCst);
+                let completed = self.completed_after_file.fetch_add(1, Ordering::SeqCst) + 1;
+                if completed >= self.cancel_after_file {
+                    self.file_bytes_at_cancellation.store(
+                        std::fs::metadata(&self.path).unwrap().len(),
+                        Ordering::SeqCst,
+                    );
+                    self.probe.cancellation.cancel();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_units_cancel_base_encoding_and_retry_without_changing_authority() {
+        use crate::background::{CheckpointWorkContext, CheckpointWorkProbe};
+        use hawdb_core::RuntimeTaskContext;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        let path = unique_test_dir("checkpoint_base_unit_cancel");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        for id in 0..64i64 {
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                .unwrap();
+        }
+        store.checkpoint(&catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(64))]))
+            .unwrap();
+        let identity = store.checkpoint_source_identity();
+        let generation = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .next_checkpoint_generation()
+            .unwrap();
+        let wal_path = store.durable.as_ref().unwrap().wal_path.clone();
+        let manifest_path = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .manifest_path()
+            .to_path_buf();
+        let wal = std::fs::read(&wal_path).unwrap();
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let private = path.join(super::canonical_artifact_generation_file(generation));
+        let observer = Arc::new(CancelCheckpointAtFile {
+            probe: probe.clone(),
+            path: private.with_extension("hawdb.tmp"),
+            observed_file: Default::default(),
+            completed_after_file: Default::default(),
+            cancel_after_file: 10,
+            file_bytes_at_cancellation: Default::default(),
+        });
+        scheduler.set_telemetry_sink(Some(observer.clone()));
+        let task = RuntimeTaskContext::without_deadline(probe.cancellation.clone())
+            .with_io_wave_controller(probe.clone());
+        let work = CheckpointWorkContext::new(task).with_scheduler(scheduler.clone());
+        let source = store.checkpoint_source();
+        let error = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap_err();
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(observer.observed_file.load(Ordering::SeqCst));
+        assert_eq!(observer.completed_after_file.load(Ordering::SeqCst), 10);
+        probe.assert_released(&scheduler);
+        assert_eq!(store.checkpoint_source_identity(), identity);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        source.ensure_usable().unwrap();
+        store.ensure_usable().unwrap();
+        assert!(!private.exists());
+        assert!(!private.with_extension("hawdb.tmp").exists());
+        assert!(!path
+            .join(format!(".checkpoint.{generation}.prepare"))
+            .exists());
+        drop(source);
+
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(65))]))
+            .unwrap();
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let work = retry.context(scheduler.clone());
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        store
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+            .unwrap();
+        drop(candidate);
+        retry.assert_released(&scheduler);
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        let mut ids = recovered
+            .scan_nodes(None)
+            .map(|node| match node.properties["id"] {
+                Value::Int(id) => id,
+                _ => panic!("wrong recovered id"),
+            })
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        assert_eq!(ids, (0..66i64).collect::<Vec<_>>());
+        assert_eq!(recovered.commit_epoch(), 66);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_units_append_capture_candidate_stops_before_publication_and_reopens_all_rows() {
+        use crate::append_table::{
+            append_generation_manifest_file, append_segment_file, AppendOrderMode, AppendTableRow,
+            AppendTableSchema, AppendTransaction, AppendWrite,
+        };
+        use crate::background::{CheckpointWorkContext, CheckpointWorkProbe};
+        use hawdb_core::RuntimeTaskContext;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        let path = unique_test_dir("checkpoint_append_capture_cancel");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        let schema = AppendTableSchema {
+            name: "events".into(),
+            columns: [
+                ("stream", RelationalScalarType::BigInt),
+                ("sequence", RelationalScalarType::BigInt),
+                ("payload", RelationalScalarType::Bytea),
+            ]
+            .into_iter()
+            .map(|(name, scalar_type)| RelationalColumnSchema {
+                name: name.into(),
+                scalar_type,
+                nullable: false,
+                default: None,
+            })
+            .collect(),
+            partition_key: vec!["stream".into()],
+            order_key: vec!["sequence".into()],
+            order_mode: AppendOrderMode::CallerProvided,
+        };
+        let row = |sequence| {
+            RelationalRow::new(vec![
+                RelationalValue::BigInt(sequence % 7),
+                RelationalValue::BigInt(sequence),
+                RelationalValue::Bytea(vec![sequence as u8; 17]),
+            ])
+        };
+        store
+            .append_transaction(AppendTransaction {
+                writes: vec![
+                    AppendWrite::CreateTable {
+                        schema: schema.clone(),
+                    },
+                    AppendWrite::Append {
+                        table: "events".into(),
+                        rows: (0..64).map(row).collect(),
+                    },
+                ],
+            })
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        store
+            .append_transaction(AppendTransaction {
+                writes: vec![AppendWrite::Append {
+                    table: "events".into(),
+                    rows: (64..128).map(row).collect(),
+                }],
+            })
+            .unwrap();
+        assert_eq!(store.append_state.live_rows(), 64);
+        let identity = store.checkpoint_source_identity();
+        let durable = store.durable.as_ref().unwrap();
+        let generation = durable.next_checkpoint_generation().unwrap();
+        let staging = path.join(format!(".checkpoint.{generation}.prepare"));
+        let wal_path = durable.wal_path.clone();
+        let manifest_path = durable.manifest_path().to_path_buf();
+        let wal = std::fs::read(&wal_path).unwrap();
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let observer = Arc::new(CancelCheckpointAtFile {
+            probe: probe.clone(),
+            path: staging.clone(),
+            observed_file: Default::default(),
+            completed_after_file: Default::default(),
+            cancel_after_file: 17,
+            file_bytes_at_cancellation: Default::default(),
+        });
+        scheduler.set_telemetry_sink(Some(observer.clone()));
+        let work = CheckpointWorkContext::new(
+            RuntimeTaskContext::without_deadline(probe.cancellation.clone())
+                .with_io_wave_controller(probe.clone()),
+        )
+        .with_scheduler(scheduler.clone());
+        let source = store.checkpoint_source();
+        let error = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap_err();
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(observer.observed_file.load(Ordering::SeqCst));
+        assert_eq!(observer.completed_after_file.load(Ordering::SeqCst), 17);
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+        probe.assert_released(&scheduler);
+        source.ensure_usable().unwrap();
+        drop(source);
+        assert_eq!(store.checkpoint_source_identity(), identity);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        assert!(!staging.exists());
+        assert!(!path.join(append_segment_file(generation)).exists());
+        assert!(!path
+            .join(append_generation_manifest_file(generation))
+            .exists());
+        store.ensure_usable().unwrap();
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate_with_work_context(
+                &catalog,
+                &retry.context(scheduler.clone()),
+            )
+            .unwrap()
+            .unwrap();
+        drop(source);
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        store
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+            .unwrap();
+        drop(candidate);
+        retry.assert_released(&scheduler);
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.append_state.schema("events"), Some(&schema));
+        let mut count = 0;
+        for stream in 0..7i64 {
+            let partition = RelationalKey(vec![RelationalValue::BigInt(stream)]);
+            let actual = recovered
+                .read_append_partition("events", &partition, None, 128)
+                .unwrap();
+            let expected = (0..128)
+                .filter(|sequence| sequence % 7 == stream)
+                .map(|sequence| AppendTableRow {
+                    table: "events".into(),
+                    partition_key: partition.clone(),
+                    order_key: RelationalKey(vec![RelationalValue::BigInt(sequence)]),
+                    row: row(sequence),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual.rows, expected);
+            count += actual.rows.len();
+        }
+        assert_eq!(count, 128);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_units_cancel_native_tombstone_run_before_survivor_and_retry() {
+        use crate::background::{CheckpointWorkContext, CheckpointWorkProbe};
+        use hawdb_core::RuntimeTaskContext;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+        let path = unique_test_dir("checkpoint_tombstone_run_cancel");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig {
+                residency_mode: StorageResidencyMode::OutOfCore,
+                ..WalReplayConfig::default()
+            },
+        )
+        .unwrap();
+        let mut ids = Vec::new();
+        for id in 0..512 {
+            ids.push(
+                store
+                    .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                    .unwrap(),
+            );
+        }
+        store.checkpoint(&catalog).unwrap();
+        store
+            .delete_node_ids_with_limits(&mut catalog, &ids[..511], true, MutationLimits::default())
+            .unwrap();
+        assert!(store.nodes.is_empty());
+        assert_eq!(store.node_tombstones.len(), 511);
+        let expected = store.node_owned(ids[511]).unwrap().unwrap();
+        let identity = store.checkpoint_source_identity();
+        let durable = store.durable.as_ref().unwrap();
+        let generation = durable.next_checkpoint_generation().unwrap();
+        let wal_path = durable.wal_path.clone();
+        let manifest_path = durable.manifest_path().to_path_buf();
+        let wal = std::fs::read(&wal_path).unwrap();
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let private = path.join(super::canonical_artifact_generation_file(generation));
+        let observer = Arc::new(CancelCheckpointAtFile {
+            probe: probe.clone(),
+            path: private.with_extension("hawdb.tmp"),
+            observed_file: Default::default(),
+            completed_after_file: Default::default(),
+            cancel_after_file: 17,
+            file_bytes_at_cancellation: Default::default(),
+        });
+        scheduler.set_telemetry_sink(Some(observer.clone()));
+        let task = RuntimeTaskContext::without_deadline(probe.cancellation.clone())
+            .with_io_wave_controller(probe.clone());
+        let work = CheckpointWorkContext::new(task).with_scheduler(scheduler.clone());
+        let source = store.checkpoint_source();
+        let error = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap_err();
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(observer.observed_file.load(Ordering::SeqCst));
+        assert_eq!(observer.completed_after_file.load(Ordering::SeqCst), 17);
+        // No surviving record has been encoded: only the immutable 16-byte
+        // canonical header and 8-byte generation were written before stopping.
+        assert_eq!(
+            observer.file_bytes_at_cancellation.load(Ordering::SeqCst),
+            24
+        );
+        probe.assert_released(&scheduler);
+        assert_eq!(store.checkpoint_source_identity(), identity);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        assert!(!private.exists());
+        assert!(!observer.path.exists());
+        source.ensure_usable().unwrap();
+        store.ensure_usable().unwrap();
+        drop(source);
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate_with_work_context(
+                &catalog,
+                &retry.context(scheduler.clone()),
+            )
+            .unwrap()
+            .unwrap();
+        drop(source);
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        store
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+            .unwrap();
+        drop(candidate);
+        retry.assert_released(&scheduler);
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(
+            recovered
+                .node_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            vec![expected]
+        );
+        assert_eq!(recovered.relationship_records_owned().count(), 0);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_units_cancel_adjacency_and_retry_with_complete_relationships() {
+        assert_cancelled_derived_artifact_unit_preserves_authority("adjacency");
+    }
+
+    #[test]
+    fn checkpoint_units_cancel_property_projection_and_retry_with_complete_relationships() {
+        assert_cancelled_derived_artifact_unit_preserves_authority("property-index");
+    }
+
+    #[test]
+    fn checkpoint_units_cancel_source_scan_and_retry_with_complete_graph() {
+        assert_cancelled_derived_artifact_unit_preserves_authority("source-scan");
+    }
+
+    #[test]
+    fn checkpoint_units_cancel_projected_graph_and_retry_with_complete_arrays() {
+        assert_cancelled_derived_artifact_unit_preserves_authority("projected-graph");
+    }
+
+    fn assert_cancelled_derived_artifact_unit_preserves_authority(artifact: &str) {
+        use crate::background::{CheckpointWorkContext, CheckpointWorkProbe};
+        use hawdb_core::RuntimeTaskContext;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        let path = unique_test_dir(&format!("checkpoint_{artifact}_unit_cancel"));
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        let label = if artifact == "source-scan" {
+            "Source"
+        } else {
+            "Memory"
+        };
+        let nodes = (0..64i64)
+            .map(|id| {
+                store
+                    .create_node(&mut catalog, label, properties([("id", Value::Int(id))]))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut relationships = nodes[1..]
+            .iter()
+            .enumerate()
+            .map(|(id, target)| {
+                store
+                    .create_relationship(
+                        &mut catalog,
+                        nodes[0],
+                        *target,
+                        "LINKS",
+                        properties([("id", Value::Int(id as i64))]),
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        if artifact == "projected-graph" {
+            store
+                .register_projected_graph(
+                    "CheckpointGraph",
+                    crate::projection::ProjectedGraphDefinition {
+                        node_labels: Vec::new(),
+                        rel_types: Vec::new(),
+                        relationship_predicates: Default::default(),
+                    },
+                )
+                .unwrap();
+        }
+        store.checkpoint(&catalog).unwrap();
+        relationships.push(
+            store
+                .create_relationship(&mut catalog, nodes[1], nodes[0], "LINKS", BTreeMap::new())
+                .unwrap(),
+        );
+        let identity = store.checkpoint_source_identity();
+        let durable = store.durable.as_ref().unwrap();
+        let generation = durable.next_checkpoint_generation().unwrap();
+        let wal_path = durable.wal_path.clone();
+        let manifest_path = durable.manifest_path().to_path_buf();
+        let wal = std::fs::read(&wal_path).unwrap();
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let temporary = if artifact == "projected-graph" {
+            path.join(format!(".checkpoint.{generation}.prepare"))
+                .join(super::PROJECTED_GRAPHS_FILE)
+                .with_extension("hawdb.tmp")
+        } else if artifact == "source-scan" {
+            path.join(format!(".checkpoint.{generation}.prepare"))
+                .join(source_scan::SOURCE_SCAN_PAYLOAD_FILE)
+                .with_extension("hawdb.tmp")
+        } else {
+            path.join(format!(".{artifact}.{generation}.run.0.tmp"))
+        };
+        let observer = Arc::new(CancelCheckpointAtFile {
+            probe: probe.clone(),
+            path: temporary,
+            observed_file: Default::default(),
+            completed_after_file: Default::default(),
+            cancel_after_file: 1,
+            file_bytes_at_cancellation: Default::default(),
+        });
+        scheduler.set_telemetry_sink(Some(observer.clone()));
+        let task = RuntimeTaskContext::without_deadline(probe.cancellation.clone())
+            .with_io_wave_controller(probe.clone());
+        let work = CheckpointWorkContext::new(task).with_scheduler(scheduler.clone());
+        let source = store.checkpoint_source();
+        let error = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap_err();
+        assert!(observer.observed_file.load(Ordering::SeqCst));
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        probe.assert_released(&scheduler);
+        assert_eq!(store.checkpoint_source_identity(), identity);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        assert!(!observer.path.exists());
+        assert!(!path
+            .join(format!(".checkpoint.{generation}.prepare"))
+            .exists());
+        source.ensure_usable().unwrap();
+        store.ensure_usable().unwrap();
+        drop(source);
+
+        relationships.push(
+            store
+                .create_relationship(&mut catalog, nodes[2], nodes[0], "LINKS", BTreeMap::new())
+                .unwrap(),
+        );
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let work = retry.context(scheduler.clone());
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        store
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+            .unwrap();
+        drop(candidate);
+        retry.assert_released(&scheduler);
+        let expected = relationships
+            .into_iter()
+            .map(|id| store.relationship_owned(id).unwrap().unwrap())
+            .collect::<Vec<_>>();
+        let expected_nodes = nodes
+            .into_iter()
+            .map(|id| store.node_owned(id).unwrap().unwrap())
+            .collect::<Vec<_>>();
+        let epoch = store.commit_epoch();
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), epoch);
+        assert_eq!(recovered.scan_nodes(None).count(), expected_nodes.len());
+        let expected_node_ids = expected_nodes
+            .iter()
+            .map(|node| node.id)
+            .collect::<Vec<_>>();
+        for node in expected_nodes {
+            assert_eq!(recovered.node_owned(node.id).unwrap(), Some(node));
+        }
+        assert_eq!(recovered.scan_relationships(None).count(), expected.len());
+        for relationship in expected {
+            assert_eq!(
+                recovered.relationship_owned(relationship.id).unwrap(),
+                Some(relationship)
+            );
+        }
+        if artifact == "source-scan" {
+            let crate::scan::ScanSegmentAccessPlan::Read(plan) = recovered
+                .plan_published_source_scan(&ScanPredicate::Eq {
+                    property: "id".into(),
+                    value: Value::Int(31),
+                })
+            else {
+                panic!("successful retry must reopen a current Source sidecar");
+            };
+            assert_eq!(plan.segments.len(), 1);
+            assert_eq!(plan.segments[0].candidates.as_ref().unwrap().remaining(), 1);
+        }
+        if artifact == "projected-graph" {
+            let graph = recovered
+                .projected_graph_artifact(
+                    "CheckpointGraph",
+                    &crate::projection::ProjectedGraphDefinition {
+                        node_labels: Vec::new(),
+                        rel_types: Vec::new(),
+                        relationship_predicates: Default::default(),
+                    },
+                )
+                .expect("successful retry must reopen current projected arrays");
+            assert_eq!(graph.nodes(), expected_node_ids);
+            assert_eq!(
+                graph.csr_offsets(),
+                std::iter::once(0)
+                    .chain([63, 64])
+                    .chain(std::iter::repeat_n(65, 62))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                graph.csr_targets(),
+                (1..64).chain([0, 0]).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                graph.csc_offsets(),
+                std::iter::once(0).chain(2..=65).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                graph.csc_sources(),
+                [1, 2]
+                    .into_iter()
+                    .chain(std::iter::repeat_n(0, 63))
+                    .collect::<Vec<_>>()
+            );
+        }
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_candidate_rejects_lost_private_tail_and_cleans_owned_artifacts() {
+        let path = unique_test_dir("checkpoint_candidate_lost_tail");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        let old_manifest = std::fs::read(path.join(super::MANIFEST_FILE)).unwrap();
+        let old_wal = store.durable.as_ref().unwrap().wal_path.clone();
+        let old_bytes = std::fs::read(&old_wal).unwrap();
+        let generation = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .next_checkpoint_generation()
+            .unwrap();
+        let candidate_path = path.join(super::wal_generation_file(generation));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&candidate_path)
+            .unwrap()
+            .set_len(super::WAL_BINARY_FILE_HEADER_BYTES as u64)
+            .unwrap();
+        assert!(matches!(
+            store.publish_checkpoint_candidate(&mut candidate, None, &Default::default()),
+            Err(HawDBError::StorageIntegrity(_))
+        ));
+        store.ensure_usable().unwrap();
+        assert_eq!(
+            std::fs::read(path.join(super::MANIFEST_FILE)).unwrap(),
+            old_manifest
+        );
+        assert_eq!(std::fs::read(&old_wal).unwrap(), old_bytes);
+        drop(candidate);
+        assert!(!candidate_path.exists());
+        assert!(!path
+            .join(super::checkpoint_generation_file(generation))
+            .exists());
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.node_count_for_label(None), 2);
+        assert_eq!(recovered.commit_epoch(), 2);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_candidate_uncertain_manifest_retains_complete_recovery_evidence() {
+        let path = unique_test_dir("checkpoint_candidate_uncertain_manifest");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let reader = store.snapshot();
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        let generation = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .next_checkpoint_generation()
+            .unwrap();
+        super::set_checkpoint_failpoint(Some(super::CheckpointPublishStage::ManifestPublished));
+        let publication =
+            store.publish_checkpoint_candidate(&mut candidate, Some(1), &Default::default());
+        super::set_checkpoint_failpoint(None);
+        assert!(matches!(publication, Err(HawDBError::StorageIntegrity(_))));
+        assert!(store.ensure_usable().is_err());
+        assert!(reader.ensure_usable().is_err());
+        drop(candidate);
+        assert!(path.join(super::wal_generation_file(generation)).exists());
+        assert!(path
+            .join(super::checkpoint_generation_file(generation))
+            .exists());
+        drop(reader);
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 2);
+        assert_eq!(recovered.node_count_for_label(None), 2);
+        assert_eq!(
+            recovered.storage_recovery_report().checkpoint_commit_epoch,
+            Some(1)
+        );
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn selected_checkpoint_handoff_preserves_live_ownership_and_releases_snapshot_floor() {
+        for durability in [
+            DurabilityPolicy::SyncOnEveryWrite,
+            DurabilityPolicy::SyncOnCheckpoint,
+        ] {
+            let path = unique_test_dir("selected_checkpoint_handoff");
+            let mut catalog = Catalog::default();
+            let mut store =
+                GraphStore::open_with_durability(&path, &mut catalog, durability).unwrap();
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+                .unwrap();
+            let reader = store.snapshot();
+            let base = store.checkpoint_source();
+            let mut candidate = base
+                .prepare_checkpoint_candidate(&catalog)
+                .unwrap()
+                .unwrap();
+            drop(base);
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+                .unwrap();
+            let expected = store.checkpoint_source_identity().unwrap();
+            let mut worker = store.checkpoint_source();
+            candidate.catch_up(&worker).unwrap();
+            assert!(worker
+                .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, Some(1))
+                .unwrap_err()
+                .to_string()
+                .contains("finalized before publication"));
+            assert_eq!(worker.durable.as_ref().unwrap().checkpoint_epoch, 0);
+            candidate.finish_catch_up().unwrap();
+            candidate.finish_catch_up().unwrap();
+            let sealed_tail = candidate.catch_up(&worker).unwrap();
+            assert_eq!(sealed_tail.captured_commit_epoch, worker.commit_epoch());
+            assert_eq!(sealed_tail.entries, 1);
+            candidate.finish_catch_up().unwrap();
+            worker
+                .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, Some(1))
+                .unwrap();
+            candidate
+                .reclaim_published_generations(&mut worker, &Default::default())
+                .unwrap();
+            assert!(worker.version_snapshot_pin.is_some());
+            assert!(store.version_snapshot_pin.is_none());
+            let retired = store.adopt_selected_checkpoint(worker, expected).unwrap();
+            assert!(store.version_snapshot_pin.is_none());
+            assert_eq!(store.commit_epoch(), 2);
+            assert_eq!(store.node_count_for_label(None), 2);
+            assert_eq!(reader.commit_epoch(), 1);
+            assert_eq!(reader.node_count_for_label(None), 1);
+            assert!(store
+                .version_index
+                .shares_storage_with(&retired.version_index));
+            drop(retired);
+            drop(candidate);
+            drop(reader);
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+                .unwrap();
+            store.reclaim_version_history();
+            // The worker's capture at epoch 2 must not become a permanent live
+            // writer pin. No snapshots remain, so every old stamp can retire.
+            assert_eq!(store.version_snapshot_pins.oldest_epoch(), None);
+            assert_eq!(store.version_index.retained_history_bytes(), 0);
+            assert_eq!(store.version_index.len(), 0);
+            drop(store);
+            let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+            assert_eq!(recovered.commit_epoch(), 3);
+            assert_eq!(recovered.node_count_for_label(None), 3);
+            drop(recovered);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn selected_checkpoint_handoff_rejects_an_equal_epoch_from_another_store() {
+        let left_path = unique_test_dir("selected_checkpoint_identity_left");
+        let right_path = unique_test_dir("selected_checkpoint_identity_right");
+        let mut left_catalog = Catalog::default();
+        let mut right_catalog = Catalog::default();
+        let mut left = GraphStore::open(&left_path, &mut left_catalog).unwrap();
+        let mut right = GraphStore::open(&right_path, &mut right_catalog).unwrap();
+        left.create_node(
+            &mut left_catalog,
+            "Memory",
+            properties([("id", Value::Int(1))]),
+        )
+        .unwrap();
+        right
+            .create_node(
+                &mut right_catalog,
+                "Memory",
+                properties([("id", Value::Int(2))]),
+            )
+            .unwrap();
+        let reader = left.snapshot();
+        let expected = left.checkpoint_source_identity().unwrap();
+        right.checkpoint(&right_catalog).unwrap();
+        let error = left.adopt_selected_checkpoint(right, expected).unwrap_err();
+        assert!(matches!(error, HawDBError::StorageIntegrity(_)));
+        assert!(left.ensure_usable().is_err());
+        assert!(reader.ensure_usable().is_err());
+        drop(reader);
+        drop(left);
+        let recovered = GraphStore::open(&left_path, &mut left_catalog).unwrap();
+        let id = left_catalog.label_id("Memory").unwrap();
+        let row = recovered.scan_nodes(Some(id)).next().unwrap();
+        assert_eq!(row.properties.get("id"), Some(&Value::Int(1)));
+        assert_eq!(recovered.commit_epoch(), 1);
+        drop(recovered);
+        std::fs::remove_dir_all(left_path).unwrap();
+        std::fs::remove_dir_all(right_path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_candidate_rejects_lost_authoritative_tail_and_poisons_live_owners() {
+        let path = unique_test_dir("checkpoint_candidate_source_tail_loss");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let base = store.checkpoint_source();
+        let mut candidate = base
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(base);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        let reader = store.snapshot();
+        let source = store.checkpoint_source();
+        let wal_path = store.durable.as_ref().unwrap().wal_path.clone();
+        let complete_wal = std::fs::read(&wal_path).unwrap();
+        let manifest_path = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .manifest_path()
+            .to_path_buf();
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&wal_path)
+            .unwrap()
+            .set_len(complete_wal.len() as u64 - 1)
+            .unwrap();
+        let error = candidate.catch_up(&source).unwrap_err();
+        assert!(matches!(error, HawDBError::StorageIntegrity(_)));
+        assert!(store.ensure_usable().is_err());
+        assert!(reader.ensure_usable().is_err());
+        assert!(source.ensure_usable().is_err());
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        assert_eq!(store.durable.as_ref().unwrap().checkpoint_epoch, 0);
+        drop(candidate);
+        drop(source);
+        drop(reader);
+        drop(store);
+        // Restore only this fixture's known complete bytes, then use ordinary
+        // recovery. Live handles stay poisoned until they are closed.
+        std::fs::write(&wal_path, &complete_wal).unwrap();
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 2);
+        assert_eq!(recovered.node_count_for_label(None), 2);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_candidate_keeps_only_post_snapshot_debt_age() {
+        let path = unique_test_dir("checkpoint_candidate_suffix_age");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let old_debt = std::time::Instant::now() - std::time::Duration::from_secs(60);
+        store.durable.as_mut().unwrap().wal_uncheckpointed_since = Some(old_debt);
+        let source = store.checkpoint_source();
+        let capture_floor = source.checkpoint_capture_started.unwrap();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        let source = store.checkpoint_source();
+        candidate.catch_up(&source).unwrap();
+        drop(source);
+        store
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+            .unwrap();
+        assert_eq!(
+            store.durable.as_ref().unwrap().wal_uncheckpointed_since,
+            Some(capture_floor)
+        );
+        assert_ne!(
+            store.durable.as_ref().unwrap().wal_uncheckpointed_since,
+            Some(old_debt)
+        );
+        drop(candidate);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+            .unwrap();
+        assert_eq!(
+            store.durable.as_ref().unwrap().wal_uncheckpointed_since,
+            Some(capture_floor)
+        );
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        candidate.finish_catch_up().unwrap();
+        store
+            .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, None)
+            .unwrap();
+        assert!(store
+            .durable
+            .as_ref()
+            .unwrap()
+            .wal_uncheckpointed_since
+            .is_none());
+        assert_eq!(store.checkpoint_debt_snapshot().unwrap().wal_age_millis, 0);
+        drop(candidate);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn wal_checkpoint_debt_age_does_not_reset_on_continuous_writes() {
+        let path = unique_test_dir("wal_checkpoint_debt_age");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let started = std::time::Instant::now() - std::time::Duration::from_secs(60);
+        store.durable.as_mut().unwrap().wal_uncheckpointed_since = Some(started);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        assert!(store.storage_pressure_snapshot(None).wal_age_millis >= 60_000);
+        assert_eq!(
+            store.durable.as_ref().unwrap().wal_uncheckpointed_since,
+            Some(started)
+        );
+        store.checkpoint(&catalog).unwrap();
+        assert_eq!(store.storage_pressure_snapshot(None).wal_age_millis, 0);
+        assert!(store
+            .durable
+            .as_ref()
+            .unwrap()
+            .wal_uncheckpointed_since
+            .is_none());
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_wal_tail_rejects_corruption_without_selecting_a_candidate() {
+        let path = unique_test_dir("checkpoint_wal_tail_corruption");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let source = store.checkpoint_source();
+        let prepared = source.prepare_checkpoint(&catalog).unwrap().unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        let durable = store.durable.as_ref().unwrap();
+        let manifest_path = path.join(super::MANIFEST_FILE);
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        let mut bytes = std::fs::read(&durable.wal_path).unwrap();
+        // The complete second record remains the same length but its payload
+        // no longer matches the fragment checksum.
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        std::fs::write(&durable.wal_path, &bytes).unwrap();
+        let error = store.prepare_checkpoint_wal_tail(&prepared).unwrap_err();
+        assert!(matches!(error, HawDBError::StorageIntegrity(_)));
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        assert_eq!(std::fs::read(&durable.wal_path).unwrap(), bytes);
+        assert!(!path
+            .join(format!("wal.{}.hawdb.tail.tmp", prepared.generation))
+            .exists());
+        drop(prepared);
+        drop(source);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn writable_open_reclaims_abandoned_future_checkpoint_generation() {
         let path = unique_test_dir("abandoned_prepared_checkpoint");
         let mut catalog = Catalog::default();
@@ -8519,6 +11499,174 @@ mod tests {
             }
             std::fs::remove_dir_all(path).unwrap();
         }
+    }
+
+    #[test]
+    fn checkpoint_retirement_source_shares_failed_reclamation_and_retry_with_frontend() {
+        let path = unique_test_dir("checkpoint_retirement_shared_debt");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        for id in 1..=2 {
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+        }
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+            .unwrap();
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(4))]))
+            .unwrap();
+        let mut final_source = store.checkpoint_source();
+        let expected = final_source.checkpoint_source_identity().unwrap();
+        candidate.catch_up(&final_source).unwrap();
+        candidate.finish_catch_up().unwrap();
+        final_source
+            .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, None)
+            .unwrap();
+        let retired = store
+            .adopt_selected_checkpoint(final_source, expected)
+            .unwrap();
+        drop(retired);
+
+        // The owner retires files using a source, outside mutable frontend
+        // access. A failed deletion must still appear in that frontend's
+        // pressure/admission signals, rather than only in this temporary copy.
+        let mut retirement_source = store.checkpoint_source();
+        set_generation_reclamation_remove_failpoint(Some("checkpoint.1.hawdb".to_string()));
+        let result =
+            candidate.reclaim_published_generations(&mut retirement_source, &BTreeSet::new());
+        set_generation_reclamation_remove_failpoint(None);
+        result.unwrap();
+        let pressure = store.storage_pressure_snapshot(None);
+        assert!(pressure.generation_reclamation_retry_required);
+        assert_eq!(pressure.generation_reclamation_pending_files, 1);
+        assert!(pressure.generation_reclamation_pending_bytes > 0);
+        assert!(path.join("checkpoint.1.hawdb").exists());
+        assert_eq!(store.commit_epoch(), 4);
+        assert_eq!(store.scan_nodes(None).count(), 4);
+
+        candidate
+            .reclaim_published_generations(&mut retirement_source, &BTreeSet::new())
+            .unwrap();
+        let pressure = store.storage_pressure_snapshot(None);
+        assert!(!pressure.generation_reclamation_retry_required);
+        assert_eq!(pressure.generation_reclamation_pending_files, 0);
+        assert_eq!(pressure.generation_reclamation_pending_bytes, 0);
+        assert!(!path.join("checkpoint.1.hawdb").exists());
+        drop(candidate);
+        drop(retirement_source);
+        drop(store);
+        let mut recovered_catalog = Catalog::default();
+        let recovered = GraphStore::open(&path, &mut recovered_catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 4);
+        assert_eq!(recovered.scan_nodes(None).count(), 4);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_deferred_reclamation_preserves_debt_and_rejects_other_runtime() {
+        let path = unique_test_dir("checkpoint_deferred_debt");
+        let other_path = unique_test_dir("checkpoint_deferred_other_runtime");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        for id in 1..=2 {
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+        }
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+            .unwrap();
+        let mut selected = store.checkpoint_source();
+        let expected = selected.checkpoint_source_identity().unwrap();
+        let mut candidate = selected
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        candidate.finish_catch_up().unwrap();
+        selected
+            .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, None)
+            .unwrap();
+        drop(store.adopt_selected_checkpoint(selected, expected).unwrap());
+        let mut selected = store.checkpoint_source();
+
+        let stale_file = path.join("checkpoint.1.hawdb");
+        let stale_bytes = std::fs::read(&stale_file).unwrap();
+        candidate
+            .defer_published_generation_reclamation(&mut selected)
+            .unwrap();
+        let unknown = store.storage_pressure_snapshot(None);
+        assert!(unknown.generation_reclamation_retry_required);
+        assert_eq!(unknown.generation_reclamation_pending_files, 0);
+        assert_eq!(unknown.generation_reclamation_pending_bytes, 0);
+        assert_eq!(std::fs::read(&stale_file).unwrap(), stale_bytes);
+
+        set_generation_reclamation_remove_failpoint(Some("checkpoint.1.hawdb".to_string()));
+        let result = candidate.reclaim_published_generations(&mut selected, &BTreeSet::new());
+        set_generation_reclamation_remove_failpoint(None);
+        result.unwrap();
+        let known = store.storage_pressure_snapshot(None);
+        assert!(known.generation_reclamation_retry_required);
+        assert_eq!(known.generation_reclamation_pending_files, 1);
+        assert_eq!(
+            known.generation_reclamation_pending_bytes,
+            stale_bytes.len() as u64
+        );
+        candidate
+            .defer_published_generation_reclamation(&mut selected)
+            .unwrap();
+        let deferred = store.storage_pressure_snapshot(None);
+        assert!(deferred.generation_reclamation_retry_required);
+        assert_eq!(deferred.generation_reclamation_pending_files, 1);
+        assert_eq!(
+            deferred.generation_reclamation_pending_bytes,
+            known.generation_reclamation_pending_bytes
+        );
+        assert_eq!(std::fs::read(&stale_file).unwrap(), stale_bytes);
+
+        let mut other_catalog = Catalog::default();
+        let mut other = GraphStore::open(&other_path, &mut other_catalog).unwrap();
+        assert!(candidate
+            .defer_published_generation_reclamation(&mut other)
+            .is_err());
+        assert!(
+            !other
+                .storage_pressure_snapshot(None)
+                .generation_reclamation_retry_required
+        );
+        assert!(candidate
+            .reclaim_published_generations(&mut other, &BTreeSet::new())
+            .is_err());
+        assert_eq!(std::fs::read(&stale_file).unwrap(), stale_bytes);
+
+        candidate
+            .reclaim_published_generations(&mut selected, &BTreeSet::new())
+            .unwrap();
+        let cleared = store.storage_pressure_snapshot(None);
+        assert!(!cleared.generation_reclamation_retry_required);
+        assert_eq!(cleared.generation_reclamation_pending_files, 0);
+        assert_eq!(cleared.generation_reclamation_pending_bytes, 0);
+        assert!(!stale_file.exists());
+        drop(candidate);
+        drop(selected);
+        drop(store);
+        drop(other);
+        let reopened = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(reopened.commit_epoch(), 3);
+        assert_eq!(reopened.scan_nodes(None).count(), 3);
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+        std::fs::remove_dir_all(other_path).unwrap();
     }
 
     #[test]
@@ -11484,3 +14632,11 @@ mod tests {
         assert!(wal_ops_touched_records(&ddl).is_none());
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "store/graph_checkpoint_projection_memory_tests.rs"]
+mod checkpoint_projection_memory_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "store/graph_checkpoint_projection_memory_related_tests.rs"]
+mod checkpoint_projection_memory_related_tests;

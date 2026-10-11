@@ -22,6 +22,133 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn checkpoint_units_projected_graph_publication_cancels_at_every_io_and_retries() {
+    use crate::background::CheckpointWorkProbe;
+    use crate::projection::{ProjectedGraphArtifactData, ProjectedGraphDefinition};
+    use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+
+    let scheduler = || {
+        LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        })
+    };
+    let data = ProjectedGraphArtifactData {
+        nodes: (0..4096).map(NodeId).collect(),
+        csr_offsets: (0..=4096).collect(),
+        csr_targets: (0..4096).collect(),
+        csc_offsets: (0..=4096).collect(),
+        csc_sources: (0..4096).collect(),
+    };
+    let definition = ProjectedGraphDefinition {
+        node_labels: vec!["Memory".into()],
+        rel_types: vec!["LINKS".into()],
+        relationship_predicates: Default::default(),
+    };
+    let body = crate::projection::artifact::encode_projected_graph_artifacts(
+        41,
+        43,
+        [("graph", &definition, data.clone())],
+    );
+    let baseline = Fixture::new();
+    let baseline_path = baseline.staging.join("controlled_projection.hawdb");
+    let local = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    baseline
+        .durable()
+        .write_projected_graph_artifacts_to_with_work_context(
+            &baseline_path,
+            &body,
+            &probe.context(local.clone()),
+        )
+        .unwrap();
+    let waves = probe.io_waves.load(Ordering::SeqCst);
+    assert!(waves >= 4);
+    probe.assert_released(&local);
+    let expected = std::fs::read(&baseline_path).unwrap();
+    for wave in 1..=waves {
+        let fixture = Fixture::new();
+        let path = fixture.staging.join("controlled_projection.hawdb");
+        let temporary = path.with_extension("hawdb.tmp");
+        if wave == 1 {
+            std::fs::write(&temporary, b"previous writer evidence").unwrap();
+        }
+        let local = scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_on_io_wave.store(wave, Ordering::SeqCst);
+        let error = fixture
+            .durable()
+            .write_projected_graph_artifacts_to_with_work_context(
+                &path,
+                &body,
+                &probe.context(local.clone()),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            hawdb_core::HawDBError::Storage(
+                "checkpoint build I/O stopped: runtime I/O wave stopped: cancelled".into(),
+            )
+        );
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), wave);
+        probe.assert_released(&local);
+        if wave == 1 {
+            assert_eq!(
+                std::fs::read(&temporary).unwrap(),
+                b"previous writer evidence"
+            );
+            let conflict = Arc::new(CheckpointWorkProbe::default());
+            assert!(fixture
+                .durable()
+                .write_projected_graph_artifacts_to_with_work_context(
+                    &path,
+                    &body,
+                    &conflict.context(local.clone()),
+                )
+                .is_err());
+            conflict.assert_released(&local);
+            assert_eq!(
+                std::fs::read(&temporary).unwrap(),
+                b"previous writer evidence"
+            );
+            // This fixture owns the evidence and removes it before a clean retry.
+            std::fs::remove_file(&temporary).unwrap();
+        } else {
+            assert!(!temporary.exists());
+        }
+        assert!(!path.exists());
+        assert_eq!(read_sidecars(&fixture.root), fixture.old);
+        assert_eq!(
+            std::fs::read(fixture.durable().manifest_path()).unwrap(),
+            fixture.manifest
+        );
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        fixture
+            .durable()
+            .write_projected_graph_artifacts_to_with_work_context(
+                &path,
+                &body,
+                &retry.context(local.clone()),
+            )
+            .unwrap();
+        retry.assert_released(&local);
+        assert!(!temporary.exists());
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+        let text = crate::store::read_durable_text(&path, "projection retry").unwrap();
+        let (decoded, _) =
+            crate::projection::artifact::split_projected_graph_artifact_checksum(&text).unwrap();
+        let (epoch, mut recovered) =
+            crate::projection::artifact::decode_projected_graph_artifacts(decoded).unwrap();
+        assert_eq!(epoch, 43);
+        assert_eq!(recovered.remove("graph").unwrap().data, data);
+        assert!(recovered.is_empty());
+        assert_eq!(fixture.project.metrics().reserved, 0);
+        assert!(fixture.project.metrics().high_water <= 8);
+    }
+}
+
 thread_local! {
     static AFTER_FIRST_PUBLICATION: RefCell<Option<Box<dyn FnOnce()>>> =
         const { RefCell::new(None) };
@@ -225,4 +352,511 @@ fn checkpoint_sidecar_reservation_survives_competing_owner_after_first_replaceme
     );
     held.lock().unwrap().clear();
     assert_eq!(fixture.project.metrics().open, baseline);
+}
+
+#[test]
+fn checkpoint_units_metadata_publication_cancels_every_io_preserves_evidence_and_retries() {
+    use crate::background::CheckpointWorkProbe;
+    use hawdb_core::{BasicGraphStatistics, GraphStatistics};
+    use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+    let scheduler = || {
+        LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        })
+    };
+    let mut random = 31u64;
+    let fingerprint = (0..131073)
+        .map(|_| {
+            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+            char::from(b'!' + ((random >> 32) % 90) as u8)
+        })
+        .collect::<String>();
+    let mut catalog = Catalog::default();
+    let label = catalog.get_or_create_label("Memory");
+    let statistics = crate::statistics::graph_statistics_from_basic(
+        BasicGraphStatistics {
+            computed_at_commit_epoch: 41,
+            node_count: 31,
+            label_counts: BTreeMap::from([(label, 31)]),
+            ..BasicGraphStatistics::default()
+        },
+        false,
+    );
+    let projected = BTreeMap::new();
+    let changes = Vec::new();
+    let image = || CheckpointImage {
+        catalog: &catalog,
+        commit_epoch: 41,
+        next_node_id: 31,
+        next_rel_id: 0,
+        search_projection_change_log_start_epoch: 41,
+        search_projection_graph_changes: &changes,
+        statistics: &statistics,
+        projected_graphs: &projected,
+        initial_import_source_fingerprint: Some(&fingerprint),
+        search_projection_database_identity: None,
+        relational_checkpoint: None,
+    };
+    let ordinary = crate::checkpoint::encode_checkpoint_body(&image(), 17).unwrap();
+    let expected_text = format!(
+        "{ordinary}checksum\t{}\n",
+        crate::store::checksum_bytes(ordinary.as_bytes())
+    );
+    let baseline = Fixture::new();
+    let local = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let metadata = baseline
+        .durable()
+        .write_checkpoint(image(), 17, changes.iter(), &probe.context(local.clone()))
+        .unwrap();
+    let path = baseline.root.join(checkpoint_generation_file(17));
+    let expected = std::fs::read(&path).unwrap();
+    assert_eq!(metadata, DurableArtifactMetadata::for_bytes(&expected));
+    assert_eq!(
+        crate::store::read_durable_text(&path, "controlled checkpoint").unwrap(),
+        expected_text
+    );
+    let waves = probe.io_waves.load(Ordering::SeqCst);
+    let units = probe.completed.load(Ordering::SeqCst);
+    assert!(waves >= 5);
+    probe.assert_released(&local);
+    for wave in 1..=waves {
+        let fixture = Fixture::new();
+        let path = fixture.root.join(checkpoint_generation_file(17));
+        let temporary = path.with_extension("hawdb.tmp");
+        if wave == 1 {
+            std::fs::write(&temporary, b"previous checkpoint evidence").unwrap();
+        }
+        let local = scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_on_io_wave.store(wave, Ordering::SeqCst);
+        let error = fixture
+            .durable()
+            .write_checkpoint(image(), 17, changes.iter(), &probe.context(local.clone()))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            hawdb_core::HawDBError::Storage(
+                "checkpoint build I/O stopped: runtime I/O wave stopped: cancelled".into()
+            )
+        );
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), wave);
+        probe.assert_released(&local);
+        assert_eq!(
+            std::fs::read(fixture.durable().manifest_path()).unwrap(),
+            fixture.manifest
+        );
+        assert_eq!(read_sidecars(&fixture.root), fixture.old);
+        assert!(!path.exists());
+        if wave == 1 {
+            assert_eq!(
+                std::fs::read(&temporary).unwrap(),
+                b"previous checkpoint evidence"
+            );
+            let conflict = Arc::new(CheckpointWorkProbe::default());
+            assert!(fixture
+                .durable()
+                .write_checkpoint(
+                    image(),
+                    17,
+                    changes.iter(),
+                    &conflict.context(local.clone())
+                )
+                .is_err());
+            conflict.assert_released(&local);
+            assert_eq!(
+                std::fs::read(&temporary).unwrap(),
+                b"previous checkpoint evidence"
+            );
+            std::fs::remove_file(&temporary).unwrap();
+        } else {
+            assert!(!temporary.exists());
+        }
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let actual = fixture
+            .durable()
+            .write_checkpoint(image(), 17, changes.iter(), &retry.context(local.clone()))
+            .unwrap();
+        retry.assert_released(&local);
+        assert!(!temporary.exists());
+        assert_eq!(actual, metadata);
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+        assert_eq!(
+            crate::store::read_durable_text(&path, "checkpoint retry").unwrap(),
+            expected_text
+        );
+        let mut recovered_catalog = Catalog::default();
+        let mut decoded = crate::checkpoint::DecodedCheckpoint::default();
+        crate::checkpoint::parse_checkpoint(&ordinary, &mut recovered_catalog, &mut decoded)
+            .unwrap();
+        assert_eq!(
+            decoded.initial_import_source_fingerprint.as_deref(),
+            Some(fingerprint.as_str())
+        );
+        assert_eq!(
+            decoded.checkpoint_statistics,
+            GraphStatistics {
+                advanced_statistics_complete: false,
+                ..statistics.clone()
+            }
+        );
+        assert_eq!(fixture.project.metrics().reserved, 0);
+    }
+    // Cancellation after the complete rename is a lost response, not rollback.
+    let fixture = Fixture::new();
+    let local = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    probe.cancel_after.store(units, Ordering::SeqCst);
+    let error = fixture
+        .durable()
+        .write_checkpoint(image(), 17, changes.iter(), &probe.context(local.clone()))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        hawdb_core::HawDBError::Storage("checkpoint build stopped: cancelled".into())
+    );
+    probe.assert_released(&local);
+    let path = fixture.root.join(checkpoint_generation_file(17));
+    assert_eq!(std::fs::read(&path).unwrap(), expected);
+    assert_eq!(
+        std::fs::read(fixture.durable().manifest_path()).unwrap(),
+        fixture.manifest
+    );
+    let retry = Arc::new(CheckpointWorkProbe::default());
+    assert_eq!(
+        fixture
+            .durable()
+            .write_checkpoint(image(), 17, changes.iter(), &retry.context(local.clone()))
+            .unwrap(),
+        metadata
+    );
+    retry.assert_released(&local);
+    assert_eq!(std::fs::read(&path).unwrap(), expected);
+}
+
+#[test]
+fn checkpoint_units_relational_publication_cancels_every_io_preserves_evidence_and_reopens() {
+    use crate::background::CheckpointWorkProbe;
+    use crate::relational::{
+        decode_relational_checkpoint_file, encode_relational_checkpoint, RelationalColumnSchema,
+        RelationalHydrationBudget, RelationalInsertMode, RelationalKey, RelationalMutationLimits,
+        RelationalOverflowConfig, RelationalRow, RelationalScalarType, RelationalStore,
+        RelationalTableSchema, RelationalTransaction, RelationalValue, RelationalWrite,
+    };
+    use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+
+    let scheduler = || {
+        LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        })
+    };
+    let store = RelationalStore::with_overflow_config(
+        RelationalMutationLimits::default(),
+        RelationalOverflowConfig {
+            threshold_bytes: 512,
+            ..RelationalOverflowConfig::default()
+        },
+    );
+    let schema = RelationalTableSchema {
+        name: "messages".into(),
+        columns: vec![
+            RelationalColumnSchema {
+                name: "id".into(),
+                scalar_type: RelationalScalarType::BigInt,
+                nullable: false,
+                default: None,
+            },
+            RelationalColumnSchema {
+                name: "text".into(),
+                scalar_type: RelationalScalarType::Text,
+                nullable: false,
+                default: None,
+            },
+            RelationalColumnSchema {
+                name: "bytes".into(),
+                scalar_type: RelationalScalarType::Bytea,
+                nullable: false,
+                default: None,
+            },
+        ],
+        primary_key: vec!["id".into()],
+        unique_constraints: Vec::new(),
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+    };
+    let mut random = 101u64;
+    let bytes = (0..131073)
+        .map(|_| {
+            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (random >> 32) as u8
+        })
+        .collect();
+    let rows = vec![
+        RelationalRow::new(vec![
+            RelationalValue::BigInt(1),
+            RelationalValue::Text("界".repeat(25000)),
+            RelationalValue::Bytea(bytes),
+        ]),
+        RelationalRow::new(vec![
+            RelationalValue::BigInt(2),
+            RelationalValue::Text("complete second row".into()),
+            RelationalValue::Bytea(vec![97; 257]),
+        ]),
+    ];
+    store
+        .commit(
+            RelationalTransaction {
+                writes: vec![
+                    RelationalWrite::CreateTable(schema),
+                    RelationalWrite::Insert {
+                        table: "messages".into(),
+                        rows: rows.clone(),
+                        mode: RelationalInsertMode::Error,
+                    },
+                ],
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap();
+    let snapshot = store.snapshot().unwrap();
+    let expected = encode_relational_checkpoint(41, snapshot.value()).unwrap();
+    let baseline = Fixture::new();
+    let source = baseline.staging.join("relational-source.hawdb");
+    std::fs::write(&source, &expected).unwrap();
+    let state = decode_relational_checkpoint_file(&source, RelationalDecodeLimits::checkpoint())
+        .unwrap()
+        .state;
+    assert_eq!(state.file_backed_overflow_segment_count(), 2);
+    let local = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let metadata = baseline
+        .durable()
+        .write_relational_checkpoint(&state, 41, 17, &probe.context(local.clone()))
+        .unwrap()
+        .unwrap();
+    let path = baseline
+        .root
+        .join(relational_checkpoint_generation_file(17));
+    assert!(
+        std::fs::read(&path).unwrap() == expected,
+        "complete ordinary bytes differ"
+    );
+    assert_eq!(metadata, DurableArtifactMetadata::for_bytes(&expected));
+    let waves = probe.io_waves.load(Ordering::SeqCst);
+    let units = probe.completed.load(Ordering::SeqCst);
+    // Enumerate every actual wave, including chunked writes, reads and hashes.
+    assert!(waves > 2 * expected.len().div_ceil(64 * 1024));
+    eprintln!("relational publication: {waves} actual I/O waves, {units} completed work units");
+    probe.assert_released(&local);
+    let denied_fixture = Fixture::new();
+    let denied_path = denied_fixture
+        .root
+        .join(relational_checkpoint_generation_file(17));
+    let temporary = denied_path.with_extension("hawdb.tmp");
+    std::fs::write(&temporary, b"unowned admission evidence").unwrap();
+    let denied = LocalQosScheduler::new(LocalQosPolicy {
+        max_background_operations: Some(1),
+        max_total_background_operations: Some(4),
+        max_background_operations_by_class: [Some(1); hawdb_qos::WORK_CLASS_COUNT],
+        ..LocalQosPolicy::default()
+    });
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(denied.clone());
+    let held = denied
+        .try_start(hawdb_qos::WorkRequest::background(
+            hawdb_qos::WorkClass::Mutation,
+            1,
+        ))
+        .unwrap();
+    let error = denied_fixture
+        .durable()
+        .write_relational_checkpoint(&state, 41, 17, &work)
+        .unwrap_err();
+    assert!(
+        matches!(error, HawDBError::Storage(ref text) if text.contains("admission deferred")),
+        "{error:?}"
+    );
+    assert_eq!(probe.completed.load(Ordering::SeqCst), 0);
+    assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+    assert!(!denied_path.exists());
+    assert_eq!(
+        std::fs::read(&temporary).unwrap(),
+        b"unowned admission evidence"
+    );
+    assert_eq!(
+        std::fs::read(denied_fixture.durable().manifest_path()).unwrap(),
+        denied_fixture.manifest
+    );
+    assert_eq!(read_sidecars(&denied_fixture.root), denied_fixture.old);
+    drop(held);
+    probe.assert_released(&denied);
+    let assert_recovered = |path: &Path| {
+        let recovered =
+            decode_relational_checkpoint_file(path, RelationalDecodeLimits::checkpoint()).unwrap();
+        assert_eq!(recovered.epoch, 41);
+        assert_eq!(recovered.state.row_count("messages"), 2);
+        for (index, expected) in rows.iter().enumerate() {
+            let actual = recovered
+                .state
+                .hydrate_row(
+                    "messages",
+                    &RelationalKey(vec![RelationalValue::BigInt(index as i64 + 1)]),
+                    &mut RelationalHydrationBudget::default(),
+                )
+                .unwrap()
+                .unwrap();
+            assert!(
+                actual == *expected,
+                "complete reopened row differs: {index}"
+            );
+        }
+    };
+    for wave in 1..=waves {
+        // Recapture the source so cold I/O waves match the measured baseline.
+        let state =
+            decode_relational_checkpoint_file(&source, RelationalDecodeLimits::checkpoint())
+                .unwrap()
+                .state;
+        let fixture = Fixture::new();
+        let path = fixture.root.join(relational_checkpoint_generation_file(17));
+        let temporary = path.with_extension("hawdb.tmp");
+        if wave == 1 {
+            std::fs::write(&temporary, b"unowned relational evidence").unwrap();
+        }
+        let local = scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_on_io_wave.store(wave, Ordering::SeqCst);
+        let error = fixture
+            .durable()
+            .write_relational_checkpoint(&state, 41, 17, &probe.context(local.clone()))
+            .unwrap_err();
+        assert!(
+            matches!(error, HawDBError::Storage(ref text) if text.contains("cancelled")),
+            "{error:?}"
+        );
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), wave);
+        probe.assert_released(&local);
+        assert!(!path.exists());
+        if wave == 1 {
+            assert_eq!(
+                std::fs::read(&temporary).unwrap(),
+                b"unowned relational evidence"
+            );
+            let conflict = Arc::new(CheckpointWorkProbe::default());
+            assert!(fixture
+                .durable()
+                .write_relational_checkpoint(&state, 41, 17, &conflict.context(local.clone()))
+                .is_err());
+            conflict.assert_released(&local);
+            assert_eq!(
+                std::fs::read(&temporary).unwrap(),
+                b"unowned relational evidence"
+            );
+            // Only this fixture owns the pre-existing evidence.
+            std::fs::remove_file(&temporary).unwrap();
+        } else {
+            assert!(!temporary.exists());
+        }
+        assert_eq!(
+            std::fs::read(fixture.durable().manifest_path()).unwrap(),
+            fixture.manifest
+        );
+        assert_eq!(read_sidecars(&fixture.root), fixture.old);
+        assert!(std::fs::read(&source).unwrap() == expected);
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        assert_eq!(
+            fixture
+                .durable()
+                .write_relational_checkpoint(&state, 41, 17, &retry.context(local.clone()))
+                .unwrap(),
+            Some(metadata)
+        );
+        retry.assert_released(&local);
+        assert!(!temporary.exists());
+        assert!(std::fs::read(&path).unwrap() == expected);
+        assert_recovered(&path);
+        assert_eq!(fixture.project.metrics().reserved, 0);
+    }
+    for limit in [1, 7, units / 2, units - 1] {
+        // Recapture the source so cold I/O waves match the measured baseline.
+        let state =
+            decode_relational_checkpoint_file(&source, RelationalDecodeLimits::checkpoint())
+                .unwrap()
+                .state;
+        let fixture = Fixture::new();
+        let path = fixture.root.join(relational_checkpoint_generation_file(17));
+        let local = scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(limit, Ordering::SeqCst);
+        let error = fixture
+            .durable()
+            .write_relational_checkpoint(&state, 41, 17, &probe.context(local.clone()))
+            .unwrap_err();
+        assert!(
+            matches!(error, HawDBError::Storage(ref text) if text.contains("cancelled")),
+            "{error:?}"
+        );
+        assert_eq!(probe.completed.load(Ordering::SeqCst), limit);
+        probe.assert_released(&local);
+        assert!(!path.exists());
+        assert!(!path.with_extension("hawdb.tmp").exists());
+        assert_eq!(
+            std::fs::read(fixture.durable().manifest_path()).unwrap(),
+            fixture.manifest
+        );
+        assert_eq!(read_sidecars(&fixture.root), fixture.old);
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        assert_eq!(
+            fixture
+                .durable()
+                .write_relational_checkpoint(&state, 41, 17, &retry.context(local.clone()))
+                .unwrap(),
+            Some(metadata)
+        );
+        retry.assert_released(&local);
+        assert_recovered(&path);
+    }
+    // The final lost-response cut uses the same cold source cost as the baseline.
+    let state = decode_relational_checkpoint_file(&source, RelationalDecodeLimits::checkpoint())
+        .unwrap()
+        .state;
+    let fixture = Fixture::new();
+    let path = fixture.root.join(relational_checkpoint_generation_file(17));
+    let local = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    probe.cancel_after.store(units, Ordering::SeqCst);
+    let error = fixture
+        .durable()
+        .write_relational_checkpoint(&state, 41, 17, &probe.context(local.clone()))
+        .unwrap_err();
+    assert!(
+        matches!(error, HawDBError::Storage(ref text) if text.contains("cancelled")),
+        "{error:?}"
+    );
+    probe.assert_released(&local);
+    assert!(
+        std::fs::read(&path).unwrap() == expected,
+        "lost response must retain the complete renamed private artifact"
+    );
+    assert!(!path.with_extension("hawdb.tmp").exists());
+    assert_recovered(&path);
+    assert_eq!(
+        std::fs::read(fixture.durable().manifest_path()).unwrap(),
+        fixture.manifest
+    );
+    assert_eq!(read_sidecars(&fixture.root), fixture.old);
+    let retry = Arc::new(CheckpointWorkProbe::default());
+    assert_eq!(
+        fixture
+            .durable()
+            .write_relational_checkpoint(&state, 41, 17, &retry.context(local.clone()))
+            .unwrap(),
+        Some(metadata)
+    );
+    retry.assert_released(&local);
+    assert_recovered(&path);
 }

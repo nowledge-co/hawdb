@@ -33,6 +33,33 @@ pub struct File {
     backing: FileBacking,
 }
 
+/// A publication scope owns lock release, independently of descriptor copies
+/// retained by a concurrent fork before close-on-exec. Construct only after
+/// successful acquisition; failed acquisition must never unlock another owner.
+#[derive(Debug)]
+pub(crate) struct PublicationLockGuard(File);
+
+impl PublicationLockGuard {
+    pub(crate) fn new(locked: File) -> Self {
+        Self(locked)
+    }
+}
+
+#[cfg(test)]
+impl std::borrow::Borrow<File> for PublicationLockGuard {
+    fn borrow(&self) -> &File {
+        &self.0
+    }
+}
+
+impl Drop for PublicationLockGuard {
+    fn drop(&mut self) {
+        // Release before closing the original descriptor. Closing remains the
+        // fallback on unlock failure; publication data/durability is unchanged.
+        let _ = self.0.unlock();
+    }
+}
+
 #[derive(Debug)]
 enum FileBacking {
     Native(NativeFile),

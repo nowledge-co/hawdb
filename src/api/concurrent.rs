@@ -267,6 +267,10 @@ impl ConcurrentDatabase {
         self.inner.commits.lock()?.storage_recovery_report()
     }
 
+    pub fn automatic_checkpoint_report(&self) -> Result<Option<super::AutomaticCheckpointReport>> {
+        self.inner.commits.lock()?.automatic_checkpoint_report()
+    }
+
     /// Pins the last completed publication while a writer or group sync is active.
     pub fn begin_read_transaction(&self) -> Result<DatabaseReadTransaction> {
         let view = self.inner.commits.read_view()?;
@@ -274,6 +278,14 @@ impl ConcurrentDatabase {
         self.inner.commits.finish_read(&view, snapshot)
     }
 
+    /// Completes a caller-triggered checkpoint through the writer coordinator.
+    ///
+    /// Like [`Database::checkpoint`], this blocking call works below automatic
+    /// thresholds and with background maintenance disabled. A successful return
+    /// follows durable publication of the captured source. It serializes manual
+    /// callers and coordinates with the automatic owner, preserving read pins.
+    /// Concurrent source changes and storage/resource errors remain errors; a
+    /// failed attempt does not undo already committed writes.
     pub fn checkpoint(&self) -> Result<()> {
         let _checkpoint_serial = self
             .inner

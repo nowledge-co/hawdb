@@ -20,7 +20,8 @@ fn knowledge_retrieval_expands_graph_context_by_ordered_adjacency() {
     db.query("CREATE (:Memory {id: 'root', title: 'Ordered retrieval context'})")
         .unwrap();
     let lower_neighbor_id = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -38,7 +39,8 @@ fn knowledge_retrieval_expands_graph_context_by_ordered_adjacency() {
     }
     .unwrap();
     let higher_neighbor_id = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -56,7 +58,8 @@ fn knowledge_retrieval_expands_graph_context_by_ordered_adjacency() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(0),
@@ -67,7 +70,8 @@ fn knowledge_retrieval_expands_graph_context_by_ordered_adjacency() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(0),
@@ -140,7 +144,8 @@ fn knowledge_retrieval_reports_dense_graph_context_without_truncation() {
         .unwrap();
     for index in 0..DENSE_ADJACENCY_DEGREE_THRESHOLD {
         let target = {
-            let branch_runtime = db.runtime.get_mut().unwrap();
+            let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+            let branch_runtime = &mut *branch_runtime_access;
             branch_runtime.store.create_node(
                 &mut branch_runtime.catalog,
                 "Entity",
@@ -152,7 +157,8 @@ fn knowledge_retrieval_reports_dense_graph_context_without_truncation() {
         }
         .unwrap();
         {
-            let branch_runtime = db.runtime.get_mut().unwrap();
+            let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+            let branch_runtime = &mut *branch_runtime_access;
             branch_runtime.store.create_relationship(
                 &mut branch_runtime.catalog,
                 NodeId(0),

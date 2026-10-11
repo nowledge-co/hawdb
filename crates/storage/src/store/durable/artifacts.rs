@@ -23,10 +23,10 @@ use crate::file_io::{self as fs, File};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checksum_bytes, decode_projected_graph_artifacts,
-    encode_durable_text, property_projection_artifact_generation_file,
-    property_projection_manifest_generation_file, property_spill_artifact_generation_file,
-    property_spill_manifest_generation_file, read_durable_text, remove_source_scan_artifacts,
-    source_scan, split_projected_graph_artifact_checksum, sync_parent_dir, ProjectedGraphArtifact,
+    property_projection_artifact_generation_file, property_projection_manifest_generation_file,
+    property_spill_artifact_generation_file, property_spill_manifest_generation_file,
+    read_durable_text, remove_source_scan_artifacts, source_scan,
+    split_projected_graph_artifact_checksum, sync_parent_dir, ProjectedGraphArtifact,
     CANONICAL_MANIFEST_MAX_BYTES, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
     PROPERTY_SPILL_MANIFEST_MAX_BYTES,
 };
@@ -50,8 +50,7 @@ use hawdb_storage::{
     property_projection::{
         PersistentPropertyProjectionConfig, PersistentPropertyProjectionDefinition,
         PersistentPropertyProjectionDescriptorTree, PersistentPropertyProjectionManifest,
-        PersistentPropertyProjectionReader, PersistentPropertyProjectionRecord,
-        PersistentPropertyProjectionWriter,
+        PersistentPropertyProjectionReader, PersistentPropertyProjectionWriter,
     },
     property_spill::{
         PersistentPropertySpillDescriptorTree, PropertySpillConfig, PropertySpillManifest,
@@ -67,8 +66,60 @@ use hawdb_storage::{
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::num::NonZeroU64;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+pub(super) struct CheckpointMetadataTemporaryPath(pub(super) Option<PathBuf>);
+
+impl Drop for CheckpointMetadataTemporaryPath {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+pub(super) fn publish_checkpoint_metadata(
+    path: &Path,
+    encoded: &[u8],
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<()> {
+    let tmp_path = path.with_extension("hawdb.tmp");
+    let mut temporary_path = CheckpointMetadataTemporaryPath(None);
+    let mut file = {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+        let file = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        temporary_path.0 = Some(tmp_path.clone());
+        unit.finish();
+        file
+    };
+    for block in encoded.chunks(64 * 1024) {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+        file.write_all(block)?;
+        unit.finish();
+    }
+    {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+        file.sync_all()?;
+        unit.finish();
+    }
+    drop(file);
+    {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+        durable_replace_file(&tmp_path, path)?;
+        temporary_path.0 = None;
+        unit.finish();
+    }
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    Ok(())
+}
 
 impl DurableStore {
     pub(in crate::store) fn load_source_scan_manifest(
@@ -95,16 +146,19 @@ impl DurableStore {
         }
     }
 
-    pub(in crate::store) fn write_canonical_segments<N, R>(
+    pub(in crate::store) fn write_canonical_segments<N, R, NT, RT>(
         &self,
         nodes: N,
         relationships: R,
         generation: u64,
         source_commit_epoch: u64,
+        work: &crate::background::CheckpointWorkContext,
     ) -> Result<(DurableArtifactMetadata, DurableArtifactMetadata)>
     where
-        N: IntoIterator<Item = std::result::Result<NodeRecord, CanonicalSegmentError>>,
-        R: IntoIterator<Item = std::result::Result<RelRecord, CanonicalSegmentError>>,
+        N: IntoIterator<Item = std::result::Result<Option<NT>, CanonicalSegmentError>>,
+        R: IntoIterator<Item = std::result::Result<Option<RT>, CanonicalSegmentError>>,
+        NT: std::borrow::Borrow<NodeRecord>,
+        RT: std::borrow::Borrow<RelRecord>,
     {
         let artifact_path = self
             .root_path
@@ -125,7 +179,8 @@ impl DurableStore {
         );
         let (canonical_manifest, property_spill_output) =
             CanonicalSegmentWriter::new(CanonicalSegmentConfig::default())
-                .write_fallible_with_property_spills(
+                .with_work_context(work.clone())
+                .write_checkpoint_steps(
                     &artifact_path,
                     ManifestGeneration(generation),
                     nodes,
@@ -140,52 +195,49 @@ impl DurableStore {
                 .map_err(HawDBError::from_storage_error)?;
         let property_spill_manifest = property_spill_output.manifest;
         let encoded = canonical_manifest
-            .encode()
+            .encode_with_work_context(work)
             .map_err(HawDBError::from_storage_error)?;
-        let metadata = DurableArtifactMetadata::for_bytes(encoded.as_bytes());
+        let integrity = work
+            .integrity(encoded.as_bytes())
+            .map_err(HawDBError::from_storage_error)?;
+        let metadata = DurableArtifactMetadata {
+            encoded_len: encoded.len() as u64,
+            encoded_checksum: integrity.crc32c.as_u64(),
+            encoded_sha256: integrity.sha256,
+        };
         let manifest_path = self
             .root_path
             .join(canonical_manifest_generation_file(generation));
-        let tmp_path = manifest_path.with_extension("hawdb.tmp");
-        {
-            let mut file = File::create(&tmp_path)?;
-            file.write_all(encoded.as_bytes())?;
-            file.sync_all()?;
-        }
-        durable_replace_file(&tmp_path, &manifest_path)?;
+        publish_checkpoint_metadata(&manifest_path, encoded.as_bytes(), work)?;
         let property_encoded = property_spill_manifest
             .encode()
             .map_err(HawDBError::from_storage_error)?;
         let property_manifest_path = self
             .root_path
             .join(property_spill_manifest_generation_file(generation));
-        let property_tmp_path = property_manifest_path.with_extension("hawdb.tmp");
-        {
-            let mut file = File::create(&property_tmp_path)?;
-            file.write_all(property_encoded.as_bytes())?;
-            file.sync_all()?;
-        }
-        durable_replace_file(&property_tmp_path, &property_manifest_path)?;
+        publish_checkpoint_metadata(&property_manifest_path, property_encoded.as_bytes(), work)?;
         Ok((
             metadata,
             DurableArtifactMetadata::for_bytes(property_encoded.as_bytes()),
         ))
     }
 
-    pub(in crate::store) fn write_canonical_adjacency<R>(
+    pub(in crate::store) fn write_canonical_adjacency<R, RT>(
         &self,
         relationships: R,
         generation: u64,
         source_commit_epoch: u64,
         config: CanonicalAdjacencyConfig,
+        work: &crate::background::CheckpointWorkContext,
     ) -> Result<CanonicalAdjacencyCheckpointArtifacts>
     where
         R: IntoIterator<
             Item = std::result::Result<
-                RelRecord,
+                Option<RT>,
                 hawdb_storage::canonical_adjacency::CanonicalAdjacencyError,
             >,
         >,
+        RT: std::borrow::Borrow<RelRecord>,
     {
         let artifact_path = self
             .root_path
@@ -208,7 +260,8 @@ impl DurableStore {
             ..GraphDescriptorTreeBuildConfig::default()
         };
         let output = CanonicalAdjacencyWriter::new(config)
-            .write_fallible_with_descriptor_tree(
+            .with_work_context(work.clone())
+            .write_checkpoint_steps(
                 &artifact_path,
                 descriptor_paths,
                 ManifestGeneration(generation),
@@ -247,21 +300,23 @@ impl DurableStore {
         })
     }
 
-    pub(in crate::store) fn write_persistent_property_projection<N>(
+    pub(in crate::store) fn write_persistent_property_projection<N, PT>(
         &self,
         definitions: Vec<PersistentPropertyProjectionDefinition>,
         nodes: N,
         generation: u64,
         source_commit_epoch: u64,
         config: PersistentPropertyProjectionConfig,
+        work: &crate::background::CheckpointWorkContext,
     ) -> Result<DurableArtifactMetadata>
     where
         N: IntoIterator<
             Item = std::result::Result<
-                PersistentPropertyProjectionRecord,
+                Option<PT>,
                 hawdb_storage::property_projection::PersistentPropertyProjectionError,
             >,
         >,
+        PT: crate::property_projection::PropertyProjectionRecord,
     {
         let artifact_path = self
             .root_path
@@ -279,7 +334,8 @@ impl DurableStore {
             ),
         );
         let output = PersistentPropertyProjectionWriter::new(config)
-            .write_fallible(
+            .with_work_context(work.clone())
+            .write_checkpoint_steps(
                 &artifact_path,
                 ManifestGeneration(generation),
                 source_commit_epoch,
@@ -301,21 +357,24 @@ impl DurableStore {
                 "property projection descriptor root identity is inconsistent".to_string(),
             ));
         }
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
         let encoded = output
             .manifest
             .encode()
             .map_err(HawDBError::from_storage_error)?;
-        let metadata = DurableArtifactMetadata::for_bytes(encoded.as_bytes());
+        unit.finish();
+        let integrity = work
+            .integrity(encoded.as_bytes())
+            .map_err(HawDBError::from_storage_error)?;
+        let metadata = DurableArtifactMetadata {
+            encoded_len: encoded.len() as u64,
+            encoded_checksum: integrity.crc32c.as_u64(),
+            encoded_sha256: integrity.sha256,
+        };
         let manifest_path = self
             .root_path
             .join(property_projection_manifest_generation_file(generation));
-        let tmp_path = manifest_path.with_extension("hawdb.tmp");
-        {
-            let mut file = File::create(&tmp_path)?;
-            file.write_all(encoded.as_bytes())?;
-            file.sync_all()?;
-        }
-        durable_replace_file(&tmp_path, &manifest_path)?;
+        publish_checkpoint_metadata(&manifest_path, encoded.as_bytes(), work)?;
         Ok(metadata)
     }
 
@@ -328,17 +387,29 @@ impl DurableStore {
         path: &Path,
         body: &str,
     ) -> Result<()> {
-        let checksum = checksum_bytes(body.as_bytes());
+        self.write_projected_graph_artifacts_to_with_work_context(
+            path,
+            body,
+            &crate::background::CheckpointWorkContext::default(),
+        )
+    }
+
+    pub(in crate::store) fn write_projected_graph_artifacts_to_with_work_context(
+        &self,
+        path: &Path,
+        body: &str,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
+        let checksum = work
+            .checksum(body.as_bytes())
+            .map_err(HawDBError::from_storage_error)?;
         let data = format!("{body}checksum\t{checksum}\n");
-        let tmp_path = path.with_extension("hawdb.tmp");
-        {
-            let mut file = File::create(&tmp_path)?;
-            let encoded = encode_durable_text(&data, DurableCompression::default())?;
-            file.write_all(&encoded)?;
-            file.sync_all()?;
-        }
-        durable_replace_file(&tmp_path, path)?;
-        Ok(())
+        let encoded = crate::text::envelope::encode_durable_text_with_work_context(
+            &data,
+            DurableCompression::default(),
+            work,
+        )?;
+        publish_checkpoint_metadata(path, &encoded, work)
     }
 
     pub(super) fn remove_projected_graph_artifacts(&self) -> Result<()> {
@@ -460,15 +531,24 @@ impl DurableStore {
         &self,
         overflow_root: &hawdb_storage::relational::RelationalOverflowRootReader,
     ) -> Result<hawdb_storage::relational::RelationalRowPageRootReader> {
+        self.open_bound_relational_row_pages_with_work_context(overflow_root, None)
+    }
+
+    pub(in crate::store) fn open_bound_relational_row_pages_with_work_context(
+        &self,
+        overflow_root: &hawdb_storage::relational::RelationalOverflowRootReader,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<hawdb_storage::relational::RelationalRowPageRootReader> {
         let binding = self.relational_row_generation_artifacts.ok_or_else(|| {
             HawDBError::Storage(
                 "published checkpoint has no relational row-page generation binding".to_string(),
             )
         })?;
-        let reader = hawdb_storage::relational::RelationalRowPageRootReader::open_bound_generation(
+        let reader = hawdb_storage::relational::RelationalRowPageRootReader::open_bound_generation_with_work_context(
             &self.root_path,
             binding,
             hawdb_storage::relational::RelationalRowPagePublicationConfig::default(),
+            work,
         )
         .map_err(HawDBError::from_storage_error)?;
         let manifest = reader.manifest();

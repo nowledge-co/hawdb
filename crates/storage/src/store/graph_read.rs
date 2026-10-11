@@ -81,6 +81,138 @@ impl GraphStore {
         )
     }
 
+    pub(super) fn checkpoint_node_records_owned<'a>(
+        &'a self,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<
+        crate::graph_overlay::CheckpointOverlayIterator<
+            'a,
+            NodeRecord,
+            impl Iterator<Item = &'a NodeRecord>,
+        >,
+    > {
+        // Preserve the capture cancellation boundaries without copying values.
+        for _ in self.nodes.values() {
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            unit.finish();
+        }
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        Ok(crate::graph_overlay::CheckpointOverlayIterator::new(
+            self.canonical_base.as_ref(),
+            self.nodes.values(),
+            &self.node_tombstones,
+            work,
+        ))
+    }
+
+    pub(super) fn checkpoint_relationship_records_owned<'a>(
+        &'a self,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<
+        crate::graph_overlay::CheckpointOverlayIterator<
+            'a,
+            RelRecord,
+            impl Iterator<Item = &'a RelRecord>,
+        >,
+    > {
+        for _ in self.relationships.values() {
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            unit.finish();
+        }
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        Ok(crate::graph_overlay::CheckpointOverlayIterator::new(
+            self.canonical_base.as_ref(),
+            self.relationships.values(),
+            &self.relationship_tombstones,
+            work,
+        ))
+    }
+
+    #[cfg(test)]
+    pub(in crate::store) fn checkpoint_node_owned(
+        &self,
+        id: NodeId,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<NodeRecord>> {
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        if self.node_tombstones.contains(&id) {
+            return Ok(None);
+        }
+        if let Some(node) = self.nodes.get(&id) {
+            return Ok(Some(node.clone()));
+        }
+        Ok(self
+            .checkpoint_mounted_node(id, work)?
+            .map(|record| record.into_record()))
+    }
+
+    #[cfg(test)]
+    pub(in crate::store) fn checkpoint_relationship_owned(
+        &self,
+        id: RelId,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<RelRecord>> {
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        if self.relationship_tombstones.contains(&id) {
+            return Ok(None);
+        }
+        if let Some(relationship) = self.relationships.get(&id) {
+            return Ok(Some(relationship.clone()));
+        }
+        Ok(self
+            .checkpoint_mounted_relationship(id, work)?
+            .map(|record| record.into_record()))
+    }
+
+    // Delta estimation calls these only for records absent from the overlay.
+    // Keep the allocation owner with the temporary decoded record through the
+    // estimator's final borrow; a plain owned-record return would release early.
+    pub(in crate::store) fn checkpoint_mounted_node(
+        &self,
+        id: NodeId,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<crate::canonical::CheckpointRecord<NodeRecord>>> {
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        if self.node_tombstones.contains(&id) {
+            return Ok(None);
+        }
+        self.canonical_base
+            .as_ref()
+            .map(|reader| {
+                reader
+                    .checkpoint_node(id, work)
+                    .map_err(|error| match error {
+                        CanonicalSegmentError::Work(error) => HawDBError::from_storage_error(error),
+                        error => canonical_segment_error(error),
+                    })
+            })
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    pub(in crate::store) fn checkpoint_mounted_relationship(
+        &self,
+        id: RelId,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<crate::canonical::CheckpointRecord<RelRecord>>> {
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        if self.relationship_tombstones.contains(&id) {
+            return Ok(None);
+        }
+        self.canonical_base
+            .as_ref()
+            .map(|reader| {
+                reader
+                    .checkpoint_relationship(id, work)
+                    .map_err(|error| match error {
+                        CanonicalSegmentError::Work(error) => HawDBError::from_storage_error(error),
+                        error => canonical_segment_error(error),
+                    })
+            })
+            .transpose()
+            .map(Option::flatten)
+    }
+
     pub fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         if self.node_tombstones.contains(&id) {
             return Ok(None);
@@ -627,7 +759,7 @@ impl GraphStore {
             );
             return statistics;
         }
-        let mut statistics = self.checkpoint_statistics.clone();
+        let mut statistics = self.checkpoint_statistics.materialize();
         retain_supported_property_statistics(&mut statistics, Some(catalog));
         retain_valid_index_statistics_samples(&mut statistics, catalog);
         let basic = self.basic_statistics();
@@ -638,10 +770,44 @@ impl GraphStore {
         statistics
     }
 
+    pub(super) fn checkpoint_statistics_with_work_context(
+        &self,
+        catalog: &Catalog,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<GraphStatistics> {
+        use hawdb_storage::statistics::checkpoint::{
+            clone_retained_with_index_samples_and_work_context, compute_with_work_context,
+            index_samples_with_work_context,
+        };
+        let basic = self
+            .basic_statistics
+            .materialize_with_work_context(self.commit_epoch, work)
+            .map_err(HawDBError::from_storage_error)?;
+        if self.canonical_base_out_of_core {
+            return clone_retained_with_index_samples_and_work_context(
+                &self.checkpoint_statistics,
+                self.checkpoint_statistics.index_samples.iter(),
+                catalog,
+                basic,
+                work,
+            )
+            .map_err(HawDBError::from_storage_error);
+        }
+        let mut statistics =
+            compute_with_work_context(&self.nodes, &self.relationships, Some(catalog), basic, work)
+                .map_err(HawDBError::from_storage_error)?;
+        statistics.index_samples = index_samples_with_work_context(
+            catalog,
+            &self.property_index,
+            &self.composite_property_index,
+            work,
+        )
+        .map_err(HawDBError::from_storage_error)?;
+        Ok(statistics)
+    }
+
     pub fn basic_statistics(&self) -> BasicGraphStatistics {
-        let mut statistics = self.basic_statistics.clone();
-        statistics.computed_at_commit_epoch = self.commit_epoch;
-        statistics
+        self.basic_statistics.materialize(self.commit_epoch)
     }
 
     pub fn basic_statistics_consistency_report(&self) -> BasicStatisticsConsistencyReport {
@@ -4713,3 +4879,7 @@ fn relationship_matches_endpoint(
         AdjacencyDirection::Incoming => relationship.target == node_id,
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "graph_read/checkpoint_scan_memory_tests.rs"]
+mod checkpoint_scan_memory_tests;

@@ -20,6 +20,7 @@ use hawdb_integrity::Sha256Digest;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+pub(super) mod checkpoint;
 mod envelope;
 mod exact;
 mod publication;
@@ -27,7 +28,8 @@ mod publication;
 pub(in crate::relational) use envelope::admit_overflow_hydration;
 use envelope::DEFAULT_ZSTD_LEVEL;
 pub(crate) use envelope::{
-    decode_overflow_envelope, encode_overflow_envelope, EncodedRelationalOverflow,
+    decode_overflow_envelope, encode_overflow_envelope, encode_overflow_envelope_with_work_context,
+    validate_overflow_envelope_with_work_context, EncodedRelationalOverflow,
 };
 pub use exact::{
     RelationalOverflowReferenceSet, RelationalOverflowReferenceSetBuilder,
@@ -41,12 +43,13 @@ pub use publication::{
     relational_overflow_manifest_generation_file, RelationalOverflowArtifactMetadata,
     RelationalOverflowExactGenerationRequest, RelationalOverflowExactPublicationReport,
     RelationalOverflowExtentDescriptor, RelationalOverflowExtentInput,
-    RelationalOverflowGenerationArtifacts, RelationalOverflowPublicationConfig,
-    RelationalOverflowPublicationError, RelationalOverflowPublicationPhase,
-    RelationalOverflowPublicationReport, RelationalOverflowPublisher,
-    RelationalOverflowRootBinding, RelationalOverflowRootManifest, RelationalOverflowRootReader,
-    DEFAULT_RELATIONAL_OVERFLOW_EXTENTS, DEFAULT_RELATIONAL_OVERFLOW_MANIFEST_BYTES,
-    DEFAULT_RELATIONAL_OVERFLOW_NEW_EXTENT_BYTES, RELATIONAL_OVERFLOW_MANIFEST_FILE,
+    RelationalOverflowGenerationArtifacts, RelationalOverflowInputs, RelationalOverflowInputsIter,
+    RelationalOverflowPublicationConfig, RelationalOverflowPublicationError,
+    RelationalOverflowPublicationPhase, RelationalOverflowPublicationReport,
+    RelationalOverflowPublisher, RelationalOverflowRootBinding, RelationalOverflowRootManifest,
+    RelationalOverflowRootReader, DEFAULT_RELATIONAL_OVERFLOW_EXTENTS,
+    DEFAULT_RELATIONAL_OVERFLOW_MANIFEST_BYTES, DEFAULT_RELATIONAL_OVERFLOW_NEW_EXTENT_BYTES,
+    RELATIONAL_OVERFLOW_MANIFEST_FILE,
 };
 
 pub const DEFAULT_RELATIONAL_OVERFLOW_THRESHOLD_BYTES: usize = 4 * 1024;

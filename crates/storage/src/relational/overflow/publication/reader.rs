@@ -40,6 +40,24 @@ pub struct RelationalOverflowRootReader {
 }
 
 impl RelationalOverflowRootReader {
+    pub(super) fn open_latest_with_work_context(
+        directory: &Path,
+        config: RelationalOverflowPublicationConfig,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<Option<Self>, RelationalOverflowPublicationError> {
+        let Some(work) = work else {
+            return Self::open_latest(directory, config);
+        };
+        let path = directory.join(RELATIONAL_OVERFLOW_MANIFEST_FILE);
+        manifest::read_manifest_if_exists_with_work_context(&path, config, Some(work))?
+            .map(|manifest| {
+                super::publisher::checkpoint::io(Some(work), || {
+                    Self::from_manifest(directory, manifest, config)
+                })
+            })
+            .transpose()
+    }
+
     pub fn open_latest(
         directory: &Path,
         config: RelationalOverflowPublicationConfig,
@@ -119,32 +137,55 @@ impl RelationalOverflowRootReader {
         Ok(self.find_descriptor(reference)?.is_some())
     }
 
+    pub(crate) fn contains_with_work_context(
+        &self,
+        reference: &RelationalOverflowRef,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<bool, RelationalOverflowPublicationError> {
+        Ok(self.find_descriptor_inner(reference, Some(work))?.is_some())
+    }
+
     pub fn find_descriptor(
         &self,
         reference: &RelationalOverflowRef,
     ) -> Result<Option<RelationalOverflowExtentDescriptor>, RelationalOverflowPublicationError>
     {
-        let mut descriptors = File::open(self.descriptor_path())
-            .map_err(durability("open overflow descriptor artifact"))?;
+        self.find_descriptor_inner(reference, None)
+    }
+
+    fn find_descriptor_inner(
+        &self,
+        reference: &RelationalOverflowRef,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<Option<RelationalOverflowExtentDescriptor>, RelationalOverflowPublicationError>
+    {
+        use super::publisher::checkpoint::{check, cpu, io};
+        let mut descriptors = io(work, || {
+            File::open(self.descriptor_path())
+                .map_err(durability("open overflow descriptor artifact"))
+        })?;
         let mut lower = 0u64;
         let mut upper = self.manifest.extent_count;
         while lower < upper {
             let middle = lower + (upper - lower) / 2;
-            let descriptor = self.read_descriptor_from(&mut descriptors, middle)?;
-            if descriptor.reference.digest < reference.digest {
-                lower = middle.checked_add(1).ok_or_else(|| {
-                    RelationalOverflowPublicationError::Corrupt(
-                        "overflow descriptor search overflow".to_string(),
-                    )
-                })?;
-            } else {
-                upper = middle;
-            }
+            let descriptor = io(work, || self.read_descriptor_from(&mut descriptors, middle))?;
+            cpu(work, || {
+                if descriptor.reference.digest < reference.digest {
+                    lower = middle.checked_add(1).ok_or_else(|| {
+                        RelationalOverflowPublicationError::Corrupt(
+                            "overflow descriptor search overflow".to_string(),
+                        )
+                    })?;
+                } else {
+                    upper = middle;
+                }
+                Ok(())
+            })?;
         }
         if lower == self.manifest.extent_count {
             return Ok(None);
         }
-        let descriptor = self.read_descriptor_from(&mut descriptors, lower)?;
+        let descriptor = io(work, || self.read_descriptor_from(&mut descriptors, lower))?;
         if descriptor.reference.digest != reference.digest {
             return Ok(None);
         }
@@ -154,6 +195,7 @@ impl RelationalOverflowRootReader {
                 reference.digest
             )));
         }
+        check(work)?;
         Ok(Some(descriptor))
     }
 
@@ -221,6 +263,94 @@ impl RelationalOverflowRootReader {
             )));
         }
         Ok(encoded.into())
+    }
+
+    /// Owned checkpoint input: initialize, read and hash at most one fixed
+    /// block per unit, then transfer the Vec without an Arc slice conversion.
+    /// The complete encoded value is still retained. Its capacity and allocator
+    /// costs need the candidate's hard resource ledger before owner integration
+    /// can rely on this as a memory bound.
+    pub(super) fn read_encoded_extent_with_work_context(
+        &self,
+        descriptor: &RelationalOverflowExtentDescriptor,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Vec<u8>, RelationalOverflowPublicationError> {
+        use super::publisher::checkpoint;
+
+        let reference = descriptor.reference;
+        let path = self.directory.join(relational_overflow_extent_file(
+            descriptor.physical_generation,
+        ));
+        let end = checkpoint::cpu(Some(work), || {
+            descriptor
+                .physical_offset
+                .checked_add(descriptor.envelope_bytes)
+                .ok_or_else(|| {
+                    RelationalOverflowPublicationError::Corrupt(
+                        "overflow extent range overflow".to_string(),
+                    )
+                })
+        })?;
+        let artifact_bytes = checkpoint::io(Some(work), || {
+            fs::metadata(&path)
+                .map(|metadata| metadata.len())
+                .map_err(durability("read overflow extent artifact metadata"))
+        })?;
+        let envelope_bytes = checkpoint::cpu(Some(work), || {
+            if end > artifact_bytes {
+                return Err(RelationalOverflowPublicationError::Corrupt(format!(
+                    "overflow extent {} range ends at {end}, beyond artifact length {artifact_bytes}",
+                    reference.digest
+                )));
+            }
+            usize::try_from(descriptor.envelope_bytes).map_err(|_| {
+                RelationalOverflowPublicationError::Admission(
+                    "overflow envelope length exceeds this target".to_string(),
+                )
+            })
+        })?;
+        let mut encoded = checkpoint::cpu(Some(work), || Ok(Vec::with_capacity(envelope_bytes)))?;
+        let mut artifact = checkpoint::io(Some(work), || {
+            File::open(path).map_err(durability("open overflow extent artifact"))
+        })?;
+        checkpoint::io(Some(work), || {
+            artifact
+                .seek(SeekFrom::Start(descriptor.physical_offset))
+                .map_err(durability("seek overflow extent"))
+                .map(|_| ())
+        })?;
+        let mut hasher = IntegrityHasher::new();
+        while encoded.len() < envelope_bytes {
+            let start = encoded.len();
+            let block_bytes = (envelope_bytes - start).min(checkpoint::BLOCK_BYTES);
+            checkpoint::cpu(Some(work), || {
+                encoded.resize(start + block_bytes, 0);
+                Ok(())
+            })?;
+            checkpoint::io(Some(work), || {
+                artifact
+                    .read_exact(&mut encoded[start..])
+                    .map_err(durability("read overflow extent"))
+            })?;
+            checkpoint::cpu(Some(work), || {
+                hasher.update(&encoded[start..]);
+                Ok(())
+            })?;
+        }
+        checkpoint::cpu(Some(work), || {
+            let digest = hasher.finish();
+            if digest.crc32c.get() != descriptor.envelope_crc32c
+                || digest.sha256 != reference.digest
+            {
+                return Err(RelationalOverflowPublicationError::Corrupt(format!(
+                    "overflow extent {} checksum mismatch",
+                    reference.digest
+                )));
+            }
+            Ok(())
+        })?;
+        checkpoint::check(Some(work))?;
+        Ok(encoded)
     }
 
     pub fn visit_descriptors(

@@ -35,8 +35,10 @@ thread_local! {
     static PROJECTED_ROW_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+mod checkpoint;
 mod delta;
 mod demand;
+mod encoding;
 mod live;
 mod mutation;
 mod publication;
@@ -45,6 +47,7 @@ mod snapshot;
 mod state;
 mod value;
 
+pub(crate) use delta::relational_row_delta_prefix_file;
 pub use delta::{
     relational_row_delta_manifest_generation_file, relational_row_delta_run_file,
     RelationalRowDeltaBaseBinding, RelationalRowDeltaBuilder, RelationalRowDeltaConfig,
@@ -134,7 +137,7 @@ pub(crate) fn test_row_page_schema_digest(table: &str, column_count: usize) -> S
     super::index_shadow::relational_schema_digest(&test_row_page_schema(table, column_count))
         .expect("test row-page schema must encode")
 }
-use value::{decode_row_field_refs, decode_row_fields, encode_row, validate_requested_fields};
+use value::{decode_row_field_refs, decode_row_fields, validate_requested_fields};
 
 const ROW_PAGE_MAGIC: &[u8; 8] = b"SKINROW1";
 const ROW_PAGE_VERSION: u16 = 1;
@@ -350,133 +353,7 @@ impl ImmutableRelationalRowPage {
         &self,
         limits: RelationalRowPageLimits,
     ) -> Result<Vec<u8>, RelationalRowPageError> {
-        validate_page_for_encode(self, limits)?;
-
-        let mut slots = Vec::with_capacity(self.rows.len());
-        let mut key_payload = Vec::new();
-        let mut row_payload = Vec::new();
-        let mut lower_bound: Option<Vec<u8>> = None;
-        let mut previous_key: Option<Vec<u8>> = None;
-        for entry in &self.rows {
-            let key = encode_ordered_relational_key(&entry.primary_key)
-                .map_err(|error| RelationalRowPageError::Admission(error.to_string()))?;
-            if key.len() > limits.max_key_bytes.get() {
-                return Err(RelationalRowPageError::Admission(format!(
-                    "primary key contains {} bytes, exceeding limit {}",
-                    key.len(),
-                    limits.max_key_bytes
-                )));
-            }
-            if previous_key
-                .as_ref()
-                .is_some_and(|previous| previous >= &key)
-            {
-                return Err(RelationalRowPageError::Admission(
-                    "row primary keys are not strictly increasing".to_string(),
-                ));
-            }
-
-            let row = encode_row(&entry.row, self.column_count, limits)?;
-            if row.len() > limits.max_row_bytes.get() {
-                return Err(RelationalRowPageError::Admission(format!(
-                    "encoded row contains {} bytes, exceeding limit {}",
-                    row.len(),
-                    limits.max_row_bytes
-                )));
-            }
-            let slot = RowSlot {
-                key_offset: u32_len(key_payload.len(), "key offset")?,
-                key_len: u32_len(key.len(), "key length")?,
-                row_offset: u32_len(row_payload.len(), "row offset")?,
-                row_len: u32_len(row.len(), "row length")?,
-            };
-            let next_key_bytes = key_payload.len().checked_add(key.len()).ok_or_else(|| {
-                RelationalRowPageError::Admission("key payload length overflow".to_string())
-            })?;
-            let next_row_bytes = row_payload.len().checked_add(row.len()).ok_or_else(|| {
-                RelationalRowPageError::Admission("row payload length overflow".to_string())
-            })?;
-            let directory_bytes = self.rows.len().checked_mul(ROW_SLOT_BYTES).ok_or_else(|| {
-                RelationalRowPageError::Admission("row slot directory length overflow".to_string())
-            })?;
-            let lower_len = lower_bound.as_ref().map_or(key.len(), Vec::len);
-            let projected_bytes = ROW_PAGE_HEADER_BYTES
-                .checked_add(lower_len)
-                .and_then(|bytes| bytes.checked_add(key.len()))
-                .and_then(|bytes| bytes.checked_add(directory_bytes))
-                .and_then(|bytes| bytes.checked_add(next_key_bytes))
-                .and_then(|bytes| bytes.checked_add(next_row_bytes))
-                .ok_or_else(|| {
-                    RelationalRowPageError::Admission("encoded page size overflow".to_string())
-                })?;
-            if projected_bytes > limits.max_page_bytes.get() {
-                return Err(RelationalRowPageError::Admission(format!(
-                    "encoded page would contain {projected_bytes} bytes, exceeding limit {}",
-                    limits.max_page_bytes
-                )));
-            }
-            key_payload.extend_from_slice(&key);
-            row_payload.extend_from_slice(&row);
-            slots.push(slot);
-            if lower_bound.is_none() {
-                lower_bound = Some(key.clone());
-            }
-            previous_key = Some(key);
-        }
-
-        let lower_bound = lower_bound.expect("validated row page has a lower key bound");
-        let upper_bound = previous_key.expect("validated row page has an upper key bound");
-        let directory_len = slots.len().checked_mul(ROW_SLOT_BYTES).ok_or_else(|| {
-            RelationalRowPageError::Admission("row slot directory length overflow".to_string())
-        })?;
-        let payload_len = lower_bound
-            .len()
-            .checked_add(upper_bound.len())
-            .and_then(|bytes| bytes.checked_add(directory_len))
-            .and_then(|bytes| bytes.checked_add(key_payload.len()))
-            .and_then(|bytes| bytes.checked_add(row_payload.len()))
-            .ok_or_else(|| {
-                RelationalRowPageError::Admission("encoded page payload overflow".to_string())
-            })?;
-        let total_len = ROW_PAGE_HEADER_BYTES
-            .checked_add(payload_len)
-            .ok_or_else(|| {
-                RelationalRowPageError::Admission("encoded page length overflow".to_string())
-            })?;
-        if total_len > limits.max_page_bytes.get() {
-            return Err(RelationalRowPageError::Admission(format!(
-                "encoded page contains {total_len} bytes, exceeding limit {}",
-                limits.max_page_bytes
-            )));
-        }
-
-        let mut encoded = Vec::with_capacity(total_len);
-        encoded.extend_from_slice(ROW_PAGE_MAGIC);
-        encoded.extend_from_slice(&ROW_PAGE_VERSION.to_le_bytes());
-        encoded.extend_from_slice(&0u16.to_le_bytes());
-        encoded.extend_from_slice(&self.generation.to_le_bytes());
-        encoded.extend_from_slice(&self.source_commit_epoch.to_le_bytes());
-        encoded.extend_from_slice(&self.page_id.get().to_le_bytes());
-        encoded.extend_from_slice(&u32_len(self.rows.len(), "row count")?.to_le_bytes());
-        encoded.extend_from_slice(&u32_len(self.column_count, "column count")?.to_le_bytes());
-        encoded.extend_from_slice(&u32_len(lower_bound.len(), "lower key length")?.to_le_bytes());
-        encoded.extend_from_slice(&u32_len(upper_bound.len(), "upper key length")?.to_le_bytes());
-        encoded.extend_from_slice(&u32_len(directory_len, "directory length")?.to_le_bytes());
-        encoded.extend_from_slice(&u64_len(key_payload.len(), "key payload length")?.to_le_bytes());
-        encoded.extend_from_slice(&u64_len(row_payload.len(), "row payload length")?.to_le_bytes());
-        encoded.extend_from_slice(self.schema_digest.as_bytes());
-        debug_assert_eq!(encoded.len(), INTEGRITY_PREFIX_BYTES);
-        encoded.extend_from_slice(&[0; 4 + SHA256_BYTES]);
-        debug_assert_eq!(encoded.len(), ROW_PAGE_HEADER_BYTES);
-        encoded.extend_from_slice(&lower_bound);
-        encoded.extend_from_slice(&upper_bound);
-        for slot in slots {
-            slot.encode(&mut encoded);
-        }
-        encoded.extend_from_slice(&key_payload);
-        encoded.extend_from_slice(&row_payload);
-        write_integrity(&mut encoded);
-        Ok(encoded)
+        encoding::encode(self, limits, &encoding::NoWork)
     }
 
     pub fn decode(

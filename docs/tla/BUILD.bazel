@@ -109,3 +109,43 @@ tla_test_suite(
     tests = [":HawDBLargeDocumentLifecycle" + control + "_check" for control in _LARGE_DOCUMENT_CONTROLS],
     tags = ["manual"],
 )
+
+_AUTOMATIC_CHECKPOINT_CONTROLS = [
+    "DiscardWriterWitness",
+    "ManualBeforeCleanup",
+    "ReleaseLeaseBeforeCleanup",
+    "ReleaseWriterWitness",
+    "DropSuffix",
+    "KeepExecutionOnPause",
+    "LeakLease",
+    "LoseMemoryOnPause",
+    "LostReplyWitness",
+    "ReadAdoptWhileBusy",
+    "ReadAdoptionWitness",
+    "ReclaimPinned",
+    "RelaxedLossWitness",
+    "ResumedCandidateWitness",
+    "ResumedRetirementWitness",
+    "SelectBeforeSync",
+    "SelectStalePrefix",
+    "SplitTransaction",
+]
+
+[
+    tla_check(
+        name = "HawDBAutomaticCheckpoint" + control + "_check",
+        module = "HawDBAutomaticCheckpoint.tla",
+        config = "mutants/HawDBAutomaticCheckpoint" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in _AUTOMATIC_CHECKPOINT_CONTROLS
+]
+
+tla_test_suite(
+    name = "automatic_checkpoint_controls",
+    tests = [":HawDBAutomaticCheckpoint" + control + "_check" for control in _AUTOMATIC_CHECKPOINT_CONTROLS],
+    tags = ["manual"],
+)

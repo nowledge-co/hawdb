@@ -108,6 +108,15 @@ use hawdb_core::{PropertyType, SchemaObjectState, TableKind};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[cfg(test)]
+mod checkpoint;
+
+mod checkpoint_decode;
+mod op_decode;
+mod record_decode;
+mod value_decode;
+pub(crate) use checkpoint_decode::decode_binary_wal_record_with_work_context;
+
 const RECORD_KIND_SINGLE: u8 = 0;
 const RECORD_KIND_BATCH: u8 = 1;
 
@@ -153,12 +162,8 @@ const VALUE_FIELD_UUID: u32 = 9;
 const ENTRY_FIELD_KEY: u32 = 1;
 const ENTRY_FIELD_VALUE: u32 = 2;
 
-pub enum BinaryWalRecordDecode {
-    Entry {
-        entry: WalEntry,
-        #[allow(dead_code)]
-        commit_epoch: u64,
-    },
+pub enum BinaryWalRecordDecode<E = WalEntry> {
+    Entry { entry: E, commit_epoch: u64 },
     Corrupt(String),
 }
 
@@ -194,54 +199,7 @@ pub fn decode_binary_wal_record(bytes: &[u8]) -> Result<BinaryWalRecordDecode> {
 }
 
 fn decode_binary_wal_record_inner(bytes: &[u8]) -> Result<BinaryWalRecordDecode> {
-    if bytes.len() < 21 {
-        return Err(HawDBError::Storage(
-            "binary WAL record envelope is truncated".to_string(),
-        ));
-    }
-    let lsn = u64::from_le_bytes(bytes[0..8].try_into().expect("8-byte lsn"));
-    let record_kind = bytes[8];
-    let commit_epoch = u64::from_le_bytes(bytes[9..17].try_into().expect("8-byte commit epoch"));
-    let op_count = u32::from_le_bytes(bytes[17..21].try_into().expect("4-byte op count"));
-    let mut pos = 21usize;
-    let op = match record_kind {
-        RECORD_KIND_SINGLE => {
-            if op_count != 1 {
-                return Err(HawDBError::Storage(format!(
-                    "single-op WAL record declares op_count {op_count}"
-                )));
-            }
-            let op = decode_op_frame(bytes, &mut pos)?;
-            if let WalOp::Batch(_) = op {
-                return Err(HawDBError::Storage(
-                    "single-op WAL record carries a batch envelope".to_string(),
-                ));
-            }
-            op
-        }
-        RECORD_KIND_BATCH => {
-            let mut ops = Vec::with_capacity(op_count.min(1024) as usize);
-            for _ in 0..op_count {
-                ops.push(decode_op_frame(bytes, &mut pos)?);
-            }
-            WalOp::Batch(ops)
-        }
-        kind => {
-            return Err(HawDBError::Storage(format!(
-                "unknown WAL record kind {kind}"
-            )));
-        }
-    };
-    if pos != bytes.len() {
-        return Err(HawDBError::Storage(format!(
-            "binary WAL record has {} trailing bytes",
-            bytes.len() - pos
-        )));
-    }
-    Ok(BinaryWalRecordDecode::Entry {
-        entry: WalEntry { lsn, op },
-        commit_epoch,
-    })
+    record_decode::decode_record(bytes, &OrdinaryOpDecoder)
 }
 
 fn encode_op_frame(op: &WalOp, out: &mut Vec<u8>) -> Result<()> {
@@ -357,102 +315,11 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
 }
 
 fn decode_value_message(bytes: &[u8], depth: usize) -> Result<Value> {
-    ensure_value_depth(depth)?;
-    let mut pos = 0usize;
-    let mut value: Option<Value> = None;
-    while pos < bytes.len() {
-        let (field_id, wire_type) = decode_tag(bytes, &mut pos)?;
-        match (field_id, wire_type) {
-            (VALUE_FIELD_NULL, WIRE_TYPE_VARINT) => {
-                decode_varint_u64(bytes, &mut pos)?;
-                value = Some(Value::Null);
-            }
-            (VALUE_FIELD_BOOL, WIRE_TYPE_VARINT) => {
-                value = Some(Value::Bool(decode_varint_u64(bytes, &mut pos)? != 0));
-            }
-            (VALUE_FIELD_INT, WIRE_TYPE_VARINT) => {
-                value = Some(Value::Int(zigzag_decode_i64(decode_varint_u64(
-                    bytes, &mut pos,
-                )?)));
-            }
-            (VALUE_FIELD_FLOAT, WIRE_TYPE_FIXED64) => {
-                value = Some(Value::Float(f64::from_bits(decode_fixed64(
-                    bytes, &mut pos,
-                )?)));
-            }
-            (VALUE_FIELD_STRING, WIRE_TYPE_LEN) => {
-                value = Some(Value::String(decode_string_body(bytes, &mut pos)?));
-            }
-            (VALUE_FIELD_BINARY, WIRE_TYPE_LEN) => {
-                value = Some(Value::Binary(decode_len_body(bytes, &mut pos)?.to_vec()));
-            }
-            (VALUE_FIELD_UUID, WIRE_TYPE_LEN) => {
-                let encoded = decode_len_body(bytes, &mut pos)?;
-                let bytes: [u8; 16] = encoded.try_into().map_err(|_| {
-                    HawDBError::Storage("WAL UUID value must contain 16 bytes".to_string())
-                })?;
-                value = Some(Value::Uuid(hawdb_core::Uuid::from_bytes(bytes)));
-            }
-            (VALUE_FIELD_ELEMENT, WIRE_TYPE_LEN) => {
-                let body = decode_len_body(bytes, &mut pos)?;
-                let list = match value.take() {
-                    Some(Value::List(mut values)) => {
-                        if !body.is_empty() {
-                            values.push(decode_value_message(body, depth.saturating_add(1))?);
-                        }
-                        values
-                    }
-                    None | Some(_) => {
-                        if body.is_empty() {
-                            Vec::new()
-                        } else {
-                            vec![decode_value_message(body, depth.saturating_add(1))?]
-                        }
-                    }
-                };
-                value = Some(Value::List(list));
-            }
-            (VALUE_FIELD_MAP_ENTRY, WIRE_TYPE_LEN) => {
-                let body = decode_len_body(bytes, &mut pos)?;
-                let mut map = match value.take() {
-                    Some(Value::Map(values)) => values,
-                    None | Some(_) => BTreeMap::new(),
-                };
-                if !body.is_empty() {
-                    let (key, entry_value) = decode_map_entry(body, depth.saturating_add(2))?;
-                    map.insert(key, entry_value);
-                }
-                value = Some(Value::Map(map));
-            }
-            (_, wire_type) => skip_field(bytes, &mut pos, wire_type)?,
-        }
-    }
-    value.ok_or_else(|| HawDBError::Storage("WAL value message is empty".to_string()))
+    value_decode::decode_value(bytes, depth, &OrdinaryOpDecoder)
 }
 
 fn decode_map_entry(bytes: &[u8], value_depth: usize) -> Result<(String, Value)> {
-    let mut pos = 0usize;
-    let mut key = None;
-    let mut value = None;
-    while pos < bytes.len() {
-        let (field_id, wire_type) = decode_tag(bytes, &mut pos)?;
-        match (field_id, wire_type) {
-            (ENTRY_FIELD_KEY, WIRE_TYPE_LEN) => key = Some(decode_string_body(bytes, &mut pos)?),
-            (ENTRY_FIELD_VALUE, WIRE_TYPE_LEN) => {
-                value = Some(decode_value_message(
-                    decode_len_body(bytes, &mut pos)?,
-                    value_depth,
-                )?);
-            }
-            (_, wire_type) => skip_field(bytes, &mut pos, wire_type)?,
-        }
-    }
-    match (key, value) {
-        (Some(key), Some(value)) => Ok((key, value)),
-        _ => Err(HawDBError::Storage(
-            "WAL map entry is missing its key or value".to_string(),
-        )),
-    }
+    value_decode::decode_map_entry(bytes, value_depth, &OrdinaryOpDecoder)
 }
 
 fn ensure_value_depth(depth: usize) -> Result<()> {
@@ -782,230 +649,101 @@ impl<'a> OpFields<'a> {
     }
 }
 
-fn decode_op_frame(bytes: &[u8], pos: &mut usize) -> Result<WalOp> {
-    let op_code = decode_varint_u64(bytes, pos)?;
-    let body = decode_len_body(bytes, pos)?;
-    decode_op_body(op_code, body)
+struct OrdinaryOpDecoder;
+
+impl value_decode::ValueDecoder for OrdinaryOpDecoder {
+    type MapNodes = ();
+
+    fn string(&self, bytes: &[u8], pos: &mut usize) -> Result<String> {
+        decode_string_body(bytes, pos)
+    }
+
+    fn bytes(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+        Ok(bytes.to_vec())
+    }
+
+    fn push_value(&self, values: &mut Vec<Value>, value: Value) -> Result<()> {
+        values.push(value);
+        Ok(())
+    }
+
+    fn singleton_value(&self, value: Value) -> Result<Vec<Value>> {
+        Ok(vec![value])
+    }
+
+    fn before_map_insert(&self, _nodes: &mut (), _len: usize) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl record_decode::RecordDecoder for OrdinaryOpDecoder {
+    #[inline]
+    fn with_unit<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        operation()
+    }
+
+    fn decode_body(&self, code: u64, body: &[u8]) -> Result<WalOp> {
+        decode_op_body(code, body)
+    }
+
+    fn batch(&self, count: u32) -> Vec<WalOp> {
+        Vec::with_capacity(count.min(1024) as usize)
+    }
+
+    fn push(&self, batch: &mut Vec<WalOp>, op: WalOp) -> Result<()> {
+        batch.push(op);
+        Ok(())
+    }
+}
+
+impl<'a> op_decode::OpDecoder<'a> for OrdinaryOpDecoder {
+    type Fields = OpFields<'a>;
+
+    fn parse(
+        &self,
+        body: &'a [u8],
+        strings: &'static [u32],
+        messages: &'static [u32],
+    ) -> Result<Self::Fields> {
+        OpFields::parse(body, strings, messages)
+    }
+}
+
+impl op_decode::OpFieldsDecode for OpFields<'_> {
+    fn required_string(&mut self, id: u32, name: &str) -> Result<String> {
+        OpFields::required_string(self, id, name)
+    }
+    fn strings_for(&mut self, id: u32) -> Result<Vec<String>> {
+        Ok(OpFields::strings_for(self, id))
+    }
+    fn required_varint(&self, id: u32, name: &str) -> Result<u64> {
+        OpFields::required_varint(self, id, name)
+    }
+    fn properties_for(&self, id: u32) -> Result<BTreeMap<String, Value>> {
+        OpFields::properties_for(self, id)
+    }
+    fn value(&self, id: u32, name: &str) -> Result<Value> {
+        decode_value_message(self.required_message(id, name)?, 1)
+    }
+    fn record(&self, id: u32, name: &str) -> Result<Arc<[u8]>> {
+        Ok(Arc::from(self.required_message(id, name)?.to_vec()))
+    }
+    fn predicates(
+        &mut self,
+    ) -> Result<BTreeMap<String, crate::projection::ProjectedRelationshipPredicate>> {
+        let encoded = OpFields::strings_for(self, 4);
+        match encoded.as_slice() {
+            [] => Ok(BTreeMap::new()),
+            [encoded] => crate::projection::decode_projected_relationship_predicates(encoded),
+            _ => Err(HawDBError::Storage(
+                "projected graph WAL has duplicate relationship predicate fields".to_string(),
+            )),
+        }
+    }
 }
 
 fn decode_op_body(op_code: u64, body: &[u8]) -> Result<WalOp> {
-    match op_code {
-        OP_CREATE_NODE_LABEL => {
-            let mut fields = OpFields::parse(body, &[1], &[])?;
-            Ok(WalOp::CreateNodeLabel {
-                label: fields.required_string(1, "label")?,
-            })
-        }
-        OP_CREATE_RELATIONSHIP_TYPE => {
-            let mut fields = OpFields::parse(body, &[1], &[])?;
-            Ok(WalOp::CreateRelationshipType {
-                rel_type: fields.required_string(1, "relationship type")?,
-            })
-        }
-        OP_CREATE_NODE_TABLE => {
-            let mut fields = OpFields::parse(body, &[1], &[])?;
-            Ok(WalOp::CreateNodeTable {
-                name: fields.required_string(1, "table name")?,
-            })
-        }
-        OP_CREATE_RELATIONSHIP_TABLE => {
-            let mut fields = OpFields::parse(body, &[1], &[])?;
-            Ok(WalOp::CreateRelationshipTable {
-                name: fields.required_string(1, "table name")?,
-            })
-        }
-        OP_CREATE_PROPERTY => {
-            let mut fields = OpFields::parse(body, &[2, 3], &[])?;
-            Ok(WalOp::CreateProperty {
-                table_kind: decode_table_kind_code(fields.required_varint(1, "table kind")?)?,
-                table: fields.required_string(2, "table")?,
-                property: fields.required_string(3, "property")?,
-                value_type: decode_property_type_code(fields.required_varint(4, "value type")?)?,
-                nullable: fields.required_varint(5, "nullable flag")? != 0,
-            })
-        }
-        OP_ALTER_TABLE_STATE => {
-            let mut fields = OpFields::parse(body, &[2], &[])?;
-            Ok(WalOp::AlterTableState {
-                table_kind: decode_table_kind_code(fields.required_varint(1, "table kind")?)?,
-                table: fields.required_string(2, "table")?,
-                state: decode_schema_object_state_code(fields.required_varint(3, "state")?)?,
-            })
-        }
-        OP_ALTER_PROPERTY_STATE => {
-            let mut fields = OpFields::parse(body, &[2, 3], &[])?;
-            Ok(WalOp::AlterPropertyState {
-                table_kind: decode_table_kind_code(fields.required_varint(1, "table kind")?)?,
-                table: fields.required_string(2, "table")?,
-                property: fields.required_string(3, "property")?,
-                state: decode_schema_object_state_code(fields.required_varint(4, "state")?)?,
-            })
-        }
-        OP_GC_TABLE_DESCRIPTOR => {
-            let mut fields = OpFields::parse(body, &[2], &[])?;
-            Ok(WalOp::GcTableDescriptor {
-                table_kind: decode_table_kind_code(fields.required_varint(1, "table kind")?)?,
-                table: fields.required_string(2, "table")?,
-            })
-        }
-        OP_GC_PROPERTY_DESCRIPTOR => {
-            let mut fields = OpFields::parse(body, &[2, 3], &[])?;
-            Ok(WalOp::GcPropertyDescriptor {
-                table_kind: decode_table_kind_code(fields.required_varint(1, "table kind")?)?,
-                table: fields.required_string(2, "table")?,
-                property: fields.required_string(3, "property")?,
-            })
-        }
-        OP_CREATE_INDEX => {
-            let mut fields = OpFields::parse(body, &[1, 2], &[])?;
-            Ok(WalOp::CreateIndex {
-                label: fields.required_string(1, "label")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_COMPOSITE_INDEX => {
-            let mut fields = OpFields::parse(body, &[1, 2], &[])?;
-            Ok(WalOp::CreateCompositeIndex {
-                label: fields.required_string(1, "label")?,
-                properties: fields.strings_for(2),
-            })
-        }
-        OP_CREATE_RANGE_INDEX => {
-            let mut fields = OpFields::parse(body, &[1, 2], &[])?;
-            Ok(WalOp::CreateRangeIndex {
-                label: fields.required_string(1, "label")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_FULL_TEXT_INDEX => {
-            let mut fields = OpFields::parse(body, &[1, 2], &[])?;
-            Ok(WalOp::CreateFullTextIndex {
-                label: fields.required_string(1, "label")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_UNIQUE_CONSTRAINT => {
-            let mut fields = OpFields::parse(body, &[1, 2], &[])?;
-            Ok(WalOp::CreateUniqueConstraint {
-                label: fields.required_string(1, "label")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_NODE_PROPERTY_EXISTS_CONSTRAINT => {
-            let mut fields = OpFields::parse(body, &[1, 2], &[])?;
-            Ok(WalOp::CreateNodePropertyExistsConstraint {
-                label: fields.required_string(1, "label")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_RELATIONSHIP_UNIQUE_CONSTRAINT => {
-            let mut fields = OpFields::parse(body, &[1, 2], &[])?;
-            Ok(WalOp::CreateRelationshipUniqueConstraint {
-                rel_type: fields.required_string(1, "relationship type")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_RELATIONSHIP_PROPERTY_EXISTS_CONSTRAINT => {
-            let mut fields = OpFields::parse(body, &[1, 2], &[])?;
-            Ok(WalOp::CreateRelationshipPropertyExistsConstraint {
-                rel_type: fields.required_string(1, "relationship type")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_NODE => {
-            let mut fields = OpFields::parse(body, &[2], &[3])?;
-            Ok(WalOp::CreateNode {
-                id: NodeId(fields.required_varint(1, "node id")?),
-                label: fields.required_string(2, "label")?,
-                properties: fields.properties_for(3)?,
-            })
-        }
-        OP_CREATE_RELATIONSHIP => {
-            let mut fields = OpFields::parse(body, &[4], &[5])?;
-            Ok(WalOp::CreateRelationship {
-                id: RelId(fields.required_varint(1, "relationship id")?),
-                source: NodeId(fields.required_varint(2, "source node id")?),
-                target: NodeId(fields.required_varint(3, "target node id")?),
-                rel_type: fields.required_string(4, "relationship type")?,
-                properties: fields.properties_for(5)?,
-            })
-        }
-        OP_SET_NODE_PROPERTY => {
-            let mut fields = OpFields::parse(body, &[2], &[3])?;
-            Ok(WalOp::SetNodeProperty {
-                id: NodeId(fields.required_varint(1, "node id")?),
-                property: fields.required_string(2, "property")?,
-                value: decode_value_message(fields.required_message(3, "value")?, 1)?,
-            })
-        }
-        OP_SET_RELATIONSHIP_PROPERTY => {
-            let mut fields = OpFields::parse(body, &[2], &[3])?;
-            Ok(WalOp::SetRelationshipProperty {
-                id: RelId(fields.required_varint(1, "relationship id")?),
-                property: fields.required_string(2, "property")?,
-                value: decode_value_message(fields.required_message(3, "value")?, 1)?,
-            })
-        }
-        OP_DELETE_NODE => {
-            let fields = OpFields::parse(body, &[], &[])?;
-            Ok(WalOp::DeleteNode {
-                id: NodeId(fields.required_varint(1, "node id")?),
-            })
-        }
-        OP_DELETE_RELATIONSHIP => {
-            let fields = OpFields::parse(body, &[], &[])?;
-            Ok(WalOp::DeleteRelationship {
-                id: RelId(fields.required_varint(1, "relationship id")?),
-            })
-        }
-        OP_PROJECT_GRAPH => {
-            let mut fields = OpFields::parse(body, &[1, 2, 3, 4], &[])?;
-            let encoded_predicates = fields.strings_for(4);
-            let relationship_predicates = match encoded_predicates.as_slice() {
-                [] => BTreeMap::new(),
-                [encoded] => crate::projection::decode_projected_relationship_predicates(encoded)?,
-                _ => {
-                    return Err(HawDBError::Storage(
-                        "projected graph WAL has duplicate relationship predicate fields"
-                            .to_string(),
-                    ));
-                }
-            };
-            Ok(WalOp::ProjectGraph {
-                name: fields.required_string(1, "projected graph name")?,
-                node_labels: fields.strings_for(2),
-                rel_types: fields.strings_for(3),
-                relationship_predicates,
-            })
-        }
-        OP_MARK_INITIAL_IMPORT_SOURCE => {
-            let mut fields = OpFields::parse(body, &[1], &[])?;
-            Ok(WalOp::MarkInitialImportSource {
-                source_fingerprint: fields.required_string(1, "source fingerprint")?,
-            })
-        }
-        OP_RELATIONAL => {
-            let fields = OpFields::parse(body, &[], &[1])?;
-            Ok(WalOp::Relational {
-                record: Arc::from(fields.required_message(1, "relational record")?.to_vec()),
-            })
-        }
-        OP_RELATIONAL_SNAPSHOT => {
-            let fields = OpFields::parse(body, &[], &[1])?;
-            Ok(WalOp::RelationalSnapshot {
-                record: Arc::from(fields.required_message(1, "relational record")?.to_vec()),
-            })
-        }
-        OP_APPEND => {
-            let fields = OpFields::parse(body, &[], &[1])?;
-            Ok(WalOp::Append {
-                record: Arc::from(fields.required_message(1, "append record")?.to_vec()),
-            })
-        }
-        op_code => Err(HawDBError::Storage(format!(
-            "unknown WAL op code {op_code}"
-        ))),
-    }
+    op_decode::decode_op_body(op_code, body, &OrdinaryOpDecoder)
 }
 
 #[cfg(test)]
@@ -1203,7 +941,7 @@ mod tests {
     /// One WalOp sample per variant. The match is exhaustive on purpose:
     /// adding a WalOp variant without extending the binary codec (and this
     /// list) fails to compile here.
-    fn sample_ops() -> Vec<WalOp> {
+    pub(super) fn sample_ops() -> Vec<WalOp> {
         let mut samples = Vec::new();
         // Compile-time exhaustiveness pin: every variant must be listed.
         let pin = |op: &WalOp| match op {

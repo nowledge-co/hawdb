@@ -24,7 +24,8 @@ fn retrieves_knowledge_through_database_facade() {
         )
         .unwrap();
     let extra_entity = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -36,7 +37,8 @@ fn retrieves_knowledge_through_database_facade() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(0),

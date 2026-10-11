@@ -14,6 +14,9 @@
 
 use super::*;
 
+#[path = "tests/checkpoint_admission.rs"]
+mod checkpoint_admission;
+
 #[test]
 fn relational_types_map_to_shared_logical_types() {
     assert_eq!(

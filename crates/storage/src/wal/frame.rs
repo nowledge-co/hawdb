@@ -68,6 +68,11 @@
 use hawdb_core::{HawDBError, Result};
 use std::io::Read;
 
+mod checkpoint;
+pub(crate) use checkpoint::{
+    CheckpointBinaryWalReader, CheckpointWalFrameStream, CheckpointWalReadEvent,
+};
+
 pub const WAL_BINARY_MAGIC: &[u8; 8] = b"SKWALB01";
 pub const WAL_BLOCK_BYTES: usize = 32 * 1024;
 pub const WAL_FRAGMENT_HEADER_BYTES: usize = 15;
@@ -205,6 +210,50 @@ pub struct BinaryWalReader<R: Read> {
     block_loaded: bool,
     chain: Option<PendingChain>,
     finished: bool,
+    // A checkpoint captures a complete byte boundary while owning the writer.
+    // Later appends must not extend this reader's captured interval.
+    end_offset: Option<u64>,
+}
+
+impl<R: Read + std::io::Seek> BinaryWalReader<R> {
+    /// Opens an internally captured, complete-record interval. Read at most
+    /// one preceding block to preserve the existing block/framing grammar.
+    pub(crate) fn range(
+        mut reader: R,
+        generation: u64,
+        max_record_bytes: Option<usize>,
+        from_offset: u64,
+        to_offset: u64,
+    ) -> Result<Self> {
+        let header_bytes = WAL_BINARY_FILE_HEADER_BYTES as u64;
+        if from_offset < header_bytes || from_offset > to_offset {
+            return Err(HawDBError::Storage(
+                "invalid captured WAL byte interval".into(),
+            ));
+        }
+        let data_offset = from_offset - header_bytes;
+        let block_start =
+            header_bytes + data_offset / WAL_BLOCK_BYTES as u64 * WAL_BLOCK_BYTES as u64;
+        reader.seek(std::io::SeekFrom::Start(block_start))?;
+        let mut cursor = Self::new(reader, generation, max_record_bytes);
+        cursor.block_offset = block_start;
+        cursor.end_offset = Some(to_offset);
+        if from_offset == to_offset {
+            cursor.finished = true;
+            return Ok(cursor);
+        }
+        cursor.load_next_block()?;
+        let skip = usize::try_from(from_offset - block_start).map_err(|_| {
+            HawDBError::Storage("captured WAL offset exceeds platform limits".into())
+        })?;
+        if skip > cursor.block_len {
+            return Err(HawDBError::Storage(
+                "captured WAL interval starts beyond the available bytes".into(),
+            ));
+        }
+        cursor.block_pos = skip;
+        Ok(cursor)
+    }
 }
 
 enum FragmentParse {
@@ -226,6 +275,10 @@ enum FragmentParse {
 }
 
 impl<R: Read> BinaryWalReader<R> {
+    pub(crate) fn into_reader(self) -> R {
+        self.reader
+    }
+
     pub fn new(reader: R, generation: u64, max_record_bytes: Option<usize>) -> Self {
         Self {
             reader,
@@ -239,6 +292,7 @@ impl<R: Read> BinaryWalReader<R> {
             block_loaded: false,
             chain: None,
             finished: false,
+            end_offset: None,
         }
     }
 
@@ -247,7 +301,20 @@ impl<R: Read> BinaryWalReader<R> {
         self.block_len = 0;
         self.block_pos = 0;
         while self.block_len < WAL_BLOCK_BYTES {
-            let read = self.reader.read(&mut self.block[self.block_len..])?;
+            let remaining = self
+                .end_offset
+                .map_or(WAL_BLOCK_BYTES - self.block_len, |end| {
+                    usize::try_from(end.saturating_sub(self.block_offset + self.block_len as u64))
+                        .unwrap_or(usize::MAX)
+                        .min(WAL_BLOCK_BYTES - self.block_len)
+                });
+            if remaining == 0 {
+                self.stream_ended = true;
+                break;
+            }
+            let read = self
+                .reader
+                .read(&mut self.block[self.block_len..self.block_len + remaining])?;
             if read == 0 {
                 self.stream_ended = true;
                 break;
@@ -547,6 +614,72 @@ impl<R: Read> BinaryWalReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_range_reads_only_the_suffix_and_ignores_later_append_damage() {
+        struct CountedReader {
+            cursor: std::io::Cursor<Vec<u8>>,
+            read_bytes: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+        impl Read for CountedReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.cursor.read(buffer)?;
+                self.read_bytes.set(self.read_bytes.get() + count);
+                Ok(count)
+            }
+        }
+        impl std::io::Seek for CountedReader {
+            fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+                self.cursor.seek(position)
+            }
+        }
+        let prefix = vec![17; 40 * WAL_BLOCK_BYTES + 13];
+        let tail = vec![23; 2 * WAL_BLOCK_BYTES + 7];
+        let mut bytes = framed_file(7, 1, &[prefix]);
+        let from = bytes.len() as u64;
+        let framed = frame_binary_wal_record(7, &tail, from - WAL_BINARY_FILE_HEADER_BYTES as u64);
+        bytes.extend_from_slice(&framed);
+        let to = bytes.len() as u64;
+        // A concurrent writer has begun another incomplete record. It is
+        // outside the captured completed prefix and must remain unobserved.
+        let later =
+            frame_binary_wal_record(7, &[41; 100], to - WAL_BINARY_FILE_HEADER_BYTES as u64);
+        bytes.extend_from_slice(&later[..later.len() / 2]);
+        let read_bytes = std::rc::Rc::new(std::cell::Cell::new(0));
+        let source = CountedReader {
+            cursor: std::io::Cursor::new(bytes),
+            read_bytes: read_bytes.clone(),
+        };
+        let mut cursor = BinaryWalReader::range(source, 7, None, from, to).unwrap();
+        let BinaryWalReadEvent::Record { payload, .. } = cursor.next_event().unwrap() else {
+            panic!("captured suffix was not decoded");
+        };
+        assert_eq!(payload, tail);
+        assert!(matches!(
+            cursor.next_event().unwrap(),
+            BinaryWalReadEvent::Eof
+        ));
+        assert!(read_bytes.get() as u64 <= to - from + WAL_BLOCK_BYTES as u64);
+    }
+
+    #[test]
+    fn captured_range_rejects_a_cut_inside_a_fragment_chain() {
+        let payload = vec![19; 3 * WAL_BLOCK_BYTES];
+        let bytes = framed_file(9, 42, &[payload]);
+        let to = bytes.len() as u64 - 1;
+        let mut cursor = BinaryWalReader::range(
+            std::io::Cursor::new(bytes),
+            9,
+            None,
+            WAL_BINARY_FILE_HEADER_BYTES as u64,
+            to,
+        )
+        .unwrap();
+        assert!(matches!(
+            cursor.next_event().unwrap(),
+            BinaryWalReadEvent::TornTail { .. }
+        ));
+    }
 
     fn framed_file(generation: u64, start_lsn: u64, payloads: &[Vec<u8>]) -> Vec<u8> {
         let mut file = encode_binary_wal_header(generation, start_lsn);

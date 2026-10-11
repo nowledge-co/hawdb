@@ -32,6 +32,7 @@ use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 pub const COLUMN_GROUP_MANIFEST_FILE: &str = "column-groups.manifest.hawdb";
 
@@ -666,8 +667,8 @@ impl ColumnGroupManifest {
         if current.as_ref() == Some(self) {
             let directories = self.load_directories(root, ArtifactValidation::ChangedTables)?;
             return Ok(PublishedColumnGroupCatalog {
-                manifest: self.clone(),
-                directories,
+                manifest: Arc::new(self.clone()),
+                directories: Arc::new(directories),
             });
         }
         let actual_parent = current.as_ref().map(|manifest| manifest.generation);
@@ -682,8 +683,8 @@ impl ColumnGroupManifest {
         let bytes = encode_envelope(MANIFEST_MAGIC, &self.encode_body()?)?;
         publish_bytes(&root.join(COLUMN_GROUP_MANIFEST_FILE), &bytes)?;
         Ok(PublishedColumnGroupCatalog {
-            manifest: self.clone(),
-            directories,
+            manifest: Arc::new(self.clone()),
+            directories: Arc::new(directories),
         })
     }
 
@@ -693,8 +694,8 @@ impl ColumnGroupManifest {
         };
         let directories = manifest.load_directories(root, ArtifactValidation::AllTables)?;
         Ok(Some(PublishedColumnGroupCatalog {
-            manifest,
-            directories,
+            manifest: Arc::new(manifest),
+            directories: Arc::new(directories),
         }))
     }
 
@@ -945,8 +946,8 @@ enum ArtifactValidation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishedColumnGroupCatalog {
-    manifest: ColumnGroupManifest,
-    directories: Vec<ColumnGroupTableDirectory>,
+    manifest: Arc<ColumnGroupManifest>,
+    directories: Arc<Vec<ColumnGroupTableDirectory>>,
 }
 
 impl PublishedColumnGroupCatalog {
@@ -969,7 +970,7 @@ impl PublishedColumnGroupCatalog {
     /// scrub/doctor flows. Normal reopen remains proportional to metadata and
     /// footer size; individual chunk CRC32C checks remain on the read path.
     pub fn scrub_artifacts(&self, root: &Path) -> Result<(), ColumnGroupError> {
-        for directory in &self.directories {
+        for directory in self.directories.iter() {
             for group in &directory.groups {
                 let actual_group_sha256 = hash_file(&root.join(&group.group_file))?;
                 if actual_group_sha256 != group.group_sha256 {

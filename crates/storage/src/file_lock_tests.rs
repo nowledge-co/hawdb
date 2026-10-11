@@ -15,6 +15,7 @@
 //! Contracts exercised through each real publication-lock acquisition path.
 
 use crate::file_io::File;
+use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::fs::{self, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -28,6 +29,36 @@ const CHILD_DIRECTORY: &str = "HAWDB_PUBLICATION_LOCK_TEST_DIRECTORY";
 const CHILD_SIDECAR: &str = "HAWDB_PUBLICATION_LOCK_TEST_SIDECAR";
 const WAIT_LIMIT: Duration = Duration::from_secs(10);
 const SENTINEL: &[u8] = b"persistent lock sidecar";
+
+pub(crate) fn assert_owner_release_with_duplicate<E: Debug, L: Borrow<File>>(
+    sidecar: &str,
+    acquire: impl Fn(&Path, bool) -> Result<L, E>,
+) {
+    let mut released = Vec::new();
+    for controlled in [false, true] {
+        let directory = TestDirectory::new();
+        let path = directory.0.join(sidecar);
+        fs::write(&path, SENTINEL).unwrap();
+        let lock = acquire(&directory.0, controlled).unwrap();
+        // A fork can retain a duplicate briefly before close-on-exec. Model
+        // that ownership without racing a subprocess or allocating after fork.
+        let duplicate = lock.borrow().try_clone().unwrap();
+        assert_contended(&path);
+        drop(lock);
+        // Always use the nonblocking controlled acquisition for observation.
+        let next = acquire(&directory.0, true);
+        released.push((controlled, next.is_ok()));
+        drop(next);
+        drop(duplicate);
+        drop(acquire(&directory.0, true).unwrap());
+        assert_eq!(fs::read(&path).unwrap(), SENTINEL);
+    }
+    // Close every descriptor before asserting the before/after observation.
+    assert!(
+        released.iter().all(|(_, released)| *released),
+        "{released:?}"
+    );
+}
 
 pub(crate) fn assert_contract<E: Debug + ToString + 'static>(
     sidecar: &str,

@@ -19,6 +19,7 @@ use super::{
     GraphDescriptorTreeBuildReport, GraphDescriptorTreeError, GraphDescriptorTreePaths,
     GraphDescriptorTreeRoot, PreparedGraphDescriptorTree, ROOT_HEADER_BYTES,
 };
+use crate::background::{CheckpointAllocationOwner, CheckpointWorkContext, CheckpointWorkError};
 use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_page::{
     decode_page_ref, encode_page_ref, GraphDescriptorInteriorEntry, GraphDescriptorKind,
@@ -35,14 +36,23 @@ use std::path::{Path, PathBuf};
 const REF_RUN_MAGIC: &[u8; 8] = b"SKGDRF01";
 const TREE_IO_BUFFER_BYTES: usize = 8 * 1024;
 
+mod writer;
+use writer::BufferedWriter;
+
+struct WriterWork {
+    context: CheckpointWorkContext,
+    checkpoint_buffers: bool,
+}
+
 pub struct GraphDescriptorTreeBuilder {
+    work: CheckpointWorkContext,
     paths: GraphDescriptorTreePaths,
     kind: GraphDescriptorKind,
     generation: u64,
     source_commit_epoch: u64,
     artifact_id: u64,
     config: GraphDescriptorTreeBuildConfig,
-    page_writer: BufWriter<File>,
+    page_writer: BufferedWriter,
     page_hasher: IntegrityHasher,
     page_artifact_bytes: u64,
     next_page_id: u64,
@@ -57,6 +67,9 @@ pub struct GraphDescriptorTreeBuilder {
     peak_intermediate_level_bytes: u64,
     peak_resident_bytes: u64,
     temporary_files: TemporaryFiles,
+    checkpoint_buffers: bool,
+    // Buffered data must be destroyed before its retained allocation inventory.
+    _page_buffer_memory: CheckpointAllocationOwner,
 }
 
 impl GraphDescriptorTreeBuilder {
@@ -68,6 +81,79 @@ impl GraphDescriptorTreeBuilder {
         artifact_id: u64,
         config: GraphDescriptorTreeBuildConfig,
     ) -> Result<Self, GraphDescriptorTreeError> {
+        Self::create_with_work_context(
+            paths,
+            kind,
+            generation,
+            source_commit_epoch,
+            artifact_id,
+            config,
+            CheckpointWorkContext::default(),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn create_with_work_context(
+        paths: GraphDescriptorTreePaths,
+        kind: GraphDescriptorKind,
+        generation: u64,
+        source_commit_epoch: u64,
+        artifact_id: u64,
+        config: GraphDescriptorTreeBuildConfig,
+        work: CheckpointWorkContext,
+    ) -> Result<Self, GraphDescriptorTreeError> {
+        Self::create_inner(
+            paths,
+            kind,
+            generation,
+            source_commit_epoch,
+            artifact_id,
+            config,
+            WriterWork {
+                context: work,
+                checkpoint_buffers: false,
+            },
+        )
+    }
+
+    pub(crate) fn create_checkpoint(
+        paths: GraphDescriptorTreePaths,
+        kind: GraphDescriptorKind,
+        generation: u64,
+        source_commit_epoch: u64,
+        artifact_id: u64,
+        config: GraphDescriptorTreeBuildConfig,
+        work: CheckpointWorkContext,
+    ) -> Result<Self, GraphDescriptorTreeError> {
+        Self::create_inner(
+            paths,
+            kind,
+            generation,
+            source_commit_epoch,
+            artifact_id,
+            config,
+            WriterWork {
+                context: work,
+                checkpoint_buffers: true,
+            },
+        )
+    }
+
+    fn create_inner(
+        paths: GraphDescriptorTreePaths,
+        kind: GraphDescriptorKind,
+        generation: u64,
+        source_commit_epoch: u64,
+        artifact_id: u64,
+        config: GraphDescriptorTreeBuildConfig,
+        writer_work: WriterWork,
+    ) -> Result<Self, GraphDescriptorTreeError> {
+        let WriterWork {
+            context: work,
+            checkpoint_buffers,
+        } = writer_work;
+        let unit = work.start_unit()?;
+        let _wave = work.io_wave()?;
         if generation == 0 || artifact_id == 0 {
             return Err(admission(
                 "graph descriptor tree generation and artifact id must be non-zero",
@@ -123,12 +209,32 @@ impl GraphDescriptorTreeBuilder {
         remove_if_exists(&page_tmp)?;
         remove_if_exists(&root_tmp)?;
         remove_if_exists(&level_zero_path)?;
+        let mut page_buffer_memory = CheckpointAllocationOwner::default();
+        let page_token = if checkpoint_buffers {
+            Some(page_buffer_memory.reserve(TREE_IO_BUFFER_BYTES, &work)?)
+        } else {
+            None
+        };
         let mut temporary_files = TemporaryFiles::default();
         temporary_files.track(page_tmp.clone());
         temporary_files.track(level_zero_path.clone());
-        let page_writer = BufWriter::with_capacity(TREE_IO_BUFFER_BYTES, File::create(&page_tmp)?);
-        let level_zero = RefRunWriter::create(level_zero_path)?;
+        let page_writer = BufferedWriter::new(
+            TREE_IO_BUFFER_BYTES,
+            File::create(&page_tmp)?,
+            checkpoint_buffers,
+        );
+        if let Some(token) = page_token {
+            check_buffer_capacity(page_writer.capacity(), &work)?;
+            token.address(page_writer.buffer().as_ptr() as usize);
+        }
+        let level_zero = if checkpoint_buffers {
+            RefRunWriter::create_checkpoint(level_zero_path, &work)?
+        } else {
+            RefRunWriter::create(level_zero_path)?
+        };
+        unit.finish();
         Ok(Self {
+            work: work.clone(),
             paths,
             kind,
             generation,
@@ -150,10 +256,13 @@ impl GraphDescriptorTreeBuilder {
             peak_intermediate_level_bytes: 0,
             peak_resident_bytes: (2 * TREE_IO_BUFFER_BYTES) as u64,
             temporary_files,
+            checkpoint_buffers,
+            _page_buffer_memory: page_buffer_memory,
         })
     }
 
     pub fn push(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), GraphDescriptorTreeError> {
+        let unit = self.work.start_unit()?;
         validate_leaf_input(&key, &value, self.config.page_limits)?;
         if self
             .last_key
@@ -196,18 +305,28 @@ impl GraphDescriptorTreeBuilder {
             .checked_add(1)
             .ok_or_else(|| admission("graph descriptor count overflow"))?;
         self.observe_resident_leaf();
+        unit.finish();
         Ok(())
     }
 
     pub fn finish(mut self) -> Result<PreparedGraphDescriptorTree, GraphDescriptorTreeError> {
+        self.work.checkpoint()?;
         self.flush_leaf_page()?;
-        let level_zero = self
-            .level_zero
-            .take()
-            .expect("graph descriptor level-zero run is present")
-            .finish()?;
+        let level_zero = {
+            let unit = self.work.start_unit()?;
+            let _wave = self.work.io_wave()?;
+            let run = self
+                .level_zero
+                .take()
+                .expect("graph descriptor level-zero run is present")
+                .finish()?;
+            unit.finish();
+            run
+        };
         self.record_finished_run(&level_zero)?;
         let (root, height) = self.build_interior_levels(level_zero)?;
+        let unit = self.work.start_unit()?;
+        let _wave = self.work.io_wave()?;
         self.page_writer.flush()?;
         self.page_writer.get_ref().sync_all()?;
         let page_integrity = self.page_hasher.clone().finish();
@@ -248,8 +367,11 @@ impl GraphDescriptorTreeBuilder {
             peak_resident_bytes: self.peak_resident_bytes,
         };
         let page_tmp = self.paths.page_tmp();
+        unit.finish();
+        self.work.checkpoint()?;
         self.temporary_files.disarm(&page_tmp);
         Ok(PreparedGraphDescriptorTree {
+            work: self.work.clone(),
             paths: self.paths.clone(),
             config: self.config,
             root: root_manifest,
@@ -291,6 +413,7 @@ impl GraphDescriptorTreeBuilder {
         }
         let mut height = 0u32;
         while current.count > 1 {
+            self.work.checkpoint()?;
             height = height
                 .checked_add(1)
                 .ok_or_else(|| admission("graph descriptor tree height overflow"))?;
@@ -308,11 +431,31 @@ impl GraphDescriptorTreeBuilder {
                 )));
             }
             self.total_intermediate_bytes = required_intermediate;
-            let mut next_writer = RefRunWriter::create(next_path)?;
-            let mut reader = RefRunReader::open(&current.path, current.count, self.config)?;
+            let (mut next_writer, mut reader) = {
+                let unit = self.work.start_unit()?;
+                let _wave = self.work.io_wave()?;
+                let writer = if self.checkpoint_buffers {
+                    RefRunWriter::create_checkpoint(next_path, &self.work)?
+                } else {
+                    RefRunWriter::create(next_path)?
+                };
+                let reader = RefRunReader::open(&current.path, current.count, self.config)?;
+                unit.finish();
+                (writer, reader)
+            };
             let mut children = Vec::new();
             let mut payload_bytes = 0usize;
-            while let Some(child) = reader.next_ref()? {
+            loop {
+                let unit = self.work.start_unit()?;
+                let child = {
+                    let _wave = self.work.io_wave()?;
+                    reader.next_ref()?
+                };
+                let Some(child) = child else {
+                    unit.finish();
+                    break;
+                };
+                self.work.checkpoint()?;
                 let child_bytes = interior_entry_payload_bytes(&child)?;
                 let max_payload_bytes = self
                     .config
@@ -339,18 +482,30 @@ impl GraphDescriptorTreeBuilder {
                     .ok_or_else(|| admission("graph descriptor interior payload overflow"))?;
                 children.push(GraphDescriptorInteriorEntry { child });
                 self.observe_resident_interior(payload_bytes, &children);
+                unit.finish();
             }
-            reader.finish()?;
+            {
+                let _wave = self.work.io_wave()?;
+                reader.finish()?;
+            }
             drop(reader);
             if !children.is_empty() {
                 let reference = self.flush_interior_page(&mut children)?;
                 self.write_ref(&mut next_writer, &reference)?;
             }
-            let next = next_writer.finish()?;
+            let next = {
+                let unit = self.work.start_unit()?;
+                let _wave = self.work.io_wave()?;
+                let run = next_writer.finish()?;
+                unit.finish();
+                run
+            };
             self.record_finished_run(&next)?;
             self.remove_temporary(&current.path)?;
             current = next;
         }
+        let unit = self.work.start_unit()?;
+        let _wave = self.work.io_wave()?;
         let mut reader = RefRunReader::open(&current.path, 1, self.config)?;
         let root = reader
             .next_ref()?
@@ -358,6 +513,7 @@ impl GraphDescriptorTreeBuilder {
         reader.finish()?;
         drop(reader);
         self.remove_temporary(&current.path)?;
+        unit.finish();
         Ok((Some(root), height))
     }
 
@@ -390,6 +546,7 @@ impl GraphDescriptorTreeBuilder {
         &mut self,
         page: ImmutableGraphDescriptorPage,
     ) -> Result<GraphDescriptorPageRef, GraphDescriptorTreeError> {
+        let unit = self.work.start_unit()?;
         let required_pages = self
             .page_count
             .checked_add(1)
@@ -419,11 +576,15 @@ impl GraphDescriptorTreeBuilder {
             .saturating_add(encoded.len())
             .saturating_add(3 * TREE_IO_BUFFER_BYTES) as u64;
         self.peak_resident_bytes = self.peak_resident_bytes.max(page_resident_bytes);
-        self.page_writer.write_all(&encoded)?;
+        {
+            let _wave = self.work.io_wave()?;
+            self.page_writer.write_all(&encoded)?;
+        }
         self.page_hasher.update(&encoded);
         self.page_artifact_bytes = required_artifact_bytes;
         self.page_count = required_pages;
         self.peak_resident_bytes = self.peak_resident_bytes.max(encoded.len() as u64);
+        unit.finish();
         Ok(reference)
     }
 
@@ -445,6 +606,7 @@ impl GraphDescriptorTreeBuilder {
         writer: &mut RefRunWriter,
         reference: &GraphDescriptorPageRef,
     ) -> Result<(), GraphDescriptorTreeError> {
+        self.work.checkpoint()?;
         let encoded = encode_page_ref(reference)?;
         let _ = u32::try_from(encoded.len())
             .map_err(|_| admission("graph descriptor page reference length exceeds u32"))?;
@@ -459,7 +621,10 @@ impl GraphDescriptorTreeBuilder {
                 self.config.max_intermediate_bytes
             )));
         }
-        writer.write_encoded_ref(&encoded)?;
+        {
+            let _wave = self.work.io_wave()?;
+            writer.write_encoded_ref(&encoded)?;
+        }
         self.total_intermediate_bytes = required;
         Ok(())
     }
@@ -589,20 +754,45 @@ struct RefRun {
 
 struct RefRunWriter {
     path: PathBuf,
-    writer: BufWriter<File>,
+    writer: BufferedWriter,
     count: u64,
     bytes: u64,
+    _buffer_memory: CheckpointAllocationOwner,
 }
 
 impl RefRunWriter {
     fn create(path: PathBuf) -> Result<Self, GraphDescriptorTreeError> {
-        let mut writer = BufWriter::with_capacity(TREE_IO_BUFFER_BYTES, File::create(&path)?);
+        Self::create_inner(path, None)
+    }
+
+    fn create_checkpoint(
+        path: PathBuf,
+        work: &CheckpointWorkContext,
+    ) -> Result<Self, GraphDescriptorTreeError> {
+        Self::create_inner(path, Some(work))
+    }
+
+    fn create_inner(
+        path: PathBuf,
+        work: Option<&CheckpointWorkContext>,
+    ) -> Result<Self, GraphDescriptorTreeError> {
+        let mut memory = CheckpointAllocationOwner::default();
+        let token = work
+            .map(|work| memory.reserve(TREE_IO_BUFFER_BYTES, work))
+            .transpose()?;
+        let mut writer =
+            BufferedWriter::new(TREE_IO_BUFFER_BYTES, File::create(&path)?, work.is_some());
+        if let (Some(token), Some(work)) = (token, work) {
+            check_buffer_capacity(writer.capacity(), work)?;
+            token.address(writer.buffer().as_ptr() as usize);
+        }
         writer.write_all(REF_RUN_MAGIC)?;
         Ok(Self {
             path,
             writer,
             count: 0,
             bytes: REF_RUN_MAGIC.len() as u64,
+            _buffer_memory: memory,
         })
     }
 
@@ -630,6 +820,21 @@ impl RefRunWriter {
             bytes: self.bytes,
         })
     }
+}
+
+fn check_buffer_capacity(
+    capacity: usize,
+    work: &CheckpointWorkContext,
+) -> Result<(), GraphDescriptorTreeError> {
+    if capacity != TREE_IO_BUFFER_BYTES {
+        return Err(GraphDescriptorTreeError::Work(work.record_failure(
+            CheckpointWorkError::Allocation {
+                bytes: TREE_IO_BUFFER_BYTES as u64,
+                reason: "descriptor-tree writer capacity differs from admitted capacity".into(),
+            },
+        )));
+    }
+    Ok(())
 }
 
 struct RefRunReader {
@@ -739,3 +944,9 @@ impl Drop for TemporaryFiles {
         }
     }
 }
+
+#[cfg(test)]
+mod checkpoint_buffer_memory_tests;
+
+#[cfg(all(test, unix))]
+mod checkpoint_abort_io_tests;

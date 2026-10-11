@@ -20,7 +20,10 @@ use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 
+mod inputs;
 mod manifest;
+#[doc(hidden)]
+pub use inputs::{RelationalOverflowInputs, RelationalOverflowInputsIter};
 mod publisher;
 mod reader;
 
@@ -73,14 +76,28 @@ impl Default for RelationalOverflowPublicationConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum RelationalOverflowExtentInput {
     Reuse(RelationalOverflowRef),
     Write {
         reference: RelationalOverflowRef,
         encoded: Arc<[u8]>,
     },
+    /// A private checkpoint copy that retains its governor allocation lease.
+    #[doc(hidden)]
+    CheckpointWrite {
+        reference: RelationalOverflowRef,
+        encoded: crate::background::CheckpointSharedBytes,
+    },
 }
+
+impl PartialEq for RelationalOverflowExtentInput {
+    fn eq(&self, other: &Self) -> bool {
+        self.reference() == other.reference() && self.encoded_bytes() == other.encoded_bytes()
+    }
+}
+
+impl Eq for RelationalOverflowExtentInput {}
 
 impl RelationalOverflowExtentInput {
     pub fn encode(
@@ -97,7 +114,17 @@ impl RelationalOverflowExtentInput {
 
     pub const fn reference(&self) -> &RelationalOverflowRef {
         match self {
-            Self::Reuse(reference) | Self::Write { reference, .. } => reference,
+            Self::Reuse(reference)
+            | Self::Write { reference, .. }
+            | Self::CheckpointWrite { reference, .. } => reference,
+        }
+    }
+
+    pub fn encoded_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Reuse(_) => None,
+            Self::Write { encoded, .. } => Some(encoded),
+            Self::CheckpointWrite { encoded, .. } => Some(encoded),
         }
     }
 }
