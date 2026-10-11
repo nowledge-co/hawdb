@@ -133,9 +133,40 @@ the durable generation and permits automatic work again. The synchronous manual
 APIs remain available while automatic scheduling is parked. Publication
 uncertainty still retains recovery evidence and fails closed.
 
-This retry path still retains the existing whole-candidate reservation. It does
-not make preparation resumable, establish bounded per-unit owner admission, or
-qualify the default sustained-load envelope; those remain completion gates.
+Preparation owns its original source/catalog and completed projected-graph and
+source-row plans across safe resource/cancellation deferrals. Submitting a later
+source in the same contiguous WAL generation transfers that owned state rather
+than recapturing its base. Completed candidate mounting and branch setup retain
+their stages across cooperative stops; physical or operation errors discard
+mutated private roots. A fresh task resumes the original admission and eventually
+catches up later writes. Manual suspension destroys parked preparation and its
+memory ownership before its generation can be reused, outside the Control gate.
+
+Source-row planning pins the captured graph COW root and stores sparse segment
+intervals for at most 128 Source rows each, instead of copying every property
+map. The temporary reference-array capacity is admitted before allocation.
+Payload encoding consumes a unit for each visited record, including non-Source
+records between sparse bounds. Writer changes leave the pinned records intact.
+Payload text streams the existing tagged property grammar into its owning
+admitted buffer. Nested List/Map escaping writes directly to the destination
+without whole intermediate value strings. Checkpoint metadata value vectors
+use this same owning tagged encoder rather than a duplicate recursive codec.
+Growth admits simultaneous old/new capacities before copying, and wide encoding
+checks cancellation in bounded
+units. Denial and cancellation destroy the text before refunding its lease.
+Summary/dictionary, descriptor, compressed output and native compression
+workspace accounting remain separate coverage gaps; this does not qualify the
+small automatic owner by itself.
+
+The ordinary property decoder preserves the existing text wire grammar while
+distinguishing hex-escaped map leaves from outer tagged property values. Internal
+map semicolons no longer split one property into several. Encoded bytes remain
+unchanged, including nested maps/lists and following scalar/container fields.
+
+Unfinished artifact builders still restart their private generation. The owner
+retains the existing whole-candidate reservation; fully resumable bounded
+preparation, complete allocation accounting, small fixed admission and the
+default sustained-load envelope remain completion gates.
 
 Shutdown stops admission of new work, cancels or completes the owned candidate,
 joins its worker, and releases worker-owned sources, artifacts and execution
@@ -2378,7 +2409,7 @@ Directory pointers copy in 64 KiB groups and record copies use separate units.
 Insertion preflight covers the target page even when the new key is absent;
 missing-key updates/deletes keep their shared page without copying it. Target
 page-copy denial precedes transaction mutation and preserves old snapshots.
-Wide-record traversal/copy time, growth/split admission, indirect relationship
+Wide-record traversal/copy time, property-update rebalancing, indirect relationship
 deletion, other index/schema and relational structures, decoded-record
 lifetime and complete serving-reader
 ownership remain open; this does not qualify the automatic fixed-owner switch.
@@ -2392,7 +2423,49 @@ observes no large allocation across five index scenarios, verifies the changed
 composite key and retains unaffected composite/full-text entries. Removing the
 property filter fails the same test for an unrelated wide composite key;
 restoring it passes. This removes unnecessary payload copies, not the remaining
-capacity-growth, affected-index allocation or complete fixed-owner gates.
+affected-index allocation or complete fixed-owner gates.
+
+Primary record insertion now reserves capacity before creating an empty page,
+growing a unique B-tree or splitting it. Preflight counts node and relationship
+creates across the complete nested WAL transaction, then admits an exact
+pointer-directory capacity that covers every possible primary split. One shared
+allowance admits the batch's steady B-tree capacity, possible split borders and
+one transient insertion/split pillar; small batches use the tighter independent
+per-insertion bound. Every insertion consumes a credit, including existing-key replacements that
+can split a page under its byte limit. Split descendants share the remaining
+allowance. Repeated preflight does not reserve the same
+batch again. Copying a pinned page admits an independent allowance; a lower
+resumed memory ceiling cannot reuse a higher-ceiling allowance. Directory
+replacement admits peak old/new capacity; page growth extends the existing
+allocation inventory. Split right pages retain that inventory, including when
+all other pages and the task are closed. These bounds assume pinned layouts,
+allocator rounding and platform behavior; they do not bound allocator or
+destruction latency.
+
+Four real runtime baseline failures cover first-page denial/lifetime, snapshot
+copying of a logically empty page and previously uncharged unique-page growth.
+Removing page admission, insertion growth admission or right-page ownership
+fails its runtime regression, and restoration passes. Cancellation at every
+observed initial/growth unit preserves the original physical root and refunds
+failed-build buffers. A 1025-entry map preflights every insert, splits without
+directory reallocation, preserves all data and retains charges through its last
+right-page pin. Actual nested 1025-node and 1025-relationship WAL transactions
+verify every row, one complete epoch, old snapshots and final charge refund.
+
+The first full storage regression exposed overreservation in the unchanged
+1057-operation, 4 MiB decode/replay fixture. Batch sharing preserves that budget
+and operation count. Four mixed-replay tests now verify that successful primary
+allocations remain charged through data/snapshot lifetime and refund after the
+last pin, rather than expecting live data's capacity to be refunded immediately.
+Cancellation still preserves the original source and refunds tentative buffers
+when their actual owner is destroyed.
+
+This addresses primary Create replay capacity. Property-update rebalance,
+auxiliary indexes/adjacency/tombstones, decoded-payload lifetime, indirect
+deletions and schema/relational/serving-reader preparation remain separate
+allocation and resumption gaps. The automatic owner still holds its existing
+whole-candidate reservation; no default-load, complete-resource, power-loss or
+release-performance qualification follows from these insertion fixtures.
 
 ### Publication lock scope and duplicated descriptors
 

@@ -97,6 +97,8 @@ mod durable;
 mod graph_apply;
 #[path = "store/graph_checkpoint.rs"]
 mod graph_checkpoint;
+#[doc(hidden)]
+pub use graph_checkpoint::CheckpointPreparation;
 #[path = "store/graph_checkpoint_candidate.rs"]
 mod graph_checkpoint_candidate;
 #[path = "store/graph_checkpoint_projection.rs"]

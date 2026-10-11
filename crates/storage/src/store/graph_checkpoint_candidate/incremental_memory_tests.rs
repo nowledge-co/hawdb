@@ -19,6 +19,117 @@ use hawdb_qos::{
 };
 
 #[test]
+fn controlled_nested_record_insertions_admit_primary_growth_and_preserve_pins() {
+    const ROWS: usize = 1025;
+    const BUDGET: u64 = 16 * 1024 * 1024;
+    for relationships in [false, true] {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::default();
+        catalog.get_or_create_label("Memory");
+        let endpoints = if relationships {
+            Some((
+                store
+                    .create_node(&mut catalog, "Memory", BTreeMap::new())
+                    .unwrap(),
+                store
+                    .create_node(&mut catalog, "Memory", BTreeMap::new())
+                    .unwrap(),
+            ))
+        } else {
+            None
+        };
+        let old = store.snapshot();
+        let epoch = store.commit_epoch();
+        let operations = (0..ROWS)
+            .map(|id| {
+                let properties = BTreeMap::from([("rank".into(), Value::Int(id as i64))]);
+                if let Some((source, target)) = endpoints {
+                    WalOp::CreateRelationship {
+                        id: RelId(id as u64),
+                        source,
+                        target,
+                        rel_type: "Growth".into(),
+                        properties,
+                    }
+                } else {
+                    WalOp::CreateNode {
+                        id: NodeId(id as u64),
+                        label: "Memory".into(),
+                        properties,
+                    }
+                }
+            })
+            .collect();
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig {
+                memory_budget_bytes: Some(BUDGET),
+                background_task_limit: Some(NonZeroUsize::MIN),
+                ..RuntimeGovernorConfig::shared_host()
+            },
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::MIN, None, None),
+                RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+            ),
+            IoConcurrencyBudget::new(2, 1),
+        );
+        let admission = governor
+            .try_admit_incremental_maintenance(4096, BUDGET, 1, RuntimeTaskContext::default())
+            .unwrap();
+        let work = crate::background::CheckpointWorkContext::new(
+            admission.task_context().unwrap().clone(),
+        );
+        let mut mutation_started = false;
+        work.classify(|work| {
+            store.apply_replayed_checkpoint_wal_transaction_with_boundary(
+                &mut catalog,
+                WalOp::Batch(vec![WalOp::Batch(operations)]),
+                work,
+                &mut mutation_started,
+                None,
+            )
+        })
+        .unwrap();
+        assert!(mutation_started);
+        assert_eq!(store.commit_epoch(), epoch + 1);
+        if relationships {
+            assert_eq!(store.relationships.len(), ROWS);
+            assert!(store.relationships.segment_count() >= 3);
+            assert!(old.relationships.is_empty());
+            for id in 0..ROWS {
+                assert_eq!(
+                    store
+                        .relationships
+                        .get(&RelId(id as u64))
+                        .unwrap()
+                        .properties["rank"],
+                    Value::Int(id as i64)
+                );
+            }
+        } else {
+            assert_eq!(store.nodes.len(), ROWS);
+            assert!(store.nodes.segment_count() >= 3);
+            assert!(old.nodes.is_empty());
+            for id in 0..ROWS {
+                assert_eq!(
+                    store.nodes.get(&NodeId(id as u64)).unwrap().properties["rank"],
+                    Value::Int(id as i64)
+                );
+            }
+        }
+        let charge = admission.memory_report().live_accounted_bytes;
+        assert!(charge > 1024 * 1024);
+        let pin = store.snapshot();
+        drop(work);
+        drop(admission);
+        drop(store);
+        assert!(governor.snapshot().admitted_memory_bytes >= charge);
+        drop(pin);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+        drop(old);
+    }
+}
+
+#[test]
 fn allocation_admitted_candidate_finishes_beyond_whole_estimate_with_a_fixed_small_owner() {
     const ROWS: i64 = 1025;
     const BUDGET: u64 = 16 * 1024 * 1024;
@@ -658,4 +769,63 @@ fn controlled_unshared_node_update_borrows_index_inputs_without_copying_wide_pay
         drop(admission);
         assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
     }
+}
+
+#[test]
+fn controlled_empty_graph_create_denies_initial_page_before_transaction_mutation() {
+    let mut catalog = Catalog::default();
+    catalog.get_or_create_label("Memory");
+    let mut store = GraphStore::default();
+    let pin = store.snapshot();
+    let epoch = store.commit_epoch();
+    let governor = RuntimeGovernor::new(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(4 * 1024 * 1024),
+            background_task_limit: Some(NonZeroUsize::MIN),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::MIN, None, None),
+            RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+        ),
+        IoConcurrencyBudget::new(2, 1),
+    );
+    let admission = governor
+        .try_admit_incremental_maintenance(4096, 64, 1, RuntimeTaskContext::default())
+        .unwrap();
+    let work =
+        crate::background::CheckpointWorkContext::new(admission.task_context().unwrap().clone());
+    let operation = WalOp::Batch(vec![WalOp::CreateNode {
+        id: NodeId(0),
+        label: "Memory".into(),
+        properties: BTreeMap::new(),
+    }]);
+    let mut mutation_started = false;
+    let result = work.classify(|work| {
+        store.apply_replayed_checkpoint_wal_transaction_with_boundary(
+            &mut catalog,
+            operation,
+            work,
+            &mut mutation_started,
+            None,
+        )
+    });
+    assert!(matches!(
+        result,
+        Err(crate::background::CheckpointOperationError::Work(
+            crate::background::CheckpointWorkError::Memory(_)
+        ))
+    ));
+    assert!(
+        !mutation_started,
+        "initial-capacity denial must precede transaction mutation"
+    );
+    assert_eq!(store.commit_epoch(), epoch);
+    assert!(store.nodes.shares_storage_with(&pin.nodes));
+    assert_eq!(store.node_count_for_label(None), 0);
+    assert!(store.node_owned(NodeId(0)).unwrap().is_none());
+    assert_eq!(admission.memory_report().live_accounted_bytes, 0);
+    drop(work);
+    drop(admission);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
 }

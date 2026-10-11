@@ -24,6 +24,27 @@ use std::sync::atomic::Ordering;
 
 const CEILING: u64 = 4 * 1024 * 1024;
 
+fn assert_retained_then_refunded(store: GraphStore, task: &RuntimeTaskContext, idle: u64) {
+    let retained = available(task);
+    assert!(
+        retained < idle,
+        "successful replay retains primary allocation charges"
+    );
+    let pin = store.snapshot();
+    drop(store);
+    assert_eq!(
+        available(task),
+        retained,
+        "the snapshot keeps the actual allocations alive"
+    );
+    drop(pin);
+    assert_eq!(
+        available(task),
+        idle,
+        "the last data pin releases all replay allocations"
+    );
+}
+
 fn source() -> (PathBuf, GraphStore, Catalog) {
     let directory = std::env::temp_dir().join(format!(
         "hawdb-checkpoint-delta-related-{}",
@@ -224,8 +245,7 @@ fn checkpoint_units_wal_replay_delta_estimation_cancels_every_unit_and_retries_c
     assert!(units > 50);
     assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
     probe.assert_released(&scheduler);
-    assert_eq!(available(&task), idle);
-    drop(actual);
+    assert_retained_then_refunded(actual, &task, idle);
     drop(work);
     for stop in 1..=units {
         let probe = Arc::new(CheckpointWorkProbe::default());
@@ -261,8 +281,8 @@ fn checkpoint_units_wal_replay_delta_estimation_cancels_every_unit_and_retries_c
             .is_empty());
         assert_eq!(catalog.label_id("Additional"), None);
         probe.assert_released(&scheduler);
-        assert_eq!(available(&task), idle);
         drop(actual);
+        assert_eq!(available(&task), idle);
         drop(work);
         scheduler.set_telemetry_sink(None);
         let work = CheckpointWorkContext::new(task.clone()).with_scheduler(scheduler.clone());
@@ -272,7 +292,7 @@ fn checkpoint_units_wal_replay_delta_estimation_cancels_every_unit_and_retries_c
             .apply_replayed_checkpoint_wal_transaction(&mut current, operation(), &work)
             .unwrap();
         assert_complete(&retry, &current, &expected, &other);
-        assert_eq!(available(&task), idle);
+        assert_retained_then_refunded(retry, &task, idle);
         assert_eq!(governor.snapshot().admissions, 1);
     }
     drop(task);
@@ -316,9 +336,8 @@ fn checkpoint_units_wal_replay_delta_estimation_denies_tree_memory_before_mutati
         .apply_replayed_checkpoint_wal_transaction(&mut current, operation(), &work)
         .unwrap();
     assert_complete(&actual, &current, &expected, &other);
-    assert_eq!(available(&task), idle);
+    assert_retained_then_refunded(actual, &task, idle);
     assert_eq!(governor.snapshot().admissions, 1);
-    drop(actual);
     drop(work);
     drop(task);
     drop(permit);
@@ -359,9 +378,8 @@ fn checkpoint_units_wal_replay_delta_estimation_denies_local_work_before_mutatio
         .apply_replayed_checkpoint_wal_transaction(&mut current, operation(), &work)
         .unwrap();
     assert_complete(&actual, &current, &expected, &other);
-    assert_eq!(available(&task), idle);
+    assert_retained_then_refunded(actual, &task, idle);
     assert_eq!(governor.snapshot().admissions, 1);
-    drop(actual);
     drop(work);
     drop(task);
     drop(permit);
@@ -391,12 +409,18 @@ fn checkpoint_units_wal_replay_delta_estimation_preserves_exact_ordinary_limit_d
         let mut current = catalog.clone();
         let result =
             actual.apply_replayed_checkpoint_wal_transaction(&mut current, operation(), &work);
+        let succeeded = result.is_ok();
         assert_eq!(
             result.map_err(|e| e.to_string()),
             expected.map_err(|e| e.to_string())
         );
         assert_complete(&actual, &current, &ordinary, &other);
-        assert_eq!(available(&task), idle);
+        if succeeded {
+            assert_retained_then_refunded(actual, &task, idle);
+        } else {
+            assert_eq!(available(&task), idle);
+            drop(actual);
+        }
     }
     drop(work);
     drop(task);

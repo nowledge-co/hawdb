@@ -983,20 +983,68 @@ impl GraphStore {
         operations: &[WalOp],
         work: &crate::background::CheckpointWorkContext,
     ) -> Result<()> {
+        fn count_insertions(
+            operations: &[WalOp],
+            work: &crate::background::CheckpointWorkContext,
+            count: &mut (usize, usize),
+        ) -> Result<()> {
+            for operation in operations {
+                let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+                match operation {
+                    WalOp::Batch(operations) => {
+                        unit.finish();
+                        count_insertions(operations, work, count)?;
+                        continue;
+                    }
+                    WalOp::CreateNode { .. } => count.0 += 1,
+                    WalOp::CreateRelationship { .. } => count.1 += 1,
+                    _ => {}
+                }
+                unit.finish();
+            }
+            Ok(())
+        }
+        let mut insertions = (0, 0);
+        count_insertions(operations, work, &mut insertions)?;
+        self.prepare_replayed_checkpoint_record_copies_inner(operations, insertions, work)
+    }
+
+    fn prepare_replayed_checkpoint_record_copies_inner(
+        &mut self,
+        operations: &[WalOp],
+        insertions: (usize, usize),
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
         for operation in operations {
             work.checkpoint().map_err(HawDBError::from_storage_error)?;
             match operation {
                 WalOp::Batch(operations) => {
-                    self.prepare_replayed_checkpoint_record_copies(operations, work)?;
+                    self.prepare_replayed_checkpoint_record_copies_inner(
+                        operations, insertions, work,
+                    )?;
                 }
-                WalOp::CreateNode { id, .. } => self
-                    .nodes
-                    .prepare_checkpoint_insert_copy_for_key(id, work)
-                    .map_err(HawDBError::from_storage_error)?,
-                WalOp::CreateRelationship { id, .. } => self
-                    .relationships
-                    .prepare_checkpoint_insert_copy_for_key(id, work)
-                    .map_err(HawDBError::from_storage_error)?,
+                WalOp::CreateNode { id, .. } => {
+                    let result = if insertions.0 > 1 {
+                        self.nodes
+                            .prepare_checkpoint_insertions_for_key(id, insertions.0, work)
+                    } else {
+                        self.nodes.prepare_checkpoint_insert_copy_for_key(id, work)
+                    };
+                    result.map_err(HawDBError::from_storage_error)?;
+                }
+                WalOp::CreateRelationship { id, .. } => {
+                    let result = if insertions.1 > 1 {
+                        self.relationships.prepare_checkpoint_insertions_for_key(
+                            id,
+                            insertions.1,
+                            work,
+                        )
+                    } else {
+                        self.relationships
+                            .prepare_checkpoint_insert_copy_for_key(id, work)
+                    };
+                    result.map_err(HawDBError::from_storage_error)?;
+                }
                 WalOp::SetNodeProperty { id, .. } | WalOp::DeleteNode { id } => self
                     .nodes
                     .prepare_checkpoint_copy_for_key(id, work)

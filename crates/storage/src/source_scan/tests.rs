@@ -12,13 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "pinned_rows_tests.rs"]
+mod pinned_rows_tests;
+
 use super::*;
 use crate::NodeId;
 
 fn checkpoint_unit_scheduler() -> hawdb_qos::LocalQosScheduler {
     hawdb_qos::LocalQosScheduler::new(hawdb_qos::LocalQosPolicy {
         max_background_operations: Some(1),
-        max_total_background_operations: Some(4),
+        max_total_background_operations: Some(1),
         ..hawdb_qos::LocalQosPolicy::default()
     })
 }
@@ -134,7 +138,7 @@ fn checkpoint_units_source_scan_reopens_complete_segments_and_exact_candidates()
     .unwrap();
     assert!(empty.segments.is_empty());
     assert!(probe.completed.load(Ordering::SeqCst) > 2000);
-    assert!(probe.peak_units.load(Ordering::SeqCst) <= 4);
+    assert!(probe.peak_units.load(Ordering::SeqCst) <= 1);
     probe.assert_released(&scheduler);
 }
 

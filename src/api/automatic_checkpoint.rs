@@ -120,6 +120,7 @@ pub(super) struct Source {
     store: GraphStore,
     catalog: Catalog,
     planned_memory: Option<(CheckpointSourceIdentity, u64)>,
+    preparing: Option<Preparing>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     retirement_probe: Option<SourceRetirementProbe>,
 }
@@ -141,6 +142,7 @@ impl Source {
             store: store.checkpoint_source(),
             catalog: catalog.clone(),
             planned_memory: None,
+            preparing: None,
             #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
             retirement_probe: None,
         }
@@ -165,6 +167,13 @@ enum Phase {
 #[derive(Debug)]
 struct Admission {
     runtime: RuntimeMaintenanceWork,
+}
+
+#[derive(Debug)]
+struct Preparing {
+    // Captured plans and private bootstrap state die before their admission.
+    frame: Box<hawdb_storage::store::CheckpointPreparation>,
+    admission: Admission,
 }
 
 #[derive(Debug)]
@@ -357,7 +366,17 @@ impl Control {
         }
         let identity = store.checkpoint_source_identity();
         let retired = if identity != state.last_identity || finished_group {
-            let retired = state.latest.replace(Source::capture(store, catalog));
+            let mut next = Source::capture(store, catalog);
+            let mut retired = state.latest.take();
+            if let Some(previous) = &mut retired
+                && previous
+                    .preparing
+                    .as_ref()
+                    .is_some_and(|preparing| preparing.frame.can_continue_from(store))
+            {
+                next.preparing = previous.preparing.take();
+            }
+            state.latest = Some(next);
             state.last_identity = identity;
             retired
         } else {
@@ -430,9 +449,24 @@ impl Control {
         // namespace. Finish abandoning private work before the caller proceeds.
         // Destruction can include COW maps and staging cleanup, so do it off-gate.
         let pending = state.pending.take();
+        let preparation = state
+            .latest
+            .as_mut()
+            .and_then(|source| source.preparing.take());
+        let owns_cleanup =
+            state.phase == Phase::Idle && (pending.is_some() || preparation.is_some());
+        if owns_cleanup {
+            state.phase = Phase::Discarding;
+        }
         self.changed.notify_all();
         drop(state);
         drop(pending);
+        drop(preparation);
+        if owns_cleanup {
+            let mut state = self.lock()?;
+            state.phase = Phase::Idle;
+            self.changed.notify_all();
+        }
         Ok(Suspension {
             control: Arc::clone(self),
         })
@@ -624,7 +658,7 @@ impl Owner {
                 state.retired.take(),
                 state.task.take(),
             );
-            state.phase = Phase::Idle;
+            state.phase = Phase::Discarding;
             state.report.preparing = false;
             state.report.waiting_for_handoff = false;
             self.control.changed.notify_all();
@@ -634,6 +668,13 @@ impl Owner {
         // Release COW snapshots, open locks and builders outside the gate;
         // Selected/Retired retain admission until their storage is destroyed.
         drop(owned);
+        let mut state = self
+            .control
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.phase = Phase::Idle;
+        self.control.changed.notify_all();
     }
 }
 
@@ -888,8 +929,36 @@ fn run(
                         let _ = probe.send(error.to_string());
                     }
                 }
-                if state.latest.is_none() {
+                let keep_preparation = state.suspensions == 0
+                    && !state.stopping
+                    && !preparation_report.operation_failed;
+                let mut discarded = None;
+                if let Some(latest) = &mut state.latest {
+                    if keep_preparation
+                        && source.preparing.as_ref().is_some_and(|preparing| {
+                            preparing.frame.can_continue_from(&latest.store)
+                        })
+                    {
+                        discarded = latest.preparing.take();
+                        latest.preparing = source.preparing.take();
+                    } else {
+                        discarded = source.preparing.take();
+                    }
+                } else {
+                    if !keep_preparation {
+                        discarded = source.preparing.take();
+                    }
                     state.latest = Some(source);
+                }
+                if discarded.is_some() {
+                    state.phase = Phase::Discarding;
+                    control.changed.notify_all();
+                    drop(state);
+                    drop(discarded);
+                    state = control
+                        .state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
                 }
                 state.phase = Phase::Idle;
                 state.task = None;
@@ -1291,6 +1360,10 @@ fn prepare(
             "automatic checkpoint QoS deferred: background disabled".into(),
         ));
     }
+    if source.preparing.is_some() {
+        report.planning_cache_hits += 1;
+        return continue_preparation(source, scheduler, task, report);
+    }
     let identity = source.store.checkpoint_source_identity();
     let cached = source
         .planned_memory
@@ -1334,27 +1407,57 @@ fn prepare(
             report.admission_denial = Some(reason);
             HawDBError::Storage(format!("automatic checkpoint admission deferred: {reason}"))
         })?;
-    // Actual builder units consume LocalQoS, rather than reserving one
-    // operation for every record until handoff. Keep the existing conservative
-    // memory reservation across retries; parked execution yields its CPU and task slot.
-    let work = hawdb_storage::background::CheckpointWorkContext::new(
-        runtime
+    let Some(frame) = source.store.begin_checkpoint_preparation(&source.catalog)? else {
+        return Ok(None);
+    };
+    source.preparing = Some(Preparing {
+        frame: Box::new(frame),
+        admission: Admission { runtime },
+    });
+    continue_preparation(source, scheduler, task, report)
+}
+
+fn continue_preparation(
+    source: &mut Source,
+    scheduler: &LocalQosScheduler,
+    task: &RuntimeTaskContext,
+    report: &mut PreparationReport,
+) -> Result<Option<(CheckpointCandidate, Admission)>> {
+    let preparing = source
+        .preparing
+        .as_mut()
+        .expect("source owns its preparation");
+    preparing
+        .admission
+        .runtime
+        .try_resume(task.clone())
+        .map_err(|reason| {
+            report.admission_denial = Some(reason);
+            HawDBError::Storage(format!("automatic checkpoint resume deferred: {reason}"))
+        })?;
+    let work = CheckpointWorkContext::new(
+        preparing
+            .admission
+            .runtime
             .task_context()
-            .expect("checkpoint execution is admitted")
+            .expect("preparation execution is admitted")
             .clone(),
     )
     .with_scheduler(scheduler.clone());
-    let candidate = preparation_result(
-        work.classify(|work| {
-            source
-                .store
-                .prepare_checkpoint_candidate_with_work_context(&source.catalog, work)
-        }),
+    let result = preparation_result(
+        work.classify(|work| preparing.frame.prepare_candidate_with_work_context(work)),
         report,
-    )?;
-    task.checkpoint()
-        .map_err(|reason| HawDBError::Storage(reason.to_string()))?;
-    Ok(candidate.map(|candidate| (candidate, Admission { runtime })))
+    );
+    match result {
+        Ok(Some(candidate)) => {
+            let preparing = source.preparing.take().expect("completed preparation");
+            Ok(Some((candidate, preparing.admission)))
+        }
+        other => {
+            preparing.admission.runtime.pause();
+            other.map(|_| None)
+        }
+    }
 }
 
 fn preparation_result<T>(
@@ -1450,6 +1553,7 @@ mod tests {
     mod operation_retry;
     mod planning_recovery;
     mod planning_retry;
+    mod preparation_resume;
     mod progress;
     mod publication_io;
     mod qos_units;

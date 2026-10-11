@@ -20,6 +20,8 @@ use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 use hawdb_core::{HawDBError, Result, RuntimeMemoryPermit};
 use std::fmt::{self, Write};
 
+mod properties;
+
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct CheckpointText {
@@ -41,6 +43,12 @@ impl std::ops::Deref for CheckpointText {
 impl PartialEq<String> for CheckpointText {
     fn eq(&self, other: &String) -> bool {
         self.text == *other
+    }
+}
+
+impl fmt::Display for CheckpointText {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.text.fmt(formatter)
     }
 }
 

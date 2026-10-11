@@ -127,13 +127,28 @@ fn retiring_owner_blocks_pressure_growth_until_cleanup_finishes() {
     paused.recv_timeout(Duration::from_secs(15)).unwrap();
     let (waiting, waited) = mpsc::channel();
     control.lock().unwrap().frontend_wait_probe = Some(waiting);
+    let (at_pressure, pressure_reached) = mpsc::channel();
     let producer = std::thread::spawn(move || -> Result<Database> {
+        let mut at_pressure = Some(at_pressure);
         for id in next..320 {
+            let state = control.lock()?;
+            if state.phase == Phase::Retiring
+                && pressure_pending(&state)
+                && needs_headroom(&state)
+                && let Some(at_pressure) = at_pressure.take()
+            {
+                at_pressure.send(()).unwrap();
+            }
+            drop(state);
             create(&mut db, id)?;
         }
         Ok(db)
     });
-    let observed = waited.recv_timeout(Duration::from_secs(1));
+    // Time the blocked call after preceding acknowledged writes have reached
+    // the pressure boundary. Filesystem contention during fixture preparation
+    // must not consume the separate one-second blocking observation window.
+    let reached = pressure_reached.recv_timeout(Duration::from_secs(15));
+    let observed = reached.and_then(|()| waited.recv_timeout(Duration::from_secs(1)));
     resume.send(()).unwrap();
     let produced = producer.join().unwrap();
     assert_eq!(observed.unwrap(), Phase::Retiring);

@@ -35,6 +35,7 @@ pub struct CowSegment<T>(Arc<CowData<T>>);
 struct CowData<T> {
     // Destroy the actual data before refunding its allocation ownership.
     value: T,
+    growth: Option<Arc<checkpoint::CheckpointGrowthBudget>>,
     _memory: crate::background::CheckpointAllocationOwner,
 }
 
@@ -42,6 +43,7 @@ impl<T: Clone> Clone for CowData<T> {
     fn clone(&self) -> Self {
         Self {
             value: self.value.clone(),
+            growth: None,
             // Ordinary frontend copying does not manufacture a second lease
             // for the old allocation. Its original snapshots keep that owner.
             _memory: Default::default(),
@@ -73,6 +75,7 @@ impl<T> From<T> for CowSegment<T> {
     fn from(value: T) -> Self {
         Self(Arc::new(CowData {
             value,
+            growth: None,
             _memory: Default::default(),
         }))
     }
@@ -458,12 +461,18 @@ impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K
         if previous.is_none() {
             self.len = self.len.saturating_add(1);
         }
+        // Replacement records can also exceed the byte limit and split a
+        // page. Every insertion consumes its preflight allowance.
+        if let Some(growth) = &segments[index].0.growth {
+            growth.consume_insertion();
+        }
         Self::split_oversized_segment(segments, index);
         previous
     }
 
     fn split_oversized_segment(segments: &mut Vec<CowSegment<BTreeMap<K, V>>>, index: usize) {
         let memory = segments[index].0._memory.clone();
+        let growth = segments[index].0.growth.clone();
         let segment = &mut *segments[index];
         let segment_bytes = cow_map_segment_bytes(segment);
         if segment.len() <= 1
@@ -499,6 +508,7 @@ impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K
             index + 1,
             CowSegment(Arc::new(CowData {
                 value: right,
+                growth,
                 _memory: memory,
             })),
         );

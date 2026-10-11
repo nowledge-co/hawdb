@@ -15,11 +15,131 @@
 //! Checkpoint preparation and publication, backup, residency and pressure reporting, and published-manifest accessors for [`GraphStore`].
 
 use super::*;
+
+/// An owned, immutable source and its completed preparation plans.
+///
+/// A fresh execution context may continue planning after a work denial. The
+/// caller must retain the original maintenance admission until this state is
+/// destroyed. Artifact builders still restart their unfinished stage; this
+/// state does not yet provide resumable segment/file publication.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct CheckpointPreparation {
+    source: GraphStore,
+    catalog: Catalog,
+    plan: PreparationPlan,
+    finished: bool,
+    bootstrap: Option<CheckpointCandidate>,
+}
+
+#[derive(Debug, Default)]
+struct PreparationPlan {
+    projected: Option<(
+        Option<crate::projection::artifact::CheckpointProjectedGraphText>,
+        crate::projection::artifact::CheckpointProjectedGraphRoot,
+    )>,
+    source_scan: Option<Option<crate::source_scan::SourceScanProjection>>,
+    // Completed plan buffers can outlive the execution attempt. Keep its
+    // memory controller alive; this context is never executed after pause.
+    memory_owner: Option<crate::background::CheckpointWorkContext>,
+}
+
+impl CheckpointPreparation {
+    /// Identity of the immutable source captured before any preparation work.
+    pub fn source_identity(&self) -> CheckpointSourceIdentity {
+        self.source
+            .checkpoint_source_identity()
+            .expect("preparation owns a durable source")
+    }
+
+    pub fn can_continue_from(&self, source: &GraphStore) -> bool {
+        self.source.ensure_usable().is_ok()
+            && source.ensure_usable().is_ok()
+            && source
+                .durable
+                .as_ref()
+                .is_some_and(|durable| !durable.read_only)
+            && self
+                .source
+                .checkpoint_source_identity()
+                .zip(source.checkpoint_source_identity())
+                .is_some_and(|(original, latest)| original.can_advance_to(latest))
+            && self
+                .source
+                .durable
+                .as_ref()
+                .zip(source.durable.as_ref())
+                .is_some_and(|(original, latest)| original.wal_path == latest.wal_path)
+    }
+
+    pub fn prepare_candidate_with_work_context(
+        &mut self,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<CheckpointCandidate>> {
+        if self.bootstrap.is_none() {
+            let Some(prepared) = self.prepare_with_work_context(work)? else {
+                return Ok(None);
+            };
+            self.bootstrap = Some(self.source.checkpoint_candidate_from_prepared(
+                &self.catalog,
+                prepared,
+                work,
+            ));
+        }
+        let result = work.classify(|work| {
+            self.bootstrap
+                .as_mut()
+                .expect("preparation owns bootstrap")
+                .bootstrap_with_work_context(work)
+        });
+        match result {
+            Ok(()) => Ok(self.bootstrap.take()),
+            Err(crate::background::CheckpointOperationError::Work(error)) => {
+                Err(HawDBError::from_storage_error(error))
+            }
+            Err(crate::background::CheckpointOperationError::Operation(error)) => {
+                // A partial mount or physical error cannot reuse mutated roots.
+                // Discard private artifacts, then rebuild from the same source.
+                self.bootstrap = None;
+                self.finished = false;
+                Err(error)
+            }
+        }
+    }
+
+    pub fn prepare_with_work_context(
+        &mut self,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<PreparedCheckpoint>> {
+        if self.finished {
+            return Err(HawDBError::StorageIntegrity(
+                "checkpoint preparation was already consumed".into(),
+            ));
+        }
+        let result = self.source.prepare_checkpoint_with_maintenance_inner(
+            &self.catalog,
+            DerivedArtifactBuildConfig::default(),
+            None,
+            None,
+            work,
+            &mut self.plan,
+        );
+        self.source.poison_on_storage_error(&result);
+        if matches!(result, Ok(Some(_))) {
+            self.finished = true;
+        }
+        result
+    }
+}
 use crate::relational::decode_relational_checkpoint_file_with_work_context;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "graph_checkpoint/definition_memory_tests.rs"]
 mod definition_memory_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "graph_checkpoint/preparation_state_tests.rs"]
+mod preparation_state_tests;
 
 struct ExactRelationalOverflowCheckpoint<'a> {
     references: &'a hawdb_storage::relational::RelationalOverflowReferenceSet,
@@ -114,6 +234,28 @@ fn push_relationship_property_projection_definitions(
 }
 
 impl GraphStore {
+    #[doc(hidden)]
+    pub fn begin_checkpoint_preparation(
+        &self,
+        catalog: &Catalog,
+    ) -> Result<Option<CheckpointPreparation>> {
+        self.ensure_usable()?;
+        if self.durable.is_none() {
+            return Ok(None);
+        }
+        let mut source = self.checkpoint_source();
+        if let Some(captured) = self.checkpoint_capture_started {
+            source.checkpoint_capture_started = Some(captured);
+        }
+        Ok(Some(CheckpointPreparation {
+            source,
+            catalog: catalog.clone(),
+            plan: PreparationPlan::default(),
+            finished: false,
+            bootstrap: None,
+        }))
+    }
+
     pub(super) fn mount_append_generation_for_recovery(&mut self) -> Result<()> {
         let Some(durable) = self.durable.as_ref() else {
             self.append_generation_reader = None;
@@ -532,6 +674,7 @@ impl GraphStore {
             exact_overflow,
             row_compaction,
             work,
+            &mut PreparationPlan::default(),
         );
         self.poison_on_storage_error(&result);
         result
@@ -544,6 +687,7 @@ impl GraphStore {
         exact_overflow: Option<ExactRelationalOverflowCheckpoint<'_>>,
         row_compaction: Option<RelationalRowCompactionCheckpoint<'_>>,
         work: &crate::background::CheckpointWorkContext,
+        plan: &mut PreparationPlan,
     ) -> Result<Option<PreparedCheckpoint>> {
         let Some(durable) = self.durable.as_ref() else {
             return Ok(None);
@@ -558,33 +702,46 @@ impl GraphStore {
                     || estimated_record_bytes > self.auto_materialize_checkpoint_bytes
             }
         };
-        let (projected_graph_artifacts, artifacts) = if checkpoint_out_of_core {
-            (
-                None,
-                crate::projection::artifact::CheckpointProjectedGraphRoot::empty(work)?,
-            )
-        } else {
-            let encoded = encode_projected_graph_artifacts_with_work_context(
-                catalog,
-                self,
-                self.next_projection_epoch(),
-                work,
-            )?;
-            let (_, artifacts) = hawdb_storage::projection::artifact::decode_projected_graph_artifacts_with_work_context(
+        if plan.projected.is_none() {
+            let projected = if checkpoint_out_of_core {
+                (
+                    None,
+                    crate::projection::artifact::CheckpointProjectedGraphRoot::empty(work)?,
+                )
+            } else {
+                let encoded = encode_projected_graph_artifacts_with_work_context(
+                    catalog,
+                    self,
+                    self.next_projection_epoch(),
+                    work,
+                )?;
+                let (_, artifacts) = hawdb_storage::projection::artifact::decode_projected_graph_artifacts_with_work_context(
                 &encoded, work,
             )?;
-            (Some(encoded), artifacts.into_root(work)?)
-        };
-        let source_scan_projection = (!checkpoint_out_of_core)
-            .then(|| {
-                source_scan::build_with_work_context(
-                    self.commit_epoch,
-                    catalog.label_id("Source"),
-                    self.nodes.values(),
-                    work,
-                )
-            })
-            .transpose()?;
+                (Some(encoded), artifacts.into_root(work)?)
+            };
+            plan.memory_owner = Some(work.clone());
+            plan.projected = Some(projected);
+        }
+        if plan.source_scan.is_none() {
+            let source_scan_projection = (!checkpoint_out_of_core)
+                .then(|| {
+                    source_scan::build_with_pinned_nodes(
+                        self.commit_epoch,
+                        catalog.label_id("Source"),
+                        &self.nodes,
+                        work,
+                    )
+                })
+                .transpose()?;
+            plan.source_scan = Some(source_scan_projection);
+        }
+        let publish_projected_graph_artifacts = plan
+            .projected
+            .as_ref()
+            .expect("completed projection plan")
+            .0
+            .is_some();
         let merged_nodes = self
             .canonical_base
             .as_ref()
@@ -814,16 +971,26 @@ impl GraphStore {
                 work,
             )
             .map_err(HawDBError::from_storage_error)?;
-            if let Some(encoded) = projected_graph_artifacts.as_deref() {
+            if let Some(encoded) = plan
+                .projected
+                .as_ref()
+                .expect("completed projection plan")
+                .0
+                .as_deref()
+            {
                 durable.write_projected_graph_artifacts_to_with_work_context(
                     &staging_path.join(PROJECTED_GRAPHS_FILE),
                     encoded,
                     work,
                 )?;
             }
-            let source_scan_publication = source_scan_projection
-                .map(|mut projection| {
-                    source_scan::write_with_work_context(&staging_path, &mut projection, work)
+            let source_scan_publication = plan
+                .source_scan
+                .as_mut()
+                .expect("completed source-scan plan")
+                .as_mut()
+                .map(|projection| {
+                    source_scan::write_with_work_context(&staging_path, projection, work)
                 })
                 .transpose()?;
             let (canonical_manifest_artifact, property_spill_manifest_artifact) =
@@ -1168,6 +1335,12 @@ impl GraphStore {
             if let Some(compaction) = row_compaction.as_ref() {
                 row_compaction_checkpoint(compaction.task)?;
             }
+            let checkpoint_statistics =
+                CheckpointStatisticsState::with_work_context(checkpoint_statistics, work)
+                    .map_err(HawDBError::from_storage_error)?;
+            // Move completed roots only after the last fallible preparation
+            // step. A denied step must leave its earlier plans in this state.
+            let artifacts = plan.projected.take().expect("completed projection plan").1;
             Ok(PreparedCheckpoint {
                 source_commit_epoch: commit_epoch,
                 source_checkpoint_epoch: durable.checkpoint_epoch,
@@ -1177,13 +1350,9 @@ impl GraphStore {
                 generation,
                 checkpoint_out_of_core,
                 projected_graph_artifacts: Some(artifacts),
-                publish_projected_graph_artifacts: projected_graph_artifacts.is_some(),
+                publish_projected_graph_artifacts,
                 source_scan_publication,
-                checkpoint_statistics: CheckpointStatisticsState::with_work_context(
-                    checkpoint_statistics,
-                    work,
-                )
-                .map_err(HawDBError::from_storage_error)?,
+                checkpoint_statistics,
                 checkpoint_relational_state,
                 checkpoint_append_reader,
                 relational_index_candidate,

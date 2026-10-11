@@ -62,6 +62,22 @@ pub struct CheckpointSourceIdentity {
     branch_head: Option<crate::branch_head::BranchHead>,
 }
 
+impl CheckpointSourceIdentity {
+    pub(super) fn can_advance_to(self, next: Self) -> bool {
+        self.store_id == next.store_id
+            && self.checkpoint_generation == next.checkpoint_generation
+            && self.wal_generation == next.wal_generation
+            && self.branch_head == next.branch_head
+            && next.wal_bytes >= self.wal_bytes
+            && next
+                .next_lsn
+                .checked_sub(self.next_lsn)
+                .is_some_and(|entries| {
+                    next.commit_epoch.checked_sub(self.commit_epoch) == Some(entries)
+                })
+    }
+}
+
 /// Constant-time WAL/delta scheduling signals. Reading these does not enumerate
 /// generations, walk graph records, or probe the filesystem.
 #[doc(hidden)]
@@ -80,11 +96,21 @@ pub struct CheckpointDebtSnapshot {
     pub wal_sync_group_active: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootstrapStage {
+    Prepared,
+    Mounted,
+    BranchPrepared,
+    Ready,
+}
+
 /// One unpublished checkpoint and its complete private replay state. A caller
 /// must serialize candidates and manual checkpoint/seal work for this writer.
 /// Catch-up runs on captured sources outside the writer critical section.
 #[doc(hidden)]
 pub struct CheckpointCandidate {
+    bootstrap_stage: BootstrapStage,
+    bootstrap_manifest: Option<super::durable::DurableManifest>,
     // Keep unit admission across fresh catch-up tasks without retaining the
     // cancelled task or an execution permit for every record in the dataset.
     scheduler: Option<hawdb_qos::LocalQosScheduler>,
@@ -318,15 +344,25 @@ impl GraphStore {
         catalog: &Catalog,
         work: &crate::background::CheckpointWorkContext,
     ) -> Result<Option<CheckpointCandidate>> {
-        self.ensure_usable()?;
-        let Some(prepared) = self.prepare_checkpoint_with_work_context(catalog, work)? else {
+        let Some(mut preparation) = self.begin_checkpoint_preparation(catalog)? else {
             return Ok(None);
         };
+        preparation.prepare_candidate_with_work_context(work)
+    }
+
+    pub(super) fn checkpoint_candidate_from_prepared(
+        &self,
+        catalog: &Catalog,
+        prepared: PreparedCheckpoint,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> CheckpointCandidate {
         let durable = self
             .durable
             .as_ref()
             .expect("prepared checkpoint is durable");
-        let mut candidate = CheckpointCandidate {
+        CheckpointCandidate {
+            bootstrap_stage: BootstrapStage::Prepared,
+            bootstrap_manifest: None,
             scheduler: work.scheduler(),
             source_wal_path: durable.wal_path.clone(),
             source_head: self.admitted_branch_head().copied(),
@@ -356,71 +392,7 @@ impl GraphStore {
             retain_artifacts: false,
             retired_store: None,
             retired_recovery_builders: None,
-        };
-        let store = candidate.store.as_mut().expect("candidate owns a runtime");
-        work.checkpoint().map_err(HawDBError::from_storage_error)?;
-        // Private replay errors must not poison the still-authoritative writer.
-        // The original shared flags are restored on successful selection.
-        store.post_wal_apply_poisoned = Arc::new(AtomicBool::new(false));
-        store.integrity_poisoned = Arc::new(AtomicBool::new(false));
-        let prepared = candidate
-            .prepared
-            .as_mut()
-            .expect("candidate owns its base");
-        let durable = store.durable.as_mut().expect("candidate is durable");
-        let manifest = durable.checkpoint_manifest(
-            prepared.generation,
-            prepared.manifest_artifacts,
-            prepared.source_commit_epoch,
-            None,
-            prepared.source_scan_publication,
-            CheckpointReplayBoundary {
-                start_lsn: prepared.source_next_lsn,
-                next_lsn: prepared.source_next_lsn,
-                commit_epoch: prepared.source_commit_epoch,
-            },
-        )?;
-        durable.adopt_checkpoint_manifest(
-            manifest,
-            prepared.manifest_artifacts.relational_checkpoint,
-            prepared.source_commit_epoch,
-        )?;
-        store.source_scan_manifest = CowSegment::default();
-        store.adopt_prepared_checkpoint_state(prepared)?;
-        store.mount_relational_index_shadow_for_recovery();
-        store.validate_authoritative_relational_index_open()?;
-        work.checkpoint().map_err(HawDBError::from_storage_error)?;
-        candidate.branch_root = store.prepare_checkpoint_branch_root(manifest)?;
-        work.checkpoint().map_err(HawDBError::from_storage_error)?;
-        if let Some(head_path) = store
-            .durable
-            .as_ref()
-            .and_then(|durable| durable.branch_runtime.as_ref())
-            .map(|branch| branch.head_path().to_path_buf())
-        {
-            let directory = head_path.parent().ok_or_else(|| {
-                HawDBError::StorageIntegrity("checkpoint branch has no directory".into())
-            })?;
-            let path = directory.join(wal_generation_file(prepared.generation));
-            let header = encode_binary_wal_header(prepared.generation, prepared.source_next_lsn);
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)?;
-            // Ownership begins only after exclusive creation. Never remove an
-            // earlier interrupted candidate with the same generation spelling.
-            candidate.owns_branch_wal = true;
-            store
-                .durable
-                .as_mut()
-                .expect("candidate is durable")
-                .wal_path = path;
-            file.write_all(&header)?;
-            file.sync_all()?;
-            drop(file);
-            crate::durability::sync_directory_ancestors(directory)?;
         }
-        Ok(Some(candidate))
     }
 
     /// Selects an already caught-up candidate. The caller holds the writer
@@ -611,6 +583,89 @@ impl GraphStore {
 }
 
 impl CheckpointCandidate {
+    pub(super) fn bootstrap_with_work_context(
+        &mut self,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
+        if self.bootstrap_stage == BootstrapStage::Prepared {
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
+            let store = self.store.as_mut().expect("candidate owns a runtime");
+            // Private replay errors must not poison the still-authoritative writer.
+            // The original shared flags are restored on successful selection.
+            store.post_wal_apply_poisoned = Arc::new(AtomicBool::new(false));
+            store.integrity_poisoned = Arc::new(AtomicBool::new(false));
+            let prepared = self.prepared.as_mut().expect("candidate owns its base");
+            let durable = store.durable.as_mut().expect("candidate is durable");
+            let manifest = durable.checkpoint_manifest(
+                prepared.generation,
+                prepared.manifest_artifacts,
+                prepared.source_commit_epoch,
+                None,
+                prepared.source_scan_publication,
+                CheckpointReplayBoundary {
+                    start_lsn: prepared.source_next_lsn,
+                    next_lsn: prepared.source_next_lsn,
+                    commit_epoch: prepared.source_commit_epoch,
+                },
+            )?;
+            durable.adopt_checkpoint_manifest(
+                manifest,
+                prepared.manifest_artifacts.relational_checkpoint,
+                prepared.source_commit_epoch,
+            )?;
+            store.source_scan_manifest = CowSegment::default();
+            store.adopt_prepared_checkpoint_state(prepared)?;
+            store.mount_relational_index_shadow_for_recovery();
+            store.validate_authoritative_relational_index_open()?;
+            self.bootstrap_manifest = Some(manifest);
+            self.bootstrap_stage = BootstrapStage::Mounted;
+        }
+        if self.bootstrap_stage == BootstrapStage::Mounted {
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
+            let store = self.store.as_mut().expect("candidate owns a runtime");
+            let manifest = self.bootstrap_manifest.expect("mounted candidate manifest");
+            self.branch_root = store.prepare_checkpoint_branch_root(manifest)?;
+            self.bootstrap_stage = BootstrapStage::BranchPrepared;
+        }
+        if self.bootstrap_stage == BootstrapStage::BranchPrepared {
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
+            let store = self.store.as_mut().expect("candidate owns a runtime");
+            let prepared = self.prepared.as_ref().expect("candidate owns its base");
+            if let Some(head_path) = store
+                .durable
+                .as_ref()
+                .and_then(|durable| durable.branch_runtime.as_ref())
+                .map(|branch| branch.head_path().to_path_buf())
+            {
+                let directory = head_path.parent().ok_or_else(|| {
+                    HawDBError::StorageIntegrity("checkpoint branch has no directory".into())
+                })?;
+                let path = directory.join(wal_generation_file(prepared.generation));
+                let header =
+                    encode_binary_wal_header(prepared.generation, prepared.source_next_lsn);
+                let mut file = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)?;
+                // Ownership begins only after exclusive creation. Never remove an
+                // earlier interrupted candidate with the same generation spelling.
+                self.owns_branch_wal = true;
+                store
+                    .durable
+                    .as_mut()
+                    .expect("candidate is durable")
+                    .wal_path = path;
+                file.write_all(&header)?;
+                file.sync_all()?;
+                drop(file);
+                crate::durability::sync_directory_ancestors(directory)?;
+            }
+            self.bootstrap_manifest = None;
+            self.bootstrap_stage = BootstrapStage::Ready;
+        }
+        work.checkpoint().map_err(HawDBError::from_storage_error)
+    }
+
     /// Whether a stopped private attempt can continue against this complete
     /// source. Publication uncertainty and partial mutation never qualify.
     /// This does not admit work or modify recovery dependencies.

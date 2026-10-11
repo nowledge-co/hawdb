@@ -64,6 +64,12 @@ impl CheckpointWorkContext {
         self.scheduler.clone()
     }
 
+    pub(crate) fn memory_ceiling(&self) -> u64 {
+        self.task
+            .memory_reservation()
+            .map_or(u64::MAX, |reservation| reservation.memory_bytes())
+    }
+
     pub fn checkpoint(&self) -> Result<(), CheckpointWorkError> {
         self.task
             .checkpoint()

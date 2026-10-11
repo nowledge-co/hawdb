@@ -443,56 +443,13 @@ fn numbers(values: impl Iterator<Item = u64>, work: &CheckpointWorkContext) -> R
     Ok(body.output)
 }
 
-fn value_text(value: &Value, work: &CheckpointWorkContext) -> Result<String> {
-    let mut body = Body::new(work);
-    match value {
-        Value::Null => body.write(format_args!("n"))?,
-        Value::Bool(value) => body.write(format_args!("b{}", u8::from(*value)))?,
-        Value::Int(value) => body.write(format_args!("i{value}"))?,
-        Value::Float(value) => body.write(format_args!("f{}", value.to_bits()))?,
-        Value::String(value) => body.write(format_args!("s{}", hex(value.as_bytes(), work)?))?,
-        Value::Uuid(value) => body.write(format_args!("u{value}"))?,
-        Value::Binary(value) => body.write(format_args!("x{}", hex(value, work)?))?,
-        Value::List(values) => {
-            body.write(format_args!("l"))?;
-            for (position, value) in values.iter().enumerate() {
-                let encoded = value_text(value, work)?;
-                body.write(format_args!(
-                    "{}{}",
-                    if position == 0 { "" } else { "," },
-                    hex(encoded.as_bytes(), work)?
-                ))?;
-            }
-        }
-        Value::Map(values) => {
-            body.write(format_args!("m"))?;
-            for (position, (key, value)) in values.iter().enumerate() {
-                let encoded = value_text(value, work)?;
-                body.write(format_args!(
-                    "{}{}={}",
-                    if position == 0 { "" } else { ";" },
-                    hex(key.as_bytes(), work)?,
-                    hex(encoded.as_bytes(), work)?
-                ))?;
-            }
-        }
-    }
-    work.checkpoint().map_err(HawDBError::from_storage_error)?;
-    Ok(body.output)
-}
-
-fn values_text(values: &[Value], work: &CheckpointWorkContext) -> Result<String> {
-    let mut body = Body::new(work);
-    for (position, value) in values.iter().enumerate() {
-        let encoded = value_text(value, work)?;
-        body.write(format_args!(
-            "{}{}",
-            if position == 0 { "" } else { ":" },
-            hex(encoded.as_bytes(), work)?
-        ))?;
-    }
-    work.checkpoint().map_err(HawDBError::from_storage_error)?;
-    Ok(body.output)
+fn values_text(
+    values: &[Value],
+    work: &CheckpointWorkContext,
+) -> Result<crate::background::CheckpointText> {
+    let mut body = crate::background::CheckpointText::new();
+    body.values(values, work)?;
+    Ok(body)
 }
 
 fn capture_text(

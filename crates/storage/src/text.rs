@@ -72,13 +72,34 @@ pub fn decode_properties(input: &str) -> Result<BTreeMap<String, Value>> {
     if input.is_empty() {
         return Ok(properties);
     }
-    for pair in input.split(';') {
+    let mut pairs = input.split(';').peekable();
+    let mut offset = 0;
+    while let Some(pair) = pairs.next() {
         let Some((key, value)) = pair.split_once('=') else {
             return Err(HawDBError::Storage(format!(
                 "invalid property pair: {pair}"
             )));
         };
-        properties.insert(decode_string(key)?, decode_value(value)?);
+        let key = decode_string(key)?;
+        let value_start = offset + pair.len() - value.len();
+        let mut value_end = offset + pair.len();
+        offset += pair.len() + 1;
+        if value.starts_with('m') {
+            // Map leaves contain hex-escaped tagged values; every valid tag
+            // starts with ASCII 0x6? or 0x7?. Outer properties use the literal
+            // tag instead. Preserve this existing wire grammar without
+            // treating a map's internal semicolons as property separators.
+            while pairs.peek().is_some_and(|next| {
+                next.split_once('=').is_some_and(|(_, encoded)| {
+                    matches!(encoded.as_bytes().first(), Some(b'6' | b'7'))
+                })
+            }) {
+                let next = pairs.next().expect("peeked map continuation");
+                value_end += next.len() + 1;
+                offset += next.len() + 1;
+            }
+        }
+        properties.insert(key, decode_value(&input[value_start..value_end])?);
     }
     Ok(properties)
 }
