@@ -188,6 +188,10 @@ harness = false
 name = "host_boundary_allocations"
 harness = false
 
+[[bench]]
+name = "retained_source_capacity"
+harness = false
+
 [[example]]
 name = "wasm_playground"
 path = "examples/wasm_playground.rs"

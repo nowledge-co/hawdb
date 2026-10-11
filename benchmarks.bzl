@@ -40,6 +40,7 @@ HAWDB_MANUAL_BENCHMARKS = [
     "graph_analytics",
     "host_boundary",
     "host_boundary_allocations",
+    "retained_source_capacity",
 ]
 
 def _release_benchmark_transition_impl(_settings, _attr):

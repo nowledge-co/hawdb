@@ -96,3 +96,51 @@ cold/warm retained creation, allocation profiles, or whole-query memory bounds.
 Process peak RSS includes fixture parsing, setup, warmup and the checksum.
 It is not the memory held solely by a retained source or result. The full
 five-case cross-language performance and memory gates remain open.
+
+## Shared-directory capacity-cache control
+The subsequent control uses candidate `8513f167869013ea72e2066508e7e6662cb26bca`,
+tree `017f7ea5608d8c963bc0183b5728583db45ba68e`, against the same main
+baseline and binary described above. The candidate binary SHA-256 is
+`206f996d383829e1e084f320fd89b95793123cc86c9577ed4191fd1134ff3e6a`.
+The harness, fixture hashes, defaults, sizes, backend order, discarded pair,
+and seven alternating measured pairs are unchanged. Both producer sources and
+binaries stayed frozen throughout the experiment. Competing host compilation
+was present; this control does not establish cache-change causality.
+
+| Rows | Case | Backend | Query-boundary speedup | Write-phase speedup |
+| ---: | --- | --- | ---: | ---: |
+| 1,000 | `select` | memory | 0.951x | - |
+| 1,000 | `select` | file | 0.924x | - |
+| 1,000 | `point` | memory | 1.141x | - |
+| 1,000 | `point` | file | 1.188x | - |
+| 1,000 | `fill` | memory | 0.971x | 0.969x |
+| 1,000 | `fill` | file | 1.027x | 1.027x |
+| 1,000 | `fill_bulk` | memory | 1.013x | 1.017x |
+| 1,000 | `fill_bulk` | file | 0.949x | 0.958x |
+| 1,000 | `wide` | memory | 0.986x | - |
+| 1,000 | `wide` | file | 0.948x | - |
+| 10,000 | `select` | memory | 0.994x | - |
+| 10,000 | `select` | file | 0.995x | - |
+| 10,000 | `point` | memory | 2.581x | - |
+| 10,000 | `point` | file | 2.511x | - |
+| 10,000 | `fill` | memory | 0.986x | 0.986x |
+| 10,000 | `fill` | file | 0.977x | 0.977x |
+| 10,000 | `fill_bulk` | memory | 1.072x | 1.081x |
+| 10,000 | `fill_bulk` | file | 1.073x | 1.080x |
+| 10,000 | `wide` | memory | Refused before timing | - |
+| 10,000 | `wide` | file | Refused before timing | - |
+
+All 320 records are present, with 288 successful records and 32 unchanged
+10,000-row wide budget refusals. The 10,000-row ordinary point groups have
+paired medians of 2.581x (memory) and 2.511x (file); all seven measured pairs
+are faster at this size. Scans and several write groups remain unfavorable.
+The individual-create write-phase medians of paired ratios are 0.986x (memory)
+and 0.977x (file) at 10,000 rows. These outcomes cannot close the comprehensive
+performance gate or prove write neutrality. This experiment predates the
+[read-free CREATE statistics change](../../docs/READ_FREE_CREATE_STATISTICS.md).
+
+[Complete shared-cache control evidence](evidence/rust_ordinary_shared_cache_controls_20261011.json)
+contains raw stdout/stderr, hashes, all ratios and the final audit. The original
+report SHA-256 is `6c27ac81694b3812503221a4acf9b6b86665abe0c5a498a465cc82ae1f788949`.
+The earlier `9630934b` observations above remain a separate historical control;
+comparing their ratios across runs does not isolate the cache change.

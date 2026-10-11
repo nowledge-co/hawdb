@@ -17,7 +17,7 @@ import sys
 import run as matrix
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-BASELINE = "5a5c4639a0df03487a35a4b71794cc276a26466f"
+BASELINE = "3cdb2610ba8b984676b80ba22df64821787886d3"
 TARGETS = (
     "//:hawdb_bench_host_boundary", "//bindings/benchmarks:python_boundary",
     "//bindings/go/cmd/boundary", "//bindings/ffi:hawdb_ffi",

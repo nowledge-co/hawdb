@@ -1,5 +1,5 @@
 {
-  "baseline": "5a5c4639a0df03487a35a4b71794cc276a26466f",
+  "baseline": "3cdb2610ba8b984676b80ba22df64821787886d3",
   "patch_lines": [
     "diff --git a/benchmarks.bzl b/benchmarks.bzl\n",
     "index 8044d7e4..1df8ea19 100644\n",

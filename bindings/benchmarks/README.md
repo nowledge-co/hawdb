@@ -117,8 +117,10 @@ backends, one discarded iteration and three measured iterations. Large cases
 can reach the workflow's six-hour execution ceiling; partial reports and raw
 failures are uploaded and cannot count as completed qualification.
 
-`compare.py` pins baseline `5a5c4639a0df03487a35a4b71794cc276a26466f` and records
-the candidate HEAD and staged tree. The isolated baseline adds the identical
+`compare.py` pins current-main baseline `3cdb2610ba8b984676b80ba22df64821787886d3` and records
+the candidate HEAD and staged tree. The update from `5a5c4639` changes only
+three test deadline attributes; the adapter target source files are identical.
+The isolated baseline adds the identical
 ordinary harness and the patch in `main-baseline-adapters.json`: an untimed
 in-memory constructor/Go opening adapter. Query, conversion, write and durability
 implementations remain the baseline's. The patch is not applied to production
@@ -193,3 +195,25 @@ Artifact hashes are checked before and after each child and at completion; a
 concurrent rebuild terminates qualification instead of mixing revisions. Copy
 artifacts and required runfiles into separate before/after directories before
 rebuilding for an alternating revision comparison.
+
+## Retained source-capacity creation control
+
+The manual `retained_source_capacity` benchmark opens four read snapshots before
+any retained cursor preflight. It creates and consumes one cursor at a time,
+keeping default admission and zero prefetch. Each `creation_ns` timer covers
+`into_retained_query` only; fixture setup, snapshot acquisition and full ordered
+consumption are outside those timers. Source preflight counts distinguish the
+cold directory from subsequent same-generation cursor creations. Timings still
+include planning and admission, so they cannot isolate capacity-walk CPU cost.
+
+```console
+bazel build -c opt //:hawdb_bench_retained_source_capacity
+bazel-bin/hawdb_bench_retained_source_capacity 1000 -
+bazel-bin/hawdb_bench_retained_source_capacity 10000 /tmp/new-hawdb-source-control
+```
+
+The file argument must name a new path. Preserve any admission refusal rather
+than raising the default budget. Output verifies every ordered integer value,
+completion, source release and final retained owner/handle charges. This probe
+uses the embedded Rust facade; it does not qualify Arrow, source-to-host reuse,
+whole-query memory, cross-language performance or the full performance gate.
