@@ -26,7 +26,7 @@ rust_test(
 
 rust_library(
     name = "hawdb_relational",
-    version = "0.6.0",
+    version = "0.7.0",
     crate_name = "hawdb_relational",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),

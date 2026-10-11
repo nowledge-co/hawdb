@@ -16,7 +16,7 @@
 name = "hawdb-ffi"
 publish = false
 # Tracks the hawdb engine version; hawdb_version() reports this string.
-version = "0.6.0"
+version = "0.7.0"
 
 description = "C ABI bindings for the HawDB embedded database"
 edition = "2024"
