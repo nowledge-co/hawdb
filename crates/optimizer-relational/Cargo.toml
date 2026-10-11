@@ -9,8 +9,8 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-hawdb-cascades = { path = "../cascades", version = "0.6.0" }
-hawdb-expression = { path = "../expression", version = "0.6.0" }
+hawdb-cascades = { path = "../cascades", version = "0.7.0" }
+hawdb-expression = { path = "../expression", version = "0.7.0" }
 
 [dev-dependencies]
-hawdb-core = { path = "../core", version = "0.6.0" }
+hawdb-core = { path = "../core", version = "0.7.0" }

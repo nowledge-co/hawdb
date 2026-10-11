@@ -16,7 +16,7 @@ rust_shared_library(
     crate_name = "hawdb_ffi",
     crate_root = "src/lib.rs",
     edition = "2024",
-    version = "0.6.0",
+    version = "0.7.0",
     deps = _FFI_DEPS,
 )
 
@@ -26,6 +26,6 @@ rust_static_library(
     crate_name = "hawdb_ffi",
     crate_root = "src/lib.rs",
     edition = "2024",
-    version = "0.6.0",
+    version = "0.7.0",
     deps = _FFI_DEPS,
 )
