@@ -63,9 +63,7 @@ pub(crate) fn stream_graph_match(
         return Ok(BatchControl::Stop);
     }
     let account = context.operator_account("GraphMatchExec state");
-    let source_account = context
-        .source_account("GraphMatchExec source")
-        .with_retained_state(account.clone());
+    let source_account = context.source_account_retaining("GraphMatchExec source", account.clone());
     let output_account = context.memory_ledger.account(
         QueryMemoryClass::PipelineBatch,
         "GraphMatchExec output",

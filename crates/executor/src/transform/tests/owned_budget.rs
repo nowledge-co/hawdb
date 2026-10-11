@@ -139,6 +139,63 @@ fn public_transform_owned_filter_cancel_after_continue_at_byte_flush() {
 }
 
 #[test]
+fn public_transform_owned_filter_final_flush_observes_cancel_after_continue() {
+    let mut source = Source::new(input(0, 3), 1);
+    let token = RuntimeCancellationToken::new();
+    let task = RuntimeTaskContext::without_deadline(token.clone());
+    let mut calls = 0;
+    let error = with_context(16, 64 * 1024, |context| {
+        stream_filter_batches(
+            &PhysicalPlan::EmptyExec,
+            &mut source,
+            BatchExecutionContext {
+                task_context: Some(&task),
+                ..context
+            },
+            ExecutionLimit::unlimited(),
+            &mut |_| Ok(true),
+            &mut |batch| {
+                calls += 1;
+                assert_eq!(batch.len(), 3);
+                token.cancel();
+                Ok(BatchControl::Continue)
+            },
+        )
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("cancelled"));
+    assert_eq!(calls, 1);
+    assert_eq!(source.calls, 3);
+}
+
+#[test]
+fn public_transform_owned_filter_consumer_stop_preserves_control_after_cancel() {
+    let mut source = Source::new(input(0, 5), 1);
+    let token = RuntimeCancellationToken::new();
+    let task = RuntimeTaskContext::without_deadline(token.clone());
+    let control = with_context(4, 64 * 1024, |context| {
+        stream_filter_batches(
+            &PhysicalPlan::EmptyExec,
+            &mut source,
+            BatchExecutionContext {
+                task_context: Some(&task),
+                ..context
+            },
+            ExecutionLimit::unlimited(),
+            &mut |_| Ok(true),
+            &mut |batch| {
+                assert_eq!(batch.len(), 4);
+                token.cancel();
+                Ok(BatchControl::Stop)
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(control, BatchControl::Stop);
+    assert_eq!(source.calls, 4);
+}
+
+#[test]
 fn public_transform_owned_limit_cancel_after_continue_at_row_flush() {
     cancel_after_continue(
         Kernel::Limit {

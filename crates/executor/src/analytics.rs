@@ -143,14 +143,11 @@ impl GraphAlgorithmSpec<'_> {
             "GraphAlgorithm",
             context.memory.blocking_operator_bytes,
         );
-        let source_account = context
-            .memory_ledger
-            .source_account(
-                "GraphAlgorithm source",
-                context.memory.query_memory_bytes,
-                context.memory.blocking_operator_bytes,
-            )
-            .with_retained_state(retained_account.clone());
+        let source_account = context.memory_ledger.source_account_retaining(
+            "GraphAlgorithm source",
+            context.memory.query_memory_bytes,
+            retained_account.clone(),
+        );
         let mut source = GraphExecutionProjectionSource(
             context.store,
             context.task_context,

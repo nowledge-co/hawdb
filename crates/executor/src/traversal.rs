@@ -91,13 +91,11 @@ pub fn execute_shortest_path(
         "ShortestPathExec",
         memory.blocking_operator_bytes,
     );
-    let source_account = memory_ledger
-        .source_account(
-            "ShortestPathExec source",
-            memory.query_memory_bytes,
-            memory.blocking_operator_bytes,
-        )
-        .with_retained_state(blocking_account.clone());
+    let source_account = memory_ledger.source_account_retaining(
+        "ShortestPathExec source",
+        memory.query_memory_bytes,
+        blocking_account.clone(),
+    );
     let Some(source) = find_node_by_id_property(
         catalog,
         store,
@@ -947,13 +945,11 @@ pub fn thread_repair_stats_rows(
         memory_budget,
     );
     let mut tracker = OperatorMemoryTracker::with_account(memory_budget, blocking_account.clone());
-    let property_account = memory_ledger
-        .source_account(
-            "ThreadRepairStatsExec properties",
-            memory_ledger.budget_bytes(),
-            memory_budget,
-        )
-        .with_retained_state(blocking_account.clone());
+    let property_account = memory_ledger.source_account_retaining(
+        "ThreadRepairStatsExec properties",
+        memory_ledger.budget_bytes(),
+        blocking_account.clone(),
+    );
     let mut identity_bytes = 0usize;
     // Identity counts and thread state have different property requirements.
     // Select labels before ownership, then project only each phase's fields.

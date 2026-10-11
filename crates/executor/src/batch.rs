@@ -133,6 +133,11 @@ fn stream_node_column_lookup_batches(
                 },
             )?;
             let (permits, _permit_storage) = bindings.allocations.into_parts();
+            if bindings.bindings.len() != permits.len() {
+                return Err(HawDBError::Execution(
+                    "lookup bindings and allocations lost their one-to-one mapping".into(),
+                ));
+            }
             for (binding, permit) in bindings.bindings.into_iter().zip(permits) {
                 let bytes = binding_memory_bytes(&binding);
                 if bytes > context.memory.batch_payload_bytes.get() {

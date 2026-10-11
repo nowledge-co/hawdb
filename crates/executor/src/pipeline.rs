@@ -76,6 +76,18 @@ impl BatchExecutionContext<'_> {
         )
     }
 
+    pub(crate) fn source_account_retaining(
+        &self,
+        operator: &'static str,
+        retained: QueryMemoryAccount,
+    ) -> QueryMemoryAccount {
+        self.memory_ledger.source_account_retaining(
+            operator,
+            self.memory.query_memory_bytes,
+            retained,
+        )
+    }
+
     pub fn operator_account(&self, operator: &'static str) -> QueryMemoryAccount {
         self.memory_ledger.account(
             QueryMemoryClass::BlockingState,

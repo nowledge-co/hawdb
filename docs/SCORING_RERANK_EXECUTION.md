@@ -572,15 +572,23 @@ the query root, keeping that grant while the identity map is alive. Its scalar
 algorithm result vector still obeys the retained-state allowance.
 
 Native full-node Filter pushes its complete predicate into the scan; optional
-property pruning does not replace predicate evaluation. Its other store-backed
-input paths return after each produced binding, so dropped rows can release
-source grants before the next source admission. The caller's output batch
-limits remain in force. External text/vector result cohorts retain their existing
-batching and ownership. Lookup can materialize multiple matches for one input:
+property pruning does not replace predicate evaluation. Direct store-owned leaf
+inputs return after each produced binding, so dropped rows can release source
+grants before the next source admission. Composite inputs, including projection,
+sort and aggregation, retain their configured batching throughout the subtree.
+The filter reuses one output builder across input batches, preserving the caller's
+row and payload limits downstream without registering an account per source row.
+External text/vector result cohorts retain their existing batching and ownership.
+Lookup can materialize multiple matches for one input:
 unconsumed matches are actually live and keep their grants through downstream
 callbacks, including Stop and errors. Public arbitrary multirow sources do not
 provide per-row release notifications; no equivalent per-row promise is made
 for their callback sidecars.
+
+Owned numeric input buffering flushes at `batch_payload_bytes`, and its pipeline
+selection scratch uses that same allowance rather than `blocking_operator_bytes`.
+This keeps intermediate batching independent of retained operator state; source
+and pipeline allocations still share the live query root budget.
 
 Source-wave scratch is a bounded conservative reservation while the storage
 visit runs. It is released before fallback and final output callbacks. As with

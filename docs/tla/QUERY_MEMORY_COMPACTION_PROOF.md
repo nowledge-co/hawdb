@@ -133,6 +133,8 @@ The source/state policy in https://github.com/nowledge-co/hawdb/issues/293
 uses the existing direct-account and same-ledger transfer actions above.
 `BatchExecutionContext::source_account` admits native reads as ExternalRead
 under Q; its attached retained account has the configured blocking budget B[a].
+`source_account_retaining` attaches an existing state account directly without
+registering an unused replacement account; it preserves the same shared cap.
 `QueryGraphReadAllocation::retain_state` transfers the complete source grant
 through `QueryMemoryLease::transfer_to` before retaining selected GraphSeed
 payloads or growing read-side key containers. Successful equal-size transfer
@@ -144,8 +146,9 @@ releases the charge of its current owner.
 permit before capacity allocation. Native lookup carries row permits and their
 container permit with unconsumed results; it admits the output owner before
 dropping each source permit. This handoff can temporarily overlap conservative
-charges, and both remain subject to R <= Q. Native rejected full-node rows drop
-before the next source read; still-live batches, worker/spill allowances and
+charges, and both remain subject to R <= Q. Native scan predicates and direct-leaf
+filters drop rejected full-node row grants before the next source read. Composite
+filter inputs preserve batch ownership; still-live batches, worker/spill allowances and
 unconsumed lookup/GraphSeed rows retain their original charges. Result
 materialization uses a separate root account, preserving the blocking bound on
 algorithm/traversal state. Streaming canonical identity staging keeps its

@@ -634,10 +634,10 @@ pub(super) fn stream_adjacency_expand_batches(
         "AdjacencyExpandExec",
         memory.blocking_operator_bytes,
     );
-    let source_account = context
-        .kernel_context()
-        .source_account("AdjacencyExpandExec source reads")
-        .with_retained_state(adjacency_account.clone());
+    let source_account = context.kernel_context().source_account_retaining(
+        "AdjacencyExpandExec source reads",
+        adjacency_account.clone(),
+    );
     let mut graph_expansion = GraphExpansionExecutionState::with_memory_account(
         graph_budget.map(|budget| memory.graph_expansion_budget.unwrap_or(budget)),
         0,

@@ -138,14 +138,11 @@ impl GraphAlgorithmSpec<'_> {
             context.memory.blocking_operator_bytes,
             state_account.clone(),
         );
-        let source_account = context
-            .memory_ledger
-            .source_account(
-                "GraphAlgorithm streaming source",
-                context.memory.query_memory_bytes,
-                context.memory.blocking_operator_bytes,
-            )
-            .with_retained_state(state_account);
+        let source_account = context.memory_ledger.source_account_retaining(
+            "GraphAlgorithm streaming source",
+            context.memory.query_memory_bytes,
+            state_account,
+        );
         let mut node_count = 0;
         let result = (|| {
             runtime_checkpoint(context.task_context)?;

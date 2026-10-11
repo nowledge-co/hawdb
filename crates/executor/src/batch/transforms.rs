@@ -133,16 +133,23 @@ pub(super) fn stream_filter_batches(
         .kernel_context()
         .source_account("FilterExec relationship predicate");
     let source_memory = ExecutionMemoryConfig {
-        // External seed rows already belong to a retained result cohort. Keep
-        // its batching; a store-owned source must return after each row so
-        // rejected payload grants drop before the next source admission.
+        // Only a direct storage leaf needs to return each row's source grant
+        // before the next admission. Composite inputs keep their batching;
+        // overriding their context would also shrink every descendant's batches.
         batch_rows: if matches!(
             input,
-            PhysicalPlan::TextSeedScan { .. } | PhysicalPlan::VectorSeedScan { .. }
+            PhysicalPlan::NodeProjectionScanExec { .. }
+                | PhysicalPlan::IndexNodeSeek { .. }
+                | PhysicalPlan::IndexNodeMultiSeek { .. }
+                | PhysicalPlan::IndexNodeUnionSeek { .. }
+                | PhysicalPlan::IndexNodeCompositeSeek { .. }
+                | PhysicalPlan::IndexNodeCompositeRangeSeek { .. }
+                | PhysicalPlan::IndexNodeRangeSeek { .. }
+                | PhysicalPlan::IndexNodeTextSeek { .. }
         ) {
-            context.memory.batch_rows
+            NonZeroUsize::MIN
         } else {
-            NonZeroUsize::new(1).unwrap()
+            context.memory.batch_rows
         },
         ..context.memory.clone()
     };

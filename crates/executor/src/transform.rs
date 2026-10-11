@@ -47,7 +47,16 @@ pub fn stream_filter_batches(
 ) -> Result<BatchControl> {
     runtime_checkpoint(context.task_context)?;
     let emitted = Cell::new(0usize);
-    source.execute(input, ExecutionLimit::unlimited(), &mut |batch| {
+    let mut filtered: Option<TransformBatchBuilder> = None;
+    let mut emit_filtered = |output: BindingBatch| {
+        emitted.set(emitted.get().saturating_add(output.len()));
+        let control = emit(output)?;
+        if control == BatchControl::Continue {
+            runtime_checkpoint(context.task_context)?;
+        }
+        Ok(control)
+    };
+    let control = source.execute(input, ExecutionLimit::unlimited(), &mut |batch| {
         runtime_checkpoint(context.task_context)?;
         let remaining = execution_limit
             .output_rows
@@ -56,20 +65,15 @@ pub fn stream_filter_batches(
         if remaining == 0 {
             return Ok(BatchControl::Stop);
         }
-        let mut filtered = TransformBatchBuilder::new(
-            "FilterExec",
-            context.memory.batch_rows.get(),
-            context.memory.batch_payload_bytes,
-            context.memory_ledger,
-        )?;
-        let mut emit_filtered = |output: BindingBatch| {
-            emitted.set(emitted.get().saturating_add(output.len()));
-            let control = emit(output)?;
-            if control == BatchControl::Continue {
-                runtime_checkpoint(context.task_context)?;
-            }
-            Ok(control)
-        };
+        if filtered.is_none() {
+            filtered = Some(TransformBatchBuilder::new(
+                "FilterExec",
+                context.memory.batch_rows.get(),
+                context.memory.batch_payload_bytes,
+                context.memory_ledger,
+            )?);
+        }
+        let filtered = filtered.as_mut().unwrap();
         for binding in batch {
             runtime_checkpoint(context.task_context)?;
             let matches = predicate(&binding)?;
@@ -91,15 +95,23 @@ pub fn stream_filter_batches(
                 }
             }
         }
-        if !filtered.is_empty() && filtered.emit(&mut emit_filtered)? == BatchControl::Stop {
+        Ok(
+            if execution_limit.is_reached(emitted.get().saturating_add(filtered.len())) {
+                BatchControl::Stop
+            } else {
+                BatchControl::Continue
+            },
+        )
+    })?;
+    if let Some(filtered) = filtered.as_mut()
+        && !filtered.is_empty()
+    {
+        runtime_checkpoint(context.task_context)?;
+        if filtered.emit(&mut emit_filtered)? == BatchControl::Stop {
             return Ok(BatchControl::Stop);
         }
-        Ok(if execution_limit.is_reached(emitted.get()) {
-            BatchControl::Stop
-        } else {
-            BatchControl::Continue
-        })
-    })
+    }
+    Ok(control)
 }
 
 pub fn stream_projection_batches(

@@ -58,8 +58,7 @@ impl GraphSeedScanSpec<'_> {
         );
         let source_account = context
             .kernel_context()
-            .source_account("GraphSeedScan source")
-            .with_retained_state(account.clone());
+            .source_account_retaining("GraphSeedScan source", account.clone());
         let scorer = GraphSeedScorer::new(query, &source_account, context.task_context)?;
         if scorer.is_empty() {
             return Ok(BatchControl::Continue);

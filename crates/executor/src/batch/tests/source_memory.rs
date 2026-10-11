@@ -209,6 +209,97 @@ fn source_memory_fallback_filter_releases_rejected_source_before_consumer_return
     assert_eq!(ledger.snapshot().used_bytes, 0);
 }
 
+fn fallback_filter_batching(input_kind: &str) {
+    for count in [17usize, 257] {
+        let (catalog, mut store) = fixture(count);
+        for node in &mut store.nodes {
+            node.properties
+                .insert("body".into(), Value::String("small".into()));
+        }
+        let memory = ExecutionMemoryConfig {
+            query_memory_bytes: nz(4 * 1024 * 1024),
+            blocking_operator_bytes: nz(1024 * 1024),
+            batch_payload_bytes: nz(64 * 1024),
+            batch_rows: nz(16),
+            ..memory()
+        };
+        let leaf = PhysicalPlan::IndexNodeMultiSeek {
+            variable: "n".into(),
+            label: "Memory".into(),
+            property: "id".into(),
+            values: (0..count).map(|id| Value::Int(id as i64)).collect(),
+        };
+        let input = match input_kind {
+            "index" => leaf,
+            "projection" => PhysicalPlan::ProjectExec {
+                items: vec![Projection {
+                    name: "body".into(),
+                    expression: hawdb_plan_cypher::ProjectionExpression::Property {
+                        variable: "n".into(),
+                        property: "body".into(),
+                    },
+                }],
+                input: Box::new(leaf),
+            },
+            "sort" => PhysicalPlan::SortExec {
+                items: Vec::new(),
+                input: Box::new(leaf),
+            },
+            _ => unreachable!(),
+        };
+        let plan = PhysicalPlan::FilterExec {
+            predicate: Predicate::ConstantBool(true),
+            input: Box::new(input),
+        };
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let mut batches = Vec::new();
+        let mut ids = Vec::new();
+        run(&plan, &catalog, &store, &memory, &ledger, &mut |batch| {
+            batches.push(batch.len());
+            ids.extend(batch.iter().map(|row| row.nodes["n"].id));
+            Ok(BatchControl::Continue)
+        })
+        .unwrap();
+        let snapshot = ledger.snapshot();
+        eprintln!(
+            "fallback filter {input_kind}: rows={count}, callbacks={}, accounts={}, peak_bytes={}",
+            batches.len(),
+            snapshot.account_count,
+            snapshot.peak_bytes
+        );
+        let expected_batches: Vec<_> = (0..count)
+            .collect::<Vec<_>>()
+            .chunks(memory.batch_rows.get())
+            .map(<[usize]>::len)
+            .collect();
+        assert_eq!(batches, expected_batches, "{input_kind}, rows={count}");
+        assert_eq!(
+            ids,
+            (0..count).map(|id| NodeId(id as u64)).collect::<Vec<_>>()
+        );
+        assert!(
+            snapshot.account_count <= 24 + 3 * count.div_ceil(memory.batch_rows.get()),
+            "per-row ledger account growth: {snapshot:?}"
+        );
+        assert_eq!(snapshot.used_bytes, 0);
+    }
+}
+
+#[test]
+fn source_memory_fallback_filter_batches_index_rows() {
+    fallback_filter_batching("index");
+}
+
+#[test]
+fn source_memory_fallback_filter_batches_projection_rows() {
+    fallback_filter_batching("projection");
+}
+
+#[test]
+fn source_memory_fallback_filter_batches_sort_rows() {
+    fallback_filter_batching("sort");
+}
+
 #[test]
 fn source_memory_graph_seed_rejected_read_does_not_consume_topk_cap() {
     let (catalog, mut store) = fixture(2);
