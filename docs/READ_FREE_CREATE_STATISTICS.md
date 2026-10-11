@@ -49,11 +49,49 @@ advanced-statistics publication. Existing successful write/schema invalidation
 behavior is preserved; this claim concerns the planning step itself.
 
 Creation consequently stops incidental publication of a new advanced-statistics
-generation. Already cached read plans remain reusable under the existing rule
-that data changes affect cost, not plan legality; their executor still reads
-the current snapshot. An uncached graph-dependent plan refreshes with the
-existing lag policy. Mixed read/write workload plan quality is a performance
-qualification obligation rather than a semantic equivalence claim about costs.
+generation. Cached read plans remain semantically legal across data changes;
+their executor still reads the current snapshot. The physical cache additionally
+tracks the existing small-label index cost boundary described below. A cache
+miss refreshes graph-dependent planning with the existing lag policy. General
+mixed-workload plan quality remains a performance qualification obligation.
+
+## Small-label index cost boundary
+
+Let `T = NODE_INDEX_SMALL_LABEL_SCAN_THRESHOLD` from the optimizer's costing
+module. For each distinct label with an equality, range or composite scalar
+index, let `b(S, label) = (maintained_count(S, label) > T)` for read snapshot `S`.
+The read cache key includes the sorted `(LabelId, b)` vector in addition to its
+existing schema, parameter and published-statistics identities. Full-text-only
+and unindexed labels contribute no entry. The threshold is shared with the
+optimizer rather than duplicated in the cache.
+
+For fixed schema and parameters, crossing `T` changes one vector component.
+The old/new keys therefore differ even when CREATE leaves the published
+statistics generation unchanged. Full key equality resolves hash collisions,
+so the old key cannot produce a hit. The normal miss path refreshes statistics
+according to the configured lag policy and optimizes again. With default zero
+lag and a selective indexed equality, the new large-label plan can choose the
+existing index alternative. Shrinking back across `T` also changes the key.
+Remaining in the same class does not invalidate a plan solely because of these
+maintained counts. This proves threshold observation, not globally optimal
+costs for arbitrary distributions or a measured latency benefit.
+
+Counts come from the supplied read view, not the live database head. Thus an
+older snapshot retains its own class after newer writes. The classification
+reads maintained metadata and does not request/publish advanced statistics or
+walk graph records. For `I` scalar index descriptors and `L` labels/relationship
+types, its native metadata work is O(I log I + L), independent of graph row count;
+the key stores at most one entry per indexed label. Existing metadata allocation
+is not a whole-query memory proof.
+
+Read-free CREATE/UNWIND CREATE bypass the physical plan cache and construct an
+empty cost-class vector. They do not call this classification helper or clone
+basic counts a second time. The new field is cost-only: explicit prepared-plan
+execution compatibility continues to check schema and ordering capabilities,
+not data/statistics/cost classes. No operand, result, WAL or durability rule
+changes. The assumptions are consistent maintained counts and the existing
+cache miss/parameter-binding/execution contracts; these are source-level proof
+obligations, not machine-checked whole-system verification.
 
 ## Failure and snapshot preservation
 
@@ -89,14 +127,27 @@ cancellation, WAL reopen, observable shape selection, and unchanged optimizer
 search directives. Before the production change, the publication and shape
 regressions fail; the other two establish preserved execution behavior.
 
+The `point_plan_cache_` regressions exercise template lookup without force-refresh
+EXPLAIN: growth within the small class hits, the 8-to-9 transition misses and
+selects an index, growth within the large class hits, shrinking to eight misses,
+old snapshots retain their class, and unindexed label growth remains reusable.
+They verify exact values and unchanged CREATE statistics publication. The
+original implementation fails at the expected boundary hit/miss assertion.
+
 Use the repository's pinned toolchain and the focused root test target:
 
 ```console
 cargo test --locked -p hawdb --lib plan_cache
-bazel test //:hawdb_unit_fast_tests --test_arg=creation_planning_
+bazel test //:hawdb_unit_fast_tests --test_arg=plan_cache
 ```
 
 [Ordinary controls](../bindings/benchmarks/RUST_ORDINARY_RESULTS.md) preserve the
-completed pre-fix observations and budget refusals. They do not measure this
-statistics change. A measured after-fix performance claim requires a new frozen
-producer and the same fixtures, calls, compiler profile, defaults and consumers.
+separate historical controls and budget refusals, including a complete frozen
+CREATE control at runtime `6ce232ca`. Its write improvements do not qualify this
+subsequent cache-boundary change. The negative fixed-parameter hot-point control
+remains recorded. New three-producer controls at 1,000/10,000 rows and a complete ordinary
+320-record control freeze this fix with unchanged fixtures, calls, compiler
+profile, defaults and consumers. They improve hot/amortized points and ordinary
+writes against main, but preserve unfavorable first-call, scan and bulk samples
+and unchanged wide-result budget refusals. They do not complete performance
+or whole-operation memory acceptance.

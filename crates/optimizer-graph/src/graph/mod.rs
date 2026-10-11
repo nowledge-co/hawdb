@@ -35,6 +35,7 @@ pub use catalog::{
     optimizer_catalog_from_graph_statistics, OptimizerCatalog, OptimizerCatalogIndexes,
     OptimizerCatalogStatistics, OptimizerIndexStatistics,
 };
+pub use costing::NODE_INDEX_SMALL_LABEL_SCAN_THRESHOLD;
 pub use lowering::CascadesOptimizer;
 pub use roots::{
     FastPathPhysicalPhase, FastPathPhysicalPlanRoot, LogicalPhase, LogicalPlanRoot,

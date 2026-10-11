@@ -253,7 +253,8 @@ use the selected tree without inherited Python/runfiles paths or bytecode writes
 contains all baseline raw streams and hashes, source/artifact manifest, timeout
 annotations and qualification limits. The primary log SHA-256 is
 `c5126615e33f84bdb42bcc4f56112c37cf81768161082fb20c9186be5c43b480`.
-A corrected Linux comparison is still required. macOS baseline Python remains
+A corrected Linux comparison was still required at this snapshot. The corrected
+1,000-row comparison follows below; larger sizes remain open. macOS baseline Python remains
 unqualified because its default-opt native extension fails to load with
 `mis-aligned LINKEDIT string pool`; no compiler override or binary repair is used.
 
@@ -305,7 +306,8 @@ whole-operation memory bounds, and cannot complete the full performance gate.
 contains both full reports, every raw stream/hash, reconstructed fixture-hash
 checks, copied native-producer checks and recomputed summaries. Original
 comparison SHA-256: `85ed8fbf9d8e75cc3c5c0ce72fe10969486cd621cdf9aadbbf3006e15af5057a`.
-A new comparison with independently frozen Python runfiles is still required.
+A new comparison with independently frozen Python runfiles was still required
+at this snapshot; the corrected comparison follows below.
 
 ## Mixed growth and point-plan controls
 
@@ -349,3 +351,106 @@ preserve every individual timing, raw stream/hash, source/artifact guard receipt
 cache counter, diagnostic and exact source snapshot. These shared-host memory
 controls do not qualify file backends, large sizes, Arrow, source reuse or
 whole-operation memory bounds.
+
+## Corrected 1,000-row Linux Python isolation comparison
+
+The [corrected Linux run](https://github.com/nowledge-co/hawdb/actions/runs/38103880331) succeeds at delivery head `fc6dd487` against main `3cdb2610`. The production runtime is still the CREATE optimization at `6ce232ca`; this run predates the subsequent index-size-class cache fix. All 480 records succeed and all 30 groups qualify: Rust/Python/Go, five cases, both backends, one discarded and seven measured samples. All builds finish before timing. Ordering remains baseline then candidate; these are ratios of medians, not alternating paired medians.
+
+| Layer | Case | Backend | Query-boundary speedup | Write-phase speedup |
+| --- | --- | --- | ---: | ---: |
+| go | `fill` | file | 2.486x | 2.505x |
+| go | `fill` | memory | 4.449x | 4.554x |
+| go | `fill_bulk` | file | 1.025x | 1.014x |
+| go | `fill_bulk` | memory | 1.037x | 1.023x |
+| go | `point` | file | 1.073x | - |
+| go | `point` | memory | 1.059x | - |
+| go | `select` | file | 1.011x | - |
+| go | `select` | memory | 0.981x | - |
+| go | `wide` | file | 0.883x | - |
+| go | `wide` | memory | 0.917x | - |
+| python | `fill` | file | 2.622x | 2.637x |
+| python | `fill` | memory | 5.014x | 5.119x |
+| python | `fill_bulk` | file | 1.022x | 1.015x |
+| python | `fill_bulk` | memory | 1.021x | 1.011x |
+| python | `point` | file | 1.073x | - |
+| python | `point` | memory | 1.086x | - |
+| python | `select` | file | 1.068x | - |
+| python | `select` | memory | 1.051x | - |
+| python | `wide` | file | 1.086x | - |
+| python | `wide` | memory | 1.079x | - |
+| rust | `fill` | file | 2.720x | 2.736x |
+| rust | `fill` | memory | 5.245x | 5.359x |
+| rust | `fill_bulk` | file | 1.000x | 1.003x |
+| rust | `fill_bulk` | memory | 1.010x | 1.010x |
+| rust | `point` | file | 1.085x | - |
+| rust | `point` | memory | 1.088x | - |
+| rust | `select` | file | 1.028x | - |
+| rust | `select` | memory | 0.998x | - |
+| rust | `wide` | file | 1.008x | - |
+| rust | `wide` | memory | 1.006x | - |
+
+Python individual-CREATE write-phase ratios are 5.119x (memory) and 2.637x (file). Its point-query ratios are 1.086x/1.073x. The unfavorable Go memory scan (0.981x), Go wide reads (0.917x/0.883x memory/file), and Rust memory scan (0.998x) remain visible. Near-one bulk medians are not a general regression exclusion. Ordinary APIs in this control use no Arrow or retained result APIs. This small phase resolves the Python comparison defect; it does not qualify large sizes, current cache-fix performance or whole-operation memory.
+
+[Complete corrected Linux evidence](evidence/linux_ordinary_frozen_python_controls_20261011.json) preserves both full reports and every raw stream/hash. The audit reconstructs all input hashes, checks values/parity/profiles/phases/RSS, compares copied producer bytes and matching Python wrapper/extension pairs, and recomputes all summaries. Complete runfiles identities are checked in the actual CI process before/after both matrices. GitHub artifact transport does not preserve executable modes or symlink types, so the local audit does not claim a transported runfiles identity recomputation. Original comparison SHA-256: `9fdb41b314a39102367bb841ec556e7b3216d2078370a6549d3c8c10abf48fa8`.
+
+## Maintained index-size-class cache fix
+
+The previous stable-parameter raw control exposes prolonged reuse of a four-row scan plan after growth. The cache now includes the existing scalar-index small-label cost class, derived from maintained counts. It replans on the eight-to-nine crossing and on shrinking back, while preserving same-class and unindexed-label reuse. Pure CREATE/UNWIND CREATE bypass this helper. [Source proof obligations](../../docs/READ_FREE_CREATE_STATISTICS.md) separate threshold observation from general optimality or measured performance.
+
+Two three-producer controls compare main `3cdb2610`, the exact frozen negative-control binary from runtime `6ce232ca`, and the fix staged on `fc6dd487` (tree `7b3ac26300af3efc6b848d648877938241e088c4`). The shared default-opt probe, fixed ID, four initial rows, independent growth statements and 100 exact-checked point calls per phase are identical. Producer ordering rotates among three revisions with alternating direction/API order. One discarded and seven measured iterations give 48 records per size; all 96 succeed. All task-owned builds/checks finish before timing; foreign CPU load may remain.
+
+| Rows | API | main / fix growth | main / fix hot point | previous / fix growth | previous / fix hot point | previous / fix post-refresh point |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1000 | raw | 3.978x | 1.237x | 1.012x | 1.345x | 0.992x |
+| 1000 | admitted | 5.255x | 1.115x | 0.977x | 0.992x | 0.980x |
+| 10000 | raw | 26.443x | 4.305x | 0.987x | 4.714x | 0.978x |
+| 10000 | admitted | 44.640x | 2.652x | 1.010x | 0.989x | 0.991x |
+
+The raw fix has 99 cache hits/one miss in every child at both sizes; the preserved previous binary has 100 hits/zero misses. At 10,000 rows the hot raw paired median is 4.305x versus main and 4.714x versus the previous binary. Admitted private cache counters are not exposed by this probe: Database diagnostics describe the raw API only.
+
+Growth ratios versus the previous binary remain near one. The admitted hot ratios versus the previous binary are slightly unfavorable (0.992x/0.989x at 1,000/10,000 rows); raw post-refresh ratios are also 0.992x/0.978x. All individual timings and these unfavorable comparisons are retained. The helper therefore does not receive a general write/read neutrality claim from this control. Force-refresh diagnostics run after the hot timer and cannot reconstruct the previously cached hot plan.
+
+[Complete index-class control evidence](evidence/mixed_point_index_class_controls_20261011.json) includes every native output, individual timing, phase median, raw hash, RSS observation, producer identity, source snapshot and source/artifact guard receipt. Timers exclude exact value checks; growth includes parameter/loop work. This memory-only shared-host control does not qualify file backends, other languages, arbitrary plan distributions, Arrow, source reuse or whole-operation memory. Ordinary full-case controls on the same fixed producer are reported separately.
+
+
+| Rows | API | First-call fix median | main / fix first call | previous / fix first call | main / fix total 100 calls | previous / fix total 100 calls |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1000 | raw | 0.454 ms | 0.816x | 0.312x | 1.163x | 1.208x |
+| 1000 | admitted | 0.707 ms | 0.903x | 0.997x | 1.087x | 0.993x |
+| 10000 | raw | 3.174 ms | 0.841x | 0.133x | 2.415x | 2.235x |
+| 10000 | admitted | 5.745 ms | 0.871x | 0.936x | 1.729x | 0.964x |
+
+The first hot raw call includes the normal cache miss and statistics refresh. It is unfavorable versus main (0.816x/0.841x at 1,000/10,000 rows) and especially versus the old cache-hit producer (0.312x/0.133x). Thus the hot median must not be presented as isolated first-point improvement. Including all 100 timed calls, raw paired medians remain 1.163x/2.415x versus main and 1.208x/2.235x versus the old producer. Admitted totals versus the old producer are unfavorable at 0.993x/0.964x. First-call, total and nearest-rank p95/p99 calculations, including every pair, are included in the same evidence package. The first-call and representative mixed-workload obligations remain open.
+
+## Ordinary Rust controls on the index-class fix
+
+After both default-opt builds finish, a separate full ordinary control freezes the same candidate staged tree `7b3ac26300af3efc6b848d648877938241e088c4` and a main `3cdb2610` adapter tree with the identical current harness. It uses all five fixed cases, both backends, 1,000/10,000 rows, one discarded and seven alternating measured producer pairs. Parameters, seeds, calls, budgets and `SyncOnEveryWrite` are unchanged. No Arrow/retained API or allocation instrumentation is enabled.
+
+| Rows | Case | Backend | Query-boundary speedup | Write-phase speedup |
+| ---: | --- | --- | ---: | ---: |
+| 1000 | `select` | memory | 0.983x | - |
+| 1000 | `select` | file | 0.976x | - |
+| 1000 | `point` | memory | 1.143x | - |
+| 1000 | `point` | file | 1.134x | - |
+| 1000 | `fill` | memory | 5.183x | 5.325x |
+| 1000 | `fill` | file | 1.083x | 1.083x |
+| 1000 | `fill_bulk` | memory | 1.004x | 1.017x |
+| 1000 | `fill_bulk` | file | 1.015x | 1.021x |
+| 1000 | `wide` | memory | 1.025x | - |
+| 1000 | `wide` | file | 1.018x | - |
+| 10000 | `select` | memory | 0.976x | - |
+| 10000 | `select` | file | 0.974x | - |
+| 10000 | `point` | memory | 2.949x | - |
+| 10000 | `point` | file | 2.540x | - |
+| 10000 | `fill` | memory | 51.913x | 53.229x |
+| 10000 | `fill` | file | 2.076x | 2.078x |
+| 10000 | `fill_bulk` | memory | 0.997x | 0.999x |
+| 10000 | `fill_bulk` | file | 1.003x | 1.004x |
+| 10000 | `wide` | memory | Refused before timing | - |
+| 10000 | `wide` | file | Refused before timing | - |
+
+All 320 expected records are present: 288 successes and the same 32 wide warmup refusals at 10,000 rows. Each refusal reports 16,780,548 result-materialization bytes against the unchanged 16,777,216-byte account. Thus the whole matrix qualification flag remains false; there is no successful speedup claim for those groups.
+
+At 10,000 rows the point medians are 2.949x/2.540x and individual-CREATE write-phase medians are 53.229x/2.078x (memory/file). Both sizes have unfavorable scan medians, about 0.974x-0.983x. The 10,000-row memory bulk median is also unfavorable at 0.997x query-boundary and 0.999x write-boundary. These are complete shared-host controls against main, not isolated cache-change causality or comprehensive acceptance.
+
+[Complete ordinary index-class evidence](evidence/rust_ordinary_index_class_controls_20261011.json) includes every raw native outcome/hash, all paired ratios, fixture checks and consumer/driver snapshots, source/artifact guards and recomputed summaries. Original report SHA-256: `ffd7fdd4e9291bdb5bc3d8b70ef5b22ba4af8f5295a3826526757324585dde9b`. This control does not establish idle-host guarantees, larger sizes, cross-language neutrality, Arrow/source reuse or whole-operation memory bounds.
