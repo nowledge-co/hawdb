@@ -119,15 +119,72 @@ impl Database {
         cypher: &str,
         params: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<QueryResult> {
+        #[cfg(feature = "boundary-profiling")]
+        let conversion =
+            crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Parameters);
         let params = match params {
             Some(dict) => py_dict_to_params(dict)?,
             None => Default::default(),
         };
+        #[cfg(feature = "boundary-profiling")]
+        drop(conversion);
         let database = self.required()?;
+        #[cfg(feature = "boundary-profiling")]
+        let engine =
+            crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Engine);
         let output = py
             .detach(|| database.query_with_params_admitted(cypher, &params))
             .map_err(|error| format_embedded_error(&error))?;
+        #[cfg(feature = "boundary-profiling")]
+        drop(engine);
         QueryResult::from_output(py, output)
+    }
+
+    /// Experimental retained numeric query; unsupported shapes refuse without
+    /// an owned-result fallback. Parameter conversion remains input work.
+    #[pyo3(signature = (cypher, params = None, *, options = None))]
+    fn execute_retained(
+        &mut self,
+        py: Python<'_>,
+        cypher: &str,
+        params: Option<&Bound<'_, PyDict>>,
+        options: Option<PyRef<'_, crate::retained::RetainedOptions>>,
+    ) -> PyResult<crate::retained::RetainedCursor> {
+        let options = match options {
+            Some(options) => options.inner,
+            None => crate::retained::options(py, None, None, None, false, false)?,
+        };
+        let params = params
+            .map(py_dict_to_params)
+            .transpose()?
+            .unwrap_or_default();
+        let module = py.import("hawdb._hawdb")?.into_any().unbind();
+        let database = self.required()?;
+        let cursor = py
+            .detach(move || database.query_with_params_retained(cypher, &params, options))
+            .map_err(|error| crate::retained::error(py, &error))?;
+        Ok(crate::retained::RetainedCursor::new(cursor, module))
+    }
+
+    /// Explicit resource observation; interpreter/application RSS is separate.
+    fn retained_snapshot_copy<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let database = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("database is closed"))?;
+        let Some(snapshot) = database.database().retained_result_snapshot() else {
+            return Ok(None);
+        };
+        let result = PyDict::new(py);
+        result.set_item("budget_bytes", snapshot.budget_bytes)?;
+        result.set_item("handle_limit", snapshot.handle_limit)?;
+        result.set_item("retained_bytes", snapshot.retained_bytes)?;
+        result.set_item("peak_retained_bytes", snapshot.peak_retained_bytes)?;
+        result.set_item("buffer_owners", snapshot.buffer_owners)?;
+        result.set_item("view_handles", snapshot.view_handles)?;
+        result.set_item("peak_view_handles", snapshot.peak_view_handles)?;
+        result.set_item("backpressure_events", snapshot.backpressure_events)?;
+        Ok(Some(result))
     }
 
     /// Runs one SQL statement and returns the materialized result.
@@ -141,19 +198,29 @@ impl Database {
         sql: &str,
         params: Option<&Bound<'_, PyList>>,
     ) -> PyResult<QueryResult> {
+        #[cfg(feature = "boundary-profiling")]
+        let conversion =
+            crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Parameters);
         let values = match params {
             Some(list) => py_list_to_params(list)?,
             None => Vec::new(),
         };
+        #[cfg(feature = "boundary-profiling")]
+        drop(conversion);
         let database = self.required()?;
         if database.transaction_active() {
             return Err(PyRuntimeError::new_err(
                 "a transaction is open on this database",
             ));
         }
+        #[cfg(feature = "boundary-profiling")]
+        let engine =
+            crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Engine);
         let output = py
             .detach(|| database.database_mut().query_sql_with_params(sql, &values))
             .map_err(|error| format_hawdb_error(&error))?;
+        #[cfg(feature = "boundary-profiling")]
+        drop(engine);
         QueryResult::from_output(py, output)
     }
 
@@ -235,13 +302,16 @@ pub struct QueryResult {
 
 impl QueryResult {
     fn from_output(py: Python<'_>, output: QueryOutput) -> PyResult<Self> {
+        #[cfg(feature = "boundary-profiling")]
+        let _conversion =
+            crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Results);
         let columns = output.schema().columns().to_vec();
         let mut rows = Vec::new();
         for row in output.value_rows() {
             let dict = PyDict::new(py);
             for (index, column) in columns.iter().enumerate() {
-                let value = row.get(index).cloned().unwrap_or(Value::Null);
-                dict.set_item(column, value_to_py(py, &value)?)?;
+                let value = row.get(index).unwrap_or(&Value::Null);
+                dict.set_item(column, value_to_py(py, value)?)?;
             }
             rows.push(dict.unbind());
         }

@@ -29,3 +29,7 @@ func loadSharedLibrary(path string) (uintptr, error) {
 	}
 	return uintptr(handle), nil
 }
+
+func lookupSharedSymbol(handle uintptr, name string) (uintptr, error) {
+	return syscall.GetProcAddress(syscall.Handle(handle), name)
+}

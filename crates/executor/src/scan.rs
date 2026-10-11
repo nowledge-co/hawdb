@@ -794,49 +794,93 @@ pub fn stream_node_projection_scan_batches(
                 owned_bytes,
             )
         };
-    let control = match (exact_label_id, spec.access) {
-        (_, NodeProjectionAccess::LabelScan) => context.store.visit_projected_nodes_admitted(
-            exact_label_id,
-            &required_properties,
-            &mut admit,
-            &mut visit,
-        )?,
-        (Some(label_id), NodeProjectionAccess::PropertyUnion { branches }) => {
-            let mut allocate_keys = |bytes| {
-                crate::store::admit_graph_read(context.memory_account, context.task_context, bytes)
-            };
-            let key_admission =
-                hawdb_storage::read_view::GraphReadAdmission::new(&mut allocate_keys);
-            let mut seen = hawdb_storage::read_view::AdmittedKeySet::new(&key_admission)?;
-            let mut control = ScanControl::Continue;
-            for branch in branches {
-                control = context.store.visit_projected_nodes_by_property_admitted(
-                    label_id,
-                    &branch.property,
-                    &branch.values,
-                    &required_properties,
-                    &mut admit,
-                    &mut |node| {
-                        if !seen.try_insert(node.id)? {
-                            return Ok(ScanControl::Continue);
-                        }
-                        visit(node)
-                    },
-                )?;
+    let indexed_nodes = match (exact_label_id, spec.access) {
+        (Some(label_id), NodeProjectionAccess::PropertyValues { property, values })
+            if !context.store.is_out_of_core()
+                && context
+                    .catalog
+                    .has_scalar_property_index(label_id, property) =>
+        {
+            match values.as_slice() {
+                [value] => context
+                    .store
+                    .scan_indexed_nodes_borrowed(label_id, property, value),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let control = if let Some(nodes) = indexed_nodes {
+        let mut control = ScanControl::Continue;
+        for candidate in nodes {
+            runtime_checkpoint(context.task_context)?;
+            // Keep the before-copy allocation through residual evaluation and
+            // projection, including the temporary binding's owned capacity.
+            let mut source_allocation = None;
+            if let Some(node) = context.store.projected_node_owned_admitted(
+                candidate.id,
+                &required_properties,
+                &mut |bytes| {
+                    source_allocation = Some(admit(bytes)?);
+                    Ok(())
+                },
+            )? {
+                control = visit(node)?;
                 if control == ScanControl::Stop {
                     break;
                 }
             }
-            control
         }
-        (Some(label_id), access) => context.store.visit_projected_nodes_by_access_admitted(
-            label_id,
-            access,
-            &required_properties,
-            &mut admit,
-            &mut visit,
-        )?,
-        (None, _) => ScanControl::Continue,
+        control
+    } else {
+        match (exact_label_id, spec.access) {
+            (_, NodeProjectionAccess::LabelScan) => context.store.visit_projected_nodes_admitted(
+                exact_label_id,
+                &required_properties,
+                &mut admit,
+                &mut visit,
+            )?,
+            (Some(label_id), NodeProjectionAccess::PropertyUnion { branches }) => {
+                let mut allocate_keys = |bytes| {
+                    crate::store::admit_graph_read(
+                        context.memory_account,
+                        context.task_context,
+                        bytes,
+                    )
+                };
+                let key_admission =
+                    hawdb_storage::read_view::GraphReadAdmission::new(&mut allocate_keys);
+                let mut seen = hawdb_storage::read_view::AdmittedKeySet::new(&key_admission)?;
+                let mut control = ScanControl::Continue;
+                for branch in branches {
+                    control = context.store.visit_projected_nodes_by_property_admitted(
+                        label_id,
+                        &branch.property,
+                        &branch.values,
+                        &required_properties,
+                        &mut admit,
+                        &mut |node| {
+                            if !seen.try_insert(node.id)? {
+                                return Ok(ScanControl::Continue);
+                            }
+                            visit(node)
+                        },
+                    )?;
+                    if control == ScanControl::Stop {
+                        break;
+                    }
+                }
+                control
+            }
+            (Some(label_id), access) => context.store.visit_projected_nodes_by_access_admitted(
+                label_id,
+                access,
+                &required_properties,
+                &mut admit,
+                &mut visit,
+            )?,
+            (None, _) => ScanControl::Continue,
+        }
     };
     let candidate_count = context.store.node_count_for_label(exact_label_id);
     let pruned = !spec.access.is_label_scan();

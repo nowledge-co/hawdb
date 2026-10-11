@@ -28,6 +28,8 @@ version = "0.6.0"
 [workspace]
 
 [features]
+# Local measurement only; default/lite imports do not install instrumentation.
+boundary-profiling = []
 # Default profile: the engine's own default feature set (full-text, vector,
 # analytics, background maintenance, tokio runtime).
 default = ["hawdb/default"]

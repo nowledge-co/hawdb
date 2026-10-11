@@ -14,13 +14,44 @@
 
 mod database;
 mod errors;
+mod retained;
 mod value;
+
+#[cfg(feature = "boundary-profiling")]
+#[path = "../../benchmarks/native_profile.rs"]
+mod boundary_profile;
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 pub use database::{open, Database, QueryResult, ReadTransaction, Transaction};
 pub use errors::register_exceptions;
+
+/// Private local-qualification hook, absent from ordinary/default/lite builds.
+#[cfg(feature = "boundary-profiling")]
+#[pyfunction]
+fn _boundary_profile_snapshot(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
+    let snapshot = boundary_profile::snapshot();
+    let result = PyDict::new(py);
+    for (key, value) in [
+        ("allocation_calls", snapshot.allocation_calls),
+        ("allocated_bytes", snapshot.allocated_bytes),
+        ("deallocation_calls", snapshot.deallocation_calls),
+        ("deallocated_bytes", snapshot.deallocated_bytes),
+        ("reallocation_calls", snapshot.reallocation_calls),
+        ("live_requested_bytes", snapshot.live_requested_bytes),
+        (
+            "process_peak_requested_bytes",
+            snapshot.process_peak_requested_bytes,
+        ),
+        ("parameter_conversion_ns", snapshot.parameter_conversion_ns),
+        ("engine_call_ns", snapshot.engine_call_ns),
+        ("result_conversion_ns", snapshot.result_conversion_ns),
+    ] {
+        result.set_item(key, value)?;
+    }
+    Ok(result)
+}
 
 /// Report the engine capabilities compiled into this extension.
 ///
@@ -53,8 +84,14 @@ fn _hawdb(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<QueryResult>()?;
     module.add_class::<Transaction>()?;
     module.add_class::<ReadTransaction>()?;
+    module.add_class::<retained::RetainedCursor>()?;
+    module.add_class::<retained::RetainedOptions>()?;
+    module.add_class::<retained::RetainedBatch>()?;
+    module.add_class::<retained::RetainedBuffer>()?;
     module.add_function(wrap_pyfunction!(open, module)?)?;
     module.add_function(wrap_pyfunction!(capabilities, module)?)?;
+    #[cfg(feature = "boundary-profiling")]
+    module.add_function(wrap_pyfunction!(_boundary_profile_snapshot, module)?)?;
 
     let exceptions = PyModule::new(py, "hawdb.exceptions")?;
     register_exceptions(py, &exceptions)?;

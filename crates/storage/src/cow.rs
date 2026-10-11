@@ -19,7 +19,10 @@ use crate::{adjacency::AdjacencyPostingList, NodeId, NodeRecord, RelId, RelRecor
 use hawdb_core::{LabelId, RelTypeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+#[path = "cow/retained_capacity.rs"]
+mod retained_capacity;
 
 /// An immutable snapshot segment that is cloned only when a writer mutates it.
 ///
@@ -223,6 +226,44 @@ fn cow_map_segment_bytes<K: CowPageWeight, V: CowPageWeight>(segment: &BTreeMap<
         .fold(0usize, usize::saturating_add)
 }
 
+#[derive(Debug)]
+struct CowPageDirectory<K, V> {
+    pages: Vec<Arc<BTreeMap<K, V>>>,
+    retained_capacity: OnceLock<Option<usize>>,
+}
+
+impl<K, V> CowPageDirectory<K, V> {
+    fn new(pages: Vec<Arc<BTreeMap<K, V>>>) -> Self {
+        Self {
+            pages,
+            retained_capacity: OnceLock::new(),
+        }
+    }
+}
+
+impl<K, V> Clone for CowPageDirectory<K, V> {
+    fn clone(&self) -> Self {
+        // Arc::make_mut detaches a writer from immutable source snapshots.
+        Self::new(self.pages.clone())
+    }
+}
+
+impl<K, V> Deref for CowPageDirectory<K, V> {
+    type Target = Vec<Arc<BTreeMap<K, V>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pages
+    }
+}
+
+impl<K, V> DerefMut for CowPageDirectory<K, V> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // No mutable page or record access can preserve an earlier bound.
+        self.retained_capacity.take();
+        &mut self.pages
+    }
+}
+
 /// An ordered map backed by immutable COW pages.
 ///
 /// A snapshot clones one outer `Arc`. A writer clones the small page directory
@@ -230,7 +271,7 @@ fn cow_map_segment_bytes<K: CowPageWeight, V: CowPageWeight>(segment: &BTreeMap<
 /// first write while a read snapshot is alive.
 #[derive(Debug)]
 pub struct CowSegmentedMap<K, V> {
-    segments: Arc<Vec<Arc<BTreeMap<K, V>>>>,
+    segments: Arc<CowPageDirectory<K, V>>,
     len: usize,
 }
 
@@ -246,7 +287,7 @@ impl<K, V> Clone for CowSegmentedMap<K, V> {
 impl<K, V> Default for CowSegmentedMap<K, V> {
     fn default() -> Self {
         Self {
-            segments: Arc::new(Vec::new()),
+            segments: Arc::new(CowPageDirectory::new(Vec::new())),
             len: 0,
         }
     }
@@ -274,7 +315,7 @@ impl<K: Ord + CowPageWeight, V: CowPageWeight> From<BTreeMap<K, V>> for CowSegme
             segments.push(Arc::new(segment));
         }
         Self {
-            segments: Arc::new(segments),
+            segments: Arc::new(CowPageDirectory::new(segments)),
             len,
         }
     }
@@ -316,6 +357,20 @@ impl<K: Ord, V> CowSegmentedMap<K, V> {
         self.segments.iter().flat_map(|segment| segment.iter())
     }
 
+    /// Resume ordered borrowed delivery without rescanning the preceding pages.
+    /// Range bounds are consumed during iterator creation, not retained as
+    /// references into mutable cursor state. Values remain in their COW pages.
+    pub fn iter_after(&self, after: Option<K>) -> impl Iterator<Item = (&K, &V)> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let start = after
+            .as_ref()
+            .and_then(|key| self.segment_index(key))
+            .unwrap_or(0);
+        self.segments[start..].iter().flat_map(move |segment| {
+            segment.range((after.as_ref().map_or(Unbounded, Excluded), Unbounded))
+        })
+    }
+
     /// Borrow a key interval without scanning unrelated immutable segments.
     pub(crate) fn range<'a>(
         &'a self,
@@ -345,10 +400,16 @@ impl<K: Ord, V> CowSegmentedMap<K, V> {
     }
 }
 
+#[cfg(test)]
+#[path = "cow/retained_scan_tests.rs"]
+mod retained_scan_tests;
+
 impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K, V> {
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         if self.segments.is_empty() {
-            self.segments = Arc::new(vec![Arc::new(BTreeMap::from([(key, value)]))]);
+            self.segments = Arc::new(CowPageDirectory::new(vec![Arc::new(BTreeMap::from([(
+                key, value,
+            )]))]));
             self.len = 1;
             return None;
         }
@@ -466,6 +527,14 @@ impl<K, V> CowSegmentedMap<K, V> {
 
     pub fn segment_count(&self) -> usize {
         self.segments.len()
+    }
+
+    /// Shared directory capacity, including its Arc header. Page/record
+    /// allocations are intentionally excluded from this metadata observation.
+    pub fn directory_capacity_bytes(&self) -> usize {
+        2 * std::mem::size_of::<usize>()
+            + std::mem::size_of::<CowPageDirectory<K, V>>()
+            + self.segments.capacity() * std::mem::size_of::<Arc<BTreeMap<K, V>>>()
     }
 
     pub fn shared_segment_count_with(&self, other: &Self) -> usize {

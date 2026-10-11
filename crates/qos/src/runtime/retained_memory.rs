@@ -20,7 +20,7 @@ use super::*;
 /// and its process-memory policy. It does not admit CPU, task or I/O work.
 #[derive(Debug)]
 pub struct RuntimeRetainedMemory {
-    governor: Arc<RuntimeGovernorInner>,
+    pub(super) governor: Arc<RuntimeGovernorInner>,
     bytes: u64,
     process_memory: Option<ProcessMemoryReservation>,
 }
@@ -43,74 +43,83 @@ impl RuntimePermit {
         &self,
         bytes: u64,
     ) -> Result<RuntimeRetainedMemory, RuntimeAdmissionError> {
-        let mut state = mutex_lock(&self.governor.state);
-        let capacity = state.process_memory_policy.as_ref().map_or(
-            state.limits.memory_capacity_bytes,
-            |policy| {
+        reserve_retained_memory(&self.governor, self.request.priority, bytes)
+    }
+}
+
+pub(super) fn reserve_retained_memory(
+    governor: &Arc<RuntimeGovernorInner>,
+    priority: RuntimeWorkPriority,
+    bytes: u64,
+) -> Result<RuntimeRetainedMemory, RuntimeAdmissionError> {
+    let mut state = mutex_lock(&governor.state);
+    let capacity =
+        state
+            .process_memory_policy
+            .as_ref()
+            .map_or(state.limits.memory_capacity_bytes, |policy| {
                 state
                     .limits
                     .memory_capacity_bytes
                     .min(policy.resident_limit_bytes())
-            },
-        );
-        if bytes > capacity {
-            return Err(admission_error_value(
-                RuntimeAdmissionCode::MemorySaturated,
-                bytes,
-                capacity,
-                false,
-            ));
-        }
-        if self.request.priority == RuntimeWorkPriority::Background
-            && state.resources.memory.pressure == RuntimeMemoryPressure::Critical
-        {
-            return Err(admission_error_value(
-                RuntimeAdmissionCode::MemoryPressure,
-                bytes,
-                0,
-                true,
-            ));
-        }
-        let available = state
-            .limits
-            .memory_budget_bytes
-            .saturating_sub(state.admitted_memory_bytes);
-        if bytes > available {
-            return Err(admission_error_value(
-                RuntimeAdmissionCode::MemorySaturated,
-                bytes,
-                available,
-                true,
-            ));
-        }
-        let process_memory = state
-            .process_memory_policy
-            .as_ref()
-            .map(|policy| {
-                policy
-                    .try_reserve(bytes)
-                    .map_err(|error| RuntimeAdmissionError {
-                        code: match error.code {
-                            ProcessMemoryAdmissionCode::SampleUnavailable => {
-                                RuntimeAdmissionCode::MemoryPressure
-                            }
-                            ProcessMemoryAdmissionCode::ResidentLimitExceeded => {
-                                RuntimeAdmissionCode::MemorySaturated
-                            }
-                        },
-                        requested: error.requested,
-                        available: error.available,
-                        retryable: error.retryable,
-                    })
-            })
-            .transpose()?;
-        state.admitted_memory_bytes += bytes;
-        Ok(RuntimeRetainedMemory {
-            governor: self.governor.clone(),
+            });
+    if bytes > capacity {
+        return Err(admission_error_value(
+            RuntimeAdmissionCode::MemorySaturated,
             bytes,
-            process_memory,
-        })
+            capacity,
+            false,
+        ));
     }
+    if priority == RuntimeWorkPriority::Background
+        && state.resources.memory.pressure == RuntimeMemoryPressure::Critical
+    {
+        return Err(admission_error_value(
+            RuntimeAdmissionCode::MemoryPressure,
+            bytes,
+            0,
+            true,
+        ));
+    }
+    let available = state
+        .limits
+        .memory_budget_bytes
+        .saturating_sub(state.admitted_memory_bytes);
+    if bytes > available {
+        return Err(admission_error_value(
+            RuntimeAdmissionCode::MemorySaturated,
+            bytes,
+            available,
+            true,
+        ));
+    }
+    let process_memory = state
+        .process_memory_policy
+        .as_ref()
+        .map(|policy| {
+            policy
+                .try_reserve(bytes)
+                .map_err(|error| RuntimeAdmissionError {
+                    code: match error.code {
+                        ProcessMemoryAdmissionCode::SampleUnavailable => {
+                            RuntimeAdmissionCode::MemoryPressure
+                        }
+                        ProcessMemoryAdmissionCode::ResidentLimitExceeded => {
+                            RuntimeAdmissionCode::MemorySaturated
+                        }
+                    },
+                    requested: error.requested,
+                    available: error.available,
+                    retryable: error.retryable,
+                })
+        })
+        .transpose()?;
+    state.admitted_memory_bytes += bytes;
+    Ok(RuntimeRetainedMemory {
+        governor: governor.clone(),
+        bytes,
+        process_memory,
+    })
 }
 
 impl Drop for RuntimeRetainedMemory {

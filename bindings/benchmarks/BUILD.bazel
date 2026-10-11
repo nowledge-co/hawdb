@@ -1,0 +1,40 @@
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["native_alloc.rs", "native_profile.rs"])
+
+py_library(
+    name = "checksum",
+    srcs = ["checksum.py"],
+    imports = ["."],
+)
+
+py_binary(
+    name = "python_boundary",
+    srcs = ["python_boundary.py"],
+    deps = [":checksum", "//bindings/python:hawdb"],
+    tags = ["manual"],
+)
+
+py_binary(
+    name = "retained_boundary",
+    srcs = ["retained_boundary.py"],
+    deps = ["//bindings/python:hawdb"],
+    tags = ["manual"],
+)
+
+py_binary(
+    name = "retained_write_control",
+    srcs = ["retained_write_control.py"],
+    deps = ["//bindings/python:hawdb"],
+    tags = ["manual"],
+)
+
+py_test(
+    name = "driver_tests",
+    srcs = ["compare.py", "run.py", "test_run.py"],
+    main = "test_run.py",
+    deps = [":checksum"],
+    tags = ["manual"],
+)

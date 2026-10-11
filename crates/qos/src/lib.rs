@@ -40,9 +40,10 @@ pub use resource::{
 pub use runtime::{
     RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeAdmissionWaiter, RuntimeGovernor,
     RuntimeGovernorConfig, RuntimeGovernorLimits, RuntimeGovernorSnapshot,
-    RuntimeIoReservationScope, RuntimePermit, RuntimeRetainedMemory, RuntimeTelemetryEvent,
-    RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind, RuntimeWorkPriority,
-    RuntimeWorkRequest,
+    RuntimeIoReservationScope, RuntimePermit, RuntimeRetainedMemory, RuntimeRetainedResult,
+    RuntimeRetainedResultError, RuntimeRetainedResultResource, RuntimeRetainedResultSnapshot,
+    RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind,
+    RuntimeWorkPriority, RuntimeWorkRequest,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

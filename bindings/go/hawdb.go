@@ -102,6 +102,34 @@ func OpenReadOnly(path string) (*DB, error) {
 	return Open(path, &OpenOptions{ReadOnly: true})
 }
 
+// OpenInMemory opens an independent in-memory database on the default library.
+func OpenInMemory() (*DB, error) {
+	lib, err := defaultLibrary()
+	if err != nil {
+		return nil, err
+	}
+	return lib.OpenInMemory()
+}
+
+// OpenInMemory uses the engine's normal in-memory configuration. Older shared
+// libraries report an unavailable capability; they never substitute a file.
+func (lib *Library) OpenInMemory() (*DB, error) {
+	if lib.openMemory == nil {
+		return nil, &Error{Kind: "capability_unavailable", Message: "hawdb_open_in_memory is unavailable"}
+	}
+	var errBuf ffiBuffer
+	ptr := lib.openMemory(&errBuf)
+	if ptr == nil {
+		if err := lib.takeErr(&errBuf); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("hawdb: in-memory open failed")
+	}
+	db := &DB{lib: lib, ptr: ptr}
+	runtime.SetFinalizer(db, (*DB).Close)
+	return db, nil
+}
+
 // Open opens a HawDB database at path on this library.
 func (lib *Library) Open(path string, opts ...*OpenOptions) (*DB, error) {
 	var optionsJSON string

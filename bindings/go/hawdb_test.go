@@ -20,6 +20,39 @@ import (
 	"testing"
 )
 
+func TestInMemoryIsolationAndClose(t *testing.T) {
+	first, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { first.Close() })
+	second, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { second.Close() })
+	if err := first.Exec("CREATE (:Memory {id: 42})", nil); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := second.Query("MATCH (n:Memory) RETURN n.id AS id", nil)
+	if err != nil || len(rows.Rows) != 0 {
+		t.Fatalf("in-memory databases must be independent: rows=%v err=%v", rows, err)
+	}
+	first.Close()
+	first.Close()
+	if _, err := first.Query("RETURN 1", nil); err == nil {
+		t.Fatal("closed in-memory database accepted a query")
+	}
+}
+
+func TestInMemoryUnavailableOnOlderLibrary(t *testing.T) {
+	_, err := (&Library{}).OpenInMemory()
+	var typed *Error
+	if !errors.As(err, &typed) || typed.Kind != "capability_unavailable" {
+		t.Fatalf("expected explicit capability error: %v", err)
+	}
+}
+
 // TestGraph builds a small social graph and answers a friend-of-a-friend
 // query — the traversal shape a graph database exists for:
 //

@@ -1,0 +1,11 @@
+load("@rules_go//go:def.bzl", "go_binary")
+
+go_binary(
+    name = "boundary",
+    srcs = ["main.go", "profile_unix.go", "profile_windows.go"],
+    importpath = "github.com/nowledge-co/hawdb/bindings/go/cmd/boundary",
+    pure = "on",
+    tags = ["manual"],
+    deps = ["//bindings/go:hawdb", "@com_github_ebitengine_purego//:purego"],
+    visibility = ["//visibility:public"],
+)

@@ -24,10 +24,87 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#define HAWDB_RETAINED_ABI_V1 1
+
+#define HAWDB_RETAINED_OK 0
+
+#define HAWDB_RETAINED_EOF 1
+
+#define HAWDB_RETAINED_BACKPRESSURE 2
+
+#define HAWDB_RETAINED_INVALID_HANDLE 3
+
+#define HAWDB_RETAINED_INVALID_ARGUMENT 4
+
+#define HAWDB_RETAINED_PANIC 5
+
+#define HAWDB_RETAINED_CLOSED 6
+
+#define HAWDB_RETAINED_WORKING_UNIT_TOO_LARGE 7
+
+#define HAWDB_RETAINED_EXECUTION_ERROR 8
+
+#define HAWDB_RETAINED_RESULT_BUDGET 9
+
+#define HAWDB_RETAINED_UNSUPPORTED_PLAN 10
+
+#define HAWDB_RETAINED_UNSUPPORTED_LAYOUT 11
+
+#define HAWDB_RETAINED_UNSUPPORTED_TYPE 12
+
+#define HAWDB_RETAINED_COPY_REQUIRED 13
+
+#define HAWDB_RETAINED_SELECTION_REQUIRES_MATERIALIZATION 14
+
+#define HAWDB_RETAINED_INVALID_COLUMN 15
+
+#define HAWDB_RETAINED_SIZE_OVERFLOW 16
+
+#define HAWDB_RETAINED_STOPPED 17
+
+#define HAWDB_RETAINED_ADMISSION_ERROR 18
+
+#define HAWDB_RETAINED_INT64 1
+
+#define HAWDB_RETAINED_FLOAT64 2
+
+#define HAWDB_RETAINED_UINT64 3
+
+#define HAWDB_RETAINED_PROPERTY 1
+
+#define HAWDB_RETAINED_NODE_IDENTITY 2
+
+#define HAWDB_RETAINED_READ_ONLY 1
+
+#define HAWDB_RETAINED_BORROWED 2
+
+#define HAWDB_RETAINED_REQUIRE_SOURCE_REUSE 1
+
+#define HAWDB_RETAINED_REQUEST_WRITABLE 2
+
+#define HAWDB_RETAINED_VALIDITY_ALL 1
+
+#define HAWDB_RETAINED_VALIDITY_U64_LSB 2
+
 /**
  * An open HawDB database handle. Opaque to C callers.
  */
 typedef struct HawdbDatabase HawdbDatabase;
+
+#if defined(HAWDB_BOUNDARY_PROFILING)
+typedef struct BoundaryProfileSnapshot {
+  uint64_t allocation_calls;
+  uint64_t allocated_bytes;
+  uint64_t deallocation_calls;
+  uint64_t deallocated_bytes;
+  uint64_t reallocation_calls;
+  uint64_t live_requested_bytes;
+  uint64_t process_peak_requested_bytes;
+  uint64_t parameter_conversion_ns;
+  uint64_t engine_call_ns;
+  uint64_t result_conversion_ns;
+} BoundaryProfileSnapshot;
+#endif
 
 /**
  * A byte buffer the library hands to the caller.
@@ -42,6 +119,126 @@ typedef struct HawdbBuffer {
   char *ptr;
   uintptr_t len;
 } HawdbBuffer;
+
+/**
+ * All lengths are byte lengths. A zero batch/slot limit selects the Rust
+ * default. Unknown flags/versions refuse before ownership transfer.
+ */
+typedef struct HawdbRetainedQueryV1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  const char *cypher;
+  uint64_t cypher_len;
+  const char *params_json;
+  uint64_t params_len;
+  uint32_t batch_rows;
+  uint32_t outstanding_batches;
+  uint64_t batch_bytes;
+  uint32_t flags;
+  uint32_t reserved;
+} HawdbRetainedQueryV1;
+
+typedef struct HawdbRetainedCursorV1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint64_t owner_namespace;
+  uint64_t owner_id;
+  uint64_t column_count;
+} HawdbRetainedCursorV1;
+
+/**
+ * Borrowed immutable range. data addresses the visible range; byte_offset is
+ * allocation provenance and must not be applied to data a second time. Keep
+ * the owner live and library mapped. A small slice retains its full capacity.
+ */
+typedef struct HawdbRetainedBufferV1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  const void *data;
+  uint64_t allocation_namespace;
+  uint64_t allocation_id;
+  uint64_t generation;
+  uint64_t retained_capacity_bytes;
+  uint64_t byte_offset;
+  uint64_t byte_length;
+} HawdbRetainedBufferV1;
+
+/**
+ * Selected indices address the physical rows, without gathering their values.
+ * Release owner_id explicitly. EOF never carries a live batch owner.
+ */
+typedef struct HawdbRetainedBatchV1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint64_t owner_namespace;
+  uint64_t owner_id;
+  uint64_t physical_rows;
+  uint64_t selected_rows;
+  uint64_t column_count;
+  struct HawdbRetainedBufferV1 selection;
+} HawdbRetainedBatchV1;
+
+/**
+ * Schema names borrow the supplied cursor/batch/column handle. They are UTF-8
+ * byte ranges, without a NUL-termination contract.
+ */
+typedef struct HawdbRetainedSchemaV1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  const char *name;
+  uint64_t name_len;
+  uint32_t data_type;
+  uint32_t role;
+  uint32_t nullable;
+  uint32_t flags;
+} HawdbRetainedSchemaV1;
+
+/**
+ * Independently owned read-only column, including its selection and validity.
+ * The validity bitmap consists of native u64 words; row r uses bit r % 64.
+ * Release this owner even when its parent batch was already released.
+ */
+typedef struct HawdbRetainedColumnV1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint64_t owner_namespace;
+  uint64_t owner_id;
+  uint64_t physical_rows;
+  uint64_t selected_rows;
+  struct HawdbRetainedSchemaV1 schema;
+  struct HawdbRetainedBufferV1 values;
+  struct HawdbRetainedBufferV1 selection;
+  struct HawdbRetainedBufferV1 validity;
+  uint32_t validity_kind;
+  uint32_t flags;
+} HawdbRetainedColumnV1;
+
+/**
+ * Status is 0 Open, 1 Completed, 2 Failed or 3 Closed. Earlier views remain
+ * readable after failure/close; only Completed makes the result final.
+ */
+typedef struct HawdbRetainedStateV1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t status;
+  uint32_t terminal_code;
+  uint64_t visited_rows;
+  uint64_t emitted_rows;
+  uint64_t source_constructed_bytes;
+  uint64_t source_pinned_rows;
+  uint64_t source_pinned_pages;
+} HawdbRetainedStateV1;
+
+#if defined(HAWDB_BOUNDARY_PROFILING)
+/**
+ * Developer profiling build only. This observation is not an admission ledger
+ * or an allocator-capacity bound. NULL output is a no-op; no buffer is allocated.
+ *
+ * # Safety
+ * `out` must be NULL or point to writable `BoundaryProfileSnapshot` storage.
+ */
+void hawdb_boundary_profile_snapshot(struct BoundaryProfileSnapshot *out);
+#endif
 
 /**
  * Open a HawDB database at `path`, creating it if needed.
@@ -64,6 +261,16 @@ struct HawdbDatabase *hawdb_open(const char *path,
                                  const char *options_json,
                                  uintptr_t options_len,
                                  struct HawdbBuffer *err_out);
+
+/**
+ * Open an independent in-memory database using the embedded facade defaults.
+ * Close the returned handle with [`hawdb_close`]. Errors use the same output
+ * convention as [`hawdb_open`]; this does not create a temporary on-disk store.
+ *
+ * # Safety
+ * `err_out` must be NULL or point to writable [`HawdbBuffer`] storage.
+ */
+struct HawdbDatabase *hawdb_open_in_memory(struct HawdbBuffer *err_out);
 
 /**
  * Close a database handle and release its resources.
@@ -138,3 +345,128 @@ void hawdb_buffer_free(struct HawdbBuffer *buffer);
  * `out` must be NULL or point to writable [`HawdbBuffer`] storage.
  */
 void hawdb_version(struct HawdbBuffer *out);
+
+/**
+ * Return the additive experimental retained descriptor ABI version.
+ */
+uint32_t hawdb_retained_abi_version(void);
+
+/**
+ * Create an eligible experimental cursor. There is no copying fallback or JSON
+ * result encoding. Parameter JSON remains an input format.
+ *
+ * # Safety
+ * db must remain live for this call. request must be aligned/readable for
+ * request_size bytes, with valid pointed-to input ranges. out must be aligned
+ * and writable for out_size bytes. Keep the library loaded until final release.
+ */
+uint32_t hawdb_retained_query(struct HawdbDatabase *db,
+                              const struct HawdbRetainedQueryV1 *request,
+                              uint32_t request_size,
+                              struct HawdbRetainedCursorV1 *out,
+                              uint32_t out_size);
+
+/**
+ * Pull serially with no prefetch. Backpressure precedes source advancement and
+ * EOF carries an empty output. Earlier batches remain provisional until EOF.
+ *
+ * # Safety
+ * out must be aligned/writable for out_size bytes. Do not release a handle
+ * concurrently with access to its borrowed payload pointers.
+ */
+uint32_t hawdb_retained_next(uint64_t owner_namespace,
+                             uint64_t owner_id,
+                             struct HawdbRetainedBatchV1 *out,
+                             uint32_t out_size);
+
+/**
+ * Return borrowed schema, including before the first pull or after empty EOF.
+ *
+ * # Safety
+ * out must be aligned/writable for out_size bytes. Schema names expire when
+ * the supplied owner is released; retain its owner during all reads.
+ */
+uint32_t hawdb_retained_schema(uint64_t owner_namespace,
+                               uint64_t owner_id,
+                               uint64_t column,
+                               struct HawdbRetainedSchemaV1 *out,
+                               uint32_t out_size);
+
+/**
+ * Create an independent immutable column owner without copying payload.
+ *
+ * # Safety
+ * out must be aligned/writable for out_size bytes. Pointers remain readable
+ * until this returned column owner is released, including after parent close.
+ */
+uint32_t hawdb_retained_column(uint64_t owner_namespace,
+                               uint64_t owner_id,
+                               uint64_t column,
+                               struct HawdbRetainedColumnV1 *out,
+                               uint32_t out_size);
+
+/**
+ * Borrow a column from a batch without allocating or admitting another owner.
+ * Its descriptor capacity was prepaid during the pull. This permits consuming
+ * a held batch even when no additional independently owned view can be admitted.
+ *
+ * # Safety
+ * out must be aligned/writable for out_size bytes. The supplied batch must
+ * remain live throughout every pointer read. A BORROWED descriptor must not be
+ * released independently; its owner_id refers to the existing batch.
+ */
+uint32_t hawdb_retained_column_borrow(uint64_t owner_namespace,
+                                      uint64_t owner_id,
+                                      uint64_t column,
+                                      struct HawdbRetainedColumnV1 *out,
+                                      uint32_t out_size);
+
+/**
+ * Retain an independent batch owner. Cursor and column handles refuse; columns
+ * have their own export function and release lifetime.
+ *
+ * # Safety
+ * out must be aligned/writable for out_size bytes. Do not release its returned
+ * owner until all reads through the descriptor have finished.
+ */
+uint32_t hawdb_retained_batch_retain(uint64_t owner_namespace,
+                                     uint64_t owner_id,
+                                     struct HawdbRetainedBatchV1 *out,
+                                     uint32_t out_size);
+
+/**
+ * Retain an independent column owner, preserving all allocation identities and
+ * ranges. Admission failure leaves the original column readable.
+ *
+ * # Safety
+ * out must be aligned/writable for out_size bytes. Release this new owner after
+ * all reads, independently of the original column's owner.
+ */
+uint32_t hawdb_retained_column_retain(uint64_t owner_namespace,
+                                      uint64_t owner_id,
+                                      struct HawdbRetainedColumnV1 *out,
+                                      uint32_t out_size);
+
+/**
+ * Read current terminal state. A prior descriptor's scalar status must not be
+ * treated as final; this function observes late failures through retained views.
+ *
+ * # Safety
+ * out must be aligned/writable for out_size bytes.
+ */
+uint32_t hawdb_retained_state(uint64_t owner_namespace,
+                              uint64_t owner_id,
+                              struct HawdbRetainedStateV1 *out,
+                              uint32_t out_size);
+
+/**
+ * Close a cursor and its source without revoking previously exported payload.
+ * Release the closed cursor handle separately. Repeated close is harmless.
+ */
+uint32_t hawdb_retained_cursor_close(uint64_t owner_namespace, uint64_t owner_id);
+
+/**
+ * Release exactly one owner. Stale, foreign-module and unknown handles return
+ * InvalidHandle without dereferencing caller-provided addresses.
+ */
+uint32_t hawdb_retained_release(uint64_t owner_namespace, uint64_t owner_id);

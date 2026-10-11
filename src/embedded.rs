@@ -19,8 +19,8 @@ use crate::nowledge_mem::{
 use crate::store::DurabilityPolicy;
 use crate::{
     AdaptiveVectorBackendPolicy, Database, DatabaseConfig, DatabaseReadTransaction, HawDBError,
-    QueryOutput, QueryStreamOptions, Result, RuntimeCapabilities, SearchIndex,
-    SearchRangeReadConfig, Value,
+    QueryOutput, QueryStreamOptions, Result, RetainedQueryCursor, RetainedQueryError,
+    RetainedQueryOptions, RuntimeCapabilities, SearchIndex, SearchRangeReadConfig, Value,
 };
 use hawdb_core::{RuntimeCancellationReason, RuntimeTaskContext};
 use hawdb_qos::{
@@ -413,6 +413,24 @@ impl HawDBEmbedded {
             parameters,
             &RuntimeTaskContext::default(),
         )
+    }
+
+    /// Experimental immutable numeric batches under this facade's shared governor.
+    /// Source/planning workspace qualification remains incomplete.
+    pub fn query_with_params_retained(
+        &self,
+        cypher_text: &str,
+        parameters: &BTreeMap<String, Value>,
+        options: RetainedQueryOptions,
+    ) -> std::result::Result<RetainedQueryCursor, RetainedQueryError> {
+        if self.transaction.is_some() {
+            return Err(HawDBError::Execution(
+                "a user transaction is open on this database".into(),
+            )
+            .into());
+        }
+        self.database
+            .query_with_params_retained(cypher_text, parameters, options)
     }
 
     pub fn query_with_params_admitted_context(

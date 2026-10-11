@@ -1,0 +1,1829 @@
+{
+  "terminal": true,
+  "manifest": {
+    "head": "6ce232ca14f65a1ec97487231e027e26432196a3",
+    "tree": "3b42526cc8b47182933a1346c4534162160345df",
+    "binary_sha256": "bdc20c4baadab682bb95d0ea8fab07cb4b1738512915115504a199ca95934c60",
+    "source_sha256": "b0c9bd3188e0bdb49d05fa6b6cbc0b02cfe69dfa6e48ecf0fb33435d34d5b704",
+    "build": "bazel build -c opt //:hawdb_bench_host_boundary //:hawdb_bench_retained_source_capacity",
+    "source": "/Users/hawkingrei/Library/Caches/bazel/_bazel_hawkingrei/12752cf60922a27f8c26e7a55b226afb/execroot/_main/bazel-out/darwin_arm64-opt/bin/hawdb_bench_retained_source_capacity",
+    "status": "Frozen, not measured; wait for own checks before timing"
+  },
+  "records": [
+    {
+      "backend": "memory",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        279625,
+        40083,
+        28417,
+        29042
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.012915334,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-0.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-0.stderr",
+      "process_peak_rss_bytes": 21544960,
+      "size": 1000,
+      "iteration": 0,
+      "discarded": true,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[279625,40083,28417,29042],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "9b1f27471c66a5ab5726cfab2fece44a7958aba49ef7a5428c947715a58f4e93",
+      "raw_stderr": "        0.00 real         0.00 user         0.00 sys\n            21544960  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                1569  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                   9  involuntary context switches\n           176058422  instructions retired\n            35168151  cycles elapsed\n            11960824  peak memory footprint\n",
+      "stderr_sha256": "86a7cc598e63e5418ae9a38b026f85ced5838fe48e6015aaa292d99930adc9c2"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        282417,
+        38875,
+        27833,
+        28625
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.012333582999999981,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-1.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-1.stderr",
+      "process_peak_rss_bytes": 20856832,
+      "size": 1000,
+      "iteration": 1,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[282417,38875,27833,28625],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "e4373ab387ea551bef9e007ca96089f74ed9fc84689ffba041276ec8883d7e85",
+      "raw_stderr": "        0.00 real         0.00 user         0.00 sys\n            20856832  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                1527  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  10  involuntary context switches\n           176417451  instructions retired\n            36284115  cycles elapsed\n            11272696  peak memory footprint\n",
+      "stderr_sha256": "a9ffe1325f9733f9c379d3d7daca1142636bf7a44186a68956f47a6b406072be"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        276916,
+        38250,
+        27500,
+        38083
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.011716665999999987,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-2.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-2.stderr",
+      "process_peak_rss_bytes": 21512192,
+      "size": 1000,
+      "iteration": 2,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[276916,38250,27500,38083],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "16e5649fd41c67d80bfd8874c362dbcb86e79b1607af50f60656457b6295c670",
+      "raw_stderr": "        0.00 real         0.00 user         0.00 sys\n            21512192  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                1567  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                   7  involuntary context switches\n           176541588  instructions retired\n            35455218  cycles elapsed\n            11928056  peak memory footprint\n",
+      "stderr_sha256": "e1e307533ce3ac9b37a7c4a026b17ac6eeace0a240daeb04523686cb8fc32468"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        279709,
+        40542,
+        36584,
+        28000
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.012237040999999893,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-3.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-3.stderr",
+      "process_peak_rss_bytes": 21577728,
+      "size": 1000,
+      "iteration": 3,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[279709,40542,36584,28000],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "a57488529c1923987fc7160fae6b1e3ca5e81cf7fb332ba966931251e44e46b9",
+      "raw_stderr": "        0.00 real         0.00 user         0.00 sys\n            21577728  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                1572  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                   9  involuntary context switches\n           176639221  instructions retired\n            35826820  cycles elapsed\n            11993592  peak memory footprint\n",
+      "stderr_sha256": "6cdb44812fb3a1e788418d73747b5f2bd825247ab8b62115c8c951c13dc41930"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        289250,
+        38292,
+        28417,
+        29500
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.011644790999999932,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-4.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-4.stderr",
+      "process_peak_rss_bytes": 20201472,
+      "size": 1000,
+      "iteration": 4,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[289250,38292,28417,29500],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "bd49d9533be843d344a3e0e6f1f86f26cd72a732aa373fa9a07ae0a26eea6355",
+      "raw_stderr": "        0.00 real         0.00 user         0.00 sys\n            20201472  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                1487  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                   9  involuntary context switches\n           175875031  instructions retired\n            35436948  cycles elapsed\n            10617336  peak memory footprint\n",
+      "stderr_sha256": "ce14405950920a91a1949ad4b006c00b14fc0ff157781e8c896b302ae358703a"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        291291,
+        47375,
+        30334,
+        29708
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.011720082999999937,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-5.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-5.stderr",
+      "process_peak_rss_bytes": 21626880,
+      "size": 1000,
+      "iteration": 5,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[291291,47375,30334,29708],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "a5cc5cb29a37c9816cae8e8e8674f245cb08d45bc71c51871f94ffd6fe50c4d3",
+      "raw_stderr": "        0.00 real         0.00 user         0.00 sys\n            21626880  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                1574  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                   9  involuntary context switches\n           176774144  instructions retired\n            35072775  cycles elapsed\n            12042744  peak memory footprint\n",
+      "stderr_sha256": "0c401bd4da0effaa593d4824ca4a4bcc17ea7730c65d808a7a65e6190117be18"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        280792,
+        39500,
+        28750,
+        27458
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.011744500000000047,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-6.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-6.stderr",
+      "process_peak_rss_bytes": 20250624,
+      "size": 1000,
+      "iteration": 6,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[280792,39500,28750,27458],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "676ee90c67ab856ede68bbe3ae2fe507f5cabdf5880fb43ead8aa9b5369cdd21",
+      "raw_stderr": "        0.00 real         0.00 user         0.00 sys\n            20250624  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                1490  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                   8  involuntary context switches\n           176048738  instructions retired\n            34902293  cycles elapsed\n            10666488  peak memory footprint\n",
+      "stderr_sha256": "7bdf120f136d2ba25b4c4043e271acbe44fd0eef5e892074dbda7b4a1cf37d01"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        290709,
+        43542,
+        30375,
+        29625
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.012012541999999904,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-7.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-memory-7.stderr",
+      "process_peak_rss_bytes": 21544960,
+      "size": 1000,
+      "iteration": 7,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[290709,43542,30375,29625],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "b09c1cfc73f499c09243bcc4657ceea7d7ab8b1322da72dffe7afec5d1686eaa",
+      "raw_stderr": "        0.00 real         0.00 user         0.00 sys\n            21544960  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                1569  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  10  involuntary context switches\n           176601785  instructions retired\n            35560881  cycles elapsed\n            11960824  peak memory footprint\n",
+      "stderr_sha256": "20c6dda18fea5bfe84f681f637f04d3278a781bc15761545d600bd41ee0a9e1b"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        379791,
+        49916,
+        38583,
+        36125
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.6356150830000002,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-88lyuo4l/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-0.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-0.stderr",
+      "process_peak_rss_bytes": 31031296,
+      "size": 1000,
+      "iteration": 0,
+      "discarded": true,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[379791,49916,38583,36125],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "4bf8d53c2d84a0ddeb6926d1c6f1209ac09acbb42e1655cd654a2177dd682fdd",
+      "raw_stderr": "        0.63 real         0.02 user         0.09 sys\n            31031296  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                2149  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 477  voluntary context switches\n                  56  involuntary context switches\n           815602172  instructions retired\n           241661872  cycles elapsed\n            16794104  peak memory footprint\n",
+      "stderr_sha256": "17a2d9e9e291a0c4eebfb50bf13b584e38aca02dc1a6e4a6de63411c4f1cc169"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        337667,
+        37833,
+        32541,
+        31625
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.6114861249999999,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-hwmfvscc/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-1.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-1.stderr",
+      "process_peak_rss_bytes": 30900224,
+      "size": 1000,
+      "iteration": 1,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[337667,37833,32541,31625],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "7882f024a46c7d26f8adf62253aac19bf63533886d764cb3a4ab1ad982b6d7fd",
+      "raw_stderr": "        0.60 real         0.01 user         0.08 sys\n            30900224  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                2141  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 470  voluntary context switches\n                  48  involuntary context switches\n           808349041  instructions retired\n           228479042  cycles elapsed\n            16663032  peak memory footprint\n",
+      "stderr_sha256": "b6ee2857410421b78c40183848abbcca431188c68ffa9c3263cb8e4433d84a62"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        392541,
+        44875,
+        34375,
+        34709
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.621374458,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-x6y25lh3/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-2.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-2.stderr",
+      "process_peak_rss_bytes": 31473664,
+      "size": 1000,
+      "iteration": 2,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[392541,44875,34375,34709],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "d9b5f3c3e6d327307ff95f73bff3e5cdd66a7d3e4c1087259793cfbc89ebaaa4",
+      "raw_stderr": "        0.61 real         0.02 user         0.07 sys\n            31473664  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                2176  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 478  voluntary context switches\n                  31  involuntary context switches\n           806132216  instructions retired\n           226550312  cycles elapsed\n            17236472  peak memory footprint\n",
+      "stderr_sha256": "f6310cd4ceada6173f6825b6a1cf79c23b428b3ef232a7d1f7e2fd6b281d4a33"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        360417,
+        44583,
+        34458,
+        34792
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.6291722499999999,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-iyzy41q1/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-3.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-3.stderr",
+      "process_peak_rss_bytes": 30965760,
+      "size": 1000,
+      "iteration": 3,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[360417,44583,34458,34792],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "d9cf4165958479caf9cb6ac63d9c5511a709eebf80507eb5e6ce17b933d8b348",
+      "raw_stderr": "        0.62 real         0.02 user         0.09 sys\n            30965760  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                2145  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 470  voluntary context switches\n                  42  involuntary context switches\n           807132217  instructions retired\n           240522222  cycles elapsed\n            16728568  peak memory footprint\n",
+      "stderr_sha256": "986ef10f710ca312d62baa031cd7e6c34a7b4d2f57537851fd0e1a09d177e9d6"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        532583,
+        52958,
+        42083,
+        39542
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.6357774169999999,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-aa3olu_c/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-4.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-4.stderr",
+      "process_peak_rss_bytes": 30425088,
+      "size": 1000,
+      "iteration": 4,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[532583,52958,42083,39542],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "5092ce5280de245658df9c2d4a1a009b057faf0c5b189d3fb2c74fe5c00e521d",
+      "raw_stderr": "        0.63 real         0.02 user         0.08 sys\n            30425088  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                2111  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 484  voluntary context switches\n                  39  involuntary context switches\n           801430295  instructions retired\n           221938596  cycles elapsed\n            16187896  peak memory footprint\n",
+      "stderr_sha256": "fa35f1105c2ac9c753e636cb2558ec9e2a98acf72ed8cebe627ce6eab19c93c8"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        500792,
+        49250,
+        34125,
+        35959
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.6153018339999994,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-nkxosrcg/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-5.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-5.stderr",
+      "process_peak_rss_bytes": 30916608,
+      "size": 1000,
+      "iteration": 5,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[500792,49250,34125,35959],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "ef62c43266e07ddd41f6bd79fe808e7ef55b404700c9f263bfd78892d1339de7",
+      "raw_stderr": "        0.61 real         0.02 user         0.08 sys\n            30916608  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                2141  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 470  voluntary context switches\n                  42  involuntary context switches\n           799867725  instructions retired\n           217262185  cycles elapsed\n            16679416  peak memory footprint\n",
+      "stderr_sha256": "6b2d9b3337f6970e5ac89bbc91b9042812f266f23e4be0ad0427cb12b2b517ba"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        426542,
+        52250,
+        39333,
+        34042
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.6304550410000003,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-9byou48e/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-6.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-6.stderr",
+      "process_peak_rss_bytes": 31703040,
+      "size": 1000,
+      "iteration": 6,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[426542,52250,39333,34042],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "c66ef42b506d7bd3e0dff54586bbff037baf6a802078c2b8804dec9804160463",
+      "raw_stderr": "        0.62 real         0.02 user         0.09 sys\n            31703040  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                2189  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 478  voluntary context switches\n                  50  involuntary context switches\n           805850022  instructions retired\n           229653238  cycles elapsed\n            17482256  peak memory footprint\n",
+      "stderr_sha256": "78ee209b51e3a012a383fc95a4362adbec050a82e3f62d41a60de3bc8e6a70e8"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        499500,
+        499500,
+        499500,
+        499500
+      ],
+      "creation_ns": [
+        377500,
+        45500,
+        35875,
+        30708
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        1000,
+        0,
+        0,
+        0
+      ],
+      "rows": 1000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        1089344,
+        1089344,
+        1089344,
+        1089344
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.6180342500000009,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "1000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-bozyvsvp/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-7.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-1000-file-7.stderr",
+      "process_peak_rss_bytes": 31621120,
+      "size": 1000,
+      "iteration": 7,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[499500,499500,499500,499500],\"creation_ns\":[377500,45500,35875,30708],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[1000,0,0,0],\"rows\":1000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[1089344,1089344,1089344,1089344],\"status\":\"ok\"}\n",
+      "stdout_sha256": "b55d88dc977eb8680b138dab13f55afcd0bb3ea253de59c69c2bceccce18f7f4",
+      "raw_stderr": "        0.61 real         0.02 user         0.08 sys\n            31621120  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                2185  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 473  voluntary context switches\n                  44  involuntary context switches\n           806113392  instructions retired\n           230595768  cycles elapsed\n            17383928  peak memory footprint\n",
+      "stderr_sha256": "35acd391f4a3c88efa242a2cb5ae391d8173b53883c78fa39089338f740b5df3"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1699167,
+        45542,
+        32250,
+        29125
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.17095450000000056,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-0.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-0.stderr",
+      "process_peak_rss_bytes": 86999040,
+      "size": 10000,
+      "iteration": 0,
+      "discarded": true,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1699167,45542,32250,29125],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "9d4c995107d0fcfa80cd6febedc99eaad50c7ffb07853e9a90a808e2a1433e52",
+      "raw_stderr": "        0.16 real         0.16 user         0.00 sys\n            86999040  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                5730  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  24  involuntary context switches\n          4181563662  instructions retired\n           726020756  cycles elapsed\n            61620776  peak memory footprint\n",
+      "stderr_sha256": "b0731a972f26812f63394242c74552119832d7aefc6883e4ef5937431e87556d"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1859625,
+        40708,
+        31000,
+        32333
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.17306295900000102,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-1.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-1.stderr",
+      "process_peak_rss_bytes": 83001344,
+      "size": 10000,
+      "iteration": 1,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1859625,40708,31000,32333],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "a1b25a41a4d84e31b11c303c9df12bfbc651e3f345668119708524bb47fda59d",
+      "raw_stderr": "        0.17 real         0.16 user         0.00 sys\n            83001344  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                5328  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  24  involuntary context switches\n          4179767979  instructions retired\n           736291627  cycles elapsed\n            56230440  peak memory footprint\n",
+      "stderr_sha256": "0e15b62e5fc353a614f099e38a7340ab6ede5bba01ea0cbbce68e9eb96c4e384"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1942208,
+        43500,
+        30667,
+        29834
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.17540312500000077,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-2.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-2.stderr",
+      "process_peak_rss_bytes": 87064576,
+      "size": 10000,
+      "iteration": 2,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1942208,43500,30667,29834],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "12f1284d71fff7d4e17a97596b9dbae23574fb8d66a582fb9171d1d94df9fd4a",
+      "raw_stderr": "        0.17 real         0.16 user         0.00 sys\n            87064576  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                5726  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  25  involuntary context switches\n          4182768782  instructions retired\n           744936826  cycles elapsed\n            61686312  peak memory footprint\n",
+      "stderr_sha256": "2865fa87c15acc3e6e79dfff73f49faf22d0498990bfb9b2518a2a56566227b8"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1883250,
+        41709,
+        30416,
+        32083
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.17303350000000073,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-3.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-3.stderr",
+      "process_peak_rss_bytes": 87048192,
+      "size": 10000,
+      "iteration": 3,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1883250,41709,30416,32083],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "b7929f107edcc4068016e34314cb4eb1de1e6134167a4452c3b70898acbd9363",
+      "raw_stderr": "        0.17 real         0.16 user         0.00 sys\n            87048192  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                5728  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  26  involuntary context switches\n          4182392626  instructions retired\n           734344023  cycles elapsed\n            61669928  peak memory footprint\n",
+      "stderr_sha256": "ee69d446452ba28719f8d75fd9b2ac08e28b55704b5cfb91f50f118c45532932"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1787833,
+        48417,
+        50917,
+        37333
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.17727454200000103,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-4.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-4.stderr",
+      "process_peak_rss_bytes": 83017728,
+      "size": 10000,
+      "iteration": 4,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1787833,48417,50917,37333],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "49c464a1efbf1c44cf70e89ed9c33634e691b669e1ecf4b9f683ca46a061b7fe",
+      "raw_stderr": "        0.17 real         0.16 user         0.00 sys\n            83017728  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                5329  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  27  involuntary context switches\n          4179106313  instructions retired\n           754574783  cycles elapsed\n            56246824  peak memory footprint\n",
+      "stderr_sha256": "0284be4b09d4d2470f8bf4c1659bb158103656931e05dad563713a913a57d9b4"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1804250,
+        43833,
+        32667,
+        29417
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.17133041599999999,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-5.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-5.stderr",
+      "process_peak_rss_bytes": 93519872,
+      "size": 10000,
+      "iteration": 5,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1804250,43833,32667,29417],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "c4d3b1dc023decca7ecacc289f2906558e01bd08b9f4dcc023721ef881907df0",
+      "raw_stderr": "        0.16 real         0.16 user         0.00 sys\n            93519872  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                6134  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  22  involuntary context switches\n          4187139339  instructions retired\n           725421852  cycles elapsed\n            68207144  peak memory footprint\n",
+      "stderr_sha256": "134db5516a2677ee6d3b1a186ba7c9c2369e8146471549cd57334108eb895ac5"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1773417,
+        63250,
+        34583,
+        32041
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.17793779099999973,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-6.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-6.stderr",
+      "process_peak_rss_bytes": 83034112,
+      "size": 10000,
+      "iteration": 6,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1773417,63250,34583,32041],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "54a8faa096073594fdb7d95d9253b753e10abb5c875c147f3ec4b162995b3ea9",
+      "raw_stderr": "        0.17 real         0.16 user         0.00 sys\n            83034112  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                5330  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  24  involuntary context switches\n          4179812044  instructions retired\n           757188181  cycles elapsed\n            56263208  peak memory footprint\n",
+      "stderr_sha256": "1e8b76c8e401fdaa88023b670b8eb5d7d5fffee8e5c96c249e9fb8017b4d9cf6"
+    },
+    {
+      "backend": "memory",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1883708,
+        69167,
+        30791,
+        28334
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.17216545800000027,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "-"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-7.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-memory-7.stderr",
+      "process_peak_rss_bytes": 93536256,
+      "size": 10000,
+      "iteration": 7,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"memory\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1883708,69167,30791,28334],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "2443d4999e2114229b1685e4259e02833172b685951fcb752ad7263117e08f9d",
+      "raw_stderr": "        0.16 real         0.16 user         0.00 sys\n            93536256  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                6134  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  24  involuntary context switches\n          4187245037  instructions retired\n           728379355  cycles elapsed\n            68223528  peak memory footprint\n",
+      "stderr_sha256": "974989f106ca960e8054017d6f50eab32f7d2c981a1afbc05ea63ab86f4be012"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1749875,
+        41042,
+        24958,
+        25583
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.7991790420000005,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-2rgx81qv/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-0.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-0.stderr",
+      "process_peak_rss_bytes": 93487104,
+      "size": 10000,
+      "iteration": 0,
+      "discarded": true,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1749875,41042,24958,25583],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "acc235008ee50b68b4352e4c50ea82a5ba9d300acf0748edabf1b1249bd79d24",
+      "raw_stderr": "        0.79 real         0.18 user         0.09 sys\n            93487104  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                6019  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 475  voluntary context switches\n                  57  involuntary context switches\n          4846300092  instructions retired\n           926300300  cycles elapsed\n            58999360  peak memory footprint\n",
+      "stderr_sha256": "13eb12b7859ed273d98b00799fe0324ae012f3532fec74af13629ac0b023a6e6"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1796125,
+        38208,
+        25292,
+        25292
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.8024919999999991,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-gk8kx687/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-1.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-1.stderr",
+      "process_peak_rss_bytes": 93519872,
+      "size": 10000,
+      "iteration": 1,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1796125,38208,25292,25292],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "1ef6aad27410f47d4c8277346b2379b73f59ebd661a40942e908d301e1fe0ab1",
+      "raw_stderr": "        0.79 real         0.18 user         0.09 sys\n            93519872  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                6021  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 475  voluntary context switches\n                  57  involuntary context switches\n          4856274040  instructions retired\n           942641823  cycles elapsed\n            59015720  peak memory footprint\n",
+      "stderr_sha256": "155e148fd240d42c226cc6a41afdfa23bd414d4dc56b6e8379e87fd848e6b419"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1782292,
+        38667,
+        25166,
+        26917
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.802764250000001,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-cpbbrjld/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-2.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-2.stderr",
+      "process_peak_rss_bytes": 98385920,
+      "size": 10000,
+      "iteration": 2,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1782292,38667,25166,26917],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "c80e73787a3f9ba2fb3c4ca532f722beb99e9f2c816daf74a748db359d64bf35",
+      "raw_stderr": "        0.80 real         0.18 user         0.09 sys\n            98385920  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                6422  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 474  voluntary context switches\n                  55  involuntary context switches\n          4856649954  instructions retired\n           934127603  cycles elapsed\n            64733736  peak memory footprint\n",
+      "stderr_sha256": "ee02ca13d0413fd7ea475fbaee8d24e49b5062e1ebf439f3fd31dbad5786b890"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1810792,
+        42458,
+        25125,
+        24167
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.7977618329999991,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-5yw5nw87/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-3.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-3.stderr",
+      "process_peak_rss_bytes": 98140160,
+      "size": 10000,
+      "iteration": 3,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1810792,42458,25125,24167],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "b780d13ce1c9c1817960d1906f28abb518a6fb84b38404b8a7eeb0737eeff57a",
+      "raw_stderr": "        0.79 real         0.18 user         0.08 sys\n            98140160  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                6405  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 474  voluntary context switches\n                  50  involuntary context switches\n          4852005076  instructions retired\n           916003430  cycles elapsed\n            64422440  peak memory footprint\n",
+      "stderr_sha256": "3932d033d89dedace9159f1ffde868c5df2c42cbdb0e36ad4ec62c81e6fe7701"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1884833,
+        41875,
+        28291,
+        22500
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.7949629169999994,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-wdhqtls8/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-4.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-4.stderr",
+      "process_peak_rss_bytes": 104923136,
+      "size": 10000,
+      "iteration": 4,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1884833,41875,28291,22500],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "8bb85763b1aa0dfc8490a2340665e8a56e125ddd1882e8ce8ddfdf30ef7f971f",
+      "raw_stderr": "        0.79 real         0.18 user         0.09 sys\n           104923136  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                6823  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 472  voluntary context switches\n                  53  involuntary context switches\n          4861991810  instructions retired\n           939791077  cycles elapsed\n            71303744  peak memory footprint\n",
+      "stderr_sha256": "660c5d8b9ec27801fc0c32ad67527ad71973701f058b1b70dd78ad086ce2c791"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1895125,
+        37083,
+        28833,
+        25959
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.7807477499999997,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-e5tejxnc/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-5.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-5.stderr",
+      "process_peak_rss_bytes": 98353152,
+      "size": 10000,
+      "iteration": 5,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1895125,37083,28833,25959],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "7ea33d53513bd32b692dca350a2a9a87c5e52502b3cd0b4cfba52aff07ac86e8",
+      "raw_stderr": "        0.77 real         0.18 user         0.08 sys\n            98353152  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                6423  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 471  voluntary context switches\n                  45  involuntary context switches\n          4849419039  instructions retired\n           917541392  cycles elapsed\n            64651840  peak memory footprint\n",
+      "stderr_sha256": "4a46bd56121127724fc40d51c14518bc61795d468af1c6a75266f4363bf69fae"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1831334,
+        40292,
+        26500,
+        23291
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.818508167000001,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-4l1gx_2q/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-6.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-6.stderr",
+      "process_peak_rss_bytes": 104906752,
+      "size": 10000,
+      "iteration": 6,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1831334,40292,26500,23291],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "b3a150f0e23b14928057dc921cc08b95f74b9c9d51bc25a4b1bc0c05247ef7a4",
+      "raw_stderr": "        0.81 real         0.18 user         0.09 sys\n           104906752  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                6823  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 487  voluntary context switches\n                  58  involuntary context switches\n          4857503353  instructions retired\n           930965488  cycles elapsed\n            71287360  peak memory footprint\n",
+      "stderr_sha256": "ba867c22f2c1910c7b6198a30b909939f5ff4038bd3df61dc6796b56ca189d4c"
+    },
+    {
+      "backend": "file",
+      "checksums": [
+        49995000,
+        49995000,
+        49995000,
+        49995000
+      ],
+      "creation_ns": [
+        1738041,
+        38375,
+        25333,
+        23375
+      ],
+      "durability": "SyncOnEveryWrite",
+      "final_buffer_owners": 0,
+      "final_retained_bytes": 0,
+      "final_view_handles": 0,
+      "maximum_live_cursors": 1,
+      "prefetch": 0,
+      "preflight_rows": [
+        10000,
+        0,
+        0,
+        0
+      ],
+      "rows": 10000,
+      "scope": "Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.",
+      "snapshots": 4,
+      "source_capacity_bytes": [
+        10901992,
+        10901992,
+        10901992,
+        10901992
+      ],
+      "status": "ok",
+      "process_exit": 0,
+      "process_seconds": 0.7999112920000009,
+      "command": [
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-probe",
+        "10000",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-db-rycos4jk/store"
+      ],
+      "stdout": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-7.stdout",
+      "stderr": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-rust-main3c-create-controls/source-capacity-10000-file-7.stderr",
+      "process_peak_rss_bytes": 98402304,
+      "size": 10000,
+      "iteration": 7,
+      "discarded": false,
+      "raw_stdout": "{\"backend\":\"file\",\"checksums\":[49995000,49995000,49995000,49995000],\"creation_ns\":[1738041,38375,25333,23375],\"durability\":\"SyncOnEveryWrite\",\"final_buffer_owners\":0,\"final_retained_bytes\":0,\"final_view_handles\":0,\"maximum_live_cursors\":1,\"prefetch\":0,\"preflight_rows\":[10000,0,0,0],\"rows\":10000,\"scope\":\"Four precreated snapshots with one live cursor at a time. Setup and full ordered consumption outside creation timers. No Arrow API or whole-query memory claim.\",\"snapshots\":4,\"source_capacity_bytes\":[10901992,10901992,10901992,10901992],\"status\":\"ok\"}\n",
+      "stdout_sha256": "e96e2129e56de8d654f28a9be483133f722174221d453230949b6b9b88085bdc",
+      "raw_stderr": "        0.79 real         0.18 user         0.09 sys\n            98402304  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                6423  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 474  voluntary context switches\n                  66  involuntary context switches\n          4860105677  instructions retired\n           953422949  cycles elapsed\n            64766528  peak memory footprint\n",
+      "stderr_sha256": "cfa52b29b0a975a4d1da9203c61e6477ca203baf87d8b1ca37ebeb079c143e39"
+    }
+  ],
+  "groups": [
+    {
+      "size": 1000,
+      "backend": "memory",
+      "qualified": true,
+      "cold_median_ns": 282417,
+      "warm_median_ns": 30334,
+      "paired_cold_over_warm": [
+        9.866096069868995,
+        7.271380931124123,
+        7.645664771484802,
+        9.805084745762711,
+        9.602788949693414,
+        9.766678260869565,
+        9.570666666666666
+      ],
+      "process_peak_rss_median_bytes": 21512192,
+      "source_capacity_bytes": 1089344
+    },
+    {
+      "size": 1000,
+      "backend": "file",
+      "qualified": true,
+      "cold_median_ns": 392541,
+      "warm_median_ns": 35875,
+      "paired_cold_over_warm": [
+        10.376663286315726,
+        11.309487452822035,
+        10.35919176822258,
+        12.65553786564646,
+        13.92674990961929,
+        10.844380037118958,
+        10.522648083623693
+      ],
+      "process_peak_rss_median_bytes": 30965760,
+      "source_capacity_bytes": 1089344
+    },
+    {
+      "size": 10000,
+      "backend": "memory",
+      "qualified": true,
+      "cold_median_ns": 1859625,
+      "warm_median_ns": 32333,
+      "paired_cold_over_warm": [
+        57.51476819348653,
+        63.33218117194378,
+        58.69931116167441,
+        36.92572856641262,
+        55.23157926959929,
+        51.280021976115435,
+        61.17722711181839
+      ],
+      "process_peak_rss_median_bytes": 87048192,
+      "source_capacity_bytes": 10901992
+    },
+    {
+      "size": 10000,
+      "backend": "file",
+      "qualified": true,
+      "cold_median_ns": 1810792,
+      "warm_median_ns": 26500,
+      "paired_cold_over_warm": [
+        71.01553851020086,
+        66.21436267043133,
+        72.07132338308458,
+        66.62306033720971,
+        65.7276384698089,
+        69.10694339622641,
+        68.60778431295148
+      ],
+      "process_peak_rss_median_bytes": 98385920,
+      "source_capacity_bytes": 10901992
+    }
+  ],
+  "all_groups_successful": true,
+  "scope": "Same-generation cold/warm cursor creation on frozen Rust source. Planning/admission remain timed; setup and ordered consumption excluded. Shared-host, one cursor at a time, default budgets/durability, no Arrow/old-head causality/whole-query/cross-language claim.",
+  "audit": {
+    "terminal": true,
+    "records": 32,
+    "measured_records": 28,
+    "discarded_records": 4,
+    "report_sha256": "a52e5df4fefceec0a97cbb1843761f4277e72123688996e0266309832326d19a",
+    "raw_hashes_and_profiles_verified": true,
+    "head": "6ce232ca14f65a1ec97487231e027e26432196a3",
+    "tree": "3b42526cc8b47182933a1346c4534162160345df",
+    "scope": "Same-generation cold/warm cursor creation, including planning/admission. No prior-head, Arrow, whole-query memory or idle-host attribution."
+  }
+}

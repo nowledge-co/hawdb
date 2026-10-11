@@ -1,0 +1,2454 @@
+{
+  "source": {
+    "head": "94bace8ae7a28087d81c3eac8edafe92eb9ac4f4",
+    "tree": "6233f370ba4c107c0180693a3e0722e8abf7f0e5"
+  },
+  "manifest": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-performance-94bace8/manifest.json",
+  "samples": 7,
+  "threshold": 1.1,
+  "terminal": true,
+  "groups": [
+    {
+      "rows": 1000,
+      "backend": "memory",
+      "process_exit": 0,
+      "command": [
+        "uv",
+        "run",
+        "--no-project",
+        "--python",
+        "3.14.6",
+        "--with",
+        "pyarrow==26.0.0",
+        "python",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-performance-94bace8/artifacts/retained_boundary.py",
+        "--rows",
+        "1000",
+        "--backend",
+        "memory",
+        "--mode",
+        "all",
+        "--samples",
+        "7"
+      ],
+      "result": {
+        "status": "ok",
+        "rows": 1000,
+        "backend": "memory",
+        "mode": "all",
+        "samples": 7,
+        "pyarrow": "26.0.0",
+        "reference": {
+          "rows": 1000,
+          "checksum": "b283e64104aa390d",
+          "query_boundary_ns": 1884916,
+          "elapsed_ns": 2093916,
+          "retained_snapshot": null
+        },
+        "warmups": {
+          "owned": {
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 559541,
+            "elapsed_ns": 770417,
+            "retained_snapshot": null
+          },
+          "retained": {
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 136293,
+            "elapsed_ns": 368667,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 17607,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          "arrow": {
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 1471043,
+            "elapsed_ns": 1717458,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          }
+        },
+        "records": [
+          {
+            "sample": 0,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 652166,
+            "elapsed_ns": 862416,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 0,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 72291,
+            "elapsed_ns": 291875,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 0,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 76998,
+            "elapsed_ns": 291500,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 1,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 48833,
+            "elapsed_ns": 267875,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 1,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 60456,
+            "elapsed_ns": 271792,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 1,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 569917,
+            "elapsed_ns": 773958,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 2,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 61124,
+            "elapsed_ns": 286958,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 2,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 550291,
+            "elapsed_ns": 765875,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 2,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 64414,
+            "elapsed_ns": 307292,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 3,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 584667,
+            "elapsed_ns": 789625,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 3,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 54207,
+            "elapsed_ns": 288833,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 3,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 67541,
+            "elapsed_ns": 283959,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 4,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 46250,
+            "elapsed_ns": 273208,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 4,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 56919,
+            "elapsed_ns": 288333,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 4,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 541708,
+            "elapsed_ns": 759209,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 5,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 58957,
+            "elapsed_ns": 277250,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 5,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 535750,
+            "elapsed_ns": 752584,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 5,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 60042,
+            "elapsed_ns": 313375,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 6,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 613584,
+            "elapsed_ns": 818417,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 6,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 68166,
+            "elapsed_ns": 300250,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 6,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 82583,
+            "elapsed_ns": 323542,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          }
+        ],
+        "summary": {
+          "owned": {
+            "median_query_boundary_ns": 569917,
+            "median_elapsed_ns": 773958
+          },
+          "retained": {
+            "median_query_boundary_ns": 60042,
+            "median_elapsed_ns": 291875
+          },
+          "arrow": {
+            "median_query_boundary_ns": 61124,
+            "median_elapsed_ns": 286958
+          }
+        },
+        "process_peak_rss_bytes": 57393152
+      },
+      "pairs": {
+        "retained": [
+          2.9547443254817987,
+          2.889250583294447,
+          2.492336279499629,
+          2.7338462017844223,
+          2.7788681151357206,
+          2.401544475468688,
+          2.7257851790174854
+        ],
+        "arrow": [
+          2.9585454545454546,
+          2.8476114087243185,
+          2.668944584224869,
+          2.780771167668572,
+          2.633097841731609,
+          2.7144598737601444,
+          2.529554122803222
+        ]
+      },
+      "every_pair_improves_10_percent": {
+        "retained": true,
+        "arrow": true
+      }
+    },
+    {
+      "rows": 1000,
+      "backend": "file",
+      "process_exit": 0,
+      "command": [
+        "uv",
+        "run",
+        "--no-project",
+        "--python",
+        "3.14.6",
+        "--with",
+        "pyarrow==26.0.0",
+        "python",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-performance-94bace8/artifacts/retained_boundary.py",
+        "--rows",
+        "1000",
+        "--backend",
+        "file",
+        "--mode",
+        "all",
+        "--samples",
+        "7"
+      ],
+      "result": {
+        "status": "ok",
+        "rows": 1000,
+        "backend": "file",
+        "mode": "all",
+        "samples": 7,
+        "pyarrow": "26.0.0",
+        "reference": {
+          "rows": 1000,
+          "checksum": "b283e64104aa390d",
+          "query_boundary_ns": 2535084,
+          "elapsed_ns": 3049458,
+          "retained_snapshot": null
+        },
+        "warmups": {
+          "owned": {
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 1276250,
+            "elapsed_ns": 1743875,
+            "retained_snapshot": null
+          },
+          "retained": {
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 204626,
+            "elapsed_ns": 719625,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 17607,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          "arrow": {
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 365833,
+            "elapsed_ns": 871958,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          }
+        },
+        "records": [
+          {
+            "sample": 0,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 1196874,
+            "elapsed_ns": 1605084,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 0,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 140250,
+            "elapsed_ns": 557167,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 0,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 151334,
+            "elapsed_ns": 582708,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 1,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 96833,
+            "elapsed_ns": 519458,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 1,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 116002,
+            "elapsed_ns": 545042,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 1,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 984249,
+            "elapsed_ns": 1358083,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 2,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 108457,
+            "elapsed_ns": 488625,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 2,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 955417,
+            "elapsed_ns": 1319375,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 2,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 87458,
+            "elapsed_ns": 466917,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 3,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 892666,
+            "elapsed_ns": 1216500,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 3,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 74418,
+            "elapsed_ns": 420417,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 3,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 101750,
+            "elapsed_ns": 439667,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 4,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 66957,
+            "elapsed_ns": 386917,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 4,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 80917,
+            "elapsed_ns": 387792,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 4,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 792583,
+            "elapsed_ns": 1094083,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 5,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 90916,
+            "elapsed_ns": 404375,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 5,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 783376,
+            "elapsed_ns": 1083834,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 5,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 68544,
+            "elapsed_ns": 389708,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 6,
+            "mode": "owned",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 725084,
+            "elapsed_ns": 1002417,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 6,
+            "mode": "retained",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 61000,
+            "elapsed_ns": 339750,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 6,
+            "mode": "arrow",
+            "rows": 1000,
+            "checksum": "b283e64104aa390d",
+            "query_boundary_ns": 79042,
+            "elapsed_ns": 368541,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          }
+        ],
+        "summary": {
+          "owned": {
+            "median_query_boundary_ns": 892666,
+            "median_elapsed_ns": 1216500
+          },
+          "retained": {
+            "median_query_boundary_ns": 74418,
+            "median_elapsed_ns": 420417
+          },
+          "arrow": {
+            "median_query_boundary_ns": 101750,
+            "median_elapsed_ns": 439667
+          }
+        },
+        "process_peak_rss_bytes": 67633152
+      },
+      "pairs": {
+        "retained": [
+          2.8807951655428266,
+          2.614423110241829,
+          2.825716347873391,
+          2.8935556839994576,
+          2.827694311699925,
+          2.7811438307655987,
+          2.9504547461368653
+        ],
+        "arrow": [
+          2.754525422681686,
+          2.4917033916652294,
+          2.700179073931952,
+          2.7668667423299906,
+          2.821314003383257,
+          2.6802695517774344,
+          2.7199606013984874
+        ]
+      },
+      "every_pair_improves_10_percent": {
+        "retained": true,
+        "arrow": true
+      }
+    },
+    {
+      "rows": 10000,
+      "backend": "memory",
+      "process_exit": 0,
+      "command": [
+        "uv",
+        "run",
+        "--no-project",
+        "--python",
+        "3.14.6",
+        "--with",
+        "pyarrow==26.0.0",
+        "python",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-performance-94bace8/artifacts/retained_boundary.py",
+        "--rows",
+        "10000",
+        "--backend",
+        "memory",
+        "--mode",
+        "all",
+        "--samples",
+        "7"
+      ],
+      "result": {
+        "status": "ok",
+        "rows": 10000,
+        "backend": "memory",
+        "mode": "all",
+        "samples": 7,
+        "pyarrow": "26.0.0",
+        "reference": {
+          "rows": 10000,
+          "checksum": "971a5ed4248c88d5",
+          "query_boundary_ns": 8276625,
+          "elapsed_ns": 10359584,
+          "retained_snapshot": null
+        },
+        "warmups": {
+          "owned": {
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5286917,
+            "elapsed_ns": 7415167,
+            "retained_snapshot": null
+          },
+          "retained": {
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 434624,
+            "elapsed_ns": 2733625,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 17607,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          "arrow": {
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 455122,
+            "elapsed_ns": 2757208,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          }
+        },
+        "records": [
+          {
+            "sample": 0,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5220083,
+            "elapsed_ns": 7339084,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 0,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 452494,
+            "elapsed_ns": 2650292,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 0,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 450538,
+            "elapsed_ns": 2671250,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 1,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 343252,
+            "elapsed_ns": 2572458,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 1,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 436667,
+            "elapsed_ns": 2685125,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 1,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5241751,
+            "elapsed_ns": 7511250,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 2,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 513504,
+            "elapsed_ns": 2724000,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 2,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5011666,
+            "elapsed_ns": 7180542,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 2,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 395746,
+            "elapsed_ns": 2560583,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 3,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5042124,
+            "elapsed_ns": 7180208,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 3,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 381909,
+            "elapsed_ns": 2635000,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 3,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 411417,
+            "elapsed_ns": 2616542,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 4,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 311082,
+            "elapsed_ns": 2670583,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 4,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 399794,
+            "elapsed_ns": 2641709,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 4,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5201375,
+            "elapsed_ns": 7343417,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 5,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 536251,
+            "elapsed_ns": 2699458,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 5,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5169709,
+            "elapsed_ns": 7248166,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 5,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 380295,
+            "elapsed_ns": 2769833,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 6,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 4995667,
+            "elapsed_ns": 7106625,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 6,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 365709,
+            "elapsed_ns": 2572750,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 6,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 419868,
+            "elapsed_ns": 2614750,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          }
+        ],
+        "summary": {
+          "owned": {
+            "median_query_boundary_ns": 5169709,
+            "median_elapsed_ns": 7248166
+          },
+          "retained": {
+            "median_query_boundary_ns": 380295,
+            "median_elapsed_ns": 2635000
+          },
+          "arrow": {
+            "median_query_boundary_ns": 436667,
+            "median_elapsed_ns": 2671250
+          }
+        },
+        "process_peak_rss_bytes": 78823424
+      },
+      "pairs": {
+        "retained": [
+          2.7691605302359137,
+          2.9198727442780408,
+          2.8042605922166945,
+          2.7249366223908917,
+          2.7497430336372246,
+          2.6168241912057515,
+          2.7622680011660674
+        ],
+        "arrow": [
+          2.747434347215723,
+          2.7973558028024765,
+          2.6360286343612334,
+          2.7441592758686846,
+          2.7797978505581047,
+          2.685044923832858,
+          2.7178984606558942
+        ]
+      },
+      "every_pair_improves_10_percent": {
+        "retained": true,
+        "arrow": true
+      }
+    },
+    {
+      "rows": 10000,
+      "backend": "file",
+      "process_exit": 0,
+      "command": [
+        "uv",
+        "run",
+        "--no-project",
+        "--python",
+        "3.14.6",
+        "--with",
+        "pyarrow==26.0.0",
+        "python",
+        "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-performance-94bace8/artifacts/retained_boundary.py",
+        "--rows",
+        "10000",
+        "--backend",
+        "file",
+        "--mode",
+        "all",
+        "--samples",
+        "7"
+      ],
+      "result": {
+        "status": "ok",
+        "rows": 10000,
+        "backend": "file",
+        "mode": "all",
+        "samples": 7,
+        "pyarrow": "26.0.0",
+        "reference": {
+          "rows": 10000,
+          "checksum": "971a5ed4248c88d5",
+          "query_boundary_ns": 11414250,
+          "elapsed_ns": 14076375,
+          "retained_snapshot": null
+        },
+        "warmups": {
+          "owned": {
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 6553208,
+            "elapsed_ns": 8975125,
+            "retained_snapshot": null
+          },
+          "retained": {
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 466829,
+            "elapsed_ns": 3095667,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 17607,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          "arrow": {
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 487754,
+            "elapsed_ns": 2882292,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          }
+        },
+        "records": [
+          {
+            "sample": 0,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5662417,
+            "elapsed_ns": 7771875,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 0,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 425834,
+            "elapsed_ns": 2559583,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 0,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 425209,
+            "elapsed_ns": 2565208,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 1,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 307873,
+            "elapsed_ns": 2474125,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 1,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 379411,
+            "elapsed_ns": 2542334,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 1,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5298917,
+            "elapsed_ns": 7505375,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 2,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 499751,
+            "elapsed_ns": 2593542,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 2,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5036334,
+            "elapsed_ns": 7169000,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 2,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 386921,
+            "elapsed_ns": 2524333,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 3,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5180958,
+            "elapsed_ns": 7258792,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 3,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 393801,
+            "elapsed_ns": 2707583,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 3,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 436922,
+            "elapsed_ns": 2732792,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 4,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 296246,
+            "elapsed_ns": 2527917,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 4,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 370496,
+            "elapsed_ns": 2457041,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 4,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5258167,
+            "elapsed_ns": 7367334,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 5,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 481167,
+            "elapsed_ns": 2585500,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 5,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 5280541,
+            "elapsed_ns": 7407500,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 5,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 400170,
+            "elapsed_ns": 2776625,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 6,
+            "mode": "owned",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 4957293,
+            "elapsed_ns": 7078542,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 6,
+            "mode": "retained",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 347951,
+            "elapsed_ns": 2513292,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          },
+          {
+            "sample": 6,
+            "mode": "arrow",
+            "rows": 10000,
+            "checksum": "971a5ed4248c88d5",
+            "query_boundary_ns": 393913,
+            "elapsed_ns": 2458834,
+            "retained_snapshot": {
+              "budget_bytes": 16777216,
+              "handle_limit": 1024,
+              "retained_bytes": 0,
+              "peak_retained_bytes": 20111,
+              "buffer_owners": 0,
+              "view_handles": 0,
+              "peak_view_handles": 10,
+              "backpressure_events": 0
+            }
+          }
+        ],
+        "summary": {
+          "owned": {
+            "median_query_boundary_ns": 5258167,
+            "median_elapsed_ns": 7367334
+          },
+          "retained": {
+            "median_query_boundary_ns": 386921,
+            "median_elapsed_ns": 2527917
+          },
+          "arrow": {
+            "median_query_boundary_ns": 425209,
+            "median_elapsed_ns": 2565208
+          }
+        },
+        "process_peak_rss_bytes": 88064000
+      },
+      "pairs": {
+        "retained": [
+          3.0363832702436295,
+          3.0335472136613952,
+          2.839958119630017,
+          2.6809120902295516,
+          2.9143891986960013,
+          2.6678071399630845,
+          2.8164423393700373
+        ],
+        "arrow": [
+          3.029725074925698,
+          2.9521593150231245,
+          2.7641734739595503,
+          2.6561816632952673,
+          2.998457901190904,
+          2.8650164378263394,
+          2.87882061172084
+        ]
+      },
+      "every_pair_improves_10_percent": {
+        "retained": true,
+        "arrow": true
+      }
+    }
+  ],
+  "scope": "unchanged numeric complete-operation fixture; no whole-memory or idle-host claim",
+  "all_groups_pass": true,
+  "manifest_data": {
+    "head": "94bace8ae7a28087d81c3eac8edafe92eb9ac4f4",
+    "tree": "6233f370ba4c107c0180693a3e0722e8abf7f0e5",
+    "build": "bazel build -c opt, default repository configuration",
+    "python": "/Users/hawkingrei/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/bin/python3.14",
+    "producer_files": {
+      "rust": {
+        "source": "/Users/hawkingrei/Library/Caches/bazel/_bazel_hawkingrei/12752cf60922a27f8c26e7a55b226afb/execroot/_main/bazel-out/darwin_arm64-opt/bin/hawdb_bench_host_boundary",
+        "path": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-performance-94bace8/artifacts/hawdb_bench_host_boundary",
+        "sha256": "486ed2d903b6279e861d0dea9e4c4dd1aa5e417476fd8b39d33bce3d1b7400af"
+      },
+      "library": {
+        "source": "/Users/hawkingrei/Library/Caches/bazel/_bazel_hawkingrei/12752cf60922a27f8c26e7a55b226afb/execroot/_main/bazel-out/darwin_arm64-opt/bin/bindings/ffi/libhawdb_ffi.dylib",
+        "path": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-performance-94bace8/artifacts/libhawdb_ffi.dylib",
+        "sha256": "6e384e25d1759ed30c9a620e7ba4cce6702569fe65cd91fdbdfe771f23d71532"
+      },
+      "extension": {
+        "source": "/Users/hawkingrei/Library/Caches/bazel/_bazel_hawkingrei/12752cf60922a27f8c26e7a55b226afb/execroot/_main/bazel-out/darwin_arm64-opt/bin/bindings/python/python/hawdb/_hawdb.so",
+        "path": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-performance-94bace8/artifacts/python/hawdb/_hawdb.so",
+        "sha256": "efa482efb4d6a1f857888fd7b745e0f5fb6f7cb955efeb7957601f9857bc3f16"
+      },
+      "go": {
+        "source": "/Users/hawkingrei/Library/Caches/bazel/_bazel_hawkingrei/12752cf60922a27f8c26e7a55b226afb/execroot/_main/bazel-out/darwin_arm64-opt-ST-2c5af747e1f8/bin/bindings/go/cmd/boundary/boundary_/boundary",
+        "path": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-performance-94bace8/artifacts/boundary",
+        "sha256": "69e6c8b7e489905bb2b386f42f8900dd6256ced0a40a20e25974b44f0a8477b2"
+      }
+    },
+    "consumer_files": {
+      "retained_boundary.py": {
+        "path": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-performance-94bace8/artifacts/retained_boundary.py",
+        "sha256": "a3e9eb99226faa424e4cbe6bcd4faac8104f0815ab2bcad0b4797c7607dc35ab"
+      },
+      "python_boundary.py": {
+        "path": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-performance-94bace8/artifacts/python_boundary.py",
+        "sha256": "c7b7fbc541c49e30f02289a1bb7ca2c5cac06b243fe64f6e0f45168f57b5ab5c"
+      },
+      "checksum.py": {
+        "path": "/Users/hawkingrei/devel/opensource/skein/.scratch/pr-986-performance-94bace8/artifacts/checksum.py",
+        "sha256": "9fac220dad093e1ce18189fc1582481172d3efa8dc5b7919c676cb8fae23b123"
+      }
+    }
+  },
+  "cpu_environment": {
+    "numeric-1000-memory.cpu-before.txt": [
+      {
+        "pid": 7308,
+        "cpu_percent": 0.0,
+        "elapsed": "59:50",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 7314,
+        "cpu_percent": 0.0,
+        "elapsed": "59:49",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 9012,
+        "cpu_percent": 0.0,
+        "elapsed": "55:13",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 10128,
+        "cpu_percent": 0.0,
+        "elapsed": "10:36",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 11043,
+        "cpu_percent": 0.0,
+        "elapsed": "52:30",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 12282,
+        "cpu_percent": 0.0,
+        "elapsed": "51:53",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 17636,
+        "cpu_percent": 0.0,
+        "elapsed": "49:14",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 78831,
+        "cpu_percent": 0.0,
+        "elapsed": "21:34",
+        "process_kind": "bazel"
+      }
+    ],
+    "numeric-10000-file.cpu-before.txt": [
+      {
+        "pid": 7308,
+        "cpu_percent": 0.0,
+        "elapsed": "59:56",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 7314,
+        "cpu_percent": 0.0,
+        "elapsed": "59:55",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 9012,
+        "cpu_percent": 0.0,
+        "elapsed": "55:19",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 10128,
+        "cpu_percent": 0.0,
+        "elapsed": "10:42",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 11043,
+        "cpu_percent": 0.0,
+        "elapsed": "52:36",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 12282,
+        "cpu_percent": 0.0,
+        "elapsed": "51:59",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 17636,
+        "cpu_percent": 0.0,
+        "elapsed": "49:20",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 78831,
+        "cpu_percent": 0.0,
+        "elapsed": "21:40",
+        "process_kind": "bazel"
+      }
+    ],
+    "numeric-1000-file.cpu-after.txt": [
+      {
+        "pid": 7308,
+        "cpu_percent": 0.0,
+        "elapsed": "59:55",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 7314,
+        "cpu_percent": 0.0,
+        "elapsed": "59:54",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 9012,
+        "cpu_percent": 0.0,
+        "elapsed": "55:18",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 10128,
+        "cpu_percent": 0.0,
+        "elapsed": "10:41",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 11043,
+        "cpu_percent": 0.0,
+        "elapsed": "52:35",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 12282,
+        "cpu_percent": 0.0,
+        "elapsed": "51:58",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 17636,
+        "cpu_percent": 0.0,
+        "elapsed": "49:19",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 78831,
+        "cpu_percent": 0.0,
+        "elapsed": "21:39",
+        "process_kind": "bazel"
+      }
+    ],
+    "numeric-10000-file.cpu-after.txt": [
+      {
+        "pid": 7308,
+        "cpu_percent": 0.0,
+        "elapsed": "59:57",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 7314,
+        "cpu_percent": 0.0,
+        "elapsed": "59:56",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 9012,
+        "cpu_percent": 0.0,
+        "elapsed": "55:20",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 10128,
+        "cpu_percent": 0.0,
+        "elapsed": "10:43",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 11043,
+        "cpu_percent": 0.0,
+        "elapsed": "52:37",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 12282,
+        "cpu_percent": 0.0,
+        "elapsed": "52:00",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 17636,
+        "cpu_percent": 0.0,
+        "elapsed": "49:21",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 78831,
+        "cpu_percent": 0.0,
+        "elapsed": "21:41",
+        "process_kind": "bazel"
+      }
+    ],
+    "numeric-10000-memory.cpu-after.txt": [
+      {
+        "pid": 7308,
+        "cpu_percent": 0.0,
+        "elapsed": "59:56",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 7314,
+        "cpu_percent": 0.0,
+        "elapsed": "59:55",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 9012,
+        "cpu_percent": 0.0,
+        "elapsed": "55:19",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 10128,
+        "cpu_percent": 0.0,
+        "elapsed": "10:42",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 11043,
+        "cpu_percent": 0.0,
+        "elapsed": "52:36",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 12282,
+        "cpu_percent": 0.0,
+        "elapsed": "51:59",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 17636,
+        "cpu_percent": 0.0,
+        "elapsed": "49:20",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 78831,
+        "cpu_percent": 0.0,
+        "elapsed": "21:40",
+        "process_kind": "bazel"
+      }
+    ],
+    "numeric-1000-memory.cpu-after.txt": [
+      {
+        "pid": 7308,
+        "cpu_percent": 0.0,
+        "elapsed": "59:54",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 7314,
+        "cpu_percent": 0.0,
+        "elapsed": "59:53",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 9012,
+        "cpu_percent": 0.0,
+        "elapsed": "55:17",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 10128,
+        "cpu_percent": 0.0,
+        "elapsed": "10:40",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 11043,
+        "cpu_percent": 0.0,
+        "elapsed": "52:34",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 12282,
+        "cpu_percent": 0.0,
+        "elapsed": "51:57",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 17636,
+        "cpu_percent": 0.0,
+        "elapsed": "49:18",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 78831,
+        "cpu_percent": 0.0,
+        "elapsed": "21:38",
+        "process_kind": "bazel"
+      }
+    ],
+    "numeric-1000-file.cpu-before.txt": [
+      {
+        "pid": 7308,
+        "cpu_percent": 0.0,
+        "elapsed": "59:55",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 7314,
+        "cpu_percent": 0.0,
+        "elapsed": "59:54",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 9012,
+        "cpu_percent": 0.0,
+        "elapsed": "55:18",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 10128,
+        "cpu_percent": 0.0,
+        "elapsed": "10:41",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 11043,
+        "cpu_percent": 0.0,
+        "elapsed": "52:35",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 12282,
+        "cpu_percent": 0.0,
+        "elapsed": "51:58",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 17636,
+        "cpu_percent": 0.4,
+        "elapsed": "49:19",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 78831,
+        "cpu_percent": 0.0,
+        "elapsed": "21:39",
+        "process_kind": "bazel"
+      }
+    ],
+    "numeric-10000-memory.cpu-before.txt": [
+      {
+        "pid": 7308,
+        "cpu_percent": 0.0,
+        "elapsed": "59:56",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 7314,
+        "cpu_percent": 0.0,
+        "elapsed": "59:55",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 9012,
+        "cpu_percent": 0.0,
+        "elapsed": "55:19",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 10128,
+        "cpu_percent": 0.0,
+        "elapsed": "10:42",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 11043,
+        "cpu_percent": 0.0,
+        "elapsed": "52:36",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 12282,
+        "cpu_percent": 0.0,
+        "elapsed": "51:59",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 17636,
+        "cpu_percent": 0.0,
+        "elapsed": "49:20",
+        "process_kind": "bazel"
+      },
+      {
+        "pid": 78831,
+        "cpu_percent": 0.0,
+        "elapsed": "21:40",
+        "process_kind": "bazel"
+      }
+    ]
+  }
+}

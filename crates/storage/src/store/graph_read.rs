@@ -42,7 +42,88 @@ enum RangeRecord<'a> {
 #[path = "graph_read/ordered_range_tests.rs"]
 mod ordered_range_tests;
 
+#[cfg(test)]
+#[path = "graph_read/retained_scan_tests.rs"]
+mod retained_scan_tests;
+
+/// Root-internal immutable materialized-node source. Capturing this source
+/// shares only the node directory/pages and fail-closed poison signals, without
+/// keeping relationships, indexes, statistics, file leases or a query cache.
+/// It does not borrow a mutable store and does not decode canonical data.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct MaterializedNodeReadSource {
+    nodes: CowSegmentedMap<NodeId, NodeRecord>,
+    integrity_poisoned: Arc<AtomicBool>,
+    post_wal_apply_poisoned: Arc<AtomicBool>,
+}
+
+impl MaterializedNodeReadSource {
+    pub fn iter_after(&self, after: Option<NodeId>) -> Result<impl Iterator<Item = &NodeRecord>> {
+        ensure_graph_read_flags_usable(&self.integrity_poisoned, &self.post_wal_apply_poisoned)?;
+        Ok(self.nodes.iter_after(after).map(|(_, node)| node))
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.nodes.segment_count()
+    }
+
+    /// Capacity of the shared page-directory allocation only. This excludes
+    /// node-page/record payload capacities and is not a full source memory bound.
+    pub fn directory_capacity_bytes(&self) -> usize {
+        self.nodes.directory_capacity_bytes()
+    }
+}
+
 impl GraphStore {
+    /// Bound every heap allocation pinned by the same materialized directory
+    /// before a caller adopts it. This preflight borrows all source records.
+    #[doc(hidden)]
+    pub fn materialized_node_read_source_capacity_bytes(&self) -> Result<Option<usize>> {
+        Ok(self
+            .materialized_node_read_source_capacity_preflight()?
+            .map(|(bytes, _)| bytes))
+    }
+
+    /// Return capacity and the records inspected on a cold snapshot preflight.
+    #[doc(hidden)]
+    pub fn materialized_node_read_source_capacity_preflight(
+        &self,
+    ) -> Result<Option<(usize, usize)>> {
+        self.ensure_usable()?;
+        if self.is_out_of_core() || self.canonical_base.is_some() {
+            return Ok(None);
+        }
+        let (capacity, inspected) = self.nodes.retained_capacity_preflight();
+        capacity
+            .and_then(|bytes| bytes.checked_add(64))
+            .map(|bytes| Some((bytes, inspected)))
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "retained source capacity overflow or excessive value nesting".into(),
+                )
+            })
+    }
+
+    /// Capture a heap-only materialized source without cloning the whole store.
+    /// Caller admission of source capacities remains a separate requirement.
+    #[doc(hidden)]
+    pub fn try_materialized_node_read_source(&self) -> Result<Option<MaterializedNodeReadSource>> {
+        self.ensure_usable()?;
+        if self.is_out_of_core() || self.canonical_base.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(MaterializedNodeReadSource {
+            nodes: self.nodes.clone(),
+            integrity_poisoned: Arc::clone(&self.integrity_poisoned),
+            post_wal_apply_poisoned: Arc::clone(&self.post_wal_apply_poisoned),
+        }))
+    }
+
     pub fn canonical_node_from_segments(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         self.durable
             .as_ref()
@@ -708,6 +789,26 @@ impl GraphStore {
         self.nodes
             .values()
             .filter(move |node| label_id.map(|id| node.labels.contains(&id)).unwrap_or(true))
+    }
+
+    /// A resumable borrowed source for a demanded retained numeric batch.
+    /// Refuses sources requiring canonical decoding instead of exposing just
+    /// their in-memory overlay. The caller bounds each demanded iterator step.
+    pub fn try_scan_materialized_nodes_after(
+        &self,
+        label_id: Option<LabelId>,
+        after: Option<NodeId>,
+    ) -> Result<Option<impl Iterator<Item = &NodeRecord>>> {
+        self.ensure_usable()?;
+        if self.is_out_of_core() || self.canonical_base.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.nodes
+                .iter_after(after)
+                .map(|(_, node)| node)
+                .filter(move |node| label_id.is_none_or(|id| node.labels.contains(&id))),
+        ))
     }
 
     pub fn scan_nodes_with_filter_pruning<'a>(

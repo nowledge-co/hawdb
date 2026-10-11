@@ -26,6 +26,9 @@ mod clause_normalization;
 #[path = "tests/clause_procedures.rs"]
 mod clause_procedures;
 
+#[path = "tests/indexed_projection.rs"]
+mod indexed_projection;
+
 #[path = "tests/request_contract.rs"]
 mod request_contract;
 

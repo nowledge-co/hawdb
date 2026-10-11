@@ -2,6 +2,23 @@ name: Native Bindings
 
 on:
   workflow_dispatch:
+    inputs:
+      boundary_comparison:
+        description: "Run the manual Linux ordinary-boundary comparison instead of binding tests"
+        type: boolean
+        default: false
+      benchmark_sizes:
+        description: "Comma-separated row counts; default is the complete three-size matrix"
+        type: string
+        default: "1000,100000,1000000"
+      benchmark_cases:
+        description: "Comma-separated workload cases"
+        type: string
+        default: "select,point,fill,fill_bulk,wide"
+      benchmark_samples:
+        description: "Measured iterations, in addition to one discarded iteration"
+        type: string
+        default: "3"
   pull_request:
     paths:
       - "bindings/ffi/**"
@@ -28,12 +45,18 @@ concurrency:
 
 jobs:
   bazel:
+    if: github.event_name != 'workflow_dispatch' || !inputs.boundary_comparison
     name: Bazel native bindings (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-latest]
+        include:
+          - os: ubuntu-24.04
+            library: libhawdb_ffi.so
+          - os: macos-latest
+            library: libhawdb_ffi.dylib
     env:
       USE_BAZEL_VERSION: "9.3.0"
     steps:
@@ -51,3 +74,64 @@ jobs:
 
       - name: Test Go against the Bazel-built C ABI
         run: bazel test --test_output=errors --test_arg=-test.v //bindings/go:hawdb_go_tests
+
+      - name: Test the retained C ABI contract
+        run: bazel test --test_output=errors //bindings/ffi:hawdb_ffi_tests
+
+      - name: Install Go for the race detector
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: bindings/go/go.mod
+          cache-dependency-path: bindings/go/go.sum
+
+      - name: Check retained read and close concurrency with the race detector
+        working-directory: bindings/go
+        env:
+          HAWDB_LIBRARY: ${{ github.workspace }}/bazel-bin/bindings/ffi/${{ matrix.library }}
+          # The race runtime needs cgo; the production package stays purego.
+          CGO_ENABLED: "1"
+        # The Go test cache does not qualify the newly built dynamic library.
+        run: go test -race -count=1 -run '^TestRetained' ./...
+
+  boundary-comparison:
+    if: github.event_name == 'workflow_dispatch' && inputs.boundary_comparison
+    name: Manual ordinary-boundary comparison (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      USE_BAZEL_VERSION: "9.3.0"
+      BENCHMARK_SIZES: ${{ inputs.benchmark_sizes }}
+      BENCHMARK_CASES: ${{ inputs.benchmark_cases }}
+      BENCHMARK_SAMPLES: ${{ inputs.benchmark_samples }}
+    steps:
+      - name: Checkout the candidate
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Bazel
+        uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Install Go for provenance
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: bindings/go/go.mod
+          cache-dependency-path: bindings/go/go.sum
+
+      - name: Compare frozen ordinary producers with unchanged defaults
+        run: |
+          python3 -B bindings/benchmarks/compare.py \
+            --output "$RUNNER_TEMP/hawdb-boundary-comparison" \
+            --sizes "$BENCHMARK_SIZES" --cases "$BENCHMARK_CASES" \
+            --samples "$BENCHMARK_SAMPLES"
+
+      - name: Preserve complete or partial evidence, including failed outcomes
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ordinary-boundary-comparison-${{ github.sha }}
+          path: ${{ runner.temp }}/hawdb-boundary-comparison/evidence
+          if-no-files-found: error

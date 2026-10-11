@@ -240,6 +240,18 @@ pub trait GraphExecutionRead {
         label_id: Option<LabelId>,
     ) -> Box<dyn Iterator<Item = &'a NodeRecord> + 'a>;
 
+    /// Optional borrowed index iteration paired with admitted projected reads.
+    /// The caller must prove a complete scalar index in the same catalog
+    /// snapshot and a materialized store. Unsupported readers return None.
+    fn scan_indexed_nodes_borrowed<'a>(
+        &'a self,
+        _label_id: LabelId,
+        _property: &str,
+        _value: &hawdb_core::Value,
+    ) -> Option<Box<dyn Iterator<Item = &'a NodeRecord> + 'a>> {
+        None
+    }
+
     fn node_count_for_label(&self, label_id: Option<LabelId>) -> usize;
 
     fn relationship_count_for_type(&self, rel_type: Option<RelTypeId>) -> usize;

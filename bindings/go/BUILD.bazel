@@ -9,6 +9,7 @@ go_library(
         "hawdb.go",
         "lib_unix.go",
         "lib_windows.go",
+        "retained.go",
     ],
     importpath = "github.com/nowledge-co/hawdb/bindings/go",
     deps = ["@com_github_ebitengine_purego//:purego"],
@@ -20,6 +21,8 @@ go_test(
     srcs = [
         "bazel_test.go",
         "hawdb_test.go",
+        "retained_bench_test.go",
+        "retained_test.go",
     ],
     data = ["//bindings/ffi:hawdb_ffi"],
     embed = [":hawdb"],

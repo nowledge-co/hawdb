@@ -46,6 +46,28 @@ use hawdb::{
 };
 use serde_json::json;
 
+mod retained;
+pub use retained::*;
+
+#[cfg(feature = "boundary-profiling")]
+#[path = "../../benchmarks/native_profile.rs"]
+mod boundary_profile;
+#[cfg(feature = "boundary-profiling")]
+pub use boundary_profile::BoundaryProfileSnapshot;
+
+/// Developer profiling build only. This observation is not an admission ledger
+/// or an allocator-capacity bound. NULL output is a no-op; no buffer is allocated.
+///
+/// # Safety
+/// `out` must be NULL or point to writable `BoundaryProfileSnapshot` storage.
+#[cfg(feature = "boundary-profiling")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hawdb_boundary_profile_snapshot(out: *mut BoundaryProfileSnapshot) {
+    if !out.is_null() {
+        unsafe { out.write(boundary_profile::snapshot()) };
+    }
+}
+
 /// An open HawDB database handle. Opaque to C callers.
 pub struct HawdbDatabase {
     inner: Mutex<HawDBEmbedded>,
@@ -368,6 +390,26 @@ unsafe fn hawdb_open_inner(
     })))
 }
 
+/// Open an independent in-memory database using the embedded facade defaults.
+/// Close the returned handle with [`hawdb_close`]. Errors use the same output
+/// convention as [`hawdb_open`]; this does not create a temporary on-disk store.
+///
+/// # Safety
+/// `err_out` must be NULL or point to writable [`HawdbBuffer`] storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hawdb_open_in_memory(err_out: *mut HawdbBuffer) -> *mut HawdbDatabase {
+    unsafe { clear_buffer(err_out) };
+    match catch_unwind(AssertUnwindSafe(HawDBEmbedded::open_in_memory)) {
+        Ok(database) => Box::into_raw(Box::new(HawdbDatabase {
+            inner: Mutex::new(database),
+        })),
+        Err(_) => {
+            unsafe { set_error(err_out, FfiError::panic()) };
+            ptr::null_mut()
+        }
+    }
+}
+
 /// Close a database handle and release its resources.
 ///
 /// # Safety
@@ -482,6 +524,8 @@ unsafe fn query_impl(
         let text = read_str(text, "statement")?;
         if sql {
             let params = parse_sql_params(params_json)?;
+            #[cfg(feature = "boundary-profiling")]
+            let _engine = boundary_profile::PhaseTimer::start(boundary_profile::Phase::Engine);
             database
                 .inner
                 .lock()
@@ -494,6 +538,8 @@ unsafe fn query_impl(
                 })
         } else {
             let params = parse_cypher_params(params_json)?;
+            #[cfg(feature = "boundary-profiling")]
+            let _engine = boundary_profile::PhaseTimer::start(boundary_profile::Phase::Engine);
             database
                 .inner
                 .lock()
@@ -504,6 +550,8 @@ unsafe fn query_impl(
     }));
     match result {
         Ok(Ok(output)) => {
+            #[cfg(feature = "boundary-profiling")]
+            let _conversion = boundary_profile::PhaseTimer::start(boundary_profile::Phase::Results);
             unsafe { set_buffer(result_out, output_to_json(&output)) };
             true
         }
@@ -519,6 +567,8 @@ unsafe fn query_impl(
 }
 
 unsafe fn parse_cypher_params(params_json: FfiStr) -> Result<BTreeMap<String, Value>, FfiError> {
+    #[cfg(feature = "boundary-profiling")]
+    let _conversion = boundary_profile::PhaseTimer::start(boundary_profile::Phase::Parameters);
     let Some(text) = unsafe { read_opt_str(params_json, "params_json") }? else {
         return Ok(BTreeMap::new());
     };
@@ -535,6 +585,8 @@ unsafe fn parse_cypher_params(params_json: FfiStr) -> Result<BTreeMap<String, Va
 }
 
 unsafe fn parse_sql_params(params_json: FfiStr) -> Result<Vec<Value>, FfiError> {
+    #[cfg(feature = "boundary-profiling")]
+    let _conversion = boundary_profile::PhaseTimer::start(boundary_profile::Phase::Parameters);
     let Some(text) = unsafe { read_opt_str(params_json, "params_json") }? else {
         return Ok(Vec::new());
     };
