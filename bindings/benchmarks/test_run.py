@@ -6,6 +6,7 @@
 import contextlib
 import io
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -194,6 +195,77 @@ class ComparisonTests(unittest.TestCase):
             with self.subTest(revision=revision):
                 with self.assertRaises(ValueError):
                     compare.validate_revision(revision)
+
+
+class ProducerFreezeTests(unittest.TestCase):
+    def producer(self, root):
+        repository = root / "repository"
+        launcher = repository / "bazel-bin/bindings/benchmarks/python_boundary"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "sys.path.insert(0, os.environ['RUNFILES_DIR'])\n"
+            "import wrapper\n"
+            "print(json.dumps({'status': 'ok', 'version': wrapper.VERSION}))\n")
+        launcher.chmod(0o755)
+        runfiles = pathlib.Path(str(launcher) + ".runfiles")
+        runfiles.mkdir()
+        wrapper = repository / "wrapper.py"
+        wrapper.write_text("VERSION = 'baseline'\n")
+        (runfiles / "wrapper.py").symlink_to(wrapper)
+        (runfiles / "runtime").mkdir()
+        (runfiles / "runtime/python").write_text("frozen interpreter\n")
+        (runfiles / "venv").mkdir()
+        (runfiles / "venv/python").symlink_to("../runtime/python")
+        (runfiles / "data with space.txt").write_text("manifest path control\n")
+        (runfiles / "__pycache__").mkdir()
+        (runfiles / "__pycache__/wrapper.pyc").write_bytes(b"stale bytecode")
+        manifest = pathlib.Path(str(launcher) + ".runfiles_manifest")
+        manifest.write_text("wrapper.py " + str(wrapper) + "\n")
+        (runfiles / "MANIFEST").symlink_to(manifest)
+        suffix = ".dylib" if sys.platform == "darwin" else ".so"
+        for relative in ("hawdb_bench_host_boundary", "boundary",
+                         "bindings/ffi/libhawdb_ffi" + suffix,
+                         "bindings/python/python/hawdb/_hawdb.so"):
+            path = repository / "bazel-bin" / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"native producer")
+        with mock.patch.object(compare.subprocess, "run"), \
+                mock.patch.object(compare, "command", return_value="bazel-bin/boundary"):
+            frozen = compare.build_producer(repository, root / "frozen producer")
+        return frozen, launcher, wrapper
+
+    def test_rebuilding_shared_output_cannot_replace_frozen_package(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            producer, launcher, wrapper = self.producer(root)
+            wrapper.write_text("VERSION = 'candidate'\n")
+            launcher.write_text("raise RuntimeError('replaced launcher')\n")
+            compare.require_producer(producer)
+            python = producer["python"]
+            runfiles = pathlib.Path(python["runfiles"]["path"])
+            self.assertNotEqual(python["path"], str(launcher))
+            self.assertFalse((runfiles / "wrapper.py").is_symlink())
+            self.assertEqual(os.readlink(runfiles / "venv/python"), "../runtime/python")
+            self.assertFalse((runfiles / "__pycache__").exists())
+            manifest = (runfiles / "MANIFEST").read_text()
+            self.assertIn(" data\\swith\\sspace.txt " + str(runfiles / "data with space.txt"), manifest)
+            self.assertIn("wrapper.py " + str(runfiles / "wrapper.py"), manifest)
+            self.assertNotIn(str(wrapper), manifest)
+            with mock.patch.dict(os.environ, {"RUNFILES_DIR": str(launcher) + ".runfiles"}):
+                result = driver.run_child([python["path"]], root / "frozen-import")
+            self.assertEqual(result["process_exit"], 0)
+            self.assertEqual(result["version"], "baseline")
+            compare.require_producer(producer)
+
+    def test_changed_frozen_package_prevents_qualification(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            producer, _, _ = self.producer(pathlib.Path(temporary))
+            runfiles = pathlib.Path(producer["python"]["runfiles"]["path"])
+            (runfiles / "wrapper.py").write_text("VERSION = 'changed'\n")
+            with self.assertRaisesRegex(RuntimeError, "Python runfiles changed"):
+                compare.require_producer(producer)
 
 
 if __name__ == "__main__":

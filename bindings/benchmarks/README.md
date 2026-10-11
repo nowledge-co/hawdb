@@ -196,6 +196,43 @@ concurrent rebuild terminates qualification instead of mixing revisions. Copy
 artifacts and required runfiles into separate before/after directories before
 rebuilding for an alternating revision comparison.
 
+`compare.py` independently copies each Python launcher and its complete runfiles
+tree before building the next producer. Relative links within that tree remain
+relative; external links are dereferenced, and manifests point to the frozen
+copies. This includes the matching public Python package, not just `_hawdb.so`.
+Runfiles hashes are checked after all builds and before/after each producer
+matrix; ordinary binary hashes remain checked around every child. Python
+children select their own runfiles and clear inherited Python/runfiles paths.
+Bytecode writes are disabled, and preexisting bytecode caches are excluded from
+the copy. These are untimed consumer-isolation controls, not engine overrides.
+
+## Mixed growth and indexed point control
+
+The manual `mixed_point_growth` probe warms a point plan at four rows, performs
+independent CREATE statements, then measures 100 parameterized point calls.
+It supports the raw database API and the admitted host path separately. Bound
+EXPLAIN diagnostics run after hot timing because they may refresh statistics;
+another 100 calls then measure the refreshed plan. Output preserves individual
+times, plans, decisions, execution profiles and exact result verification.
+The default `stable` mode repeats the initially warmed parameter. Optional
+`rotating` mode changes the bound value on each call and exercises cache misses;
+it does not qualify prolonged reuse of the initially warmed small-table plan.
+
+```console
+bazel build -c opt //:hawdb_bench_mixed_point_growth
+bazel-bin/hawdb_bench_mixed_point_growth 1000 - raw stable
+bazel-bin/hawdb_bench_mixed_point_growth 1000 - admitted stable
+```
+
+The probe accepts 9 through 10,000 rows and a new file path or `-` for memory.
+Point input construction and verification are outside each query timer; growth
+timing includes parameters and loop work. Database cache counters do not cover
+an admitted read transaction's private cache. Plans, decisions and execution
+profiles describe raw Database diagnostics, not private admitted read plans.
+Freeze both revision producers and
+finish all compilation before a comparison. This exploratory mixed workload
+does not replace the fixed ordinary matrix or qualify Arrow or source reuse.
+
 ## Retained source-capacity creation control
 
 The manual `retained_source_capacity` benchmark opens four read snapshots before
@@ -217,3 +254,5 @@ than raising the default budget. Output verifies every ordered integer value,
 completion, source release and final retained owner/handle charges. This probe
 uses the embedded Rust facade; it does not qualify Arrow, source-to-host reuse,
 whole-query memory, cross-language performance or the full performance gate.
+The [completed cold/warm control](RUST_ORDINARY_RESULTS.md#same-generation-source-capacity-creation-control)
+preserves every raw result and hash separately from ordinary query timing.

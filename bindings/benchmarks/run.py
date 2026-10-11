@@ -116,7 +116,14 @@ def run_child(command, artifact):
     started = time.monotonic()
     timer = ["/usr/bin/time", "-l"] if sys.platform == "darwin" else ["/usr/bin/time", "-v"]
     with artifact.with_suffix(".stdout").open("w") as stdout, artifact.with_suffix(".stderr").open("w") as stderr:
-        process = subprocess.Popen(timer + command, cwd=ROOT, stdout=stdout, stderr=stderr)
+        environment = os.environ.copy()
+        runfiles = pathlib.Path(command[0] + ".runfiles")
+        if runfiles.is_dir():
+            for key in ("RUNFILES_MANIFEST_FILE", "JAVA_RUNFILES", "PYTHONPATH", "PYTHONHOME"):
+                environment.pop(key, None)
+            environment.update(RUNFILES_DIR=str(runfiles), PYTHONDONTWRITEBYTECODE="1")
+        process = subprocess.Popen(timer + command, cwd=ROOT, stdout=stdout, stderr=stderr,
+                                   env=environment)
         return_code = process.wait()
     lines = artifact.with_suffix(".stdout").read_text().splitlines()
     try:

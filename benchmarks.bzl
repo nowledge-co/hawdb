@@ -40,6 +40,7 @@ HAWDB_MANUAL_BENCHMARKS = [
     "graph_analytics",
     "host_boundary",
     "host_boundary_allocations",
+    "mixed_point_growth",
     "retained_source_capacity",
 ]
 

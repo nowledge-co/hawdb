@@ -6,6 +6,7 @@
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import platform
 import re
@@ -43,6 +44,81 @@ def command(arguments, cwd):
 
 def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def runfiles_identity(directory):
+    entries = []
+    for path in sorted(directory.rglob("*")):
+        relative = path.relative_to(directory).as_posix()
+        if path.is_symlink():
+            if not path.resolve(strict=True).is_relative_to(directory.resolve()):
+                raise RuntimeError("frozen runfile points outside its tree: " + relative)
+            entries.append((relative, "link", os.readlink(path)))
+        elif path.is_file():
+            entries.append((relative, "file", sha256(path), path.stat().st_mode & 0o777))
+        else:
+            entries.append((relative, "directory"))
+    digest = hashlib.sha256(json.dumps(entries, separators=(",", ":")).encode()).hexdigest()
+    return {"path": str(directory), "sha256": digest, "entries": len(entries)}
+
+
+def manifest_entry(logical, physical):
+    def escape(value):
+        return value.replace("\\", "\\b").replace("\n", "\\n")
+    # Bazel escapes spaces in logical names only; physical paths may contain
+    # spaces because the manifest reader splits once at the first separator.
+    escaped = escape(logical).replace(" ", "\\s"), escape(physical)
+    prefix = " " if escaped != (logical, physical) else ""
+    return prefix + escaped[0] + " " + escaped[1] + "\n"
+
+
+def freeze_python_launcher(original, target):
+    source = pathlib.Path(str(original) + ".runfiles")
+    destination = pathlib.Path(str(target) + ".runfiles")
+    source_manifest = pathlib.Path(str(original) + ".runfiles_manifest")
+    manifest_before = sha256(source_manifest)
+    links = []
+
+    def ignore(directory, names):
+        skipped = []
+        for name in names:
+            path = pathlib.Path(directory) / name
+            if name == "__pycache__" or name.endswith(".pyc") or path == source / "MANIFEST":
+                skipped.append(name)
+            elif path.is_symlink():
+                link = os.readlink(path)
+                endpoint = pathlib.Path(os.path.abspath(path.parent / link))
+                if not os.path.isabs(link) and endpoint.is_relative_to(source) and endpoint.exists():
+                    # Keep the venv interpreter linked to the frozen runtime;
+                    # copying it into the venv breaks its library search path.
+                    links.append((path.relative_to(source), link))
+                    skipped.append(name)
+        return skipped
+
+    shutil.copy2(original, target)
+    # Absolute/out-of-tree Bazel links must become independent content.
+    shutil.copytree(source, destination, ignore=ignore)
+    for relative, link in links:
+        (destination / relative).symlink_to(link)
+    contents = "".join(manifest_entry(path.relative_to(destination).as_posix(), str(path))
+                       for path in sorted(destination.rglob("*")))
+    (destination / "MANIFEST").write_text(contents)
+    pathlib.Path(str(target) + ".runfiles_manifest").write_text(contents)
+    if sha256(source_manifest) != manifest_before:
+        raise RuntimeError("Python runfiles manifest changed while freezing")
+    return runfiles_identity(destination)
+
+
+def require_producer(producer):
+    for name, artifact in producer.items():
+        if sha256(pathlib.Path(artifact["path"])) != artifact["sha256"]:
+            raise RuntimeError("frozen producer changed: " + name)
+    python = producer["python"]
+    if runfiles_identity(pathlib.Path(python["runfiles"]["path"])) != python["runfiles"]:
+        raise RuntimeError("frozen Python runfiles changed")
+    manifest = pathlib.Path(python["path"] + ".runfiles_manifest")
+    if sha256(manifest) != python["runfiles_manifest_sha256"]:
+        raise RuntimeError("frozen Python runfiles manifest changed")
 
 
 def validate_revision(revision):
@@ -104,14 +180,18 @@ def build_producer(repository, directory):
     for name, original in paths.items():
         original = original.resolve(strict=True)
         before = sha256(original)
-        # A Bazel Python launcher needs its original runfiles. Its native
-        # extension is frozen separately and passed explicitly to the consumer.
-        target = original if name == "python" else directory / original.name
-        if target != original:
+        target = directory / original.name
+        runfiles = None
+        if name == "python":
+            runfiles = freeze_python_launcher(original, target)
+        else:
             shutil.copy2(original, target)
         if sha256(original) != before or sha256(target) != before:
             raise RuntimeError("producer changed while freezing " + name)
         frozen[name] = {"path": str(target), "source": str(original), "sha256": before}
+        if runfiles is not None:
+            frozen[name].update(runfiles=runfiles, runfiles_manifest_sha256=sha256(
+                pathlib.Path(str(target) + ".runfiles_manifest")))
     (directory / "manifest.json").write_text(json.dumps(frozen, indent=2) + "\n")
     return frozen
 
@@ -174,7 +254,10 @@ def main():
                 "ordering": "baseline then candidate; ratios of medians, not alternated pairs",
                 "measurement_limits": ["Process RSS includes fixture/setup/host runtime.",
                                        "Ordinary APIs do not use Arrow or retained cursors.",
+                                       "Python launcher, package and runtime are copied independently; runfiles hashes are checked before and after each producer matrix.",
                                        "Any refusal/failure prevents a group speedup claim."]}
+    for producer in producers.values():
+        require_producer(producer)
     (evidence / "manifest.json").write_text(json.dumps(identity, indent=2) + "\n")
     shutil.copyfile(ROOT / "bindings/benchmarks/main-baseline-adapters.json", evidence / "baseline-adapters.json")
     statuses = {}
@@ -182,6 +265,7 @@ def main():
     for name, repository in (("baseline", baseline_repository), ("candidate", ROOT)):
         require_source(repository, sources[name])
         producer = producers[name]
+        require_producer(producer)
         arguments = [sys.executable, "-B", str(repository / "bindings/benchmarks/run.py"),
                      "--output", str(evidence / name), "--sizes", args.sizes, "--cases", args.cases,
                      "--backends", args.backends, "--samples", str(args.samples)]
@@ -195,6 +279,7 @@ def main():
             if reports[name]["source"] != {key: sources[name][key] for key in ("head", "tree")}:
                 raise RuntimeError("matrix source does not match the frozen producer")
         require_source(repository, sources[name])
+        require_producer(producer)
         print(name, "driver exit", statuses[name], flush=True)
     identity["driver_exits"] = statuses
     if len(reports) == 2:
