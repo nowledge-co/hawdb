@@ -318,7 +318,7 @@ fn check_stream(fixture: &Fixture, options: &RunOptions, only_visible: bool, ide
     let (mut expected, result_bytes, scratch) = expected_rows(&graph, options);
     expected.truncate(options.output_rows.unwrap_or(usize::MAX));
     let binding_bytes: usize = expected.iter().map(binding_memory_bytes).sum();
-    let peak = projection + scratch.max(result_bytes + binding_bytes);
+    let peak = projection + scratch.max(result_bytes);
     let expected_report = crate::BlockingOperatorMemoryReport {
         operator: "GraphAlgorithm".to_string(),
         budget_bytes: options.memory.blocking_operator_bytes.get(),

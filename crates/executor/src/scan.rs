@@ -85,6 +85,25 @@ pub struct NodeScanContext<'a> {
 }
 
 impl<'a> NodeScanContext<'a> {
+    fn source_account(self) -> QueryMemoryAccount {
+        self.memory_account
+            .clone()
+            .with_retained_state(self.retained_account("Node scan retained read keys"))
+    }
+
+    fn retained_account(self, owner: &'static str) -> QueryMemoryAccount {
+        self.memory_account
+            .retained_state()
+            .cloned()
+            .unwrap_or_else(|| {
+                self.memory_account.sibling(
+                    crate::QueryMemoryClass::BlockingState,
+                    owner,
+                    self.memory_budget,
+                )
+            })
+    }
+
     fn pruned_scan(
         self,
         label_id: Option<LabelId>,
@@ -658,6 +677,11 @@ pub fn stream_node_projection_scan_batches(
     observer: &dyn ExecutionObserver,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    let source_account = context.source_account();
+    let context = NodeScanContext {
+        memory_account: &source_account,
+        ..context
+    };
     let exact_label = exact_scan_label_id(context.catalog, spec.label);
     let exact_label_id = exact_label.flatten();
     let label_ids = label_ids_for_pattern(context.catalog, spec.label);
@@ -689,7 +713,7 @@ pub fn stream_node_projection_scan_batches(
                 &binding,
                 observer,
                 AdjacencyReadMemory {
-                    budget_bytes: context.memory_budget.get(),
+                    budget_bytes: context.memory_account.budget_bytes().get(),
                     account: Some(context.memory_account),
                 },
                 context.task_context,
@@ -744,7 +768,7 @@ pub fn stream_node_projection_scan_batches(
             .store
             .node_count_for_label(label_id)
             .saturating_mul(std::mem::size_of::<&NodeRecord>())
-            <= context.memory_budget.get()
+            <= context.memory_account.budget_bytes().get()
     {
         let scan = context.pruned_scan(label_id, property_filter.as_ref())?;
         observer.record_scan_pruning_report(scan.report.clone());
@@ -784,6 +808,13 @@ pub fn stream_node_projection_scan_batches(
     let mut admit =
         |bytes: usize| -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>> {
             runtime_checkpoint(context.task_context)?;
+            if bytes == 0 {
+                return crate::store::admit_graph_read(
+                    context.memory_account,
+                    context.task_context,
+                    0,
+                );
+            }
             let owned_bytes = bytes
                 .saturating_add(std::mem::size_of::<crate::binding::Binding>())
                 .saturating_add(spec.variable.len())
@@ -802,9 +833,9 @@ pub fn stream_node_projection_scan_batches(
             &mut visit,
         )?,
         (Some(label_id), NodeProjectionAccess::PropertyUnion { branches }) => {
-            let mut allocate_keys = |bytes| {
-                crate::store::admit_graph_read(context.memory_account, context.task_context, bytes)
-            };
+            let key_account = context.retained_account("NodeProjectionScanExec union keys");
+            let mut allocate_keys =
+                |bytes| crate::store::admit_graph_read(&key_account, context.task_context, bytes);
             let key_admission =
                 hawdb_storage::read_view::GraphReadAdmission::new(&mut allocate_keys);
             let mut seen = hawdb_storage::read_view::AdmittedKeySet::new(&key_admission)?;
@@ -1013,8 +1044,16 @@ pub fn stream_index_node_union_seek_batches(
     let Some(label_id) = context.catalog.label_id(label) else {
         return Ok(BatchControl::Continue);
     };
+    // The outer union and cold storage reader can retain keys concurrently.
+    // Attach once so public contexts also share one operator allowance.
+    let source_account = context.source_account();
+    let context = NodeScanContext {
+        memory_account: &source_account,
+        ..context
+    };
+    let key_account = context.retained_account("IndexNodeUnionSeekExec union keys");
     let mut allocate_keys =
-        |bytes| crate::store::admit_graph_read(context.memory_account, context.task_context, bytes);
+        |bytes| crate::store::admit_graph_read(&key_account, context.task_context, bytes);
     let key_admission = hawdb_storage::read_view::GraphReadAdmission::new(&mut allocate_keys);
     let mut seen = hawdb_storage::read_view::AdmittedKeySet::new(&key_admission)?;
     let mut emitted = 0usize;
@@ -1083,16 +1122,38 @@ pub struct NodeColumnLookupSpec<'a> {
     pub node_visibility_predicate: Option<&'a Predicate>,
 }
 
+pub(crate) struct OwnedLookupBindings {
+    pub bindings: Vec<Binding>,
+    pub allocations: hawdb_storage::read_view::AdmittedVec<
+        Box<dyn hawdb_storage::read_view::GraphReadAllocation>,
+    >,
+}
+
 pub fn execute_node_column_lookup(
     spec: NodeColumnLookupSpec<'_>,
     input: Vec<Binding>,
     context: NodeScanContext<'_>,
     observer: &dyn ExecutionObserver,
 ) -> Result<Vec<Binding>> {
+    execute_node_column_lookup_owned(spec, input, context, observer).map(|output| output.bindings)
+}
+
+pub(crate) fn execute_node_column_lookup_owned(
+    spec: NodeColumnLookupSpec<'_>,
+    input: Vec<Binding>,
+    context: NodeScanContext<'_>,
+    observer: &dyn ExecutionObserver,
+) -> Result<OwnedLookupBindings> {
     let exact_label = exact_scan_label_id(context.catalog, spec.label).flatten();
+    let source_account = context.source_account();
+    let context = NodeScanContext {
+        memory_account: &source_account,
+        ..context
+    };
     let label_ids = label_ids_for_pattern(context.catalog, spec.label);
+    let key_account = context.retained_account("NodeColumnLookupExec keys");
     let mut allocate_keys =
-        |bytes| crate::store::admit_graph_read(context.memory_account, context.task_context, bytes);
+        |bytes| crate::store::admit_graph_read(&key_account, context.task_context, bytes);
     let admission = hawdb_storage::read_view::GraphReadAdmission::new(&mut allocate_keys);
     let lookup_value_count = {
         let mut values = hawdb_storage::read_view::AdmittedKeySet::new(&admission)?;
@@ -1112,7 +1173,7 @@ pub fn execute_node_column_lookup(
     let mut unique_ids = hawdb_storage::read_view::AdmittedKeySet::new(&admission)?;
     let mut output = Vec::new();
     let mut allocations = owned::allocation_vector(context)?;
-    let mut tracker = OperatorMemoryTracker::new(context.memory_budget);
+    let mut tracker = OperatorMemoryTracker::new(context.memory_account.budget_bytes());
     for binding in input {
         let expected = binding
             .values
@@ -1148,7 +1209,7 @@ pub fn execute_node_column_lookup(
                     &next,
                     observer,
                     AdjacencyReadMemory {
-                        budget_bytes: context.memory_budget.get(),
+                        budget_bytes: context.memory_account.budget_bytes().get(),
                         account: Some(context.memory_account),
                     },
                     context.task_context,
@@ -1212,7 +1273,10 @@ pub fn execute_node_column_lookup(
             observer,
         );
     }
-    Ok(output)
+    Ok(OwnedLookupBindings {
+        bindings: output,
+        allocations,
+    })
 }
 
 fn record_node_column_lookup_report(

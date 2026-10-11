@@ -321,6 +321,69 @@ mod tests {
     }
 
     #[test]
+    fn expansion_state_cumulative_payload_budget_refuses_before_append_and_recovers() {
+        let binding = Binding::values(std::collections::BTreeMap::from([(
+            "value".into(),
+            hawdb_core::Value::String("payload".into()),
+        )]));
+        let row_bytes = binding_payload_bytes(&binding);
+        assert!(row_bytes > 0);
+        let root_budget = std::num::NonZeroUsize::new(4096).unwrap();
+        let ledger = crate::QueryMemoryLedger::new(root_budget);
+        let account = ledger.account(
+            crate::QueryMemoryClass::BlockingState,
+            "cumulative expansion",
+            root_budget,
+        );
+        for allowed_rows in [2, 3] {
+            let mut state = GraphExpansionExecutionState::with_memory_account(
+                Some(GraphExpansionBudget {
+                    candidate_limit: 10,
+                    payload_byte_limit: row_bytes * allowed_rows,
+                }),
+                1,
+                0,
+                &account,
+            )
+            .unwrap();
+            let mut output = Vec::new();
+            for id in [NodeId(1), NodeId(2)] {
+                assert!(state
+                    .try_push(&mut output, binding.clone(), Some(id), 1)
+                    .unwrap());
+            }
+            assert_eq!(output.len(), 2);
+            let before = ledger.snapshot();
+            assert!(before.used_bytes > 0);
+            let result = state.try_push(&mut output, binding.clone(), Some(NodeId(3)), 1);
+            if allowed_rows == 2 {
+                assert_eq!(
+                    result.unwrap_err(),
+                    HawDBError::GraphExpansionPayloadLimitExceeded {
+                        requested: row_bytes * 3,
+                        limit: row_bytes * 2,
+                    }
+                );
+                assert_eq!(output.len(), 2);
+                assert_eq!(state.returned_count, 2);
+                assert_eq!(state.expanded_nodes.len(), 2);
+                assert_eq!(
+                    ledger.snapshot(),
+                    before,
+                    "refusal must not reserve or insert the third identity"
+                );
+            } else {
+                assert!(result.unwrap());
+                assert_eq!(output.len(), 3);
+                assert_eq!(state.payload_bytes_used, row_bytes * 3);
+            }
+            drop(output);
+            drop(state);
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+        }
+    }
+
+    #[test]
     fn expansion_node_set_uses_and_releases_the_query_root() {
         let ledger = crate::QueryMemoryLedger::new(std::num::NonZeroUsize::new(64).unwrap());
         let account = ledger.account(

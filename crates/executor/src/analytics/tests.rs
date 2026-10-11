@@ -530,13 +530,12 @@ fn source_and_projection_admission_fail_without_partial_rows() {
     let graph = reference_graph(&fixture, false, ProjectionLayout::Outgoing);
     let projection = graph.memory_estimate().estimated_bytes;
     let scratch = graph.page_rank_memory_estimate().algorithm_peak_bytes;
-    // These graph-only estimates cannot bypass a larger live source lease.
-    // Small operator caps now refuse before publishing algorithm reports.
+    // Source leases use the root. Projection/state refusals publish only
+    // completed blocking reports and never expose partial result rows.
     for (block, query, fragment, reports) in [
-        (1, 1024 * 1024, "exceeding its 1-byte budget", 0),
-        (64 * 1024, projection - 1, "exceeding", 0),
-        (projection + scratch - 1, 1024 * 1024, "exceeding", 0),
-        (projection + scratch, 1024 * 1024, "exceeding", 0),
+        (1, 1024 * 1024, "exceeding blocking_operator_bytes 1", 1),
+        (64 * 1024, projection - 1, "exceed", 0),
+        (projection + scratch - 1, 1024 * 1024, "exceed", 1),
     ] {
         let mut options = RunOptions::default();
         options.memory.blocking_operator_bytes = nz(block);
@@ -547,6 +546,19 @@ fn source_and_projection_admission_fail_without_partial_rows() {
         assert!(output.batches.is_empty());
         assert_eq!(output.reports.blocking_memory.len(), reports);
     }
+    let mut options = RunOptions::default();
+    options.memory.blocking_operator_bytes = nz(projection + scratch);
+    let output = run(&fixture, &options, None);
+    assert_eq!(output.result.unwrap(), BatchControl::Continue);
+    assert_eq!(
+        output.batches.iter().map(Vec::len).sum::<usize>(),
+        graph.node_count()
+    );
+    assert!(output
+        .reports
+        .blocking_memory
+        .iter()
+        .all(|report| report.peak_tracked_bytes <= projection + scratch));
 }
 
 #[test]
@@ -632,9 +644,13 @@ fn algorithm_options_fail_closed_and_identity_columns_are_bounded() {
         },
         None,
     );
-    let error = bounded.result.unwrap_err().to_string();
-    assert!(error.contains("node identity hydration"), "{error}");
-    assert!(bounded.batches.is_empty());
+    assert_eq!(bounded.result.unwrap(), BatchControl::Continue);
+    assert_eq!(bounded.batches.iter().map(Vec::len).sum::<usize>(), 1);
+    assert!(bounded
+        .reports
+        .blocking_memory
+        .iter()
+        .all(|report| report.peak_tracked_bytes <= baseline_peak));
 }
 
 #[test]
@@ -645,41 +661,54 @@ fn identity_hydration_admits_selected_columns_before_cloning() {
         Value::String("unrelated".repeat(256 * 1024)),
     );
     let ledger = QueryMemoryLedger::new(nz(4096));
-    let mut tracker = OperatorMemoryTracker::with_account(
-        nz(4096),
-        ledger.account(QueryMemoryClass::BlockingState, "identity test", nz(4096)),
-    );
+    let memory = ExecutionMemoryConfig {
+        query_memory_bytes: nz(4096),
+        blocking_operator_bytes: nz(1),
+        ..RunOptions::default().memory
+    };
+    let source_account = ledger.source_account("identity test", nz(4096), nz(1));
+    let observer = QueryExecutionObserver::default();
     let mut row = BTreeMap::new();
     let bytes = append_node_identity(
         &mut row,
-        &fixture.catalog,
-        &fixture,
+        GraphAlgorithmContext {
+            catalog: &fixture.catalog,
+            store: &fixture,
+            memory: &memory,
+            memory_ledger: &ledger,
+            task_context: None,
+            observer: &observer,
+        },
         NodeId(0),
         &["Memory".into()],
-        "PageRank",
-        &mut tracker,
+        &source_account,
     )
     .unwrap();
-    assert!(bytes < 4096, "unrequested content was retained");
+    assert!(bytes.bytes() < 4096, "unrequested content was retained");
     assert_eq!(row["node_id"], Value::String("node-0".into()));
-    tracker.release(bytes);
+    drop(row);
+    drop(bytes);
     fixture.nodes[0]
         .properties
         .insert("id".into(), Value::String("oversized".repeat(1024)));
     let mut row = BTreeMap::new();
     let error = append_node_identity(
         &mut row,
-        &fixture.catalog,
-        &fixture,
+        GraphAlgorithmContext {
+            catalog: &fixture.catalog,
+            store: &fixture,
+            memory: &memory,
+            memory_ledger: &ledger,
+            task_context: None,
+            observer: &observer,
+        },
         NodeId(0),
         &[],
-        "PageRank",
-        &mut tracker,
+        &source_account,
     )
     .unwrap_err();
-    assert!(error.to_string().contains("blocking_operator_bytes"));
+    assert!(error.to_string().contains("4096-byte budget"));
     assert!(row.is_empty());
-    drop(tracker);
     assert_eq!(ledger.snapshot().used_bytes, 0);
 }
 

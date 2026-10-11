@@ -95,6 +95,33 @@ struct QueryMemoryClassState {
 }
 
 impl QueryMemoryLedger {
+    pub(crate) fn budget_bytes(&self) -> NonZeroUsize {
+        NonZeroUsize::new(self.inner.budget_bytes).unwrap()
+    }
+
+    pub(crate) fn source_account(
+        &self,
+        owner: &'static str,
+        source_budget: NonZeroUsize,
+        retained_budget: NonZeroUsize,
+    ) -> QueryMemoryAccount {
+        self.source_account_retaining(
+            owner,
+            source_budget,
+            self.account(QueryMemoryClass::BlockingState, owner, retained_budget),
+        )
+    }
+
+    pub(crate) fn source_account_retaining(
+        &self,
+        owner: &'static str,
+        source_budget: NonZeroUsize,
+        retained: QueryMemoryAccount,
+    ) -> QueryMemoryAccount {
+        self.account(QueryMemoryClass::ExternalRead, owner, source_budget)
+            .with_retained_state(retained)
+    }
+
     pub fn new(budget_bytes: NonZeroUsize) -> Self {
         Self {
             inner: Arc::new(QueryMemoryLedgerInner {
@@ -146,6 +173,7 @@ impl QueryMemoryLedger {
             ledger: self.clone(),
             account_id,
             backing: None,
+            retained_state: None,
         }
     }
 
@@ -380,9 +408,23 @@ pub struct QueryMemoryAccount {
     // A child ledger owns an up-front reservation in its parent. Every account
     // and outstanding lease keeps that reservation alive.
     backing: Option<Arc<QueryMemoryLease>>,
+    retained_state: Option<Arc<QueryMemoryAccount>>,
 }
 
 impl QueryMemoryAccount {
+    pub(crate) fn query_budget_bytes(&self) -> NonZeroUsize {
+        self.ledger.budget_bytes()
+    }
+
+    pub(crate) fn with_retained_state(mut self, account: Self) -> Self {
+        self.retained_state = Some(Arc::new(account));
+        self
+    }
+
+    pub(crate) fn retained_state(&self) -> Option<&Self> {
+        self.retained_state.as_deref()
+    }
+
     /// Reserve the entire child allowance before dispatch, without charging
     /// individual child allocations to the query root a second time.
     pub(crate) fn sub_account(&self, budget: NonZeroUsize) -> Result<Self> {
@@ -533,6 +575,28 @@ mod hardening_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_account_reuses_retained_cap_without_registering_an_unused_account() {
+        let ledger = QueryMemoryLedger::new(NonZeroUsize::new(1024).unwrap());
+        let retained = ledger.account(
+            QueryMemoryClass::BlockingState,
+            "shared state",
+            NonZeroUsize::new(512).unwrap(),
+        );
+        let source =
+            ledger.source_account_retaining("source", ledger.budget_bytes(), retained.clone());
+        assert_eq!(ledger.snapshot().account_count, 2);
+        let mut grant = crate::store::admit_graph_read(&source, None, 512).unwrap();
+        grant.retain_state().unwrap();
+        assert!(retained.reserve(1).is_err());
+        assert_eq!(ledger.snapshot().used_bytes, 512);
+        drop(grant);
+        let reused = retained.reserve(512).unwrap();
+        assert_eq!(ledger.snapshot().account_count, 2);
+        drop(reused);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
 
     #[test]
     fn sub_accounts_reserve_parent_capacity_without_double_charging() {

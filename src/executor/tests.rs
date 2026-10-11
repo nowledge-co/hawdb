@@ -1743,10 +1743,10 @@ fn graph_algorithm_rejects_unadmitted_resident_and_streaming_state() {
     assert!(
         error
             .to_string()
-            .contains("query memory account GraphAlgorithm"),
+            .contains("GraphAlgorithm streaming node scan"),
         "{error}"
     );
-    assert!(error.to_string().contains("150-byte budget"));
+    assert!(error.to_string().contains("blocking_operator_bytes 150"));
 }
 
 #[test]

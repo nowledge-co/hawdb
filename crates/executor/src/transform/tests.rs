@@ -364,6 +364,98 @@ fn transform_kernels_match_vector_oracles() {
 }
 
 #[test]
+fn filter_reuses_output_account_across_single_row_source_batches() {
+    for count in [0, 1, 33] {
+        let mut source = Source::new(rows(count, 1), 1);
+        let mut batches = Vec::new();
+        with_context(4, 8192, |context| {
+            stream_filter_batches(
+                &PhysicalPlan::EmptyExec,
+                &mut source,
+                context,
+                ExecutionLimit::unlimited(),
+                &mut |_| Ok(true),
+                &mut |batch| {
+                    batches.push(batch.len());
+                    Ok(BatchControl::Continue)
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                context.memory_ledger.snapshot().account_count,
+                usize::from(count != 0),
+                "one output account for the entire filter, none for an empty source"
+            );
+        });
+        let expected: Vec<_> = rows(count, 1).chunks(4).map(<[Binding]>::len).collect();
+        assert_eq!(batches, expected);
+    }
+}
+
+#[test]
+fn filter_cross_batch_buffer_honors_limit_and_consumer_exit() {
+    for exit in [Exit::Complete, Exit::Stop, Exit::Error] {
+        let mut source = Source::new(rows(33, 1), 1);
+        let mut batches = Vec::new();
+        let result = with_context(4, 8192, |context| {
+            stream_filter_batches(
+                &PhysicalPlan::EmptyExec,
+                &mut source,
+                context,
+                ExecutionLimit {
+                    output_rows: Some(5),
+                },
+                &mut |_| Ok(true),
+                &mut |batch| {
+                    batches.push(batch.len());
+                    match exit {
+                        Exit::Complete => Ok(BatchControl::Continue),
+                        Exit::Stop => Ok(BatchControl::Stop),
+                        Exit::Error => Err(HawDBError::Execution("consumer failure".into())),
+                    }
+                },
+            )
+        });
+        match exit {
+            Exit::Complete => {
+                assert_eq!(result.unwrap(), BatchControl::Stop);
+                assert_eq!(batches, vec![4, 1]);
+                assert_eq!(source.calls, 5);
+            }
+            Exit::Stop => {
+                assert_eq!(result.unwrap(), BatchControl::Stop);
+                assert_eq!(batches, vec![4]);
+                assert_eq!(source.calls, 4);
+            }
+            Exit::Error => {
+                assert!(result.unwrap_err().to_string().contains("consumer failure"));
+                assert_eq!(batches, vec![4]);
+                assert_eq!(source.calls, 4);
+            }
+        }
+    }
+}
+
+#[test]
+fn filter_source_failure_drops_unflushed_cross_batch_rows() {
+    let mut source = Source::new(rows(5, 1), 1);
+    source.fail_at = Some(3);
+    let error = with_context(4, 8192, |context| {
+        stream_filter_batches(
+            &PhysicalPlan::EmptyExec,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |_| Ok(true),
+            &mut |_| panic!("unflushed rows must not escape a source failure"),
+        )
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("source failure"));
+    assert_eq!(source.calls, 3);
+}
+
+#[test]
 #[ignore = "deterministic local streaming transform campaign"]
 fn transform_differential_campaign() {
     campaign(256);
@@ -380,7 +472,9 @@ fn source_errors_cancellation_and_admission_fail_closed() {
             limit: None,
         },
     ] {
-        let mut source = Source::new(rows(12, 1), 3);
+        // Fill an output batch before the failure; a partial input batch no
+        // longer forces the filter to flush its pending rows.
+        let mut source = Source::new(rows(12, 1), 4);
         source.fail_at = Some(1);
         let mut output = Vec::new();
         let error = with_context(2, 8192, |context| {

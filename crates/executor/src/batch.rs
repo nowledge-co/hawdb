@@ -132,7 +132,13 @@ fn stream_node_column_lookup_batches(
                     output_rows: Some(remaining),
                 },
             )?;
-            for binding in bindings {
+            let (permits, _permit_storage) = bindings.allocations.into_parts();
+            if bindings.bindings.len() != permits.len() {
+                return Err(HawDBError::Execution(
+                    "lookup bindings and allocations lost their one-to-one mapping".into(),
+                ));
+            }
+            for (binding, permit) in bindings.bindings.into_iter().zip(permits) {
                 let bytes = binding_memory_bytes(&binding);
                 if bytes > context.memory.batch_payload_bytes.get() {
                     return Err(HawDBError::Execution(format!(
@@ -151,6 +157,7 @@ fn stream_node_column_lookup_batches(
                     }
                 }
                 output_lease.grow(bytes)?;
+                drop(permit);
                 output_bytes = output_bytes.saturating_add(bytes);
                 crate::pipeline::reserve_binding_slot(&mut output);
                 output.push(binding);
@@ -215,11 +222,9 @@ impl OptionalDegreeSpec<'_> {
             context.catalog.rel_type_id(rel_type)
         };
         let target_label_ids = label_ids_for_pattern(context.catalog, target_label);
-        let adjacency_account = context.memory_ledger.account(
-            QueryMemoryClass::BlockingState,
-            "OptionalDegreeExec adjacency",
-            context.memory.blocking_operator_bytes,
-        );
+        let adjacency_account = context
+            .kernel_context()
+            .source_account("OptionalDegreeExec adjacency");
         let mut emitted = 0usize;
         execute_prepared_binding_batches(
             BatchPlanRef::descendant(input),
@@ -250,7 +255,7 @@ impl OptionalDegreeSpec<'_> {
                                 direction,
                             },
                             crate::store::AdjacencyReadMemory {
-                                budget_bytes: context.memory.blocking_operator_bytes.get(),
+                                budget_bytes: context.memory.query_memory_bytes.get(),
                                 account: Some(&adjacency_account),
                             },
                             context.observer,
@@ -350,11 +355,11 @@ pub fn collect_batch_pipeline(
     let task_context = execution_context.task_context;
     let mut output = Vec::new();
     let mut tracker = OperatorMemoryTracker::with_account(
-        memory.blocking_operator_bytes,
+        memory.query_memory_bytes,
         execution_context.memory_ledger.account(
-            QueryMemoryClass::BlockingState,
+            QueryMemoryClass::ResultMaterialization,
             "materialized batch pipeline",
-            memory.blocking_operator_bytes,
+            memory.query_memory_bytes,
         ),
     );
     let external = BatchExternalReadAdapter::new(&mut *execution_context.external);

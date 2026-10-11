@@ -4225,6 +4225,7 @@ fn grow_relationship_key_allocation(
         .bytes()
         .checked_add(bytes)
         .ok_or_else(|| HawDBError::Execution("relationship key allocation size overflow".into()))?;
+    allocation.retain_state()?;
     allocation.grow(bytes)?;
     if allocation.bytes() < required {
         return Err(HawDBError::Execution(

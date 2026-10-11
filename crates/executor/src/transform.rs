@@ -14,9 +14,9 @@
 
 //! Storage-neutral streaming filter, projection, and limit kernels.
 //!
-//! Sources retain cancellation and input validation; consumers retain output
-//! validation. Kernels reserve transform memory and propagate stop/error across
-//! those boundaries without taking ownership of recursive plan dispatch.
+//! Sources retain input validation; consumers retain output validation.
+//! Kernels honor the supplied task, reserve transform memory, and propagate
+//! stop/error without taking ownership of recursive plan dispatch.
 
 use crate::binding::{binding_memory_bytes, binding_memory_bytes_with_values, Binding};
 use crate::expression::{
@@ -45,8 +45,19 @@ pub fn stream_filter_batches(
     predicate: &mut dyn FnMut(&Binding) -> Result<bool>,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    runtime_checkpoint(context.task_context)?;
     let emitted = Cell::new(0usize);
-    source.execute(input, ExecutionLimit::unlimited(), &mut |batch| {
+    let mut filtered: Option<TransformBatchBuilder> = None;
+    let mut emit_filtered = |output: BindingBatch| {
+        emitted.set(emitted.get().saturating_add(output.len()));
+        let control = emit(output)?;
+        if control == BatchControl::Continue {
+            runtime_checkpoint(context.task_context)?;
+        }
+        Ok(control)
+    };
+    let control = source.execute(input, ExecutionLimit::unlimited(), &mut |batch| {
+        runtime_checkpoint(context.task_context)?;
         let remaining = execution_limit
             .output_rows
             .unwrap_or(usize::MAX)
@@ -54,18 +65,20 @@ pub fn stream_filter_batches(
         if remaining == 0 {
             return Ok(BatchControl::Stop);
         }
-        let mut filtered = TransformBatchBuilder::new(
-            "FilterExec",
-            context.memory.batch_rows.get(),
-            context.memory.batch_payload_bytes,
-            context.memory_ledger,
-        )?;
-        let mut emit_filtered = |output: BindingBatch| {
-            emitted.set(emitted.get().saturating_add(output.len()));
-            emit(output)
-        };
+        if filtered.is_none() {
+            filtered = Some(TransformBatchBuilder::new(
+                "FilterExec",
+                context.memory.batch_rows.get(),
+                context.memory.batch_payload_bytes,
+                context.memory_ledger,
+            )?);
+        }
+        let filtered = filtered.as_mut().unwrap();
         for binding in batch {
-            if predicate(&binding)? {
+            runtime_checkpoint(context.task_context)?;
+            let matches = predicate(&binding)?;
+            runtime_checkpoint(context.task_context)?;
+            if matches {
                 if filtered.reserve_row_before_allocation(
                     binding_memory_bytes(&binding),
                     &mut emit_filtered,
@@ -82,15 +95,23 @@ pub fn stream_filter_batches(
                 }
             }
         }
-        if !filtered.is_empty() && filtered.emit(&mut emit_filtered)? == BatchControl::Stop {
+        Ok(
+            if execution_limit.is_reached(emitted.get().saturating_add(filtered.len())) {
+                BatchControl::Stop
+            } else {
+                BatchControl::Continue
+            },
+        )
+    })?;
+    if let Some(filtered) = filtered.as_mut()
+        && !filtered.is_empty()
+    {
+        runtime_checkpoint(context.task_context)?;
+        if filtered.emit(&mut emit_filtered)? == BatchControl::Stop {
             return Ok(BatchControl::Stop);
         }
-        Ok(if execution_limit.is_reached(emitted.get()) {
-            BatchControl::Stop
-        } else {
-            BatchControl::Continue
-        })
-    })
+    }
+    Ok(control)
 }
 
 pub fn stream_projection_batches(
@@ -118,7 +139,7 @@ pub fn stream_projection_batches(
             }
             Ok(control)
         };
-        let working = context.operator_account("ProjectExec expressions");
+        let working = context.source_account("ProjectExec expressions");
         for binding in batch {
             runtime_checkpoint(context.task_context)?;
             let (mut values, mut layout) =
@@ -207,6 +228,7 @@ pub fn stream_limit_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    runtime_checkpoint(context.task_context)?;
     let skipped = Cell::new(0usize);
     let emitted = Cell::new(0usize);
     let consumer_stopped = Cell::new(false);
@@ -222,6 +244,7 @@ pub fn stream_limit_batches(
             output_rows: Some(offset.saturating_add(output_cap)),
         },
         &mut |batch| {
+            runtime_checkpoint(context.task_context)?;
             let mut output = TransformBatchBuilder::new(
                 "LimitExec",
                 context.memory.batch_rows.get(),
@@ -232,9 +255,13 @@ pub fn stream_limit_batches(
                 emitted.set(emitted.get().saturating_add(batch.len()));
                 let control = emit(batch)?;
                 consumer_stopped.set(consumer_stopped.get() || control == BatchControl::Stop);
+                if control == BatchControl::Continue {
+                    runtime_checkpoint(context.task_context)?;
+                }
                 Ok(control)
             };
             for binding in batch {
+                runtime_checkpoint(context.task_context)?;
                 if skipped.get() < offset {
                     skipped.set(skipped.get().saturating_add(1));
                     continue;

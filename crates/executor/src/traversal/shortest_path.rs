@@ -168,6 +168,13 @@ pub(super) fn search_shortest_paths(
 ) -> Result<ShortestPathSearchResult> {
     runtime_checkpoint(task_context)?;
     let mut tracker = OperatorMemoryTracker::with_account(memory_budget, memory_account.clone());
+    let source_account = memory_account
+        .sibling(
+            QueryMemoryClass::ExternalRead,
+            "ShortestPathExec adjacency",
+            memory_account.query_budget_bytes(),
+        )
+        .with_retained_state(memory_account.clone());
     let mut paths = Vec::new();
     let mut visited_paths = 0usize;
     // A positive node-simple path cannot return to its source or use more than
@@ -212,8 +219,8 @@ pub(super) fn search_shortest_paths(
                     direction: search.direction,
                 },
                 AdjacencyReadMemory {
-                    budget_bytes: memory_budget.get(),
-                    account: Some(&memory_account),
+                    budget_bytes: source_account.budget_bytes().get(),
+                    account: Some(&source_account),
                 },
                 observer,
                 task_context,

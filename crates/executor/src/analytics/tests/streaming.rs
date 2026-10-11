@@ -273,6 +273,139 @@ fn both_algorithms_complete_when_edges_exceed_the_blocking_budget() {
 }
 
 #[test]
+fn source_memory_streaming_fallback_identity_uses_live_query_allowance() {
+    let mut fixture = dense_fixture();
+    let large_id = "x".repeat(1024 * 1024);
+    for node in &mut fixture.nodes {
+        node.properties.insert(
+            "id".into(),
+            Value::String(if node.id == NodeId(0) {
+                large_id.clone()
+            } else {
+                format!("memory-{}", node.id.0)
+            }),
+        );
+    }
+    for algorithm in [GraphAlgorithmKind::PageRank, GraphAlgorithmKind::Louvain] {
+        let mut options = RunOptions {
+            algorithm,
+            return_node_identity: true,
+            ..RunOptions::default()
+        };
+        options.options.max_iterations = Some(1);
+        options.options.max_levels = Some(1);
+        options.memory.query_memory_bytes = nz(32 * 1024 * 1024);
+        options.memory.blocking_operator_bytes = nz(96 * 1024);
+        options.memory.batch_payload_bytes = nz(2 * 1024 * 1024);
+        options.memory.batch_rows = nz(1);
+        let layout = if algorithm == GraphAlgorithmKind::PageRank {
+            ProjectionLayout::Outgoing
+        } else {
+            ProjectionLayout::Undirected
+        };
+        assert!(try_projected_graph_with_node_filter(
+            &fixture.catalog,
+            &fixture,
+            &[],
+            &[],
+            |_| true,
+            layout,
+            ProjectionMemoryBudget::new(options.memory.blocking_operator_bytes),
+        )
+        .is_err());
+        // Exercise the automatic resident-to-streaming fallback, rather than
+        // calling the streaming implementation directly.
+        let output = run(&fixture, &options, None);
+        assert_eq!(output.result.unwrap(), BatchControl::Continue);
+        let report = &output.reports.blocking_memory[0];
+        assert_eq!(report.operator, "GraphAlgorithmStreaming");
+        assert!(report.peak_tracked_bytes <= 96 * 1024);
+        assert!(output.peak_bytes > large_id.len());
+        assert!(output
+            .live_bytes
+            .iter()
+            .all(|bytes| *bytes >= large_id.len()));
+        let rows: Vec<_> = output.batches.into_iter().flatten().collect();
+        assert_eq!(rows.len(), 128);
+        for row in rows {
+            let Value::Int(node) = row.values["node"] else {
+                panic!("missing node")
+            };
+            assert_eq!(
+                row.values["node_id"],
+                Value::String(if node == 0 {
+                    large_id.clone()
+                } else {
+                    format!("memory-{node}")
+                }),
+            );
+            assert_eq!(row.values["node_label"], Value::String("Memory".into()));
+        }
+        options.memory.batch_payload_bytes = nz(64 * 1024);
+        let output = run(&fixture, &options, None);
+        let error = output.result.unwrap_err();
+        assert!(error.to_string().contains("batch_payload_bytes"), "{error}");
+        assert!(output.batches.is_empty());
+        assert_eq!(
+            output.reports.blocking_memory[0].operator,
+            "GraphAlgorithmStreaming"
+        );
+        options.memory.batch_payload_bytes = nz(2 * 1024 * 1024);
+        fixture.fail_identity_node = Some(NodeId(127));
+        let output = run(&fixture, &options, None);
+        let error = output.result.unwrap_err();
+        assert!(
+            error.to_string().contains("identity lookup sentinel"),
+            "{error}"
+        );
+        assert!(output.batches.is_empty());
+        fixture.fail_identity_node = None;
+    }
+}
+
+#[test]
+fn source_memory_streaming_identity_grants_release_on_consumer_exit() {
+    let mut fixture = dense_fixture();
+    fixture.nodes[0]
+        .properties
+        .insert("id".into(), Value::String("x".repeat(1024 * 1024)));
+    for algorithm in [GraphAlgorithmKind::PageRank, GraphAlgorithmKind::Louvain] {
+        for exit in [Exit::Stop, Exit::Error] {
+            let mut options = RunOptions {
+                algorithm,
+                return_node_identity: true,
+                exit,
+                ..RunOptions::default()
+            };
+            options.options.max_iterations = Some(1);
+            options.options.max_levels = Some(1);
+            options.memory.query_memory_bytes = nz(32 * 1024 * 1024);
+            options.memory.blocking_operator_bytes = nz(96 * 1024);
+            options.memory.batch_payload_bytes = nz(2 * 1024 * 1024);
+            options.memory.batch_rows = nz(1);
+            let output = run(&fixture, &options, None);
+            match exit {
+                Exit::Stop => assert_eq!(output.result.unwrap(), BatchControl::Stop),
+                Exit::Error => {
+                    let error = output.result.unwrap_err();
+                    assert!(error.to_string().contains("consumer sentinel"), "{error}");
+                }
+                Exit::Complete => unreachable!(),
+            }
+            assert_eq!(output.batches.len(), 1);
+            assert_eq!(output.batches[0].len(), 1);
+            assert!(output.live_bytes[0] >= 1024 * 1024);
+            assert_eq!(
+                output.reports.blocking_memory[0].operator,
+                "GraphAlgorithmStreaming"
+            );
+            assert!(output.reports.blocking_memory[0].peak_tracked_bytes <= 96 * 1024);
+            // run() independently requires every query class to return to zero.
+        }
+    }
+}
+
+#[test]
 fn cancellation_and_storage_failure_emit_no_partial_algorithm_results() {
     for algorithm in [GraphAlgorithmKind::PageRank, GraphAlgorithmKind::Louvain] {
         for fail_at in [0, 127, 2048] {
@@ -319,11 +452,20 @@ fn node_state_and_oversized_records_remain_fail_closed() {
         .properties
         .insert("large".into(), Value::String("x".repeat(8192)));
     let output = run_external(&fixture, &options, None);
+    assert!(
+        output.result.is_ok(),
+        "source record fits shared root: {:?}",
+        output.result
+    );
+    assert!(!output.batches.is_empty());
     assert!(output
-        .result
-        .unwrap_err()
-        .to_string()
-        .contains("adjacency record"));
+        .reports
+        .blocking_memory
+        .iter()
+        .all(|report| report.peak_tracked_bytes <= 4096));
+    options.memory.query_memory_bytes = nz(8192);
+    let output = run_external(&fixture, &options, None);
+    assert!(output.result.unwrap_err().to_string().contains("exceeding"));
     assert!(output.batches.is_empty());
 }
 

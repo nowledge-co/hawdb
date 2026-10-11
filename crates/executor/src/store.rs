@@ -51,6 +51,7 @@ pub struct PrunedNodeScan<'a> {
 struct QueryGraphReadAllocation {
     allocation: crate::QueryMemoryLease,
     task_context: Option<hawdb_core::RuntimeTaskContext>,
+    retained_state: Option<QueryMemoryAccount>,
 }
 
 impl hawdb_storage::read_view::GraphReadAllocation for QueryGraphReadAllocation {
@@ -66,6 +67,19 @@ impl hawdb_storage::read_view::GraphReadAllocation for QueryGraphReadAllocation 
             self.allocation.grow(bytes)
         }
     }
+
+    fn retain_state(&mut self) -> Result<()> {
+        crate::pipeline::runtime_checkpoint(self.task_context.as_ref())?;
+        let Some(account) = self.retained_state.as_ref() else {
+            return Ok(());
+        };
+        let bytes = self.allocation.bytes();
+        let mut retained = account.reserve(0)?;
+        self.allocation.transfer_to(bytes, &mut retained, bytes)?;
+        self.allocation = retained;
+        self.retained_state = None;
+        Ok(())
+    }
 }
 
 /// Transfer a query-ledger permit with owned graph input.
@@ -79,6 +93,7 @@ pub fn admit_graph_read(
     Ok(Box::new(QueryGraphReadAllocation {
         allocation: account.reserve(bytes)?,
         task_context: task_context.cloned(),
+        retained_state: account.retained_state().cloned(),
     }))
 }
 

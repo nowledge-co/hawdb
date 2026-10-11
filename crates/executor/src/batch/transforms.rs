@@ -77,13 +77,12 @@ pub(super) fn stream_filter_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    if let PhysicalPlan::SeqNodeScan { variable, label } = input
-        && let Ok(filter) = property_filter_from_predicate(predicate)
-    {
+    if let PhysicalPlan::SeqNodeScan { variable, label } = input {
+        let filter = property_filter_from_predicate(predicate).ok();
         return stream_node_scan_batches(
             variable,
             label,
-            Some((predicate, &filter)),
+            Some((predicate, filter.as_ref())),
             context,
             execution_limit,
             emit,
@@ -130,12 +129,36 @@ pub(super) fn stream_filter_batches(
             emit,
         );
     }
-    let predicate_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "FilterExec relationship predicate",
-        context.memory.blocking_operator_bytes,
-    );
-    let mut source = PreparedTransformSource { context };
+    let predicate_account = context
+        .kernel_context()
+        .source_account("FilterExec relationship predicate");
+    let source_memory = ExecutionMemoryConfig {
+        // Only a direct storage leaf needs to return each row's source grant
+        // before the next admission. Composite inputs keep their batching;
+        // overriding their context would also shrink every descendant's batches.
+        batch_rows: if matches!(
+            input,
+            PhysicalPlan::NodeProjectionScanExec { .. }
+                | PhysicalPlan::IndexNodeSeek { .. }
+                | PhysicalPlan::IndexNodeMultiSeek { .. }
+                | PhysicalPlan::IndexNodeUnionSeek { .. }
+                | PhysicalPlan::IndexNodeCompositeSeek { .. }
+                | PhysicalPlan::IndexNodeCompositeRangeSeek { .. }
+                | PhysicalPlan::IndexNodeRangeSeek { .. }
+                | PhysicalPlan::IndexNodeTextSeek { .. }
+        ) {
+            NonZeroUsize::MIN
+        } else {
+            context.memory.batch_rows
+        },
+        ..context.memory.clone()
+    };
+    let mut source = PreparedTransformSource {
+        context: BatchReadContext {
+            memory: &source_memory,
+            ..context
+        },
+    };
     executor_transform::stream_filter_batches(
         input,
         &mut source,
@@ -149,7 +172,7 @@ pub(super) fn stream_filter_batches(
                 binding,
                 context.observer,
                 crate::store::AdjacencyReadMemory {
-                    budget_bytes: context.memory.blocking_operator_bytes.get(),
+                    budget_bytes: context.memory.query_memory_bytes.get(),
                     account: Some(&predicate_account),
                 },
                 context.task_context,

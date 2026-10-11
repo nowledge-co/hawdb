@@ -56,7 +56,10 @@ impl GraphSeedScanSpec<'_> {
             "GraphSeedScan",
             context.memory.blocking_operator_bytes,
         );
-        let scorer = GraphSeedScorer::new(query, &account, context.task_context)?;
+        let source_account = context
+            .kernel_context()
+            .source_account_retaining("GraphSeedScan source", account.clone());
+        let scorer = GraphSeedScorer::new(query, &source_account, context.task_context)?;
         if scorer.is_empty() {
             return Ok(BatchControl::Continue);
         }
@@ -77,7 +80,7 @@ impl GraphSeedScanSpec<'_> {
                     .ok_or_else(|| {
                         HawDBError::Execution("graph seed binding size overflow".into())
                     })?;
-                admit_graph_read(&account, context.task_context, bytes).map(Some)
+                admit_graph_read(&source_account, context.task_context, bytes).map(Some)
             },
             &mut |input| {
                 runtime_checkpoint(context.task_context)?;
@@ -96,8 +99,8 @@ impl GraphSeedScanSpec<'_> {
                         &binding,
                         context.observer,
                         crate::store::AdjacencyReadMemory {
-                            budget_bytes: context.memory.blocking_operator_bytes.get(),
-                            account: Some(&account),
+                            budget_bytes: context.memory.query_memory_bytes.get(),
+                            account: Some(&source_account),
                         },
                         context.task_context,
                     )?
@@ -112,12 +115,13 @@ impl GraphSeedScanSpec<'_> {
                 if score <= 0.0 {
                     return Ok(ScanControl::Continue);
                 }
-                let candidate = Candidate {
+                let mut candidate = Candidate {
                     node,
                     score,
                     allocation,
                 };
                 if candidates.as_slice().len() < self.top_k {
+                    candidate.allocation.retain_state()?;
                     candidates.try_push(candidate)?;
                 } else {
                     let (index, worst) = candidates
@@ -127,7 +131,12 @@ impl GraphSeedScanSpec<'_> {
                         .max_by(|(_, left), (_, right)| candidate_order(left, right))
                         .expect("nonzero topK is full");
                     if candidate_order(&candidate, worst).is_lt() {
-                        candidates.as_mut_slice()[index] = candidate;
+                        // The displaced node is no longer retained. Drop it
+                        // before transferring the replacement so a full K-row
+                        // state is never spuriously charged as K + 1.
+                        drop(candidates.swap_remove(index));
+                        candidate.allocation.retain_state()?;
+                        candidates.try_push(candidate)?;
                     }
                 }
                 Ok(ScanControl::Continue)

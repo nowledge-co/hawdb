@@ -268,7 +268,9 @@ fn projected_identity_ignores_large_content_and_rejects_large_ids_without_a_pref
                 let mut emitted = 0;
                 let error = snapshot.query_streaming("CALL page_rank('large', maxIterations := 1) RETURN node, node_id, node_label, pagerank_score", QueryStreamOptions { max_rows: Some(1), max_payload_bytes: Some(64 * 1024) }, |_| { emitted += 1; Ok(()) }).unwrap_err();
                 assert!(
-                    error.to_string().contains("node identity hydration"),
+                    error
+                        .to_string()
+                        .contains("max_read_result_payload_bytes 65536"),
                     "{error}"
                 );
                 assert_eq!(emitted, 0);

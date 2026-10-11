@@ -89,7 +89,9 @@ pub struct ExecutionMemoryConfig {
     pub batch_rows: NonZeroUsize,
     /// Maximum estimated resident bytes in an executor-owned transfer batch.
     pub batch_payload_bytes: NonZeroUsize,
-    /// Maximum estimated resident bytes retained by one blocking operator.
+    /// Maximum estimated bytes retained for blocking state, including sort,
+    /// aggregation, deduplication, graph traversal state and selected top-K.
+    /// Source reads use the shared query budget independently of this cap.
     pub blocking_operator_bytes: NonZeroUsize,
     /// Override the row and cumulative payload limits of each seeded expansion.
     /// Live allocations still obey the operator, batch and shared query budgets.

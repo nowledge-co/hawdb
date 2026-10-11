@@ -387,15 +387,27 @@ fn cypher_graph_seed_default_yields_materialize_canonical_nodes_and_keep_paramet
 }
 
 #[test]
-fn cypher_graph_seed_scan_enforces_its_operator_budget_on_late_canonical_payloads() {
+fn cypher_graph_seed_scan_splits_read_and_retained_budgets() {
     let mut database = fixture();
     let values = BTreeMap::from([("body".into(), Value::String("x".repeat(64 * 1024)))]);
     database.query_with_params("CREATE (:Memory {id: 'large', key: 'late-large', title: 'graph', pagerank: 1.0, content: $body})", &values).unwrap();
     let params = parameters(1);
     let score = scoring(1, 1.0);
-    let old = database.config.execution_memory.blocking_operator_bytes;
+    let old = database.config.execution_memory.clone();
     database.config.execution_memory.blocking_operator_bytes =
         NonZeroUsize::new(32 * 1024).unwrap();
+    let rows = run(
+        &mut database.begin_read_transaction().unwrap(),
+        &score,
+        &params,
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["seed_key"], Value::String("b".into()));
+
+    // The late, unselected payload can exceed the retained-state allowance,
+    // but it must still fit the shared query allowance before ownership.
+    database.config.execution_memory.query_memory_bytes = NonZeroUsize::new(64 * 1024).unwrap();
+    database.config.execution_memory.batch_payload_bytes = NonZeroUsize::new(8 * 1024).unwrap();
     let error = database
         .begin_read_transaction()
         .unwrap()
@@ -407,10 +419,12 @@ fn cypher_graph_seed_scan_enforces_its_operator_budget_on_late_canonical_payload
         )
         .unwrap_err();
     assert!(
-        error.to_string().contains("GraphSeedScan"),
+        error.to_string().contains("GraphSeedScan")
+            && error.to_string().contains("external_read")
+            && error.to_string().contains("65536"),
         "failure must reach the canonical producer account: {error}"
     );
-    database.config.execution_memory.blocking_operator_bytes = old;
+    database.config.execution_memory = old;
     assert_eq!(
         run(
             &mut database.begin_read_transaction().unwrap(),

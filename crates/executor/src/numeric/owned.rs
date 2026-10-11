@@ -92,9 +92,9 @@ pub fn stream_owned_numeric_nodes<'plan>(
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<(usize, bool)> {
     let properties = selected_properties(fragment, items);
-    let input_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
+    let input_account = context.memory_ledger.source_account(
         "numeric owned input",
+        context.memory.query_memory_bytes,
         context.memory.blocking_operator_bytes,
     );
     let vector_account = context.memory_ledger.account(
@@ -113,12 +113,9 @@ pub fn stream_owned_numeric_nodes<'plan>(
         batch_rows: context.memory.batch_rows.get(),
         stopped: false,
         selection_account: context.memory_ledger.account(
-            QueryMemoryClass::BlockingState,
+            QueryMemoryClass::PipelineBatch,
             "numeric owned selection",
-            context
-                .memory
-                .blocking_operator_bytes
-                .min(context.memory.batch_payload_bytes),
+            context.memory.batch_payload_bytes,
         ),
         emitter: NumericBatchEmitter::new(
             fragment,
@@ -138,7 +135,7 @@ pub fn stream_owned_numeric_nodes<'plan>(
             let mut state = state.borrow_mut();
             if !state.stopped
                 && state.buffered_bytes.saturating_add(bytes)
-                    > context.memory.blocking_operator_bytes.get()
+                    > context.memory.batch_payload_bytes.get()
             {
                 state.flush()?;
             }
@@ -192,9 +189,9 @@ pub fn stream_owned_typed_numeric_nodes(
         scan.needs_node_ids,
         true,
     ))?;
-    let input_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
+    let input_account = context.memory_ledger.source_account(
         "numeric owned typed input",
+        context.memory.query_memory_bytes,
         context.memory.blocking_operator_bytes,
     );
     let mut buffer = OwnedNumericBatchBuffer::new(fragment, scan.batch_rows, scan.needs_node_ids);
