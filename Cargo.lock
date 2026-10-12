@@ -381,7 +381,7 @@ dependencies = [
  "unicode-width",
  "wasm-bindgen",
  "wasm-bindgen-test",
- "zstd",
+ "zstd 0.14.0",
 ]
 
 [[package]]
@@ -741,7 +741,7 @@ dependencies = [
  "regex-syntax",
  "serde",
  "serde_json",
- "zstd",
+ "zstd 0.14.0",
 ]
 
 [[package]]
@@ -782,7 +782,7 @@ dependencies = [
  "roaring",
  "serde",
  "serde_json",
- "zstd",
+ "zstd 0.14.0",
 ]
 
 [[package]]
@@ -849,7 +849,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44fbb9c5ccb9a5b67b4afa2974c27e5507ea1bf6d22828cef418e4dfaeca51dd"
 dependencies = [
  "libflate",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -1830,7 +1830,16 @@ version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
 dependencies = [
- "zstd-safe",
+ "zstd-safe 7.2.4",
+]
+
+[[package]]
+name = "zstd"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf06bd8162af0734b344780deb55b42a2429ae430870d13fcc12f238e880fe6e"
+dependencies = [
+ "zstd-safe 8.1.0",
 ]
 
 [[package]]
@@ -1843,10 +1852,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "zstd-sys"
-version = "2.0.16+zstd.1.5.7"
+name = "zstd-safe"
+version = "8.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
+checksum = "bdd44c6a7284e91f3717755b24315a302edd9153a01f753c3cba3d765e8eafac"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.1+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeec9eaf2dffbbd09201e23bd0ffcbaa33bb8e9266a10734fd7ed90a85eca078"
 dependencies = [
  "cc",
  "pkg-config",

@@ -25,7 +25,7 @@ hawdb-analytics = { path = "../analytics", version = "0.7.0" }
 hawdb-telemetry = { path = "../telemetry", version = "0.7.0" }
 hawdb-plan-cypher = { path = "../plan-cypher", version = "0.7.0" }
 hawdb-qos = { path = "../qos", version = "0.7.0" }
-zstd = "0.13"
+zstd = "0.14"
 memmap2 = { version = "0.9.11", optional = true }
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
