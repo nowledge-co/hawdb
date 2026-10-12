@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 
 # The aarch64 hardware SHA-256 backend is only reachable through this feature;
 # x86 already detects SHA-NI at runtime and needs nothing here. `sha2-asm`
