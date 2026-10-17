@@ -631,8 +631,12 @@ impl GraphStore {
                     post_merge_assignments,
                 } => {
                     let label_id = working_catalog.get_or_create_label(&label);
-                    let current =
-                        self.find_node_by_label_and_properties(label_id, &match_properties)?;
+                    // Newly staged indexes have not been backfilled yet.
+                    let current = self.find_node_by_label_and_properties(
+                        catalog,
+                        label_id,
+                        &match_properties,
+                    )?;
                     let pending = pending_nodes
                         .iter()
                         .find(|(_, pending_label, pending_properties)| {
@@ -702,10 +706,12 @@ impl GraphStore {
                         working_catalog.get_or_create_label(&request.target_label);
                     let rel_type_id = working_catalog.get_or_create_rel_type(&request.rel_type);
                     let current_source = self.find_node_by_label_and_properties(
+                        catalog,
                         source_label_id,
                         &request.source_properties,
                     )?;
                     let current_target = self.find_node_by_label_and_properties(
+                        catalog,
                         target_label_id,
                         &request.target_properties,
                     )?;

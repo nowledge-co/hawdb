@@ -19,6 +19,10 @@ use super::*;
 #[path = "graph_mutation/checkpoint_capture.rs"]
 mod checkpoint_capture;
 
+#[cfg(test)]
+#[path = "graph_mutation/indexed_merge_tests.rs"]
+mod indexed_merge_tests;
+
 fn wal_ops_contain_relational_transaction(ops: &[WalOp]) -> bool {
     ops.iter().any(|op| match op {
         WalOp::Relational { .. } => true,
@@ -67,7 +71,9 @@ impl GraphStore {
         post_merge_assignments: &[NodeSetAssignment],
     ) -> Result<(NodeId, bool)> {
         let label_id = catalog.get_or_create_label(label);
-        if let Some(id) = self.find_node_by_label_and_properties(label_id, &match_properties)? {
+        if let Some(id) =
+            self.find_node_by_label_and_properties(catalog, label_id, &match_properties)?
+        {
             if !on_match_assignments.is_empty() || !post_merge_assignments.is_empty() {
                 let mut assignments =
                     Vec::with_capacity(on_match_assignments.len() + post_merge_assignments.len());
@@ -1255,10 +1261,16 @@ impl GraphStore {
         let source_label_id = catalog.get_or_create_label(&request.source_label);
         let target_label_id = catalog.get_or_create_label(&request.target_label);
         let rel_type_id = catalog.get_or_create_rel_type(&request.rel_type);
-        let source =
-            self.find_node_by_label_and_properties(source_label_id, &request.source_properties)?;
-        let target =
-            self.find_node_by_label_and_properties(target_label_id, &request.target_properties)?;
+        let source = self.find_node_by_label_and_properties(
+            catalog,
+            source_label_id,
+            &request.source_properties,
+        )?;
+        let target = self.find_node_by_label_and_properties(
+            catalog,
+            target_label_id,
+            &request.target_properties,
+        )?;
         if let (Some(source), Some(target)) = (source, target)
             && let Some(relationship) = self.find_relationship_by_properties(
                 source,
@@ -1597,9 +1609,22 @@ impl GraphStore {
 
     pub(super) fn find_node_by_label_and_properties(
         &self,
+        catalog: &Catalog,
         label_id: LabelId,
         properties: &BTreeMap<String, Value>,
     ) -> Result<Option<NodeId>> {
+        // Cold stores retain only delta postings in memory. Their complete
+        // canonical/delta scan also preserves the first matching node by ID.
+        if !self.canonical_base_out_of_core
+            && let Some((property, value)) = properties
+                .iter()
+                .find(|(property, _)| catalog.has_scalar_property_index(label_id, property))
+        {
+            return Ok(self
+                .seek_nodes_by_property(label_id, property, value)
+                .find(|node| properties_contain_all(&node.properties, properties))
+                .map(|node| node.id));
+        }
         let mut found = None;
         self.visit_nodes_owned(Some(label_id), |node| {
             if properties
