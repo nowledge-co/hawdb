@@ -19,7 +19,15 @@ use crate::{adjacency::AdjacencyPostingList, NodeId, NodeRecord, RelId, RelRecor
 use hawdb_core::{IndexId, IndexStatisticsSample, LabelId, RelTypeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+#[path = "cow/retained_capacity.rs"]
+mod retained_capacity;
+
+#[path = "cow/node_map.rs"]
+mod node_map;
+#[doc(hidden)]
+pub use node_map::{CowNodeMap, NodeRecordRead, NodeRecordWrite};
 
 /// An immutable snapshot segment that is cloned only when a writer mutates it.
 ///
@@ -32,7 +40,7 @@ use std::sync::Arc;
 pub struct CowSegment<T>(Arc<CowData<T>>);
 
 #[derive(Debug)]
-struct CowData<T> {
+pub(crate) struct CowData<T> {
     // Destroy the actual data before refunding its allocation ownership.
     value: T,
     growth: Option<Arc<checkpoint::CheckpointGrowthBudget>>,
@@ -99,6 +107,16 @@ impl<T: Clone> DerefMut for CowSegment<T> {
 
 #[doc(hidden)]
 impl<T> CowSegment<T> {
+    #[cfg(test)]
+    pub(crate) fn owner_count(&self) -> usize {
+        Arc::strong_count(&self.0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn downgrade(&self) -> std::sync::Weak<CowData<T>> {
+        Arc::downgrade(&self.0)
+    }
+
     pub(crate) fn is_shared(&self) -> bool {
         Arc::strong_count(&self.0) > 1
     }
@@ -325,6 +343,44 @@ fn cow_map_segment_bytes<K: CowPageWeight, V: CowPageWeight>(segment: &BTreeMap<
         .fold(0usize, usize::saturating_add)
 }
 
+#[derive(Debug)]
+struct CowPageDirectory<K, V> {
+    pages: Vec<CowSegment<BTreeMap<K, V>>>,
+    retained_capacity: OnceLock<Option<usize>>,
+}
+
+impl<K, V> CowPageDirectory<K, V> {
+    fn new(pages: Vec<CowSegment<BTreeMap<K, V>>>) -> Self {
+        Self {
+            pages,
+            retained_capacity: OnceLock::new(),
+        }
+    }
+}
+
+impl<K, V> Clone for CowPageDirectory<K, V> {
+    fn clone(&self) -> Self {
+        // Arc::make_mut detaches a writer from immutable source snapshots.
+        Self::new(self.pages.clone())
+    }
+}
+
+impl<K, V> Deref for CowPageDirectory<K, V> {
+    type Target = Vec<CowSegment<BTreeMap<K, V>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pages
+    }
+}
+
+impl<K, V> DerefMut for CowPageDirectory<K, V> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // No mutable page or record access can preserve an earlier bound.
+        self.retained_capacity.take();
+        &mut self.pages
+    }
+}
+
 /// An ordered map backed by immutable COW pages.
 ///
 /// A snapshot clones one outer `Arc`. A writer clones the small page directory
@@ -332,7 +388,7 @@ fn cow_map_segment_bytes<K: CowPageWeight, V: CowPageWeight>(segment: &BTreeMap<
 /// first write while a read snapshot is alive.
 #[derive(Debug)]
 pub struct CowSegmentedMap<K, V> {
-    segments: CowSegment<Vec<CowSegment<BTreeMap<K, V>>>>,
+    segments: CowSegment<CowPageDirectory<K, V>>,
     len: usize,
     // Keep the exact sum before narrowing, so removing a large value can
     // recover from a saturated public estimate without undercounting.
@@ -352,21 +408,22 @@ impl<K, V> Clone for CowSegmentedMap<K, V> {
 impl<K, V> Default for CowSegmentedMap<K, V> {
     fn default() -> Self {
         Self {
-            segments: CowSegment::from(Vec::new()),
+            segments: CowSegment::from(CowPageDirectory::new(Vec::new())),
             len: 0,
             delta_pressure_bytes: 0,
         }
     }
 }
 
-impl<K: Ord + CowPageWeight, V: CowPageWeight> From<BTreeMap<K, V>> for CowSegmentedMap<K, V> {
-    fn from(values: BTreeMap<K, V>) -> Self {
-        let len = values.len();
+impl<K: Ord + CowPageWeight, V: CowPageWeight> CowSegmentedMap<K, V> {
+    pub(crate) fn from_ordered_entries(values: impl IntoIterator<Item = (K, V)>) -> Self {
+        let mut len = 0;
         let mut segments = Vec::new();
         let mut segment = BTreeMap::new();
         let mut segment_bytes = 0usize;
         let mut delta_pressure_bytes = 0u128;
         for (key, value) in values {
+            len += 1;
             delta_pressure_bytes += u128::from(value.delta_pressure_bytes());
             let entry_bytes = cow_map_entry_bytes(&key, &value);
             if !segment.is_empty()
@@ -383,10 +440,16 @@ impl<K: Ord + CowPageWeight, V: CowPageWeight> From<BTreeMap<K, V>> for CowSegme
             segments.push(CowSegment::from(segment));
         }
         Self {
-            segments: CowSegment::from(segments),
+            segments: CowSegment::from(CowPageDirectory::new(segments)),
             len,
             delta_pressure_bytes,
         }
+    }
+}
+
+impl<K: Ord + CowPageWeight, V: CowPageWeight> From<BTreeMap<K, V>> for CowSegmentedMap<K, V> {
+    fn from(values: BTreeMap<K, V>) -> Self {
+        Self::from_ordered_entries(values)
     }
 }
 
@@ -429,6 +492,20 @@ impl<K: Ord, V> CowSegmentedMap<K, V> {
 
     pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
         self.segments.iter().flat_map(|segment| segment.iter())
+    }
+
+    /// Resume ordered borrowed delivery without rescanning the preceding pages.
+    /// Range bounds are consumed during iterator creation, not retained as
+    /// references into mutable cursor state. Values remain in their COW pages.
+    pub fn iter_after(&self, after: Option<K>) -> impl Iterator<Item = (&K, &V)> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let start = after
+            .as_ref()
+            .and_then(|key| self.segment_index(key))
+            .unwrap_or(0);
+        self.segments[start..].iter().flat_map(move |segment| {
+            segment.range((after.as_ref().map_or(Unbounded, Excluded), Unbounded))
+        })
     }
 
     /// Borrow a key interval without scanning unrelated immutable segments.
@@ -479,12 +556,17 @@ impl<K: Ord, V> CowSegmentedMap<K, V> {
     }
 }
 
+#[cfg(test)]
+#[path = "cow/retained_scan_tests.rs"]
+mod retained_scan_tests;
+
 impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K, V> {
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         let pressure = u128::from(value.delta_pressure_bytes());
         if self.segments.is_empty() {
-            self.segments =
-                CowSegment::from(vec![CowSegment::from(BTreeMap::from([(key, value)]))]);
+            self.segments = CowSegment::from(CowPageDirectory::new(vec![CowSegment::from(
+                BTreeMap::from([(key, value)]),
+            )]));
             self.len = 1;
             self.delta_pressure_bytes = pressure;
             return None;
@@ -639,6 +721,14 @@ impl<K, V> CowSegmentedMap<K, V> {
 
     pub fn segment_count(&self) -> usize {
         self.segments.len()
+    }
+
+    /// Shared directory capacity, including its Arc header. Page/record
+    /// allocations are intentionally excluded from this metadata observation.
+    pub fn directory_capacity_bytes(&self) -> usize {
+        2 * std::mem::size_of::<usize>()
+            + std::mem::size_of::<CowData<CowPageDirectory<K, V>>>()
+            + self.segments.capacity() * std::mem::size_of::<CowSegment<BTreeMap<K, V>>>()
     }
 
     pub fn shared_segment_count_with(&self, other: &Self) -> usize {

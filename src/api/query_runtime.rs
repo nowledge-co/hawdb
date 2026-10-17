@@ -851,6 +851,7 @@ impl Database {
             statement_result,
             StatementExecutionContext {
                 execution_profile,
+                retained_profile: None,
                 access_control,
                 parse_nanos: parse_metrics.elapsed_nanos,
             },

@@ -141,12 +141,16 @@ cargo test --locked -p hawdb --lib plan_cache
 bazel test //:hawdb_unit_fast_tests --test_arg=plan_cache
 ```
 
-Historical ordinary controls, negative observations and budget refusals remain
-source-qualified in [#986](https://github.com/nowledge-co/hawdb/pull/986),
-[#1001](https://github.com/nowledge-co/hawdb/issues/1001) and
-[#992](https://github.com/nowledge-co/hawdb/issues/992). They do not qualify the
-independent main-based extraction. Performance testing is explicitly deferred;
-all original latency, tail and whole-operation memory gates remain open.
+[Ordinary controls](../bindings/benchmarks/RUST_ORDINARY_RESULTS.md) preserve the
+separate historical controls and budget refusals, including a complete frozen
+CREATE control at runtime `6ce232ca`. Its write improvements do not qualify this
+subsequent cache-boundary change. The negative fixed-parameter hot-point control
+remains recorded. New three-producer controls at 1,000/10,000 rows and a complete ordinary
+320-record control freeze this fix with unchanged fixtures, calls, compiler
+profile, defaults and consumers. They improve hot/amortized points and ordinary
+writes against main, but preserve unfavorable first-call, scan and bulk samples
+and unchanged wide-result budget refusals. They do not complete performance
+or whole-operation memory acceptance.
 
 ## Bounded statistics for ordinary indexed point reads
 
@@ -247,7 +251,8 @@ parameter rebinding on both subsequent planning calls, disabled caches, missing
 parameters, shared-cache older snapshots, schema changes, the eight-to-nine
 index cost-class transition, volatile read bypass, cancellation, admission
 rejection and permit release. The volatile eligibility regression also covers
-nested expressions and deterministic timestamp parameters. Historical controls and remaining performance gates are recorded in
-[#986](https://github.com/nowledge-co/hawdb/pull/986).
+nested expressions and deterministic timestamp parameters. The measured
+controls and remaining performance gates are recorded in
+[RUST_ORDINARY_RESULTS.md](../bindings/benchmarks/RUST_ORDINARY_RESULTS.md).
 This mechanism does not establish Arrow source-to-host zero copy or
 comprehensive performance qualification.

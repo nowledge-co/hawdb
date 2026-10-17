@@ -246,3 +246,56 @@ fn database_instance_identity_is_stable_and_distinguishes_equal_state() {
     drop(moved);
     assert_ne!(Database::new().instance_identity().unwrap(), identity);
 }
+
+#[test]
+fn consumed_retained_node_snapshot_keeps_old_data_and_task_bound_after_database_drop() {
+    use hawdb::{
+        RetainedNodeField, RetainedNodeSnapshotCursor, RetainedQueryOptions, RetainedQueryStatus,
+    };
+
+    let mut db = Database::new();
+    db.query("CREATE NODE TABLE Item").unwrap();
+    db.query("CREATE PROPERTY ON NODE TABLE Item(key) TYPE INT")
+        .unwrap();
+    db.query("CREATE INDEX ON :Item(key)").unwrap();
+    db.query_with_params(
+        "UNWIND $rows AS row CREATE (:Item {key: row.key, text: 'original'})",
+        &BTreeMap::from([(
+            "rows".into(),
+            Value::List(
+                (0..17)
+                    .map(|key| Value::Map(BTreeMap::from([("key".into(), Value::Int(key))])))
+                    .collect(),
+            ),
+        )]),
+    )
+    .unwrap();
+    let context = RuntimeTaskContext::default();
+    let cancellation = context.cancellation().clone();
+    let snapshot = db.begin_read_transaction_with_context(&context).unwrap();
+    drop(context);
+    let parameters = BTreeMap::from([("key".into(), Value::Int(7))]);
+    db.query_with_params(
+        "MATCH (n:Item {key: $key}) SET n.text = 'current'",
+        &parameters,
+    )
+    .unwrap();
+    let mut cursor: RetainedNodeSnapshotCursor = snapshot
+        .into_retained_node_query(
+            "MATCH (n:Item {key: $key}) RETURN n AS node",
+            &parameters,
+            RetainedQueryOptions::default(),
+        )
+        .unwrap();
+    drop(db);
+    let view = cursor.next_node().unwrap().unwrap();
+    assert!(matches!(view.field("text").unwrap(),
+        Some(RetainedNodeField::Value(Value::String(text))) if text == "original"));
+    cancellation.cancel();
+    assert!(cursor.next_node().is_err());
+    assert_eq!(cursor.status(), RetainedQueryStatus::Failed);
+    drop(cursor);
+    assert_eq!(view.status(), RetainedQueryStatus::Failed);
+    assert!(matches!(view.field("text").unwrap(),
+        Some(RetainedNodeField::Value(Value::String(text))) if text == "original"));
+}

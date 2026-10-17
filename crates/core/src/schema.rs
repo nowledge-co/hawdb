@@ -14,6 +14,7 @@
 
 use crate::{LogicalType, Value};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LabelId(pub u32);
@@ -28,6 +29,62 @@ pub struct TableId(pub u32);
 pub struct Label {
     pub id: LabelId,
     pub name: String,
+}
+
+/// The lookup directory shares the immutable symbol rather than allocating a
+/// second name. Ordering and borrowed lookup retain their string semantics.
+#[derive(Debug, Clone)]
+struct LabelNameKey(Arc<Label>);
+
+impl std::borrow::Borrow<str> for LabelNameKey {
+    fn borrow(&self) -> &str {
+        &self.0.name
+    }
+}
+
+impl PartialEq for LabelNameKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.name == other.0.name
+    }
+}
+
+impl Eq for LabelNameKey {}
+
+impl PartialOrd for LabelNameKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for LabelNameKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.name.cmp(&other.0.name)
+    }
+}
+
+/// Admission token for a retained immutable symbol. Standalone callers remain
+/// responsible for their allocation policy and complete backing capacity.
+#[doc(hidden)]
+pub trait RetainedLabelAllocation {
+    fn bytes(&self) -> usize;
+}
+
+/// Own one admitted immutable symbol without retaining the catalog directory.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct RetainedLabelName<A> {
+    label: Arc<Label>,
+    _allocation: A,
+}
+
+impl<A> RetainedLabelName<A> {
+    pub fn id(&self) -> LabelId {
+        self.label.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.label.name
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,8 +345,8 @@ mod snapshot_tests;
 
 #[derive(Debug, Default, Clone)]
 pub struct Catalog {
-    labels_by_name: snapshot::CatalogSnapshot<BTreeMap<String, LabelId>>,
-    labels: snapshot::CatalogSnapshot<Vec<Label>>,
+    labels_by_name: snapshot::CatalogSnapshot<BTreeMap<LabelNameKey, LabelId>>,
+    labels: snapshot::CatalogSnapshot<Vec<Arc<Label>>>,
     rel_types_by_name: snapshot::CatalogSnapshot<BTreeMap<String, RelTypeId>>,
     rel_types: snapshot::CatalogSnapshot<Vec<RelType>>,
     tables_by_key: snapshot::CatalogSnapshot<BTreeMap<(TableKind, String), TableId>>,
@@ -324,11 +381,13 @@ impl Catalog {
             return *id;
         }
         let id = LabelId(self.labels.len() as u32);
-        self.labels.push(Label {
+        let label = Arc::new(Label {
             id,
             name: name.to_string(),
         });
-        self.labels_by_name.insert(name.to_string(), id);
+        self.labels_by_name
+            .insert(LabelNameKey(Arc::clone(&label)), id);
+        self.labels.push(label);
         id
     }
 
@@ -343,7 +402,52 @@ impl Catalog {
     }
 
     pub fn labels(&self) -> impl Iterator<Item = &Label> {
-        self.labels.iter()
+        self.labels.iter().map(Arc::as_ref)
+    }
+
+    /// Complete immutable symbol backing capacity, observed without capture.
+    #[doc(hidden)]
+    pub fn retained_label_name_capacity_bytes(&self, id: LabelId) -> crate::Result<Option<usize>> {
+        self.labels
+            .get(id.0 as usize)
+            .map(|label| Self::label_name_capacity_bytes(label))
+            .transpose()
+    }
+
+    fn label_name_capacity_bytes(label: &Label) -> crate::Result<usize> {
+        std::mem::size_of::<Label>()
+            .checked_add(2 * std::mem::size_of::<usize>())
+            .and_then(|bytes| bytes.checked_add(label.name.capacity()))
+            .ok_or_else(|| crate::HawDBError::Execution("label capacity overflow".into()))
+    }
+
+    /// Reserve a label's complete name capacity before retaining its immutable
+    /// owner. Missing IDs do not invoke admission; host refusals stay typed.
+    /// Container and adapter metadata require separate caller admission.
+    #[doc(hidden)]
+    pub fn retain_label_name_with_admission<A: RetainedLabelAllocation, E>(
+        &self,
+        id: LabelId,
+        allocate: impl FnOnce(usize) -> std::result::Result<A, E>,
+    ) -> std::result::Result<Option<RetainedLabelName<A>>, E>
+    where
+        E: From<crate::HawDBError>,
+    {
+        let Some(label) = self.labels.get(id.0 as usize) else {
+            return Ok(None);
+        };
+        let bytes = Self::label_name_capacity_bytes(label)?;
+        let allocation = allocate(bytes)?;
+        if allocation.bytes() < bytes {
+            return Err(crate::HawDBError::Execution(
+                "retained label admission returned an insufficient allocation permit".into(),
+            )
+            .into());
+        }
+        Ok(Some(RetainedLabelName {
+            label: Arc::clone(label),
+            _allocation: allocation,
+        }))
     }
 
     pub fn get_or_create_rel_type(&mut self, name: &str) -> RelTypeId {
@@ -975,16 +1079,20 @@ impl Catalog {
         let index = id.0 as usize;
         while self.labels.len() <= index {
             let next = LabelId(self.labels.len() as u32);
-            self.labels.push(Label {
+            self.labels.push(Arc::new(Label {
                 id: next,
                 name: String::new(),
-            });
+            }));
         }
-        self.labels[index] = Label {
-            id,
-            name: name.clone(),
-        };
-        self.labels_by_name.insert(name, id);
+        let previous = self.labels[index].name.as_str();
+        if self.labels_by_name.get(previous).copied() == Some(id) {
+            self.labels_by_name.remove(previous);
+        }
+        self.labels_by_name.remove(name.as_str());
+        let label = Arc::new(Label { id, name });
+        self.labels_by_name
+            .insert(LabelNameKey(Arc::clone(&label)), id);
+        self.labels[index] = label;
     }
 
     pub fn import_rel_type(&mut self, id: RelTypeId, name: String) {
@@ -1007,6 +1115,205 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct LabelAllocation {
+        bytes: usize,
+        source_on_release: Option<std::sync::Weak<Label>>,
+    }
+
+    impl RetainedLabelAllocation for LabelAllocation {
+        fn bytes(&self) -> usize {
+            self.bytes
+        }
+    }
+
+    impl Drop for LabelAllocation {
+        fn drop(&mut self) {
+            if let Some(source) = &self.source_on_release {
+                assert_eq!(source.strong_count(), 0, "symbol must drop before permit");
+            }
+        }
+    }
+
+    #[test]
+    fn retained_label_name_preserves_source_and_snapshot_without_catalog_pin() {
+        let mut catalog = Catalog::default();
+        let id = LabelId(0);
+        let mut name = String::with_capacity(16 * 1024);
+        name.push_str("original");
+        catalog.import_label(id, name);
+        let other = catalog.get_or_create_label("unrelated");
+        let capacity = catalog.labels[id.0 as usize].name.capacity();
+        let snapshot = catalog.clone();
+        assert_eq!(
+            snapshot.label_name(id).unwrap().as_ptr(),
+            catalog.label_name(id).unwrap().as_ptr()
+        );
+        drop(snapshot);
+        let original = Arc::downgrade(&catalog.labels[id.0 as usize]);
+        let unrelated = Arc::downgrade(&catalog.labels[other.0 as usize]);
+        let address = catalog.label_name(id).unwrap().as_ptr() as usize;
+        let preflight = catalog
+            .retained_label_name_capacity_bytes(id)
+            .unwrap()
+            .unwrap();
+        let source = catalog
+            .retain_label_name_with_admission(id, |bytes| -> crate::Result<_> {
+                assert_eq!(original.strong_count(), 2);
+                assert_eq!(bytes, preflight);
+                assert!(
+                    bytes
+                        >= std::mem::size_of::<Label>()
+                            + 2 * std::mem::size_of::<usize>()
+                            + capacity
+                );
+                Ok(LabelAllocation {
+                    bytes,
+                    source_on_release: Some(original.clone()),
+                })
+            })
+            .unwrap()
+            .unwrap();
+        catalog.import_label(id, "replacement".into());
+        assert_eq!(catalog.label_name(id), Some("replacement"));
+        assert_eq!(catalog.label_id("original"), None);
+        assert_eq!(catalog.label_id("replacement"), Some(id));
+        assert_eq!(
+            original.strong_count(),
+            1,
+            "only the retained name survives"
+        );
+        drop(catalog);
+        assert_eq!(unrelated.strong_count(), 0);
+        assert_eq!(source.id(), id);
+        assert_eq!(source.name(), "original");
+        assert_eq!(source.name().as_ptr() as usize, address);
+        drop(source);
+        assert_eq!(original.strong_count(), 0);
+    }
+
+    #[test]
+    fn import_label_removes_only_its_own_previous_name_mapping() {
+        let mut catalog = Catalog::default();
+        let original = catalog.get_or_create_label("original");
+        let snapshot = catalog.clone();
+        catalog.import_label(original, "replacement".into());
+        assert_eq!(catalog.label_id("original"), None);
+        assert_eq!(snapshot.label_id("original"), Some(original));
+        assert_eq!(snapshot.label_id("replacement"), None);
+        let renamed = catalog.get_or_create_label("original");
+        assert_ne!(renamed, original);
+        catalog.import_label(original, "original".into());
+        assert_eq!(catalog.label_id("original"), Some(original));
+        catalog.import_label(renamed, "third".into());
+        assert_eq!(catalog.label_id("original"), Some(original));
+        assert_eq!(catalog.label_id("replacement"), None);
+        assert_eq!(catalog.label_id("third"), Some(renamed));
+    }
+
+    #[test]
+    fn label_admission_refusal_and_missing_do_not_retain_source() {
+        let mut catalog = Catalog::default();
+        let id = catalog.get_or_create_label("Item");
+        let source = &catalog.labels[id.0 as usize];
+        let owners = Arc::strong_count(source);
+        let result =
+            catalog.retain_label_name_with_admission(id, |_| -> crate::Result<LabelAllocation> {
+                assert_eq!(Arc::strong_count(source), owners);
+                Err(crate::HawDBError::Execution(
+                    "label admission sentinel".into(),
+                ))
+            });
+        assert!(
+            matches!(result, Err(crate::HawDBError::Execution(reason)) if reason == "label admission sentinel")
+        );
+        assert_eq!(Arc::strong_count(source), owners);
+        let result = catalog.retain_label_name_with_admission(id, |_| -> crate::Result<_> {
+            Ok(LabelAllocation {
+                bytes: 0,
+                source_on_release: None,
+            })
+        });
+        assert!(
+            matches!(result, Err(crate::HawDBError::Execution(reason)) if reason.contains("insufficient allocation permit"))
+        );
+        assert_eq!(Arc::strong_count(source), owners);
+        assert!(catalog
+            .retain_label_name_with_admission(
+                LabelId(u32::MAX),
+                |_| -> crate::Result<LabelAllocation> {
+                    panic!("missing label must skip admission");
+                }
+            )
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn label_admission_preserves_typed_host_refusal() {
+        #[derive(Debug)]
+        enum HostError {
+            Refused { retryable: bool, identity: Arc<()> },
+            Storage(crate::HawDBError),
+        }
+        impl From<crate::HawDBError> for HostError {
+            fn from(error: crate::HawDBError) -> Self {
+                Self::Storage(error)
+            }
+        }
+        let mut catalog = Catalog::default();
+        let id = catalog.get_or_create_label("Item");
+        for retryable in [true, false] {
+            let identity = Arc::new(());
+            let result = catalog.retain_label_name_with_admission(
+                id,
+                |_| -> std::result::Result<LabelAllocation, HostError> {
+                    Err(HostError::Refused {
+                        retryable,
+                        identity: Arc::clone(&identity),
+                    })
+                },
+            );
+            match result {
+                Err(HostError::Refused {
+                    retryable: observed,
+                    identity: observed_identity,
+                }) => {
+                    assert_eq!(observed, retryable);
+                    assert!(Arc::ptr_eq(&identity, &observed_identity));
+                }
+                Err(HostError::Storage(error)) => panic!("host error was converted: {error}"),
+                Ok(_) => panic!("host refusal was ignored"),
+            }
+            assert_eq!(Arc::strong_count(&catalog.labels[id.0 as usize]), 2);
+        }
+    }
+
+    #[test]
+    fn label_directory_shares_names_and_preserves_borrowed_lookup_order() {
+        let mut catalog = Catalog::default();
+        for name in ["zeta", "alpha", "beta"] {
+            let id = catalog.get_or_create_label(name);
+            let (key, indexed_id) = catalog.labels_by_name.get_key_value(name).unwrap();
+            assert_eq!(*indexed_id, id);
+            assert!(Arc::ptr_eq(&key.0, &catalog.labels[id.0 as usize]));
+        }
+        assert_eq!(
+            catalog
+                .labels_by_name
+                .keys()
+                .map(|key| key.0.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "beta", "zeta"]
+        );
+        let id = catalog.label_id("alpha").unwrap();
+        catalog.import_label(id, "alpha".into());
+        let (key, indexed_id) = catalog.labels_by_name.get_key_value("alpha").unwrap();
+        assert_eq!(*indexed_id, id);
+        assert!(Arc::ptr_eq(&key.0, &catalog.labels[id.0 as usize]));
+        assert_eq!(catalog.get_or_create_label("alpha"), id);
+    }
 
     #[test]
     fn advanced_statistics_freshness_requires_complete_current_epoch_data() {

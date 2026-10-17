@@ -989,7 +989,7 @@ fn encode_bytes_base64(input: &[u8]) -> String {
 /// Applies a WAL op to a copy-on-write node/relationship snapshot.
 pub fn apply_wal_op_to_snapshot(
     catalog: &Catalog,
-    nodes: &mut CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &mut impl crate::cow::NodeRecordWrite,
     relationships: &mut CowSegmentedMap<RelId, RelRecord>,
     op: &WalOp,
 ) {

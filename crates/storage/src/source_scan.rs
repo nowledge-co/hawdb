@@ -18,7 +18,6 @@
 //! when the checkpoint manifest publishes the same graph epoch.
 
 use crate::background::{CheckpointBytes, CheckpointText, CheckpointValues, CheckpointWorkContext};
-use crate::cow::CowSegmentedMap;
 use crate::file_io::{self as fs, File};
 use crate::text::envelope::{encode_owned_durable_text_with_work_context, read_durable_text_bytes};
 use crate::text::{decode_properties, decode_string, decode_value, parse_i64, parse_u64};
@@ -61,7 +60,7 @@ pub struct SourceScanProjection {
     segments: owned::SharedSegments,
     // One outer COW root preserves the original records without copying their
     // property maps. Segment intervals identify at most 128 matching rows.
-    source_nodes: Option<CowSegmentedMap<NodeId, NodeRecord>>,
+    source_nodes: Option<crate::cow::CowNodeMap>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -392,7 +391,7 @@ pub fn build_with_work_context<'a>(
 pub(crate) fn build_with_pinned_nodes(
     graph_epoch: u64,
     source_label_id: Option<LabelId>,
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &crate::cow::CowNodeMap,
     work: &CheckpointWorkContext,
 ) -> Result<SourceScanProjection> {
     work.checkpoint().map_err(HawDBError::from_storage_error)?;

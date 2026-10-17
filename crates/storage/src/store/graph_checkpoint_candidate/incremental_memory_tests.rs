@@ -117,7 +117,17 @@ fn controlled_nested_record_insertions_admit_primary_growth_and_preserve_pins() 
             }
         }
         let charge = admission.memory_report().live_accounted_bytes;
-        assert!(charge > 1024 * 1024);
+        // Node pages now copy row owners rather than every NodeRecord. Keep
+        // a layout-derived primary-growth floor for that smaller directory.
+        let primary_floor = if relationships {
+            1024 * 1024
+        } else {
+            ROWS as u64
+                * (std::mem::size_of::<NodeId>()
+                    + std::mem::size_of::<crate::cow::CowSegment<NodeRecord>>())
+                    as u64
+        };
+        assert!(charge > primary_floor, "primary growth charge {charge}");
         let pin = store.snapshot();
         drop(work);
         drop(admission);
@@ -612,12 +622,75 @@ fn assert_relationship_record_replay_denies_before_pinned_copy(
 }
 
 #[test]
-fn controlled_record_create_node_denies_before_pinned_page_copy() {
-    assert_node_record_replay_denies_before_pinned_copy(|_, created| WalOp::CreateNode {
-        id: created,
-        label: "Memory".into(),
-        properties: BTreeMap::new(),
+fn controlled_record_create_node_shares_unmodified_wide_row_without_payload_copy() {
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::default();
+    let body = "索引".repeat(64 * 1024);
+    let id = store
+        .create_node(
+            &mut catalog,
+            "Memory",
+            BTreeMap::from([
+                ("body".into(), Value::String(body.clone())),
+                ("rank".into(), Value::Int(0)),
+            ]),
+        )
+        .unwrap();
+    let pinned = store.snapshot();
+    let address = std::ptr::from_ref(store.nodes.get(&id).unwrap());
+    let governor = RuntimeGovernor::new(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(4 * 1024 * 1024),
+            background_task_limit: Some(NonZeroUsize::MIN),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::MIN, None, None),
+            RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+        ),
+        IoConcurrencyBudget::new(2, 1),
+    );
+    let admission = governor
+        .try_admit_incremental_maintenance(4096, 4096, 1, RuntimeTaskContext::default())
+        .unwrap();
+    let work =
+        crate::background::CheckpointWorkContext::new(admission.task_context().unwrap().clone());
+    let created = NodeId(id.0 + 1);
+    let epoch = store.commit_epoch();
+    let mut mutation_started = false;
+    let observer = crate::test_allocator::AllocationObservation::start();
+    let result = work.classify(|work| {
+        store.apply_replayed_checkpoint_wal_transaction_with_boundary(
+            &mut catalog,
+            WalOp::CreateNode {
+                id: created,
+                label: "Memory".into(),
+                properties: BTreeMap::new(),
+            },
+            work,
+            &mut mutation_started,
+            None,
+        )
     });
+    let large_allocations = observer.finish();
+    result.unwrap();
+    assert_eq!(large_allocations, 0);
+    assert!(mutation_started);
+    assert_eq!(store.commit_epoch(), epoch + 1);
+    assert!(store.nodes.get(&created).is_some());
+    assert!(pinned.nodes.get(&created).is_none());
+    assert_eq!(std::ptr::from_ref(store.nodes.get(&id).unwrap()), address);
+    assert_eq!(std::ptr::from_ref(pinned.nodes.get(&id).unwrap()), address);
+    assert_eq!(
+        store.nodes.get(&id).unwrap().properties["body"],
+        Value::String(body)
+    );
+    assert!(admission.memory_report().live_accounted_bytes > 0);
+    drop(work);
+    drop(admission);
+    drop(store);
+    drop(pinned);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
 }
 
 #[test]

@@ -8,6 +8,325 @@ use hawdb::store::GraphStore;
 use hawdb::value::Value;
 use std::collections::BTreeMap;
 
+struct LimitArrowStream(hawdb::ArrowArrayStream);
+
+impl Drop for LimitArrowStream {
+    fn drop(&mut self) {
+        if let Some(release) = self.0.release {
+            // This guard owns the sole raw stream release obligation.
+            unsafe { release(&mut self.0) };
+        }
+    }
+}
+
+struct LimitArrowArray(hawdb::ArrowArray);
+
+impl Drop for LimitArrowArray {
+    fn drop(&mut self) {
+        if let Some(release) = self.0.release {
+            // Each successful pull transfers this array's release obligation.
+            unsafe { release(&mut self.0) };
+        }
+    }
+}
+
+fn consume_limit_arrow(cursor: hawdb::RetainedQueryCursor) -> Result<usize, (usize, String)> {
+    let mut stream = LimitArrowStream(cursor.into_arrow_stream(0).unwrap().into_raw());
+    let mut rows = 0usize;
+    loop {
+        let mut array = LimitArrowArray(hawdb::ArrowArray::default());
+        // Descriptors remain owned by their guards through callbacks and reads.
+        let code = unsafe { stream.0.get_next.unwrap()(&mut stream.0, &mut array.0) };
+        if code != 0 {
+            assert!(array.0.release.is_none());
+            let error = unsafe { stream.0.get_last_error.unwrap()(&mut stream.0) };
+            assert!(!error.is_null());
+            let message = unsafe { std::ffi::CStr::from_ptr(error) }
+                .to_str()
+                .unwrap()
+                .to_owned();
+            assert!(!message.is_empty());
+            let repeated = unsafe { stream.0.get_next.unwrap()(&mut stream.0, &mut array.0) };
+            assert_eq!(repeated, code, "terminal refusal must not turn into EOF");
+            assert!(array.0.release.is_none());
+            return Err((rows, message));
+        }
+        if array.0.release.is_none() {
+            return Ok(rows);
+        }
+        assert_eq!(array.0.n_children, 1);
+        let count = usize::try_from(array.0.length).unwrap();
+        // The fixture exports one non-null signed-int column in insertion order.
+        let child = unsafe { &**array.0.children };
+        assert_eq!(child.null_count, 0);
+        let offset = usize::try_from(child.offset).unwrap();
+        let values = unsafe {
+            std::slice::from_raw_parts((*child.buffers.add(1)).cast::<i64>(), offset + count)
+        };
+        for value in &values[offset..] {
+            assert_eq!(*value, i64::try_from(rows).unwrap());
+            rows += 1;
+        }
+    }
+}
+
+#[test]
+fn default_unlimited_and_explicit_read_row_limits_preserve_complete_delivery() {
+    use hawdb::{
+        DatabaseConfig, EmbeddedQueryError, HawDBEmbedded, HawDBError, ReadBudgetResource,
+        RetainedColumnValues, RetainedQueryError, RetainedQueryOptions, RetainedQueryStatus,
+    };
+
+    assert_eq!(DatabaseConfig::default().max_read_result_rows, None);
+    assert_eq!(hawdb::SessionConfig::default().max_result_rows, 0);
+    let cap = 100_000;
+    let directory = (0..1000)
+        .find_map(|attempt| {
+            let path = std::env::temp_dir().join(format!(
+                "hawdb-default-read-cap-{}-{attempt}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => Some(IdentityDirectory(path)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => panic!("reserve read-limit fixture: {error}"),
+            }
+        })
+        .expect("a uniquely reserved fixture directory");
+    for (persistent, configured) in [
+        (false, None),
+        (true, None),
+        (false, Some(0)),
+        (true, Some(0)),
+        (false, Some(cap)),
+        (true, Some(cap)),
+    ] {
+        let bounded = configured.is_some_and(|rows| rows != 0);
+        let config = DatabaseConfig {
+            max_read_result_rows: configured,
+            ..DatabaseConfig::default()
+        };
+        let path = directory.0.join(format!("project-{configured:?}"));
+        let mut engine = if persistent {
+            let mut options = hawdb::HawDBEmbeddedOpenOptions::new(&path);
+            options.config = config;
+            HawDBEmbedded::open_with_options(options).unwrap()
+        } else {
+            HawDBEmbedded::open_in_memory_with_config(config)
+        };
+        engine.query_admitted("CREATE NODE TABLE RowLimit").unwrap();
+        engine
+            .query_admitted("CREATE PROPERTY ON NODE TABLE RowLimit(score) TYPE INT")
+            .unwrap();
+        for start in (0..=cap).step_by(512) {
+            let values = (start..(start + 512).min(cap + 1))
+                .map(|score| {
+                    Value::Map(BTreeMap::from([(
+                        "score".into(),
+                        Value::Int(i64::try_from(score).unwrap()),
+                    )]))
+                })
+                .collect();
+            engine
+                .query_with_params_admitted(
+                    "UNWIND $scores AS row CREATE (:RowLimit {score: row.score})",
+                    &BTreeMap::from([("scores".into(), Value::List(values))]),
+                )
+                .unwrap();
+        }
+        let epoch = engine.database().commit_epoch().unwrap();
+        let query = "MATCH (n:RowLimit) WHERE n.score < $count RETURN n.score AS score";
+        for count in [cap - 1, cap, cap + 1] {
+            let params =
+                BTreeMap::from([("count".into(), Value::Int(i64::try_from(count).unwrap()))]);
+            let owned = engine.query_with_params_admitted(query, &params);
+            if !bounded || count <= cap {
+                let output = owned.unwrap();
+                assert_eq!(output.rows.len(), count);
+                for (index, row) in output.rows.iter().enumerate() {
+                    assert_eq!(row.get("score"), Some(&Value::Int(index as i64)));
+                }
+            } else {
+                assert!(matches!(owned.unwrap_err(),
+                    EmbeddedQueryError::Database(HawDBError::ReadBudgetExceeded(cause))
+                    if cause.resource == ReadBudgetResource::Rows && cause.limit == cap));
+            }
+            let options = RetainedQueryOptions {
+                max_result_rows: Some(cap + 1000),
+                ..RetainedQueryOptions::default()
+            };
+            let mut cursor = engine
+                .database()
+                .query_with_params_retained(query, &params, options)
+                .unwrap();
+            let mut retained_rows = 0;
+            loop {
+                match cursor.next_batch() {
+                    Ok(Some(batch)) => {
+                        let RetainedColumnValues::Int64(values) = batch.column(0).unwrap() else {
+                            panic!("integer fixture")
+                        };
+                        for index in batch.selected_rows() {
+                            assert_eq!(values[*index as usize], retained_rows as i64);
+                            retained_rows += 1;
+                        }
+                        assert!(!bounded || retained_rows <= cap);
+                    }
+                    Ok(None) => {
+                        assert!(
+                            !bounded || count <= cap,
+                            "over-cap result must not appear complete"
+                        );
+                        assert_eq!(retained_rows, count);
+                        assert_eq!(cursor.status(), RetainedQueryStatus::Completed);
+                        break;
+                    }
+                    Err(error) => {
+                        assert!(bounded);
+                        assert_eq!(count, cap + 1);
+                        assert!(
+                            matches!(error, RetainedQueryError::ResultBudget { rows, .. } if rows > cap)
+                        );
+                        assert_eq!(cursor.status(), RetainedQueryStatus::Failed);
+                        assert_eq!(cursor.next_batch().unwrap_err(), error);
+                        assert_eq!(cursor.profile().source_pinned_capacity_bytes, 0);
+                        break;
+                    }
+                }
+            }
+            cursor.close();
+            drop(cursor);
+            let arrow = engine
+                .database()
+                .query_with_params_retained(query, &params, options)
+                .unwrap();
+            match consume_limit_arrow(arrow) {
+                Ok(rows) => {
+                    assert!(!bounded || count <= cap);
+                    assert_eq!(rows, count);
+                }
+                Err((rows, message)) => {
+                    assert!(bounded);
+                    assert_eq!(count, cap + 1);
+                    assert!(rows <= cap);
+                    assert!(
+                        message.starts_with(&format!(
+                            "retained query ResultBudget {{ rows: {},",
+                            cap + 1
+                        )),
+                        "unexpected Arrow refusal: {message}"
+                    );
+                }
+            }
+            assert_eq!(engine.database().commit_epoch().unwrap(), epoch);
+            let governor = engine.runtime_governor();
+            let retained = governor.retained_result_snapshot();
+            assert_eq!(retained.retained_bytes, 0);
+            assert_eq!(retained.buffer_owners, 0);
+            assert_eq!(retained.view_handles, 0);
+            let runtime = governor.snapshot();
+            assert_eq!(runtime.admissions, runtime.completions);
+            assert_eq!(runtime.admitted_memory_bytes, 0);
+        }
+        let mut strict = engine
+            .database()
+            .query_with_params_retained(
+                query,
+                &BTreeMap::from([("count".into(), Value::Int(2))]),
+                RetainedQueryOptions {
+                    batch_rows: std::num::NonZeroUsize::new(1).unwrap(),
+                    max_result_rows: Some(1),
+                    ..RetainedQueryOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            strict.next_batch().unwrap().unwrap().selected_rows().len(),
+            1
+        );
+        assert!(matches!(
+            strict.next_batch().unwrap_err(),
+            RetainedQueryError::ResultBudget { rows: 2, .. }
+        ));
+        drop(strict);
+        let output = engine
+            .query_admitted("MATCH (n:RowLimit) RETURN count(n) AS total")
+            .unwrap();
+        assert_eq!(
+            output.rows[0].get("total"),
+            Some(&Value::Int((cap + 1) as i64))
+        );
+        // A predicate exercises aggregate execution independently of the
+        // unfiltered label-count fast path above.
+        let aggregate = engine
+            .query_admitted("MATCH (n:RowLimit) WHERE n.score >= 0 RETURN count(n) AS total")
+            .unwrap();
+        assert_eq!(aggregate.rows.len(), 1);
+        assert_eq!(
+            aggregate.rows[0].get("total"),
+            Some(&Value::Int((cap + 1) as i64))
+        );
+        let limited =
+            format!("MATCH (n:RowLimit) WHERE n.score >= 0 RETURN n.score AS score LIMIT {cap}");
+        assert_eq!(engine.query_admitted(&limited).unwrap().rows.len(), cap);
+        let cursor = engine
+            .database()
+            .query_with_params_retained(&limited, &BTreeMap::new(), RetainedQueryOptions::default())
+            .unwrap();
+        assert_eq!(consume_limit_arrow(cursor).unwrap(), cap);
+        engine
+            .query_admitted("CREATE (:RowLimit {score: -1})")
+            .unwrap();
+        assert!(engine.database().commit_epoch().unwrap() > epoch);
+        let output = engine
+            .query_admitted("MATCH (n:RowLimit) RETURN count(n) AS total")
+            .unwrap();
+        assert_eq!(
+            output.rows[0].get("total"),
+            Some(&Value::Int((cap + 2) as i64))
+        );
+    }
+}
+
+#[test]
+fn configured_sql_row_limits_refuse_work_instead_of_returning_partial_aggregates() {
+    use hawdb::{Database, DatabaseConfig, HawDBError};
+
+    let mut database = Database::new_with_config(DatabaseConfig {
+        max_read_result_rows: Some(2),
+        ..DatabaseConfig::default()
+    });
+    database
+        .query_sql("CREATE TABLE row_limit (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    for id in 0..3 {
+        database
+            .query_sql(&format!("INSERT INTO row_limit (id) VALUES ({id})"))
+            .unwrap();
+    }
+    let epoch = database.commit_epoch().unwrap();
+    let selected = database.query_sql("SELECT id FROM row_limit").unwrap_err();
+    assert!(
+        matches!(&selected, HawDBError::Execution(message)
+        if message == "relational SQL exceeds max_intermediate_rows 2"),
+        "unexpected refusal: {selected:?}"
+    );
+    // SQL also has an intermediate-work cap derived from the database limit.
+    // An aggregate can use a complete fast path or refuse that bounded work;
+    // a successful aggregate must never silently count just the first two rows.
+    match database.query_sql("SELECT COUNT(*) AS total FROM row_limit") {
+        Ok(output) => assert_eq!(output.rows[0].get("total"), Some(&Value::Int(3))),
+        Err(error) => assert!(matches!(error, HawDBError::Execution(message)
+            if message == "relational SQL exceeds max_intermediate_rows 2")),
+    }
+    let selected = database
+        .query_sql("SELECT id FROM row_limit WHERE id = 2")
+        .unwrap();
+    assert_eq!(selected.rows.len(), 1);
+    assert_eq!(selected.rows[0].get("id"), Some(&Value::Int(2)));
+    assert_eq!(database.commit_epoch().unwrap(), epoch);
+}
+
 struct IdentityDirectory(std::path::PathBuf);
 
 impl IdentityDirectory {
@@ -551,7 +870,7 @@ fn host_can_implement_external_reads_using_only_the_hawdb_facade() {
 
 #[test]
 fn session_result_row_settings_are_isolated_and_inherited_by_transactions() {
-    use hawdb::{Database, DatabaseConfig};
+    use hawdb::{Database, DatabaseConfig, RetainedQueryError, RetainedQueryOptions};
 
     for configured in [Some(0), None, Some(2)] {
         let mut db = Database::new_with_config(DatabaseConfig {
@@ -592,6 +911,31 @@ fn session_result_row_settings_are_isolated_and_inherited_by_transactions() {
                 .unwrap()
                 .rows
                 .is_empty());
+            let mut cursor = session
+                .query_with_params_retained(
+                    query,
+                    &BTreeMap::new(),
+                    RetainedQueryOptions::default(),
+                )
+                .unwrap();
+            session.set_max_result_rows(0);
+            assert!(matches!(
+                cursor.next_batch(),
+                Err(RetainedQueryError::ResultBudget { rows: 3, .. })
+            ));
+            assert!(cursor.next_batch().is_err());
+            drop(cursor);
+            session.set_max_result_rows(1);
+            assert!(consume_limit_arrow(
+                session
+                    .query_with_params_retained(
+                        query,
+                        &BTreeMap::new(),
+                        RetainedQueryOptions::default()
+                    )
+                    .unwrap()
+            )
+            .is_err());
             session.query("BEGIN TRANSACTION").unwrap();
             session.set_max_result_rows(0);
             assert!(

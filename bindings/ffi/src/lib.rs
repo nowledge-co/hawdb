@@ -52,6 +52,9 @@ use hawdb::{
 };
 use serde_json::json;
 
+mod retained;
+pub use retained::*;
+
 /// Developer profiling build only. This observation is not an admission ledger
 /// or an allocator-capacity bound. NULL output is a no-op; no buffer is allocated.
 ///

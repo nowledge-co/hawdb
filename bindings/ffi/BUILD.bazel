@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_shared_library", "rust_static_library")
+load("@rules_rust//rust:defs.bzl", "rust_shared_library", "rust_static_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -10,13 +10,23 @@ _FFI_DEPS = [
     "@ffi_crates//:base64",
 ]
 
-rust_shared_library(
-    name = "hawdb_ffi",
-    srcs = ["src/lib.rs"],
+rust_test(
+    name = "hawdb_ffi_tests",
+    srcs = glob(["src/**/*.rs"]),
     crate_name = "hawdb_ffi",
     crate_root = "src/lib.rs",
     edition = "2024",
-    # Pinned Rust stripping misaligns Mach-O LINKEDIT on macOS 27.
+    deps = _FFI_DEPS,
+)
+
+rust_shared_library(
+    name = "hawdb_ffi",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "hawdb_ffi",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    # The pinned Rust stripping tool produces an invalid Mach-O LINKEDIT
+    # string pool rejected by macOS 27. Keep the optimized library loadable.
     rustc_flags = select({
         "@platforms//os:macos": ["-Cstrip=none"],
         "//conditions:default": [],
@@ -27,7 +37,7 @@ rust_shared_library(
 
 rust_static_library(
     name = "hawdb_ffi_static",
-    srcs = ["src/lib.rs"],
+    srcs = glob(["src/**/*.rs"]),
     crate_name = "hawdb_ffi",
     crate_root = "src/lib.rs",
     edition = "2024",
