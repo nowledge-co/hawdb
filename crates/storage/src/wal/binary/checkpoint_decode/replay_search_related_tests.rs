@@ -142,7 +142,7 @@ fn assert_complete(
 }
 
 #[test]
-fn checkpoint_units_wal_replay_search_capture_admits_nonmatching_relationship_prefix() {
+fn checkpoint_units_wal_replay_search_capture_skips_unrelated_indexed_relationships() {
     let (mut store, mut catalog) = source(2, 1057);
     let base_epoch = store.commit_epoch();
     let mut expected = store.snapshot();
@@ -171,9 +171,13 @@ fn checkpoint_units_wal_replay_search_capture_admits_nonmatching_relationship_pr
         1059,
         base_epoch,
     );
+    // Capture now visits the endpoint/type adjacency index directly. The
+    // complete-result assertions above still require both HAS_LABEL directions
+    // and the old document ID; unrelated OTHER edges must add no linear scan.
+    let units = probe.completed.load(Ordering::SeqCst);
     assert!(
-        probe.completed.load(Ordering::SeqCst) >= 1057,
-        "nonmatching relationships must not be hidden inside Iterator::next"
+        units > 0 && units < 1057,
+        "indexed capture used {units} units"
     );
     probe.assert_released(&scheduler);
     drop(store);

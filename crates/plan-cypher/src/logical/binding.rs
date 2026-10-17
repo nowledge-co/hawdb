@@ -1327,6 +1327,8 @@ pub(super) fn collect_scalar_expression_variables(
         ScalarExpressionKind::Variable(variable)
         | ScalarExpressionKind::Property { variable, .. }
         | ScalarExpressionKind::Id(variable)
+        | ScalarExpressionKind::Properties(variable)
+        | ScalarExpressionKind::Labels(variable)
         | ScalarExpressionKind::RelationshipType(variable) => {
             variables.insert(variable.clone());
         }

@@ -126,6 +126,16 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             write_identifier(output, variable);
             output.push(')');
         }
+        ProjectionExpression::Properties { variable } => {
+            output.push_str("properties(");
+            write_identifier(output, variable);
+            output.push(')');
+        }
+        ProjectionExpression::Labels { variable } => {
+            output.push_str("labels(");
+            write_identifier(output, variable);
+            output.push(')');
+        }
         ProjectionExpression::RelationshipType { variable } => {
             output.push_str("label(");
             write_identifier(output, variable);

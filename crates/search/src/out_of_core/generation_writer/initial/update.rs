@@ -18,27 +18,39 @@ use super::*;
 use crate::out_of_core::{SearchOutOfCoreManifestBody, SearchOutOfCoreMutationRunManifest};
 
 pub(super) struct Prepared {
+    // Rust drops fields in declaration order. The joined manifest must die
+    // before any reservation that covered its decode or vector growth.
+    manifest: SearchOutOfCoreManifestBody,
     pub(super) old_segments: usize,
     pub(super) mutation: Option<(artifact_name::Name, json::EncodedManifest)>,
+    _input: QueryMemoryLease,
     _decode: Option<QueryMemoryLease>,
     _growth: Option<QueryMemoryLease>,
     _reference: Option<QueryMemoryLease>,
 }
 
+impl Prepared {
+    pub(super) fn manifest(&self) -> &SearchOutOfCoreManifestBody {
+        &self.manifest
+    }
+}
+
 pub(super) fn prepare(
     writer: &SearchOutOfCoreGenerationWriter,
-    manifest: &mut SearchOutOfCoreManifestBody,
+    manifest: SearchOutOfCoreManifestBody,
+    input_memory: QueryMemoryLease,
 ) -> Result<Prepared> {
+    let mut prepared = Prepared {
+        manifest,
+        old_segments: 0,
+        mutation: None,
+        _input: input_memory,
+        _decode: None,
+        _growth: None,
+        _reference: None,
+    };
     let expected = match writer.active_manifest_update {
-        None => {
-            return Ok(Prepared {
-                old_segments: 0,
-                mutation: None,
-                _decode: None,
-                _growth: None,
-                _reference: None,
-            })
-        }
+        None => return Ok(prepared),
         Some(ActiveManifestUpdate::Append {
             expected_generation,
         })
@@ -58,19 +70,24 @@ pub(super) fn prepare(
         &io.path(&writer.root, Path::new(OUT_OF_CORE_MANIFEST_FILE))?,
         MAX_OUT_OF_CORE_MANIFEST_BYTES,
     )?;
-    let decode = memory.spool.reserve(checked_add(
-        json::decode_capacity(&bytes.bytes, 0, 0, task)?,
-        3 * 128,
-    )?)?;
-    let mut active = SearchOutOfCoreManifestBody::decode(&bytes.bytes)?;
+    prepared._decode = Some(
+        memory
+            .spool
+            .reserve(SearchOutOfCoreManifestBody::decode_capacity(
+                &bytes.bytes,
+                task,
+            )?)?,
+    );
+    let mut active = SearchOutOfCoreManifestBody::decode_with_context(&bytes.bytes, Some(task))?;
     if active.generation != expected {
         return Err(generation_changed(expected, active.generation));
     }
+    let manifest = &mut prepared.manifest;
     let old_segments = active.segments.len();
     let count = checked_add(old_segments, manifest.segments.len())?.max(active.segments.capacity());
     // The old/new serde allocations remain admitted by their decode leases.
     // Admit vector growth before moving either closure into the final manifest.
-    let growth = memory.retained.reserve(checked_add(
+    prepared._growth = Some(memory.retained.reserve(checked_add(
         checked_mul(
             count,
             std::mem::size_of::<crate::out_of_core::SearchOutOfCoreSegmentManifest>(),
@@ -79,7 +96,7 @@ pub(super) fn prepare(
             std::mem::size_of::<SearchOutOfCoreMutationRunManifest>(),
             128,
         )?,
-    )?)?;
+    )?)?);
     active
         .segments
         .try_reserve_exact(manifest.segments.len())
@@ -162,20 +179,20 @@ pub(super) fn prepare(
                 analyzer_digest: mutation.analyzer_digest,
                 entries: &mutation.entries,
             };
-            let prepared = json::prepare(
+            let encoding = json::prepare(
                 &body,
                 mutation.max_run_bytes,
                 Some(task),
                 "search mutation run",
             )?;
-            let checksum = prepared.checksum();
-            let encoded = prepared.encode(memory, task)?;
+            let checksum = encoding.checksum();
+            let encoded = encoding.encode(memory, task)?;
             let capacity = checked_add(manifest.mutation_runs.len(), 1)?
                 .max(manifest.mutation_runs.capacity());
-            let reference = memory.retained.reserve(checked_mul(
+            prepared._reference = Some(memory.retained.reserve(checked_mul(
                 capacity,
                 std::mem::size_of::<SearchOutOfCoreMutationRunManifest>(),
-            )?)?;
+            )?)?);
             manifest
                 .mutation_runs
                 .try_reserve_exact(1)
@@ -199,18 +216,13 @@ pub(super) fn prepare(
                     entry_count: mutation.entries.len(),
                     analyzer_digest: mutation.analyzer_digest,
                 });
-            Ok::<_, HawDBError>(((name, encoded), reference))
+            Ok::<_, HawDBError>((name, encoded))
         })
         .transpose()?;
-    let (mutation, reference) = match mutation {
-        Some((mutation, reference)) => (Some(mutation), Some(reference)),
-        None => (None, None),
-    };
-    Ok(Prepared {
-        old_segments,
-        mutation,
-        _decode: Some(decode),
-        _growth: Some(growth),
-        _reference: reference,
-    })
+    prepared.old_segments = old_segments;
+    prepared.mutation = mutation;
+    Ok(prepared)
 }
+
+#[cfg(test)]
+mod tests;

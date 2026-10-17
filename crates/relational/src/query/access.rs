@@ -265,6 +265,9 @@ pub(super) fn index_access_candidate(
         return Ok(None);
     }
     let prefix_len = prefix.len();
+    if !schema.index_prefix_covers_matches(columns, prefix_len, unique) {
+        return Ok(None);
+    }
     let (mut order_prefix_len, mut direction) =
         index_order_prefix(order_by, columns, prefix_len, schema, table, qualifier);
     let key = RelationalKey(prefix);
@@ -498,6 +501,14 @@ pub(super) fn choose_join_access(
             });
         }
         for (ordinal, columns) in schema.unique_constraints.iter().enumerate() {
+            let prefix_len = columns
+                .iter()
+                .take_while(|c| bound.contains_key(*c))
+                .count();
+            if !schema.index_prefix_covers_matches(columns, prefix_len, true) {
+                continue;
+            }
+
             if let Some(candidate) = join_index_access_candidate(
                 relational_unique_index_name(ordinal),
                 columns,
@@ -511,6 +522,15 @@ pub(super) fn choose_join_access(
             }
         }
         for index in &schema.indexes {
+            let prefix_len = index
+                .columns
+                .iter()
+                .take_while(|c| bound.contains_key(*c))
+                .count();
+            if !schema.index_prefix_covers_matches(&index.columns, prefix_len, index.unique) {
+                continue;
+            }
+
             if let Some(candidate) = join_index_access_candidate(
                 index.name.clone(),
                 &index.columns,

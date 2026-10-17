@@ -436,6 +436,8 @@ fn collect_projection_columns(
         ProjectionExpression::Variable { .. }
         | ProjectionExpression::Property { .. }
         | ProjectionExpression::Id { .. }
+        | ProjectionExpression::Properties { .. }
+        | ProjectionExpression::Labels { .. }
         | ProjectionExpression::RelationshipType { .. }
         | ProjectionExpression::DatePart { .. }
         | ProjectionExpression::DefaultIfNullOrEq { .. }
@@ -471,6 +473,8 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         ProjectionExpression::Variable { .. }
         | ProjectionExpression::Property { .. }
         | ProjectionExpression::Id { .. }
+        | ProjectionExpression::Properties { .. }
+        | ProjectionExpression::Labels { .. }
         | ProjectionExpression::RelationshipType { .. }
         | ProjectionExpression::Literal(_)
         | ProjectionExpression::DatePart { .. }

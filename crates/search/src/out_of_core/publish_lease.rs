@@ -44,6 +44,14 @@ impl SearchProjectionPublishLease {
         Self::acquire_lock_with_context(root, &memory, &task)
     }
 
+    // Cleanup may inspect registered roots, but must share publication exclusion
+    // while discovering the current closure and deleting unreferenced files.
+    pub(crate) fn acquire_for_cleanup(root: &Path) -> Result<Self> {
+        let task = RuntimeTaskContext::default();
+        let memory = BuildMemory::new(&task)?;
+        Self::acquire_lock_with_context(root, &memory, &task)
+    }
+
     pub(crate) fn acquire_with_context(
         root: &Path,
         memory: &BuildMemory,
@@ -63,6 +71,8 @@ impl SearchProjectionPublishLease {
     ) -> Result<Self> {
         checkpoint(task)?;
         let registration = registration::Registration::acquire(root, memory, task)?;
+        #[cfg(test)]
+        tests::after_registration(root);
         let lock_path = OwnedPath::join(
             root,
             Path::new(SEARCH_PROJECTION_PUBLISH_LOCK_FILE),
@@ -88,8 +98,24 @@ impl SearchProjectionPublishLease {
             lock_file,
             _registration: registration,
         };
+        #[cfg(test)]
+        tests::after_lock(root);
+        // The path may have been replaced between registration and native open,
+        // or between opening and locking. Never grant a lease for a different
+        // directory/lock file than the authority actually retained.
+        lease.require_current_binding(root, &lock_path)?;
         checkpoint(task)?;
         Ok(lease)
+    }
+
+    fn require_current_binding(&self, root: &Path, lock_path: &Path) -> Result<()> {
+        self._registration.require_current_root(root)?;
+        if !self.lock_file.matches_native_path(lock_path)? {
+            return Err(HawDBError::StorageIntegrity(
+                "search publication lock path changed during acquisition".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -128,6 +154,17 @@ mod registration {
     }
 
     impl Registration {
+        // The caller retains admitted native path scratch and the lock FD.
+        pub(super) fn require_current_root(&self, root: &Path) -> Result<()> {
+            let metadata = hawdb_storage::file_io::metadata(root)?;
+            if self.identity != (metadata.dev(), metadata.ino()) {
+                return Err(HawDBError::StorageIntegrity(
+                    "search publication root changed during acquisition".into(),
+                ));
+            }
+            Ok(())
+        }
+
         pub(super) fn acquire(
             root: &Path,
             memory: &BuildMemory,
@@ -191,6 +228,10 @@ mod registration {
     #[derive(Debug)]
     pub(super) struct Registration;
     impl Registration {
+        pub(super) fn require_current_root(&self, _root: &Path) -> Result<()> {
+            Ok(())
+        }
+
         pub(super) fn acquire(
             _: &Path,
             _: &BuildMemory,
@@ -209,6 +250,64 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    type Hook = fn(&Path);
+    thread_local! {
+        static AFTER_REGISTRATION: std::cell::Cell<Option<Hook>> = const { std::cell::Cell::new(None) };
+        static AFTER_LOCK: std::cell::Cell<Option<Hook>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn after_registration(root: &Path) {
+        if let Some(hook) = AFTER_REGISTRATION.with(|slot| slot.take()) {
+            hook(root);
+        }
+    }
+    pub(super) fn after_lock(root: &Path) {
+        if let Some(hook) = AFTER_LOCK.with(|slot| slot.take()) {
+            hook(root);
+        }
+    }
+
+    #[test]
+    fn replacement_after_registration_cannot_misbind_the_native_lease() {
+        let root = test_dir();
+        fs::create_dir_all(&root).unwrap();
+        AFTER_REGISTRATION.with(|slot| {
+            slot.set(Some(|root| {
+                fs::rename(root, root.with_extension("replaced")).unwrap();
+                fs::create_dir(root).unwrap();
+            }))
+        });
+        let result = SearchProjectionPublishLease::acquire(&root);
+        assert!(AFTER_REGISTRATION.with(|slot| slot.take()).is_none());
+        #[cfg(unix)]
+        assert!(matches!(result, Err(HawDBError::StorageIntegrity(_))));
+        // Windows has no process-local directory registration; its retained
+        // native lease correctly covers the new root opened after replacement.
+        #[cfg(not(unix))]
+        drop(result.unwrap());
+        drop(SearchProjectionPublishLease::acquire(&root).unwrap());
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(root.with_extension("replaced")).unwrap();
+    }
+
+    #[test]
+    fn replacement_after_lock_cannot_turn_old_file_lock_into_new_path_authority() {
+        let root = test_dir();
+        fs::create_dir_all(&root).unwrap();
+        AFTER_LOCK.with(|slot| {
+            slot.set(Some(|root| {
+                let path = root.join(SEARCH_PROJECTION_PUBLISH_LOCK_FILE);
+                fs::rename(&path, root.join("replaced-lock")).unwrap();
+                fs::write(path, b"").unwrap();
+            }))
+        });
+        let result = SearchProjectionPublishLease::acquire(&root);
+        assert!(AFTER_LOCK.with(|slot| slot.take()).is_none());
+        assert!(matches!(result, Err(HawDBError::StorageIntegrity(_))));
+        drop(SearchProjectionPublishLease::acquire(&root).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn publication_lease_rejects_concurrent_owner_and_recovers_after_drop() {

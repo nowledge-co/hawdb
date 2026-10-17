@@ -161,3 +161,352 @@ tla_check(
     timeout_seconds = 1800,
     tlc_args = ["-cleanup", "-workers", "auto"],
 )
+
+[
+    tla_check(
+        name = "HawDBProjectionOwnerCapture" + control + "_check",
+        module = "HawDBProjectionOwnerCapture.tla",
+        config = "mutants/HawDBProjectionOwnerCapture" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in ["TrustLegacyFloor", "DropOwnerOnly", "ForgetTrimFloor", "PublishBeforeWal", "IgnoreMissingRows", "UpgradeWitness"]
+]
+
+[
+    tla_check(
+        name = "HawDBProjectionOwnerFeedCursor" + control + "_check",
+        module = "HawDBProjectionOwnerFeedCursor.tla",
+        config = "mutants/HawDBProjectionOwnerFeedCursor" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in ["ResetTotals", "RefundDeferral", "IgnoreMetadataWork", "SkipItem", "IgnoreError", "DropEnd", "ReadLive", "LateAdmission", "TrustLegacyFloor", "IgnorePreimageWork", "IgnorePreimageBytes", "DropRepeatedOwner", "CompleteWitness", "DeferredWitness"]
+]
+
+[
+    tla_check(
+        name = "HawDBProjectionLabelLookup" + control + "_check",
+        module = "HawDBProjectionLabelLookup.tla",
+        config = "mutants/HawDBProjectionLabelLookup" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in ["IgnoreAbsentGuard", "IgnoreSchemaBarrier", "WrongDomain", "GlobalEpochFallback", "SuccessWitness"]
+]
+
+[
+    tla_check(
+        name = "HawDBRelationalTableReadScope" + control + "_check",
+        module = "HawDBRelationalTableReadScope.tla",
+        config = "mutants/HawDBRelationalTableReadScope" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in [
+        "MissingDomain",
+        "IgnoreDeletes",
+        "IgnoreOffPage",
+        "WrongTable",
+        "IgnoreBarrier",
+        "GlobalEpochFallback",
+        "SharedWriterIntent",
+        "EarlyStamp",
+        "ReadLive",
+        "IgnoreSchema",
+        "SuccessWitness",
+        "BothWritersWitness",
+    ]
+]
+
+[
+    tla_check(
+        name = "HawDBRelationshipReadScope" + control + "_check",
+        module = "HawDBRelationshipReadScope.tla",
+        config = "mutants/HawDBRelationshipReadScope" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in [
+        "MissingDomain",
+        "IgnoreDeletes",
+        "IgnoreProperties",
+        "IgnoreOffRoot",
+        "WrongType",
+        "IgnoreBarrier",
+        "GlobalEpochFallback",
+        "SharedWriterIntent",
+        "EarlyStamp",
+        "ReadLive",
+        "IgnoreSchema",
+        "SuccessWitness",
+        "BothWritersWitness",
+    ]
+]
+
+[
+    tla_check(
+        name = "HawDBScopedGraphRead" + control + "_check",
+        module = "HawDBScopedGraphRead.tla",
+        config = "mutants/HawDBScopedGraphRead" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in [
+        "SkipRoot",
+        "SkipTarget",
+        "SkipKind",
+        "WrongName",
+        "WildcardAsNamed",
+        "IgnoreRefusal",
+        "IgnoreBarrier",
+        "IgnoreSchema",
+        "GlobalEpochFallback",
+        "SuccessWitness",
+    ]
+]
+
+[
+    tla_check(
+        name = "HawDBProjectionEndpointCapture" + control + "_check",
+        module = "HawDBProjectionEndpointCapture.tla",
+        config = "mutants/HawDBProjectionEndpointCapture" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in [
+        "TrustV1",
+        "SkipProperty",
+        "SkipOtherType",
+        "DropEndpoint",
+        "DropOwnerOnly",
+        "IgnoreRefusal",
+        "EarlyPublish",
+        "ForgetTrimFloor",
+        "IgnoreMissingRows",
+        "UpgradeWitness",
+    ]
+]
+
+[
+    tla_check(
+        name = "HawDBSearchCleanupPublication" + control + "_check",
+        module = "HawDBSearchCleanupPublication.tla",
+        config = "mutants/HawDBSearchCleanupPublication" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in [
+        "SkipExclusion",
+        "UseStaleHint",
+        "ForgetReferences",
+        "ReleaseEarly",
+        "StaleSafeCleanupWitness",
+        "DeferralWitness",
+        "OldCallerAndSweep",
+        "IgnoreUnknownClosure",
+        "TrustStaleResident",
+        "StandaloneWitness",
+    ]
+]
+
+[
+    tla_check(
+        name = "HawDBConsumerInstalledActivation" + control + "_check",
+        module = "HawDBConsumerInstalledActivation.tla",
+        config = "mutants/HawDBConsumerInstalledActivation" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in [
+        "BypassOperation",
+        "ForgetIncarnation",
+        "SeparateReceipt",
+        "SkipDataSync",
+        "SkipSourceSync",
+        "ReleaseSlotEarly",
+        "DropHeavyUnderFence",
+        "DecodeManifestUnderFence",
+        "TrustDirtyCheckpoint",
+        "AckBeforeHeadSync",
+        "ReclaimUnknown",
+        "RecoverAsEmpty",
+        "DropSourceFence",
+        "LostResponseWitness",
+        "UnrelatedWitness",
+        "ReopenWitness",
+        "BarrierWriterWitness",
+    ]
+]
+
+[
+    tla_check(
+        name = "HawDBConsumerReceiptLedger" + control + "_check",
+        module = "HawDBConsumerReceiptLedger.tla",
+        config = "mutants/HawDBConsumerReceiptLedger" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in [
+        "ForgetPriorReceipt",
+        "EvictOnFull",
+        "GcBeforeRetireSync",
+        "ReuseRetiredId",
+        "ForgetAllocatorOnCrash",
+        "ForgetRetireFloor",
+        "LateRetryWitness",
+        "RetireAndContinueWitness",
+    ]
+]
+
+[
+    tla_check(
+        name = "HawDBConsumerMutationCustody" + control + "_check",
+        module = "HawDBConsumerMutationCustody.tla",
+        config = "mutants/HawDBConsumerMutationCustody" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in [
+        "IgnoreGeneration",
+        "AdmitAfterClose",
+        "ReleaseBusyEarly",
+        "ForgetNativePin",
+        "SkipOwnerAssociation",
+    ]
+]
+
+[
+    tla_check(
+        name = "HawDBConsumerDirectoryRelocation" + control + "_check",
+        module = "HawDBConsumerDirectoryRelocation.tla",
+        config = "mutants/HawDBConsumerDirectoryRelocation" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in [
+        "KeepOldPath",
+        "TrustFailedPublish",
+        "ReleaseNativeEarly",
+        "DeleteUncertain",
+    ]
+]
+
+# Retained reader capacity must outlive every shared allocation it covers.
+[
+    tla_check(
+        name = "HawDBSharedReaderCapacity" + control + "_check",
+        module = "HawDBSharedReaderCapacity.tla",
+        config = "mutants/HawDBSharedReaderCapacity" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in [
+        "RefundBeforeBlock",
+        "DetachClone",
+        "KeepExecutionPermit",
+        "RefundBeforeLedger",
+    ]
+]
+
+# Native lease custody remains counted across cache pressure and input cloning.
+[
+    tla_check(
+        name = "HawDBAdmittedNativeLease" + control + "_check",
+        module = "HawDBAdmittedNativeLease.tla",
+        config = "mutants/HawDBAdmittedNativeLease" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in ["EvictBusy", "PublishEarly", "SkipCharge", "KeepReturnedPin"]
+]
+
+[
+    tla_check(
+        name = "HawDBBorrowedQueryCursor" + control + "_check",
+        module = "HawDBBorrowedQueryCursor.tla",
+        config = "mutants/HawDBBorrowedQueryCursor" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in ["ReuseTask", "DropBorrow", "SkipCheckpoint"]
+]
+
+[
+    tla_check(
+        name = "HawDBTargetReanalysisIo" + control + "_check",
+        module = "HawDBTargetReanalysisIo.tla",
+        config = "mutants/HawDBTargetReanalysisIo" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in ["KeepCaptureIo", "KeepBodyIo"]
+]
+
+[
+    tla_check(
+        name = "HawDBProjectionFreshness" + control + "_check",
+        module = "HawDBProjectionFreshness.tla",
+        config = "mutants/HawDBProjectionFreshness" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in ["CountOwnerOnly", "IgnoreFloor"]
+]
+
+[
+    tla_check(
+        name = "HawDBSourceRootCustody" + control + "_check",
+        module = "HawDBSourceRootCustody.tla",
+        config = "mutants/HawDBSourceRootCustody" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in [
+        "DropOnParent",
+        "ReleaseDuringRead",
+        "IgnoreOncePins",
+        "IgnoreRetryPins",
+        "PathForUnlink",
+        "PathForRead",
+        "RetainBusy",
+        "PinWholeManifest",
+        "UnlockBeforePin",
+    ]
+]

@@ -419,6 +419,27 @@ pub(super) fn plan_projection_with_columns(
                 format!("id({variable})"),
             )
         }
+        ScalarExpressionKind::Properties(variable) | ScalarExpressionKind::Labels(variable) => {
+            if !scope.contains(variable) {
+                return Err(HawDBError::Semantic(format!(
+                    "unknown native variable '{variable}' in entity function"
+                )));
+            }
+            match &value.kind {
+                ScalarExpressionKind::Properties(_) => (
+                    ProjectionExpression::Properties {
+                        variable: variable.clone(),
+                    },
+                    format!("properties({variable})"),
+                ),
+                _ => (
+                    ProjectionExpression::Labels {
+                        variable: variable.clone(),
+                    },
+                    format!("labels({variable})"),
+                ),
+            }
+        }
         ScalarExpressionKind::RelationshipType(variable) => {
             if !scope.contains(variable) {
                 return Err(HawDBError::Semantic(format!(
@@ -992,6 +1013,21 @@ pub(super) fn plan_scalar_expression_with_columns(
             }
             Ok(ProjectionExpression::Id {
                 variable: variable.clone(),
+            })
+        }
+        ScalarExpressionKind::Properties(variable) | ScalarExpressionKind::Labels(variable) => {
+            if !scope.contains(variable) {
+                return Err(HawDBError::Semantic(format!(
+                    "unknown native variable '{variable}' in entity function"
+                )));
+            }
+            Ok(match &expression.kind {
+                ScalarExpressionKind::Properties(_) => ProjectionExpression::Properties {
+                    variable: variable.clone(),
+                },
+                _ => ProjectionExpression::Labels {
+                    variable: variable.clone(),
+                },
             })
         }
         ScalarExpressionKind::RelationshipType(variable) => {

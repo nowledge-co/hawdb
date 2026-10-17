@@ -39,6 +39,9 @@ if [[ "${1:-}" == --list ]]; then
     echo 'api::tests::graph_analytics::persistent_edges_stream_with_bounded_rss_in_an_isolated_process: test'
     echo 'api::tests::graph_analytics::rss_child: test'
   fi
+  if [[ "${PARTITION_PROBE_EMPTY_CHECKPOINT:-0}" == 0 ]]; then
+    echo 'api::automatic_checkpoint::tests::owned: test'
+  fi
   echo 'api::tests::storage_recovery::owned: test'
   echo 'api::tests::query_execution::owned: test'
   if [[ "${PARTITION_PROBE_OVERLAP:-0}" == 1 ]]; then
@@ -52,7 +55,7 @@ if [[ "${1:-}" == --list ]]; then
   if [[ "${PARTITION_PROBE_RSS_OVERLAP:-0}" == 1 ]]; then
     echo 'api::tests::graph_analytics::rss_child_extension: test'
   fi
-  echo '6 tests, 0 benchmarks'
+  echo '7 tests, 0 benchmarks'
   exit 0
 fi
 printf '%s\n' "$@" >"${PARTITION_PROBE_ARGS}"
@@ -60,7 +63,7 @@ exit "${PARTITION_PROBE_EXIT:-0}"
 EOF
 chmod +x "${fixture}/binary"
 
-for partition in general concurrent analytics analytics_core analytics_core_general analytics_identity analytics_rss recovery; do
+for partition in general automatic_checkpoint concurrent analytics analytics_core analytics_core_general analytics_identity analytics_rss recovery; do
   "${runner}" "${fixture}/binary" "${partition}" custom_filter --exact --skip user_skip
   cp "${PARTITION_PROBE_ARGS}" "${fixture}/args.${partition}"
   python3 - "${PARTITION_PROBE_ARGS}" "${partition}" <<'PY'
@@ -69,6 +72,7 @@ import sys
 
 args = pathlib.Path(sys.argv[1]).read_text().splitlines()
 owners = {
+    "automatic_checkpoint": {"api::automatic_checkpoint::tests::owned"},
     "concurrent": {"api::tests::concurrent_transactions::owned"},
     "analytics_core_general": {"api::tests::graph_analytics::owned"},
     "analytics_rss": {
@@ -100,6 +104,7 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 names = {
+    "api::automatic_checkpoint::tests::owned",
     "api::tests::concurrent_transactions::owned",
     "api::tests::graph_analytics::owned",
     "api::tests::graph_analytics::persistent_edges_stream_with_bounded_rss_in_an_isolated_process",
@@ -114,7 +119,7 @@ def selected(partition):
     return names - skips
 
 leaves = [selected(name) for name in [
-    "general", "concurrent", "analytics_core_general", "analytics_rss", "recovery"
+    "general", "automatic_checkpoint", "concurrent", "analytics_core_general", "analytics_rss", "recovery"
 ]]
 assert set().union(*leaves) == names
 assert sum(map(len, leaves)) == len(names)
@@ -135,6 +140,7 @@ expect_exit() {
 }
 expect_exit 42 env PARTITION_PROBE_EXIT=42 "${runner}" "${fixture}/binary" general
 expect_exit 17 env PARTITION_PROBE_DISCOVERY_EXIT=17 "${runner}" "${fixture}/binary" general
+expect_exit 1 env PARTITION_PROBE_EMPTY_CHECKPOINT=1 "${runner}" "${fixture}/binary" automatic_checkpoint
 expect_exit 1 env PARTITION_PROBE_EMPTY=1 "${runner}" "${fixture}/binary" concurrent
 expect_exit 1 env PARTITION_PROBE_EMPTY_CORE=1 "${runner}" "${fixture}/binary" analytics_core_general
 expect_exit 1 env PARTITION_PROBE_EMPTY_RSS=1 "${runner}" "${fixture}/binary" analytics_identity

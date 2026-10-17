@@ -174,8 +174,19 @@ fn system_sql_exposes_projected_graph_and_changefeed_state() {
             "CREATE (:Memory {id: 1, title: 'Root'})-[:LINKS]->(:Entity {id: 2, name: 'Leaf'})",
         )
         .unwrap();
+        assert_eq!(
+            db.search_projection_changefeed_status()
+                .unwrap()
+                .retained_mutation_count,
+            1
+        );
         db.query("CALL project_graph('EntityGraph', ['Memory', 'Entity'], ['LINKS'])")
             .unwrap();
+        // Explicit projection DDL is a schema barrier. Its rebuild floor
+        // replaces the earlier point feed rather than certifying a partial delta.
+        let status = db.search_projection_changefeed_status().unwrap();
+        assert_eq!(status.retained_mutation_count, 0);
+        assert_eq!(status.resume_floor_commit_epoch, db.commit_epoch().unwrap());
         db.checkpoint().unwrap();
         projection_epoch = db.projected_graph_statuses().unwrap()[0]
             .projection_epoch
@@ -212,13 +223,18 @@ fn system_sql_exposes_projected_graph_and_changefeed_state() {
             )
             .unwrap();
         assert_eq!(changefeed.rows.len(), 1);
+        let status = db.search_projection_changefeed_status().unwrap();
+        assert_eq!(status.resume_floor_commit_epoch, graph_commit_epoch);
+        assert!(db
+            .build_search_projection_graph_delta_request_after(0, None)
+            .is_err());
         assert_eq!(
             changefeed.rows[0].get("graph_commit_epoch"),
             Some(&Value::Int(graph_commit_epoch as i64))
         );
         assert_eq!(
             changefeed.rows[0].get("retained_mutation_count"),
-            Some(&Value::Int(1))
+            Some(&Value::Int(0))
         );
     }
     std::fs::remove_dir_all(path).unwrap();

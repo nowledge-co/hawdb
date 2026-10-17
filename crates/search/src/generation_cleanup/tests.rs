@@ -270,3 +270,82 @@ fn test_root(name: &str) -> std::path::PathBuf {
         std::process::id()
     ))
 }
+
+#[test]
+fn explicit_vector_references_override_a_remove_all_hint() {
+    let candidate = CleanupCandidate::parse("search_rabitq.5.hawdb".to_string()).unwrap();
+    let generations = SearchProjectionGenerations {
+        rabitq_remove_all: true,
+        retained_rabitq: BTreeSet::from([5]),
+        ..Default::default()
+    };
+    assert!(!candidate.is_obsolete(&generations));
+}
+
+#[test]
+fn publication_deferral_bounds_retry_names_and_next_sweep_rediscovers_omissions() {
+    let root = test_root("publication_deferral_queue");
+    fs::create_dir_all(&root).unwrap();
+    for generation in 1..=3 {
+        fs::write(
+            root.join(format!("search_lexical.{generation}.hawdb")),
+            b"artifact",
+        )
+        .unwrap();
+    }
+    let mut state = SearchProjectionCleanupState::default();
+    let generations = SearchProjectionGenerations {
+        lexical: Some(10),
+        ..Default::default()
+    };
+    let initial = state.run_with_remover(
+        &root,
+        generations.clone(),
+        SearchProjectionCleanupOptions::default(),
+        |_| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+    );
+    assert_eq!(initial.pending_after, 3);
+    let options = SearchProjectionCleanupOptions {
+        max_pending_files: NonZeroUsize::new(1).unwrap(),
+        ..Default::default()
+    };
+    let deferred = state.defer_for_publication(options);
+    assert_eq!(deferred.pending_before, 3);
+    assert_eq!(deferred.pending_after, 1);
+    assert_eq!(deferred.queue_overflow_files, 2);
+    assert_eq!(deferred.delete_attempts, 0);
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 3);
+    let retried = state.run(&root, generations, options);
+    assert_eq!(retried.deleted_files, 3);
+    assert_eq!(retried.pending_after, 0);
+    assert!(!retried.retry_required);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn uncertain_closure_retains_quarantine_evidence_and_normal_artifacts() {
+    let root = test_root("uncertain_quarantine");
+    fs::create_dir_all(&root).unwrap();
+    let names = [
+        "search_rabitq.5.hawdb",
+        "search_lexical.manifest.7.hawdb.corrupt.123.456",
+    ];
+    for name in names {
+        fs::write(root.join(name), b"evidence").unwrap();
+    }
+    let report = SearchProjectionCleanupState::default().run(
+        &root,
+        SearchProjectionGenerations {
+            rabitq_remove_all: true,
+            out_of_core_discovery_failed: true,
+            ..Default::default()
+        },
+        Default::default(),
+    );
+    assert_eq!(report.delete_attempts, 0);
+    assert!(report.retry_required);
+    for name in names {
+        assert!(root.join(name).exists());
+    }
+    fs::remove_dir_all(root).unwrap();
+}

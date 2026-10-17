@@ -14,44 +14,105 @@
 
 use super::SearchProjectionGraphChange;
 use crate::cow::CowSegment;
+use crate::projection::owner_capture::CapturedProjectionChange;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+#[path = "search_projection_change_log/cursor.rs"]
+mod cursor;
+pub use cursor::*;
+
 const PAGE_ENTRIES: usize = 64;
-type ChangePage = CowSegment<VecDeque<Arc<SearchProjectionGraphChange>>>;
+type ChangePage = CowSegment<VecDeque<Arc<CapturedProjectionChange>>>;
 
 /// Snapshots share the directory and immutable record pages. Append and prefix
 /// removal detach only their boundary pages; directory cost scales with pages.
 #[derive(Debug, Clone, Default)]
-pub(super) struct SearchProjectionChangeLog {
+pub(crate) struct SearchProjectionChangeLog {
     pages: CowSegment<VecDeque<ChangePage>>,
     len: usize,
+    // Exclusive floor for the current endpoint-complete capture contract.
+    // Older contracts start at their checkpoint head.
+    owner_floor: u64,
 }
 
 impl SearchProjectionChangeLog {
+    pub(crate) fn owner_floor(&self) -> u64 {
+        self.owner_floor
+    }
+    pub(crate) fn at_owner_floor(owner_floor: u64) -> Self {
+        Self {
+            owner_floor,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn recover_owner_capture(
+        state: &mut crate::checkpoint::DecodedCheckpoint,
+        head: u64,
+    ) -> Self {
+        // V1 payloads did not enumerate arbitrary relationship endpoints or
+        // relationship-property changes. Preserve their source transactions,
+        // but never upgrade those old facts into the stronger V2 contract.
+        let qualified = state.projection_owner_capture_version == Some(2);
+        let floor = if qualified {
+            state.projection_owner_capture_floor.unwrap_or(head)
+        } else {
+            head
+        };
+        let mut log = Self::at_owner_floor(floor);
+        if !qualified {
+            state.projection_owner_changes.clear();
+        }
+        for legacy in std::mem::take(&mut state.search_projection_graph_changes) {
+            let owners_v1 = state
+                .projection_owner_changes
+                .remove(&legacy.commit_epoch)
+                .map(|(_, owners)| owners);
+            log.push(Arc::new(CapturedProjectionChange {
+                legacy: Arc::new(legacy),
+                owners_v1,
+            }));
+        }
+        log
+    }
     pub(super) fn len(&self) -> usize {
         self.len
     }
 
-    pub(super) fn first(&self) -> Option<&Arc<SearchProjectionGraphChange>> {
+    // Only the first and last pages can be partial. Prefix trim preserves this.
+    fn get(&self, index: usize) -> Option<&Arc<CapturedProjectionChange>> {
+        let first = self.pages.front()?;
+        if index < first.len() {
+            first.get(index)
+        } else {
+            let offset = index - first.len();
+            self.pages
+                .get(1 + offset / PAGE_ENTRIES)?
+                .get(offset % PAGE_ENTRIES)
+        }
+    }
+
+    pub(super) fn first(&self) -> Option<&Arc<CapturedProjectionChange>> {
         self.pages.front().and_then(|page| page.front())
     }
 
-    pub(super) fn last(&self) -> Option<&Arc<SearchProjectionGraphChange>> {
+    pub(crate) fn last(&self) -> Option<&Arc<CapturedProjectionChange>> {
         self.pages.back().and_then(|page| page.back())
     }
 
-    pub(super) fn iter(&self) -> impl Iterator<Item = &Arc<SearchProjectionGraphChange>> + Clone {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Arc<CapturedProjectionChange>> + Clone {
         self.pages.iter().flat_map(|page| page.iter())
     }
 
-    pub(super) fn iter_mut(
-        &mut self,
-    ) -> impl Iterator<Item = &mut Arc<SearchProjectionGraphChange>> {
+    pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Arc<CapturedProjectionChange>> {
         self.pages.iter_mut().flat_map(|page| page.iter_mut())
     }
 
-    pub(super) fn push(&mut self, change: Arc<SearchProjectionGraphChange>) {
+    pub(crate) fn push(&mut self, change: Arc<CapturedProjectionChange>) {
+        if change.owners_v1.is_none() {
+            self.owner_floor = self.owner_floor.max(change.commit_epoch);
+        }
         if self
             .pages
             .back()
@@ -72,8 +133,11 @@ impl SearchProjectionChangeLog {
         if count == 0 {
             return;
         }
+        self.owner_floor = self
+            .owner_floor
+            .max(self.get(count - 1).expect("retained prefix").commit_epoch);
         if count == self.len {
-            *self = Self::default();
+            *self = Self::at_owner_floor(self.owner_floor);
             return;
         }
         self.len -= count;
@@ -90,8 +154,8 @@ impl SearchProjectionChangeLog {
     }
 }
 
-impl FromIterator<Arc<SearchProjectionGraphChange>> for SearchProjectionChangeLog {
-    fn from_iter<T: IntoIterator<Item = Arc<SearchProjectionGraphChange>>>(iter: T) -> Self {
+impl FromIterator<Arc<CapturedProjectionChange>> for SearchProjectionChangeLog {
+    fn from_iter<T: IntoIterator<Item = Arc<CapturedProjectionChange>>>(iter: T) -> Self {
         let mut log = Self::default();
         for change in iter {
             log.push(change);
@@ -100,26 +164,42 @@ impl FromIterator<Arc<SearchProjectionGraphChange>> for SearchProjectionChangeLo
     }
 }
 
+impl FromIterator<Arc<SearchProjectionGraphChange>> for SearchProjectionChangeLog {
+    fn from_iter<T: IntoIterator<Item = Arc<SearchProjectionGraphChange>>>(iter: T) -> Self {
+        iter.into_iter()
+            .map(|legacy| {
+                Arc::new(CapturedProjectionChange {
+                    legacy,
+                    owners_v1: None,
+                })
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::relational::RelationalPrimaryKeyChangeCapture;
 
-    fn change(epoch: u64) -> Arc<SearchProjectionGraphChange> {
-        Arc::new(SearchProjectionGraphChange {
-            commit_epoch: epoch,
-            upsert_node_ids: vec![epoch],
-            delete_document_ids: vec![format!("deleted-{epoch}")],
-            relational_primary_key_changes: RelationalPrimaryKeyChangeCapture::Captured {
-                tables: Vec::new(),
-                encoded_bytes: 0,
-            },
+    fn change(epoch: u64) -> Arc<CapturedProjectionChange> {
+        Arc::new(CapturedProjectionChange {
+            legacy: Arc::new(SearchProjectionGraphChange {
+                commit_epoch: epoch,
+                upsert_node_ids: vec![epoch],
+                delete_document_ids: vec![format!("deleted-{epoch}")],
+                relational_primary_key_changes: RelationalPrimaryKeyChangeCapture::Captured {
+                    tables: Vec::new(),
+                    encoded_bytes: 0,
+                },
+            }),
+            owners_v1: None,
         })
     }
 
     fn assert_contents(
         log: &SearchProjectionChangeLog,
-        expected: &[Arc<SearchProjectionGraphChange>],
+        expected: &[Arc<CapturedProjectionChange>],
     ) {
         assert_eq!(log.len(), expected.len());
         assert_eq!(log.first(), expected.first());

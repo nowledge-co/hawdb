@@ -86,6 +86,8 @@ pub enum HawDBError {
     Storage(String),
     FileDescriptors(FileDescriptorError),
     StorageIntegrity(String),
+    /// A registered Search target is retained by another native operation.
+    ProjectionBusy,
     Execution(String),
     ReadBudgetExceeded(ReadBudgetError),
     GraphExpansionCandidateLimitExceeded {
@@ -173,6 +175,7 @@ impl Display for HawDBError {
             HawDBError::BranchCommandUnsupported { command, context } => {
                 write!(f, "{command} is unavailable in {context}")
             }
+            HawDBError::ProjectionBusy => f.write_str("search projection operation is busy"),
             HawDBError::BranchBusy { resource } => write!(f, "branch is busy: {resource}"),
             HawDBError::BranchEvidenceBudgetExceeded { resource, requested, limit } => write!(
                 f,

@@ -426,6 +426,7 @@ impl ExpectedErrorClass {
             HawDBError::Storage(_)
             | HawDBError::StorageIntegrity(_)
             | HawDBError::AppendSequenceExhausted { .. }
+            | HawDBError::ProjectionBusy
             | HawDBError::BranchBusy { .. }
             | HawDBError::BranchReclamationBlocked { .. } => Self::Storage,
             HawDBError::Execution(_)

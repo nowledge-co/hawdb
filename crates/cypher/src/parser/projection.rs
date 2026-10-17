@@ -195,6 +195,17 @@ impl Parser<'_> {
             self.expect_char(')')?;
             return Ok(ScalarExpressionKind::Id(variable));
         }
+        if (variable.eq_ignore_ascii_case("properties") || variable.eq_ignore_ascii_case("labels"))
+            && self.consume_char('(')
+        {
+            let name = self.parse_ident()?;
+            self.expect_char(')')?;
+            return Ok(if variable.eq_ignore_ascii_case("properties") {
+                ScalarExpressionKind::Properties(name)
+            } else {
+                ScalarExpressionKind::Labels(name)
+            });
+        }
         if (variable.eq_ignore_ascii_case("label") || variable.eq_ignore_ascii_case("type"))
             && self.consume_char('(')
         {

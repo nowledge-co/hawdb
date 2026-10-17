@@ -16,7 +16,8 @@
 
 use super::{
     SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationUpdate,
-    SearchOutOfCoreGenerationWriter,
+    SearchOutOfCoreGenerationWriter, SearchOutOfCorePreparedGeneration,
+    SearchOutOfCorePreparedUpdate,
 };
 use crate::{
     Result, SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreMetrics, SearchOutOfCoreReader,
@@ -118,6 +119,76 @@ impl SearchGenerationAdmission {
         super::mutations::SearchOutOfCoreMutationWriter::create(reader, options, task, memory)
     }
 
+    /// Owns unordered intake, sorting and its prepared artifact under one permit.
+    pub fn prepare_unordered_update<'reader>(
+        self,
+        reader: &'reader SearchOutOfCoreReader,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        limits: super::SearchUnorderedMutationLimits,
+        task: RuntimeTaskContext,
+    ) -> Result<super::SearchOutOfCoreUnorderedMutationWriter<'reader>> {
+        let task = self.permit.bind_task_context(task);
+        let mut memory = crate::build_memory::BuildMemory::new(&task)?;
+        memory.host_admission = Some(self.permit.clone());
+        let inner =
+            super::mutations::SearchOutOfCoreMutationWriter::create(reader, options, task, memory)?;
+        super::unordered::from_inner(
+            inner,
+            limits,
+            reader.config().max_document_header_bytes.get(),
+        )
+    }
+
+    /// Complete replacement: no old targets or mutation closure are retained.
+    pub fn prepare_unordered_replacement(
+        self,
+        reader: &SearchOutOfCoreReader,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        limits: super::SearchUnorderedMutationLimits,
+        task: RuntimeTaskContext,
+    ) -> Result<super::SearchOutOfCoreUnorderedReplacementWriter> {
+        let source_epoch = options.source_graph_commit_epoch;
+        let task = self.permit.bind_task_context(task);
+        let mut memory = crate::build_memory::BuildMemory::new(&task)?;
+        memory.host_admission = Some(self.permit.clone());
+        let inner = super::mutations::SearchOutOfCoreMutationWriter::create_replacement(
+            reader, options, task, memory,
+        )?;
+        super::unordered::replacement::from_inner(
+            inner,
+            limits,
+            source_epoch,
+            reader.config().max_document_header_bytes.get(),
+        )
+    }
+
+    /// Artifact-only owner/phase overlay followed by strict document ordering.
+    /// The facade must separately certify source owners, intervals and mapping.
+    pub fn prepare_owner_replacement(
+        self,
+        reader: &SearchOutOfCoreReader,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        limits: super::SearchOwnerOverlayLimits,
+        task: RuntimeTaskContext,
+    ) -> Result<super::SearchOutOfCoreOwnerReplacementWriter> {
+        if options.source_graph_commit_epoch.is_some() {
+            return Err(crate::HawDBError::Execution(
+                "owner replacement binds its epoch when input closes".into(),
+            ));
+        }
+        let task = self.permit.bind_task_context(task);
+        let mut memory = crate::build_memory::BuildMemory::new(&task)?;
+        memory.host_admission = Some(self.permit.clone());
+        let inner = super::mutations::SearchOutOfCoreMutationWriter::create_replacement(
+            reader, options, task, memory,
+        )?;
+        super::unordered::owner::from_inner(
+            inner,
+            limits,
+            reader.config().max_document_header_bytes.get(),
+        )
+    }
+
     /// Prepares a governed update with a default task context.
     pub fn prepare_update(
         self,
@@ -171,6 +242,16 @@ impl GovernedSearchGenerationWriter {
         &mut self.writer
     }
 
+    /// Builds an invisible candidate that retains this governor permit through
+    /// its owned build memory and stage. Queuing, activation and drop cleanup
+    /// remain admitted even after this wrapper has been consumed.
+    pub fn prepare_publication(self) -> Result<SearchOutOfCorePreparedGeneration> {
+        let Self { writer, admission } = self;
+        let candidate = writer.prepare_publication();
+        drop(admission);
+        candidate
+    }
+
     /// Finalizes the generation and releases admission after immediate cleanup.
     /// Deferred debt keeps only its separately accounted metadata and disk limits.
     pub fn finish(self) -> Result<SearchOutOfCoreGenerationBuildReport> {
@@ -199,6 +280,15 @@ impl GovernedSearchGenerationUpdate {
         &mut self.update
     }
 
+    /// Builds an invisible update retaining the shared admission until its
+    /// candidate and immediate cleanup have completed.
+    pub fn prepare_publication(self) -> Result<SearchOutOfCorePreparedUpdate> {
+        let Self { update, admission } = self;
+        let candidate = update.prepare_publication();
+        drop(admission);
+        candidate
+    }
+
     /// Finalizes the update and releases admission after immediate cleanup.
     /// Deferred debt keeps only its separately accounted metadata and disk limits.
     pub fn finish(
@@ -214,3 +304,6 @@ impl GovernedSearchGenerationUpdate {
         result
     }
 }
+
+#[cfg(feature = "vector-search")]
+mod reader;

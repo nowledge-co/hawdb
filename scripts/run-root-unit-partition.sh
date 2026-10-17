@@ -16,7 +16,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: $0 <unit-test-binary> <general|concurrent|analytics|analytics_core|analytics_core_general|analytics_identity|analytics_rss|recovery> [libtest arguments]" >&2
+  echo "usage: $0 <unit-test-binary> <general|automatic_checkpoint|concurrent|analytics|analytics_core|analytics_core_general|analytics_identity|analytics_rss|recovery> [libtest arguments]" >&2
   exit 64
 fi
 partition_binary="$1"
@@ -27,7 +27,7 @@ if [[ "${partition}" == analytics_identity ]]; then
 fi
 shift 2
 case "${partition}" in
-  general|concurrent|analytics|analytics_core|analytics_core_general|analytics_identity|analytics_rss|recovery) ;;
+  general|automatic_checkpoint|concurrent|analytics|analytics_core|analytics_core_general|analytics_identity|analytics_rss|recovery) ;;
   *) echo "unknown root unit partition: ${partition}" >&2; exit 64 ;;
 esac
 
@@ -44,6 +44,8 @@ while IFS= read -r entry; do
     *) continue ;;
   esac
   case "${case_name}" in
+    api::automatic_checkpoint::*)
+      case_owner=automatic_checkpoint ;;
     api::tests::graph_analytics::persistent_edges_stream_with_bounded_rss_in_an_isolated_process|api::tests::graph_analytics::rss_child)
       case_owner=analytics_rss ;;
     api::tests::concurrent_transactions::*|api::concurrent::*|api::transaction_locks::*)

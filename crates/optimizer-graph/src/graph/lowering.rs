@@ -1668,6 +1668,8 @@ fn collect_projection_properties(
         | ProjectionExpression::IsNull { .. } => expression
             .all_children(|child| collect_projection_properties(child, variable, required)),
         ProjectionExpression::Variable { .. }
+        | ProjectionExpression::Properties { .. }
+        | ProjectionExpression::Labels { .. }
         | ProjectionExpression::RelationshipType { .. }
         | ProjectionExpression::Column(_)
         | ProjectionExpression::ColumnProperty { .. }

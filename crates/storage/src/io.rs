@@ -71,6 +71,37 @@ impl PositionedReadFile for crate::file_io::File {
     }
 }
 
+/// Perform one positioned read; the caller controls short-read/EINTR retries.
+pub(crate) fn read_native_at_once(
+    file: &File,
+    buffer: &mut [u8],
+    offset: u64,
+) -> io::Result<usize> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_at(buffer, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        file.seek_read(buffer, offset)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        use std::io::{Read, Seek, SeekFrom};
+        let _guard = POSITIONED_READ_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut file = file;
+        file.seek(SeekFrom::Start(offset))?;
+        file.read(buffer)
+    }
+}
+
+#[cfg(any(test, not(any(unix, windows))))]
+static POSITIONED_READ_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn read_native_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -127,11 +158,8 @@ fn invalid_range() -> io::Error {
 #[cfg(any(test, not(any(unix, windows))))]
 fn read_exact_at_fallback(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
     use std::io::{Read, Seek, SeekFrom};
-    use std::sync::Mutex;
-
     // Cloning a File can share its cursor. Serialize the whole sequence across
     // callers of this helper when the platform has no positioned-read API.
-    static POSITIONED_READ_LOCK: Mutex<()> = Mutex::new(());
     let _guard = POSITIONED_READ_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

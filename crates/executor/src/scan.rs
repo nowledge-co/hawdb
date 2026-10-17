@@ -14,6 +14,7 @@
 
 //! Storage-implementation-neutral node scan and lookup operators.
 
+pub(crate) mod ids;
 pub(crate) mod owned;
 
 use crate::binding::{
@@ -694,7 +695,18 @@ pub fn stream_node_projection_scan_batches(
     let property_filter = spec
         .predicate
         .and_then(|predicate| property_filter_from_predicate(predicate).ok());
-    let mut resident_scan = if spec.access.is_label_scan()
+    // An indexed access already encodes a predicate that may have been removed
+    // from the residual. Replacing it with ID lookup would lose that predicate.
+    let id_values = spec
+        .access
+        .is_label_scan()
+        .then(|| {
+            spec.predicate
+                .and_then(|p| ids::predicate_values(p, spec.variable))
+        })
+        .flatten();
+    let mut resident_scan = if id_values.is_none()
+        && spec.access.is_label_scan()
         && !context.store.is_out_of_core()
         && let Some(label_id) = exact_label
         && context
@@ -868,7 +880,37 @@ pub fn stream_node_projection_scan_batches(
         }
         _ => None,
     };
-    let control = if let Some(nodes) = indexed_nodes {
+    let control = if let Some(values) = id_values {
+        let candidates =
+            ids::Candidates::new(values, context.memory_account, context.task_context)?;
+        let mut control = ScanControl::Continue;
+        for id in &candidates.ids {
+            runtime_checkpoint(context.task_context)?;
+            let mut allocation = None;
+            if let Some(node) = context.store.projected_node_owned_in_labels_admitted(
+                *id,
+                label_ids.as_deref(),
+                &required_properties,
+                &mut |bytes| {
+                    allocation = Some(admit(bytes)?);
+                    Ok(())
+                },
+            )? {
+                // A point lookup does not itself apply the pattern's labels.
+                if !label_ids
+                    .as_deref()
+                    .is_none_or(|labels| labels.iter().any(|id| node.labels.contains(id)))
+                {
+                    continue;
+                }
+                control = visit(node)?;
+                if control == ScanControl::Stop {
+                    break;
+                }
+            }
+        }
+        control
+    } else if let Some(nodes) = indexed_nodes {
         let mut control = ScanControl::Continue;
         for candidate in nodes {
             runtime_checkpoint(context.task_context)?;
@@ -943,8 +985,17 @@ pub fn stream_node_projection_scan_batches(
         target_kind: ScanPruningTargetKind::Node,
         label_id: exact_label_id,
         rel_type_id: None,
-        strategy: node_projection_access_strategy(spec.access),
-        pruned,
+        strategy: id_values.map_or_else(
+            || node_projection_access_strategy(spec.access),
+            |v| {
+                if v.len() == 1 {
+                    ScanPruningStrategy::IdEq
+                } else {
+                    ScanPruningStrategy::IdIn
+                }
+            },
+        ),
+        pruned: pruned || id_values.is_some(),
         exact_empty: visited == 0,
         candidate_count_before_pruning: candidate_count,
         pruned_candidate_count: candidate_count.saturating_sub(visited),

@@ -307,7 +307,7 @@ impl Parser<'_> {
                 parser.expect_char(')')?;
                 return Ok(parser.source_node(expression.kind, start));
             }
-            let kind = if parser.consume_pipeline_function("PROPERTIES") {
+            let kind = if parser.consume_pipeline_node_properties() {
                 parser.expect_keyword("NODES")?;
                 parser.expect_char('(')?;
                 let path_variable = parser.parse_ident()?;
@@ -331,6 +331,19 @@ impl Parser<'_> {
             };
             Ok(parser.source_node(kind, start))
         })
+    }
+
+    fn consume_pipeline_node_properties(&mut self) -> bool {
+        let checkpoint = self.checkpoint();
+        if self.consume_pipeline_function("PROPERTIES") {
+            let argument = self.checkpoint();
+            if self.consume_pipeline_function("NODES") {
+                self.restore(argument);
+                return true;
+            }
+        }
+        self.restore(checkpoint);
+        false
     }
 
     fn consume_pipeline_function(&mut self, name: &str) -> bool {
@@ -670,6 +683,36 @@ mod tests {
         );
         assert!(parse_pipeline(&deep).is_err());
         assert!(parse_pipeline("MATCH (n:Item) RETURN lower(COUNT(n))").is_err());
+    }
+
+    #[test]
+    fn entity_properties_and_path_properties_keep_distinct_grammar() {
+        let query = "MATCH (nodes) RETURN properties(nodes) AS p, labels(nodes) AS l";
+        let parsed = parse_pipeline(query).unwrap();
+        let ClauseKind::Return(projection) = &parsed.clauses[1].kind else {
+            panic!("expected RETURN");
+        };
+        for (item, expected) in projection.items.iter().zip([
+            ScalarExpressionKind::Properties("nodes".into()),
+            ScalarExpressionKind::Labels("nodes".into()),
+        ]) {
+            let ReturnExpressionKind::Value(expression) = &item.expression.kind else {
+                panic!("expected scalar entity function");
+            };
+            assert_eq!(expression.kind, expected);
+        }
+        let query = "MATCH route = (a)-[:LINK* ALL SHORTEST 1..2]->(b) RETURN properties(NODES(route), 'name') AS names";
+        let parsed = parse_pipeline(query).unwrap();
+        let ClauseKind::Return(projection) = &parsed.clauses[1].kind else {
+            panic!("expected RETURN");
+        };
+        assert!(matches!(
+            &projection.items[0].expression.kind,
+            ReturnExpressionKind::Path(ShortestPathReturnExpression::NodePropertyList {
+                path_variable,
+                property,
+            }) if path_variable == "route" && property == "name"
+        ));
     }
 
     #[test]

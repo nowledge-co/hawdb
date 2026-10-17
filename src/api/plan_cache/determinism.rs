@@ -105,6 +105,8 @@ fn scalar_is_deterministic(expression: &cypher::ScalarExpression) -> bool {
         Scalar::Variable(_)
         | Scalar::Property { .. }
         | Scalar::Id(_)
+        | Scalar::Properties(_)
+        | Scalar::Labels(_)
         | Scalar::RelationshipType(_)
         | Scalar::Coalesce(_)
         | Scalar::Lower(_)

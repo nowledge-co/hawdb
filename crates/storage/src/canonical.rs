@@ -1884,6 +1884,16 @@ impl CanonicalSegmentReader {
         self.selected_node_allocation_bytes(id, Some(required_properties), None)
     }
 
+    /// Projected point ownership with label rejection from the encoded header.
+    pub fn projected_node_in_labels_allocation_bytes(
+        &self,
+        id: NodeId,
+        required_properties: &BTreeSet<String>,
+        label_ids: Option<&[LabelId]>,
+    ) -> Result<Option<usize>, CanonicalSegmentError> {
+        self.selected_node_allocation_bytes(id, Some(required_properties), label_ids)
+    }
+
     /// Full point-read ownership bound, with an optional borrowed label filter
     /// evaluated from the encoded header before any property is owned.
     pub fn node_allocation_bytes(
@@ -1900,7 +1910,7 @@ impl CanonicalSegmentReader {
         required_properties: Option<&BTreeSet<String>>,
         label_ids: Option<&[LabelId]>,
     ) -> Result<Option<usize>, CanonicalSegmentError> {
-        self.point_allocation_bytes(CanonicalSegmentKind::Nodes, id.0, |payload| {
+        self.with_point_payload(CanonicalSegmentKind::Nodes, id.0, |payload| {
             let input = CanonicalNodeInput {
                 id,
                 payload,
@@ -1931,7 +1941,7 @@ impl CanonicalSegmentReader {
         &self,
         id: RelId,
     ) -> Result<Option<usize>, CanonicalSegmentError> {
-        self.point_allocation_bytes(CanonicalSegmentKind::Relationships, id.0, |payload| {
+        self.with_point_payload(CanonicalSegmentKind::Relationships, id.0, |payload| {
             relationship_payload_layout(
                 payload,
                 Some(self.property_keys()),
@@ -1949,24 +1959,24 @@ impl CanonicalSegmentReader {
             &[u8],
         ) -> Result<(), CanonicalSegmentError>,
     ) -> Result<(), CanonicalSegmentError> {
-        self.point_allocation_bytes(CanonicalSegmentKind::Relationships, id.0, |payload| {
+        self.with_point_payload(CanonicalSegmentKind::Relationships, id.0, |payload| {
             let layout = relationship_payload_layout(
                 payload,
                 Some(self.property_keys()),
                 self.property_spills.as_ref(),
             )?;
             consumer(layout, payload)?;
-            Ok(None)
+            Ok(None::<()>)
         })?;
         Ok(())
     }
 
-    fn point_allocation_bytes(
+    fn with_point_payload<T>(
         &self,
         kind: CanonicalSegmentKind,
         id: u64,
-        mut measure: impl FnMut(&[u8]) -> Result<Option<usize>, CanonicalSegmentError>,
-    ) -> Result<Option<usize>, CanonicalSegmentError> {
+        mut measure: impl FnMut(&[u8]) -> Result<Option<T>, CanonicalSegmentError>,
+    ) -> Result<Option<T>, CanonicalSegmentError> {
         self.ensure_healthy()?;
         let result = (|| {
             let (segment, _) = self.find_descriptor_for_id(kind, id)?;
@@ -1993,6 +2003,22 @@ impl CanonicalSegmentReader {
         })();
         self.poison_on_physical_failure(&result);
         result
+    }
+
+    /// Validates encoded relationship metadata without constructing properties.
+    #[doc(hidden)]
+    pub fn relationship_identity(
+        &self,
+        id: RelId,
+    ) -> Result<Option<(NodeId, NodeId, RelTypeId)>, CanonicalSegmentError> {
+        self.with_point_payload(CanonicalSegmentKind::Relationships, id.0, |payload| {
+            let layout = relationship_payload_layout(
+                payload,
+                Some(self.property_keys()),
+                self.property_spills.as_ref(),
+            )?;
+            Ok(Some((layout.source, layout.target, layout.rel_type)))
+        })
     }
 
     pub fn get_relationship(&self, id: RelId) -> Result<Option<RelRecord>, CanonicalSegmentError> {

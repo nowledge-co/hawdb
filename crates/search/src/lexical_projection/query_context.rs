@@ -22,6 +22,20 @@ use std::num::NonZeroU64;
 pub(crate) struct QueryContext<'a> {
     pub memory: &'a QueryMemoryAccount,
     pub task: &'a RuntimeTaskContext,
+    // Borrowed execution is for active serving cursors, never retained views.
+    pub execution: Option<&'a hawdb_qos::RuntimePermit>,
+}
+
+impl<'a> QueryContext<'a> {
+    pub(crate) fn from_read_admission(
+        admission: &'a crate::build_memory::read::ReadAdmission<'_>,
+    ) -> Self {
+        Self {
+            memory: &admission.memory.spool,
+            task: admission.task,
+            execution: Some(admission.permit),
+        }
+    }
 }
 
 impl QueryContext<'_> {

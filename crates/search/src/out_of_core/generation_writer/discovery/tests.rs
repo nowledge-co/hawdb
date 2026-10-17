@@ -168,3 +168,120 @@ fn discovery_decode_admission_covers_valid_escaped_sequence_and_invalid_json() {
         assert_eq!(memory.ledger.snapshot().used_bytes, 0);
     }
 }
+
+#[test]
+fn active_manifest_admission_covers_compact_untrusted_segment_sequences() {
+    let _serial = allocation::serial();
+    assert_eq!(allocation::live(), 0);
+    let fixture = Fixture::new();
+    let path = fixture.0.join(OUT_OF_CORE_MANIFEST_FILE);
+    let original: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    // Struct visitors accept sequence encodings too. Compact malformed names
+    // still allocate complete records before checksum/name validation refuses.
+    let fields = [
+        "segment_id",
+        "level",
+        "generation",
+        "descriptor_file",
+        "descriptor_len",
+        "descriptor_checksum",
+        "payload_file",
+        "payload_len",
+        "metadata_payload_file",
+        "metadata_payload_len",
+        "vector_payload_file",
+        "vector_payload_len",
+        "layout_file",
+        "layout_len",
+        "layout_checksum",
+        "lexical_manifest_file",
+        "lexical_manifest_len",
+        "lexical_manifest_checksum",
+        "rabitq_artifact_file",
+        "rabitq_artifact_len",
+        "rabitq_artifact_checksum",
+        "rabitq_source_digest",
+        "rabitq_vector_document_count",
+        "rabitq_payload_checksum",
+        "rabitq_peak_build_working_bytes",
+        "document_count",
+        "documents_digest",
+        "source_graph_commit_epoch",
+    ];
+    for count in [65, 513] {
+        let mut value = original.clone();
+        let template = &original["body"]["segments"][0];
+        let record = serde_json::Value::Array(
+            fields
+                .iter()
+                .map(|field| {
+                    let value = template[*field].clone();
+                    if value.is_string() {
+                        serde_json::json!("")
+                    } else {
+                        value
+                    }
+                })
+                .collect(),
+        );
+        value["body"]["segments"] = serde_json::Value::Array(vec![record; count]);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let decoded: SearchOutOfCoreManifestEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.body.segments.len(), count);
+        drop(decoded);
+        fs::write(&path, &bytes).unwrap();
+        let (memory, task) = context(64 * 1024 * 1024);
+        let (_, peak) = allocation::measure(|| {
+            assert!(active_identity(&fixture.0, &memory, &task).is_err());
+        });
+        assert!(
+            peak <= memory.ledger.snapshot().peak_bytes,
+            "{count} compact records requested {peak}, admitted {}",
+            memory.ledger.snapshot().peak_bytes
+        );
+        assert_eq!(allocation::live(), 0);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+        let (limited, task) = context(memory.ledger.snapshot().peak_bytes - 1);
+        assert!(matches!(
+            active_identity(&fixture.0, &limited, &task),
+            Err(HawDBError::Execution(_))
+        ));
+        assert_eq!(limited.ledger.snapshot().used_bytes, 0);
+    }
+}
+
+#[test]
+fn active_manifest_admission_covers_compact_untrusted_mutation_sequences() {
+    let _serial = allocation::serial();
+    assert_eq!(allocation::live(), 0);
+    let fixture = Fixture::new();
+    let path = fixture.0.join(OUT_OF_CORE_MANIFEST_FILE);
+    let original: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for count in [65, 513] {
+        let mut value = original.clone();
+        value["body"]["mutation_runs"] =
+            serde_json::Value::Array(vec![serde_json::json!([1, "", 1, 0, 1, 0]); count]);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let decoded: SearchOutOfCoreManifestEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.body.mutation_runs.len(), count);
+        drop(decoded);
+        fs::write(&path, &bytes).unwrap();
+        let (memory, task) = context(64 * 1024 * 1024);
+        let (_, peak) = allocation::measure(|| {
+            assert!(active_identity(&fixture.0, &memory, &task).is_err());
+        });
+        assert!(
+            peak <= memory.ledger.snapshot().peak_bytes,
+            "{count} mutation records requested {peak}, admitted {}",
+            memory.ledger.snapshot().peak_bytes
+        );
+        assert_eq!(allocation::live(), 0);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+        let (limited, task) = context(memory.ledger.snapshot().peak_bytes - 1);
+        assert!(matches!(
+            active_identity(&fixture.0, &limited, &task),
+            Err(HawDBError::Execution(_))
+        ));
+        assert_eq!(limited.ledger.snapshot().used_bytes, 0);
+    }
+}

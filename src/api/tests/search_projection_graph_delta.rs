@@ -1139,8 +1139,22 @@ fn search_projection_changefeed_does_not_schedule_irrelevant_watermark_only_work
     db.apply_search_projection_graph_delta(&mut search_index, request)
         .unwrap();
 
+    let projected_epoch = db.commit_epoch().unwrap();
     db.query("MATCH (m:Memory {id: 'm1'}), (e:Entity {id: 'e1'}) CREATE (m)-[:RELATES_TO]->(e)")
         .unwrap();
+    let status = db.search_projection_changefeed_status().unwrap();
+    // Endpoint facts remain retained for native mapping, while the built-in
+    // mapper has no document effect for RELATES_TO.
+    assert_eq!(status.retained_mutation_count, 2);
+    assert_eq!(
+        status.newest_retained_mutation_id.unwrap().commit_epoch(),
+        db.commit_epoch().unwrap()
+    );
+    assert_eq!(
+        status.newest_projection_mutation_id.unwrap().commit_epoch(),
+        projected_epoch
+    );
+    assert_eq!(status.required_projection_commit_epoch(), projected_epoch);
     let request = db
         .build_search_projection_graph_delta_request_from_freshness(&search_index, Some(1))
         .unwrap()
@@ -1161,6 +1175,48 @@ fn search_projection_changefeed_does_not_schedule_irrelevant_watermark_only_work
         )
         .unwrap()
         .is_none());
+}
+
+#[test]
+fn owner_only_projection_freshness_survives_wal_and_checkpoint_reopen() {
+    for checkpoint in [false, true] {
+        let path = unique_test_dir("owner_only_projection_freshness");
+        let mut db = Database::open(&path).unwrap();
+        db.query(
+            "CREATE (:Memory {id: 'm1', title: 'Memory'})-[:MENTIONS]->(:Entity {id: 'e1', name: 'Entity'})",
+        )
+        .unwrap();
+        let projected_epoch = db.commit_epoch().unwrap();
+        db.checkpoint().unwrap();
+        db.query(
+            "MATCH (m:Memory {id: 'm1'}), (e:Entity {id: 'e1'}) CREATE (m)-[:RELATES_TO]->(e)",
+        )
+        .unwrap();
+        let owner_epoch = db.commit_epoch().unwrap();
+        if checkpoint {
+            db.checkpoint().unwrap();
+        }
+        drop(db);
+        let mut db = Database::open(&path).unwrap();
+        let status = db.search_projection_changefeed_status().unwrap();
+        assert_eq!(status.retained_mutation_count, 2);
+        assert_eq!(
+            status.newest_retained_mutation_id.unwrap().commit_epoch(),
+            owner_epoch
+        );
+        assert_eq!(status.required_projection_commit_epoch(), projected_epoch);
+        assert_eq!(status.projection_commit_lag_after(projected_epoch), 0);
+        db.query("MATCH (m:Memory {id: 'm1'}) SET m.title = 'Changed'")
+            .unwrap();
+        let status = db.search_projection_changefeed_status().unwrap();
+        assert_eq!(
+            status.required_projection_commit_epoch(),
+            db.commit_epoch().unwrap()
+        );
+        assert!(status.projection_commit_lag_after(projected_epoch) > 0);
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }
 
 #[test]

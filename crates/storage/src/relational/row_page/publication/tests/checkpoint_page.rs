@@ -229,129 +229,147 @@ fn checkpoint_units_row_page_publisher_preserves_complete_artifacts_in_every_mod
     }
 }
 
+// Each mode keeps its complete CPU/I/O cancellation campaign and shared setup.
+// Independent libtest cases avoid serializing all three durable retry tails.
 #[test]
-fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retains_publication_and_retries(
+fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retains_publication_and_retries_persist(
 ) {
-    for mode in 0..3 {
-        let source_directory = unique_test_dir("page-unit-synced-source");
-        let source_base = setup(&source_directory, config());
-        let source_authority = authority(&source_directory);
-        let baseline_directory = unique_test_dir("page-unit-count");
-        let base = setup(&baseline_directory, config());
-        let local = scheduler();
-        let baseline = Arc::new(CheckpointWorkProbe::default());
-        publish(
-            &baseline_directory,
-            &base,
-            mode,
-            Some(&baseline.context(local.clone())),
-        )
-        .unwrap();
-        let units = baseline.completed.load(Ordering::SeqCst);
-        let waves = baseline.io_waves.load(Ordering::SeqCst);
-        baseline.assert_released(&local);
-        let expected: Vec<_> = names(2)
-            .iter()
-            .map(|name| fs::read(baseline_directory.join(name)).unwrap())
-            .collect();
-        drop(base);
-        fs::remove_dir_all(baseline_directory).unwrap();
-        for io in [false, true] {
-            let count = if io { waves } else { units };
-            for limit in 1..=count {
-                let directory = unique_test_dir("page-unit-cancel");
-                let base = reuse_synced_authority(&source_directory, &directory);
-                let before = authority(&directory);
-                assert_eq!(before, source_authority);
-                let probe = Arc::new(CheckpointWorkProbe::default());
-                if io {
-                    probe.cancel_on_io_wave.store(limit, Ordering::SeqCst);
-                } else {
-                    probe.cancel_after.store(limit, Ordering::SeqCst);
-                }
-                let result = publish(&directory, &base, mode, Some(&probe.context(local.clone())));
-                assert!(
-                    matches!(result, Err(RelationalRowPagePublicationError::Admission(_))),
-                    "{result:?}"
-                );
-                probe.assert_released(&local);
-                let after = authority(&directory);
-                assert_eq!(&after[..4], &before[..4]);
-                let selected = RelationalRowPageRootReader::open_latest(&directory, config())
-                    .unwrap()
-                    .unwrap();
-                match selected.manifest().generation {
-                    1 => assert_eq!(after, before),
-                    2 => {
-                        assert_eq!(mode, 2);
-                        assert_eq!(after[4], expected[4]);
-                        verify(&directory, mode);
-                    }
-                    generation => panic!("unexpected selected generation {generation}"),
-                }
-                let mut published = 0;
-                let mut missing = false;
-                for (index, name) in names(2).iter().take(4).enumerate() {
-                    if directory.join(name).exists() {
-                        assert!(!missing, "publication is not an immutable prefix");
-                        assert_eq!(fs::read(directory.join(name)).unwrap(), expected[index]);
-                        published += 1;
-                    } else {
-                        missing = true;
-                    }
-                }
-                if published == 4 {
+    checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retains_publication_and_retries(0);
+}
+
+#[test]
+fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retains_publication_and_retries_compacting(
+) {
+    checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retains_publication_and_retries(1);
+}
+
+#[test]
+fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retains_publication_and_retries_publish(
+) {
+    checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retains_publication_and_retries(2);
+}
+
+fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retains_publication_and_retries(
+    mode: usize,
+) {
+    let source_directory = unique_test_dir("page-unit-synced-source");
+    let source_base = setup(&source_directory, config());
+    let source_authority = authority(&source_directory);
+    let baseline_directory = unique_test_dir("page-unit-count");
+    let base = setup(&baseline_directory, config());
+    let local = scheduler();
+    let baseline = Arc::new(CheckpointWorkProbe::default());
+    publish(
+        &baseline_directory,
+        &base,
+        mode,
+        Some(&baseline.context(local.clone())),
+    )
+    .unwrap();
+    let units = baseline.completed.load(Ordering::SeqCst);
+    let waves = baseline.io_waves.load(Ordering::SeqCst);
+    baseline.assert_released(&local);
+    let expected: Vec<_> = names(2)
+        .iter()
+        .map(|name| fs::read(baseline_directory.join(name)).unwrap())
+        .collect();
+    drop(base);
+    fs::remove_dir_all(baseline_directory).unwrap();
+    for io in [false, true] {
+        let count = if io { waves } else { units };
+        for limit in 1..=count {
+            let directory = unique_test_dir("page-unit-cancel");
+            let base = reuse_synced_authority(&source_directory, &directory);
+            let before = authority(&directory);
+            assert_eq!(before, source_authority);
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            if io {
+                probe.cancel_on_io_wave.store(limit, Ordering::SeqCst);
+            } else {
+                probe.cancel_after.store(limit, Ordering::SeqCst);
+            }
+            let result = publish(&directory, &base, mode, Some(&probe.context(local.clone())));
+            assert!(
+                matches!(result, Err(RelationalRowPagePublicationError::Admission(_))),
+                "{result:?}"
+            );
+            probe.assert_released(&local);
+            let after = authority(&directory);
+            assert_eq!(&after[..4], &before[..4]);
+            let selected = RelationalRowPageRootReader::open_latest(&directory, config())
+                .unwrap()
+                .unwrap();
+            match selected.manifest().generation {
+                1 => assert_eq!(after, before),
+                2 => {
+                    assert_eq!(mode, 2);
+                    assert_eq!(after[4], expected[4]);
                     verify(&directory, mode);
                 }
-                assert_no_temporary_files(&directory);
-                let retry_generation = if published == 0 { 2 } else { 3 };
-                let retry = Arc::new(CheckpointWorkProbe::default());
-                publish_at(
-                    &directory,
-                    &selected,
-                    mode,
-                    retry_generation,
-                    Some(&retry.context(local.clone())),
-                )
-                .unwrap();
-                retry.assert_released(&local);
-                verify_at(&directory, mode, retry_generation);
-                for (index, name) in names(2).iter().take(published).enumerate() {
-                    assert_eq!(fs::read(directory.join(name)).unwrap(), expected[index]);
-                }
-                assert_eq!(&authority(&directory)[..4], &before[..4]);
-                assert_no_temporary_files(&directory);
-                fs::remove_dir_all(directory).unwrap();
-                assert_eq!(authority(&source_directory), source_authority);
+                generation => panic!("unexpected selected generation {generation}"),
             }
-        }
-        let directory = unique_test_dir("page-unit-deny");
-        let base = reuse_synced_authority(&source_directory, &directory);
-        let before = authority(&directory);
-        let probe = Arc::new(CheckpointWorkProbe::default());
-        let work = probe.context(local.clone());
-        let held = local
-            .try_start(WorkRequest::background(WorkClass::Mutation, 1))
+            let mut published = 0;
+            let mut missing = false;
+            for (index, name) in names(2).iter().take(4).enumerate() {
+                if directory.join(name).exists() {
+                    assert!(!missing, "publication is not an immutable prefix");
+                    assert_eq!(fs::read(directory.join(name)).unwrap(), expected[index]);
+                    published += 1;
+                } else {
+                    missing = true;
+                }
+            }
+            if published == 4 {
+                verify(&directory, mode);
+            }
+            assert_no_temporary_files(&directory);
+            let retry_generation = if published == 0 { 2 } else { 3 };
+            let retry = Arc::new(CheckpointWorkProbe::default());
+            publish_at(
+                &directory,
+                &selected,
+                mode,
+                retry_generation,
+                Some(&retry.context(local.clone())),
+            )
             .unwrap();
-        let error = publish(&directory, &base, mode, Some(&work)).unwrap_err();
-        assert!(
-            error.to_string().contains("admission deferred"),
-            "{error:?}"
-        );
-        assert_eq!(probe.completed.load(Ordering::SeqCst), 0);
-        drop(held);
-        probe.assert_released(&local);
-        assert_eq!(authority(&directory), before);
-        assert_no_temporary_files(&directory);
-        let retry = Arc::new(CheckpointWorkProbe::default());
-        publish(&directory, &base, mode, Some(&retry.context(local.clone()))).unwrap();
-        retry.assert_released(&local);
-        verify(&directory, mode);
-        fs::remove_dir_all(directory).unwrap();
-        assert_eq!(authority(&source_directory), source_authority);
-        drop(source_base);
-        fs::remove_dir_all(source_directory).unwrap();
+            retry.assert_released(&local);
+            verify_at(&directory, mode, retry_generation);
+            for (index, name) in names(2).iter().take(published).enumerate() {
+                assert_eq!(fs::read(directory.join(name)).unwrap(), expected[index]);
+            }
+            assert_eq!(&authority(&directory)[..4], &before[..4]);
+            assert_no_temporary_files(&directory);
+            fs::remove_dir_all(directory).unwrap();
+            assert_eq!(authority(&source_directory), source_authority);
+        }
     }
+    let directory = unique_test_dir("page-unit-deny");
+    let base = reuse_synced_authority(&source_directory, &directory);
+    let before = authority(&directory);
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(local.clone());
+    let held = local
+        .try_start(WorkRequest::background(WorkClass::Mutation, 1))
+        .unwrap();
+    let error = publish(&directory, &base, mode, Some(&work)).unwrap_err();
+    assert!(
+        error.to_string().contains("admission deferred"),
+        "{error:?}"
+    );
+    assert_eq!(probe.completed.load(Ordering::SeqCst), 0);
+    drop(held);
+    probe.assert_released(&local);
+    assert_eq!(authority(&directory), before);
+    assert_no_temporary_files(&directory);
+    let retry = Arc::new(CheckpointWorkProbe::default());
+    publish(&directory, &base, mode, Some(&retry.context(local.clone()))).unwrap();
+    retry.assert_released(&local);
+    verify(&directory, mode);
+    fs::remove_dir_all(directory).unwrap();
+    assert_eq!(authority(&source_directory), source_authority);
+    drop(source_base);
+    fs::remove_dir_all(source_directory).unwrap();
 }
 
 #[test]

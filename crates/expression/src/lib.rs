@@ -151,6 +151,12 @@ pub enum ProjectionExpression {
     RelationshipType {
         variable: String,
     },
+    Properties {
+        variable: String,
+    },
+    Labels {
+        variable: String,
+    },
     Literal(Value),
     Coalesce(Vec<ProjectionExpression>),
     Left {

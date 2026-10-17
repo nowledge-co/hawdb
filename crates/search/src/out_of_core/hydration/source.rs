@@ -23,27 +23,120 @@ use crate::lexical_projection::{DocumentSource, LexicalProjectionConfig};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 
-pub(in crate::out_of_core) struct Source {
+pub(in crate::out_of_core) struct Source<'execution> {
     pub(in crate::out_of_core) header: AdmittedHeader,
     pub(in crate::out_of_core) body: File,
     pub(in crate::out_of_core) bytes: u64,
     pub(in crate::out_of_core) checksum: u64,
     pub(in crate::out_of_core) needs_chinese: bool,
+    query: Option<crate::lexical_projection::QueryContext<'execution>>,
     memory: BuildMemory,
     task: RuntimeTaskContext,
     _memory: QueryMemoryLease,
 }
 
-impl Source {
+struct CaptureContext<'a, 'execution> {
+    segment: &'a SearchSegmentDescriptorEntry,
+    id: &'a str,
+    output: File,
+    limits: (u64, usize),
+    memory: &'a BuildMemory,
+    task: &'a RuntimeTaskContext,
+    query: Option<crate::lexical_projection::QueryContext<'execution>>,
+}
+
+impl Source<'static> {
     pub(in crate::out_of_core) fn capture(
         artifact: &SearchOutOfCoreSegmentReader,
         segment: &SearchSegmentDescriptorEntry,
         id: &str,
-        mut output: File,
+        output: File,
         limits: (u64, usize),
         memory: &BuildMemory,
         task: &RuntimeTaskContext,
     ) -> Result<Self> {
+        let range = segment
+            .payload_range
+            .ok_or_else(|| invalid("segment has no payload range"))?;
+        Self::capture_reader(
+            CaptureContext {
+                segment,
+                id,
+                output,
+                limits,
+                memory,
+                task,
+                query: None,
+            },
+            RangeReader {
+                file: &artifact.payload,
+                offset: range.offset,
+                remaining: range.length,
+            },
+        )
+    }
+}
+
+impl<'execution> Source<'execution> {
+    pub(in crate::out_of_core) fn capture_with_read_admission(
+        artifact: &SearchOutOfCoreSegmentReader,
+        segment: &SearchSegmentDescriptorEntry,
+        id: &str,
+        output: File,
+        limits: (u64, usize),
+        admission: &'execution crate::build_memory::read::ReadAdmission<'_>,
+        maximum_artifact_bytes: u64,
+    ) -> Result<Self> {
+        let range = segment
+            .payload_range
+            .ok_or_else(|| invalid("segment has no payload range"))?;
+        if range
+            .offset
+            .checked_add(range.length)
+            .is_none_or(|end| end > artifact.payload_length)
+        {
+            return Err(invalid("segment range exceeds payload artifact"));
+        }
+        admission.with_read_scope(
+            &artifact.payload,
+            artifact.payload_length,
+            maximum_artifact_bytes,
+            |reader| {
+                let input = crate::build_memory::read::ScopedRange {
+                    reader,
+                    offset: range.offset,
+                    remaining: range.length,
+                };
+                #[cfg(test)]
+                let input = crate::build_control::read_observation::track_reads(input);
+                Self::capture_reader(
+                    CaptureContext {
+                        segment,
+                        id,
+                        output,
+                        limits,
+                        memory: admission.memory,
+                        task: admission.task,
+                        query: Some(
+                            crate::lexical_projection::QueryContext::from_read_admission(admission),
+                        ),
+                    },
+                    input,
+                )
+            },
+        )
+    }
+
+    fn capture_reader(context: CaptureContext<'_, 'execution>, input: impl Read) -> Result<Self> {
+        let CaptureContext {
+            segment,
+            id,
+            mut output,
+            limits,
+            memory,
+            task,
+            query,
+        } = context;
         let retained = memory.retained.reserve(std::mem::size_of::<Self>())?;
         let range = segment
             .payload_range
@@ -54,11 +147,7 @@ impl Source {
             max_header_bytes: limits.1,
         };
         let receipt = read_validated(
-            RangeReader {
-                file: &artifact.payload,
-                offset: range.offset,
-                remaining: range.length,
-            },
+            input,
             range.length,
             range.checksum,
             limits.0,
@@ -77,6 +166,7 @@ impl Source {
             bytes: receipt.body_bytes,
             checksum: receipt.body_checksum,
             needs_chinese,
+            query,
             memory: memory.clone(),
             task: task.clone(),
             _memory: retained,
@@ -103,21 +193,44 @@ impl Source {
         Ok(digest.finish())
     }
 
-    fn reader(&self) -> RangeReader<'_> {
-        RangeReader {
-            file: &self.body,
-            offset: 0,
-            remaining: self.bytes,
+    fn reader(&self) -> SourceReader<'_> {
+        match self.query {
+            Some(context) => SourceReader::Admitted(crate::build_memory::read::QueryFileRange {
+                file: &self.body,
+                expected_length: Some(self.bytes),
+                offset: 0,
+                remaining: self.bytes,
+                context,
+                require_execution: true,
+            }),
+            None => SourceReader::Legacy(RangeReader {
+                file: &self.body,
+                offset: 0,
+                remaining: self.bytes,
+            }),
         }
     }
 }
 
-impl HeaderSource for Source {
+enum SourceReader<'a> {
+    Legacy(RangeReader<'a>),
+    Admitted(crate::build_memory::read::QueryFileRange<'a>),
+}
+impl Read for SourceReader<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Legacy(reader) => reader.read(output),
+            Self::Admitted(reader) => reader.read(output),
+        }
+    }
+}
+
+impl HeaderSource for Source<'_> {
     fn header(&self) -> Header<'_> {
         self.header.header()
     }
 }
-impl RecordSource for Source {
+impl RecordSource for Source<'_> {
     fn encoded_len(&self, _: Option<&RuntimeTaskContext>) -> Result<usize> {
         usize::try_from(streamed::record_len(self.header(), self.bytes)?)
             .map_err(|_| invalid("encoded body size exceeds usize"))
@@ -141,7 +254,7 @@ impl RecordSource for Source {
         .map_err(io::Error::other)
     }
 }
-impl DocumentSource for Source {
+impl DocumentSource for Source<'_> {
     fn id(&self) -> &str {
         &self.header.id
     }

@@ -17,6 +17,7 @@ use crate::model::ProjectionIdentity;
 use hawdb_core::error::{file_descriptor_error, FileDescriptorError};
 use hawdb_storage::file_descriptors::ProjectFileDescriptors;
 use hawdb_storage::file_io::OpenOptions as CountedOpenOptions;
+use std::sync::Arc;
 
 fn config() -> ProjectionBuildConfig {
     ProjectionBuildConfig::new(2, ProjectionIdentity::new(1)).with_bit_width(RaBitQBitWidth::One)

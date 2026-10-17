@@ -240,6 +240,16 @@ impl ImmutableFileHandles {
         context: &FileOpenContext,
         admit_validation: impl FnMut(u64) -> io::Result<()>,
     ) -> io::Result<(Arc<File>, u64)> {
+        self.get_controlled(binding, context, &mut ValidationAdmission(admit_validation))
+    }
+
+    pub(crate) fn get_controlled(
+        &self,
+        binding: &ImmutableFileBinding,
+        context: &FileOpenContext,
+        control: &mut impl crate::file_io::ReadAdmissionControl,
+    ) -> io::Result<(Arc<File>, u64)> {
+        control.checkpoint()?;
         if let Some(file) = self.cached(binding.reference) {
             self.state.record_cache_hit();
             return Ok((file, 0));
@@ -250,16 +260,17 @@ impl ImmutableFileHandles {
             .opening
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        control.checkpoint()?;
         if let Some(file) = self.cached(binding.reference) {
             self.state.record_cache_hit();
             return Ok((file, 0));
         }
         self.state.record_cache_miss();
-        let file = Arc::new(Self::open_verified_object_admitted(
+        let file = Arc::new(Self::open_verified_object_controlled(
             binding,
             context,
             DescriptorKind::ImmutableCache,
-            admit_validation,
+            control,
         )?);
         self.handles
             .lock()
@@ -304,8 +315,23 @@ impl ImmutableFileHandles {
         binding: &ImmutableFileBinding,
         context: &FileOpenContext,
         kind: DescriptorKind,
-        mut admit_validation: impl FnMut(u64) -> io::Result<()>,
+        admit_validation: impl FnMut(u64) -> io::Result<()>,
     ) -> io::Result<File> {
+        Self::open_verified_object_controlled(
+            binding,
+            context,
+            kind,
+            &mut ValidationAdmission(admit_validation),
+        )
+    }
+
+    fn open_verified_object_controlled(
+        binding: &ImmutableFileBinding,
+        context: &FileOpenContext,
+        kind: DescriptorKind,
+        control: &mut impl crate::file_io::ReadAdmissionControl,
+    ) -> io::Result<File> {
+        control.checkpoint()?;
         let mut file = OpenOptions::new()
             .read(true)
             .descriptor_kind(kind)
@@ -319,7 +345,7 @@ impl ImmutableFileHandles {
         }
         // Descriptor rejection occurs before this charge. No payload may be
         // read until the caller has reserved the complete identity validation.
-        admit_validation(binding.reference.byte_length)?;
+        control.admit_validation(binding.reference.byte_length)?;
         let mut hasher = crate::immutable_object::identity_hasher(
             binding.reference.kind,
             binding.reference.format_version,
@@ -328,11 +354,22 @@ impl ImmutableFileHandles {
         let mut buffer = [0_u8; 64 * 1024];
         let mut remaining = binding.reference.byte_length;
         while remaining > 0 {
+            control.checkpoint()?;
             let chunk = remaining.min(buffer.len() as u64) as usize;
-            file.read_exact(&mut buffer[..chunk])?;
-            remaining -= chunk as u64;
-            hasher.update(&buffer[..chunk]);
+            let read = match file.read(&mut buffer[..chunk]) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "immutable identity validation ended early",
+                ));
+            }
+            remaining -= read as u64;
+            hasher.update(&buffer[..read]);
         }
+        control.checkpoint()?;
         // Detect length drift without fetching an unadmitted EOF sentinel.
         if file.metadata()?.len() != binding.reference.byte_length
             || hasher.finish().sha256 != binding.reference.sha256
@@ -368,6 +405,18 @@ impl DescriptorCache for ImmutableFileHandles {
         drop(removed);
         self.state.record_cache_evictions(count);
         count
+    }
+}
+
+struct ValidationAdmission<F>(F);
+impl<F: FnMut(u64) -> io::Result<()>> crate::file_io::ReadAdmissionControl
+    for ValidationAdmission<F>
+{
+    fn admit_validation(&mut self, bytes: u64) -> io::Result<()> {
+        (self.0)(bytes)
+    }
+    fn checkpoint(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 

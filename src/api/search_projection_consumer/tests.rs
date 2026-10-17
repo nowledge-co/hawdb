@@ -842,6 +842,13 @@ fn byte_retention_limit_does_not_wait_for_registry_io() {
         .unwrap();
     assert!(!readiness.is_ready());
     assert_eq!(readiness.consumer.state, status.state);
+    // A complete fresh-C replacement can retain this valid target without
+    // pretending the discarded delta interval is available again.
+    drop(
+        db.reserve_search_projection_consumer(&mut consumer)
+            .unwrap(),
+    );
+    assert_eq!(std::fs::read(&registry).unwrap(), old);
     assert!(matches!(
         catch_up(&mut db, &mut consumer),
         Err(Error::RebuildRequired(
@@ -1116,4 +1123,78 @@ fn initializer_descriptor_rejection_preserves_typed_cause_and_source() {
         .open_search_projection_consumer(&id("fd-retry"), &destination)
         .unwrap();
     assert!(consumer.search_index().document("memory:m1").is_some());
+}
+
+#[test]
+fn reserved_target_defers_catch_up_before_hydration_and_allows_source_writes() {
+    let fixture = Fixture::new();
+    let mut db = fixture.database();
+    append(&mut db, 1);
+    let mut consumer = db
+        .create_search_projection_consumer(
+            id("reserved"),
+            fixture.0.join("projection"),
+            options(100),
+            initialize,
+        )
+        .unwrap();
+    let preparation = db
+        .reserve_search_projection_consumer(&mut consumer)
+        .unwrap();
+    append(&mut db, 2);
+    let hydrated = std::cell::Cell::new(false);
+    let result = db.catch_up_search_projection_consumer(&mut consumer, 32, 32, 8, |_, _| {
+        hydrated.set(true);
+        Ok(SearchProjectionRelationalDelta::default())
+    });
+    assert!(matches!(
+        result,
+        Err(SearchProjectionConsumerError::Database(
+            HawDBError::ProjectionBusy
+        ))
+    ));
+    assert!(!hydrated.get());
+    assert_eq!(consumer.search_index().document_count(), 1);
+    drop(preparation);
+    assert!(catch_up(&mut db, &mut consumer).unwrap().catch_up.complete);
+    assert_eq!(consumer.search_index().document_count(), 2);
+}
+
+#[test]
+fn expired_feed_allows_fresh_preparation_without_restoring_delta_readiness() {
+    let fixture = Fixture::new();
+    let mut db = fixture.database();
+    append(&mut db, 1);
+    let mut consumer = db
+        .create_search_projection_consumer(
+            id("expired-preparation"),
+            fixture.0.join("projection"),
+            options(1),
+            initialize,
+        )
+        .unwrap();
+    append(&mut db, 2);
+    append(&mut db, 3);
+    assert!(matches!(
+        db.search_projection_consumer_status(consumer.id())
+            .unwrap()
+            .state,
+        State::RebuildRequired(Reason::Expired { .. })
+    ));
+    let operation = db
+        .reserve_search_projection_consumer(&mut consumer)
+        .unwrap();
+    append(&mut db, 4);
+    drop(operation);
+    assert!(matches!(
+        catch_up(&mut db, &mut consumer),
+        Err(Error::RebuildRequired(Reason::Expired { .. }))
+    ));
+    assert_eq!(consumer.search_index().document_count(), 1);
+    assert!(matches!(
+        db.search_projection_consumer_status(consumer.id())
+            .unwrap()
+            .state,
+        State::RebuildRequired(Reason::Expired { .. })
+    ));
 }

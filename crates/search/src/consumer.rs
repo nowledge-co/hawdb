@@ -23,7 +23,10 @@ use std::io::Read;
 use std::path::Path;
 
 mod control;
+mod operation;
 pub(crate) use control::require_unregistered_directory;
+pub use operation::ConsumerPreparationLease;
+pub(crate) use operation::{Authority as MutationOwner, MutationPermit};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsumerBinding {
@@ -82,7 +85,8 @@ pub struct CheckpointReceipt {
 #[derive(Debug)]
 pub struct ConsumerProjection {
     index: SearchIndex,
-    _lease: SearchProjectionPublishLease,
+    authority: std::sync::Arc<operation::Authority>,
+    pending_mutation: bool,
 }
 
 impl ConsumerProjection {
@@ -100,13 +104,24 @@ impl ConsumerProjection {
                 root, false,
             )?;
         let lease = SearchProjectionPublishLease::acquire_for_consumer(root)?;
+        let authority = operation::Authority::new(lease);
+        let operation = authority.acquire()?;
         let mut index = SearchIndex {
             path: Some(root.to_path_buf()),
             _project_files: Some(project_files),
+            consumer_owner: std::sync::Arc::downgrade(&authority),
+            consumer_mutation_generation: Some(operation.open_mutations()),
             ..SearchIndex::default()
         };
-        initialize(&mut index)?;
-        if index.path.as_deref() != Some(root)
+        {
+            let scope = MutationScope {
+                index: &mut index,
+                operation,
+            };
+            initialize(scope.index)?;
+        }
+        if !authority.owns(&index)
+            || index.path.as_deref() != Some(root)
             || index.consumer_binding.is_some()
             || index
                 .import_source_graph_commit_epoch
@@ -123,7 +138,8 @@ impl ConsumerProjection {
         index.consumer_binding = Some(binding);
         let mut owner = Self {
             index,
-            _lease: lease,
+            authority,
+            pending_mutation: true,
         };
         owner.checkpoint()?;
         Ok(owner)
@@ -135,10 +151,13 @@ impl ConsumerProjection {
                 root, false,
             )?;
         let lease = SearchProjectionPublishLease::acquire_for_consumer(root)?;
-        let index = SearchIndex::open_under_lease(root, true)?;
+        let mut index = SearchIndex::open_under_lease(root, true)?;
+        let authority = operation::Authority::new(lease);
+        index.consumer_owner = std::sync::Arc::downgrade(&authority);
         let owner = Self {
             index,
-            _lease: lease,
+            authority,
+            pending_mutation: false,
         };
         let receipt = owner.read_receipt()?;
         *owner
@@ -171,29 +190,57 @@ impl ConsumerProjection {
     }
 
     pub fn apply<T>(&mut self, apply: impl FnOnce(&mut SearchIndex) -> Result<T>) -> Result<T> {
-        self.index.consumer_owned_mutation = true;
-        let scope = MutationScope(&mut self.index);
-        apply(scope.0)
+        let operation = self.authority.acquire()?;
+        self.authority.require_index(&self.index)?;
+        self.pending_mutation = true;
+        let result = {
+            self.index.consumer_mutation_generation = Some(operation.open_mutations());
+            let scope = MutationScope {
+                index: &mut self.index,
+                operation,
+            };
+            apply(scope.index)
+        };
+        if let Err(error) = self.authority.require_index(&self.index) {
+            self.index.consumer_binding_valid = false;
+            return Err(error);
+        }
+        result
     }
 
     pub fn binding_is_valid(&self) -> bool {
-        self.index.consumer_binding_valid
+        self.index.consumer_binding_valid && self.authority.owns(&self.index)
     }
 
     pub fn checkpoint(&mut self) -> Result<CheckpointReceipt> {
+        let operation = self.authority.acquire()?;
+        self.authority.require_index(&self.index)?;
         if !self.index.consumer_binding_valid {
             return Err(invalid("untracked projection mutation"));
         }
+        self.pending_mutation = true;
         self.index
             .consumer_binding
             .as_mut()
             .expect("bound consumer")
             .checkpoint_uuid = hawdb_core::uuidv7::generate_uuidv7()?;
-        self.index.checkpoint_with_lease(true)?;
+        self.index.consumer_mutation_generation = Some(operation.open_mutations());
+        {
+            let scope = MutationScope {
+                index: &mut self.index,
+                operation,
+            };
+            scope.index.checkpoint_with_lease(true)?;
+        }
+        self.pending_mutation = false;
         Ok(self.receipt())
     }
 
     pub fn publish_directory(&mut self, destination: &Path) -> Result<()> {
+        let _operation = self.authority.acquire()?;
+        self.authority.require_index(&self.index)?;
+        let pending_mutation = self.pending_mutation;
+        self.pending_mutation = true;
         fs::create_dir(destination)?;
         let source = self.index.path.as_ref().expect("persistent consumer");
         if let Err(error) = fs::rename(source, destination) {
@@ -202,13 +249,20 @@ impl ConsumerProjection {
             }
             return Err(error.into());
         }
-        hawdb_storage::durability::sync_parent_directory(destination)?;
+        // Rename has already changed the namespace, even if a later durability
+        // barrier fails. Never reuse the vacated path with the moved native lock.
+        self.index.path = Some(destination.to_path_buf());
+        // Revoke operations until both namespace durability and reader reload
+        // succeed. A failed move retains its actual root and recovery evidence.
+        self.index.consumer_binding_valid = false;
+        sync_published_parent(destination)?;
         // Readers hold paths into their generation. Reload those readers while
         // retaining the lease, receipt, and initializer's runtime configuration.
-        self.index.path = Some(destination.to_path_buf());
         self.index.validate_registered_artifacts()?;
         #[cfg(feature = "vector-search")]
         self.index.load_registered_rabitq_projection()?;
+        self.index.consumer_binding_valid = true;
+        self.pending_mutation = pending_mutation;
         Ok(())
     }
 
@@ -245,32 +299,93 @@ impl ConsumerProjection {
     }
 }
 
-struct MutationScope<'a>(&'a mut SearchIndex);
+#[cfg(test)]
+thread_local! {
+    static FAIL_PUBLISHED_PARENT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+fn sync_published_parent(destination: &Path) -> Result<()> {
+    #[cfg(test)]
+    if FAIL_PUBLISHED_PARENT_SYNC.with(|failure| failure.replace(false)) {
+        return Err(invalid(
+            "injected parent synchronization failure after directory rename",
+        ));
+    }
+    hawdb_storage::durability::sync_parent_directory(destination)?;
+    Ok(())
+}
+
+struct MutationScope<'a> {
+    index: &'a mut SearchIndex,
+    operation: ConsumerPreparationLease,
+}
 impl Drop for MutationScope<'_> {
     fn drop(&mut self) {
-        self.0.consumer_owned_mutation = false;
-        if std::thread::panicking() {
-            self.0.consumer_binding_valid = false;
+        if self.operation.owns(self.index)
+            && self.index.consumer_mutation_generation == Some(self.operation.generation())
+        {
+            self.index.consumer_mutation_generation = None;
         }
+        if std::thread::panicking() {
+            self.index.consumer_binding_valid = false;
+        }
+        // Dropping the original operation revokes admission independently of
+        // whichever index value now occupies the borrowed slot.
     }
 }
 
+pub(super) struct MarkerMutationAuthority {
+    _consumer: Option<MutationPermit>,
+    _native: Option<SearchProjectionPublishLease>,
+}
+
 impl SearchIndex {
-    pub(super) fn mark_untracked_consumer_mutation(&mut self) {
-        if self.consumer_binding.is_some() && !self.consumer_owned_mutation {
-            self.consumer_binding_valid = false;
+    pub(super) fn require_marker_mutation(&self) -> Result<MarkerMutationAuthority> {
+        let consumer = self.require_owned_mutation_or_unregistered()?;
+        // The initializer holds runtime custody before its durable binding
+        // exists. Reuse that custody rather than recursively locking its root.
+        let consumer = consumer.or_else(|| self.borrow_consumer_mutation().ok());
+        let native = if consumer.is_none() {
+            self.path
+                .as_deref()
+                .map(SearchProjectionPublishLease::acquire)
+                .transpose()?
+        } else {
+            None
+        };
+        Ok(MarkerMutationAuthority {
+            _consumer: consumer,
+            _native: native,
+        })
+    }
+
+    pub(super) fn borrow_consumer_mutation(&self) -> Result<MutationPermit> {
+        let generation = self
+            .consumer_mutation_generation
+            .ok_or_else(|| invalid("consumer mutation scope has ended"))?;
+        MutationPermit::acquire(&self.consumer_owner, generation)
+    }
+
+    pub(super) fn mark_untracked_consumer_mutation(&mut self) -> Option<MutationPermit> {
+        self.consumer_binding.as_ref()?;
+        match self.borrow_consumer_mutation() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                self.consumer_binding_valid = false;
+                None
+            }
         }
     }
 
-    pub(super) fn require_owned_mutation_or_unregistered(&self) -> Result<()> {
-        if !self.consumer_binding_valid
-            || (self.consumer_binding.is_some() && !self.consumer_owned_mutation)
-        {
+    pub(super) fn require_owned_mutation_or_unregistered(&self) -> Result<Option<MutationPermit>> {
+        if !self.consumer_binding_valid {
             return Err(invalid(
                 "registered projection requires its consumer mutation owner",
             ));
         }
-        Ok(())
+        if self.consumer_binding.is_none() {
+            return Ok(None);
+        }
+        self.borrow_consumer_mutation().map(Some)
     }
 
     #[cfg(feature = "vector-search")]
@@ -390,6 +505,33 @@ mod tests {
         fs::create_dir(&root).unwrap();
         root
     }
+    #[test]
+    fn cleanup_reuses_consumer_authority_only_inside_owned_mutation() {
+        let root = directory();
+        let mut owner = ConsumerProjection::initialize(&root, binding(), 0, |_| Ok(())).unwrap();
+        assert!(!owner.index().projection_cleanup_report().retry_required);
+        let artifact = root.join("search_rabitq.777.hawdb");
+        fs::write(&artifact, b"unreferenced artifact").unwrap();
+        let deferred = owner.index().retry_projection_cleanup(Default::default());
+        assert!(deferred.retry_required);
+        assert_eq!(deferred.delete_attempts, 0);
+        assert!(artifact.exists());
+        owner
+            .apply(|index| {
+                let cleaned = index.retry_projection_cleanup(Default::default());
+                assert!(!cleaned.retry_required);
+                assert!(!artifact.exists());
+                Ok(())
+            })
+            .unwrap();
+        assert!(owner.binding_is_valid());
+        drop(owner);
+        let owner = ConsumerProjection::open(&root).unwrap();
+        assert!(!owner.index().projection_cleanup_report().retry_required);
+        drop(owner);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn ordinary_mutation_and_infallible_setters_cannot_publish_an_owned_index() {
         let root = directory();
@@ -543,5 +685,317 @@ mod tests {
             Err(HawDBError::StorageIntegrity(_))
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn preparation_excludes_mutations_before_any_side_effect() {
+        let root = directory();
+        let destination = root.with_extension("moved");
+        let mut owner = ConsumerProjection::initialize(&root, binding(), 0, |_| Ok(())).unwrap();
+        let receipt = owner.receipt();
+        let snapshot = fs::read(root.join(SEARCH_SNAPSHOT_FILE)).unwrap();
+        let operation = owner.reserve_preparation().unwrap();
+        assert!(matches!(
+            owner.reserve_preparation(),
+            Err(HawDBError::ProjectionBusy)
+        ));
+        let called = std::cell::Cell::new(false);
+        assert!(matches!(
+            owner.apply(|_| {
+                called.set(true);
+                Ok(())
+            }),
+            Err(HawDBError::ProjectionBusy)
+        ));
+        assert!(!called.get());
+        assert!(matches!(
+            owner.checkpoint(),
+            Err(HawDBError::ProjectionBusy)
+        ));
+        assert!(matches!(
+            owner.publish_directory(&destination),
+            Err(HawDBError::ProjectionBusy)
+        ));
+        assert!(!destination.exists());
+        assert_eq!(owner.binding(), &receipt.binding);
+        assert_eq!(owner.receipt(), receipt);
+        assert_eq!(fs::read(root.join(SEARCH_SNAPSHOT_FILE)).unwrap(), snapshot);
+        assert!(!owner.has_pending_mutation());
+        drop(operation);
+        owner.apply(|_| Ok(())).unwrap();
+        assert!(owner.has_pending_mutation());
+        owner.checkpoint().unwrap();
+        drop(owner.reserve_preparation().unwrap());
+        drop(owner);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preparation_retains_native_root_exclusion_after_owner_closes() {
+        let root = directory();
+        let mut owner = ConsumerProjection::initialize(&root, binding(), 0, |_| Ok(())).unwrap();
+        let operation = owner.reserve_preparation().unwrap();
+        drop(owner);
+        assert!(ConsumerProjection::open(&root).is_err());
+        let deferred = SearchIndex {
+            path: Some(root.clone()),
+            ..SearchIndex::default()
+        }
+        .retry_projection_cleanup(Default::default());
+        assert!(deferred.retry_required);
+        assert_eq!(deferred.scanned_entries, 0);
+        assert_eq!(deferred.delete_attempts, 0);
+        std::thread::spawn(move || drop(operation)).join().unwrap();
+        let owner = ConsumerProjection::open(&root).unwrap();
+        assert_eq!(owner.receipt().source_epoch, 0);
+        drop(owner);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preparation_refuses_same_epoch_mutation_and_failed_callbacks_until_checkpoint() {
+        let root = directory();
+        let mut owner = ConsumerProjection::initialize(&root, binding(), 0, |_| Ok(())).unwrap();
+        owner
+            .apply(|index| {
+                index.upsert(crate::SearchDocument {
+                    id: "same-epoch".into(),
+                    title: String::new(),
+                    content: "changed".into(),
+                    embedding: None,
+                    metadata: Default::default(),
+                })
+            })
+            .unwrap();
+        // Epoch-only freshness misses this actual resident mutation.
+        assert!(
+            !owner
+                .index()
+                .projection_freshness()
+                .has_uncheckpointed_changes
+        );
+        assert!(owner.reserve_preparation().is_err());
+        owner.checkpoint().unwrap();
+        drop(owner.reserve_preparation().unwrap());
+        assert!(owner
+            .apply::<()>(|_| Err(HawDBError::Execution("refused callback".into())))
+            .is_err());
+        assert!(owner.reserve_preparation().is_err());
+        owner.checkpoint().unwrap();
+        drop(owner.reserve_preparation().unwrap());
+        drop(owner);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preparation_rejection_and_unwind_release_the_operation_slot() {
+        let root = directory();
+        let mut owner = ConsumerProjection::initialize(&root, binding(), 0, |_| Ok(())).unwrap();
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _operation = owner.reserve_preparation().unwrap();
+            panic!("cancel preparation");
+        }));
+        assert!(failed.is_err());
+        assert!(owner.binding_is_valid());
+        drop(owner.reserve_preparation().unwrap());
+        // Force the real snapshot publication to fail after checkpoint_uuid
+        // changes, while preserving the previous complete snapshot for repair.
+        let snapshot = root.join(SEARCH_SNAPSHOT_FILE);
+        let previous = root.join("previous-snapshot");
+        fs::rename(&snapshot, &previous).unwrap();
+        fs::create_dir(&snapshot).unwrap();
+        assert!(owner.checkpoint().is_err());
+        assert_eq!(owner.index().source_graph_commit_epoch, Some(0));
+        assert!(owner.has_pending_mutation());
+        assert!(owner.reserve_preparation().is_err());
+        owner.require_operation_available().unwrap();
+        fs::remove_dir(&snapshot).unwrap();
+        fs::rename(&previous, &snapshot).unwrap();
+        // Restoring the old file cannot certify this in-memory checkpoint.
+        assert!(owner.reserve_preparation().is_err());
+        owner.checkpoint().unwrap();
+        drop(owner.reserve_preparation().unwrap());
+        drop(owner);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn moved_index_cannot_reuse_an_ended_foreign_mutation_scope() {
+        let root_a = directory();
+        let root_b = directory();
+        let initialize = |id: &str| crate::SearchDocument {
+            id: id.into(),
+            title: String::new(),
+            content: id.into(),
+            embedding: None,
+            metadata: Default::default(),
+        };
+        let mut owner_a = ConsumerProjection::initialize(&root_a, binding(), 0, |index| {
+            index.upsert(initialize("memory:a"))
+        })
+        .unwrap();
+        let mut owner_b = ConsumerProjection::initialize(&root_b, binding(), 0, |index| {
+            index.upsert(initialize("memory:b"))
+        })
+        .unwrap();
+        let reached_cleanup = std::cell::Cell::new(false);
+        let result = owner_a.apply(|index_a| {
+            let moved = owner_b.apply(|index_b| {
+                std::mem::swap(index_a, index_b);
+                Ok(())
+            });
+            assert!(
+                moved.is_err(),
+                "foreign index must invalidate B's owner association"
+            );
+            // The B callback ended and its owner closes. The moved index must
+            // not carry a live B authority into A's still-running callback.
+            drop(owner_b);
+            let peer_b = ConsumerProjection::open(&root_b).unwrap();
+            let report = index_a.retry_projection_cleanup(Default::default());
+            assert_eq!(
+                report.scanned_entries, 0,
+                "foreign ended scope bypassed B's current native owner: {report:?}"
+            );
+            assert_eq!(report.delete_attempts, 0);
+            assert!(report.retry_required);
+            reached_cleanup.set(true);
+            drop(peer_b);
+            Ok(())
+        });
+        assert!(
+            reached_cleanup.get(),
+            "rejection must not hide the cleanup regression"
+        );
+        assert!(
+            result.is_err(),
+            "foreign index must invalidate A's owner association"
+        );
+        assert!(!owner_a.binding_is_valid());
+        assert!(owner_a.checkpoint().is_err());
+        drop(owner_a);
+        fs::remove_dir_all(root_a).unwrap();
+        fs::remove_dir_all(root_b).unwrap();
+    }
+    #[test]
+    fn pre_registration_handle_cannot_write_registered_root_markers() {
+        let root = directory();
+        let stale = SearchIndex::open(&root).unwrap();
+        stale.checkpoint().unwrap();
+        let owner = ConsumerProjection::initialize(&root, binding(), 0, |_| Ok(())).unwrap();
+        assert!(stale.mark_full_reindex_needed("foreign marker").is_err());
+        assert!(stale.mark_metadata_repair_needed("foreign repair").is_err());
+        assert!(!owner.index().full_reindex_needed());
+        assert!(!owner.index().metadata_repair_needed());
+        drop(owner);
+        // Even without a live native owner, the durable binding refuses stale I/O.
+        assert!(stale.mark_full_reindex_needed("after owner close").is_err());
+        assert!(stale
+            .mark_metadata_repair_needed("after owner close")
+            .is_err());
+        assert!(!root.join(super::super::FULL_REINDEX_MARKER).exists());
+        assert!(!root.join(super::super::METADATA_REPAIR_MARKER).exists());
+        drop(stale);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn initializer_and_owned_markers_reuse_custody_without_recursive_locking() {
+        let root = directory();
+        let ordinary = SearchIndex::open(&root).unwrap();
+        ordinary.mark_full_reindex_needed("ordinary").unwrap();
+        assert!(ordinary.full_reindex_needed());
+        drop(ordinary);
+        let mut owner = ConsumerProjection::initialize(&root, binding(), 0, |index| {
+            index.mark_metadata_repair_needed("initializer")
+        })
+        .unwrap();
+        assert!(owner.index().metadata_repair_needed());
+        owner
+            .apply(|index| {
+                index.clear_marker(super::super::METADATA_REPAIR_MARKER)?;
+                index.mark_full_reindex_needed("owned")
+            })
+            .unwrap();
+        assert!(!owner.index().metadata_repair_needed());
+        assert!(owner.index().full_reindex_needed());
+        drop(owner);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn directory_sync_failure_cannot_reuse_the_vacated_path_as_native_authority() {
+        let parent = directory();
+        let source = parent.join("source");
+        let destination = parent.join("destination");
+        fs::create_dir(&source).unwrap();
+        let mut owner = ConsumerProjection::initialize(&source, binding(), 0, |_| Ok(())).unwrap();
+        FAIL_PUBLISHED_PARENT_SYNC.with(|failure| failure.set(true));
+        assert!(owner.publish_directory(&destination).is_err());
+        assert!(destination.is_dir());
+        assert!(!source.exists());
+        fs::create_dir(&source).unwrap();
+        let peer = ConsumerProjection::initialize(&source, binding(), 0, |_| Ok(())).unwrap();
+        let mut observed = None;
+        let attempted = owner.apply(|index| {
+            let marker = index.mark_full_reindex_needed("old directory owner");
+            let cleanup = index.retry_projection_cleanup(Default::default());
+            observed = Some((
+                marker.is_ok(),
+                cleanup.scanned_entries,
+                cleanup.delete_attempts,
+            ));
+            Ok(())
+        });
+        eprintln!(
+            "old-owner attempt={attempted:?}; observed(marker_written,scans,deletes)={observed:?}"
+        );
+        assert!(
+            attempted.is_err(),
+            "uncertain directory publication must revoke mutation: {observed:?}"
+        );
+        assert_eq!(owner.index().path.as_deref(), Some(destination.as_path()));
+        assert!(!owner.binding_is_valid());
+        assert!(!peer.index().full_reindex_needed());
+        assert!(owner.checkpoint().is_err());
+        assert!(owner.reserve_preparation().is_err());
+        let retry_destination = parent.join("retry");
+        assert!(owner.publish_directory(&retry_destination).is_err());
+        assert!(!retry_destination.exists());
+        // The failed barrier must neither release native ownership nor delete
+        // the complete checkpoint already moved to the destination.
+        assert!(ConsumerProjection::open(&destination).is_err());
+        let original_receipt = owner.receipt();
+        drop(peer);
+        drop(owner);
+        let recovered = ConsumerProjection::open(&destination).unwrap();
+        assert_eq!(recovered.receipt(), original_receipt);
+        drop(recovered);
+        fs::remove_dir_all(parent).unwrap();
+    }
+    #[test]
+    fn successful_directory_move_keeps_mutations_on_the_moved_native_root() {
+        let parent = directory();
+        let source = parent.join("source");
+        let destination = parent.join("destination");
+        fs::create_dir(&source).unwrap();
+        let mut owner = ConsumerProjection::initialize(&source, binding(), 0, |_| Ok(())).unwrap();
+        let receipt = owner.receipt();
+        owner.publish_directory(&destination).unwrap();
+        assert!(owner.binding_is_valid());
+        assert!(!owner.has_pending_mutation());
+        assert_eq!(owner.receipt(), receipt);
+        assert!(!source.exists());
+        fs::create_dir(&source).unwrap();
+        let peer = ConsumerProjection::initialize(&source, binding(), 0, |_| Ok(())).unwrap();
+        owner
+            .apply(|index| index.mark_full_reindex_needed("moved root"))
+            .unwrap();
+        assert!(owner.index().full_reindex_needed());
+        assert!(!peer.index().full_reindex_needed());
+        let completed = owner.checkpoint().unwrap();
+        drop(peer);
+        drop(owner);
+        let reopened = ConsumerProjection::open(&destination).unwrap();
+        assert_eq!(reopened.receipt(), completed);
+        assert!(reopened.index().full_reindex_needed());
+        drop(reopened);
+        fs::remove_dir_all(parent).unwrap();
     }
 }

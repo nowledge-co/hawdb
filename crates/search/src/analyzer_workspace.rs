@@ -205,4 +205,4 @@ mod tests;
 mod entrypoint_tests;
 
 #[cfg(test)]
-mod observation;
+pub(crate) mod observation;

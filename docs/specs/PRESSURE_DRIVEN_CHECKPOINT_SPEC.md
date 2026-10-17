@@ -2777,3 +2777,15 @@ refinement, scheduling fairness on every host, resource bounds, durability or
 complete maintenance liveness. Full final-source verification, remaining bounded
 builders/capacity waits, physical fault qualification and release-performance
 comparisons remain required before merge readiness.
+
+### Capacity during private and retired-resource cleanup
+
+Discarding and Releasing retain the same frontend capacity reserve as Preparing.
+They may continue to own the admission needed by another checkpoint even though
+its publication gate is free. Below the existing reserve, ordinary writers may
+proceed during cleanup; at the reserve they wait with the existing bounded
+capacity deadline before execution. A missed cleanup phase can admit a write
+whose later storage-pressure check refuses it while no new checkpoint can start.
+The conditional [cleanup admission model and native regression](../tla/CHECKPOINT_CLEANUP_HEADROOM_PROOF.md)
+cover this boundary. They do not establish global progress, unrestricted mutation
+sizes, complete physical-resource accounting or the MVCC performance gates.

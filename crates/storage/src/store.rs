@@ -119,6 +119,10 @@ mod graph_indexes;
 mod graph_mutation;
 #[path = "store/graph_read.rs"]
 mod graph_read;
+#[path = "store/read_dependencies.rs"]
+mod read_dependencies;
+#[doc(hidden)]
+pub use read_dependencies::{GraphReadDependencies, GraphReadDependencyError};
 #[path = "store/graph_recovery.rs"]
 mod graph_recovery;
 #[path = "store/immutable_root.rs"]
@@ -128,13 +132,20 @@ pub use immutable_root::{
     AdmittedBranchStore, BranchAdmissionError, BranchAdmissionRequest,
     PreparedImmutableRootHandoff, SealedBranchSource,
 };
+mod projection_full_source;
 #[path = "store/relational_index_shadow.rs"]
 mod relational_index_shadow;
 #[path = "store/relational_row_pages.rs"]
 #[doc(hidden)]
 pub mod relational_row_pages;
+#[path = "store/search_projection_capture.rs"]
+mod search_projection_capture;
 #[path = "store/search_projection_change_log.rs"]
-mod search_projection_change_log;
+pub(crate) mod search_projection_change_log;
+#[doc(hidden)]
+pub use projection_full_source::{
+    ProjectionFullSourceCursor, ProjectionFullSourceItem, ProjectionFullSourceLimits,
+};
 #[path = "store/statistics_refresh.rs"]
 mod statistics_refresh;
 #[path = "store/statistics_state.rs"]
@@ -366,10 +377,16 @@ use relational_row_pages::RelationalRowPageState;
 #[doc(hidden)]
 pub use relational_row_pages::RelationalTransactionRowView;
 use search_projection_change_log::SearchProjectionChangeLog;
+#[doc(hidden)]
+pub use search_projection_change_log::{
+    ProjectionFeedCursor, ProjectionFeedError, ProjectionFeedItem, ProjectionFeedLimits,
+    ProjectionFeedResource, ProjectionFeedStep, ProjectionFeedUsage, ProjectionOwnerBefore,
+    ProjectionOwnerFeedCursor, ProjectionOwnerFeedItem, ProjectionOwnerId,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use wal_codec::binary::encode_binary_wal_record;
 use wal_codec::frame::{
@@ -805,6 +822,7 @@ pub struct GraphStore {
     version_index: hawdb_storage::version::VersionIndex,
     version_snapshot_pins: hawdb_storage::version::VersionSnapshotPins,
     version_snapshot_pin: Option<hawdb_storage::version::VersionSnapshotPin>,
+    read_dependency_readers: Arc<AtomicUsize>,
     nodes: CowSegmentedMap<NodeId, NodeRecord>,
     relationships: CowSegmentedMap<RelId, RelRecord>,
     basic_statistics: BasicStatisticsState,
@@ -1738,6 +1756,7 @@ impl GraphStore {
             version_index: hawdb_storage::version::VersionIndex::default(),
             version_snapshot_pins: Default::default(),
             version_snapshot_pin: None,
+            read_dependency_readers: Arc::new(AtomicUsize::new(0)),
             nodes: CowSegmentedMap::default(),
             relationships: CowSegmentedMap::default(),
             basic_statistics: BasicStatisticsState::default(),
@@ -1994,8 +2013,47 @@ impl GraphStore {
         self.search_projection_graph_changes
             .iter()
             .filter(|change| change.commit_epoch > commit_epoch)
-            .map(|change| change.as_ref().clone())
+            .filter(|change| {
+                change.operation_count() != 0
+                    || change.relational_primary_key_changes.requires_rebuild()
+            })
+            .map(|change| change.legacy.as_ref().clone())
             .collect()
+    }
+
+    /// Captures immutable feed input. Completion is not projection authorization.
+    #[doc(hidden)]
+    pub fn capture_projection_feed(
+        &self,
+        start_epoch: u64,
+        limits: ProjectionFeedLimits,
+    ) -> std::result::Result<ProjectionFeedCursor, ProjectionFeedError> {
+        self.ensure_usable().map_err(ProjectionFeedError::Source)?;
+        ProjectionFeedCursor::capture(
+            &self.search_projection_graph_changes,
+            self.search_projection_change_log_start_epoch,
+            self.commit_epoch,
+            start_epoch,
+            limits,
+        )
+    }
+
+    /// Captures versioned borrowed owner input at one immutable source boundary.
+    /// This does not certify host mapping, staged coverage or a visible cursor.
+    #[doc(hidden)]
+    pub fn capture_projection_owner_feed(
+        &self,
+        start_epoch: u64,
+        limits: ProjectionFeedLimits,
+    ) -> std::result::Result<ProjectionOwnerFeedCursor, ProjectionFeedError> {
+        self.ensure_usable().map_err(ProjectionFeedError::Source)?;
+        ProjectionOwnerFeedCursor::capture(
+            &self.search_projection_graph_changes,
+            self.search_projection_change_log_start_epoch,
+            self.commit_epoch,
+            start_epoch,
+            limits,
+        )
     }
 
     pub fn search_projection_changes_after(
@@ -2015,6 +2073,15 @@ impl GraphStore {
                 .map(|change| change.mutation_id()),
             newest_retained_mutation_id: self
                 .search_projection_graph_changes
+                .last()
+                .map(|change| change.mutation_id()),
+            newest_projection_mutation_id: self
+                .search_projection_graph_changes
+                .iter()
+                .filter(|change| {
+                    change.operation_count() != 0
+                        || change.relational_primary_key_changes.requires_rebuild()
+                })
                 .last()
                 .map(|change| change.mutation_id()),
             first_rebuild_required_mutation_id: self
@@ -2204,6 +2271,7 @@ impl GraphStore {
             version_index: self.version_index.clone(),
             version_snapshot_pins: self.version_snapshot_pins.clone(),
             version_snapshot_pin: Some(self.version_snapshot_pins.pin(pin_epoch)),
+            read_dependency_readers: Arc::clone(&self.read_dependency_readers),
             nodes: self.nodes.clone(),
             relationships: self.relationships.clone(),
             basic_statistics: self.basic_statistics.clone(),

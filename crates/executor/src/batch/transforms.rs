@@ -78,7 +78,9 @@ pub(super) fn stream_filter_batches(
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
     if let PhysicalPlan::SeqNodeScan { variable, label } = input {
-        let filter = property_filter_from_predicate(predicate).ok();
+        let filter = predicate_references_only_variable(predicate, variable)
+            .then(|| property_filter_from_predicate(predicate).ok())
+            .flatten();
         return stream_node_scan_batches(
             variable,
             label,

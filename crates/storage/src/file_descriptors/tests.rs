@@ -1125,3 +1125,279 @@ fn cross_project_rename_admits_both_domains_before_mutation() {
     assert_eq!(source_project.project.metrics().open, 0);
     assert_eq!(destination_project.project.metrics().open, 0);
 }
+
+#[derive(Default)]
+struct ScopedReadControl {
+    admitted_bytes: Vec<u64>,
+    checkpoints: usize,
+    reject_admission: bool,
+    stop_after: Option<usize>,
+}
+impl crate::file_io::ReadAdmissionControl for ScopedReadControl {
+    fn admit_validation(&mut self, bytes: u64) -> std::io::Result<()> {
+        self.admitted_bytes.push(bytes);
+        if self.reject_admission {
+            return Err(std::io::Error::other("validation refused"));
+        }
+        Ok(())
+    }
+    fn checkpoint(&mut self) -> std::io::Result<()> {
+        self.checkpoints += 1;
+        if self
+            .stop_after
+            .is_some_and(|limit| self.checkpoints >= limit)
+        {
+            return Err(std::io::Error::other("validation stopped"));
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn scoped_cold_read_admits_identity_and_warm_read_does_not_repeat_validation() {
+    let fixture = Fixture::new(2);
+    let bytes = vec![b'x'; 160 * 1024];
+    let binding = fixture.binding("physical", &bytes);
+    let alias = fixture.root.join("logical");
+    fixture
+        .project
+        .immutable_handles
+        .bind(&alias, binding)
+        .unwrap();
+    let logical = File::open(&alias).unwrap();
+    assert_eq!(fixture.project.metrics().open, 0);
+    for expected_validation in [bytes.len() as u64, 0] {
+        let mut control = ScopedReadControl::default();
+        let (read, validation) = logical
+            .with_admitted_read(&mut control, |file| {
+                assert_eq!(file.metadata()?.len(), bytes.len() as u64);
+                let mut read = Vec::new();
+                file.read_to_end(&mut read)?;
+                Ok(read)
+            })
+            .unwrap();
+        assert_eq!(read, bytes);
+        assert_eq!(validation, expected_validation);
+        assert_eq!(
+            control.admitted_bytes,
+            if expected_validation == 0 {
+                vec![]
+            } else {
+                vec![expected_validation]
+            }
+        );
+        assert!(control.checkpoints >= bytes.len() / 8192);
+        assert_eq!(fixture.project.metrics().cached_handles, 1);
+        assert_eq!(fixture.project.metrics().open, 1);
+    }
+}
+
+#[test]
+fn scoped_cold_read_refusal_and_mid_validation_stop_do_not_cache_a_partial_identity() {
+    let fixture = Fixture::new(2);
+    let bytes = vec![b'x'; 160 * 1024];
+    let binding = fixture.binding("physical", &bytes);
+    let alias = fixture.root.join("logical");
+    fixture
+        .project
+        .immutable_handles
+        .bind(&alias, binding)
+        .unwrap();
+    let logical = File::open(&alias).unwrap();
+    for stop in [false, true] {
+        let mut control = ScopedReadControl {
+            reject_admission: !stop,
+            // Opening and coalescing boundaries precede validation. The sixth
+            // checkpoint is after the first 64 KiB identity chunk.
+            stop_after: stop.then_some(6),
+            ..Default::default()
+        };
+        let result = logical.with_admitted_read(&mut control, |_| -> std::io::Result<()> {
+            panic!("partial or refused identity must not reach the consumer")
+        });
+        assert!(result.is_err());
+        assert_eq!(control.admitted_bytes, [bytes.len() as u64]);
+        assert_eq!(fixture.project.metrics().cached_handles, 0);
+        assert_eq!(fixture.project.metrics().open, 0);
+    }
+    // A stopped cold read must leave a complete subsequent retry possible.
+    let mut control = ScopedReadControl::default();
+    let (_, validation) = logical
+        .with_admitted_read(&mut control, |file| {
+            let mut prefix = [0; 8];
+            file.read_exact(&mut prefix)?;
+            assert_eq!(&prefix, b"xxxxxxxx");
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(validation, bytes.len() as u64);
+}
+
+#[test]
+fn scoped_read_retains_selected_native_file_across_path_replacement() {
+    let fixture = Fixture::new(2);
+    let original = b"selected snapshot";
+    let binding = fixture.binding("physical", original);
+    let physical = binding.object_path.clone();
+    let alias = fixture.root.join("logical");
+    fixture
+        .project
+        .immutable_handles
+        .bind(&alias, binding)
+        .unwrap();
+    let logical = File::open(&alias).unwrap();
+    let mut control = ScopedReadControl::default();
+    let (bytes, _) = logical
+        .with_admitted_read(&mut control, |file| {
+            std::fs::rename(&physical, fixture.root.join("held"))?;
+            std::fs::write(&physical, b"replaced snapshot")?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        })
+        .unwrap();
+    assert_eq!(bytes, original);
+    assert_ne!(std::fs::read(physical).unwrap(), original);
+    assert_eq!(fixture.project.metrics().open, 1);
+}
+
+#[test]
+fn scoped_concurrent_readers_keep_independent_cursors_and_pin_the_native_lease() {
+    let fixture = Fixture::new(2);
+    let bytes: Vec<u8> = (0..20000).map(|index| (index % 251) as u8).collect();
+    let active = fixture.binding("active", &bytes);
+    let idle = fixture.binding("idle", b"idle");
+    let alias = fixture.root.join("logical");
+    fixture
+        .project
+        .immutable_handles
+        .bind(&alias, active)
+        .unwrap();
+    let logical = Arc::new(File::open(&alias).unwrap());
+    let context = context_for_path(&fixture.root).unwrap();
+    drop(
+        fixture
+            .project
+            .immutable_handles
+            .get(&idle, &context)
+            .unwrap(),
+    );
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let readers: Vec<_> = (0..2)
+        .map(|_| {
+            let logical = logical.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                logical
+                    .with_admitted_read(&mut ScopedReadControl::default(), |file| {
+                        barrier.wait();
+                        barrier.wait();
+                        let mut prefix = vec![0; 10000];
+                        file.read_exact(&mut prefix)?;
+                        file.read_to_end(&mut prefix)?;
+                        Ok(prefix)
+                    })
+                    .unwrap()
+                    .0
+            })
+        })
+        .collect();
+    barrier.wait();
+    let pressure = File::create(fixture.root.join("pressure")).unwrap();
+    assert_eq!(fixture.project.metrics().cached_handles, 1);
+    assert_eq!(fixture.project.metrics().cache_evictions, 1);
+    assert_eq!(fixture.project.metrics().open, 2);
+    barrier.wait();
+    for reader in readers {
+        assert_eq!(reader.join().unwrap(), bytes);
+    }
+    drop(pressure);
+    assert_eq!(fixture.project.metrics().open, 1);
+}
+
+#[test]
+fn pinned_admitted_file_keeps_one_counted_native_lease_until_all_copies_drop() {
+    let fixture = Fixture::new(2);
+    let active = fixture.binding("active-pinned", b"pinned selected input");
+    let idle = fixture.binding("idle-pinned", b"idle");
+    let alias = fixture.root.join("logical-pinned");
+    fixture
+        .project
+        .immutable_handles
+        .bind(&alias, active)
+        .unwrap();
+    let logical = File::open(&alias).unwrap();
+    let mut control = ScopedReadControl::default();
+    let mut pinned = logical.pin_admitted(&mut control).unwrap();
+    assert_eq!(control.admitted_bytes, [21]);
+    let context = context_for_path(&fixture.root).unwrap();
+    drop(
+        fixture
+            .project
+            .immutable_handles
+            .get(&idle, &context)
+            .unwrap(),
+    );
+    let pressure = File::create(fixture.root.join("pinned-pressure")).unwrap();
+    assert_eq!(fixture.project.metrics().cached_handles, 1);
+    assert_eq!(fixture.project.metrics().open, 2);
+    let mut copy = pinned.try_clone().unwrap();
+    assert_eq!(
+        fixture.project.metrics().open,
+        2,
+        "a pinned copy shares the admitted descriptor"
+    );
+    assert_eq!(pinned.metadata().unwrap().len(), 21);
+    let mut bytes = [0; 21];
+    pinned.read_exact(&mut bytes).unwrap();
+    assert_eq!(&bytes, b"pinned selected input");
+    copy.seek(SeekFrom::Start(0)).unwrap();
+    let mut refuse_cold = ScopedReadControl {
+        reject_admission: true,
+        ..Default::default()
+    };
+    let (prefix, validation) = copy
+        .with_admitted_read(&mut refuse_cold, |file| {
+            let mut prefix = [0; 6];
+            file.read_exact(&mut prefix)?;
+            Ok(prefix)
+        })
+        .unwrap();
+    assert_eq!(&prefix, b"pinned");
+    assert_eq!(validation, 0);
+    assert!(refuse_cold.admitted_bytes.is_empty());
+    drop(pinned);
+    assert_eq!(fixture.project.metrics().open, 2);
+    drop(copy);
+    let second_pressure = File::create(fixture.root.join("second-pinned-pressure")).unwrap();
+    assert_eq!(fixture.project.metrics().cached_handles, 0);
+    assert_eq!(fixture.project.metrics().open, 2);
+    drop(second_pressure);
+    drop(pressure);
+    assert_eq!(fixture.project.metrics().open, 0);
+}
+
+#[test]
+fn pinned_cold_file_refusal_and_stop_leave_no_native_lease_or_partial_cache() {
+    let fixture = Fixture::new(2);
+    let bytes = vec![b'x'; 160 << 10];
+    let binding = fixture.binding("pin-refused", &bytes);
+    let alias = fixture.root.join("logical-pin-refused");
+    fixture
+        .project
+        .immutable_handles
+        .bind(&alias, binding)
+        .unwrap();
+    for stop in [false, true] {
+        let logical = File::open(&alias).unwrap();
+        let mut control = ScopedReadControl {
+            reject_admission: !stop,
+            stop_after: stop.then_some(6),
+            ..Default::default()
+        };
+        assert!(logical.pin_admitted(&mut control).is_err());
+        assert_eq!(control.admitted_bytes, [bytes.len() as u64]);
+        assert_eq!(fixture.project.metrics().cached_handles, 0);
+        assert_eq!(fixture.project.metrics().open, 0);
+    }
+}

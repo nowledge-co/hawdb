@@ -6,6 +6,11 @@ fn critical_preparation_wait_returns_busy_without_resetting_its_deadline() {
 }
 
 #[test]
+fn critical_discard_wait_returns_busy_without_resetting_its_deadline() {
+    assert_critical_wait_returns_busy(Phase::Discarding);
+}
+
+#[test]
 fn critical_release_wait_returns_busy_without_resetting_its_deadline() {
     assert_critical_wait_returns_busy(Phase::Releasing);
 }

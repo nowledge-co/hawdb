@@ -1805,8 +1805,16 @@ impl GraphStore {
                 self.validate_version_writes(&version_writes, read_epoch)?;
             }
             let authoritative_index = self.authoritative_relational_constraint_index()?;
-            let index_limits = self.relational_index_live_capture_limits();
-            let row_limits = self.relational_row_live_capture_limits();
+            // Captured old index membership plus new row values also supply
+            // read-only prefix invalidation, including payload-only updates.
+            let tracking = self.tracks_read_dependencies()
+                && !version_writes.contains_key(&VersionKey::Database);
+            let index_limits = self
+                .relational_index_live_capture_limits()
+                .or_else(|| tracking.then(Default::default));
+            let row_limits = self
+                .relational_row_live_capture_limits()
+                .or_else(|| tracking.then(Default::default));
             let staged = if self.relational_state.canonical_row_metadata_only() {
                 let index = authoritative_index.as_ref().ok_or_else(|| {
                     HawDBError::StorageIntegrity(
@@ -1913,6 +1921,14 @@ impl GraphStore {
         if let Some(read_epoch) = mvcc_read_epoch {
             self.validate_version_writes(&version_writes, read_epoch)?;
         }
+        // No writer validation may consume read-only summaries. All the final
+        // mixed destinations above have now been validated; admission is pre-WAL.
+        self.extend_relational_read_invalidation_stamps(
+            staged_relational_state.as_ref(),
+            staged_relational_index_capture.as_ref(),
+            staged_relational_row_capture.as_ref(),
+            &mut version_writes,
+        )?;
         let staged_relational_index_publication = self.stage_relational_index_live_publication(
             next_commit_epoch,
             staged_relational_index_capture,
@@ -1932,12 +1948,22 @@ impl GraphStore {
         self.poison_on_storage_error(&row_publication_requirement);
         row_publication_requirement?;
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
+        // Writer validation above consumes destinations only. Domain summaries
+        // invalidate prepared reads and must not serialize disjoint writers.
+        // Admission still completes before WAL; install all stamps atomically.
+        self.extend_read_invalidation_stamps(&working_catalog, &ops, &mut version_writes)?;
         let staged_versions = self
             .stage_version_index(&version_writes, next_commit_epoch)
             .or_else(|_| {
                 self.reclaim_version_history();
                 self.stage_version_index(&version_writes, next_commit_epoch)
             })?;
+        let staged_projection_change = self.prepare_search_projection_changes_for_ops(
+            catalog,
+            next_commit_epoch,
+            &ops,
+            staged_relational_primary_key_changes,
+        )?;
         let wal_result =
             if preserve_single_create_wal && let [op @ WalOp::CreateNode { .. }] = ops.as_slice() {
                 self.append_durable_wal_single(op.clone())
@@ -1947,12 +1973,7 @@ impl GraphStore {
         self.poison_on_storage_error(&wal_result);
         wal_result?;
         *catalog = working_catalog;
-        self.record_search_projection_changes_for_ops(
-            catalog,
-            next_commit_epoch,
-            &ops,
-            staged_relational_primary_key_changes,
-        );
+        self.install_search_projection_change(staged_projection_change);
         for op in ops {
             if matches!(op, WalOp::Relational { .. }) {
                 self.relational_state = staged_relational_state
@@ -2112,10 +2133,12 @@ impl GraphStore {
     }
 
     pub(super) fn append_durable_wal_single(&mut self, op: WalOp) -> Result<()> {
-        if self.durable.is_none() {
-            return Ok(());
-        }
+        let rebuild =
+            search_projection_capture::projection_wal_requires_rebuild(std::slice::from_ref(&op));
         let result = (|| {
+            if self.durable.is_none() {
+                return Ok(());
+            }
             let pressure_signals = self.wal_admission_signals(std::slice::from_ref(&op))?;
             self.durable
                 .as_mut()
@@ -2123,14 +2146,23 @@ impl GraphStore {
                 .append_single(op, pressure_signals)
         })();
         self.poison_on_storage_error(&result);
-        result
+        result?;
+        if rebuild {
+            self.install_search_projection_change(
+                search_projection_capture::PreparedSearchProjectionChange::Gap(
+                    self.commit_epoch + 1,
+                ),
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn append_durable_wal_batch(&mut self, ops: &[WalOp]) -> Result<()> {
-        if self.durable.is_none() {
-            return Ok(());
-        }
+        let rebuild = search_projection_capture::projection_wal_requires_rebuild(ops);
         let result = (|| {
+            if self.durable.is_none() {
+                return Ok(());
+            }
             let pressure_signals = self.wal_admission_signals(ops)?;
             self.durable
                 .as_mut()
@@ -2138,7 +2170,15 @@ impl GraphStore {
                 .append_batch(ops.to_vec(), pressure_signals)
         })();
         self.poison_on_storage_error(&result);
-        result
+        result?;
+        if rebuild {
+            self.install_search_projection_change(
+                search_projection_capture::PreparedSearchProjectionChange::Gap(
+                    self.commit_epoch + 1,
+                ),
+            );
+        }
+        Ok(())
     }
 
     fn wal_admission_signals(&self, ops: &[WalOp]) -> Result<StoragePressureSignals> {
@@ -2453,6 +2493,12 @@ fn version_key_kind(key: &VersionKey) -> &'static str {
     match key {
         VersionKey::Database => "database",
         VersionKey::Schema => "schema",
+        VersionKey::ReadBarrier => "read_barrier",
+        VersionKey::ReadNodeDomain(_) => "read_node_domain",
+        VersionKey::ReadRelationshipDomain(_) => "read_relationship_domain",
+        VersionKey::ReadRelationalTableDomain(_) => "read_relational_table_domain",
+        VersionKey::ReadNodeProperty { .. } => "read_node_property",
+        VersionKey::ReadRelationalIndexPrefix { .. } => "read_relational_index_prefix",
         VersionKey::GraphNode(_) => "graph_node",
         VersionKey::GraphRelationship(_) => "graph_relationship",
         VersionKey::GraphAdjacency { .. } => "graph_adjacency",

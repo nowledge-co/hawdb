@@ -31,7 +31,7 @@ pub(crate) fn visit(
         control.check()?;
         let count = match reader.read(&mut buffer[pending..pending + BUFFER_BYTES]) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => result?,
+            result => result.map_err(crate::build_memory::read::io_error)?,
         };
         control.check()?;
         total = total

@@ -23,6 +23,7 @@ pub mod logical_type;
 pub mod projection;
 pub mod regex;
 pub mod schema;
+mod shared_allocation;
 pub mod time;
 pub mod uuidv7;
 pub mod value;
@@ -61,3 +62,6 @@ pub use schema::{
 pub use uuid::Uuid;
 pub use uuidv7::generate_uuidv7;
 pub use value::{Value, ValueRef};
+
+#[doc(hidden)]
+pub use shared_allocation::SharedAllocation;

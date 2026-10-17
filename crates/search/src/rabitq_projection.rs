@@ -96,7 +96,7 @@ pub struct RaBitQCandidateProjection {
 // couple the search facade to scan buffers and per-segment execution details.
 #[derive(Debug)]
 enum RaBitQCandidateProjectionStorage {
-    InMemory(InMemoryProjection),
+    InMemory(Box<InMemoryProjection>),
     File(FileProjection),
 }
 
@@ -153,7 +153,7 @@ impl RaBitQCandidateProjection {
         let projection = builder.finish().map_err(projection_error)?;
         let build_report = projection.build_report().clone();
         Ok(Some(Self {
-            storage: RaBitQCandidateProjectionStorage::InMemory(projection),
+            storage: RaBitQCandidateProjectionStorage::InMemory(Box::new(projection)),
             ordinal_to_document_id,
             document_to_ordinal,
             build_report,
@@ -488,8 +488,9 @@ fn classify_load_error(error: ProjectionError) -> RaBitQCandidateProjectionLoadE
         ProjectionError::Io(error)
             if matches!(error.kind(), std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof)
     );
+    let admission = matches!(&error, ProjectionError::Admission(_));
     let error = projection_error(error);
-    if matches!(error, HawDBError::FileDescriptors(_)) {
+    if admission || matches!(error, HawDBError::FileDescriptors(_)) {
         RaBitQCandidateProjectionLoadError::Resource(error)
     } else if corrupt {
         RaBitQCandidateProjectionLoadError::Corrupt(error)
@@ -506,6 +507,7 @@ fn projection_error(error: ProjectionError) -> HawDBError {
 // typed IO cause. Keep their diagnostic context separate from classification.
 pub(crate) fn map_projection_error(error: ProjectionError, context: &str) -> HawDBError {
     match error {
+        ProjectionError::Admission(error) => error,
         ProjectionError::Io(error) => HawDBError::from_storage_error(error),
         error => HawDBError::Storage(format!("{context}: {error}")),
     }

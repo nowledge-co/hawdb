@@ -153,7 +153,6 @@ mod tests {
     use super::*;
     use crate::{SearchDocument, SearchOutOfCoreGenerationWriter};
     use hawdb_core::RuntimeMemoryReservation;
-    use std::sync::Arc;
 
     fn reader(name: &str) -> SearchOutOfCoreReader {
         let root = crate::out_of_core::tests::test_dir(name);
@@ -183,24 +182,20 @@ mod tests {
         let denied = BuildMemory::new(&denied_task).unwrap();
         assert!(ValidatedArtifacts::capture(&reader, &denied, &denied_task).is_err());
         assert_eq!(denied.ledger.snapshot().used_bytes, 0);
-        assert_eq!(Arc::strong_count(&reader.segments[0].descriptor), 1);
+        assert_eq!(reader.segments[0].0.strong_count(), 1);
+        let original = reader.segments[0].clone();
 
         let cache = ValidatedArtifacts::capture(&reader, &memory, &task).unwrap();
         assert!(memory.ledger.snapshot().used_bytes > 0);
-        assert!(Arc::ptr_eq(
-            &reader.segments[0].descriptor,
+        assert!(std::ptr::eq(
+            &original.descriptor,
             &cache.segments[0].descriptor
         ));
-        assert!(Arc::ptr_eq(
-            &reader.segments[0].layout,
-            &cache.segments[0].layout
-        ));
-        assert!(Arc::ptr_eq(
-            &reader.segments[0].payload,
-            &cache.segments[0].payload
-        ));
+        assert!(std::ptr::eq(&original.layout, &cache.segments[0].layout));
+        assert!(std::ptr::eq(&original.payload, &cache.segments[0].payload));
         let root = reader.root.clone();
         let analyzer = reader.analyzer_lexicon.clone();
+        drop(original);
         drop(reader);
         let generations =
             super::super::published_artifact_generations_with_reuse(&root, &analyzer, Some(&cache))

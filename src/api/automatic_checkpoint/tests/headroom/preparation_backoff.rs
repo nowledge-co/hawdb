@@ -171,3 +171,97 @@ fn preparation_deadline_cannot_bypass_capacity_or_publication_fences() {
         0
     );
 }
+
+#[test]
+fn cleanup_capacity_waits_before_admitting_another_writer() {
+    let fixture = Fixture::new();
+    let (db, _suspension, _) = seeded(&fixture);
+    let debt = db
+        .runtime
+        .peek()
+        .unwrap()
+        .store
+        .checkpoint_debt_snapshot()
+        .unwrap();
+    for phase in [Phase::Discarding, Phase::Releasing] {
+        let control = Arc::new(Control::default());
+        let (observation, observed) = mpsc::channel();
+        {
+            let mut state = control.lock().unwrap();
+            state.phase = phase;
+            let mut debt = debt;
+            debt.delta_bytes = debt.max_delta_bytes.unwrap() * 85 / 100;
+            state.debt = Some(debt);
+            state.frontend_wait_probe = Some(observation.clone());
+        }
+        let caller_control = control.clone();
+        let (finished, completion) = mpsc::channel();
+        let caller = std::thread::spawn(move || {
+            let result = caller_control.lock_frontend().map(drop);
+            // Report a completed admission on the same observation channel.
+            // A missing capacity fence therefore fails without depending on a
+            // sleep or on whether the operating system scheduled this thread.
+            observation.send(Phase::Idle).unwrap();
+            finished.send(result).unwrap();
+        });
+        let first = observed.recv_timeout(Duration::from_secs(15));
+        let early = completion.try_recv();
+        {
+            let mut state = control.lock().unwrap();
+            state.phase = Phase::Idle;
+        }
+        control.changed.notify_all();
+        let result = match early {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => {
+                completion.recv_timeout(Duration::from_secs(15)).unwrap()
+            }
+            Err(error) => panic!("writer disconnected: {error}"),
+        };
+        caller.join().unwrap();
+        assert_eq!(
+            first.unwrap(),
+            phase,
+            "capacity admission bypassed {phase:?}"
+        );
+        result.unwrap();
+    }
+}
+
+#[test]
+fn cleanup_with_capacity_still_admits_a_writer_before_resource_release() {
+    let fixture = Fixture::new();
+    let (db, _suspension, _) = seeded(&fixture);
+    let debt = db
+        .runtime
+        .peek()
+        .unwrap()
+        .store
+        .checkpoint_debt_snapshot()
+        .unwrap();
+    for phase in [Phase::Discarding, Phase::Releasing] {
+        let control = Arc::new(Control::default());
+        {
+            let mut state = control.lock().unwrap();
+            state.phase = phase;
+            let mut debt = debt;
+            debt.delta_bytes = debt.max_delta_bytes.unwrap() * 75 / 100;
+            state.debt = Some(debt);
+        }
+        let caller_control = control.clone();
+        let (finished, completion) = mpsc::channel();
+        let caller = std::thread::spawn(move || {
+            finished
+                .send(caller_control.lock_frontend().map(drop))
+                .unwrap();
+        });
+        let result = completion.recv_timeout(Duration::from_secs(1));
+        let still_cleaning = control.lock().unwrap().phase;
+        // Release even a faulty over-broad fence before checking the result.
+        control.lock().unwrap().phase = Phase::Idle;
+        control.changed.notify_all();
+        caller.join().unwrap();
+        result.unwrap().unwrap();
+        assert_eq!(still_cleaning, phase);
+    }
+}

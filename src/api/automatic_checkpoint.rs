@@ -397,11 +397,13 @@ impl Control {
                 capacity_work_progress = work_progress;
                 capacity_deadline = None;
             }
-            // Releasing old COW owners runs off the writer gate. It may take
-            // long enough for new deltas to consume the remaining capacity;
-            // only writers with room may bypass that resource release.
-            let waits_for_capacity = matches!(state.phase, Phase::Preparing | Phase::Releasing)
-                && !state.sync_group_active
+            // Releasing old COW owners runs off the writer gate. Discarding
+            // an abandoned preparation can also overlap incoming writes;
+            // only writers with room may bypass either resource cleanup.
+            let waits_for_capacity = matches!(
+                state.phase,
+                Phase::Preparing | Phase::Discarding | Phase::Releasing
+            ) && !state.sync_group_active
                 && preparation_needs_capacity(&state);
             let capacity_remaining = if waits_for_capacity {
                 let deadline = capacity_deadline
@@ -1681,6 +1683,9 @@ fn needs_headroom(state: &State) -> bool {
     })
 }
 
+// Cleanup can still own the admission needed by the next checkpoint. Letting
+// a near-capacity writer bypass it can turn an otherwise fitting small write
+// into a storage-pressure refusal while the owner cannot start a new attempt.
 fn preparation_needs_capacity(state: &State) -> bool {
     let Some(debt) = state.debt else {
         return false;

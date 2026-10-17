@@ -16,21 +16,35 @@
 
 use super::io::GenerationIo;
 use crate::build_control::{checkpoint, json};
-use crate::build_memory::{checked_add as add, checked_mul as mul, directory, BuildMemory};
+use crate::build_memory::{checked_mul as mul, directory, BuildMemory};
 use crate::lexical_projection::admitted_manifest_generation;
 use crate::out_of_core::{
-    SearchOutOfCoreManifestEnvelope, MAX_OUT_OF_CORE_MANIFEST_BYTES, OUT_OF_CORE_MANIFEST_FILE,
+    SearchOutOfCoreManifestBody, SearchOutOfCoreManifestEnvelope, MAX_OUT_OF_CORE_MANIFEST_BYTES,
+    OUT_OF_CORE_MANIFEST_FILE,
 };
 use crate::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_storage::file_io as fs;
 use std::path::Path;
 
+pub(super) struct ActiveIdentity {
+    pub(super) generation: u64,
+    pub(super) source_graph_commit_epoch: Option<u64>,
+}
+
 pub(super) fn active(
     root: &Path,
     memory: &BuildMemory,
     task: &RuntimeTaskContext,
 ) -> Result<Option<u64>> {
+    Ok(active_identity(root, memory, task)?.map(|identity| identity.generation))
+}
+
+pub(super) fn active_identity(
+    root: &Path,
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+) -> Result<Option<ActiveIdentity>> {
     let io = GenerationIo::new(memory, task);
     let manifest = io.path(root, Path::new(OUT_OF_CORE_MANIFEST_FILE))?;
     // Preserve the existing absent-path behavior; every materialized file is
@@ -39,7 +53,7 @@ pub(super) fn active(
         return Ok(None);
     }
     let bytes = io.read(&manifest, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
-    let capacity = add(json::decode_capacity(&bytes.bytes, 0, 0, task)?, 3 * 128)?;
+    let capacity = SearchOutOfCoreManifestBody::decode_capacity(&bytes.bytes, task)?;
     let _decode = memory.spool.reserve(capacity)?;
     let envelope: SearchOutOfCoreManifestEnvelope =
         serde_json::from_slice(&bytes.bytes).map_err(|error| {
@@ -53,7 +67,10 @@ pub(super) fn active(
     }
     envelope.body.validate_names()?;
     checkpoint(task)?;
-    Ok(Some(envelope.body.generation))
+    Ok(Some(ActiveIdentity {
+        generation: envelope.body.generation,
+        source_graph_commit_epoch: envelope.body.source_graph_commit_epoch,
+    }))
 }
 
 pub(super) fn next(

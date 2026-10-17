@@ -133,6 +133,17 @@ impl LexicalProjectionReader {
     /// callers from retaining a complete artifact ID set merely to resolve a
     /// newer segment's version of a document.
     pub(crate) fn probe_document_id(&self, document_id: &str) -> Result<DocumentIdProbe> {
+        self.probe_document_id_with_admission(document_id, None)
+    }
+
+    pub(crate) fn probe_document_id_with_admission(
+        &self,
+        document_id: &str,
+        admission: Option<(&crate::build_memory::read::ReadAdmission<'_>, u64)>,
+    ) -> Result<DocumentIdProbe> {
+        let context =
+            admission.map(|(admission, _)| super::QueryContext::from_read_admission(admission));
+        super::query_context::check(context)?;
         let blocks = &self.manifest.blocks;
         let index = blocks.partition_point(|block| {
             block.kind == BlockKind::Documents && block.max_key.as_str() < document_id
@@ -150,9 +161,29 @@ impl LexicalProjectionReader {
             });
         }
 
-        let bytes = self.read_block(block)?;
+        let _decode = admission
+            .map(|(admission, _)| admission.scratch(self.document_id_probe_memory_bytes()?))
+            .transpose()?;
+        if block.length > self.config.max_block_bytes.get() {
+            return Err(HawDBError::Storage(
+                "lexical document block exceeds read budget".into(),
+            ));
+        }
+        let bytes = match admission {
+            Some((admission, maximum)) => admission.read_file_range(
+                &self.file,
+                self.manifest.artifact_len,
+                maximum,
+                crate::build_memory::read::FileRange {
+                    offset: block.offset,
+                    length: block.length,
+                    checksum: block.checksum,
+                },
+            )?,
+            None => crate::build_memory::read::ReadBytes::unaccounted(self.read_block(block)?),
+        };
         let bytes_read = bytes.len() as u64;
-        validate_document_block(&bytes, self.manifest.generation, block)?;
+        validate_document_block_with_context(&bytes, self.manifest.generation, block, context)?;
         let mut cursor = SliceCursor::new(&bytes);
         let count = decode_block_header(
             &mut cursor,
@@ -161,6 +192,7 @@ impl LexicalProjectionReader {
             BlockKind::Documents,
         )?;
         for _ in 0..count {
+            super::query_context::check(context)?;
             let id = cursor.string(1024 * 1024)?;
             let ordering = id.as_str().cmp(document_id);
             if ordering.is_ge() {
@@ -183,11 +215,21 @@ pub(super) fn validate_document_block(
     generation: u64,
     descriptor: &BlockDescriptor,
 ) -> Result<()> {
+    validate_document_block_with_context(bytes, generation, descriptor, None)
+}
+
+fn validate_document_block_with_context(
+    bytes: &[u8],
+    generation: u64,
+    descriptor: &BlockDescriptor,
+    context: Option<super::QueryContext<'_>>,
+) -> Result<()> {
     let mut cursor = SliceCursor::new(bytes);
     let count = decode_block_header(&mut cursor, generation, descriptor, BlockKind::Documents)?;
     let mut first = None;
     let mut previous = None;
     for _ in 0..count {
+        super::query_context::check(context)?;
         let id = cursor.string(1024 * 1024)?;
         let _length = cursor.u32()?;
         if previous

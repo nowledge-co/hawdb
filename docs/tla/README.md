@@ -1529,6 +1529,49 @@ transactions, and safe version-history pruning. Its
 [proof and source mapping](MVCC_VALIDATION_PROOF.md) document seven negative
 controls, reachability probes, and the limits of the finite abstraction. The
 older transaction model and its recorded results remain unchanged. The
+[`HawDBVersionedProjectionPublication.tla`](HawDBVersionedProjectionPublication.tla)
+model specifies pinned preparation, complete point/scan dependencies, instance
+and target-incarnation checks, a publication fence, durable source/artifact
+closure, cancellation, GC and lost-response recovery. Its
+[argument and controls](VERSIONED_PROJECTION_PUBLICATION_PROOF.md) distinguish
+the finite protocol evidence from the native integration still required by
+#231/#232. The
+[`HawDBIndexedProjectionReadValidation.tla`](HawDBIndexedProjectionReadValidation.tla)
+checks exact declared scalar-index read footprints against unpruned history and
+query results, including delayed query selection after capture, absent keys,
+payload changes, domain fallback, OR/bounded-phase qualification and pruning.
+Its [collector argument and ten controls](INDEXED_PROJECTION_READ_VALIDATION_PROOF.md)
+separate the qualified native paths from the remaining query families. The
+[`HawDBRelationalProjectionReadValidation.tla`](HawDBRelationalProjectionReadValidation.tla)
+checks complete composite primary-key reads against an unpruned write history
+and captured/live query results, including absence, delayed first SQL statement,
+OR/partial fallback, broad/schema barriers, ABA, pin pruning and shared statement
+refusal. Its [argument and ten controls](RELATIONAL_PROJECTION_READ_VALIDATION_PROOF.md)
+map the existing writer identities, bounded SQL hydration and remaining query/
+embedded-owner obligations. The
+[`HawDBAdjacencyProjectionReadValidation.tla`](HawDBAdjacencyProjectionReadValidation.tla)
+checks internal-ID roots and complete single-hop identities, including empty
+adjacency, both directions, false-to-true filters and canonical/live metadata.
+Its [conditional argument and eleven controls](ADJACENCY_PROJECTION_READ_VALIDATION_PROOF.md)
+map the bounded native collector while retaining the batch and Mem integration
+obligations. The
+[prepared graph hydration argument](PREPARED_SEARCH_GRAPH_HYDRATION_PROOF.md)
+adds local raw-property/label expressions and a bounded optional-query bridge to
+Search shaping, including first-edge dependencies when catalog types are absent.
+It does not certify complete changefeed coverage. The
+[`HawDBSearchPreparedPublication.tla`](HawDBSearchPreparedPublication.tla)
+checks two publishers preparing private candidates without retaining the root
+lease, exact valid/damaged selector revalidation, complete activation, consumer
+exclusion, stage/active GC, cancellation, crash and lost response. Its
+[argument and ten controls](SEARCH_PREPARED_PUBLICATION_PROOF.md) map the owned
+Search candidates and source-validated facade while retaining the outer-owner,
+batch-receipt, power-loss and activation-I/O qualification gaps. The
+[`HawDBProjectionSourceDurability.tla`](HawDBProjectionSourceDurability.tla)
+model distinguishes OS-visible complete WAL records, file/namespace durability
+and runtime knowledge, including relaxed commits, process reopen, grouped sync
+and explicit source barriers. Its [argument and eight controls](PROJECTION_SOURCE_DURABILITY_PROOF.md)
+cover the source-prefix assumption without claiming byte-level power-loss proof.
+The
 [`HawDBOptimisticCommitAdmission.tla`](HawDBOptimisticCommitAdmission.tla)
 model separately checks concurrent optimistic admission, exclusion against
 ordinary locks, permit lifetime, within-group conflict validation, sync-failure
@@ -2142,3 +2185,80 @@ loses already accepted work. Both have explicit manual Bazel negative-control
 targets and entries in `mutants/mutants.txt`. Native row-runtime regressions
 cover owned/borrowed callbacks, page/byte/row/overlay admission, parent resume,
 complete admitted results and callback unwind.
+
+Search cold preimage capture and full-prefix catch-up are described in
+[the change-capture argument](PROJECTION_CHANGE_CAPTURE_PROOF.md), including
+explicit gap/rebuild semantics and the source-durability binding prerequisite.
+
+The [Search batch coverage design model](SEARCH_BATCH_COVERAGE_PROOF.md) checks
+complete-interval private preparation and a stage-bound publication boundary.
+Its artifact-owning session and Mem integration remain unimplemented; the bounded feed primitive is now available.
+the linked specification includes a verified legacy partial-prefix failure.
+
+[Bounded pinned feed enumeration](PROJECTION_FEED_CURSOR_PROOF.md) maps the
+implemented graph/relational cursor and tracked callback context to its finite
+admission/prefix model. Enumeration does not authorize staged output or a watermark.
+
+## Consumer mutation custody
+
+`HawDBConsumerMutationCustody` checks revocation of moved mutation capabilities,
+reference conservation, exclusion of later operations while admitted methods
+remain live, and native lease retention after owner closure. Five controls
+exercise generation, closure, outstanding references, native pins and owner
+association. See [the source argument and finite-proof limits](CONSUMER_MUTATION_CUSTODY_PROOF.md).
+
+## Consumer directory relocation
+
+`HawDBConsumerDirectoryRelocation` checks path/lease agreement after rename,
+revocation on later synchronization failure and retention of uncertain output.
+Four negative controls exercise stale paths, failed-owner reuse, early native
+release and uncertain cleanup. See [the relocation source argument and limits](CONSUMER_DIRECTORY_RELOCATION_PROOF.md).
+
+## Shared reader retained capacity
+
+`HawDBSharedReaderCapacity` separates concurrent final-reference extraction,
+payload destruction, query refund, account-reference drop and host refund. The
+producer can close while readers retain memory; retained custody holds no active
+execution permit. Four controls reject early backing/ledger refunds, uncharged
+clone allocation and execution-slot retention. See the [source correspondence,
+conditional termination argument and finite-model limits](SHARED_READER_CAPACITY_PROOF.md).
+This does not certify complete governed reader construction or MVCC activation.
+
+
+`HawDBAdmittedNativeLease` models counted native input custody across cold
+validation, pinned logical copies, active read scopes, eviction and mapping
+completion. Its two-client graph has 385 distinct states. Four negative controls
+cover eviction of active leases, premature identity publication, an uncharged
+native open and a construction pin retained after mapped-reader return. See
+[the proof and qualification boundary](ADMITTED_NATIVE_LEASE_PROOF.md); cache heap
+ownership, root/GC authority, cumulative work and complete MVCC remain open.
+
+
+`HawDBBorrowedQueryCursor` checks serving execution independently of a retained
+immutable view's producer. Its two-query graph has 234 distinct states. Three
+controls reject task-only cursor creation, permit release before cursor close,
+and cancelled I/O delivery. See [the protocol and source correspondence](BORROWED_QUERY_CURSOR_PROOF.md).
+This finite safety model does not prove full closure admission, pairing of task
+and permit, native cancellation latency, GC or MVCC activation.
+
+
+`HawDBTargetReanalysisIo` checks capture, body, term and digest I/O scopes sharing
+one query slot. Its two-chunk finite graph has 32 distinct states. Two negative
+controls expose self-wait when capture or body I/O is retained across the next
+read. See [the safety argument and native correspondence](TARGET_REANALYSIS_IO_PROOF.md).
+This is not a proof of external wait fairness or global deadlock freedom.
+
+
+The private admitted root constructor connects these resource protocols to root,
+analyzer/configuration, manifest, segment/run collection and validation-index
+ownership. [Its conditional construction argument](ROOT_READER_CONSTRUCTION_PROOF.md)
+describes destruction and independent-child lifetimes, the public-conversion
+fence and native evidence. It is not a new model-checking result or a certificate
+of cold managed cache/registry ownership, source/GC custody or C-ready readiness.
+
+Projection freshness over shared native owner history is specified in
+[PROJECTION_FRESHNESS_PROOF.md](PROJECTION_FRESHNESS_PROOF.md).
+
+The proposed source-root reader/GC protocol and its required native refinement
+are recorded in [SOURCE_ROOT_CUSTODY_DESIGN.md](SOURCE_ROOT_CUSTODY_DESIGN.md).
+The finite model does not certify the current native cleanup implementation.

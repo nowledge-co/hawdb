@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub use hawdb_search::consumer::ConsumerPreparationLease as SearchProjectionConsumerPreparation;
 pub(super) use hawdb_search::projection_consumer::ConsumerRegistry;
 pub use hawdb_search::projection_consumer::{
     SearchProjectionConsumer, SearchProjectionConsumerCatchUpReport, SearchProjectionConsumerError,
@@ -33,6 +34,11 @@ use std::path::{Path, PathBuf};
 use SearchProjectionConsumerError as Error;
 use SearchProjectionConsumerRebuildReason as Reason;
 use SearchProjectionConsumerState as State;
+
+enum ReceiptPurpose {
+    CatchUp,
+    FreshPreparation,
+}
 
 impl Database {
     /// Initializes a complete application projection from one pinned source
@@ -241,6 +247,23 @@ impl Database {
         Ok(consumer)
     }
 
+    /// Reserves a registered target for preparation outside this source owner.
+    /// Competing consumer mutations defer; canonical source writes remain usable.
+    /// Expired or trimmed feeds still require a complete fresh-C replacement;
+    /// reservation does not restore delta catch-up readiness or certify C..E.
+    pub fn reserve_search_projection_consumer(
+        &self,
+        consumer: &mut SearchProjectionConsumer,
+    ) -> SearchProjectionConsumerResult<SearchProjectionConsumerPreparation> {
+        consumer.projection().require_operation_available()?;
+        self.consumer_writable_root()?;
+        self.validate_consumer_checkpoint(consumer, ReceiptPurpose::FreshPreparation)?;
+        consumer
+            .projection_mut()
+            .reserve_preparation()
+            .map_err(Into::into)
+    }
+
     pub fn catch_up_search_projection_consumer<F>(
         &mut self,
         consumer: &mut SearchProjectionConsumer,
@@ -255,6 +278,7 @@ impl Database {
             &SearchProjectionChangeBatch,
         ) -> Result<SearchProjectionRelationalDelta>,
     {
+        consumer.projection().require_operation_available()?;
         let root = self.consumer_writable_root()?;
         self.validate_consumer_receipt(consumer)?;
         self.runtime
@@ -334,6 +358,7 @@ impl Database {
         &mut self,
         consumer: &SearchProjectionConsumer,
     ) -> SearchProjectionConsumerResult<SearchProjectionConsumerStatus> {
+        consumer.projection().require_operation_available()?;
         let root = self.consumer_writable_root()?;
         self.validate_consumer_receipt(consumer)?;
         self.runtime
@@ -487,6 +512,14 @@ impl Database {
         &self,
         consumer: &SearchProjectionConsumer,
     ) -> SearchProjectionConsumerResult<()> {
+        self.validate_consumer_checkpoint(consumer, ReceiptPurpose::CatchUp)
+    }
+
+    fn validate_consumer_checkpoint(
+        &self,
+        consumer: &SearchProjectionConsumer,
+        purpose: ReceiptPurpose,
+    ) -> SearchProjectionConsumerResult<()> {
         let status = self.search_projection_consumer_status(consumer.id())?;
         let runtime = self.runtime.get()?;
         let record = runtime
@@ -494,6 +527,10 @@ impl Database {
             .records
             .get(consumer.id().as_str())
             .ok_or(Error::InvalidHandle)?;
+        if !consumer.projection().binding_is_valid() || consumer.projection().has_pending_mutation()
+        {
+            return Err(Error::RebuildRequired(Reason::UntrackedProjectionMutation));
+        }
         let binding = consumer.projection().binding();
         if Some(binding.database_uuid)
             != self
@@ -513,7 +550,14 @@ impl Database {
             return Err(Error::RebuildRequired(Reason::ProjectionIdentityMismatch));
         }
         if let State::RebuildRequired(reason) = status.state {
-            return Err(Error::RebuildRequired(reason));
+            let permits_fresh_c = matches!(purpose, ReceiptPurpose::FreshPreparation)
+                && matches!(
+                    &reason,
+                    Reason::Expired { .. } | Reason::RetentionLimitExceeded { .. }
+                );
+            if !permits_fresh_c {
+                return Err(Error::RebuildRequired(reason));
+            }
         }
         let receipt = consumer.projection().receipt();
         if receipt.binding.checkpoint_uuid.to_string() != record.checkpoint_uuid
@@ -522,9 +566,6 @@ impl Database {
             || receipt.source_epoch != record.durable_complete_through_epoch
         {
             return Err(Error::RebuildRequired(Reason::CheckpointMismatch));
-        }
-        if !consumer.projection().binding_is_valid() {
-            return Err(Error::RebuildRequired(Reason::UntrackedProjectionMutation));
         }
         let freshness = consumer.search_index().projection_freshness();
         if freshness.source_graph_commit_epoch != Some(receipt.source_epoch)

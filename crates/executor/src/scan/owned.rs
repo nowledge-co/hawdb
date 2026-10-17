@@ -54,6 +54,7 @@ pub(super) fn allocation_vector(
 struct ScanVisit {
     control: ScanControl,
     fallback_label: Option<Option<LabelId>>,
+    point_report: Option<ScanPruningReport>,
 }
 
 fn visit_full_nodes(
@@ -64,6 +65,35 @@ fn visit_full_nodes(
     consume: &mut dyn FnMut(NodeRecord, Box<dyn GraphReadAllocation>) -> Result<ScanControl>,
 ) -> Result<ScanVisit> {
     let exact_label = exact_scan_label_id(context.catalog, spec.label);
+    if let Some(values) = spec.property_filter.and_then(super::ids::filter_values) {
+        let candidates =
+            super::ids::Candidates::new(values, context.memory_account, context.task_context)?;
+        let labels = label_ids_for_pattern(context.catalog, spec.label);
+        let mut visited = 0;
+        let control = candidates.visit(
+            context.store,
+            labels.as_deref(),
+            context.task_context,
+            admit,
+            &mut |node, allocation| {
+                visited += 1;
+                consume(node, allocation)
+            },
+        )?;
+        return Ok(ScanVisit {
+            control,
+            fallback_label: None,
+            point_report: Some(super::ids::report(
+                context.store,
+                exact_label.flatten(),
+                values.len(),
+                visited,
+                0,
+                control,
+            )),
+        });
+    }
+
     if !context.store.is_out_of_core()
         && let Some(label_id) = exact_label
         && context
@@ -80,18 +110,21 @@ fn visit_full_nodes(
                 return Ok(ScanVisit {
                     control: ScanControl::Stop,
                     fallback_label: None,
+                    point_report: None,
                 });
             };
             if consume(node.into_owned(), allocation)? == ScanControl::Stop {
                 return Ok(ScanVisit {
                     control: ScanControl::Stop,
                     fallback_label: None,
+                    point_report: None,
                 });
             }
         }
         return Ok(ScanVisit {
             control: ScanControl::Continue,
             fallback_label: None,
+            point_report: None,
         });
     }
     let label_id = exact_label.flatten();
@@ -104,6 +137,7 @@ fn visit_full_nodes(
     Ok(ScanVisit {
         control,
         fallback_label: Some(label_id),
+        point_report: None,
     })
 }
 
@@ -121,6 +155,12 @@ fn record_fallback(
     observer: &dyn ExecutionObserver,
     emitted: usize,
 ) {
+    if let Some(report) = &visit.point_report {
+        let mut report = report.clone();
+        report.output_count = emitted;
+        report.filtered_out_count = report.candidate_count_before_filter.saturating_sub(emitted);
+        observer.record_scan_pruning_report(report);
+    }
     if let Some(label_id) = visit.fallback_label {
         let candidate_count = context.store.node_count_for_label(label_id);
         observer.record_scan_pruning_report(ScanPruningReport {

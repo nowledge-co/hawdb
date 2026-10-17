@@ -19,6 +19,7 @@ use std::io;
 
 #[derive(Debug)]
 pub enum ProjectionError {
+    Admission(hawdb_core::HawDBError),
     InvalidConfiguration(String),
     InvalidVector(String),
     DuplicateId(u64),
@@ -34,6 +35,7 @@ pub enum ProjectionError {
 impl Display for ProjectionError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Admission(error) => write!(formatter, "projection admission rejected: {error}"),
             Self::InvalidConfiguration(reason) => {
                 write!(formatter, "invalid vector projection configuration: {reason}")
             }
@@ -66,6 +68,7 @@ impl Display for ProjectionError {
 impl Error for ProjectionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Admission(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Serialization(error) => Some(error),
             Self::Cancelled(reason) => Some(reason),

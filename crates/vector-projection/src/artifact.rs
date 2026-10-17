@@ -19,6 +19,7 @@ use crate::model::{
     ProjectionManifest, QuantizedSegment, RaBitQBitWidth, SegmentDescriptor,
 };
 use crc32fast::Hasher;
+use hawdb_core::SharedAllocation;
 #[cfg(feature = "storage-io")]
 use hawdb_storage::file_io::try_exists as target_exists;
 #[cfg(feature = "storage-io")]
@@ -31,11 +32,22 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+
+mod admission;
+mod stream_verify;
+
+#[doc(hidden)]
+pub use admission::ProjectionReadAdmission;
 
 const FOOTER_MAGIC: &[u8; 8] = b"SKRQBF01";
 const FOOTER_BYTES: u64 = 8 + 4 + FOOTER_MAGIC.len() as u64;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_PROJECTION_MAP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 #[cfg(all(test, feature = "storage-io"))]
 thread_local! {
@@ -137,8 +149,7 @@ impl ProjectionWriter {
                 .map_err(|error| ProjectionError::Io(std::io::Error::other(error)))?;
             project.reserve_admission(2)?
         };
-        let mut projection = FileProjection::open(&self.temporary)?;
-        projection.path.clone_from(&self.target);
+        let projection = FileProjection::open_named(&self.temporary, &self.target)?;
         fs::rename(&self.temporary, &self.target)?;
         sync_parent(&self.target)?;
         self.finished = true;
@@ -213,35 +224,91 @@ impl Drop for ProjectionWriter {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct FileProjection {
+#[derive(Debug)]
+pub struct FileProjection<Memory = ()> {
+    contents: SharedAllocation<ProjectionContents<Memory>>,
+}
+
+#[derive(Debug)]
+struct ProjectionContents<Memory> {
     path: PathBuf,
     manifest: ProjectionManifest,
-    mmap: Arc<Mmap>,
+    mmap: Mmap,
+    // Payloads and their shared allocation die before either capacity owner.
+    _path_memory: Memory,
+    _metadata_memory: Memory,
+}
+
+impl<Memory> Clone for FileProjection<Memory> {
+    fn clone(&self) -> Self {
+        Self {
+            contents: self.contents.clone(),
+        }
+    }
 }
 
 impl FileProjection {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
+        let path = path.as_ref();
+        Self::open_named(path, path)
+    }
+
+    fn open_named(source: &Path, identity_path: &Path) -> Result<Self> {
         #[cfg(all(test, feature = "storage-io"))]
         if let Some(callback) = BEFORE_PROJECTION_OPEN.with(|slot| slot.replace(None)) {
             callback();
         }
-        let mut file = File::open(&path)?;
-        let file_bytes = file.metadata()?.len();
+        Self::open_admitted_file(File::open(source)?, identity_path, &admission::Unaccounted)
+    }
+
+    /// Constructs shared metadata under caller-supplied admission. The supplied
+    /// handle must already have native admission and an immutable lifetime.
+    /// `identity_path` is display metadata, not a source/binding certificate.
+    #[doc(hidden)]
+    pub fn open_admitted_file<A: ProjectionReadAdmission>(
+        input: File,
+        identity_path: &Path,
+        admission: &A,
+    ) -> Result<FileProjection<A::Retained>> {
+        admission.checkpoint()?;
+        let fixed = admission::add(
+            stream_verify::BUFFER_BYTES + 4096 + FOOTER_BYTES as usize,
+            std::mem::size_of::<ProjectionContents<A::Retained>>(),
+        )?;
+        let _open_scratch = admission.reserve_scratch(fixed)?;
+        let path_bytes = admission::mul(identity_path.as_os_str().as_encoded_bytes().len(), 2)?;
+        let allocation = admission::add(
+            std::mem::size_of::<ProjectionContents<A::Retained>>(),
+            admission::add(
+                2 * std::mem::size_of::<usize>(),
+                std::mem::align_of::<ProjectionContents<A::Retained>>(),
+            )?,
+        )?;
+        let path_memory = admission.reserve_retained(admission::add(path_bytes, allocation)?)?;
+        let path = identity_path.to_path_buf();
+        let mut file = input;
+        let file_bytes = {
+            let _io = admission.acquire_io()?;
+            file.metadata()?.len()
+        };
         if file_bytes < FOOTER_BYTES {
             return Err(ProjectionError::CorruptArtifact(
-                "artifact is shorter than the footer".to_string(),
+                "artifact is shorter than the footer".into(),
             ));
         }
-        file.seek(SeekFrom::End(-(FOOTER_BYTES as i64)))?;
-        let manifest_bytes = read_u64(&mut file)?;
-        let manifest_checksum = read_u32(&mut file)?;
-        let mut magic = [0u8; FOOTER_MAGIC.len()];
-        file.read_exact(&mut magic)?;
-        if &magic != FOOTER_MAGIC {
+        {
+            let _io = admission.acquire_io()?;
+            file.seek(SeekFrom::End(-(FOOTER_BYTES as i64)))?;
+        }
+        let mut footer = [0u8; FOOTER_BYTES as usize];
+        admission::read_exact(&mut file, &mut footer, admission)?;
+        let manifest_bytes =
+            u64::from_le_bytes(footer[..8].try_into().expect("fixed footer length"));
+        let manifest_checksum =
+            u32::from_le_bytes(footer[8..12].try_into().expect("fixed footer length"));
+        if &footer[12..] != FOOTER_MAGIC {
             return Err(ProjectionError::CorruptArtifact(
-                "footer magic mismatch".to_string(),
+                "footer magic mismatch".into(),
             ));
         }
         let manifest_offset = file_bytes
@@ -253,15 +320,23 @@ impl FileProjection {
         let manifest_len = usize::try_from(manifest_bytes).map_err(|_| {
             ProjectionError::CorruptArtifact("manifest length exceeds address space".to_string())
         })?;
-        file.seek(SeekFrom::Start(manifest_offset))?;
+        let _encoded_memory = admission.reserve_scratch(manifest_len)?;
         let mut encoded_manifest = vec![0u8; manifest_len];
-        file.read_exact(&mut encoded_manifest)?;
+        {
+            let _io = admission.acquire_io()?;
+            file.seek(SeekFrom::Start(manifest_offset))?;
+        }
+        admission::read_exact(&mut file, &mut encoded_manifest, admission)?;
         if crc32fast::hash(&encoded_manifest) != manifest_checksum {
             return Err(ProjectionError::CorruptArtifact(
                 "manifest checksum mismatch".to_string(),
             ));
         }
+        let plan = admission::DecodePlan::inspect(&encoded_manifest, admission)?;
+        let metadata_memory = admission.reserve_retained(plan.retained)?;
+        let _decode_scratch = admission.reserve_scratch(plan.scratch)?;
         let manifest: ProjectionManifest = serde_json::from_slice(&encoded_manifest)?;
+        admission.checkpoint()?;
         manifest.validate()?;
         if manifest.payload_bytes != manifest_offset {
             return Err(ProjectionError::CorruptArtifact(
@@ -269,42 +344,60 @@ impl FileProjection {
             ));
         }
 
+        // Validate the held file before mapping it. Opening a reader must not
+        // fault the complete payload into its mapping just to establish integrity.
+        stream_verify::verify_admitted(&mut file, &manifest, admission)?;
+
         // SAFETY: the artifact is published via atomic rename and never mutated in
         // place after that point, so external truncation/mutation racing this map is
         // not part of HawDB's supported artifact lifecycle.
-        #[cfg(feature = "storage-io")]
-        let mmap = Arc::new(unsafe { file.map_read_only()? });
-        #[cfg(not(feature = "storage-io"))]
-        let mmap = Arc::new(unsafe { Mmap::map(&file)? });
+        #[cfg(test)]
+        if let Some(callback) = BEFORE_PROJECTION_MAP.with(|slot| slot.replace(None)) {
+            callback();
+        }
+        let mmap = {
+            admission.checkpoint()?;
+            let _io = admission.acquire_io()?;
+            #[cfg(feature = "storage-io")]
+            let mapped = unsafe { file.map_read_only()? };
+            #[cfg(not(feature = "storage-io"))]
+            let mapped = unsafe { Mmap::map(&file)? };
+            mapped
+        };
 
-        verify_projection_payload(&mmap, &manifest)?;
-        Ok(Self {
-            path,
-            manifest,
-            mmap,
+        Ok(FileProjection {
+            contents: SharedAllocation::new(ProjectionContents {
+                path,
+                manifest,
+                mmap,
+                _path_memory: path_memory,
+                _metadata_memory: metadata_memory,
+            }),
         })
     }
+}
 
+impl<Memory> FileProjection<Memory> {
     pub fn manifest(&self) -> &ProjectionManifest {
-        &self.manifest
+        &self.contents.manifest
     }
 
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.contents.path
     }
 
     pub fn build_report(&self) -> ProjectionBuildReport {
         ProjectionBuildReport {
-            document_count: self.manifest.document_count,
-            segment_count: self.manifest.segments.len(),
-            raw_vector_bytes: (self.manifest.document_count as u64)
-                .saturating_mul(self.manifest.dimension as u64)
+            document_count: self.contents.manifest.document_count,
+            segment_count: self.contents.manifest.segments.len(),
+            raw_vector_bytes: (self.contents.manifest.document_count as u64)
+                .saturating_mul(self.contents.manifest.dimension as u64)
                 .saturating_mul(std::mem::size_of::<f32>() as u64),
-            projection_payload_bytes: self.manifest.payload_bytes,
-            configured_working_bytes: self.manifest.configured_build_working_bytes,
-            peak_working_bytes: self.manifest.peak_build_working_bytes,
-            requested_segment_rows: self.manifest.requested_segment_rows,
-            admitted_segment_rows: self.manifest.admitted_segment_rows,
+            projection_payload_bytes: self.contents.manifest.payload_bytes,
+            configured_working_bytes: self.contents.manifest.configured_build_working_bytes,
+            peak_working_bytes: self.contents.manifest.peak_build_working_bytes,
+            requested_segment_rows: self.contents.manifest.requested_segment_rows,
+            admitted_segment_rows: self.contents.manifest.admitted_segment_rows,
         }
     }
 
@@ -314,7 +407,7 @@ impl FileProjection {
     /// and avoid checksum work on the query hot path. Scrub and deep-verification
     /// callers can use this method to detect payload mutation after open.
     pub fn verify(&self) -> Result<()> {
-        verify_projection_payload(&self.mmap, &self.manifest)
+        verify_projection_payload(&self.contents.mmap, &self.contents.manifest)
     }
 
     /// Zero-copy view of a segment's payload backed by the projection's mmap.
@@ -323,10 +416,10 @@ impl FileProjection {
     /// borrows directly from the mapping opened and fully validated once in
     /// `open()`: no syscall, checksum pass, or heap allocation/copy per search.
     pub(crate) fn read_segment(&self, index: usize) -> Result<SegmentBuffer<'_>> {
-        let descriptor = self.manifest.segments.get(index).ok_or_else(|| {
+        let descriptor = self.contents.manifest.segments.get(index).ok_or_else(|| {
             ProjectionError::CorruptArtifact(format!("missing segment descriptor {index}"))
         })?;
-        segment_buffer(&self.mmap, descriptor)
+        segment_buffer(&self.contents.mmap, descriptor)
     }
 }
 
@@ -526,18 +619,6 @@ fn segment_checksum_calls() -> usize {
     SEGMENT_CHECKSUM_CALLS.with(std::cell::Cell::get)
 }
 
-fn read_u64(reader: &mut impl Read) -> Result<u64> {
-    let mut bytes = [0u8; std::mem::size_of::<u64>()];
-    reader.read_exact(&mut bytes)?;
-    Ok(u64::from_le_bytes(bytes))
-}
-
-fn read_u32(reader: &mut impl Read) -> Result<u32> {
-    let mut bytes = [0u8; std::mem::size_of::<u32>()];
-    reader.read_exact(&mut bytes)?;
-    Ok(u32::from_le_bytes(bytes))
-}
-
 fn temporary_path(target: &Path) -> PathBuf {
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     target.with_extension(format!("tmp.{}.{}", std::process::id(), sequence))
@@ -582,8 +663,8 @@ mod tests {
             .unwrap();
         let projection = writer.finish().unwrap();
 
-        assert_eq!(projection.manifest.document_count, 3);
-        assert_eq!(projection.manifest.segments.len(), 2);
+        assert_eq!(projection.manifest().document_count, 3);
+        assert_eq!(projection.manifest().segments.len(), 2);
         let build_report = projection.build_report();
         assert_eq!(
             build_report.configured_working_bytes,
@@ -618,6 +699,224 @@ mod tests {
         file.sync_all().unwrap();
         let error = FileProjection::open(&artifact).unwrap_err();
         assert!(matches!(error, ProjectionError::CorruptArtifact(_)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cloned_file_projection_shares_manifest_and_path_ownership() {
+        let root = unique_test_dir("shared-projection-metadata");
+        fs::create_dir_all(&root).unwrap();
+        let artifact = root.join("search_rabitq.1.hawdb");
+        let mut writer = ProjectionWriter::create(
+            &artifact,
+            ProjectionBuildConfig::new(8, ProjectionIdentity::new(1)),
+        )
+        .unwrap();
+        writer.push(10, &[1.0; 8]).unwrap();
+        let original = writer.finish().unwrap();
+        let cloned = original.clone();
+        assert!(std::ptr::eq(original.manifest(), cloned.manifest()));
+        assert!(std::ptr::eq(original.path(), cloned.path()));
+        drop(original);
+        assert_eq!(cloned.manifest().document_count, 1);
+        assert_eq!(
+            cloned
+                .read_segment(0)
+                .unwrap()
+                .parts(8, RaBitQBitWidth::Four, 1)
+                .unwrap()
+                .id(0),
+            10
+        );
+        drop(cloned);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn corrupt_payload_is_rejected_before_mapping() {
+        let root = unique_test_dir("reject-before-map");
+        fs::create_dir_all(&root).unwrap();
+        let artifact = root.join("search_rabitq.1.hawdb");
+        let mut writer = ProjectionWriter::create(
+            &artifact,
+            ProjectionBuildConfig::new(8, ProjectionIdentity::new(1)),
+        )
+        .unwrap();
+        writer.push(10, &[1.0; 8]).unwrap();
+        writer.finish().unwrap();
+        let mut file = OpenOptions::new().write(true).open(&artifact).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(&[0xff]).unwrap();
+        file.sync_all().unwrap();
+        let mapped = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = mapped.clone();
+        BEFORE_PROJECTION_MAP.with(|slot| {
+            slot.replace(Some(Box::new(move || observed.set(true))));
+        });
+        let result = FileProjection::open(&artifact);
+        BEFORE_PROJECTION_MAP.with(|slot| slot.replace(None));
+        let corrupt = matches!(&result, Err(ProjectionError::CorruptArtifact(_)));
+        drop(result);
+        drop(file);
+        fs::remove_dir_all(root).unwrap();
+        assert!(corrupt);
+        assert!(
+            !mapped.get(),
+            "corrupt payload reached mmap before validation"
+        );
+    }
+
+    #[test]
+    fn streamed_payload_verification_matches_mapped_corruption_oracle() {
+        for bit_width in [RaBitQBitWidth::One, RaBitQBitWidth::Four] {
+            let root = unique_test_dir("streamed-verification-oracle");
+            fs::create_dir_all(&root).unwrap();
+            let artifact = root.join("search_rabitq.1.hawdb");
+            let mut writer = ProjectionWriter::create(
+                &artifact,
+                ProjectionBuildConfig::new(8, ProjectionIdentity::new(1))
+                    .with_bit_width(bit_width)
+                    .with_segment_rows(3),
+            )
+            .unwrap();
+            for id in [10, 20, 30, 40, 50, 60] {
+                writer.push(id, &[1.0; 8]).unwrap();
+            }
+            let projection = writer.finish().unwrap();
+            let original_manifest = projection.manifest().clone();
+            assert_eq!(original_manifest.segments.len(), 2);
+            drop(projection);
+            let mut original = fs::read(&artifact).unwrap();
+            original.truncate(original_manifest.payload_bytes as usize);
+            for case in [
+                "valid",
+                "duplicate",
+                "cross-segment",
+                "negative-scale",
+                "nan-scale",
+                "infinite-offset",
+                "row-order-scale-first",
+                "row-order-offset-first",
+                "field-order-id-first",
+                "bad-segment-checksum",
+                "bad-total-checksum",
+                "bad-header-and-checksum",
+                "negative-zero-scale",
+            ] {
+                let mut bytes = original.clone();
+                let mut manifest = original_manifest.clone();
+                let second = manifest.segments[1].payload_offset as usize;
+                match case {
+                    "duplicate" => bytes[8..16].copy_from_slice(&10_u64.to_le_bytes()),
+                    "cross-segment" => {
+                        bytes[second..second + 8].copy_from_slice(&30_u64.to_le_bytes())
+                    }
+                    "negative-scale" => bytes[24..28].copy_from_slice(&(-1_f32).to_le_bytes()),
+                    "nan-scale" | "bad-header-and-checksum" => {
+                        bytes[24..28].copy_from_slice(&f32::NAN.to_le_bytes())
+                    }
+                    "infinite-offset" => {
+                        bytes[36..40].copy_from_slice(&f32::INFINITY.to_le_bytes())
+                    }
+                    "row-order-scale-first" => {
+                        bytes[8..16].copy_from_slice(&10_u64.to_le_bytes());
+                        bytes[24..28].copy_from_slice(&f32::NAN.to_le_bytes());
+                    }
+                    "row-order-offset-first" => {
+                        bytes[28..32].copy_from_slice(&f32::NAN.to_le_bytes());
+                        bytes[36..40].copy_from_slice(&f32::INFINITY.to_le_bytes());
+                    }
+                    "field-order-id-first" => {
+                        bytes[second..second + 8].copy_from_slice(&30_u64.to_le_bytes());
+                        bytes[second + 24..second + 28].copy_from_slice(&f32::NAN.to_le_bytes());
+                    }
+                    "negative-zero-scale" => bytes[24..28].copy_from_slice(&(-0_f32).to_le_bytes()),
+                    "valid" | "bad-segment-checksum" | "bad-total-checksum" => {}
+                    _ => unreachable!(),
+                }
+                if case != "bad-header-and-checksum" {
+                    for segment in &mut manifest.segments {
+                        let start = segment.payload_offset as usize;
+                        let end = start + segment.payload_bytes as usize;
+                        segment.payload_checksum = crc32fast::hash(&bytes[start..end]);
+                    }
+                    manifest.payload_checksum = crc32fast::hash(&bytes);
+                }
+                if case == "bad-segment-checksum" {
+                    manifest.segments[0].payload_checksum ^= 1;
+                } else if case == "bad-total-checksum" {
+                    manifest.payload_checksum ^= 1;
+                }
+                manifest.validate().unwrap();
+                let mut mapped = memmap2::MmapMut::map_anon(bytes.len()).unwrap();
+                mapped.copy_from_slice(&bytes);
+                let mapped = mapped.make_read_only().unwrap();
+                let expected =
+                    verify_projection_payload(&mapped, &manifest).map_err(|e| e.to_string());
+                let actual = stream_verify::verify(&mut std::io::Cursor::new(&bytes), &manifest)
+                    .map_err(|e| e.to_string());
+                assert_eq!(actual, expected, "{bit_width:?} {case}");
+                if matches!(case, "valid" | "negative-zero-scale") {
+                    assert!(actual.is_ok());
+                } else {
+                    assert!(
+                        actual.is_err(),
+                        "the oracle must exercise rejection: {case}"
+                    );
+                }
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn streamed_payload_verification_bounds_reads_and_handles_short_reads() {
+        struct ShortReader<'a> {
+            cursor: std::io::Cursor<&'a [u8]>,
+            max_request: usize,
+            seeks: usize,
+        }
+        impl Read for ShortReader<'_> {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                self.max_request = self.max_request.max(bytes.len());
+                assert!(bytes.len() <= stream_verify::BUFFER_BYTES);
+                let length = bytes.len().min(3);
+                self.cursor.read(&mut bytes[..length])
+            }
+        }
+        impl Seek for ShortReader<'_> {
+            fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+                self.seeks += 1;
+                self.cursor.seek(position)
+            }
+        }
+        let root = unique_test_dir("streamed-bounded-reads");
+        fs::create_dir_all(&root).unwrap();
+        let artifact = root.join("search_rabitq.1.hawdb");
+        let mut writer = ProjectionWriter::create(
+            &artifact,
+            ProjectionBuildConfig::new(8, ProjectionIdentity::new(1)).with_segment_rows(2200),
+        )
+        .unwrap();
+        for id in 1..=2200 {
+            writer.push(id, &[1.0; 8]).unwrap();
+        }
+        let projection = writer.finish().unwrap();
+        let bytes = fs::read(&artifact).unwrap();
+        let mut reader = ShortReader {
+            cursor: std::io::Cursor::new(&bytes),
+            max_request: 0,
+            seeks: 0,
+        };
+        stream_verify::verify(&mut reader, projection.manifest()).unwrap();
+        assert_eq!(reader.max_request, stream_verify::BUFFER_BYTES);
+        assert_eq!(reader.seeks, 1);
+        assert_eq!(
+            reader.cursor.position(),
+            projection.manifest().payload_bytes
+        );
+        assert!(reader.cursor.position() < bytes.len() as u64);
+        drop(projection);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -206,17 +206,23 @@ pub use lexical_readiness::{
 pub use lexical_source_policy::SearchLexicalSourcePolicy;
 pub use lexical_term_policy::SearchLexicalTermPolicy;
 pub use out_of_core::{
-    GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter,
-    ScheduledSearchOutOfCoreSegmentCompactionReport, SearchBodyReadOptions,
-    SearchGenerationAdmission, SearchOutOfCoreCandidate, SearchOutOfCoreConfig,
+    GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter, PreparedSearchPublication,
+    ScheduledSearchOutOfCoreSegmentCompactionReport, SearchBaselineComparisonLimits,
+    SearchBaselineComparisonReport, SearchBodyReadOptions, SearchGenerationAdmission,
+    SearchMatchedBaseline, SearchMutationInspectionInput, SearchMutationInspectionStep,
+    SearchMutationSortStep, SearchMutationSortStepLimits, SearchMutationSortStepUsage,
+    SearchOutOfCoreBaselineComparison, SearchOutOfCoreCandidate, SearchOutOfCoreConfig,
     SearchOutOfCoreExecutionContext, SearchOutOfCoreGenerationBuildOptions,
     SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
     SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
-    SearchOutOfCoreMutationWriter, SearchOutOfCoreOutput, SearchOutOfCoreReader,
+    SearchOutOfCoreMutationWriter, SearchOutOfCoreOutput, SearchOutOfCoreOwnerReplacementWriter,
+    SearchOutOfCorePreparedGeneration, SearchOutOfCorePreparedUpdate, SearchOutOfCoreReader,
     SearchOutOfCoreRefreshReport, SearchOutOfCoreSegmentCompaction,
     SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
-    SearchOutOfCoreSegmentCompactionStopReason, SearchStagingCleanupReport, SearchTextSeedOutput,
-    SearchTextSeedReport, SearchVerifiedBody,
+    SearchOutOfCoreSegmentCompactionStopReason, SearchOutOfCoreUnorderedMutationWriter,
+    SearchOutOfCoreUnorderedReplacementWriter, SearchOwnerOverlayLimits, SearchOwnerOverlayReport,
+    SearchStagingCleanupReport, SearchTextSeedOutput, SearchTextSeedReport,
+    SearchUnorderedMutationLimits, SearchUnorderedMutationReport, SearchVerifiedBody,
 };
 pub use resident_text_seed::SearchResidentTextSeedOutput;
 // These are internal ownership seams. Hosts continue to use the embedded facade.
@@ -1433,7 +1439,8 @@ pub struct SearchIndex {
     documents: BTreeMap<String, SearchDocument>,
     consumer_binding: Option<consumer::ConsumerBinding>,
     consumer_binding_valid: bool,
-    consumer_owned_mutation: bool,
+    consumer_owner: std::sync::Weak<consumer::MutationOwner>,
+    consumer_mutation_generation: Option<u64>,
     consumer_receipt: Mutex<Option<consumer::CheckpointReceipt>>,
     path: Option<PathBuf>,
     _project_files: Option<hawdb_storage::file_descriptors::ProjectFileDescriptors>,
@@ -1520,19 +1527,19 @@ impl SearchIndex {
         } else {
             index.load_rabitq_projection()?;
         }
-        index.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
+        index.retry_projection_cleanup_under_publication(SearchProjectionCleanupOptions::default());
         Ok(index)
     }
 
     pub fn with_analyzer_lexicon(mut self, analyzer_lexicon: SearchAnalyzerLexicon) -> Self {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.analyzer_lexicon = analyzer_lexicon;
         self.invalidate_lexical_projection();
         self
     }
 
     pub fn set_analyzer_lexicon(&mut self, analyzer_lexicon: SearchAnalyzerLexicon) {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.analyzer_lexicon = analyzer_lexicon;
         self.invalidate_lexical_projection();
     }
@@ -1590,7 +1597,7 @@ impl SearchIndex {
         &mut self,
         options: RaBitQCandidateProjectionBuildOptions,
     ) {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.rabitq_build_options = options;
         self.invalidate_rabitq_projection();
     }
@@ -1742,7 +1749,7 @@ impl SearchIndex {
     }
 
     pub fn set_telemetry_sink(&mut self, telemetry: Option<Arc<dyn TelemetrySink>>) {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.telemetry = telemetry;
     }
 
@@ -1751,7 +1758,7 @@ impl SearchIndex {
     }
 
     pub fn set_range_read_config(&mut self, config: SearchRangeReadConfig) {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.range_read_config = config;
     }
 
@@ -1760,7 +1767,7 @@ impl SearchIndex {
     }
 
     pub fn set_runtime_capabilities(&mut self, capabilities: RuntimeCapabilities) {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.runtime_capabilities =
             crate::compiled_capabilities::effective_runtime_capabilities(capabilities);
     }
@@ -1770,7 +1777,7 @@ impl SearchIndex {
     }
 
     pub fn upsert(&mut self, document: SearchDocument) -> Result<()> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         if let Some(embedding) = &document.embedding {
             self.validate_or_set_dimension(embedding.len())?;
         }
@@ -1787,7 +1794,7 @@ impl SearchIndex {
     }
 
     pub fn delete(&mut self, id: &str) {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.record_lexical_delete(id);
         self.documents.remove(id);
         #[cfg(feature = "vector-search")]
@@ -1799,7 +1806,7 @@ impl SearchIndex {
         &mut self,
         delta: SearchProjectionDelta,
     ) -> Result<SearchProjectionDeltaReport> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         let operation_count = delta.operation_count();
         if let Some(limit) = delta.max_operations
             && operation_count > limit
@@ -2000,7 +2007,7 @@ impl SearchIndex {
     /// Records immutable provenance for an external graph bootstrap. The
     /// mutable local projection cursor remains independent.
     pub fn record_import_source_graph_commit_epoch(&mut self, epoch: u64) -> Result<()> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         self.validate_import_source_graph_commit_epoch(epoch)?;
         self.import_source_graph_commit_epoch = Some(epoch);
         Ok(())
@@ -2110,7 +2117,7 @@ impl SearchIndex {
     }
 
     pub fn apply_embedding_manifest(&mut self, manifest: SearchEmbeddingManifest) -> Result<()> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         if let Some(existing) = &self.embedding_manifest {
             if existing == &manifest {
                 return Ok(());
@@ -2139,7 +2146,7 @@ impl SearchIndex {
         store: &S,
         options: SearchRebuildOptions,
     ) -> Result<SearchRebuildSummary> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         let started = hawdb_core::time::Instant::now();
         let mut next_documents = BTreeMap::new();
         let mut scanned_nodes = 0;
@@ -2308,7 +2315,7 @@ impl SearchIndex {
         store: &S,
         options: MetadataRepairOptions,
     ) -> Result<MetadataRepairSummary> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         let started = hawdb_core::time::Instant::now();
         let mut repairs = Vec::new();
         let mut scanned_nodes = 0;
@@ -2479,29 +2486,79 @@ impl SearchIndex {
         let Some(path) = &self.path else {
             return self.projection_cleanup_report();
         };
+        if self.consumer_binding_valid
+            && self.consumer_binding.is_some()
+            && let Ok(_consumer_mutation) = self.borrow_consumer_mutation()
+        {
+            return self.retry_projection_cleanup_under_publication(options);
+        }
+        let Ok(_publication) = out_of_core::SearchProjectionPublishLease::acquire_for_cleanup(path)
+        else {
+            return self
+                .cleanup_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .defer_for_publication(options);
+        };
+        self.retry_projection_cleanup_under_publication(options)
+    }
+
+    // Caller retains the same root's publication authority through discovery
+    // and sweep. Checkpoint already owns that authority and must not reacquire.
+    fn retry_projection_cleanup_under_publication(
+        &self,
+        options: SearchProjectionCleanupOptions,
+    ) -> SearchProjectionCleanupReport {
+        let Some(path) = &self.path else {
+            return self.projection_cleanup_report();
+        };
         let (published, out_of_core_discovery_failed) =
             match out_of_core::published_artifact_generations(path, &self.analyzer_lexicon) {
                 Ok(generations) => (generations, false),
                 Err(_) => (None, true),
             };
+        #[cfg(feature = "vector-search")]
+        let resident_rabitq = self
+            .rabitq_projection()
+            .map(|projection| projection.manifest().identity.generation);
+        #[cfg(not(feature = "vector-search"))]
+        let resident_rabitq = None;
+        let resident_remove_all = self
+            .documents
+            .values()
+            .all(|document| document.embedding.is_none());
+        // A peer's published references override stale resident hints. Resident
+        // checkpoints also write standalone RaBitQ files, outside the manifest;
+        // an empty manifest reference set does not prove those files obsolete.
+        let lexical = published
+            .as_ref()
+            .and_then(|current| current.lexical_generations.last().copied())
+            .or_else(|| {
+                self.lexical_projection
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .as_ref()
+                    .map(|projection| projection.generation())
+            });
+        let published_rabitq = published
+            .as_ref()
+            .and_then(|current| current.rabitq_generations.last().copied());
+        // Standalone resident hints are usable only for the current published
+        // snapshot. A stale handle cannot authorize removal of a peer's files.
+        let resident_matches_published = published.is_none()
+            || out_of_core::validate_resident_snapshot_identity(self, path).is_ok();
+        let rabitq = published_rabitq.or_else(|| {
+            resident_matches_published
+                .then_some(resident_rabitq)
+                .flatten()
+        });
+        let rabitq_remove_all =
+            published_rabitq.is_none() && resident_matches_published && resident_remove_all;
         let generations = SearchProjectionGenerations {
-            lexical: self
-                .lexical_projection
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .as_ref()
-                .map(|projection| projection.generation()),
+            lexical,
             out_of_core: published.as_ref().map(|value| value.active_generation),
-            #[cfg(feature = "vector-search")]
-            rabitq: self
-                .rabitq_projection()
-                .map(|projection| projection.manifest().identity.generation),
-            #[cfg(not(feature = "vector-search"))]
-            rabitq: None,
-            rabitq_remove_all: self
-                .documents
-                .values()
-                .all(|document| document.embedding.is_none()),
+            rabitq,
+            rabitq_remove_all,
             out_of_core_discovery_failed,
             retained_lexical: published
                 .as_ref()
@@ -2564,7 +2621,9 @@ impl SearchIndex {
                 .durable_source_graph_commit_epoch
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.source_graph_commit_epoch;
-            self.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
+            self.retry_projection_cleanup_under_publication(
+                SearchProjectionCleanupOptions::default(),
+            );
             if let Some(binding) = &self.consumer_binding {
                 *self
                     .consumer_receipt
@@ -4081,7 +4140,7 @@ impl SearchIndex {
     }
 
     fn append_marker(&self, name: &str, reason: &str) -> Result<()> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _marker_authority = self.require_marker_mutation()?;
         {
             let mut marker_lines = self
                 .marker_lines
@@ -4109,7 +4168,7 @@ impl SearchIndex {
     }
 
     fn write_marker(&self, name: &str, reason: &str) -> Result<()> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _marker_authority = self.require_marker_mutation()?;
         self.marker_lines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -4122,7 +4181,7 @@ impl SearchIndex {
     }
 
     fn clear_marker(&self, name: &str) -> Result<()> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _marker_authority = self.require_marker_mutation()?;
         self.marker_lines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -4163,7 +4222,8 @@ impl Default for SearchIndex {
             documents: BTreeMap::new(),
             consumer_binding: None,
             consumer_binding_valid: true,
-            consumer_owned_mutation: false,
+            consumer_owner: std::sync::Weak::new(),
+            consumer_mutation_generation: None,
             consumer_receipt: Mutex::new(None),
             path: None,
             _project_files: None,
@@ -4935,7 +4995,10 @@ pub fn projection_row_from_node_with_graph_metadata<S: SearchProjectionSource + 
     Ok(Some(row))
 }
 
-fn projection_row_from_node_with_business_labels(
+/// Shapes one canonical node with already collected business-label values.
+/// The caller must establish label completeness and source validity separately.
+#[doc(hidden)]
+pub fn projection_row_from_node_with_business_labels(
     catalog: &Catalog,
     node: &NodeRecord,
     labels: &[String],
@@ -4964,7 +5027,18 @@ fn projection_business_labels_for_node<S: SearchProjectionSource + ?Sized>(
 
 #[doc(hidden)]
 pub fn projection_business_label_value(label: &NodeRecord) -> Option<String> {
-    first_non_empty_string_property(label, &["canonical_name", "name", "id"])
+    projection_business_label_value_from_properties(&label.properties)
+}
+
+/// Applies the canonical business-label precedence to a decoded query node.
+#[doc(hidden)]
+pub fn projection_business_label_value_from_properties(
+    properties: &BTreeMap<String, Value>,
+) -> Option<String> {
+    ["canonical_name", "name", "id"]
+        .into_iter()
+        .filter_map(|key| properties.get(key).map(value_to_projection_string))
+        .find(|value| !value.is_empty())
 }
 
 fn search_projection_kind_from_label(label: &str) -> Option<SearchProjectionKind> {
@@ -7227,8 +7301,20 @@ fn encode_search_segment_descriptor_body(descriptor: &SearchSegmentDescriptor) -
 }
 
 fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDescriptor> {
+    decode_search_segment_descriptor_with_context(text, None)
+}
+
+fn decode_search_segment_descriptor_with_context(
+    text: &str,
+    task: Option<&hawdb_core::RuntimeTaskContext>,
+) -> Result<SearchSegmentDescriptor> {
     let (body, checksum) = split_checksum(text)?;
-    let actual = checksum_bytes(body.as_bytes());
+    let mut hasher = hawdb_integrity::Crc32cHasher::new();
+    for chunk in body.as_bytes().chunks(8192) {
+        task.map_or(Ok(()), build_control::checkpoint)?;
+        hasher.update(chunk);
+    }
+    let actual = hasher.finish();
     if checksum != actual {
         return Err(HawDBError::Storage(format!(
             "search segment descriptor checksum mismatch: expected {checksum}, got {actual}"
@@ -7241,14 +7327,28 @@ fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDesc
     let mut current_segment = None::<SearchSegmentDescriptorEntry>;
 
     for line in body.lines() {
+        task.map_or(Ok(()), build_control::checkpoint)?;
         if line == "HAWDB_SEARCH_SEGMENTS_V1"
             || line == "HAWDB_SEARCH_SEGMENTS_V2"
             || line == "HAWDB_SEARCH_SEGMENTS_V3"
         {
             continue;
         }
-        let fields = line.split('\t').collect::<Vec<_>>();
-        match fields.as_slice() {
+        // The longest descriptor production has nine fields. Keep the field
+        // table on the stack: rejected input may contain a tab per byte, and
+        // collecting those borrowed slices would amplify it into a large Vec.
+        let mut fields = [""; 9];
+        let mut count = 0;
+        for field in line.split('\t') {
+            let Some(slot) = fields.get_mut(count) else {
+                return Err(HawDBError::Storage(format!(
+                    "invalid search segment descriptor line: {line}"
+                )));
+            };
+            *slot = field;
+            count += 1;
+        }
+        match &fields[..count] {
             ["target_documents", raw] => {
                 target_documents = Some(parse_usize(raw, "search segment target documents")?);
             }

@@ -250,6 +250,23 @@ pub trait GraphExecutionRead {
         ))
     }
 
+    /// Label-aware projected point read. The native store rejects nonmatching
+    /// labels before value ownership; custom readers may use admitted fallback.
+    fn projected_node_owned_in_labels_admitted(
+        &self,
+        id: NodeId,
+        label_ids: Option<&[LabelId]>,
+        required_properties: &BTreeSet<String>,
+        admit: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<Option<ProjectedNodeRecord>> {
+        self.projected_node_owned_admitted(id, required_properties, admit)
+            .map(|node| {
+                node.filter(|node| {
+                    label_ids.is_none_or(|ids| ids.iter().any(|id| node.labels.contains(id)))
+                })
+            })
+    }
+
     fn scan_nodes_borrowed<'a>(
         &'a self,
         label_id: Option<LabelId>,

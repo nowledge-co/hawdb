@@ -149,6 +149,30 @@ impl SearchProjectionCleanupState {
         self.report.clone()
     }
 
+    pub(crate) fn defer_for_publication(
+        &mut self,
+        options: SearchProjectionCleanupOptions,
+    ) -> SearchProjectionCleanupReport {
+        let pending_before = self.pending.len();
+        let overflow = pending_before.saturating_sub(options.max_pending_files.get());
+        // Omitted retry names are rediscovered by the next full sweep; no file
+        // is removed while publication authority is unavailable.
+        self.pending.truncate(options.max_pending_files.get());
+        let mut report = SearchProjectionCleanupReport {
+            max_pending_files: options.max_pending_files.get(),
+            max_delete_attempts: options.max_delete_attempts.get(),
+            pending_before,
+            pending_after: self.pending.len(),
+            deferred_files: pending_before,
+            queue_overflow_files: overflow,
+            retry_required: true,
+            ..Default::default()
+        };
+        record_failure(&mut report, "publication_exclusion_unavailable");
+        self.report = report.clone();
+        report
+    }
+
     pub(super) fn run(
         &mut self,
         root: &Path,
@@ -317,13 +341,15 @@ impl<S: AsRef<str>> CleanupCandidate<S> {
     }
 
     fn is_obsolete(&self, generations: &SearchProjectionGenerations) -> bool {
-        if self.quarantined {
-            return true;
-        }
         // Without a validated active closure, its retained generations are
         // unknown. A current generation number alone cannot prove obsolescence.
         if generations.out_of_core_discovery_failed {
             return false;
+        }
+        // Quarantine is evidence when selector discovery is uncertain. Only a
+        // known active closure permits the ordinary diagnostic-file cleanup.
+        if self.quarantined {
+            return true;
         }
         match self.kind {
             CleanupArtifactKind::Lexical => obsolete_generation(
@@ -336,6 +362,11 @@ impl<S: AsRef<str>> CleanupCandidate<S> {
                 generations.out_of_core,
                 &generations.retained_out_of_core,
             ),
+            CleanupArtifactKind::RaBitQ
+                if generations.retained_rabitq.contains(&self.generation) =>
+            {
+                false
+            }
             CleanupArtifactKind::RaBitQ if generations.rabitq_remove_all => true,
             CleanupArtifactKind::RaBitQ => obsolete_generation(
                 self.generation,

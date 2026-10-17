@@ -83,7 +83,7 @@ pub(crate) fn prepare<'a, T: Serialize>(
         digest: Some(Crc32cHasher::new()),
         ..JsonMeasure::default()
     };
-    serde_json::to_writer(CheckedWriter::new(&mut measure, task), &envelope).map_err(json_error)?;
+    write_json(&mut measure, &envelope, task)?;
     task.map_or(Ok(()), checkpoint)?;
     let length = measure.length;
     if length > max_bytes {
@@ -123,8 +123,7 @@ impl<T: Serialize> PreparedEnvelope<'_, T> {
             remaining: self.length,
             digest: Crc32cHasher::new(),
         };
-        serde_json::to_writer(CheckedWriter::new(&mut checked, Some(task)), &self.envelope)
-            .map_err(json_error)?;
+        write_json(&mut checked, &self.envelope, Some(task))?;
         checkpoint(task)?;
         if checked.remaining != 0 || checked.digest.finish() != self.checksum {
             return Err(HawDBError::Storage(format!(
@@ -174,8 +173,7 @@ impl<T: Serialize> PreparedEnvelope<'_, T> {
             length,
             name,
         };
-        serde_json::to_writer(CheckedWriter::new(&mut output, task), &envelope)
-            .map_err(json_error)?;
+        write_json(&mut output, &envelope, task)?;
         task.map_or(Ok(()), checkpoint)?;
         if bytes.len() != length {
             return Err(HawDBError::Storage(format!(
@@ -198,7 +196,7 @@ pub(crate) fn checksum_with_context(
         digest: Some(Crc32cHasher::new()),
         ..JsonMeasure::default()
     };
-    serde_json::to_writer(CheckedWriter::new(&mut measure, task), body).map_err(json_error)?;
+    write_json(&mut measure, body, task)?;
     task.map_or(Ok(()), checkpoint)?;
     Ok(measure
         .digest
@@ -261,8 +259,17 @@ pub(crate) fn decode_capacity(
     add(add(add(bytes.len(), vectors)?, mul(largest, 8)?)?, 4096)
 }
 
-fn json_error(error: serde_json::Error) -> HawDBError {
-    HawDBError::Storage(error.to_string())
+fn write_json(
+    output: &mut impl Write,
+    value: &impl Serialize,
+    task: Option<&RuntimeTaskContext>,
+) -> Result<()> {
+    let result = serde_json::to_writer(CheckedWriter::new(output, task), value);
+    // A stopped CheckedWriter becomes serde's generic I/O error. Recheck the
+    // operation before converting that error to a storage failure; every JSON
+    // checksum, sizing and output pass must preserve known cancellation.
+    task.map_or(Ok(()), checkpoint)?;
+    result.map_err(|error| HawDBError::Storage(error.to_string()))
 }
 
 #[derive(Default)]
@@ -353,6 +360,77 @@ mod tests {
         assert!(output.write_all(b"x").is_err());
         assert_eq!(bytes, b"abcd");
         assert_eq!(bytes.capacity(), capacity);
+    }
+
+    #[test]
+    fn checksum_cancellation_during_serialization_is_execution_failure() {
+        struct CancelOnSerialize<'a>(&'a RuntimeTaskContext);
+        impl Serialize for CancelOnSerialize<'_> {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                self.0.cancellation().cancel();
+                serializer.serialize_u64(123)
+            }
+        }
+        let task = RuntimeTaskContext::default();
+        let error = checksum_with_context(&CancelOnSerialize(&task), Some(&task)).unwrap_err();
+        assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
+    }
+
+    #[test]
+    fn cancellation_in_each_json_pass_preserves_execution_and_refunds_output() {
+        struct CancelOnPass<'a> {
+            task: &'a RuntimeTaskContext,
+            pass: std::cell::Cell<usize>,
+            cancel_at: usize,
+        }
+        impl Serialize for CancelOnPass<'_> {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                let pass = self.pass.get() + 1;
+                self.pass.set(pass);
+                if pass == self.cancel_at {
+                    self.task.cancellation().cancel();
+                }
+                serializer.serialize_str("immutable manifest")
+            }
+        }
+        // Checksum, envelope sizing and retained output serialization all use
+        // the same cancellation-preserving writer boundary.
+        for cancel_at in 1..=3 {
+            let task = RuntimeTaskContext::default();
+            let memory = BuildMemory::new(&task).unwrap();
+            drop(memory.retained.reserve(1).unwrap());
+            let baseline = memory.ledger.snapshot().used_bytes;
+            let body = CancelOnPass {
+                task: &task,
+                pass: Default::default(),
+                cancel_at,
+            };
+            let error =
+                encode_with_context(&body, 1 << 20, &memory, &task, "test manifest").unwrap_err();
+            assert!(
+                matches!(error, HawDBError::Execution(_)),
+                "pass {cancel_at}: {error:?}"
+            );
+            assert_eq!(body.pass.get(), cancel_at);
+            assert_eq!(memory.ledger.snapshot().used_bytes, baseline);
+        }
+        // Prepared streaming output has a separate caller, but the same rule.
+        let task = RuntimeTaskContext::default();
+        let body = CancelOnPass {
+            task: &task,
+            pass: Default::default(),
+            cancel_at: 3,
+        };
+        let prepared = prepare(&body, 1 << 20, Some(&task), "test manifest").unwrap();
+        let error = prepared.write_to(&mut Vec::new(), &task).unwrap_err();
+        assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
+        assert_eq!(body.pass.get(), 3);
     }
 
     #[test]

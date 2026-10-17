@@ -91,6 +91,22 @@ impl GraphExecutionRead for GraphStore {
         GraphStore::projected_node_owned_admitted(self, id, required_properties, admit)
     }
 
+    fn projected_node_owned_in_labels_admitted(
+        &self,
+        id: NodeId,
+        label_ids: Option<&[LabelId]>,
+        required_properties: &BTreeSet<String>,
+        admit: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<Option<ProjectedNodeRecord>> {
+        GraphStore::projected_node_owned_in_labels_admitted(
+            self,
+            id,
+            label_ids,
+            required_properties,
+            admit,
+        )
+    }
+
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         GraphStore::node_owned(self, id)
     }

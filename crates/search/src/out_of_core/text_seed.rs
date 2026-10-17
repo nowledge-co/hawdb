@@ -68,7 +68,11 @@ impl SearchOutOfCoreReader {
         task: &crate::RuntimeTaskContext,
         mut allowed: impl FnMut(&str) -> Result<bool>,
     ) -> Result<SearchTextSeedOutput> {
-        let context = QueryContext { memory, task };
+        let context = QueryContext {
+            execution: None,
+            memory,
+            task,
+        };
         context.checkpoint()?;
         self.require_search_capabilities(SearchMode::Text)?;
         if max_candidates > self.config.max_score_entries.get() {
@@ -106,7 +110,7 @@ impl SearchOutOfCoreReader {
         let mut statistics = AccountedCorpusStatistics::aggregate(
             self.segments
                 .iter()
-                .map(|segment| segment.lexical_projection.as_ref()),
+                .map(|segment| &segment.lexical_projection),
             &terms.terms,
             max_term_bytes,
             context,

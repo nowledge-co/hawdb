@@ -32,7 +32,7 @@ use std::fmt::{self, Display, Formatter};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Weak};
 
 const DATA_MAGIC: &[u8; 8] = b"SKPRGD01";
 const MANIFEST_MAGIC: &[u8; 8] = b"SKPRGM01";
@@ -265,10 +265,34 @@ pub struct ProjectionGenerationSeekFence {
     pub offset: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A sealed candidate retains its GC lease until the last token clone drops.
+/// Publication adds an independent durable active-head root.
+#[derive(Debug, Clone)]
 pub struct SealedProjectionGeneration {
     manifest: ProjectionGenerationManifest,
     idempotent: bool,
+    _pin: Arc<ProjectionGenerationCandidatePin>,
+}
+
+impl PartialEq for SealedProjectionGeneration {
+    fn eq(&self, other: &Self) -> bool {
+        self.manifest == other.manifest && self.idempotent == other.idempotent
+    }
+}
+impl Eq for SealedProjectionGeneration {}
+
+#[derive(Debug)]
+struct ProjectionGenerationCandidatePin {
+    store: ProjectionGenerationStore,
+    key: String,
+}
+
+impl Drop for ProjectionGenerationCandidatePin {
+    fn drop(&mut self) {
+        if let Ok(mut shared) = self.store.lock_shared() {
+            release_pin(&mut shared, &self.key);
+        }
+    }
 }
 
 impl SealedProjectionGeneration {
@@ -398,16 +422,38 @@ struct ProjectionGenerationShared {
     temporary_sequence: u64,
 }
 
+type CatalogRegistry = BTreeMap<PathBuf, Weak<Mutex<ProjectionGenerationShared>>>;
+static CATALOGS: LazyLock<Mutex<CatalogRegistry>> = LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+fn shared_catalog(
+    root: &Path,
+) -> Result<Arc<Mutex<ProjectionGenerationShared>>, ProjectionGenerationError> {
+    let mut catalogs = CATALOGS.lock().map_err(|_| {
+        ProjectionGenerationError::Corruption(
+            "projection generation catalog registry lock poisoned".into(),
+        )
+    })?;
+    catalogs.retain(|_, shared| shared.strong_count() > 0);
+    if let Some(shared) = catalogs.get(root).and_then(Weak::upgrade) {
+        return Ok(shared);
+    }
+    let shared = Arc::new(Mutex::new(ProjectionGenerationShared::default()));
+    catalogs.insert(root.to_path_buf(), Arc::downgrade(&shared));
+    Ok(shared)
+}
+
 impl ProjectionGenerationStore {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ProjectionGenerationError> {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(root.join("generations"))?;
         fs::create_dir_all(root.join("heads"))?;
         sync_directory(&root)?;
+        let root = fs::canonicalize(root)?;
+        let shared = shared_catalog(&root)?;
         Ok(Self {
             root,
             read_only: false,
-            shared: Arc::new(Mutex::new(ProjectionGenerationShared::default())),
+            shared,
         })
     }
 
@@ -419,10 +465,12 @@ impl ProjectionGenerationStore {
                 root.display()
             )));
         }
+        let root = fs::canonicalize(root)?;
+        let shared = shared_catalog(&root)?;
         Ok(Self {
             root,
             read_only: true,
-            shared: Arc::new(Mutex::new(ProjectionGenerationShared::default())),
+            shared,
         })
     }
 
@@ -461,6 +509,11 @@ impl ProjectionGenerationStore {
     ) -> Result<ProjectionGenerationPublishReport, ProjectionGenerationError> {
         self.ensure_writable()?;
         let mut shared = self.lock_shared()?;
+        if !Arc::ptr_eq(&self.shared, &sealed._pin.store.shared) {
+            return Err(ProjectionGenerationError::Conflict(
+                "sealed generation belongs to a different catalog".into(),
+            ));
+        }
         let manifest = read_manifest(&self.manifest_path(&sealed.manifest.begin.identity))?;
         if manifest != sealed.manifest {
             return Err(ProjectionGenerationError::Conflict(
@@ -521,6 +574,46 @@ impl ProjectionGenerationStore {
             publication_commit_epoch,
             idempotent: false,
         })
+    }
+
+    /// Resolves an already selected operation without opening/scanning its data
+    /// reader. This is a committed receipt, not permission for a new publish.
+    pub fn published_receipt(
+        &self,
+        sealed: &SealedProjectionGeneration,
+    ) -> Result<Option<ProjectionGenerationPublishReport>, ProjectionGenerationError> {
+        let _shared = self.lock_shared()?;
+        if !Arc::ptr_eq(&self.shared, &sealed._pin.store.shared) {
+            return Err(ProjectionGenerationError::Conflict(
+                "sealed generation belongs to a different catalog".into(),
+            ));
+        }
+        let identity = &sealed.manifest.begin.identity;
+        let Some(head) =
+            read_optional_head(&self.head_path(&identity.projection, &identity.owner_key))?
+        else {
+            return Ok(None);
+        };
+        validate_head_owner(&head, identity)?;
+        if head.manifest.begin.identity.generation != identity.generation {
+            return Ok(None);
+        }
+        if head.manifest != sealed.manifest {
+            return Err(ProjectionGenerationError::Conflict(
+                "published generation identity was reused with different content".into(),
+            ));
+        }
+        if read_manifest(&self.manifest_path(identity))? != head.manifest {
+            return Err(ProjectionGenerationError::Corruption(
+                "active head does not match its immutable generation manifest".into(),
+            ));
+        }
+        Ok(Some(ProjectionGenerationPublishReport {
+            identity: identity.clone(),
+            previous_generation: Some(identity.generation.clone()),
+            publication_commit_epoch: head.publication_commit_epoch,
+            idempotent: true,
+        }))
     }
 
     pub fn open_active(
@@ -711,7 +804,7 @@ impl ProjectionGenerationStore {
                     report.active_generations_skipped.saturating_add(1);
                 continue;
             }
-            if shared.pinned.contains_key(&key) {
+            if shared.pinned.contains_key(&key) || shared.open_writers.contains(&key) {
                 report.pinned_generations_skipped =
                     report.pinned_generations_skipped.saturating_add(1);
                 continue;
@@ -966,36 +1059,61 @@ impl ProjectionGenerationWriter {
             seek_fences,
             rollup_metadata: seal.rollup_metadata,
         };
-        let idempotent = if let Some(existing) = &self.sealed {
-            if existing != &manifest {
-                return Err(ProjectionGenerationError::Conflict(
-                    "sealed generation identity was reused with different metadata".to_string(),
-                ));
-            }
-            true
-        } else {
-            let path = self.store.manifest_path(&self.begin.identity);
-            let bytes = encode_manifest(&manifest)?;
+        // Transfer writer ownership to a sealed-candidate lease under the same
+        // catalog lock. GC must never observe a manifest without either root.
+        let (idempotent, pin) = {
             let mut shared = self.store.lock_shared()?;
-            let temporary = temporary_path(&path, &mut shared);
-            write_synchronized(&temporary, &bytes)?;
-            if path.exists() {
-                let existing = read_manifest(&path)?;
-                if existing != manifest {
+            let next_pins = shared
+                .pinned
+                .get(&self.key)
+                .copied()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| {
+                    ProjectionGenerationError::Admission(
+                        "projection generation pin count overflow".into(),
+                    )
+                })?;
+            let idempotent = if let Some(existing) = &self.sealed {
+                if existing != &manifest {
                     return Err(ProjectionGenerationError::Conflict(
-                        "generation manifest appeared with different metadata".to_string(),
+                        "sealed generation identity was reused with different metadata".to_string(),
                     ));
                 }
-                fs::remove_file(temporary)?;
+                true
             } else {
-                durable_replace_file(&temporary, &path)?;
-            }
-            false
+                let path = self.store.manifest_path(&self.begin.identity);
+                let bytes = encode_manifest(&manifest)?;
+                let temporary = temporary_path(&path, &mut shared);
+                write_synchronized(&temporary, &bytes)?;
+                if path.exists() {
+                    let existing = read_manifest(&path)?;
+                    if existing != manifest {
+                        return Err(ProjectionGenerationError::Conflict(
+                            "generation manifest appeared with different metadata".to_string(),
+                        ));
+                    }
+                    fs::remove_file(temporary)?;
+                } else {
+                    durable_replace_file(&temporary, &path)?;
+                }
+                false
+            };
+            shared.pinned.insert(self.key.clone(), next_pins);
+            shared.open_writers.remove(&self.key);
+            self.released = true;
+            (
+                idempotent,
+                Arc::new(ProjectionGenerationCandidatePin {
+                    store: self.store.clone(),
+                    key: self.key.clone(),
+                }),
+            )
         };
-        self.release();
         Ok(SealedProjectionGeneration {
             manifest,
             idempotent,
+            _pin: pin,
         })
     }
 
@@ -2293,6 +2411,7 @@ mod tests {
         let first = stage(&store, begin("generation-1", None, 10), &first_rows);
         let first_publish = store.publish(&first).expect("publish first generation");
         assert_eq!(first_publish.publication_commit_epoch, 1);
+        drop(first);
         let pinned = store
             .open_active("session_spans", b"session-1")
             .expect("pin first generation");
@@ -2459,12 +2578,103 @@ mod tests {
     }
 
     #[test]
+    fn sealed_candidate_clones_retain_gc_root_until_last_drop() {
+        let root = path("sealed-candidate-pins");
+        let store = ProjectionGenerationStore::open(&root).unwrap();
+        let rows = members(&[("a", "payload")]);
+        let token = stage(&store, begin("candidate", None, 10), &rows);
+        let retained = token.clone();
+        drop(token);
+        let gc = store
+            .reclaim(ProjectionGenerationGcLimits::default())
+            .unwrap();
+        assert_eq!(gc.generations_reclaimed, 0);
+        assert_eq!(gc.pinned_generations_skipped, 1);
+        drop(retained);
+        let gc = store
+            .reclaim(ProjectionGenerationGcLimits::default())
+            .unwrap();
+        assert_eq!(gc.generations_reclaimed, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn independent_opens_share_candidate_reader_and_publication_authority() {
+        let root = path("shared-catalog-roots");
+        let store = ProjectionGenerationStore::open(&root).unwrap();
+        let reopened = ProjectionGenerationStore::open(root.join(".")).unwrap();
+        let read_only = ProjectionGenerationStore::open_existing(&root).unwrap();
+        let rows = members(&[("a", "payload")]);
+        let candidate = stage(&store, begin("generation-1", None, 10), &rows);
+        assert_eq!(
+            reopened
+                .reclaim(ProjectionGenerationGcLimits::default())
+                .unwrap()
+                .generations_reclaimed,
+            0
+        );
+        reopened.publish(&candidate).unwrap();
+        let reader = read_only
+            .open_active("session_spans", b"session-1")
+            .unwrap();
+        drop(candidate);
+        let replacement = stage(
+            &reopened,
+            begin("generation-2", Some("generation-1"), 11),
+            &rows,
+        );
+        reopened.publish(&replacement).unwrap();
+        drop(replacement);
+        assert_eq!(
+            store
+                .reclaim(ProjectionGenerationGcLimits::default())
+                .unwrap()
+                .generations_reclaimed,
+            0
+        );
+        reader.scrub().unwrap();
+        drop(reader);
+        assert_eq!(
+            store
+                .reclaim(ProjectionGenerationGcLimits::default())
+                .unwrap()
+                .generations_reclaimed,
+            1
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn token_cannot_publish_an_identical_candidate_in_another_catalog() {
+        let first_root = path("candidate-origin-a");
+        let second_root = path("candidate-origin-b");
+        let first = ProjectionGenerationStore::open(&first_root).unwrap();
+        let second = ProjectionGenerationStore::open(&second_root).unwrap();
+        let rows = members(&[("a", "payload")]);
+        let token = stage(&first, begin("candidate", None, 10), &rows);
+        let other = stage(&second, begin("candidate", None, 10), &rows);
+        assert_eq!(token.manifest(), other.manifest());
+        assert!(matches!(
+            second.publish(&token),
+            Err(ProjectionGenerationError::Conflict(_))
+        ));
+        assert!(matches!(
+            second.open_active("session_spans", b"session-1"),
+            Err(ProjectionGenerationError::NotFound(_))
+        ));
+        second.publish(&other).unwrap();
+        fs::remove_dir_all(first_root).unwrap();
+        fs::remove_dir_all(second_root).unwrap();
+    }
+
+    #[test]
     fn multiple_readers_keep_the_same_inactive_generation_pinned() {
         let root = path("multiple-pins");
         let store = ProjectionGenerationStore::open(&root).expect("open store");
         let first_rows = members(&[("a", "first")]);
         let first = stage(&store, begin("generation-1", None, 10), &first_rows);
         store.publish(&first).expect("publish first generation");
+        drop(first);
         let first_reader = store
             .open_active("session_spans", b"session-1")
             .expect("open first reader");

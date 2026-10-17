@@ -96,7 +96,7 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
     match error {
         HawDBError::Parse(_) => ParseError::new_err(message),
         HawDBError::Semantic(_) => SemanticError::new_err(message),
-        HawDBError::Storage(_) => StorageError::new_err(message),
+        HawDBError::Storage(_) | HawDBError::ProjectionBusy => StorageError::new_err(message),
         HawDBError::FileDescriptors(_) => DescriptorError::new_err(message),
         HawDBError::StorageIntegrity(_) => IntegrityError::new_err(message),
         HawDBError::Execution(_)

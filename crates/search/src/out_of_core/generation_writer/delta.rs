@@ -14,7 +14,7 @@
 
 use super::{
     publication::ActiveManifestUpdate, SearchOutOfCoreGenerationBuildOptions,
-    SearchOutOfCoreGenerationWriter,
+    SearchOutOfCoreGenerationWriter, SearchOutOfCorePreparedGeneration,
 };
 use crate::build_control::checkpoint;
 use crate::build_memory::BuildMemory;
@@ -225,7 +225,68 @@ impl SearchOutOfCoreGenerationUpdate {
         SearchOutOfCoreGenerationBuildReport,
         SearchOutOfCoreMetrics,
     )> {
-        let build_report = self.writer.finish()?;
+        self.prepare_publication()?.publish()
+    }
+
+    /// Builds the complete update without retaining target publication exclusion.
+    /// The candidate keeps the report, source metrics and all resource ownership.
+    pub fn prepare_publication(self) -> Result<SearchOutOfCorePreparedUpdate> {
+        Ok(SearchOutOfCorePreparedUpdate {
+            candidate: self.writer.prepare_publication()?,
+            delta_report: self.delta_report,
+            source_read_metrics: self.source_read_metrics,
+            _report_memory: self._report_memory,
+        })
+    }
+}
+
+/// A fully built invisible incremental candidate with its original delta report.
+#[derive(Debug)]
+#[must_use = "publish the update or drop it to release its private resources"]
+pub struct SearchOutOfCorePreparedUpdate {
+    candidate: SearchOutOfCorePreparedGeneration,
+    delta_report: SearchProjectionDeltaReport,
+    source_read_metrics: SearchOutOfCoreMetrics,
+    _report_memory: QueryMemoryLease,
+}
+
+impl SearchOutOfCorePreparedUpdate {
+    pub(super) fn from_streamed(
+        candidate: SearchOutOfCorePreparedGeneration,
+        delta_report: SearchProjectionDeltaReport,
+        source_read_metrics: SearchOutOfCoreMetrics,
+        memory: QueryMemoryLease,
+    ) -> Self {
+        Self {
+            candidate,
+            delta_report,
+            source_read_metrics,
+            _report_memory: memory,
+        }
+    }
+
+    pub fn expected_active_generation(&self) -> Option<u64> {
+        self.candidate.expected_active_generation()
+    }
+
+    pub fn source_graph_commit_epoch(&self) -> Option<u64> {
+        self.candidate.source_graph_commit_epoch()
+    }
+
+    pub(super) fn source_watermark_floor(&self) -> Result<Option<u64>> {
+        self.candidate.source_watermark_floor()
+    }
+
+    /// Activates against the original Search base. Graph/host dependency checks
+    /// must remain fenced by the caller through this complete operation.
+    pub fn publish(
+        self,
+    ) -> Result<(
+        SearchProjectionDeltaReport,
+        SearchOutOfCoreGenerationBuildReport,
+        SearchOutOfCoreMetrics,
+    )> {
+        let build_report = self.candidate.publish()?;
         Ok((self.delta_report, build_report, self.source_read_metrics))
     }
 }

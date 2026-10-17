@@ -206,6 +206,65 @@ pub(crate) fn evaluate_projection_borrowed<'a>(
             .ok_or_else(|| {
                 HawDBError::Execution(format!("missing variable '{variable}' during projection"))
             }),
+        ProjectionExpression::Properties { variable } => {
+            let properties = binding
+                .nodes
+                .get(variable)
+                .map(|node| &node.properties)
+                .or_else(|| {
+                    binding
+                        .relationships
+                        .get(variable)
+                        .map(|relationship| &relationship.properties)
+                });
+            if let Some(properties) = properties {
+                return allocated(
+                    std::mem::size_of::<Value>().saturating_add(map_memory_bytes(properties)),
+                    account,
+                    || Value::Map(properties.clone()),
+                );
+            }
+            if binding.values.get(variable) == Some(&Value::Null) {
+                return Ok(ProjectedValue::scalar(Value::Null));
+            }
+            Err(HawDBError::Execution(format!(
+                "properties requires a native graph entity '{variable}'"
+            )))
+        }
+        ProjectionExpression::Labels { variable } => {
+            if let Some(node) = binding.nodes.get(variable) {
+                let (count, bytes) = node
+                    .labels
+                    .iter()
+                    .filter_map(|label| catalog.label_name(*label))
+                    .fold(
+                        (0usize, std::mem::size_of::<Value>()),
+                        |(count, total), name| {
+                            (
+                                count + 1,
+                                total.saturating_add(std::mem::size_of::<Value>() + name.len()),
+                            )
+                        },
+                    );
+                return allocated(bytes, account, || {
+                    let mut labels = Vec::with_capacity(count);
+                    labels.extend(node.labels.iter().filter_map(|label| {
+                        catalog
+                            .label_name(*label)
+                            .map(|name| Value::String(name.into()))
+                    }));
+                    Value::List(labels)
+                });
+            }
+            if !binding_has_variable(binding, variable)
+                && binding.values.get(variable) == Some(&Value::Null)
+            {
+                return Ok(ProjectedValue::scalar(Value::Null));
+            }
+            Err(HawDBError::Execution(format!(
+                "labels requires a native graph node '{variable}'"
+            )))
+        }
         ProjectionExpression::RelationshipType { variable }
             if binding.values.get(variable) == Some(&Value::Null)
                 && !binding_has_variable(binding, variable) =>

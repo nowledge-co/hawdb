@@ -225,3 +225,36 @@ fn rejected_encoded_length_never_reads_or_writes() {
         assert!(output.get_ref().is_empty());
     }
 }
+
+#[test]
+fn streamed_record_preserves_query_range_execution_refusal_without_cancellation() {
+    struct RefusedBody;
+    impl Read for RefusedBody {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other(HawDBError::Execution(
+                "query range I/O admission refused".into(),
+            )))
+        }
+    }
+    let error = write_record(
+        &mut io::sink(),
+        Header {
+            id: "memory:a",
+            title: "",
+            embedding: None,
+            metadata: &BTreeMap::new(),
+        },
+        &mut RefusedBody,
+        crate::SearchDocumentBody {
+            bytes: 1,
+            expected_checksum: None,
+        },
+        Control::default(),
+    )
+    .err()
+    .expect("failed query input must not yield a record receipt");
+    assert!(
+        matches!(&error, HawDBError::Execution(message) if message == "query range I/O admission refused"),
+        "{error:?}"
+    );
+}

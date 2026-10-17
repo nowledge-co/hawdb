@@ -1358,8 +1358,9 @@ impl GraphStore {
                     relational_checkpoint: relational_checkpoint_artifact,
                 },
                 generation,
-                self.search_projection_graph_changes.iter().map(Arc::as_ref),
+                self.search_projection_graph_changes.iter().map(|change| change.legacy.as_ref()),
                 work,
+                Some(&self.search_projection_graph_changes),
             )?;
             work.checkpoint().map_err(HawDBError::from_storage_error)?;
             checkpoint_publish_failpoint(CheckpointPublishStage::CheckpointPersisted)?;

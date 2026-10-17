@@ -340,7 +340,11 @@ rust_test(
         timeout = "eternal" if partition in ["concurrent", "analytics_rss"] else "long",
         # Dense identity and RSS fixtures must not compete with other test
         # executables in this invocation. External contention remains possible.
-        tags = ["exclusive"] if partition == "analytics_rss" else [],
+        tags = ["exclusive"] if partition in ["analytics_rss", "automatic_checkpoint"] else [],
+        # Keep the original per-case deadlines and all explicit concurrency.
+        # Independent deadline-controlled owners must not compete with the
+        # general partition's durable schema/recovery workloads or each other.
+        env = {"RUST_TEST_THREADS": "1"} if partition == "automatic_checkpoint" else {},
         srcs = ["scripts/run-root-unit-partition.sh"],
         args = [
             "$(rootpath :hawdb_unit_test_binary)",
@@ -350,7 +354,7 @@ rust_test(
         ],
         data = [":hawdb_unit_test_binary"],
     )
-    for partition in ["general", "concurrent", "analytics_core_general", "analytics_rss", "recovery"]
+    for partition in ["general", "automatic_checkpoint", "concurrent", "analytics_core_general", "analytics_rss", "recovery"]
 ]
 
 # Identity admission now shares the RSS fixture and its isolated measured child.
@@ -387,6 +391,7 @@ test_suite(
     name = "hawdb_unit_fast_tests",
     tests = [
         ":hawdb_unit_general_tests",
+        ":hawdb_unit_automatic_checkpoint_tests",
         ":hawdb_unit_concurrent_tests",
         ":hawdb_unit_analytics_tests",
         ":hawdb_unit_recovery_tests",
@@ -568,6 +573,16 @@ test_suite(
     name = "hawdb_unit_tests",
     tests = [
         ":hawdb_in_memory_portable_tests",
+        ":hawdb_mvcc_projection_publication_tests",
+        ":hawdb_mvcc_projection_publication_minimal_tests",
+        ":hawdb_mvcc_publication_owner_tests",
+        ":hawdb_mvcc_publication_owner_minimal_tests",
+        ":hawdb_mvcc_owner_feed_tests",
+        ":hawdb_mvcc_owner_feed_minimal_tests",
+        ":hawdb_mvcc_relational_table_scope_tests",
+        ":hawdb_mvcc_relational_table_scope_minimal_tests",
+        ":hawdb_mvcc_projection_scopes_tests",
+        ":hawdb_mvcc_projection_scopes_minimal_tests",
         ":hawdb_branch_project_open_tests",
         ":hawdb_branch_project_open_minimal_tests",
         ":hawdb_default_consumer_tests",
@@ -697,6 +712,104 @@ rust_test(
 )
 
 # External generation consumers in both supported dependency profiles.
+[
+    rust_test(
+        name = "hawdb_mvcc_projection_publication" + suffix + "_tests",
+        crate_root = "tests/mvcc_projection_publication.rs",
+        srcs = [
+            "tests/mvcc_projection_publication.rs",
+            "tests/support/mvcc_fixture.rs",
+        ],
+        edition = "2024",
+        deps = [library],
+    )
+    for suffix, library in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]
+
+# Keep complete JOIN coverage under the existing per-action timeout; share fixtures.
+[
+    rust_test(
+        name = "hawdb_mvcc_joined_reads" + suffix + "_tests",
+        crate_root = "tests/mvcc_joined_reads.rs",
+        srcs = [
+            "tests/mvcc_joined_reads.rs",
+            "tests/support/mvcc_fixture.rs",
+        ],
+        edition = "2024",
+        deps = [library],
+    )
+    for suffix, library in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]
+
+# Full-source baseline input is separate from retained-feed and JOIN actions.
+[
+    rust_test(
+        name = "hawdb_mvcc_full_source" + suffix + "_tests",
+        crate_root = "tests/mvcc_full_source.rs",
+        srcs = [
+            "tests/mvcc_full_source.rs",
+            "tests/support/mvcc_fixture.rs",
+        ],
+        edition = "2024",
+        deps = [library],
+    )
+    for suffix, library in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]
+
+# Complete canonical baseline comparison owns independent unique expected output.
+[
+    rust_test(
+        name = "hawdb_mvcc_baseline_comparison" + suffix + "_tests",
+        crate_root = "tests/mvcc_baseline_comparison.rs",
+        srcs = ["tests/mvcc_baseline_comparison.rs", "tests/mvcc_baseline_comparison/full_rebuild.rs"],
+        edition = "2024",
+        deps = [library],
+    )
+    for suffix, library in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]
+
+# Joint graph/relational intake and stage custody, separate from publication.
+[
+    rust_test(
+        name = "hawdb_mvcc_staging_session" + suffix + "_tests",
+        crate_root = "tests/mvcc_staging_session.rs",
+        srcs = ["tests/mvcc_staging_session.rs"],
+        edition = "2024",
+        deps = [library],
+    )
+    for suffix, library in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]
+
+# Compose the public main owner with pinned reads and sealed Search activation.
+[
+    rust_test(
+        name = "hawdb_mvcc_publication_owner" + suffix + "_tests",
+        crate_root = "tests/mvcc_publication_owner.rs",
+        srcs = ["tests/mvcc_publication_owner.rs"],
+        edition = "2024",
+        deps = [library],
+    )
+    for suffix, library in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]
+
 rust_test(
     name = "hawdb_search_generation_context_tests",
     crate_root = "tests/search_generation_context.rs",
@@ -1049,3 +1162,45 @@ rust_test(
     edition = "2024",
     deps = [":hawdb_minimal"],
 )
+
+[
+    rust_test(
+        name = "hawdb_mvcc_owner_feed" + suffix + "_tests",
+        crate_root = "tests/mvcc_owner_feed.rs",
+        srcs = ["tests/mvcc_owner_feed.rs"],
+        edition = "2024",
+        deps = [library],
+    )
+    for suffix, library in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]
+
+[
+    rust_test(
+        name = "hawdb_mvcc_relational_table_scope" + suffix + "_tests",
+        crate_root = "tests/mvcc_relational_table_scope.rs",
+        srcs = ["tests/mvcc_relational_table_scope.rs"],
+        edition = "2024",
+        deps = [library],
+    )
+    for suffix, library in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]
+
+[
+    rust_test(
+        name = "hawdb_mvcc_projection_scopes" + suffix + "_tests",
+        crate_root = "tests/mvcc_projection_scopes.rs",
+        srcs = ["tests/mvcc_projection_scopes.rs"],
+        edition = "2024",
+        deps = [library],
+    )
+    for suffix, library in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]

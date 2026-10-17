@@ -68,3 +68,9 @@ relaxed-write loss. See the
 
 The constraint-preserving update controls reject omitting unique or FK columns
 from eligibility; see the [projection proof](../CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).
+
+The shared-reader capacity controls reject returning backing or ledger capacity
+before its physical owners are gone, allocating an uncharged deep clone, and
+retaining execution slots after producer closure. The model separates query
+refund from dropping the final ledger reference; see the
+[resource protocol and proof limits](../SHARED_READER_CAPACITY_PROOF.md).

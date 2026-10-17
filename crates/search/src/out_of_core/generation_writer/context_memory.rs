@@ -127,6 +127,20 @@ impl Options {
         Ok(())
     }
 
+    pub(super) fn bind_replacement_epoch(&mut self, epoch: u64) -> Result<()> {
+        if self
+            .value
+            .source_graph_commit_epoch
+            .is_some_and(|previous| previous > epoch)
+        {
+            return Err(crate::HawDBError::Execution(
+                "replacement source epoch regresses".into(),
+            ));
+        }
+        self.value.source_graph_commit_epoch = Some(epoch);
+        Ok(())
+    }
+
     pub(super) fn set_lexical_source_policy(&mut self, policy: SearchLexicalSourcePolicy) {
         self.value.lexical_max_document_source_bytes = policy.max_document_source_bytes();
         self.value.lexical_max_document_tokens = policy.max_document_tokens();

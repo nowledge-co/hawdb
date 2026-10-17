@@ -24,14 +24,14 @@ use std::fmt;
 use std::io::{self, BufReader, Read};
 
 #[derive(Default)]
-struct ScalarScan {
+pub(super) struct ScalarScan {
     quoted: bool,
     escaped: bool,
     current: usize,
     largest: usize,
 }
 impl ScalarScan {
-    fn byte(&mut self, byte: u8) -> Result<()> {
+    pub(super) fn byte(&mut self, byte: u8) -> Result<()> {
         if self.quoted {
             self.current = self.current.checked_add(1).ok_or_else(size_overflow)?;
             if self.escaped {
@@ -111,10 +111,23 @@ struct CountRead<'a, R> {
     offset: &'a Cell<u64>,
     scalar: ScalarScan,
     max_scalar: usize,
+    task: Option<&'a hawdb_core::RuntimeTaskContext>,
+    term_digest: &'a Cell<Option<Crc32cHasher>>,
 }
 impl<R: Read> Read for CountRead<'_, R> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        let count = self.inner.read(bytes)?;
+        let offset = self.offset.get();
+        if offset.is_multiple_of(8192) {
+            self.task
+                .map_or(Ok(()), crate::build_control::checkpoint)
+                .map_err(io::Error::other)?;
+        }
+        let limit = bytes.len().min(8192 - (offset % 8192) as usize);
+        let count = self.inner.read(&mut bytes[..limit])?;
+        if let Some(mut digest) = self.term_digest.get() {
+            digest.update(&bytes[..count]);
+            self.term_digest.set(Some(digest));
+        }
         for &byte in &bytes[..count] {
             self.scalar.byte(byte).map_err(io::Error::other)?;
             if self.scalar.current > self.max_scalar {
@@ -137,6 +150,7 @@ struct Context<'a> {
     offset: &'a Cell<u64>,
     scalar: usize,
     entries: usize,
+    term_digest: &'a Cell<Option<Crc32cHasher>>,
 }
 
 pub(super) fn decode(
@@ -144,31 +158,74 @@ pub(super) fn decode(
     manifest: &SearchOutOfCoreMutationRunManifest,
     scalar: usize,
 ) -> Result<SearchMutationRunEnvelope> {
+    let reader = super::super::hydration::RangeReader {
+        file: &file.file,
+        offset: 0,
+        remaining: manifest.len,
+    };
+    decode_reader(&file, manifest, scalar, reader, None)
+}
+
+pub(super) fn preflight_admitted(
+    path: &std::path::Path,
+    manifest: &SearchOutOfCoreMutationRunManifest,
+    admission: &crate::build_memory::read::ReadAdmission<'_>,
+    maximum: u64,
+) -> Result<(File, usize)> {
+    let mut scan = ScalarScan::default();
+    let file = admission.visit_bound(path, manifest.len, manifest.checksum, maximum, |chunk| {
+        for &byte in chunk {
+            scan.byte(byte)?;
+        }
+        Ok(())
+    })?;
+    Ok((file, scan.largest.max(8)))
+}
+
+pub(super) fn decode_admitted(
+    file: Shared<terms::TermFile>,
+    manifest: &SearchOutOfCoreMutationRunManifest,
+    scalar: usize,
+    admission: &crate::build_memory::read::ReadAdmission<'_>,
+    maximum: u64,
+) -> Result<SearchMutationRunEnvelope> {
+    admission.with_read_scope(&file.file, manifest.len, maximum, |reader| {
+        decode_reader(&file, manifest, scalar, reader, Some(admission.task))
+    })
+}
+
+fn decode_reader(
+    file: &Shared<terms::TermFile>,
+    manifest: &SearchOutOfCoreMutationRunManifest,
+    scalar: usize,
+    reader: impl Read,
+    task: Option<&hawdb_core::RuntimeTaskContext>,
+) -> Result<SearchMutationRunEnvelope> {
     let offset = Cell::new(0);
+    let term_digest = Cell::new(None);
     let context = Context {
-        file: &file,
+        file,
         offset: &offset,
         scalar,
         entries: manifest.entry_count,
+        term_digest: &term_digest,
     };
     let input = CountRead {
-        inner: BufReader::with_capacity(
-            8192,
-            super::super::hydration::RangeReader {
-                file: &file.file,
-                offset: 0,
-                remaining: manifest.len,
-            },
-        ),
+        inner: BufReader::with_capacity(8192, reader),
         offset: &offset,
         scalar: ScalarScan::default(),
         max_scalar: scalar,
+        task,
+        term_digest: &term_digest,
     };
     let mut decoder = serde_json::Deserializer::from_reader(input);
-    let value = EnvelopeSeed(context)
-        .deserialize(&mut decoder)
-        .map_err(|error| invalid(&error.to_string()))?;
-    decoder.end().map_err(|error| invalid(&error.to_string()))?;
+    let value = EnvelopeSeed(context).deserialize(&mut decoder);
+    task.map_or(Ok(()), crate::build_control::checkpoint)?;
+    let value = value
+        .map_err(|error| super::read::json_error(error, "invalid search mutation-run artifact"))?;
+    let end = decoder.end();
+    task.map_or(Ok(()), crate::build_control::checkpoint)?;
+    end.map_err(|error| super::read::json_error(error, "invalid search mutation-run artifact"))?;
     Ok(value)
 }
 
@@ -467,6 +524,12 @@ impl<'de> Visitor<'de> for TermsSeed<'_> {
             .get()
             .checked_sub(1)
             .ok_or_else(|| de::Error::custom("missing term array"))?;
+        if self.0.term_digest.get().is_some() {
+            return Err(de::Error::custom("nested mutation term range"));
+        }
+        let mut digest = Crc32cHasher::new();
+        digest.update(b"[");
+        self.0.term_digest.set(Some(digest));
         let mut previous: Option<String> = None;
         let mut count = 0usize;
         while let Some(term) = sequence.next_element::<String>()? {
@@ -490,8 +553,12 @@ impl<'de> Visitor<'de> for TermsSeed<'_> {
             bytes,
             count,
             scalar_bytes: self.0.scalar,
-            checksum: terms::range_checksum(&self.0.file.file, start, bytes)
-                .map_err(de::Error::custom)?,
+            checksum: self
+                .0
+                .term_digest
+                .take()
+                .ok_or_else(|| de::Error::custom("missing mutation term digest"))?
+                .finish(),
             memory: None,
         })
     }

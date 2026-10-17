@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 #[doc(hidden)]
 pub mod artifact;
 
+pub(crate) mod owner_capture;
 pub(crate) mod predicate_checkpoint;
 mod predicate_decode;
 
@@ -580,6 +581,9 @@ pub struct SearchProjectionChangefeedStatus {
     pub resume_floor_commit_epoch: u64,
     pub oldest_retained_mutation_id: Option<SearchProjectionMutationId>,
     pub newest_retained_mutation_id: Option<SearchProjectionMutationId>,
+    /// Latest retained built-in graph/relational projection effect. Owner-only
+    /// facts remain in the native feed but do not make the built-in index stale.
+    pub newest_projection_mutation_id: Option<SearchProjectionMutationId>,
     pub first_rebuild_required_mutation_id: Option<SearchProjectionMutationId>,
     pub retained_mutation_count: usize,
     pub retained_bytes: usize,
@@ -602,7 +606,7 @@ pub struct SearchProjectionChangefeedReadiness {
 
 impl SearchProjectionChangefeedStatus {
     pub const fn required_projection_commit_epoch(self) -> u64 {
-        let newest_retained_epoch = match self.newest_retained_mutation_id {
+        let newest_retained_epoch = match self.newest_projection_mutation_id {
             Some(mutation_id) => mutation_id.commit_epoch(),
             None => 0,
         };

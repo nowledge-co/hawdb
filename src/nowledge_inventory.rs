@@ -602,93 +602,41 @@ mod tests {
             .any(|item| item["work_class"] == "projection"
                 && item["priority"] == "background"
                 && item["admission"] == "admit"));
-        let executable_delta = bundle["background_maintenance"]["ranked"]
+        // Fixture projection DDL leaves a conservative rebuild floor. The
+        // summary must expose lag, never advertise a point delta across it.
+        let lag_delta = bundle["background_maintenance"]["ranked"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|item| item["has_executable_search_projection_graph_delta"] == true)
+            .find(|item| item["kind"] == "search_projection_graph_delta")
             .unwrap();
-        assert!(
-            executable_delta["search_projection_graph_delta_operation_count"]
-                .as_u64()
-                .unwrap()
-                > 0
-        );
-        assert!(
-            executable_delta["hint_recent_delta_operations"]
-                .as_u64()
-                .unwrap()
-                > 0
-        );
-        assert!(
-            executable_delta["hint_source_graph_commit_lag"]
-                .as_u64()
-                .unwrap()
-                > 0
-        );
-        assert_eq!(executable_delta["hint_active_topic"], false);
         assert_eq!(
-            executable_delta["hint_query_probability_per_million"]
-                .as_u64()
-                .unwrap(),
-            0
+            lag_delta["has_executable_search_projection_graph_delta"],
+            false
         );
-        assert_eq!(
-            executable_delta["hint_staleness_millis"].as_u64().unwrap(),
-            0
-        );
-        assert!(executable_delta["hint_staleness_ttl_millis"].is_null());
-        assert!(executable_delta["hint_freshness_slo_millis"].is_null());
-        assert!(executable_delta["hint_tenant_budget_remaining_operations"].is_null());
-        assert!(
-            executable_delta["search_projection_graph_delta_upsert_node_count"]
-                .as_u64()
-                .is_some()
-        );
-        assert!(
-            executable_delta["search_projection_graph_delta_delete_document_count"]
-                .as_u64()
-                .is_some()
-        );
-        assert!(executable_delta
-            ["search_projection_graph_delta_complete_through_graph_commit_epoch"]
-            .as_u64()
-            .is_some());
-        assert!(
-            bundle["background_maintenance"]["executable_search_projection_graph_delta_count"]
-                .as_u64()
-                .unwrap()
-                > 0
-        );
-        assert!(
-            bundle["background_maintenance"]["admitted_search_projection_graph_delta_count"]
-                .as_u64()
-                .is_some()
-        );
-        assert!(
-            bundle["background_maintenance"]["deferred_search_projection_graph_delta_count"]
-                .as_u64()
-                .is_some()
-        );
-        assert!(
-            bundle["background_maintenance"]["rejected_search_projection_graph_delta_count"]
-                .as_u64()
-                .is_some()
-        );
-        assert!(
-            bundle["background_maintenance"]["executable_search_projection_graph_delta_operations"]
-                .as_u64()
-                .unwrap()
-                > 0
-        );
-        assert!(bundle["background_maintenance"]
-            ["admitted_search_projection_graph_delta_operations"]
-            .as_u64()
-            .is_some());
+        assert!(lag_delta["hint_source_graph_commit_lag"].as_u64().unwrap() > 0);
+        assert!(lag_delta["hint_recent_delta_operations"].as_u64().unwrap() > 0);
+        for key in [
+            "search_projection_graph_delta_operation_count",
+            "search_projection_graph_delta_upsert_node_count",
+            "search_projection_graph_delta_delete_document_count",
+            "search_projection_graph_delta_complete_through_graph_commit_epoch",
+        ] {
+            assert!(lag_delta[key].is_null(), "{key}");
+        }
+        for key in [
+            "executable_search_projection_graph_delta_count",
+            "admitted_search_projection_graph_delta_count",
+            "deferred_search_projection_graph_delta_count",
+            "rejected_search_projection_graph_delta_count",
+            "executable_search_projection_graph_delta_operations",
+            "admitted_search_projection_graph_delta_operations",
+        ] {
+            assert_eq!(bundle["background_maintenance"][key], 0, "{key}");
+        }
         assert!(bundle["background_maintenance"]
             ["max_search_projection_graph_delta_complete_through_graph_commit_epoch"]
-            .as_u64()
-            .is_some());
+            .is_null());
         assert_eq!(
             bundle["background_maintenance"]["qos_snapshot"]["ready"],
             true

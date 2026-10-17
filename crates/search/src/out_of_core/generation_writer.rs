@@ -61,6 +61,16 @@ mod governed;
 mod initial;
 mod io;
 mod mutations;
+mod unordered;
+pub use unordered::{
+    SearchBaselineComparisonLimits, SearchBaselineComparisonReport, SearchMatchedBaseline,
+    SearchMutationInspectionInput, SearchMutationInspectionStep, SearchMutationSortStep,
+    SearchMutationSortStepLimits, SearchMutationSortStepUsage, SearchOutOfCoreBaselineComparison,
+    SearchOutOfCoreOwnerReplacementWriter, SearchOutOfCoreUnorderedMutationWriter,
+    SearchOutOfCoreUnorderedReplacementWriter, SearchOwnerOverlayLimits, SearchOwnerOverlayReport,
+    SearchUnorderedMutationLimits, SearchUnorderedMutationReport,
+};
+mod prepared;
 mod publication;
 mod rabitq;
 #[cfg(feature = "vector-search")]
@@ -76,10 +86,11 @@ pub use compaction::{
     SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
     SearchOutOfCoreSegmentCompactionStopReason,
 };
-pub use delta::SearchOutOfCoreGenerationUpdate;
+pub use delta::{SearchOutOfCoreGenerationUpdate, SearchOutOfCorePreparedUpdate};
 pub use governed::{
     GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter, SearchGenerationAdmission,
 };
+pub use prepared::{PreparedSearchPublication, SearchOutOfCorePreparedGeneration};
 
 const STAGE_METADATA_FILE: &str = "search_projection_metadata_payloads.stage.hawdb";
 const STAGE_VECTOR_FILE: &str = "search_projection_vector_payloads.stage.hawdb";
@@ -660,18 +671,44 @@ impl SearchOutOfCoreGenerationWriter {
         compaction::prepare(reader, policy, options, task)
     }
 
+    /// Builds and publishes one generation. For preparation outside an outer
+    /// owner, use `prepare_publication` and activate its owned candidate later.
     pub fn finish(self) -> Result<SearchOutOfCoreGenerationBuildReport> {
-        self.finish_with_artifacts(|writer, source, generation| {
-            if writer.needs_chinese_analyzer {
-                crate::analyzer_workspace::run(&writer.memory, &writer.task_context, |workspace| {
-                    writer.build_artifacts_with_workspace(source, generation, Some(workspace))
-                })
-            } else {
-                writer.build_artifacts(source, generation)
-            }
-        })
+        self.prepare_publication()?.publish()
     }
 
+    /// Builds all content in an invisible private stage without retaining the
+    /// target publication lease. The returned candidate owns its staged files,
+    /// resource leases and cleanup obligation until activation or drop.
+    ///
+    /// This is a Search lifecycle primitive, not a Graph dependency proof. The
+    /// embedded owner must validate source/target dependencies while excluding
+    /// relevant mutations before calling the candidate's `publish` operation.
+    pub fn prepare_publication(self) -> Result<SearchOutOfCorePreparedGeneration> {
+        self.prepare_publication_with_artifacts(
+            |writer, source, generation| {
+                if writer.needs_chinese_analyzer {
+                    crate::analyzer_workspace::run(
+                        &writer.memory,
+                        &writer.task_context,
+                        |workspace| {
+                            writer.build_artifacts_with_workspace(
+                                source,
+                                generation,
+                                Some(workspace),
+                            )
+                        },
+                    )
+                } else {
+                    writer.build_artifacts(source, generation)
+                }
+            },
+            None,
+            false,
+        )
+    }
+
+    #[cfg(test)]
     fn finish_with_artifacts(
         self,
         build: impl FnOnce(&Self, &SpoolSource, u64) -> Result<GenerationArtifacts>,
@@ -680,11 +717,21 @@ impl SearchOutOfCoreGenerationWriter {
     }
 
     fn finish_publication(
-        mut self,
+        self,
         build: impl FnOnce(&Self, &SpoolSource, u64) -> Result<GenerationArtifacts>,
         generation_override: Option<u64>,
         private_partition: bool,
     ) -> Result<SearchOutOfCoreGenerationBuildReport> {
+        self.prepare_publication_with_artifacts(build, generation_override, private_partition)?
+            .publish()
+    }
+
+    fn prepare_publication_with_artifacts(
+        mut self,
+        build: impl FnOnce(&Self, &SpoolSource, u64) -> Result<GenerationArtifacts>,
+        generation_override: Option<u64>,
+        private_partition: bool,
+    ) -> Result<SearchOutOfCorePreparedGeneration> {
         checkpoint(&self.task_context)?;
         if self.poisoned {
             return Err(HawDBError::Storage(
@@ -708,36 +755,29 @@ impl SearchOutOfCoreGenerationWriter {
             )));
         }
 
-        let _publish_lease = super::SearchProjectionPublishLease::acquire_with_context(
-            &self.root,
-            &self.memory,
-            &self.task_context,
-        )?;
-        if let Some(expected) = self.expected_active_generation {
-            let actual = discovery::active(&self.root, &self.memory, &self.task_context)?;
-            if actual != Some(expected) {
-                return Err(actual.map_or_else(
-                    || {
-                        HawDBError::StorageIntegrity(
-                            "published search generation disappeared".into(),
-                        )
-                    },
-                    |actual| generation_changed(expected, actual),
-                ));
-            }
-        }
-
-        let generation = generation_override.map_or_else(
-            || {
-                discovery::next(
-                    &self.root,
-                    self.max_lexical_manifest_bytes.get(),
-                    &self.memory,
-                    &self.task_context,
-                )
-            },
-            Ok,
-        )?;
+        // Capture the selector and prospective names under publication authority.
+        // Concurrent candidates may use the same names only in distinct private
+        // stages. Activation checks this base again before touching real files.
+        let (base, generation) = {
+            let _lease = super::SearchProjectionPublishLease::acquire_with_context(
+                &self.root,
+                &self.memory,
+                &self.task_context,
+            )?;
+            let base = prepared::CapturedBase::capture(&self)?;
+            let generation = generation_override.map_or_else(
+                || {
+                    discovery::next(
+                        &self.root,
+                        self.max_lexical_manifest_bytes.get(),
+                        &self.memory,
+                        &self.task_context,
+                    )
+                },
+                Ok,
+            )?;
+            (base, generation)
+        };
         let compacting = matches!(
             self.active_manifest_update,
             Some(ActiveManifestUpdate::Compact { .. })
@@ -746,7 +786,10 @@ impl SearchOutOfCoreGenerationWriter {
             && !compacting
             && self.document_count > self.options.max_content_documents.get()
         {
-            return initial::finish(self, generation);
+            let report = initial::prepare(&self, generation)?;
+            return Ok(SearchOutOfCorePreparedGeneration::partitioned(
+                self, base, generation, report,
+            ));
         }
         let source = SpoolSource {
             path: &self.spool_path,
@@ -767,12 +810,31 @@ impl SearchOutOfCoreGenerationWriter {
             if !private_partition && self.document_count > 1 {
                 drop(artifacts);
                 drop(source);
-                return initial::finish(self, generation);
+                let report = initial::prepare(&self, generation)?;
+                return Ok(SearchOutOfCorePreparedGeneration::partitioned(
+                    self, base, generation, report,
+                ));
             }
             return Err(HawDBError::Storage(
                 "search content exceeds the configured document or artifact limit".into(),
             ));
         }
+        drop(source);
+        Ok(SearchOutOfCorePreparedGeneration::single(
+            self,
+            base,
+            generation,
+            private_partition,
+            artifacts,
+        ))
+    }
+
+    fn publish_artifacts(
+        mut self,
+        generation: u64,
+        private_partition: bool,
+        artifacts: GenerationArtifacts,
+    ) -> Result<SearchOutOfCoreGenerationBuildReport> {
         let GenerationArtifacts {
             segment: segment_output,
             lexical_artifact_name,
@@ -1117,6 +1179,22 @@ impl SearchOutOfCoreGenerationWriter {
             next_field_bytes,
             last_id_memory,
         })
+    }
+
+    fn push_spool_record(&mut self, record: spool::SpoolRecord, needs_chinese: bool) -> Result<()> {
+        let record_bytes = record.encoded_bytes;
+        let prepared = self.prepare_record(record.header.header(), record_bytes)?;
+        let output = self
+            .spool
+            .as_mut()
+            .ok_or_else(|| HawDBError::Storage("search generation spool is closed".into()))?;
+        output.write_all(&record_bytes.to_le_bytes())?;
+        output.write_all(&record.checksum().to_le_bytes())?;
+        record.write_to(output, &self.memory, &self.task_context)?;
+        record.add_digest(&mut self.documents_digest);
+        self.needs_chinese_analyzer |= needs_chinese;
+        self.commit_record(record.header.header, record_bytes, prepared);
+        Ok(())
     }
 
     fn push_inner(&mut self, document: AdmittedDocument) -> Result<()> {

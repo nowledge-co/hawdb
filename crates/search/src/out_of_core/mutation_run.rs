@@ -28,6 +28,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
 
+mod read;
+mod read_encoding;
+mod reader_admission;
 mod streaming;
 pub(crate) mod terms;
 
@@ -229,6 +232,7 @@ struct SearchMutationRunEnvelope {
 pub(super) struct SearchMutationRun {
     body: SearchMutationRunBody,
     open_working_bytes: u64,
+    _reader_memory: Option<crate::build_memory::read::ReaderMemory>,
 }
 
 /// One target-bound predicate shared by every read path of a validated closure.
@@ -374,6 +378,14 @@ impl SearchMutationRunBody {
     }
 
     fn validate(&self) -> Result<()> {
+        self.validate_with_query_context(None)
+    }
+
+    fn validate_with_query_context(
+        &self,
+        context: Option<crate::lexical_projection::QueryContext<'_>>,
+    ) -> Result<()> {
+        context.map_or(Ok(()), |context| context.checkpoint())?;
         if self.format != MUTATION_RUN_FORMAT || self.generation == 0 || self.entries.is_empty() {
             return Err(HawDBError::Storage(
                 "search mutation-run header or entries are invalid".to_string(),
@@ -381,6 +393,7 @@ impl SearchMutationRunBody {
         }
         let mut previous_key: Option<(&str, u64)> = None;
         for entry in &self.entries {
+            context.map_or(Ok(()), |context| context.checkpoint())?;
             let key = (entry.document_id.as_str(), entry.target_segment_id);
             if entry.document_id.is_empty() || previous_key.is_some_and(|previous| previous >= key)
             {
@@ -389,7 +402,10 @@ impl SearchMutationRunBody {
                         .to_string(),
                 ));
             }
-            entry.retraction.unique_terms.validate()?;
+            entry
+                .retraction
+                .unique_terms
+                .validate_with_query_context(context)?;
             previous_key = Some(key);
         }
         Ok(())
@@ -404,6 +420,39 @@ impl SearchMutationRun {
         expected_analyzer_digest: u64,
         budget: &mut MutationRunBudget,
     ) -> Result<Self> {
+        Self::open_with_read_admission(
+            root,
+            manifest,
+            max_bytes,
+            expected_analyzer_digest,
+            budget,
+            None,
+            max_bytes,
+        )
+    }
+
+    pub(super) fn open_with_read_admission(
+        root: &Path,
+        manifest: &SearchOutOfCoreMutationRunManifest,
+        max_bytes: u64,
+        expected_analyzer_digest: u64,
+        budget: &mut MutationRunBudget,
+        admission: Option<&crate::build_memory::read::ReadAdmission<'_>>,
+        maximum_artifact_bytes: u64,
+    ) -> Result<Self> {
+        if let Some(admission) = admission {
+            return Self::open_admitted(
+                reader_admission::OpenContext {
+                    root,
+                    admission,
+                    maximum_encoded_bytes: max_bytes,
+                    maximum_artifact_bytes,
+                    analyzer_digest: expected_analyzer_digest,
+                    budget,
+                },
+                manifest,
+            );
+        }
         if manifest.len > max_bytes {
             return Err(HawDBError::Storage(
                 "search mutation-run artifact exceeds the configured read budget".to_string(),
@@ -450,6 +499,7 @@ impl SearchMutationRun {
         Ok(Self {
             body: envelope.body,
             open_working_bytes: working_bytes,
+            _reader_memory: None,
         })
     }
 
@@ -462,6 +512,16 @@ pub(super) fn validate_closure(
     manifest: &SearchOutOfCoreManifestBody,
     runs: &[SearchMutationRun],
 ) -> Result<()> {
+    validate_closure_with_context(manifest, runs, None)
+}
+
+pub(super) fn validate_closure_with_context(
+    manifest: &SearchOutOfCoreManifestBody,
+    runs: &[SearchMutationRun],
+    task: Option<&hawdb_core::RuntimeTaskContext>,
+) -> Result<()> {
+    let checkpoint = || task.map_or(Ok(()), crate::build_control::checkpoint);
+    checkpoint()?;
     if runs.len() != manifest.mutation_runs.len() {
         return Err(HawDBError::Storage(
             "search mutation-run closure does not match the active manifest".to_string(),
@@ -473,16 +533,17 @@ pub(super) fn validate_closure(
     if runs.is_empty() {
         return Ok(());
     }
-    let active_segments = manifest
-        .segments
-        .iter()
-        .map(|segment| segment.segment_id)
-        .collect::<BTreeSet<_>>();
+    let mut active_segments = BTreeSet::new();
+    for segment in &manifest.segments {
+        checkpoint()?;
+        active_segments.insert(segment.segment_id);
+    }
     let mut visible_document_count =
         manifest
             .segments
             .iter()
             .try_fold(0usize, |total, segment| {
+                checkpoint()?;
                 total.checked_add(segment.document_count).ok_or_else(|| {
                     HawDBError::Storage("search mutation-run document count overflows".to_string())
                 })
@@ -493,6 +554,7 @@ pub(super) fn validate_closure(
     let mut retracted_targets = BTreeSet::new();
     for run in runs {
         for entry in run.entries() {
+            checkpoint()?;
             if !active_segments.contains(&entry.target_segment_id) {
                 return Err(HawDBError::Storage(
                     "search mutation-run targets a segment outside the active manifest".to_string(),
@@ -538,15 +600,47 @@ pub(super) fn validate_targets<'a>(
     analyzer: &SearchAnalyzerLexicon,
     source_policy: crate::SearchLexicalSourcePolicy,
 ) -> Result<()> {
+    validate_targets_with_admission(root, segments, runs, config, analyzer, source_policy, None)
+}
+
+pub(super) fn validate_targets_with_admission<'a>(
+    root: &Path,
+    segments: &[SearchOutOfCoreSegmentReader],
+    runs: impl Iterator<Item = &'a SearchMutationRun>,
+    config: &SearchOutOfCoreConfig,
+    analyzer: &SearchAnalyzerLexicon,
+    source_policy: crate::SearchLexicalSourcePolicy,
+    admission: Option<(&crate::build_memory::read::ReadAdmission<'_>, u64)>,
+) -> Result<()> {
     let mut runs = runs.peekable();
     if runs.peek().is_none() {
         return Ok(());
     }
-    let task = hawdb_core::RuntimeTaskContext::default().with_memory_reservation(
-        hawdb_core::RuntimeMemoryReservation::new(config.max_reanalysis_working_bytes.get(), 0),
-    );
-    let memory = crate::build_memory::BuildMemory::new(&task)?;
-    let mut stage = super::generation_writer::StageDirectory::create(root, &memory, &task)?;
+    if admission.is_none() && runs.peek().is_some_and(|run| run._reader_memory.is_some()) {
+        return Err(HawDBError::Execution(
+            "admitted mutation validation requires borrowed execution".into(),
+        ));
+    }
+    let legacy;
+    let (memory, task) = match admission {
+        Some((admission, _)) => (admission.memory, admission.task),
+        None => {
+            let task = hawdb_core::RuntimeTaskContext::default().with_memory_reservation(
+                hawdb_core::RuntimeMemoryReservation::new(
+                    config.max_reanalysis_working_bytes.get(),
+                    0,
+                ),
+            );
+            let memory = crate::build_memory::BuildMemory::new(&task)?;
+            legacy = (memory, task);
+            (&legacy.0, &legacy.1)
+        }
+    };
+    let query = admission.map(|(admission, _)| {
+        crate::lexical_projection::QueryContext::from_read_admission(admission)
+    });
+    crate::build_control::checkpoint(task)?;
+    let mut stage = super::generation_writer::StageDirectory::create(root, memory, task)?;
     stage.reserve_disk(
         config
             .max_uncompressed_segment_bytes
@@ -557,10 +651,15 @@ pub(super) fn validate_targets<'a>(
     let path = crate::build_memory::path::OwnedPath::join(
         &stage.path,
         Path::new("validate-target.body"),
-        &memory,
-        &task,
+        memory,
+        task,
     )?;
     for entry in runs.flat_map(SearchMutationRun::entries) {
+        crate::build_control::checkpoint(task)?;
+        let mut terms = entry
+            .retraction
+            .unique_terms
+            .cursor_with_query_context(query)?;
         let missing = || {
             HawDBError::Storage(
                 "search mutation-run target document is absent from its content segment".into(),
@@ -584,35 +683,58 @@ pub(super) fn validate_targets<'a>(
                 }
             })
             .map_err(|_| missing())?;
-        if !artifact.lexical_projection.probe_document_id(id)?.present {
+        if !artifact
+            .lexical_projection
+            .probe_document_id_with_admission(id, admission)?
+            .present
+        {
             return Err(missing());
         }
-        let file = hawdb_storage::file_io::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&*path)?;
-        let source = super::hydration::source::Source::capture(
-            artifact,
-            &artifact.descriptor.segments[position],
-            id,
-            file,
-            (
-                config.max_uncompressed_segment_bytes.get(),
-                config.max_document_header_bytes.get(),
-            ),
-            &memory,
-            &task,
-        )?;
-        let mut terms = entry.retraction.unique_terms.cursor()?;
+        let file = {
+            let _io = admission
+                .map(|(admission, _)| admission.io())
+                .transpose()
+                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            hawdb_storage::file_io::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&*path)?
+        };
+        let limits = (
+            config.max_uncompressed_segment_bytes.get(),
+            config.max_document_header_bytes.get(),
+        );
+        let source = match admission {
+            Some((admission, maximum)) => {
+                super::hydration::source::Source::capture_with_read_admission(
+                    artifact,
+                    &artifact.descriptor.segments[position],
+                    id,
+                    file,
+                    limits,
+                    admission,
+                    maximum,
+                )?
+            }
+            None => super::hydration::source::Source::capture(
+                artifact,
+                &artifact.descriptor.segments[position],
+                id,
+                file,
+                limits,
+                memory,
+                task,
+            )?,
+        };
         let length = artifact.lexical_projection.source_retraction(
             &source,
             analyzer,
             crate::lexical_projection::retraction::RetractionContext {
                 root: &stage.path,
-                memory: &memory,
-                task: &task,
+                memory,
+                task,
                 needs_chinese: source.needs_chinese,
                 source_policy,
             },
@@ -664,7 +786,7 @@ mod tests {
             .finish()
             .unwrap();
         assert_eq!(empty.len(), 0);
-        empty.validate().unwrap();
+        empty.validate_with_query_context(None).unwrap();
         assert!(terms::Writer::new(file.clone(), &memory, 3).is_err());
         assert_eq!(file.file.metadata().unwrap().len(), 2);
         drop(empty);
@@ -768,6 +890,12 @@ mod tests {
                 Err(error) => panic!("create mutation fixture: {error}"),
             }
         };
+        // Model the real reader's existing project domain, rather than
+        // initializing process-global standalone FD state inside observation.
+        let project = hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_component(
+            &path, false,
+        )
+        .unwrap();
         let mut manifests = Vec::new();
         let mut phases = Vec::new();
         for generation in [3, 4] {
@@ -802,8 +930,15 @@ mod tests {
         drop(error);
         // Rejected decoding scanned fixed blocks without retaining the term array.
         assert!(rejected_peak as u64 <= 2 * manifests[0].len + 8192);
+        // Native mutex backing belongs to the project cache on macOS. Close
+        // that owner too before asserting complete measured-heap reclamation.
+        drop(project);
         assert_eq!(allocation::live(), 0);
 
+        let project = hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_component(
+            &path, false,
+        )
+        .unwrap();
         let limit = base + phases.iter().copied().max().unwrap();
         let mut budget = MutationRunBudget::new(limit, 2, 1).unwrap();
         let (first, peak) = allocation::measure(|| {
@@ -819,6 +954,7 @@ mod tests {
         assert_eq!(budget.retained, retained);
         drop(error);
         drop(first);
+        drop(project);
         assert_eq!(allocation::live(), 0);
         let mut standalone = MutationRunBudget::new(limit, 2, 1).unwrap();
         SearchMutationRun::open(&path, &manifests[1], u64::MAX, 5, &mut standalone).unwrap();
@@ -846,10 +982,12 @@ mod tests {
         let visibility = MutationVisibility::from_validated_runs(vec![
             SearchMutationRun {
                 open_working_bytes: 0,
+                _reader_memory: None,
                 body: SearchMutationRunBody::new(3, 5, vec![first]).unwrap(),
             },
             SearchMutationRun {
                 open_working_bytes: 0,
+                _reader_memory: None,
                 body: SearchMutationRunBody::new(4, 5, vec![second]).unwrap(),
             },
         ]);
@@ -862,6 +1000,7 @@ mod tests {
         let combined_visibility =
             MutationVisibility::from_validated_runs(vec![SearchMutationRun {
                 open_working_bytes: 0,
+                _reader_memory: None,
                 body: SearchMutationRunBody::new(5, 5, vec![entry("memory:001"), combined])
                     .unwrap(),
             }]);

@@ -60,6 +60,8 @@ use spill_control::Control as SpillControl;
 mod spill_memory;
 use spill_memory::{PendingPostings, RunPosting};
 mod manifest_encoding;
+mod reader_admission;
+pub(super) use reader_admission::{Identity as ReaderIdentity, OpenContext as ReaderOpenContext};
 mod posting_codec;
 
 #[cfg(test)]
@@ -130,6 +132,41 @@ pub(super) fn analyzer_digest(analyzer: &SearchAnalyzerLexicon) -> u64 {
         digest.update(&[0]);
     }
     digest.finish()
+}
+
+pub(super) fn analyzer_digest_with_context(
+    analyzer: &SearchAnalyzerLexicon,
+    task: &RuntimeTaskContext,
+) -> Result<u64> {
+    let mut digest = Digest::new();
+    let mut update = |bytes: &[u8]| -> Result<()> {
+        for chunk in bytes.chunks(8192) {
+            checkpoint(task)?;
+            digest.update(chunk);
+        }
+        Ok(())
+    };
+    checkpoint(task)?;
+    update(ANALYZER_FORMAT_VERSION)?;
+    for rule in &analyzer.alias_rules {
+        checkpoint(task)?;
+        for input in &rule.inputs {
+            update(input.as_bytes())?;
+            update(&[0])?;
+        }
+        update(&[1])?;
+        for alias in &rule.aliases {
+            update(alias.as_bytes())?;
+            update(&[0])?;
+        }
+        update(&[2])?;
+    }
+    for stopword in &analyzer.stopwords {
+        update(stopword.as_bytes())?;
+        update(&[0])?;
+    }
+    checkpoint(task)?;
+    Ok(digest.finish())
 }
 
 /// An order-independent document-set identity used to join immutable search artifacts.
@@ -408,9 +445,10 @@ impl ManifestBody {
 
     fn decode_with_context(bytes: &[u8], task: Option<&RuntimeTaskContext>) -> Result<Self> {
         task.map_or(Ok(()), checkpoint)?;
-        let envelope: ManifestEnvelope = serde_json::from_slice(bytes)
-            .map_err(|error| HawDBError::Storage(format!("invalid lexical manifest: {error}")))?;
+        let envelope = serde_json::from_slice::<ManifestEnvelope>(bytes);
         task.map_or(Ok(()), checkpoint)?;
+        let envelope = envelope
+            .map_err(|error| HawDBError::Storage(format!("invalid lexical manifest: {error}")))?;
         if manifest_encoding::checksum_with_context(&envelope.body, task)? != envelope.checksum {
             return Err(HawDBError::Storage(
                 "lexical projection manifest checksum mismatch".to_string(),
@@ -1029,6 +1067,8 @@ pub(super) struct LexicalProjectionReader {
     required_term_bytes: u64,
     // Only build-created readers retain an operation-owned metadata lease.
     _build_memory: Option<QueryMemoryLease>,
+    // Admitted immutable readers retain capacity without construction execution.
+    _reader_memory: Option<crate::build_memory::read::ReaderMemory>,
 }
 
 impl LexicalProjectionReader {
@@ -1199,6 +1239,7 @@ impl LexicalProjectionReader {
             config,
             required_term_bytes,
             _build_memory: build_memory,
+            _reader_memory: None,
         })))
     }
 

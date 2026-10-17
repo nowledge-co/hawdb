@@ -4227,3 +4227,359 @@ fn source_memory_cold_union_shares_one_retained_allowance() {
         }
     }
 }
+
+#[test]
+fn entity_functions_refuse_large_owned_outputs_before_payload_allocation() {
+    // Inputs and catalog are already owned before observing the transform;
+    // this tests expression ownership, not upstream scan admission or total RSS.
+    let size = 1024 * 1024 + 137;
+    for mode in ["node", "relationship", "labels"] {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::default();
+        let label = if mode == "labels" {
+            "L".repeat(size)
+        } else {
+            "Memory".into()
+        };
+        let root = store
+            .create_node(
+                &mut catalog,
+                &label,
+                BTreeMap::from([("body".into(), Value::String("x".repeat(size)))]),
+            )
+            .unwrap();
+        let relationship = store
+            .create_relationship(
+                &mut catalog,
+                root,
+                root,
+                "HAS_LABEL",
+                BTreeMap::from([("body".into(), Value::String("y".repeat(size)))]),
+            )
+            .unwrap();
+        let mut binding = Binding::values(BTreeMap::new());
+        binding
+            .nodes
+            .insert("n".into(), store.node_owned(root).unwrap().unwrap());
+        binding.relationships.insert(
+            "r".into(),
+            store.relationship_owned(relationship).unwrap().unwrap(),
+        );
+        let mut source = DirectProjectionSource(Some(vec![binding]));
+        let memory = ExecutionMemoryConfig {
+            query_memory_bytes: nz(64 * 1024),
+            blocking_operator_bytes: nz(16 * 1024),
+            batch_payload_bytes: nz(16 * 1024),
+            ..Default::default()
+        };
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let input = PhysicalPlan::EmptyExec;
+        let observer = QueryExecutionObserver::new(&input);
+        let items = [Projection {
+            name: "output".into(),
+            expression: match mode {
+                "labels" => ProjectionExpression::Labels {
+                    variable: "n".into(),
+                },
+                "relationship" => ProjectionExpression::Properties {
+                    variable: "r".into(),
+                },
+                _ => ProjectionExpression::Properties {
+                    variable: "n".into(),
+                },
+            },
+        }];
+        let callbacks = Cell::new(0);
+        let window = AllocationWindow::start(size);
+        let result = stream_projection_batches(
+            &items,
+            &input,
+            &mut source,
+            BatchExecutionContext {
+                catalog: &catalog,
+                memory: &memory,
+                memory_ledger: &ledger,
+                task_context: None,
+                observer: &observer,
+            },
+            ExecutionLimit::unlimited(),
+            &mut |_| {
+                callbacks.set(callbacks.get() + 1);
+                Ok(BatchControl::Continue)
+            },
+        );
+        let allocations = window.allocations();
+        drop(window);
+        assert!(
+            matches!(result, Err(HawDBError::Execution(_))),
+            "{mode}: {result:?}"
+        );
+        assert_eq!(allocations, 0, "{mode}: copied payload before admission");
+        assert_eq!(callbacks.get(), 0);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+}
+
+#[test]
+fn internal_id_roots_avoid_unrelated_payloads_in_resident_and_cold_sources() {
+    let size = 1024 * 1024 + 137;
+    let mut failures = Vec::new();
+    for persisted in [false, true] {
+        let directory = persisted.then(StoredPropertyDirectory::new);
+        let replay = hawdb_storage::store::WalReplayConfig {
+            residency_mode: hawdb_storage::store::StorageResidencyMode::OutOfCore,
+            ..Default::default()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = if let Some(directory) = &directory {
+            GraphStore::open_with_durability_and_replay_config(
+                &directory.0,
+                &mut catalog,
+                Default::default(),
+                replay,
+            )
+            .unwrap()
+        } else {
+            GraphStore::default()
+        };
+        for (label, body) in [
+            ("Memory", "X".repeat(size)),
+            ("Memory", "one".into()),
+            ("Memory", "two".into()),
+            ("Other", "Y".repeat(size)),
+        ] {
+            store
+                .create_node(
+                    &mut catalog,
+                    label,
+                    BTreeMap::from([("body".into(), Value::String(body))]),
+                )
+                .unwrap();
+        }
+        if let Some(directory) = &directory {
+            store.checkpoint(&catalog).unwrap();
+            drop(store);
+            catalog = Catalog::default();
+            store = GraphStore::open_with_durability_and_replay_config(
+                &directory.0,
+                &mut catalog,
+                Default::default(),
+                replay,
+            )
+            .unwrap();
+            assert!(store.is_out_of_core());
+        }
+        let predicate = Predicate::IdIn {
+            variable: "n".into(),
+            values: [3, 2, 1, 2, 999].map(Value::Int).to_vec(),
+        };
+        let plans = internal_id_plans(predicate);
+        for plan in plans {
+            let memory = ExecutionMemoryConfig {
+                query_memory_bytes: nz(64 * 1024),
+                blocking_operator_bytes: nz(16 * 1024),
+                batch_payload_bytes: nz(16 * 1024),
+                batch_rows: nz(1),
+                ..Default::default()
+            };
+            let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+            let observer = QueryExecutionObserver::new(&plan);
+            let parameters = BTreeMap::new();
+            let external = TextSource {
+                external_id: String::new(),
+                calls: Cell::new(0),
+            };
+            let mut ids = Vec::new();
+            let window = AllocationWindow::start(size);
+            let result = execute_binding_batches(
+                &plan,
+                BatchReadContext {
+                    catalog: &catalog,
+                    store: &store,
+                    parameters: &parameters,
+                    external: &external,
+                    memory: &memory,
+                    memory_ledger: &ledger,
+                    task_context: None,
+                    observer: &observer,
+                    host_scorer: None,
+                },
+                ExecutionLimit::unlimited(),
+                &mut |batch| {
+                    ids.extend(batch.iter().map(|row| row.nodes["n"].id.0));
+                    Ok(BatchControl::Continue)
+                },
+            );
+            assert_eq!(window.allocations(), 0, "unrelated body copied by {plan:?}");
+            drop(window);
+            if let Err(error) = result {
+                failures.push(format!("persisted={persisted}, {plan:?}: {error}"));
+                continue;
+            }
+            assert_eq!(ids, [1, 2]);
+            let reports = observer.into_reports();
+            assert!(reports.scan_pruning.iter().any(|r| r.strategy
+                == hawdb_storage::scan::ScanPruningStrategy::IdIn
+                && r.pruned
+                && r.candidate_count_before_filter == 2));
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+            assert!(ledger.snapshot().peak_bytes <= memory.query_memory_bytes.get());
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn internal_id_plans(predicate: Predicate) -> [PhysicalPlan; 3] {
+    use hawdb_plan_cypher::{GraphMatchNode, GraphMatchProgram, GraphMatchStep};
+    [
+        PhysicalPlan::FilterExec {
+            predicate: predicate.clone(),
+            input: Box::new(PhysicalPlan::SeqNodeScan {
+                variable: "n".into(),
+                label: "Memory".into(),
+            }),
+        },
+        PhysicalPlan::NodeProjectionScanExec {
+            variable: "n".into(),
+            label: "Memory".into(),
+            access: NodeProjectionAccess::LabelScan,
+            required_properties: vec!["body".into()],
+            predicate: Some(predicate.clone()),
+            items: vec![],
+        },
+        PhysicalPlan::GraphMatchExec {
+            program: GraphMatchProgram {
+                imports: vec![],
+                introduced: vec!["n".into()],
+                steps: vec![GraphMatchStep::Node(GraphMatchNode {
+                    variable: "n".into(),
+                    label: "Memory".into(),
+                    properties: BTreeMap::new(),
+                })],
+                predicate: Some(predicate),
+                optional: false,
+            },
+            input: None,
+        },
+    ]
+}
+
+#[test]
+fn internal_id_root_access_matches_full_scan_boolean_and_type_semantics() {
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::default();
+    for (label, body) in [
+        ("Memory", "zero"),
+        ("Memory", "one"),
+        ("Memory", "two"),
+        ("Other", "other"),
+    ] {
+        store
+            .create_node(
+                &mut catalog,
+                label,
+                BTreeMap::from([("body".into(), Value::String(body.into()))]),
+            )
+            .unwrap();
+    }
+    let memory = ExecutionMemoryConfig::default();
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let parameters = BTreeMap::new();
+    let external = TextSource {
+        external_id: String::new(),
+        calls: Cell::new(0),
+    };
+    let run = |plan: &PhysicalPlan| {
+        let observer = QueryExecutionObserver::new(plan);
+        let mut ids = Vec::new();
+        execute_binding_batches(
+            plan,
+            BatchReadContext {
+                catalog: &catalog,
+                store: &store,
+                parameters: &parameters,
+                external: &external,
+                memory: &memory,
+                memory_ledger: &ledger,
+                task_context: None,
+                observer: &observer,
+                host_scorer: None,
+            },
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                ids.extend(batch.iter().map(|row| row.nodes["n"].id.0));
+                Ok(BatchControl::Continue)
+            },
+        )
+        .unwrap();
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        ids
+    };
+    let one = Predicate::IdEq {
+        variable: "n".into(),
+        value: Value::Int(1),
+    };
+    for values in [
+        vec![],
+        vec![
+            Value::Int(2),
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(999),
+        ],
+        vec![Value::Null, Value::Int(1)],
+        vec![Value::Float(1.0), Value::Int(1)],
+        vec![Value::Int(-1), Value::Int(2)],
+        vec![Value::Int(1); 1025],
+    ] {
+        let ids = Predicate::IdIn {
+            variable: "n".into(),
+            values,
+        };
+        for predicate in [
+            ids.clone(),
+            one.clone(),
+            Predicate::And(vec![ids.clone(), one.clone()]),
+            Predicate::Or(vec![ids.clone(), one.clone()]),
+            Predicate::Not(Box::new(ids.clone())),
+            Predicate::And(vec![
+                ids,
+                Predicate::IdEq {
+                    variable: "other".into(),
+                    value: Value::Int(1),
+                },
+            ]),
+        ] {
+            // Double NOT preserves three-valued truth but prevents necessary-ID
+            // extraction. This is the independent complete-root enumerator.
+            let oracle = internal_id_plans(Predicate::Not(Box::new(Predicate::Not(Box::new(
+                predicate.clone(),
+            )))))
+            .into_iter()
+            .last()
+            .unwrap();
+            let expected = run(&oracle);
+            for plan in internal_id_plans(predicate.clone()) {
+                assert_eq!(run(&plan), expected, "{plan:?}");
+            }
+        }
+    }
+    // An absorbed access predicate is absent from the residual; ID optimization
+    // must not bypass the existing property seek's membership restriction.
+    let plan = PhysicalPlan::NodeProjectionScanExec {
+        variable: "n".into(),
+        label: "Memory".into(),
+        access: NodeProjectionAccess::PropertyValues {
+            property: "body".into(),
+            values: vec![Value::String("one".into())],
+        },
+        required_properties: vec!["body".into()],
+        predicate: Some(Predicate::IdEq {
+            variable: "n".into(),
+            value: Value::Int(2),
+        }),
+        items: vec![],
+    };
+    assert!(run(&plan).is_empty());
+}

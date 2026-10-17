@@ -151,6 +151,8 @@ pub(super) fn scalar_expression_is_scoped(
             scalar_expression_is_scoped(expression, scope, column_names)
         }
         ScalarExpressionKind::Id(_)
+        | ScalarExpressionKind::Properties(_)
+        | ScalarExpressionKind::Labels(_)
         | ScalarExpressionKind::RelationshipType(_)
         | ScalarExpressionKind::DatePart { .. } => false,
     }

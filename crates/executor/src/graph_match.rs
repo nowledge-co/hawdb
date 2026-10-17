@@ -317,29 +317,70 @@ impl MatchRuntime<'_> {
                         None
                     }
                 });
-                self.store.visit_nodes_with_allocation(
-                    label,
-                    &mut |bytes| {
-                        crate::store::admit_graph_read(
-                            self.source_account,
-                            self.context.task_context,
-                            bytes
-                                .saturating_add(binding_memory_bytes(row))
-                                .saturating_add(1024 + pattern.variable.len()),
-                        )
-                        .map(Some)
-                    },
-                    &mut |input| {
-                        let (node, _allocation) = input.into_parts();
-                        runtime_checkpoint(self.context.task_context)?;
-                        if !self.node_matches(pattern, &node) {
-                            return Ok(ScanControl::Continue);
-                        }
-                        let mut next = row.clone();
-                        next.nodes.insert(pattern.variable.clone(), node);
-                        self.visit(index + 1, &next, used, emit)
-                    },
-                )
+                let mut admit = |bytes: usize| {
+                    crate::store::admit_graph_read(
+                        self.source_account,
+                        self.context.task_context,
+                        bytes
+                            .saturating_add(binding_memory_bytes(row))
+                            .saturating_add(1024 + pattern.variable.len()),
+                    )
+                    .map(Some)
+                };
+                let mut visited = 0;
+                let mut matched = 0;
+                let mut consume = |node, _allocation| {
+                    visited += 1;
+                    runtime_checkpoint(self.context.task_context)?;
+                    if !self.node_matches(pattern, &node) {
+                        return Ok(ScanControl::Continue);
+                    }
+                    let mut next = row.clone();
+                    next.nodes.insert(pattern.variable.clone(), node);
+                    let mut yielded = false;
+                    let control = self.visit(index + 1, &next, used, &mut |binding| {
+                        yielded = true;
+                        emit(binding)
+                    })?;
+                    matched += usize::from(yielded);
+                    Ok(control)
+                };
+                if let Some(values) = self
+                    .program
+                    .predicate
+                    .as_ref()
+                    .and_then(|p| crate::scan::ids::predicate_values(p, &pattern.variable))
+                {
+                    let candidates = crate::scan::ids::Candidates::new(
+                        values,
+                        self.account,
+                        self.context.task_context,
+                    )?;
+                    let control = candidates.visit(
+                        self.store,
+                        labels.as_deref(),
+                        self.context.task_context,
+                        &mut admit,
+                        &mut consume,
+                    )?;
+                    self.context
+                        .observer
+                        .record_scan_pruning_report(crate::scan::ids::report(
+                            self.store,
+                            label,
+                            values.len(),
+                            visited,
+                            matched,
+                            control,
+                        ));
+                    Ok(control)
+                } else {
+                    self.store
+                        .visit_nodes_with_allocation(label, &mut admit, &mut |input| {
+                            let (node, allocation) = input.into_parts();
+                            consume(node, allocation)
+                        })
+                }
             }
             GraphMatchStep::Expand {
                 source,

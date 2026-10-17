@@ -139,12 +139,7 @@ impl GraphStore {
                 ),
         );
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(
-            &working_catalog,
-            self.commit_epoch + 1,
-            &ops,
-        );
+        self.append_graph_wal_and_capture(&working_catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -255,15 +250,17 @@ impl GraphStore {
         );
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
 
+        let staged_projection_change = self.prepare_search_projection_changes_for_ops(
+            &working_catalog,
+            target_commit_epoch,
+            &ops,
+            None,
+        )?;
         // The mapping is durable before the WAL batch; recovery never observes imported
         // graph rows without the stable identities required to address them.
         self.replace_stable_id_mapping_for_epoch(stable_id_mapping, target_commit_epoch)?;
         self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(
-            &working_catalog,
-            target_commit_epoch,
-            &ops,
-        );
+        self.install_search_projection_change(staged_projection_change);
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -380,15 +377,16 @@ impl GraphStore {
         if let Some(start_epoch) = decoded.search_projection_change_log_start_epoch {
             self.search_projection_change_log_start_epoch = start_epoch;
         }
-        self.search_projection_change_log_retained_bytes =
-            decoded.search_projection_change_log_retained_bytes;
         self.search_projection_database_identity = decoded.search_projection_database_identity;
+        // Legacy checkpoints preserve canonical state but cannot certify the
+        // owner events they never captured, including owner-only deletions.
+        let log = SearchProjectionChangeLog::recover_owner_capture(&mut decoded, self.commit_epoch);
+        self.search_projection_change_log_retained_bytes = log
+            .iter()
+            .map(|change| change.estimated_retained_bytes())
+            .fold(0, usize::saturating_add);
+        self.search_projection_graph_changes = log;
         self.initial_import_source_fingerprint = decoded.initial_import_source_fingerprint;
-        self.search_projection_graph_changes = decoded
-            .search_projection_graph_changes
-            .into_iter()
-            .map(Arc::new)
-            .collect();
         self.basic_statistics = decoded.basic_statistics.into();
         self.checkpoint_statistics = decoded.checkpoint_statistics.into();
         for (name, definition) in decoded.projected_graphs {
@@ -493,7 +491,9 @@ impl GraphStore {
                 validate_search_projection_checkpoint_changes(
                     start_epoch,
                     self.commit_epoch,
-                    self.search_projection_graph_changes.iter().map(Arc::as_ref),
+                    self.search_projection_graph_changes
+                        .iter()
+                        .map(|change| change.legacy.as_ref()),
                 )?;
             }
             None => {
@@ -993,7 +993,7 @@ impl GraphStore {
                 epoch,
                 operations,
                 relational_changes,
-            );
+            )?;
             match operation {
                 WalOp::Batch(operations) => {
                     for operation in operations {

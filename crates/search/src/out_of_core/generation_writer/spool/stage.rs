@@ -30,7 +30,7 @@ static NEXT_RETRY_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 const AUTOMATIC_RETRY_STAGES: usize = 4;
 const AUTOMATIC_CLEANUP_BATCHES: usize = 4;
 // Bound the three shared ledger accounts retained by path and metadata leases.
-const CLEANUP_ACCOUNT_METADATA_BYTES: usize = 4096;
+use crate::build_memory::ACCOUNT_METADATA_BYTES as CLEANUP_ACCOUNT_METADATA_BYTES;
 
 enum Slot {
     Active,

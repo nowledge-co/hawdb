@@ -72,9 +72,15 @@ impl DurableStore {
             )
         })?;
         file.sync_data()?;
-        if group.requires_parent_sync() {
+        if group.requires_parent_sync() || !self.wal_namespace_known_durable {
+            #[cfg(test)]
+            crate::store::read_dependencies::source_sync_failpoint(
+                crate::store::read_dependencies::SourceSyncFailure::Directory,
+            )?;
             sync_parent_dir(&self.wal_path)?;
+            self.wal_namespace_known_durable = true;
         }
+        self.known_durable_commit_epoch = self.wal_commit_epoch;
         process_crash_failpoint("after_wal_sync");
         Ok(group.into_flush(elapsed_micros(started)))
     }
@@ -239,6 +245,9 @@ impl DurableStore {
                 .get_or_insert_with(std::time::Instant::now);
             self.next_lsn += 1;
             self.wal_commit_epoch = self.wal_commit_epoch.saturating_add(1);
+            if self.durability == DurabilityPolicy::SyncOnEveryWrite && !sync_deferred {
+                self.known_durable_commit_epoch = self.wal_commit_epoch;
+            }
             self.wal_bytes = self.wal_bytes.saturating_add(byte_count);
             self.wal_free_space_probe.wal_bytes_since_probe = self
                 .wal_free_space_probe
@@ -249,6 +258,65 @@ impl DurableStore {
             }
         }
         result.map(|_| ())
+    }
+
+    /// Synchronizes the complete currently applied WAL prefix without changing
+    /// the policy for subsequent commits. The checkpoint closure is already
+    /// durable; canonical WAL records contain the complete transaction payload.
+    pub(in crate::store) fn synchronize_source_prefix(&mut self) -> Result<u64> {
+        if self.wal_sync_group.is_some() {
+            return Err(HawDBError::Execution(
+                "cannot synchronize a projection source inside a WAL sync group".into(),
+            ));
+        }
+        if self.known_durable_commit_epoch >= self.wal_commit_epoch {
+            return Ok(self.known_durable_commit_epoch);
+        }
+        if self.read_only {
+            return Err(HawDBError::Execution(
+                "cannot synchronize a read-only source".into(),
+            ));
+        }
+        // Recovered databases need not have an append handle yet. Never create
+        // an empty WAL to replace missing recovery evidence.
+        let file = if let Some(file) = &self.wal_append_file {
+            Arc::clone(file)
+        } else {
+            Arc::new(
+                OpenOptions::new()
+                    .descriptor_kind(crate::file_descriptors::DescriptorKind::MutableWal)
+                    .append(true)
+                    .open(&self.wal_path)?,
+            )
+        };
+        if file.metadata()?.len() != self.wal_bytes
+            || fs::metadata(&self.wal_path)?.len() != self.wal_bytes
+        {
+            return Err(HawDBError::StorageIntegrity(
+                "projection source WAL length changed outside the committed boundary".into(),
+            ));
+        }
+        #[cfg(test)]
+        crate::store::read_dependencies::source_sync_failpoint(
+            crate::store::read_dependencies::SourceSyncFailure::Wal,
+        )?;
+        file.sync_data()?;
+        // Relaxed creation can leave the WAL name unsynchronized even though
+        // every complete transaction was flushed to the OS.
+        if !self.wal_namespace_known_durable {
+            #[cfg(test)]
+            crate::store::read_dependencies::source_sync_failpoint(
+                crate::store::read_dependencies::SourceSyncFailure::Directory,
+            )?;
+            sync_parent_dir(&self.wal_path)?;
+            self.wal_namespace_known_durable = true;
+        }
+        self.known_durable_commit_epoch = self.wal_commit_epoch;
+        Ok(self.known_durable_commit_epoch)
+    }
+
+    pub(in crate::store) const fn known_durable_commit_epoch(&self) -> u64 {
+        self.known_durable_commit_epoch
     }
 
     fn rollback_failed_wal_write(&mut self, created: bool) -> Result<()> {
@@ -428,8 +496,13 @@ impl DurableStore {
         if self.durability == DurabilityPolicy::SyncOnEveryWrite {
             let started = std::time::Instant::now();
             file.sync_data()?;
-            if created {
+            if created || !self.wal_namespace_known_durable {
+                #[cfg(test)]
+                crate::store::read_dependencies::source_sync_failpoint(
+                    crate::store::read_dependencies::SourceSyncFailure::Directory,
+                )?;
                 sync_parent_dir(&self.wal_path)?;
+                self.wal_namespace_known_durable = true;
             }
             fsync_micros = elapsed_micros(started);
         }

@@ -46,7 +46,11 @@ impl SearchIndex {
         memory: &QueryMemoryAccount,
         task: &RuntimeTaskContext,
     ) -> Result<SearchResidentTextSeedOutput> {
-        let context = QueryContext { memory, task };
+        let context = QueryContext {
+            memory,
+            task,
+            execution: None,
+        };
         context.checkpoint()?;
         self.require_search_capabilities(SearchMode::Text)?;
         if max_candidates > self.lexical_config.max_query_score_entries.get() {

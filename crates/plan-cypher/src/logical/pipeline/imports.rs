@@ -134,6 +134,8 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         ProjectionExpression::Variable { variable }
         | ProjectionExpression::Property { variable, .. }
         | ProjectionExpression::Id { variable }
+        | ProjectionExpression::Properties { variable }
+        | ProjectionExpression::Labels { variable }
         | ProjectionExpression::RelationshipType { variable }
         | ProjectionExpression::DatePart { variable, .. }
         | ProjectionExpression::DefaultIfNullOrEq { variable, .. }

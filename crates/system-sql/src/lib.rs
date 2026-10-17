@@ -2620,6 +2620,7 @@ mod tests {
                 resume_floor_commit_epoch: 0,
                 oldest_retained_mutation_id: None,
                 newest_retained_mutation_id: None,
+                newest_projection_mutation_id: None,
                 first_rebuild_required_mutation_id: None,
                 retained_mutation_count: 0,
                 retained_bytes: 0,

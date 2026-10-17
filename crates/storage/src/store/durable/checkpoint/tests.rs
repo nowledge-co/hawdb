@@ -409,7 +409,13 @@ fn checkpoint_units_metadata_publication_cancels_every_io_preserves_evidence_and
     let probe = Arc::new(CheckpointWorkProbe::default());
     let metadata = baseline
         .durable()
-        .write_checkpoint(image(), 17, changes.iter(), &probe.context(local.clone()))
+        .write_checkpoint(
+            image(),
+            17,
+            changes.iter(),
+            &probe.context(local.clone()),
+            None,
+        )
         .unwrap();
     let path = baseline.root.join(checkpoint_generation_file(17));
     let expected = std::fs::read(&path).unwrap();
@@ -434,7 +440,13 @@ fn checkpoint_units_metadata_publication_cancels_every_io_preserves_evidence_and
         probe.cancel_on_io_wave.store(wave, Ordering::SeqCst);
         let error = fixture
             .durable()
-            .write_checkpoint(image(), 17, changes.iter(), &probe.context(local.clone()))
+            .write_checkpoint(
+                image(),
+                17,
+                changes.iter(),
+                &probe.context(local.clone()),
+                None,
+            )
             .unwrap_err();
         assert_eq!(
             error,
@@ -462,7 +474,8 @@ fn checkpoint_units_metadata_publication_cancels_every_io_preserves_evidence_and
                     image(),
                     17,
                     changes.iter(),
-                    &conflict.context(local.clone())
+                    &conflict.context(local.clone()),
+                    None
                 )
                 .is_err());
             conflict.assert_released(&local);
@@ -477,7 +490,13 @@ fn checkpoint_units_metadata_publication_cancels_every_io_preserves_evidence_and
         let retry = Arc::new(CheckpointWorkProbe::default());
         let actual = fixture
             .durable()
-            .write_checkpoint(image(), 17, changes.iter(), &retry.context(local.clone()))
+            .write_checkpoint(
+                image(),
+                17,
+                changes.iter(),
+                &retry.context(local.clone()),
+                None,
+            )
             .unwrap();
         retry.assert_released(&local);
         assert!(!temporary.exists());
@@ -511,7 +530,13 @@ fn checkpoint_units_metadata_publication_cancels_every_io_preserves_evidence_and
     probe.cancel_after.store(units, Ordering::SeqCst);
     let error = fixture
         .durable()
-        .write_checkpoint(image(), 17, changes.iter(), &probe.context(local.clone()))
+        .write_checkpoint(
+            image(),
+            17,
+            changes.iter(),
+            &probe.context(local.clone()),
+            None,
+        )
         .unwrap_err();
     assert_eq!(
         error,
@@ -528,7 +553,13 @@ fn checkpoint_units_metadata_publication_cancels_every_io_preserves_evidence_and
     assert_eq!(
         fixture
             .durable()
-            .write_checkpoint(image(), 17, changes.iter(), &retry.context(local.clone()))
+            .write_checkpoint(
+                image(),
+                17,
+                changes.iter(),
+                &retry.context(local.clone()),
+                None
+            )
             .unwrap(),
         metadata
     );

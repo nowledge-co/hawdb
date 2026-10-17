@@ -44,6 +44,12 @@ pub(in super::super) struct SpoolRecord {
 }
 
 impl SpoolRecord {
+    pub(in super::super) fn retained_bytes(&self) -> Result<usize> {
+        self._memory
+            .bytes()
+            .checked_add(self.header._memory.bytes())
+            .ok_or_else(|| crate::HawDBError::Storage("spool retained extent overflow".into()))
+    }
     pub(in super::super) fn add_digest(&self, digest: &mut DocumentsDigest) {
         digest.add_record(self.checksum, self.encoded_bytes);
     }
@@ -79,6 +85,89 @@ impl SpoolRecord {
         Ok(())
     }
 
+    pub(in super::super) fn checksum(&self) -> u64 {
+        self.checksum
+    }
+
+    pub(in super::super) fn encoded_eq(
+        &self,
+        other: &Self,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<bool> {
+        if self.encoded_bytes != other.encoded_bytes || self.checksum != other.checksum {
+            return Ok(false);
+        }
+        let _scratch = memory.spool.reserve(2 * SPOOL_BUFFER_BYTES)?;
+        let mut left = RangeReader {
+            file: &self.source.file,
+            offset: self.offset,
+            remaining: self.encoded_bytes,
+        };
+        let mut right = RangeReader {
+            file: &other.source.file,
+            offset: other.offset,
+            remaining: other.encoded_bytes,
+        };
+        let (mut a, mut b) = ([0; SPOOL_BUFFER_BYTES], [0; SPOOL_BUFFER_BYTES]);
+        while left.remaining > 0 {
+            checkpoint(task)?;
+            let count = left.remaining.min(SPOOL_BUFFER_BYTES as u64) as usize;
+            left.read_exact(&mut a[..count])?;
+            right.read_exact(&mut b[..count])?;
+            if a[..count] != b[..count] {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Compare canonical encoded bytes without materializing the staged body.
+    pub(in super::super) fn require_document(
+        &self,
+        expected: &SearchDocument,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<()> {
+        self.require_source(expected, memory, task)
+    }
+    pub(in super::super) fn require_source(
+        &self,
+        expected: &impl crate::document_encoding::RecordSource,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<()> {
+        if expected.encoded_len(Some(task))? as u64 != self.encoded_bytes {
+            return Err(HawDBError::Execution(
+                "staged document differs from expected document".into(),
+            ));
+        }
+        let _scratch = memory.spool.reserve(2 * SPOOL_BUFFER_BYTES)?;
+        let mut compare = EncodedComparison {
+            input: RangeReader {
+                file: &self.source.file,
+                offset: self.offset,
+                remaining: self.encoded_bytes,
+            },
+            task,
+            buffer: [0; SPOOL_BUFFER_BYTES],
+            digest: Crc32cHasher::new(),
+            equal: true,
+        };
+        expected.write_encoded(&mut compare)?;
+        if compare.input.remaining != 0 || compare.digest.finish() != self.checksum {
+            return Err(HawDBError::Storage(
+                "immutable spool record checksum changed".into(),
+            ));
+        }
+        if !compare.equal {
+            return Err(HawDBError::Execution(
+                "staged document differs from expected document".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn body(&self) -> Result<RangeReader<'_>> {
         Ok(RangeReader {
             file: &self.source.file,
@@ -88,6 +177,28 @@ impl SpoolRecord {
                 .checked_mul(2)
                 .ok_or_else(|| HawDBError::Storage("spool body extent overflow".into()))?,
         })
+    }
+}
+
+struct EncodedComparison<'a> {
+    input: RangeReader<'a>,
+    task: &'a RuntimeTaskContext,
+    buffer: [u8; SPOOL_BUFFER_BYTES],
+    digest: Crc32cHasher,
+    equal: bool,
+}
+impl Write for EncodedComparison<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        for part in bytes.chunks(SPOOL_BUFFER_BYTES) {
+            checkpoint(self.task).map_err(io::Error::other)?;
+            self.input.read_exact(&mut self.buffer[..part.len()])?;
+            self.digest.update(&self.buffer[..part.len()]);
+            self.equal &= part == &self.buffer[..part.len()];
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -237,6 +348,48 @@ pub(in super::super) struct SpoolCursor {
 }
 
 impl SpoolCursor {
+    pub(in super::super) fn length(&self) -> u64 {
+        self.length
+    }
+    pub(in super::super) fn read_exact_at(&self, offset: u64, bytes: &mut [u8]) -> Result<()> {
+        if offset
+            .checked_add(bytes.len() as u64)
+            .is_none_or(|end| end > self.length)
+        {
+            return Err(HawDBError::Storage(
+                "spool extent is outside its admitted file".into(),
+            ));
+        }
+        let mut input = RangeReader {
+            file: &self.source.file,
+            offset,
+            remaining: bytes.len() as u64,
+        };
+        input.read_exact(bytes)?;
+        Ok(())
+    }
+    pub(in super::super) fn record_at(&self, start: u64, end: u64) -> Result<SpoolRecord> {
+        if start < SPOOL_HEADER.len() as u64 || end < start || end > self.length {
+            return Err(HawDBError::Storage("invalid spool record range".into()));
+        }
+        let mut cursor = Self {
+            source: self.source.clone(),
+            offset: start,
+            length: end,
+            ordinal: 0,
+            document_count: 1,
+            max_record_bytes: self.max_record_bytes,
+            max_metadata_fields: self.max_metadata_fields,
+            previous: None,
+            memory: self.memory.clone(),
+            task: self.task.clone(),
+            _memory: self.memory.spool.reserve(size_of::<Self>())?,
+        };
+        cursor
+            .next()?
+            .ok_or_else(|| HawDBError::Storage("missing spool record".into()))
+    }
+
     pub(in super::super) fn position(&self) -> u64 {
         self.offset
     }

@@ -19,22 +19,6 @@ use super::*;
 #[path = "graph_mutation/checkpoint_capture.rs"]
 mod checkpoint_capture;
 
-fn wal_ops_contain_relational_transaction(ops: &[WalOp]) -> bool {
-    ops.iter().any(|op| match op {
-        WalOp::Relational { .. } => true,
-        WalOp::Batch(ops) => wal_ops_contain_relational_transaction(ops),
-        _ => false,
-    })
-}
-
-fn wal_ops_contain_relational_snapshot(ops: &[WalOp]) -> bool {
-    ops.iter().any(|op| match op {
-        WalOp::RelationalSnapshot { .. } => true,
-        WalOp::Batch(ops) => wal_ops_contain_relational_snapshot(ops),
-        _ => false,
-    })
-}
-
 impl GraphStore {
     pub fn create_node(
         &mut self,
@@ -50,8 +34,7 @@ impl GraphStore {
             properties: properties.clone(),
         }];
         self.validate_constraints_for_ops(catalog, &ops)?;
-        self.append_durable_wal_single(ops[0].clone())?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, true)?;
         self.apply_create_node(catalog, id, label_id, properties);
         self.finish_non_relational_commit();
         Ok(id)
@@ -75,12 +58,7 @@ impl GraphStore {
                 assignments.extend_from_slice(post_merge_assignments);
                 let ops = self.node_set_property_ops(&[id], &assignments)?;
                 self.validate_constraints_for_ops(catalog, &ops)?;
-                self.append_durable_wal_batch(&ops)?;
-                self.record_search_projection_graph_changes_for_ops(
-                    catalog,
-                    self.commit_epoch + 1,
-                    &ops,
-                );
+                self.append_graph_wal_and_capture(catalog, &ops, false)?;
                 for op in ops {
                     self.apply_wal_op(catalog, op)?;
                 }
@@ -100,8 +78,7 @@ impl GraphStore {
             properties: properties.clone(),
         }];
         self.validate_constraints_for_ops(catalog, &ops)?;
-        self.append_durable_wal_single(ops[0].clone())?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, true)?;
         self.apply_create_node(catalog, id, label_id, properties);
         self.finish_non_relational_commit();
         Ok((id, true))
@@ -137,7 +114,7 @@ impl GraphStore {
             properties: properties.clone(),
         }];
         self.validate_constraints_for_ops(catalog, &ops)?;
-        self.append_durable_wal_single(ops[0].clone())?;
+        self.append_graph_wal_and_capture(catalog, &ops, true)?;
         self.apply_create_relationship(id, source, target, rel_type_id, properties);
         self.finish_non_relational_commit();
         Ok(id)
@@ -191,8 +168,7 @@ impl GraphStore {
             }
         }
         self.validate_constraints_for_ops(catalog, &ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -262,12 +238,7 @@ impl GraphStore {
         }
         if !ops.is_empty() {
             self.validate_constraints_for_ops(catalog, &ops)?;
-            self.append_durable_wal_batch(&ops)?;
-            self.record_search_projection_graph_changes_for_ops(
-                catalog,
-                self.commit_epoch + 1,
-                &ops,
-            );
+            self.append_graph_wal_and_capture(catalog, &ops, false)?;
             for op in ops {
                 self.apply_wal_op(catalog, op)?;
             }
@@ -381,12 +352,7 @@ impl GraphStore {
         }
         if !ops.is_empty() {
             self.validate_constraints_for_ops(catalog, &ops)?;
-            self.append_durable_wal_batch(&ops)?;
-            self.record_search_projection_graph_changes_for_ops(
-                catalog,
-                self.commit_epoch + 1,
-                &ops,
-            );
+            self.append_graph_wal_and_capture(catalog, &ops, false)?;
             for op in ops {
                 self.apply_wal_op(catalog, op)?;
             }
@@ -489,12 +455,7 @@ impl GraphStore {
         }
         if !ops.is_empty() {
             self.validate_constraints_for_ops(catalog, &ops)?;
-            self.append_durable_wal_batch(&ops)?;
-            self.record_search_projection_graph_changes_for_ops(
-                catalog,
-                self.commit_epoch + 1,
-                &ops,
-            );
+            self.append_graph_wal_and_capture(catalog, &ops, false)?;
             for op in ops {
                 self.apply_wal_op(catalog, op)?;
             }
@@ -598,12 +559,7 @@ impl GraphStore {
         }
         if !ops.is_empty() {
             self.validate_constraints_for_ops(catalog, &ops)?;
-            self.append_durable_wal_batch(&ops)?;
-            self.record_search_projection_graph_changes_for_ops(
-                catalog,
-                self.commit_epoch + 1,
-                &ops,
-            );
+            self.append_graph_wal_and_capture(catalog, &ops, false)?;
             for op in ops {
                 self.apply_wal_op(catalog, op)?;
             }
@@ -641,8 +597,7 @@ impl GraphStore {
             })
             .collect::<Vec<_>>();
         self.validate_constraints_for_ops(catalog, &ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -696,8 +651,7 @@ impl GraphStore {
             })
             .collect::<Result<Vec<_>>>()?;
         self.validate_constraints_for_ops(catalog, &ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             if let WalOp::SetNodeProperty {
                 id,
@@ -733,8 +687,7 @@ impl GraphStore {
         }
         let ops = self.node_set_property_ops(&ids, assignments)?;
         self.validate_constraints_for_ops(catalog, &ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -772,8 +725,7 @@ impl GraphStore {
         ensure_additional_mutation_limits(0, 0, operation_count, ids.len(), limits)?;
         let ops = self.node_set_property_ops(ids, assignments)?;
         self.validate_constraints_for_ops(catalog, &ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -824,8 +776,7 @@ impl GraphStore {
         }
         let ops = self.delete_node_ops(&ids, detach)?;
         self.ensure_out_of_core_delta_admission(&ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -847,8 +798,7 @@ impl GraphStore {
         ensure_additional_mutation_limits(0, 0, 0, ids.len(), limits)?;
         let ops = self.delete_node_ops_bounded(ids, detach, limits.max_operations.get())?;
         self.ensure_out_of_core_delta_admission(&ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -918,8 +868,7 @@ impl GraphStore {
             .map(|id| WalOp::DeleteRelationship { id })
             .collect::<Vec<_>>();
         self.ensure_out_of_core_delta_admission(&ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -938,8 +887,7 @@ impl GraphStore {
         }
         let ops = self.delete_node_ops(&ids, request.detach)?;
         self.ensure_out_of_core_delta_admission(&ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -1193,8 +1141,7 @@ impl GraphStore {
                 })
                 .collect::<Vec<_>>();
         self.validate_constraints_for_ops(catalog, &ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -1233,7 +1180,7 @@ impl GraphStore {
             },
         ];
         self.validate_constraints_for_ops(catalog, &ops)?;
-        self.append_durable_wal_batch(&ops)?;
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         self.apply_create_node(catalog, source, source_label_id, request.source_properties);
         self.apply_create_node(catalog, target, target_label_id, request.target_properties);
         self.apply_create_relationship(
@@ -1281,318 +1228,12 @@ impl GraphStore {
         let relationship = RelId(self.next_rel_id);
         let ops = self.merge_connected_node_ops(&request, source, target, relationship)?;
         self.validate_constraints_for_ops(catalog, &ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
         self.finish_non_relational_commit();
         Ok((source, relationship, target, true))
-    }
-
-    pub(super) fn record_search_projection_graph_changes_for_ops(
-        &mut self,
-        catalog: &Catalog,
-        commit_epoch: u64,
-        ops: &[WalOp],
-    ) {
-        self.record_search_projection_changes_for_ops(catalog, commit_epoch, ops, None);
-    }
-
-    pub(super) fn record_search_projection_changes_for_ops(
-        &mut self,
-        catalog: &Catalog,
-        commit_epoch: u64,
-        ops: &[WalOp],
-        relational_primary_key_changes: Option<
-            hawdb_storage::relational::RelationalPrimaryKeyChangeCapture,
-        >,
-    ) {
-        let mut upsert_node_ids = BTreeSet::new();
-        let mut delete_document_ids = BTreeSet::new();
-        self.collect_search_projection_graph_changes_for_ops(
-            catalog,
-            ops,
-            &mut upsert_node_ids,
-            &mut delete_document_ids,
-        );
-        let relational_primary_key_changes = relational_primary_key_changes.unwrap_or_else(|| {
-            let reason = if wal_ops_contain_relational_snapshot(ops) {
-                Some(hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement)
-            } else if wal_ops_contain_relational_transaction(ops) {
-                Some(hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture)
-            } else {
-                None
-            };
-            match reason {
-                Some(reason) => {
-                    hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason }
-                }
-                None => hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::Captured {
-                    tables: Vec::new(),
-                    encoded_bytes: 0,
-                },
-            }
-        });
-        let relational_primary_key_changes =
-            omit_internal_search_projection_relational_changes(relational_primary_key_changes);
-        if upsert_node_ids.is_empty()
-            && delete_document_ids.is_empty()
-            && relational_primary_key_changes.operation_count() == 0
-            && !relational_primary_key_changes.requires_rebuild()
-        {
-            return;
-        }
-        let change = SearchProjectionGraphChange {
-            commit_epoch,
-            upsert_node_ids: upsert_node_ids.into_iter().map(|id| id.0).collect(),
-            delete_document_ids: delete_document_ids.into_iter().collect(),
-            relational_primary_key_changes,
-        };
-        self.search_projection_change_log_retained_bytes = self
-            .search_projection_change_log_retained_bytes
-            .saturating_add(change.estimated_retained_bytes());
-        // Snapshots share payloads; append detaches the directory and only its tail page.
-        self.search_projection_graph_changes.push(Arc::new(change));
-        self.trim_search_projection_graph_change_log();
-    }
-
-    pub(super) fn relational_primary_key_changes_from_wal_ops(
-        &self,
-        ops: &[WalOp],
-    ) -> Result<Option<hawdb_storage::relational::RelationalPrimaryKeyChangeCapture>> {
-        self.relational_primary_key_changes_from_wal_ops_with_work_context(ops, None)
-    }
-
-    pub(super) fn relational_primary_key_changes_from_wal_ops_with_work_context(
-        &self,
-        ops: &[WalOp],
-        work: Option<&crate::background::CheckpointWorkContext>,
-    ) -> Result<Option<hawdb_storage::relational::RelationalPrimaryKeyChangeCapture>> {
-        let mut captures = Vec::new();
-        collect_relational_primary_key_changes_from_wal_ops(ops, &mut captures, work)?;
-        if captures.len() > 1 {
-            return Ok(Some(
-                hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
-                    reason: hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::MultipleRelationalTransactions,
-                },
-            ));
-        }
-        Ok(captures.pop())
-    }
-
-    pub(super) fn trim_search_projection_graph_change_log(&mut self) {
-        let mut retained_bytes = self.search_projection_change_log_retained_bytes;
-        let mut remove_count = 0usize;
-        let mut last_removed_epoch = None;
-        for change in self.search_projection_graph_changes.iter() {
-            let exceeds_limit =
-                self.max_search_projection_change_log_entries
-                    .is_some_and(|limit| {
-                        self.search_projection_graph_changes
-                            .len()
-                            .saturating_sub(remove_count)
-                            > limit
-                    })
-                    || self
-                        .max_search_projection_change_log_bytes
-                        .is_some_and(|limit| retained_bytes > limit);
-            if !exceeds_limit {
-                break;
-            }
-            retained_bytes = retained_bytes.saturating_sub(change.estimated_retained_bytes());
-            remove_count = remove_count.saturating_add(1);
-            last_removed_epoch = Some(change.commit_epoch);
-        }
-        if let Some(epoch) = last_removed_epoch {
-            self.search_projection_change_log_start_epoch =
-                self.search_projection_change_log_start_epoch.max(epoch);
-            self.search_projection_graph_changes
-                .discard_prefix(remove_count);
-        }
-        self.search_projection_change_log_retained_bytes = retained_bytes;
-    }
-
-    fn collect_search_projection_graph_changes_for_ops(
-        &self,
-        catalog: &Catalog,
-        ops: &[WalOp],
-        upsert_node_ids: &mut BTreeSet<NodeId>,
-        delete_document_ids: &mut BTreeSet<String>,
-    ) {
-        for op in ops {
-            match op {
-                WalOp::CreateNode { id, .. } => {
-                    // The host batch hydrator may own denormalized projection
-                    // dependencies for nodes that are not direct search
-                    // documents, so every live changed node must remain
-                    // observable in the unified changefeed.
-                    upsert_node_ids.insert(*id);
-                }
-                WalOp::SetNodeProperty { id, property, .. } => {
-                    if let Some(node) = self.nodes.get(id) {
-                        if property == "id"
-                            && let Some(document_id) =
-                                search_projection_document_id_for_node(catalog, node)
-                        {
-                            delete_document_ids.insert(document_id);
-                        }
-                        upsert_node_ids.insert(*id);
-                    }
-                    if matches!(property.as_str(), "id" | "name" | "canonical_name") {
-                        self.collect_label_projection_neighbors(catalog, *id, upsert_node_ids);
-                    }
-                }
-                WalOp::DeleteNode { id } => {
-                    if let Some(node) = self.nodes.get(id)
-                        && let Some(document_id) =
-                            search_projection_document_id_for_node(catalog, node)
-                    {
-                        delete_document_ids.insert(document_id);
-                    }
-                    self.collect_label_projection_neighbors(catalog, *id, upsert_node_ids);
-                }
-                WalOp::Batch(batch_ops) => self.collect_search_projection_graph_changes_for_ops(
-                    catalog,
-                    batch_ops,
-                    upsert_node_ids,
-                    delete_document_ids,
-                ),
-                WalOp::CreateRelationship {
-                    source,
-                    target,
-                    rel_type,
-                    ..
-                } => {
-                    if rel_type == "HAS_LABEL" {
-                        self.collect_has_label_projection_endpoints(
-                            catalog,
-                            *source,
-                            *target,
-                            upsert_node_ids,
-                        );
-                    }
-                }
-                WalOp::DeleteRelationship { id } => {
-                    if let Some(relationship) = self.relationships.get(id) {
-                        self.collect_has_label_projection_endpoints_for_relationship(
-                            catalog,
-                            relationship,
-                            upsert_node_ids,
-                        );
-                    }
-                }
-                WalOp::CreateNodeLabel { .. }
-                | WalOp::CreateRelationshipType { .. }
-                | WalOp::CreateNodeTable { .. }
-                | WalOp::CreateRelationshipTable { .. }
-                | WalOp::CreateProperty { .. }
-                | WalOp::AlterTableState { .. }
-                | WalOp::AlterPropertyState { .. }
-                | WalOp::GcTableDescriptor { .. }
-                | WalOp::GcPropertyDescriptor { .. }
-                | WalOp::CreateIndex { .. }
-                | WalOp::CreateCompositeIndex { .. }
-                | WalOp::CreateRangeIndex { .. }
-                | WalOp::CreateFullTextIndex { .. }
-                | WalOp::CreateUniqueConstraint { .. }
-                | WalOp::CreateNodePropertyExistsConstraint { .. }
-                | WalOp::CreateRelationshipUniqueConstraint { .. }
-                | WalOp::CreateRelationshipPropertyExistsConstraint { .. }
-                | WalOp::SetRelationshipProperty { .. }
-                | WalOp::ProjectGraph { .. }
-                | WalOp::MarkInitialImportSource { .. }
-                | WalOp::Relational { .. }
-                | WalOp::RelationalSnapshot { .. }
-                | WalOp::Append { .. } => {}
-            }
-        }
-    }
-
-    fn collect_label_projection_neighbors(
-        &self,
-        catalog: &Catalog,
-        label_node_id: NodeId,
-        upsert_node_ids: &mut BTreeSet<NodeId>,
-    ) {
-        let Some(label_node) = self.nodes.get(&label_node_id) else {
-            return;
-        };
-        if !Self::node_has_label(catalog, label_node, "Label") {
-            return;
-        }
-        let Some(has_label_type_id) = catalog.rel_type_id("HAS_LABEL") else {
-            return;
-        };
-        for relationship in self.scan_relationships(Some(has_label_type_id)) {
-            if relationship.source == label_node_id {
-                self.insert_projection_node_if_any(catalog, relationship.target, upsert_node_ids);
-            } else if relationship.target == label_node_id {
-                self.insert_projection_node_if_any(catalog, relationship.source, upsert_node_ids);
-            }
-        }
-    }
-
-    fn collect_has_label_projection_endpoints_for_relationship(
-        &self,
-        catalog: &Catalog,
-        relationship: &RelRecord,
-        upsert_node_ids: &mut BTreeSet<NodeId>,
-    ) {
-        if catalog.rel_type_name(relationship.rel_type) != Some("HAS_LABEL") {
-            return;
-        }
-        self.collect_has_label_projection_endpoints(
-            catalog,
-            relationship.source,
-            relationship.target,
-            upsert_node_ids,
-        );
-    }
-
-    fn collect_has_label_projection_endpoints(
-        &self,
-        catalog: &Catalog,
-        source: NodeId,
-        target: NodeId,
-        upsert_node_ids: &mut BTreeSet<NodeId>,
-    ) {
-        let source_is_label = self
-            .nodes
-            .get(&source)
-            .is_some_and(|node| Self::node_has_label(catalog, node, "Label"));
-        let target_is_label = self
-            .nodes
-            .get(&target)
-            .is_some_and(|node| Self::node_has_label(catalog, node, "Label"));
-        if source_is_label {
-            self.insert_projection_node_if_any(catalog, target, upsert_node_ids);
-        }
-        if target_is_label {
-            self.insert_projection_node_if_any(catalog, source, upsert_node_ids);
-        }
-    }
-
-    fn insert_projection_node_if_any(
-        &self,
-        catalog: &Catalog,
-        node_id: NodeId,
-        upsert_node_ids: &mut BTreeSet<NodeId>,
-    ) {
-        if self
-            .nodes
-            .get(&node_id)
-            .and_then(|node| search_projection_document_id_for_node(catalog, node))
-            .is_some()
-        {
-            upsert_node_ids.insert(node_id);
-        }
-    }
-
-    fn node_has_label(catalog: &Catalog, node: &NodeRecord, label: &str) -> bool {
-        catalog
-            .label_id(label)
-            .is_some_and(|label_id| node.labels.contains(&label_id))
     }
 
     pub(super) fn find_node_by_label_and_properties(
@@ -1829,89 +1470,4 @@ impl GraphStore {
         ops.extend(ids.iter().copied().map(|id| WalOp::DeleteNode { id }));
         Ok(ops)
     }
-}
-
-fn omit_internal_search_projection_relational_changes(
-    capture: hawdb_storage::relational::RelationalPrimaryKeyChangeCapture,
-) -> hawdb_storage::relational::RelationalPrimaryKeyChangeCapture {
-    let hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::Captured {
-        mut tables, ..
-    } = capture
-    else {
-        return capture;
-    };
-    tables.retain(|table| table.table != "hawdb_schema_migrations");
-    let encoded_bytes = tables.iter().fold(0usize, |total, table| {
-        let table_bytes = 4usize.saturating_add(table.table.len());
-        table.primary_keys.iter().fold(
-            total.saturating_add(table_bytes),
-            |table_total, primary_key| {
-                let key_bytes =
-                    hawdb_storage::relational::encode_relational_primary_key(primary_key)
-                        .map_or(0, |encoded| encoded.len());
-                table_total.saturating_add(4).saturating_add(key_bytes)
-            },
-        )
-    });
-    hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::Captured {
-        tables,
-        encoded_bytes,
-    }
-}
-
-fn collect_relational_primary_key_changes_from_wal_ops(
-    ops: &[WalOp],
-    captures: &mut Vec<hawdb_storage::relational::RelationalPrimaryKeyChangeCapture>,
-    work: Option<&crate::background::CheckpointWorkContext>,
-) -> Result<()> {
-    for op in ops {
-        let unit = work
-            .map(|work| work.start_unit().map_err(HawDBError::from_storage_error))
-            .transpose()?;
-        match op {
-            WalOp::Relational { record } => {
-                // This unit controls traversal to the record. Its codec's
-                // allocations and interior loops are a separate boundary.
-                if let Some(unit) = unit {
-                    unit.finish();
-                }
-                if let Some(work) = work {
-                    work.checkpoint().map_err(HawDBError::from_storage_error)?;
-                }
-                let batch = decode_relational_wal_batch(record, RelationalDecodeLimits::wal())
-                    .map_err(crate::relational::RelationalError::into_wal_recovery_error)?;
-                captures.push(batch.primary_key_changes.unwrap_or(
-                    hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
-                        reason: hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture,
-                    },
-                ));
-            }
-            WalOp::RelationalSnapshot { .. } => {
-                captures.push(
-                    hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
-                        reason:
-                            hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement,
-                    },
-                );
-                if let Some(unit) = unit {
-                    unit.finish();
-                }
-            }
-            WalOp::Batch(ops) => {
-                if let Some(unit) = unit {
-                    unit.finish();
-                }
-                collect_relational_primary_key_changes_from_wal_ops(ops, captures, work)?;
-            }
-            _ => {
-                if let Some(unit) = unit {
-                    unit.finish();
-                }
-            }
-        }
-    }
-    if let Some(work) = work {
-        work.checkpoint().map_err(HawDBError::from_storage_error)?;
-    }
-    Ok(())
 }

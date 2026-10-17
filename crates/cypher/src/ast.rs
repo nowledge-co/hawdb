@@ -423,6 +423,8 @@ pub enum ScalarExpressionKind {
     },
     Id(String),
     RelationshipType(String),
+    Properties(String),
+    Labels(String),
     Value(ValueExpression),
     Coalesce(Vec<ScalarExpression>),
     Left {

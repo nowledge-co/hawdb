@@ -165,6 +165,7 @@ pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
         | HawDBError::AppendSequenceExhausted { .. }
+        | HawDBError::ProjectionBusy
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",
         HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",

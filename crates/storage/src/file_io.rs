@@ -26,6 +26,10 @@ use std::sync::Arc;
 
 pub use std::fs::{FileType, Metadata, Permissions, TryLockError};
 
+mod read;
+#[doc(hidden)]
+pub use read::{AdmittedFileRead, ReadAdmissionControl};
+
 /// A mutable native handle or an immutable logical reference. Logical files
 /// retain their object identity and cursor without retaining a native handle.
 #[derive(Debug)]
@@ -90,6 +94,9 @@ struct ImmutableFile {
     binding: crate::immutable_files::ImmutableFileBinding,
     handles: Arc<crate::immutable_files::ImmutableFileHandles>,
     context: FileOpenContext,
+    // Explicit construction scopes can pin an admitted native lease. Ordinary
+    // logical files remain lazy and evictable until a read acquires a lease.
+    pinned: Option<Arc<File>>,
     // Match File::try_clone: clones share the logical sequential cursor. All
     // positioned reads bypass it and retain a cache lease for the entire read.
     cursor: Arc<std::sync::Mutex<u64>>,
@@ -166,8 +173,12 @@ impl File {
         match &self.backing {
             FileBacking::Native(file) => file.io(operation),
             FileBacking::Immutable(file) => {
-                let lease = file.handles.get(&file.binding, &file.context)?;
-                lease.with_native(operation)
+                if let Some(lease) = &file.pinned {
+                    lease.with_native(operation)
+                } else {
+                    let lease = file.handles.get(&file.binding, &file.context)?;
+                    lease.with_native(operation)
+                }
             }
         }
     }
@@ -181,12 +192,18 @@ impl File {
         match &self.backing {
             FileBacking::Native(file) => file.io(operation).map(|value| (value, 0)),
             FileBacking::Immutable(file) => {
-                let (lease, validation_bytes) =
-                    file.handles
-                        .get_admitted(&file.binding, &file.context, admit_validation)?;
-                lease
-                    .with_native(operation)
-                    .map(|value| (value, validation_bytes))
+                if let Some(lease) = &file.pinned {
+                    lease.with_native(operation).map(|value| (value, 0))
+                } else {
+                    let (lease, validation_bytes) = file.handles.get_admitted(
+                        &file.binding,
+                        &file.context,
+                        admit_validation,
+                    )?;
+                    lease
+                        .with_native(operation)
+                        .map(|value| (value, validation_bytes))
+                }
             }
         }
     }
@@ -217,6 +234,33 @@ impl File {
     pub fn metadata(&self) -> io::Result<Metadata> {
         self.with_native(std::fs::File::metadata)
     }
+    /// Compares this held file with the native file currently named by `path`.
+    /// Follows symlinks; it does not reserve that path or prove logical identity.
+    /// For native Unix handles, path lookup uses metadata without opening and closing another descriptor
+    /// for the same inode, which can release process-owned POSIX record locks.
+    /// Windows uses a counted validation handle and the full 128-bit file ID.
+    pub fn matches_native_path(&self, path: impl AsRef<Path>) -> io::Result<bool> {
+        let identity = self.with_native(crate::native_file_identity::of_file)?;
+        let path = path.as_ref();
+        #[cfg(unix)]
+        {
+            Ok(identity == crate::native_file_identity::of_metadata(&metadata(path)?))
+        }
+        #[cfg(windows)]
+        {
+            let named = Self::open(path)?;
+            Ok(identity == named.with_native(crate::native_file_identity::of_file)?)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (identity, path);
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "native path identity requires Unix or Windows",
+            ))
+        }
+    }
+
     pub fn sync_all(&self) -> io::Result<()> {
         self.synchronize(false)
     }
@@ -262,9 +306,18 @@ impl File {
                 if length == 0 {
                     return Ok(0);
                 }
-                crate::io::read_exact_at(self, &mut buffer[..length], *cursor)?;
-                *cursor += length as u64;
-                Ok(length)
+                let read = if file.pinned.is_some() {
+                    // A controlled constructor must observe short reads and
+                    // EINTR between its own cancellation checkpoints.
+                    self.with_native(|native| {
+                        crate::io::read_native_at_once(native, &mut buffer[..length], *cursor)
+                    })?
+                } else {
+                    crate::io::read_exact_at(self, &mut buffer[..length], *cursor)?;
+                    length
+                };
+                *cursor += read as u64;
+                Ok(read)
             }
         }
     }
@@ -322,10 +375,13 @@ impl File {
                 }
                 sync()
             }
-            FileBacking::Immutable(file) => file
-                .handles
-                .get(&file.binding, &file.context)?
-                .synchronize(data_only),
+            FileBacking::Immutable(file) => match &file.pinned {
+                Some(lease) => lease.synchronize(data_only),
+                None => file
+                    .handles
+                    .get(&file.binding, &file.context)?
+                    .synchronize(data_only),
+            },
         }
     }
 
@@ -494,6 +550,7 @@ impl OpenOptions {
                     binding,
                     handles: handles.clone(),
                     context: context.clone(),
+                    pinned: None,
                     cursor: Arc::new(std::sync::Mutex::new(0)),
                 })),
             });

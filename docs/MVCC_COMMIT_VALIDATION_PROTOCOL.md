@@ -280,6 +280,15 @@ of corrupt or incomplete durable state remain mandatory. Exact pre-crash stamp
 identity need not equal post-restart stamp identity; canonical data and observable
 commit behavior must agree with the recovered serial order.
 
+## Versioned projection publication
+
+The [versioned publication specification](specs/MVCC_VERSIONED_PUBLICATION_SPEC.md)
+defines the required #231/#232 follow-up: complete read dependencies, scoped
+validation, source durability, private staging and a validation-to-publication
+fence. Its finite model is a new protocol artifact, not evidence that the embedded
+outer-owner bottleneck is already removed. The specification retains the full
+acceptance ledger and the existing adverse latency evidence.
+
 ## Existing evidence and remaining work
 
 `src/api/tests/concurrent_transactions.rs` already includes:

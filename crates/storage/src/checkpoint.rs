@@ -42,6 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod controlled;
 pub(crate) use controlled::encode_checkpoint_body_with_work_context;
+pub(crate) mod owner_capture;
 
 pub const CHECKPOINT_HEADER_V1: &str = "HAWDB_CHECKPOINT_V1";
 
@@ -677,6 +678,10 @@ pub fn decode_search_projection_relational_primary_key_changes(
 #[doc(hidden)]
 #[derive(Default)]
 pub struct DecodedCheckpoint {
+    pub(crate) projection_owner_capture_floor: Option<u64>,
+    pub(crate) projection_owner_capture_version: Option<u64>,
+    pub(crate) projection_owner_changes:
+        BTreeMap<u64, (usize, Vec<crate::projection::owner_capture::OwnerEffectV1>)>,
     pub generation: Option<u64>,
     pub commit_epoch: Option<u64>,
     pub next_node_id: u64,
@@ -768,6 +773,11 @@ pub fn parse_checkpoint(
             ["relational_checkpoint_encoded_len", _]
             | ["relational_checkpoint_encoded_checksum", _]
             | ["relational_checkpoint_encoded_sha256", _] => {}
+            ["projection_owner_capture"
+            | "projection_owner_change_v1"
+            | "projection_owner_effect_v1", ..] => {
+                owner_capture::parse(&fields, state)?;
+            }
             ["search_projection_change_log_start_epoch", raw] => {
                 if state.search_projection_change_log_start_epoch.is_some() {
                     return Err(HawDBError::Storage(
@@ -1216,6 +1226,7 @@ pub fn parse_checkpoint(
             "checkpoint is missing its storage version".to_string(),
         ));
     }
+    owner_capture::validate(state)?;
     Ok(())
 }
 

@@ -86,8 +86,16 @@ struct DecodePlan {
 impl DecodePlan {
     fn new(body: &ManifestBody, task: &RuntimeTaskContext) -> Result<Self> {
         checkpoint(task)?;
-        let mut strings = add(body.format.len(), body.artifact_file.len())?;
-        let mut largest = body.format.len().max(body.artifact_file.len()).max(64);
+        let mut strings = add(
+            add(body.format.len(), body.layout.len())?,
+            body.artifact_file.len(),
+        )?;
+        let mut largest = body
+            .format
+            .len()
+            .max(body.layout.len())
+            .max(body.artifact_file.len())
+            .max(64);
         for value in body
             .blocks
             .iter()
@@ -115,14 +123,17 @@ impl DecodePlan {
     }
 }
 
-fn reader_bytes() -> usize {
+pub(super) fn reader_bytes() -> usize {
     size_of::<LexicalProjectionReader>() + size_of::<File>() + 4 * size_of::<usize>()
 }
 
 fn retained_bytes(body: &ManifestBody, task: &RuntimeTaskContext) -> Result<usize> {
     let mut bytes = add(
         reader_bytes(),
-        add(body.format.capacity(), body.artifact_file.capacity())?,
+        add(
+            add(body.format.capacity(), body.layout.capacity())?,
+            body.artifact_file.capacity(),
+        )?,
     )?;
     bytes = add(
         bytes,

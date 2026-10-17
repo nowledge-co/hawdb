@@ -293,10 +293,24 @@ impl GraphStore {
         required_properties: &BTreeSet<String>,
         admit: &mut dyn FnMut(usize) -> Result<()>,
     ) -> Result<Option<ProjectedNodeRecord>> {
+        self.projected_node_owned_in_labels_admitted(id, None, required_properties, admit)
+    }
+
+    /// Prune the visible label set before admitting/copying projected values.
+    pub fn projected_node_owned_in_labels_admitted(
+        &self,
+        id: NodeId,
+        label_ids: Option<&[LabelId]>,
+        required_properties: &BTreeSet<String>,
+        admit: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<Option<ProjectedNodeRecord>> {
         if self.node_tombstones.contains(&id) {
             return Ok(None);
         }
         if let Some(node) = self.nodes.get(&id) {
+            if label_ids.is_some_and(|ids| !ids.iter().any(|id| node.labels.contains(id))) {
+                return Ok(None);
+            }
             admit(projected_node_allocation_bytes(node, required_properties))?;
             return Ok(Some(project_node_record_ref(node, required_properties)));
         }
@@ -304,7 +318,7 @@ impl GraphStore {
             return Ok(None);
         };
         let Some(bytes) = reader
-            .projected_node_allocation_bytes(id, required_properties)
+            .projected_node_in_labels_allocation_bytes(id, required_properties, label_ids)
             .map_err(canonical_segment_error)?
         else {
             return Ok(None);
