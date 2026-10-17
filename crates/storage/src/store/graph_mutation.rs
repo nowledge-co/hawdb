@@ -1730,6 +1730,25 @@ impl GraphStore {
         max_ids: usize,
         limit_name: &str,
     ) -> Result<Vec<NodeId>> {
+        if let Some(PropertyFilter::IdEq { value }) = filter {
+            let Value::Int(value) = value else {
+                return Ok(Vec::new());
+            };
+            // Preserve the signed ID representation used by property_filter_matches.
+            let id = NodeId(*value as u64);
+            let matches = self.node_owned(id)?.is_some_and(|node| {
+                label_id.is_none_or(|label_id| node.labels.contains(&label_id))
+            });
+            if !matches {
+                return Ok(Vec::new());
+            }
+            if max_ids == 0 {
+                return Err(HawDBError::Execution(format!(
+                    "mutation would exceed {limit_name} {max_ids}"
+                )));
+            }
+            return Ok(vec![id]);
+        }
         let mut ids = Vec::with_capacity(max_ids.min(1024));
         let mut exceeded = false;
         self.visit_nodes_owned(label_id, |node| {

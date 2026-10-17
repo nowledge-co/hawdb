@@ -3406,6 +3406,7 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
 
 #[cfg(test)]
 mod tests {
+    mod id_eq_mutation;
 
     #[test]
     fn derived_repair_borrows_existing_custom_descriptor_budget() {
