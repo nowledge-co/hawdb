@@ -26,7 +26,7 @@ rust_shared_library(
         ],
         "//conditions:default": [],
     }),
-    version = "0.9.0",
+    version = "0.10.0",
     deps = [
         "//:hawdb",
         "@python_crates//:pyo3",
@@ -130,7 +130,7 @@ rust_shared_library(
         "//conditions:default": [],
     }),
     tags = ["manual"],
-    version = "0.9.0",
+    version = "0.10.0",
     deps = [
         "//:hawdb",
         "@python_crates//:pyo3",
