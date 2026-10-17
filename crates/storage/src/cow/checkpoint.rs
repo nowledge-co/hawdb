@@ -207,9 +207,7 @@ where
                 .ok_or_else(|| overflow(work))?;
             let bytes = capacity
                 .checked_mul(size_of::<CowSegment<BTreeMap<K, V>>>())
-                .and_then(|bytes| {
-                    bytes.checked_add(ownership_bytes::<Vec<CowSegment<BTreeMap<K, V>>>>())
-                })
+                .and_then(|bytes| bytes.checked_add(ownership_bytes::<CowPageDirectory<K, V>>()))
                 .ok_or_else(|| overflow(work))?;
             let unit = work.start_unit()?;
             directory_memory.reserve(bytes, work)?;
@@ -300,7 +298,7 @@ where
             if let Some(page) = page.take() {
                 values[index] = page;
             }
-            owned(values, directory_memory)
+            owned(CowPageDirectory::new(values), directory_memory)
         });
         unit.finish();
         work.checkpoint()?;
@@ -392,9 +390,7 @@ where
             .ok_or_else(|| overflow(work))?;
         let directory_bytes = directory_capacity
             .checked_mul(size_of::<CowSegment<BTreeMap<K, V>>>())
-            .and_then(|bytes| {
-                bytes.checked_add(ownership_bytes::<Vec<CowSegment<BTreeMap<K, V>>>>())
-            })
+            .and_then(|bytes| bytes.checked_add(ownership_bytes::<CowPageDirectory<K, V>>()))
             .ok_or_else(|| overflow(work))?;
         let page_bytes = ownership_bytes::<BTreeMap<K, V>>()
             .checked_add(Self::checkpoint_growth_bytes(
@@ -434,7 +430,7 @@ where
             ceiling: work.memory_ceiling(),
         }));
         values.push(page);
-        let directory = owned(values, directory_memory);
+        let directory = owned(CowPageDirectory::new(values), directory_memory);
         unit.finish();
         work.checkpoint()?;
         self.segments = directory;

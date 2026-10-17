@@ -119,6 +119,11 @@ mod graph_indexes;
 mod graph_mutation;
 #[path = "store/graph_read.rs"]
 mod graph_read;
+#[doc(hidden)]
+pub use graph_read::{
+    MaterializedNodePointRead, MaterializedNodePointSource, MaterializedNodeReadSource,
+    MaterializedReadHealth,
+};
 #[path = "store/graph_recovery.rs"]
 mod graph_recovery;
 #[path = "store/immutable_root.rs"]
@@ -805,7 +810,7 @@ pub struct GraphStore {
     version_index: hawdb_storage::version::VersionIndex,
     version_snapshot_pins: hawdb_storage::version::VersionSnapshotPins,
     version_snapshot_pin: Option<hawdb_storage::version::VersionSnapshotPin>,
-    nodes: CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: crate::cow::CowNodeMap,
     relationships: CowSegmentedMap<RelId, RelRecord>,
     basic_statistics: BasicStatisticsState,
     checkpoint_statistics: CheckpointStatisticsState,
@@ -1475,6 +1480,25 @@ fn record_relationship_endpoint_locks(
         });
 }
 
+fn ensure_graph_read_flags_usable(
+    integrity_poisoned: &AtomicBool,
+    post_wal_apply_poisoned: &AtomicBool,
+) -> Result<()> {
+    if integrity_poisoned.load(AtomicOrdering::Acquire) {
+        return Err(HawDBError::Storage(
+            "database handle is poisoned after a runtime storage integrity failure; close and reopen the database before issuing more operations"
+                .to_string(),
+        ));
+    }
+    if post_wal_apply_poisoned.load(AtomicOrdering::Acquire) {
+        return Err(HawDBError::Storage(
+            "database handle is poisoned after a durable WAL batch failed during in-memory apply; close and reopen the database before issuing more operations"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 impl GraphStore {
     pub fn in_memory() -> Self {
         Self::default()
@@ -1482,18 +1506,7 @@ impl GraphStore {
 
     #[doc(hidden)]
     pub fn ensure_usable(&self) -> Result<()> {
-        if self.integrity_poisoned.load(AtomicOrdering::Acquire) {
-            return Err(HawDBError::Storage(
-                "database handle is poisoned after a runtime storage integrity failure; close and reopen the database before issuing more operations"
-                    .to_string(),
-            ));
-        }
-        if self.post_wal_apply_poisoned.load(AtomicOrdering::Acquire) {
-            return Err(HawDBError::Storage(
-                "database handle is poisoned after a durable WAL batch failed during in-memory apply; close and reopen the database before issuing more operations"
-                    .to_string(),
-            ));
-        }
+        ensure_graph_read_flags_usable(&self.integrity_poisoned, &self.post_wal_apply_poisoned)?;
         self.validate_authoritative_relational_index_open()?;
         Ok(())
     }
@@ -1738,7 +1751,7 @@ impl GraphStore {
             version_index: hawdb_storage::version::VersionIndex::default(),
             version_snapshot_pins: Default::default(),
             version_snapshot_pin: None,
-            nodes: CowSegmentedMap::default(),
+            nodes: crate::cow::CowNodeMap::default(),
             relationships: CowSegmentedMap::default(),
             basic_statistics: BasicStatisticsState::default(),
             checkpoint_statistics: CheckpointStatisticsState::default(),
@@ -14144,7 +14157,7 @@ mod tests {
 
     #[test]
     fn statistics_track_path_source_and_target_coverage() {
-        let nodes = [
+        let nodes: crate::cow::CowNodeMap = [
             (0, LabelId(0)),
             (1, LabelId(0)),
             (10, LabelId(1)),

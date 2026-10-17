@@ -1645,7 +1645,7 @@ impl GraphStore {
             self.canonical_adjacency = durable.canonical_adjacency.clone();
             self.persistent_property_projection = durable.persistent_property_projection.clone();
             self.canonical_base_out_of_core = true;
-            self.nodes = CowSegmentedMap::default();
+            self.nodes = crate::cow::CowNodeMap::default();
             self.relationships = CowSegmentedMap::default();
             self.node_tombstones = CowSegment::default();
             self.relationship_tombstones = CowSegment::default();

@@ -20,7 +20,7 @@ use super::*;
 /// and its process-memory policy. It does not admit CPU, task or I/O work.
 #[derive(Debug)]
 pub struct RuntimeRetainedMemory {
-    governor: Arc<RuntimeGovernorInner>,
+    pub(super) governor: Arc<RuntimeGovernorInner>,
     bytes: u64,
     process_memory: Option<ProcessMemoryReservation>,
 }

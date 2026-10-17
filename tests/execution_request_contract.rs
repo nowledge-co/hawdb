@@ -551,7 +551,7 @@ fn host_can_implement_external_reads_using_only_the_hawdb_facade() {
 
 #[test]
 fn session_result_row_settings_are_isolated_and_inherited_by_transactions() {
-    use hawdb::{Database, DatabaseConfig};
+    use hawdb::{Database, DatabaseConfig, RetainedQueryError, RetainedQueryOptions};
 
     for configured in [Some(0), None, Some(2)] {
         let mut db = Database::new_with_config(DatabaseConfig {
@@ -592,6 +592,21 @@ fn session_result_row_settings_are_isolated_and_inherited_by_transactions() {
                 .unwrap()
                 .rows
                 .is_empty());
+            let mut cursor = session
+                .query_with_params_retained(
+                    query,
+                    &BTreeMap::new(),
+                    RetainedQueryOptions::default(),
+                )
+                .unwrap();
+            session.set_max_result_rows(0);
+            assert!(matches!(
+                cursor.next_batch(),
+                Err(RetainedQueryError::ResultBudget { rows: 3, .. })
+            ));
+            assert!(cursor.next_batch().is_err());
+            drop(cursor);
+            session.set_max_result_rows(1);
             session.query("BEGIN TRANSACTION").unwrap();
             session.set_max_result_rows(0);
             assert!(

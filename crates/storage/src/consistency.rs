@@ -14,13 +14,14 @@
 
 //! Graph statistics consistency and adjacency consolidation contracts.
 
+use crate::cow::NodeRecordRead;
 use crate::{
     adjacency::{
         AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyLayout,
         AdjacencyPostingList,
     },
     cow::{CowSegment, CowSegmentedMap},
-    NodeId, NodeRecord, RelId, RelRecord,
+    NodeId, RelId, RelRecord,
 };
 use hawdb_core::{BasicGraphStatistics, LabelId, RelTypeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -119,7 +120,7 @@ pub fn recompute_adjacency_groups(
 }
 
 pub fn compute_degree_statistics_from_adjacency(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &impl NodeRecordRead,
     outgoing: &CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
     incoming: &CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
 ) -> BTreeMap<DegreeStatisticsKey, DegreeStatisticsEntry> {
@@ -127,14 +128,14 @@ pub fn compute_degree_statistics_from_adjacency(
 }
 
 pub fn compute_degree_statistics_from_relationships(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &impl NodeRecordRead,
     relationships: &CowSegmentedMap<RelId, RelRecord>,
 ) -> BTreeMap<DegreeStatisticsKey, DegreeStatisticsEntry> {
     compute_degree_statistics_from_groups(nodes, recompute_adjacency_groups(relationships))
 }
 
 fn compute_degree_statistics_from_groups(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &impl NodeRecordRead,
     groups: AdjacencyGroups,
 ) -> BTreeMap<DegreeStatisticsKey, DegreeStatisticsEntry> {
     let rel_types = groups
@@ -193,9 +194,7 @@ fn compute_degree_statistics_from_groups(
     statistics
 }
 
-fn label_counts_for_degree_statistics(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-) -> BTreeMap<LabelId, u64> {
+fn label_counts_for_degree_statistics(nodes: &impl NodeRecordRead) -> BTreeMap<LabelId, u64> {
     let mut label_counts = BTreeMap::new();
     for node in nodes.values() {
         for label_id in &node.labels {

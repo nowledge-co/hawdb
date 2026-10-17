@@ -159,7 +159,7 @@ fn large_directory_denies_before_allocating_and_keeps_every_shared_page() {
     // A valid sorted directory of small one-record pages isolates directory
     // copying from payload copying without constructing oversized records.
     let mut map = CowSegmentedMap {
-        segments: CowSegment::from(
+        segments: CowSegment::from(CowPageDirectory::new(
             (0..len)
                 .map(|id| {
                     CowSegment::from(BTreeMap::from([(
@@ -172,7 +172,7 @@ fn large_directory_denies_before_allocating_and_keeps_every_shared_page() {
                     )]))
                 })
                 .collect::<Vec<_>>(),
-        ),
+        )),
         len: len as usize,
         delta_pressure_bytes: u128::from(len) * 32,
     };
@@ -641,4 +641,74 @@ fn replacing_a_record_consumes_growth_before_another_split_can_be_admitted() {
     assert!(governor.snapshot().admitted_memory_bytes >= charge);
     drop(map);
     assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
+fn retained_node_row_keeps_checkpoint_copy_charge_after_directory_release() {
+    let body = "retained checkpoint row".repeat(8192);
+    let mut map = crate::cow::CowNodeMap::from(BTreeMap::from([(NodeId(0), record(0, &body))]));
+    let old = map.clone();
+    let (governor, mut admission, work) =
+        admitted(2 * 1024 * 1024, RuntimeTaskContext::default(), scheduler());
+    map.prepare_checkpoint_copy_for_key(&NodeId(0), &work)
+        .unwrap();
+    let row = map
+        .retained_point_row_preflight(NodeId(0))
+        .unwrap()
+        .0
+        .clone();
+    map.get_mut(&NodeId(0))
+        .unwrap()
+        .properties
+        .insert("rank".into(), Value::Int(1));
+    assert_eq!(row.properties["rank"], Value::Int(0));
+    assert_eq!(
+        old.get(&NodeId(0)).unwrap().properties["rank"],
+        Value::Int(0)
+    );
+    admission.pause();
+    drop(work);
+    drop(admission);
+    drop(map);
+    drop(old);
+    assert!(governor.snapshot().admitted_memory_bytes >= body.len() as u64);
+    assert_eq!(row.properties["body"], Value::String(body));
+    drop(row);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
+fn denied_retained_node_checkpoint_copy_preserves_rows_and_releases_admission() {
+    let body = "large row".repeat(8192);
+    let mut map = crate::cow::CowNodeMap::from(BTreeMap::from([(NodeId(0), record(0, &body))]));
+    let old = map.clone();
+    let (governor, admission, work) = admitted(4096, RuntimeTaskContext::default(), scheduler());
+    assert!(map
+        .prepare_checkpoint_copy_for_key(&NodeId(0), &work)
+        .is_err());
+    assert_eq!(map.get(&NodeId(0)), old.get(&NodeId(0)));
+    drop(work);
+    drop(admission);
+    drop(map);
+    drop(old);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
+fn retained_node_pressure_tracks_snapshot_mutations_and_removal() {
+    let mut map = crate::cow::CowNodeMap::from(BTreeMap::from([(NodeId(0), record(0, "small"))]));
+    let old = map.clone();
+    let before = map.delta_pressure_bytes();
+    map.get_mut(&NodeId(0))
+        .unwrap()
+        .properties
+        .insert("body".into(), Value::String("x".repeat(8192)));
+    assert_eq!(map.delta_pressure_bytes(), before + 8192 - 5);
+    assert_eq!(old.delta_pressure_bytes(), before);
+    map.remove(&NodeId(0));
+    assert_eq!(map.delta_pressure_bytes(), 0);
+    assert_eq!(
+        old.get(&NodeId(0)).unwrap().properties["body"],
+        Value::String("small".into())
+    );
 }

@@ -332,3 +332,7 @@ harness = false
 [[bench]]
 name = "host_boundary_allocations"
 harness = false
+
+[[bench]]
+name = "retained_source_capacity"
+harness = false

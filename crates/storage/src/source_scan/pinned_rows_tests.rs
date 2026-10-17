@@ -187,7 +187,7 @@ fn source_payload_cancels_inside_wide_nested_encoding_and_releases_text() {
 
 #[test]
 fn pinned_preparation_avoids_wide_nested_record_copies_under_a_small_working_ceiling() {
-    let mut nodes = CowSegmentedMap::default();
+    let mut nodes = crate::cow::CowNodeMap::default();
     for id in 0..4 {
         nodes.insert(
             NodeId(id),
@@ -247,7 +247,7 @@ fn pinned_preparation_avoids_wide_nested_record_copies_under_a_small_working_cei
 
 #[test]
 fn pinned_projection_keeps_summary_leases_until_the_last_clone() {
-    let mut nodes = CowSegmentedMap::default();
+    let mut nodes = crate::cow::CowNodeMap::default();
     nodes.insert(NodeId(7), node(7, Value::String("s".repeat(512 * 1024))));
     let resources = governor();
     let admission = resources
@@ -282,7 +282,7 @@ fn pinned_projection_keeps_summary_leases_until_the_last_clone() {
 fn pinned_segments_preserve_wire_bytes_and_original_sparse_rows_after_writer_changes() {
     let owned_directory = TestDir::new();
     let pinned_directory = TestDir::new();
-    let mut nodes = CowSegmentedMap::default();
+    let mut nodes = crate::cow::CowNodeMap::default();
     for id in 0..330 {
         let mut record = node(
             id,
@@ -365,7 +365,7 @@ fn pinned_segments_preserve_wire_bytes_and_original_sparse_rows_after_writer_cha
 
 #[test]
 fn pinned_reference_capacity_denies_before_any_wide_copy_or_source_change() {
-    let mut nodes = CowSegmentedMap::default();
+    let mut nodes = crate::cow::CowNodeMap::default();
     nodes.insert(NodeId(0), node(0, Value::Binary(vec![0; 128 * 1024])));
     let original = nodes.clone();
     let resources = governor();
@@ -396,7 +396,7 @@ fn pinned_reference_capacity_denies_before_any_wide_copy_or_source_change() {
 
 #[test]
 fn pinned_summary_denies_wide_scalar_copies_before_allocation() {
-    let mut nodes = CowSegmentedMap::default();
+    let mut nodes = crate::cow::CowNodeMap::default();
     nodes.insert(NodeId(7), node(7, Value::String("s".repeat(512 * 1024))));
     let resources = governor();
     let admission = resources
@@ -427,7 +427,7 @@ fn pinned_summary_denies_wide_scalar_copies_before_allocation() {
 
 #[test]
 fn scalar_copy_denial_reaches_scalar_after_admitting_metadata() {
-    let mut nodes = CowSegmentedMap::default();
+    let mut nodes = crate::cow::CowNodeMap::default();
     nodes.insert(NodeId(7), node(7, Value::String("s".repeat(512 * 1024))));
     let resources = governor();
     let admission = resources
@@ -455,7 +455,7 @@ fn scalar_copy_denial_reaches_scalar_after_admitting_metadata() {
 
 #[test]
 fn source_descriptor_denies_before_unadmitted_scalar_encoding() {
-    let mut nodes = CowSegmentedMap::default();
+    let mut nodes = crate::cow::CowNodeMap::default();
     nodes.insert(NodeId(7), node(7, Value::String("s".repeat(512 * 1024))));
     let mut projection = build_with_pinned_nodes(
         1,
@@ -509,7 +509,7 @@ fn source_descriptor_retains_its_lease_through_footer_and_extreme_ranges() {
             properties: record.properties.clone(),
         }],
     );
-    let mut nodes = CowSegmentedMap::default();
+    let mut nodes = crate::cow::CowNodeMap::default();
     nodes.insert(record.id, record);
     let mut projection = build_with_pinned_nodes(
         u64::MAX,
@@ -564,7 +564,7 @@ fn source_descriptor_retains_its_lease_through_footer_and_extreme_ranges() {
 
 #[test]
 fn pinned_summary_preserves_all_128_positions_for_a_repeated_exact_key() {
-    let mut nodes = CowSegmentedMap::default();
+    let mut nodes = crate::cow::CowNodeMap::default();
     let mut rows = Vec::new();
     for id in 0..128 {
         let mut record = node(id, Value::Int(id as i64));
@@ -616,7 +616,7 @@ fn source_exact_cursor_allocations_fit_the_admitted_segment_bound() {
 
 #[test]
 fn source_payload_preparation_keeps_completed_rows_across_fixed_work_denials() {
-    let mut nodes = CowSegmentedMap::default();
+    let mut nodes = crate::cow::CowNodeMap::default();
     for id in 0..64 {
         nodes.insert(NodeId(id), node(id, Value::String("界🙂;=".repeat(128))));
     }
@@ -661,10 +661,10 @@ fn source_payload_preparation_keeps_completed_rows_across_fixed_work_denials() {
     assert!(preparation.segments[0].text.is_none());
 }
 
-fn incompressible_nodes(count: u64, width: usize) -> CowSegmentedMap<NodeId, NodeRecord> {
+fn incompressible_nodes(count: u64, width: usize) -> crate::cow::CowNodeMap {
     const ALPHABET: &[u8; 64] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
     let mut random = 0x9e37_79b9_7f4a_7c15u64;
-    let mut nodes = CowSegmentedMap::default();
+    let mut nodes = crate::cow::CowNodeMap::default();
     for id in 0..count {
         let payload = (0..width)
             .map(|_| {

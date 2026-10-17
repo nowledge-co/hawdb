@@ -22,7 +22,7 @@ use super::*;
 use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 
 pub fn compute_with_work_context(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &impl NodeRecordRead,
     relationships: &CowSegmentedMap<RelId, RelRecord>,
     catalog: Option<&Catalog>,
     basic_statistics: BasicGraphStatistics,
@@ -312,7 +312,7 @@ pub fn index_samples_with_work_context(
 }
 
 fn bounded_paths_with_work_context(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &impl NodeRecordRead,
     outgoing_by_source_type: &BTreeMap<(NodeId, RelTypeId), Vec<NodeId>>,
     max_hops: usize,
     work: &CheckpointWorkContext,
@@ -373,14 +373,14 @@ fn bounded_paths_with_work_context(
     })
 }
 
-struct CheckpointPathContext<'a> {
-    nodes: &'a CowSegmentedMap<NodeId, NodeRecord>,
+struct CheckpointPathContext<'a, N: NodeRecordRead> {
+    nodes: &'a N,
     outgoing_by_source_type: &'a BTreeMap<(NodeId, RelTypeId), Vec<NodeId>>,
     max_hops: usize,
     work: &'a CheckpointWorkContext,
 }
 
-impl CheckpointPathContext<'_> {
+impl<N: NodeRecordRead> CheckpointPathContext<'_, N> {
     fn collect(
         &self,
         root_source: NodeId,

@@ -25,7 +25,10 @@ enum Selected<I> {
     Delta { id: I, replaces_base: bool },
 }
 
-pub(crate) struct Cursor<R: OverlayRecord + CheckpointCanonicalRecord> {
+pub(crate) struct Cursor<
+    R: OverlayRecord + CheckpointCanonicalRecord,
+    D = CowSegmentedMap<<R as OverlayRecord>::Id, R>,
+> {
     reader: Option<CanonicalSegmentReader>,
     base: Option<CheckpointCanonicalCursor<R>>,
     // One admitted heap slot keeps the current record address stable even
@@ -33,16 +36,16 @@ pub(crate) struct Cursor<R: OverlayRecord + CheckpointCanonicalRecord> {
     base_row: Option<Box<Option<CheckpointRecord<R>>>>,
     base_memory: Option<Box<dyn hawdb_core::RuntimeMemoryPermit>>,
     base_ended: bool,
-    delta: CowSegmentedMap<R::Id, R>,
+    delta: D,
     tombstones: CowSegment<BTreeSet<R::Id>>,
     last_delta: Option<R::Id>,
     selected: Option<Selected<R::Id>>,
 }
 
-impl<R: OverlayRecord + CheckpointCanonicalRecord> Cursor<R> {
+impl<R: OverlayRecord + CheckpointCanonicalRecord, D: Delta<R>> Cursor<R, D> {
     pub(crate) fn new(
         reader: Option<&CanonicalSegmentReader>,
-        delta: &CowSegmentedMap<R::Id, R>,
+        delta: &D,
         tombstones: &CowSegment<BTreeSet<R::Id>>,
     ) -> Self {
         Self {
@@ -157,6 +160,27 @@ impl<R: OverlayRecord + CheckpointCanonicalRecord> Cursor<R> {
                 }
             }
         }
+    }
+}
+
+pub(crate) trait Delta<R: OverlayRecord>: Clone {
+    fn first_after(&self, id: Option<&R::Id>) -> Option<(&R::Id, &R)>;
+    fn get(&self, id: &R::Id) -> Option<&R>;
+}
+impl<R: OverlayRecord> Delta<R> for CowSegmentedMap<R::Id, R> {
+    fn first_after(&self, id: Option<&R::Id>) -> Option<(&R::Id, &R)> {
+        self.first_after(id)
+    }
+    fn get(&self, id: &R::Id) -> Option<&R> {
+        self.get(id)
+    }
+}
+impl Delta<NodeRecord> for crate::cow::CowNodeMap {
+    fn first_after(&self, id: Option<&NodeId>) -> Option<(&NodeId, &NodeRecord)> {
+        self.first_after(id)
+    }
+    fn get(&self, id: &NodeId) -> Option<&NodeRecord> {
+        self.get(id)
     }
 }
 

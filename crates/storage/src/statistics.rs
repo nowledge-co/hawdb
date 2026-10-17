@@ -19,6 +19,7 @@ pub mod checkpoint;
 #[doc(hidden)]
 pub mod node_index_updates;
 
+use crate::cow::NodeRecordRead;
 use crate::graph_index::{CompositePropertyIndex, NodePropertyIndex, RelationshipPropertyIndex};
 use crate::statistics_refresh::{
     adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
@@ -149,7 +150,7 @@ pub fn full_text_query_tokens(query: &str) -> Vec<String> {
 }
 
 pub fn compute_statistics(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &impl NodeRecordRead,
     relationships: &CowSegmentedMap<RelId, RelRecord>,
     computed_at_commit_epoch: u64,
 ) -> GraphStatistics {
@@ -162,7 +163,7 @@ pub fn compute_statistics(
 }
 
 pub fn compute_statistics_for_catalog(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &impl NodeRecordRead,
     relationships: &CowSegmentedMap<RelId, RelRecord>,
     catalog: &Catalog,
     basic_statistics: BasicGraphStatistics,
@@ -187,7 +188,7 @@ pub fn graph_statistics_from_basic(
 }
 
 pub fn compute_statistics_with_basic(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &impl NodeRecordRead,
     relationships: &CowSegmentedMap<RelId, RelRecord>,
     catalog: Option<&Catalog>,
     basic_statistics: BasicGraphStatistics,
@@ -394,7 +395,7 @@ pub fn compute_supported_property_distinct_counts<'a, K: Ord>(
 /// declared properties only. Recomputing every property would report the
 /// undeclared ones as permanently missing, which is the design, not a defect.
 pub fn recompute_node_property_index(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &impl NodeRecordRead,
     catalog: &Catalog,
 ) -> NodePropertyIndex {
     let mut index = NodePropertyIndex::default();
@@ -428,7 +429,7 @@ pub fn recompute_relationship_property_index(
 }
 
 pub fn compute_basic_statistics(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &impl NodeRecordRead,
     relationships: &CowSegmentedMap<RelId, RelRecord>,
     computed_at_commit_epoch: u64,
 ) -> BasicGraphStatistics {
@@ -478,7 +479,7 @@ pub struct BoundedPathStatistics {
 }
 
 pub fn compute_bounded_path_statistics(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    nodes: &impl NodeRecordRead,
     outgoing_by_source_type: &BTreeMap<(NodeId, RelTypeId), Vec<NodeId>>,
     max_hops: usize,
 ) -> BoundedPathStatistics {
@@ -531,8 +532,8 @@ pub fn compute_bounded_path_statistics(
     }
 }
 
-struct BoundedPathStatContext<'a> {
-    nodes: &'a CowSegmentedMap<NodeId, NodeRecord>,
+struct BoundedPathStatContext<'a, N: NodeRecordRead> {
+    nodes: &'a N,
     outgoing_by_source_type: &'a BTreeMap<(NodeId, RelTypeId), Vec<NodeId>>,
     max_hops: usize,
 }
@@ -548,7 +549,7 @@ struct BoundedPathStatAccumulator {
     exhausted: bool,
 }
 
-impl BoundedPathStatContext<'_> {
+impl<N: NodeRecordRead> BoundedPathStatContext<'_, N> {
     fn collect(
         &self,
         root_source: NodeId,

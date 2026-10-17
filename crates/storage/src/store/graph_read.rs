@@ -17,7 +17,7 @@
 use super::*;
 use crate::read_view::{
     AdmittedNodeRead, AdmittedNodeRecord, AdmittedRelationshipRead, AdmittedRelationshipRecord,
-    ControlledGraphReadAllocator,
+    ControlledGraphReadAllocator, GraphReadAdmission, GraphReadAllocation,
 };
 use hawdb_core::ids::{
     node_allocation_bytes, project_node_record_ref, projected_node_allocation_bytes,
@@ -43,6 +43,103 @@ enum RangeRecord<'a> {
 mod ordered_range_tests;
 
 #[cfg(test)]
+#[path = "graph_read/retained_scan_tests.rs"]
+mod retained_scan_tests;
+
+/// Root-internal immutable materialized-node source. Capturing this source
+/// shares only the node directory/pages and fail-closed poison signals, without
+/// keeping relationships, indexes, statistics, file leases or a query cache.
+/// It does not borrow a mutable store and does not decode canonical data.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct MaterializedNodeReadSource {
+    nodes: crate::cow::CowNodeMap,
+    integrity_poisoned: Arc<AtomicBool>,
+    post_wal_apply_poisoned: Arc<AtomicBool>,
+}
+
+/// A root-internal completion barrier, without retaining rows or directories.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct MaterializedReadHealth {
+    integrity_poisoned: Arc<AtomicBool>,
+    post_wal_apply_poisoned: Arc<AtomicBool>,
+}
+
+impl MaterializedReadHealth {
+    pub fn validate_usable(&self) -> Result<()> {
+        ensure_graph_read_flags_usable(&self.integrity_poisoned, &self.post_wal_apply_poisoned)
+    }
+
+    /// Conservative shared-atomic/header allowance on supported 32/64-bit ABIs.
+    pub const fn retained_capacity_bytes() -> usize {
+        2 * (3 * std::mem::size_of::<usize>() + std::mem::size_of::<AtomicBool>())
+    }
+}
+
+impl MaterializedNodeReadSource {
+    pub fn iter_after(&self, after: Option<NodeId>) -> Result<impl Iterator<Item = &NodeRecord>> {
+        ensure_graph_read_flags_usable(&self.integrity_poisoned, &self.post_wal_apply_poisoned)?;
+        Ok(self.nodes.iter_after(after).map(|(_, node)| node))
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.nodes.segment_count()
+    }
+
+    /// Capacity of the shared page-directory allocation only. This excludes
+    /// node-page/record payload capacities and is not a full source memory bound.
+    pub fn directory_capacity_bytes(&self) -> usize {
+        self.nodes.directory_capacity_bytes()
+    }
+}
+
+/// Root-internal point source. Unsupported storage must use a separate path;
+/// it must never be reported as a missing node in the live overlay.
+#[doc(hidden)]
+pub enum MaterializedNodePointRead<A = Box<dyn GraphReadAllocation>> {
+    Unsupported,
+    Missing,
+    Node(MaterializedNodePointSource<A>),
+}
+
+/// Own one immutable node row, without retaining its page or directory.
+/// The admission permit outlives the row and all borrowed record access.
+#[doc(hidden)]
+pub struct MaterializedNodePointSource<A = Box<dyn GraphReadAllocation>> {
+    row: crate::cow::CowSegment<NodeRecord>,
+    integrity_poisoned: Arc<AtomicBool>,
+    post_wal_apply_poisoned: Arc<AtomicBool>,
+    _allocation: A,
+}
+
+impl<A> MaterializedNodePointSource<A> {
+    pub fn node(&self) -> Result<&NodeRecord> {
+        ensure_graph_read_flags_usable(&self.integrity_poisoned, &self.post_wal_apply_poisoned)?;
+        Ok(&self.row)
+    }
+}
+
+fn retain_point_allocation(allocation: &mut dyn GraphReadAllocation, bytes: usize) -> Result<()> {
+    if allocation.bytes() < bytes {
+        return Err(HawDBError::Execution(
+            "retained point admission returned an insufficient allocation permit".into(),
+        ));
+    }
+    allocation.retain_state()?;
+    if allocation.bytes() < bytes {
+        return Err(HawDBError::Execution(
+            "retained point admission lost its allocation permit".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 #[path = "graph_read/relationship_scan_tests.rs"]
 mod relationship_scan_tests;
 
@@ -51,6 +148,140 @@ mod relationship_scan_tests;
 mod relationship_stream_tests;
 
 impl GraphStore {
+    #[doc(hidden)]
+    pub fn materialized_read_health(&self) -> Result<MaterializedReadHealth> {
+        self.ensure_usable()?;
+        Ok(MaterializedReadHealth {
+            integrity_poisoned: Arc::clone(&self.integrity_poisoned),
+            post_wal_apply_poisoned: Arc::clone(&self.post_wal_apply_poisoned),
+        })
+    }
+
+    /// Admit the selected row before pinning it, including nested and spare
+    /// capacities. This does not construct Arrow arrays or
+    /// establish a whole-process memory bound. Callers must supply their policy.
+    #[doc(hidden)]
+    pub fn materialized_node_point_read(
+        &self,
+        id: NodeId,
+        admission: &GraphReadAdmission<'_>,
+    ) -> Result<MaterializedNodePointRead> {
+        self.materialized_node_point_read_with_policy(
+            id,
+            |bytes| admission.reserve(bytes),
+            |allocation, bytes| retain_point_allocation(allocation.as_mut(), bytes),
+        )
+    }
+
+    /// Preserve the concrete permit's auto traits for typed host ownership.
+    /// No Send/Sync promise is imposed on standalone allocation policies.
+    #[doc(hidden)]
+    pub fn materialized_node_point_read_typed<A: GraphReadAllocation>(
+        &self,
+        id: NodeId,
+        allocate: impl FnOnce(usize) -> Result<A>,
+    ) -> Result<MaterializedNodePointRead<A>> {
+        self.materialized_node_point_read_with_admission(id, allocate)
+    }
+
+    /// Preserve host admission errors without converting backpressure or a
+    /// working-unit refusal into a generic storage error.
+    #[doc(hidden)]
+    pub fn materialized_node_point_read_with_admission<A: GraphReadAllocation, E>(
+        &self,
+        id: NodeId,
+        allocate: impl FnOnce(usize) -> std::result::Result<A, E>,
+    ) -> std::result::Result<MaterializedNodePointRead<A>, E>
+    where
+        E: From<HawDBError>,
+    {
+        self.materialized_node_point_read_with_policy(id, allocate, |allocation, bytes| {
+            retain_point_allocation(allocation, bytes)
+        })
+    }
+
+    fn materialized_node_point_read_with_policy<A, E>(
+        &self,
+        id: NodeId,
+        allocate: impl FnOnce(usize) -> std::result::Result<A, E>,
+        retain: impl FnOnce(&mut A, usize) -> Result<()>,
+    ) -> std::result::Result<MaterializedNodePointRead<A>, E>
+    where
+        E: From<HawDBError>,
+    {
+        self.ensure_usable()?;
+        if self.is_out_of_core() || self.canonical_base.is_some() {
+            return Ok(MaterializedNodePointRead::Unsupported);
+        }
+        if self.node_tombstones.contains(&id) {
+            return Ok(MaterializedNodePointRead::Missing);
+        }
+        let Some((row, capacity)) = self.nodes.retained_point_row_preflight(id) else {
+            return Ok(MaterializedNodePointRead::Missing);
+        };
+        let bytes = capacity
+            .and_then(|bytes| bytes.checked_add(64))
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "retained point capacity overflow or excessive value nesting".into(),
+                )
+            })?;
+        let mut allocation = allocate(bytes)?;
+        retain(&mut allocation, bytes)?;
+        Ok(MaterializedNodePointRead::Node(
+            MaterializedNodePointSource {
+                row: row.clone(),
+                integrity_poisoned: Arc::clone(&self.integrity_poisoned),
+                post_wal_apply_poisoned: Arc::clone(&self.post_wal_apply_poisoned),
+                _allocation: allocation,
+            },
+        ))
+    }
+
+    /// Bound every heap allocation pinned by the same materialized directory
+    /// before a caller adopts it. This preflight borrows all source records.
+    #[doc(hidden)]
+    pub fn materialized_node_read_source_capacity_bytes(&self) -> Result<Option<usize>> {
+        Ok(self
+            .materialized_node_read_source_capacity_preflight()?
+            .map(|(bytes, _)| bytes))
+    }
+
+    /// Return capacity and the records inspected on a cold snapshot preflight.
+    #[doc(hidden)]
+    pub fn materialized_node_read_source_capacity_preflight(
+        &self,
+    ) -> Result<Option<(usize, usize)>> {
+        self.ensure_usable()?;
+        if self.is_out_of_core() || self.canonical_base.is_some() {
+            return Ok(None);
+        }
+        let (capacity, inspected) = self.nodes.retained_capacity_preflight();
+        capacity
+            .and_then(|bytes| bytes.checked_add(64))
+            .map(|bytes| Some((bytes, inspected)))
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "retained source capacity overflow or excessive value nesting".into(),
+                )
+            })
+    }
+
+    /// Capture a heap-only materialized source without cloning the whole store.
+    /// Caller admission of source capacities remains a separate requirement.
+    #[doc(hidden)]
+    pub fn try_materialized_node_read_source(&self) -> Result<Option<MaterializedNodeReadSource>> {
+        self.ensure_usable()?;
+        if self.is_out_of_core() || self.canonical_base.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(MaterializedNodeReadSource {
+            nodes: self.nodes.clone(),
+            integrity_poisoned: Arc::clone(&self.integrity_poisoned),
+            post_wal_apply_poisoned: Arc::clone(&self.post_wal_apply_poisoned),
+        }))
+    }
+
     pub fn canonical_node_from_segments(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         self.durable
             .as_ref()
@@ -303,16 +534,21 @@ impl GraphStore {
         let Some(reader) = self.canonical_base.as_ref() else {
             return Ok(None);
         };
-        let Some(bytes) = reader
-            .projected_node_allocation_bytes(id, required_properties)
-            .map_err(canonical_segment_error)?
-        else {
-            return Ok(None);
-        };
-        admit(bytes)?;
-        reader
-            .get_projected_node(id, required_properties)
-            .map_err(canonical_segment_error)
+        let mut admission_error = None;
+        let result = reader.with_node_input(id, |input| {
+            input
+                .decode_selected(required_properties, |bytes| {
+                    admit(bytes).map_err(|error| {
+                        admission_error = Some(error);
+                        CanonicalSegmentError::Source("graph read admission refused".into())
+                    })
+                })
+                .map(|(node, ())| node)
+        });
+        if let Some(error) = admission_error {
+            return Err(error);
+        }
+        result.map_err(canonical_segment_error)
     }
 
     pub fn relationship_owned(&self, id: RelId) -> Result<Option<RelRecord>> {
@@ -917,6 +1153,26 @@ impl GraphStore {
         self.nodes
             .values()
             .filter(move |node| label_id.map(|id| node.labels.contains(&id)).unwrap_or(true))
+    }
+
+    /// A resumable borrowed source for a demanded retained numeric batch.
+    /// Refuses sources requiring canonical decoding instead of exposing just
+    /// their in-memory overlay. The caller bounds each demanded iterator step.
+    pub fn try_scan_materialized_nodes_after(
+        &self,
+        label_id: Option<LabelId>,
+        after: Option<NodeId>,
+    ) -> Result<Option<impl Iterator<Item = &NodeRecord>>> {
+        self.ensure_usable()?;
+        if self.is_out_of_core() || self.canonical_base.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.nodes
+                .iter_after(after)
+                .map(|(_, node)| node)
+                .filter(move |node| label_id.is_none_or(|id| node.labels.contains(&id))),
+        ))
     }
 
     pub fn scan_nodes_with_filter_pruning<'a>(

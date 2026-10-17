@@ -147,16 +147,14 @@ impl<'a> ProjectionAdmission<'a> {
         id: NodeId,
         properties: &BTreeSet<String>,
     ) -> std::result::Result<Option<AdmittedProjection>, CanonicalSegmentError> {
-        let Some(bytes) = reader.projected_node_allocation_bytes(id, properties)? else {
-            return Ok(None);
-        };
-        let allocation = self.reserve(bytes)?;
-        Ok(reader
-            .get_projected_node(id, properties)?
-            .map(|node| AdmittedProjection {
+        reader.with_node_input(id, |input| {
+            let (node, allocation) =
+                input.decode_selected(properties, |bytes| self.reserve(bytes))?;
+            Ok(AdmittedProjection {
                 node,
                 _allocation: allocation,
-            }))
+            })
+        })
     }
 
     pub(super) fn canonical_selection(
