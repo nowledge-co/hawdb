@@ -32,4 +32,6 @@ pub use template_cache::{PreparedRelationalSql, RelationalPlanTemplateCache};
 pub use timing::RelationalSqlStageTimings;
 
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tests;
