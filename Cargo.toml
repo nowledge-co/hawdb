@@ -340,3 +340,7 @@ harness = false
 [[bench]]
 name = "retained_source_capacity"
 harness = false
+
+[[bench]]
+name = "mixed_point_growth"
+harness = false

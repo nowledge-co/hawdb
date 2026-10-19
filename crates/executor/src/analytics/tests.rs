@@ -26,6 +26,7 @@ use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
 mod differential;
+mod identity;
 mod store;
 mod streaming;
 
@@ -234,6 +235,7 @@ struct RunOptions {
     output_rows: Option<usize>,
     score_column: String,
     return_node_identity: bool,
+    identity: Option<GraphAlgorithmIdentity>,
     exit: Exit,
 }
 
@@ -257,6 +259,7 @@ impl Default for RunOptions {
             output_rows: None,
             score_column: "score".to_string(),
             return_node_identity: false,
+            identity: None,
             exit: Exit::Complete,
         }
     }
@@ -283,7 +286,7 @@ fn run(fixture: &Fixture, options: &RunOptions, task: Option<&RuntimeTaskContext
         return_node_identity: options.return_node_identity,
         node_visibility_predicate: &options.predicate,
     }
-    .stream(
+    .stream_with_identity(
         GraphAlgorithmContext {
             catalog: &fixture.catalog,
             store: fixture,
@@ -295,6 +298,9 @@ fn run(fixture: &Fixture, options: &RunOptions, task: Option<&RuntimeTaskContext
         ExecutionLimit {
             output_rows: options.output_rows,
         },
+        options
+            .identity
+            .unwrap_or(GraphAlgorithmIdentity::legacy(options.return_node_identity)),
         &mut |batch| {
             live_bytes.push(ledger.snapshot().used_bytes);
             batches.push(batch);
@@ -681,6 +687,7 @@ fn identity_hydration_admits_selected_columns_before_cloning() {
         },
         NodeId(0),
         &["Memory".into()],
+        GraphAlgorithmIdentity::legacy(true),
         &source_account,
     )
     .unwrap();
@@ -704,6 +711,7 @@ fn identity_hydration_admits_selected_columns_before_cloning() {
         },
         NodeId(0),
         &[],
+        GraphAlgorithmIdentity::legacy(true),
         &source_account,
     )
     .unwrap_err();

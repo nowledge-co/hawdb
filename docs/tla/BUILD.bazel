@@ -161,3 +161,16 @@ tla_check(
     timeout_seconds = 1800,
     tlc_args = ["-cleanup", "-workers", "auto"],
 )
+
+[
+    tla_check(
+        name = "HawDBHeldGenerationSpool" + control + "_check",
+        module = "HawDBHeldGenerationSpool.tla",
+        config = "mutants/HawDBHeldGenerationSpool" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in ["ReopenLabel", "ForgeMissingOwner", "SharedOffset", "CloseBeforeReaders", "RefundBeforeClose", "FreshAccount", "HoldAfterBuild"]
+]

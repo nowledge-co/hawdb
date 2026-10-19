@@ -115,6 +115,7 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::ScoringProgramExec { .. }
         | PhysicalPlan::HostScoringExec { .. }
         | PhysicalPlan::GraphAlgorithm { .. }
+        | PhysicalPlan::GraphAlgorithmOutput(_)
         | PhysicalPlan::VectorSeedScan { .. }
         | PhysicalPlan::GraphSeedScan { .. }
         | PhysicalPlan::TextSeedScan { .. }

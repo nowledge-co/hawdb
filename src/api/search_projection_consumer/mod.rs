@@ -40,6 +40,9 @@ impl Database {
     /// errors; it owns the mapping of graph and relational rows into documents.
     /// The initializer must retain the staging index and its default analyzer;
     /// custom analyzer rules are not persisted by the current snapshot format.
+    /// Unavailable publication returns `HawDBError::CapabilityUnavailable`
+    /// with `RuntimeCapability::SearchProjectionPublication`
+    /// before initialization, checkpoint, directory creation, or registration.
     pub fn create_search_projection_consumer<F>(
         &mut self,
         id: SearchProjectionConsumerId,
@@ -51,6 +54,9 @@ impl Database {
         F: FnOnce(&mut DatabaseReadTransaction, &mut SearchIndex) -> Result<()>,
     {
         let root = self.consumer_writable_root()?;
+        // Refuse before user callbacks or durable writes: the final directory
+        // cannot move while the initialized consumer retains its child lease.
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::SearchProjectionPublication)?;
         if self.runtime.get_mut()?.projection_consumers.unavailable {
             let identity = self
                 .runtime
@@ -285,6 +291,10 @@ impl Database {
             };
             let operation_count = batch.operation_count();
             let mut snapshot = self.begin_read_transaction()?;
+            super::require_search_projection_source_epoch(
+                batch.complete_through_commit_epoch(),
+                snapshot.commit_epoch(),
+            )?;
             let hydrated = batch_hydrator(&mut snapshot, &batch)?;
             drop(snapshot);
             batch.graph_delta_mut().max_operations = Some(max_projection_operations_per_batch);

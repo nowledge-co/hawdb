@@ -237,7 +237,8 @@ impl From<&QueryAccessControlContext> for AccessControlPlanCacheKey {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct OptimizerEnvironmentKey {
     schema: OptimizerSchemaKey,
-    statistics_generation: u64,
+    // Query-local point estimates do not depend on published advanced statistics.
+    statistics_generation: Option<u64>,
     ordered_range_indexes: Vec<(String, String)>,
     node_index_size_classes: Vec<(LabelId, bool)>,
 }
@@ -456,13 +457,15 @@ impl OptimizerPlanningCache {
         // ordinary data commits do not make a physical plan illegal. A cache
         // miss refreshes the snapshot before choosing a new plan instead.
         // Maintained index-size classes prevent a tiny-label scan from staying
-        // cached across the existing scan/index cost boundary.
+        // cached across the existing scan/index cost boundary. Point plans use
+        // snapshot-local candidate counts instead of advanced statistics, so a
+        // diagnostic publication must not invalidate their warmed variants.
         if !query_local_statistics {
             self.ensure_statistics(catalog, store, false, None);
         }
         OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
-            statistics_generation: self.statistics_generation,
+            statistics_generation: (!query_local_statistics).then_some(self.statistics_generation),
             ordered_range_indexes: ordered_range_indexes(catalog, store),
             node_index_size_classes: node_index_size_classes(catalog, store),
         }
@@ -559,7 +562,7 @@ impl OptimizerPlanningCache {
         ));
         let environment = OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
-            statistics_generation: self.statistics_generation,
+            statistics_generation: Some(self.statistics_generation),
             ordered_range_indexes: ordered_range_indexes(catalog, store),
             node_index_size_classes: node_index_size_classes(catalog, store),
         };
@@ -866,7 +869,7 @@ fn optimizer_catalog_access_for_logical<S: crate::executor::ExecutionStore>(
     );
     let environment = OptimizerEnvironmentKey {
         schema: OptimizerSchemaKey::from_catalog(context.catalog),
-        statistics_generation: context.planning_cache.borrow().statistics_generation,
+        statistics_generation: Some(context.planning_cache.borrow().statistics_generation),
         ordered_range_indexes: ordered_range_indexes(context.catalog, context.store),
         // Mutation plans bypass the physical cache and have no graph input.
         // Do not add a second basic-count clone to their planning path.
@@ -1432,7 +1435,121 @@ mod tests {
     }
 
     #[test]
-    fn point_plan_cache_replans_only_when_crossing_the_small_label_index_boundary() {
+    fn diagnostic_statistics_preserve_query_local_point_cache() {
+        for analyze in [false, true] {
+            let mut db = crate::Database::new();
+            db.query("CREATE INDEX ON :Item(id)").unwrap();
+            let parameters = |id| {
+                BTreeMap::from([
+                    ("id".into(), Value::Int(id)),
+                    ("score".into(), Value::Int(id * 3)),
+                ])
+            };
+            for id in 0..100 {
+                db.query_with_params("CREATE (:Item {id: $id, score: $score})", &parameters(id))
+                    .unwrap();
+            }
+            db.runtime
+                .get()
+                .unwrap()
+                .optimizer_planning_cache
+                .borrow_mut()
+                .invalidate();
+            let query = "MATCH (n:Item) WHERE n.id = $id RETURN n.id AS id, n.score AS score";
+            let reads = |db: &mut crate::Database| {
+                let before = db.plan_cache_stats().unwrap();
+                for id in 0..100 {
+                    // The unused score parameter deliberately retains 100 exact variants.
+                    let output = db.query_with_params(query, &parameters(id)).unwrap();
+                    assert_eq!(output.rows.len(), 1);
+                    assert_eq!(output.rows[0].get("id"), Some(&Value::Int(id)));
+                    assert_eq!(output.rows[0].get("score"), Some(&Value::Int(id * 3)));
+                }
+                let after = db.plan_cache_stats().unwrap();
+                (after.hits - before.hits, after.misses - before.misses)
+            };
+            assert_eq!(reads(&mut db), (0, 100));
+            assert_eq!(reads(&mut db), (100, 0));
+            let generation = db
+                .runtime
+                .get()
+                .unwrap()
+                .optimizer_planning_cache
+                .borrow()
+                .statistics_generation;
+            if analyze {
+                let output = db
+                    .explain_analyze_query_with_params(query, &parameters(0))
+                    .unwrap();
+                assert_eq!(output.output.rows.len(), 1);
+            } else {
+                db.explain_query_with_params(query, &parameters(0)).unwrap();
+            }
+            assert!(
+                db.runtime
+                    .get()
+                    .unwrap()
+                    .optimizer_planning_cache
+                    .borrow()
+                    .statistics_generation
+                    > generation,
+                "the diagnostic must publish a new advanced-statistics snapshot"
+            );
+            assert_eq!(reads(&mut db), (100, 0));
+            assert_eq!(reads(&mut db), (100, 0));
+        }
+    }
+
+    #[test]
+    fn graph_dependent_cache_still_tracks_statistics_publication() {
+        let mut db = crate::Database::new();
+        for id in 0..10 {
+            db.query(&format!("CREATE (:Item {{id: {id}, score: {id}}})"))
+                .unwrap();
+        }
+        let query = "MATCH (n:Item) WHERE n.score > $minimum RETURN n.id AS id";
+        let parameters = BTreeMap::from([("minimum".into(), Value::Int(0))]);
+        assert_eq!(
+            db.query_with_params(query, &parameters).unwrap().rows.len(),
+            9
+        );
+        let warm = db.plan_cache_stats().unwrap();
+        db.query("CREATE (:Item {id: 10, score: 10})").unwrap();
+        assert_eq!(
+            db.query_with_params(query, &parameters).unwrap().rows.len(),
+            10
+        );
+        assert_eq!(db.plan_cache_stats().unwrap().hits, warm.hits + 1);
+        let generation = db
+            .runtime
+            .get()
+            .unwrap()
+            .optimizer_planning_cache
+            .borrow()
+            .statistics_generation;
+        db.explain_query_with_params(query, &parameters).unwrap();
+        assert!(
+            db.runtime
+                .get()
+                .unwrap()
+                .optimizer_planning_cache
+                .borrow()
+                .statistics_generation
+                > generation
+        );
+        let before = db.plan_cache_stats().unwrap();
+        assert_eq!(
+            db.query_with_params(query, &parameters).unwrap().rows.len(),
+            10
+        );
+        let replanned = db.plan_cache_stats().unwrap();
+        assert_eq!(replanned.misses, before.misses + 1);
+        db.query_with_params(query, &parameters).unwrap();
+        assert_eq!(db.plan_cache_stats().unwrap().hits, replanned.hits + 1);
+    }
+
+    #[test]
+    fn point_plan_cache_tracks_the_small_label_index_boundary() {
         let mut db = crate::Database::new();
         for statement in [
             "CREATE NODE TABLE Item",
@@ -1535,11 +1652,19 @@ mod tests {
         assert_eq!(output.rows[0].get("score"), Some(&Value::Int(0)));
         db.query("MATCH (n:Item) WHERE n.id >= 8 DELETE n").unwrap();
         let shrunk = plan(&db);
-        assert_eq!(shrunk.plan_cache_lookup, PlanCacheLookup::Miss);
+        // Returning to the small-label class reuses its original scan plan.
+        assert_eq!(shrunk.plan_cache_lookup, PlanCacheLookup::Hit);
+        assert_eq!(shrunk.optimizer_environment, initial.optimizer_environment);
+        assert_eq!(
+            shrunk.physical_plan.fingerprint(),
+            initial.physical_plan.fingerprint()
+        );
         assert!(shrunk
             .physical_plan
             .explain(0)
             .contains("access=SeqNodeScan"));
+        let shrunk_output = db.query_with_params(query, &parameters).unwrap();
+        assert_eq!(shrunk_output.rows, output.rows);
     }
 
     #[test]

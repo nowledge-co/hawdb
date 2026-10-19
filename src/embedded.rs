@@ -433,6 +433,23 @@ impl HawDBEmbedded {
             .query_with_params_retained(cypher_text, parameters, options)
     }
 
+    /// Experimental indexed complete-node owners under the shared governor.
+    pub fn query_with_params_retained_node(
+        &self,
+        cypher_text: &str,
+        parameters: &BTreeMap<String, Value>,
+        options: RetainedQueryOptions,
+    ) -> std::result::Result<crate::RetainedNodeCursor, RetainedQueryError> {
+        if self.transaction.is_some() {
+            return Err(HawDBError::Execution(
+                "a user transaction is open on this database".into(),
+            )
+            .into());
+        }
+        self.database
+            .query_with_params_retained_node(cypher_text, parameters, options)
+    }
+
     pub fn query_with_params_admitted_context(
         &mut self,
         cypher_text: &str,

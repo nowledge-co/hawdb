@@ -1,5 +1,5 @@
 use super::*;
-use hawdb_cypher::{ProcedureCallKind, YieldItem};
+use hawdb_cypher::{OrderExpression as CypherOrderExpression, ProcedureCallKind, YieldItem};
 
 pub(super) fn bind_procedure_pipeline(
     query: &QueryPipeline,
@@ -41,18 +41,19 @@ pub(super) fn bind_procedure_pipeline(
                 CypherGraphAlgorithmKind::Louvain => "louvain_id",
             };
             let mut score = default_score.to_string();
-            let yield_has_node_id = yields
-                .iter()
-                .any(|item| item.name.eq_ignore_ascii_case("node_id"));
-            let yield_has_node_label = yields
-                .iter()
-                .any(|item| item.name.eq_ignore_ascii_case("node_label"));
-            if yield_has_node_id != yield_has_node_label {
-                return Err(unsupported(
-                    "graph algorithm identity requires both node_id and node_label",
-                ));
+            let requested = graph_algorithm_requested_columns(yields, tail);
+            let mut identity = GraphAlgorithmIdentity {
+                node_id: requested.contains("node_id"),
+                node_label: requested.contains("node_label"),
+                node_labels: requested.contains("node_labels"),
+            };
+            if *algorithm == CypherGraphAlgorithmKind::PageRank
+                && requested.contains("rank")
+                && !requested.contains(default_score)
+            {
+                score = "rank".to_string();
             }
-            let mut return_node_identity = yield_has_node_id;
+            let mut legacy_shape = false;
             // PageRank historically exposes the requested rank spelling directly.
             if yields.is_empty()
                 && let [clause] = tail
@@ -61,35 +62,43 @@ pub(super) fn bind_procedure_pipeline(
                 && names
                     .first()
                     .is_some_and(|name| name.eq_ignore_ascii_case("node"))
-                && let Some((identity, score_name)) =
+                && let Some((legacy_identity, score_name)) =
                     graph_algorithm_return_shape(*algorithm, &names)
                 && (score_name.eq_ignore_ascii_case(default_score)
                     || (*algorithm == CypherGraphAlgorithmKind::PageRank
                         && score_name.eq_ignore_ascii_case("rank")))
             {
-                return_node_identity = identity;
+                identity = GraphAlgorithmIdentity::legacy(legacy_identity);
+                legacy_shape = true;
                 score = score_name.to_string();
                 tail = &[];
             }
             let mut columns = vec!["node".to_string()];
-            if return_node_identity {
-                columns.extend(["node_id".to_string(), "node_label".to_string()]);
-            }
+            columns.extend(identity.columns().map(str::to_string));
             if *algorithm == CypherGraphAlgorithmKind::Louvain {
                 columns.push("level".to_string());
             }
             columns.push(score.clone());
-            (
+            let input = if legacy_shape || identity.is_empty() {
                 LogicalPlan::GraphAlgorithm {
                     algorithm: plan_graph_algorithm_kind(*algorithm),
                     graph_name: graph_name.clone(),
                     options: bind_graph_algorithm_options(options, parameters)?,
                     score_column: score,
-                    return_node_identity,
+                    return_node_identity: identity.node_id,
                     node_visibility_predicate: None,
-                },
-                columns,
-            )
+                }
+            } else {
+                LogicalPlan::GraphAlgorithmOutput(Box::new(GraphAlgorithmOutput {
+                    algorithm: plan_graph_algorithm_kind(*algorithm),
+                    graph_name: graph_name.clone(),
+                    options: bind_graph_algorithm_options(options, parameters)?,
+                    score_column: score,
+                    identity,
+                    node_visibility_predicate: None,
+                }))
+            };
+            (input, columns)
         }
         ProcedureCallKind::GraphSeedSearch(search) => {
             return bind_graph_seed_pipeline(search, yields, tail, parameters);
@@ -402,4 +411,74 @@ fn bind_graph_seed_pipeline(
         });
     }
     bind_read_clauses(tail, Some(input), scope, parameters)
+}
+
+fn graph_algorithm_requested_columns(yields: &[YieldItem], tail: &[Clause]) -> BTreeSet<String> {
+    if !yields.is_empty() {
+        return yields
+            .iter()
+            .map(|item| item.name.to_ascii_lowercase())
+            .collect();
+    }
+    let mut names = BTreeSet::new();
+    if let Some(ClauseKind::Return(projection) | ClauseKind::With(projection)) =
+        tail.first().map(|clause| &clause.kind)
+    {
+        for item in &projection.items {
+            collect_algorithm_return_columns(&item.expression, &mut names);
+        }
+        let mut additional = BTreeSet::new();
+        if let Some(predicate) = &projection.predicate {
+            collect_predicate_variables(predicate, &mut additional);
+        }
+        for item in &projection.order_by {
+            match &item.expression {
+                CypherOrderExpression::Value(value) => {
+                    collect_scalar_expression_variables(value, &mut additional)
+                }
+                CypherOrderExpression::Column(name)
+                | CypherOrderExpression::Property { variable: name, .. }
+                | CypherOrderExpression::Id { variable: name } => {
+                    additional.insert(name.clone());
+                }
+            }
+        }
+        additional.retain(|name| {
+            !projection
+                .items
+                .iter()
+                .any(|item| item.alias.as_ref() == Some(name))
+        });
+        names.extend(additional);
+    }
+    names
+}
+
+fn collect_algorithm_return_columns(
+    expression: &hawdb_cypher::ReturnExpression,
+    names: &mut BTreeSet<String>,
+) {
+    use hawdb_cypher::AggregateExpression;
+    match &expression.kind {
+        ReturnExpressionKind::Value(value) => collect_scalar_expression_variables(value, names),
+        ReturnExpressionKind::Arithmetic { first, rest } => {
+            collect_algorithm_return_columns(first, names);
+            for (_, expression) in rest {
+                collect_algorithm_return_columns(expression, names);
+            }
+        }
+        ReturnExpressionKind::Aggregate(aggregate) => match aggregate {
+            AggregateExpression::CountAll => {}
+            AggregateExpression::CountVariable { variable, .. }
+            | AggregateExpression::CountProperty { variable, .. }
+            | AggregateExpression::CollectProperty { variable, .. }
+            | AggregateExpression::CollectVariable { variable, .. }
+            | AggregateExpression::MinProperty { variable, .. }
+            | AggregateExpression::MaxProperty { variable, .. }
+            | AggregateExpression::AvgProperty { variable, .. } => {
+                names.insert(variable.clone());
+            }
+        },
+        ReturnExpressionKind::Path(_) => {}
+    }
 }

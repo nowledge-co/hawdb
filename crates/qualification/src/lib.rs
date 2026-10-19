@@ -956,7 +956,10 @@ impl StableHasher {
     }
 
     fn finish(self) -> String {
-        format!("sha256:{:x}", self.0.finalize())
+        format!(
+            "sha256:{}",
+            crate::evidence_digest::hex_digest(self.0.finalize().into())
+        )
     }
 }
 

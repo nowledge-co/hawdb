@@ -32,6 +32,7 @@ pub struct OperatorMemoryTracker {
     pub used_bytes: usize,
     pub peak_bytes: usize,
     lease: Option<QueryMemoryLease>,
+    budget_option: &'static str,
 }
 
 impl OperatorMemoryTracker {
@@ -41,6 +42,7 @@ impl OperatorMemoryTracker {
             used_bytes: 0,
             peak_bytes: 0,
             lease: None,
+            budget_option: "OperatorMemoryTracker::new(budget_bytes)",
         }
     }
 
@@ -54,24 +56,96 @@ impl OperatorMemoryTracker {
                     .reserve(0)
                     .expect("zero-byte query memory reservation cannot fail"),
             ),
+            budget_option: "OperatorMemoryTracker::with_account(budget_bytes)",
         }
+    }
+
+    pub(crate) fn with_blocking_account(
+        budget_bytes: NonZeroUsize,
+        account: QueryMemoryAccount,
+    ) -> Self {
+        Self {
+            budget_option: "ExecutionMemoryConfig.blocking_operator_bytes",
+            ..Self::with_account(budget_bytes, account)
+        }
+    }
+
+    pub(crate) fn limit_error(
+        &self,
+        requested: usize,
+        used: usize,
+        budget: usize,
+        message: String,
+    ) -> HawDBError {
+        if let Some(lease) = &self.lease {
+            return lease.operator_budget_error(
+                requested,
+                used,
+                budget,
+                self.budget_option,
+                message,
+            );
+        }
+        HawDBError::from(ResourceBudgetError {
+            resource: ResourceBudgetKind::MemoryBytes,
+            scope: ResourceBudgetScope::Operator,
+            owner: "OperatorMemoryTracker".to_string(),
+            memory_class: None,
+            requested: requested as u64,
+            used: used as u64,
+            budget: budget as u64,
+            budget_option: self.budget_option,
+            message,
+        })
+    }
+
+    pub(crate) fn state_error(&self, requested: usize, message: String) -> HawDBError {
+        self.limit_error(requested, self.used_bytes, self.budget_bytes, message)
     }
 
     pub fn would_exceed(&self, bytes: usize) -> bool {
-        self.used_bytes.saturating_add(bytes) > self.budget_bytes
+        self.used_bytes
+            .checked_add(bytes)
+            .is_none_or(|total| total > self.budget_bytes)
+    }
+
+    fn ensure_charge_fits(&self, bytes: usize, context: &str) -> Result<()> {
+        if !self.would_exceed(bytes) {
+            return Ok(());
+        }
+        let message = match self.used_bytes.checked_add(bytes) {
+            Some(total) => format!(
+                "{context} would use {total} bytes, exceeding its {}-byte budget",
+                self.budget_bytes
+            ),
+            None => format!(
+                "{context} byte accounting overflow while adding {bytes} bytes to {} bytes",
+                self.used_bytes
+            ),
+        };
+        Err(self.state_error(bytes, message))
     }
 
     pub fn try_charge(&mut self, bytes: usize) -> Result<()> {
-        if self.would_exceed(bytes) {
-            return Err(HawDBError::Execution(format!(
-                "operator state would use {} bytes, exceeding its {}-byte budget",
-                self.used_bytes.saturating_add(bytes),
-                self.budget_bytes
-            )));
-        }
+        self.ensure_charge_fits(bytes, "operator state")?;
         if let Some(lease) = self.lease.as_mut() {
             lease.grow(bytes)?;
         }
+        self.used_bytes = self.used_bytes.saturating_add(bytes);
+        self.peak_bytes = self.peak_bytes.max(self.used_bytes);
+        Ok(())
+    }
+
+    pub(crate) fn try_charge_from(
+        &mut self,
+        source: &mut QueryMemoryLease,
+        bytes: usize,
+    ) -> Result<()> {
+        self.ensure_charge_fits(bytes, "operator state")?;
+        let target = self.lease.as_mut().ok_or_else(|| {
+            HawDBError::Execution("key admission requires an accounted operator".into())
+        })?;
+        source.transfer_to(source.bytes(), target, bytes)?;
         self.used_bytes = self.used_bytes.saturating_add(bytes);
         self.peak_bytes = self.peak_bytes.max(self.used_bytes);
         Ok(())
@@ -104,13 +178,7 @@ impl OperatorMemoryTracker {
                 self.used_bytes
             )));
         }
-        if target.would_exceed(target_bytes) {
-            return Err(HawDBError::Execution(format!(
-                "operator memory transfer would use {} bytes, exceeding its {}-byte budget",
-                target.used_bytes.saturating_add(target_bytes),
-                target.budget_bytes
-            )));
-        }
+        target.ensure_charge_fits(target_bytes, "operator memory transfer")?;
         match (&mut self.lease, &mut target.lease) {
             (Some(source), Some(target)) => {
                 source.transfer_to(source_bytes, target, target_bytes)?;
@@ -431,10 +499,15 @@ pub fn ensure_operator_item_fits(
     tracker: &OperatorMemoryTracker,
 ) -> Result<()> {
     if bytes > tracker.budget_bytes {
-        return Err(HawDBError::Execution(format!(
-            "{operator} item uses {bytes} bytes, exceeding blocking_operator_bytes {}",
-            tracker.budget_bytes
-        )));
+        return Err(tracker.limit_error(
+            bytes,
+            0,
+            tracker.budget_bytes,
+            format!(
+                "{operator} item uses {bytes} bytes, exceeding blocking_operator_bytes {}",
+                tracker.budget_bytes
+            ),
+        ));
     }
     Ok(())
 }
@@ -448,10 +521,13 @@ pub fn push_bounded_operator_binding(
     let bytes = binding_memory_bytes(&binding);
     ensure_operator_item_fits(operator, bytes, tracker)?;
     if tracker.would_exceed(bytes) {
-        return Err(HawDBError::Execution(format!(
-            "{operator} state exceeds blocking_operator_bytes {}",
-            tracker.budget_bytes
-        )));
+        return Err(tracker.state_error(
+            bytes,
+            format!(
+                "{operator} state exceeds blocking_operator_bytes {}",
+                tracker.budget_bytes
+            ),
+        ));
     }
     tracker.try_charge(bytes)?;
     output.push(binding);
@@ -476,6 +552,108 @@ pub fn collect_bounded_operator_bindings_with_account(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    fn refusal(error: HawDBError) -> ResourceBudgetError {
+        let HawDBError::ResourceBudgetExceeded(cause) = error else {
+            panic!("expected typed memory refusal, got {error}");
+        };
+        *cause
+    }
+
+    #[test]
+    fn operator_limit_preserves_constructor_origin_and_exact_boundary() {
+        let ledger = QueryMemoryLedger::new(NonZeroUsize::new(32).unwrap());
+        let account = ledger.account(
+            QueryMemoryClass::BlockingState,
+            "custom operator",
+            NonZeroUsize::new(16).unwrap(),
+        );
+        let mut tracker =
+            OperatorMemoryTracker::with_account(NonZeroUsize::new(8).unwrap(), account);
+        tracker.try_charge(8).unwrap();
+        let cause = refusal(tracker.try_charge(1).unwrap_err());
+        assert_eq!(cause.resource, ResourceBudgetKind::MemoryBytes);
+        assert_eq!(cause.scope, ResourceBudgetScope::Operator);
+        assert_eq!(cause.owner, "custom operator");
+        assert_eq!(cause.memory_class, Some("blocking_state"));
+        assert_eq!((cause.requested, cause.used, cause.budget), (1, 8, 8));
+        assert_eq!(
+            cause.budget_option,
+            "OperatorMemoryTracker::with_account(budget_bytes)"
+        );
+        assert_eq!((tracker.used_bytes, tracker.peak_bytes), (8, 8));
+        assert_eq!(ledger.snapshot().used_bytes, 8);
+        tracker.release(3);
+        tracker.reset();
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        assert_eq!((tracker.used_bytes, tracker.peak_bytes), (0, 8));
+    }
+
+    #[test]
+    fn operator_limit_refuses_overflow_without_changing_usage() {
+        let mut tracker = OperatorMemoryTracker::new(NonZeroUsize::new(usize::MAX).unwrap());
+        tracker.try_charge(usize::MAX).unwrap();
+        assert!(tracker.would_exceed(1));
+        let cause = refusal(tracker.try_charge(1).unwrap_err());
+        assert_eq!(
+            cause.budget_option,
+            "OperatorMemoryTracker::new(budget_bytes)"
+        );
+        assert_eq!(cause.memory_class, None);
+        assert_eq!(cause.requested, 1);
+        assert!(cause.message.contains("overflow"));
+        assert_eq!(cause.used, usize::MAX as u64);
+        assert_eq!(cause.budget, usize::MAX as u64);
+        assert_eq!(tracker.used_bytes, usize::MAX);
+        tracker.reset();
+        assert_eq!(tracker.used_bytes, 0);
+    }
+
+    #[test]
+    fn operator_limit_rejects_transfers_without_releasing_source() {
+        let ledger = QueryMemoryLedger::new(NonZeroUsize::new(32).unwrap());
+        let source_account = ledger.account(
+            QueryMemoryClass::ExternalRead,
+            "source",
+            NonZeroUsize::new(16).unwrap(),
+        );
+        let target_account = ledger.account(
+            QueryMemoryClass::BlockingState,
+            "target",
+            NonZeroUsize::new(16).unwrap(),
+        );
+        let mut source = OperatorMemoryTracker::with_account(
+            NonZeroUsize::new(8).unwrap(),
+            source_account.clone(),
+        );
+        let mut target = OperatorMemoryTracker::with_blocking_account(
+            NonZeroUsize::new(4).unwrap(),
+            target_account,
+        );
+        source.try_charge(6).unwrap();
+        target.try_charge(2).unwrap();
+        let cause = refusal(source.transfer_to(4, &mut target, 3).unwrap_err());
+        assert_eq!(cause.owner, "target");
+        assert_eq!(cause.memory_class, Some("blocking_state"));
+        assert_eq!((cause.requested, cause.used, cause.budget), (3, 2, 4));
+        assert_eq!(
+            cause.budget_option,
+            "ExecutionMemoryConfig.blocking_operator_bytes"
+        );
+        assert_eq!((source.used_bytes, target.used_bytes), (6, 2));
+        assert_eq!(ledger.snapshot().used_bytes, 8);
+        let mut key = source_account.reserve(4).unwrap();
+        let cause = refusal(target.try_charge_from(&mut key, 3).unwrap_err());
+        assert_eq!((cause.requested, cause.used, cause.budget), (3, 2, 4));
+        assert_eq!(key.bytes(), 4);
+        assert_eq!(target.used_bytes, 2);
+        assert_eq!(ledger.snapshot().used_bytes, 12);
+        source.transfer_to(4, &mut target, 2).unwrap();
+        assert_eq!((source.used_bytes, target.used_bytes), (2, 4));
+        assert_eq!(ledger.snapshot().used_bytes, 10);
+        drop((source, target, key));
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
 
     #[test]
     fn operator_tracker_rejects_state_beyond_budget() {

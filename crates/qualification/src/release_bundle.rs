@@ -587,7 +587,10 @@ pub(super) fn required_features(expected: &ProductionQualificationIdentity) -> B
 
 fn artifact_digest(artifact: &Value) -> String {
     let bytes = serde_json::to_vec(artifact).expect("JSON value serialization cannot fail");
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!(
+        "sha256:{}",
+        crate::evidence_digest::hex_digest(Sha256::digest(bytes).into())
+    )
 }
 
 #[cfg(test)]

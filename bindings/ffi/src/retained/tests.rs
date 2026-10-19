@@ -19,54 +19,61 @@ fn misaligned_retained_inputs_and_outputs_refuse_before_typed_access() {
             .add(1)
             .cast::<HawdbRetainedQueryV1>()
     };
-    let mut out = HawdbRetainedCursorV1::default();
-    assert_eq!(
-        unsafe {
-            hawdb_retained_query(
-                db,
-                misaligned_request,
-                size::<HawdbRetainedQueryV1>(),
-                &mut out,
-                size::<HawdbRetainedCursorV1>(),
-            )
-        },
-        HAWDB_RETAINED_INVALID_ARGUMENT
-    );
-    assert_eq!(out.owner_id, 0);
-    let misaligned_db = unsafe { db.cast::<u8>().add(1).cast::<HawdbDatabase>() };
-    assert_eq!(
-        unsafe {
-            hawdb_retained_query(
-                misaligned_db,
-                &request,
-                size::<HawdbRetainedQueryV1>(),
-                &mut out,
-                size::<HawdbRetainedCursorV1>(),
-            )
-        },
-        HAWDB_RETAINED_INVALID_ARGUMENT
-    );
-    let mut output_storage = [u64::MAX; 16];
-    let misaligned_out = unsafe {
-        output_storage
-            .as_mut_ptr()
-            .cast::<u8>()
-            .add(1)
-            .cast::<HawdbRetainedCursorV1>()
-    };
-    assert_eq!(
-        unsafe {
-            hawdb_retained_query(
-                db,
-                &request,
-                size::<HawdbRetainedQueryV1>(),
-                misaligned_out,
-                size::<HawdbRetainedCursorV1>(),
-            )
-        },
-        HAWDB_RETAINED_INVALID_ARGUMENT
-    );
-    assert_eq!(output_storage, [u64::MAX; 16]);
+    for node in [false, true] {
+        let query = if node {
+            hawdb_retained_node_query
+        } else {
+            hawdb_retained_query
+        };
+        let mut out = HawdbRetainedCursorV1::default();
+        assert_eq!(
+            unsafe {
+                query(
+                    db,
+                    misaligned_request,
+                    size::<HawdbRetainedQueryV1>(),
+                    &mut out,
+                    size::<HawdbRetainedCursorV1>(),
+                )
+            },
+            HAWDB_RETAINED_INVALID_ARGUMENT
+        );
+        assert_eq!(out.owner_id, 0);
+        let misaligned_db = unsafe { db.cast::<u8>().add(1).cast::<HawdbDatabase>() };
+        assert_eq!(
+            unsafe {
+                query(
+                    misaligned_db,
+                    &request,
+                    size::<HawdbRetainedQueryV1>(),
+                    &mut out,
+                    size::<HawdbRetainedCursorV1>(),
+                )
+            },
+            HAWDB_RETAINED_INVALID_ARGUMENT
+        );
+        let mut output_storage = [u64::MAX; 16];
+        let misaligned_out = unsafe {
+            output_storage
+                .as_mut_ptr()
+                .cast::<u8>()
+                .add(1)
+                .cast::<HawdbRetainedCursorV1>()
+        };
+        assert_eq!(
+            unsafe {
+                query(
+                    db,
+                    &request,
+                    size::<HawdbRetainedQueryV1>(),
+                    misaligned_out,
+                    size::<HawdbRetainedCursorV1>(),
+                )
+            },
+            HAWDB_RETAINED_INVALID_ARGUMENT
+        );
+        assert_eq!(output_storage, [u64::MAX; 16]);
+    }
     unsafe { super::super::hawdb_close(db) };
 }
 

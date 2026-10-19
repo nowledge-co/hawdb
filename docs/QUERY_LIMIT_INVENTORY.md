@@ -40,9 +40,9 @@ Callbacks without checkpoints still cannot be interrupted while executing.
 | [ExecutionLimit](../crates/executor/src/limit.rs), `from_user_max_rows` / `child_for_limit` | A + C | Semantic LIMIT includes its offset. A resource row ceiling retains one additional detection row; it is not a successful prefix. | Preserve detection when adding pushdown or another result producer. |
 | [QueryOutputAccumulator](../crates/executor/src/result_delivery.rs), `emit` | C | Excess rows or payload return `ReadBudgetExceeded` with resource identity. Owned result capacity is separately charged. | Streaming consumers can observe earlier callbacks before an error; they must treat the operation as failed. |
 | [QueryMemoryLedger](../crates/executor/src/memory_ledger.rs), `reserve` | C | Per-account and query reservations fail before counters change, with structured `ResourceBudgetExceeded` metadata. Governed spill quota refusals preserve the same resource/scope/owner/request/usage/budget/origin contract. | Other operator-local checks may still return `Execution(String)`; do not infer that every resource failure has been converted. |
-| [GraphExpansionExecutionState](../crates/executor/src/graph.rs), `try_admit_payload` | C | Candidate and payload excess return `GraphExpansionCandidateLimitExceeded` or `GraphExpansionPayloadLimitExceeded`. `Ok(false)` in `try_push` is not the excess branch. Expanded-node state also reserves memory. | Fixed planner caps remain; scaling with the admitted ledger and spill policy is unfinished. |
-| [Graph lowering](../crates/optimizer-graph/src/graph/lowering.rs), `graph_expansion_budget` | C | Seed/hop-derived candidate cap and fixed payload cap feed the fail-closed expansion above. | The original 4,096 / 4 MiB policy is not evidence of budget-derived capacity. |
-| [Sort / TopN](../crates/executor/src/blocking/sort.rs), `push`, `spill_heap`, merge output | A + C | TopN selects the requested order/window. Working-state pressure produces governed runs; spill failure propagates. | Preserve full-input ranking and spill cleanup when changing either path. |
+| [GraphExpansionExecutionState](../crates/executor/src/graph.rs), `try_admit_payload` | C | Default seeded expansions retain admitted identity state and complete counters without cumulative row/payload caps. Explicit host caps still return `GraphExpansionCandidateLimitExceeded` or `GraphExpansionPayloadLimitExceeded`; live-memory refusal is typed. | Expansion state is not spillable and must fail if its live grant is exhausted. Preserve admission and complete-cohort scoring. |
+| [Graph lowering](../crates/optimizer-graph/src/graph/lowering.rs), seeded `AdjacencyExpandExec` | C | AST/plan-derived seed identity enables reports and memory accounting. No seed-fanout heuristic or fixed cumulative payload cap precedes the live ledger. | Explicit caller traversal caps are separate from live memory. Query/runtime grants and operator/batch budgets still apply; this does not complete the wider Mem contract decision. |
+| [Sort / TopN](../crates/executor/src/blocking/sort.rs), `push`, `spill_heap`, merge output | A + C | TopN selects the requested order/window. Working-state pressure produces governed runs; spill failure propagates. | Preserve full-input ranking and spill cleanup when changing either path. Any `SortKey::Expression` uses serial spill-run compaction with shared-query admission for expression scratch; property, column and ID keys retain parallel compaction. This can reduce spill-compaction parallelism for inline computed `ORDER BY` expressions. |
 | [Hash joins](../crates/executor/src/blocking/admitted_hash_join.rs), `push_build` and repartition/replay | C | Hash state spills or refuses admission; partitioning is not a result limit. | Skew, oversized records and shared spill exhaustion must remain failures. |
 | [Aggregate](../crates/executor/src/blocking/aggregate.rs), [partial states](../crates/executor/src/blocking/aggregate/partial.rs) | C | State limits spill partial aggregates or fail; grouping is not stopped after a resource-selected prefix. | Preserve complete groups across merge/cancel/error. |
 | [Distinct](../crates/executor/src/blocking/distinct.rs) | A + C | Deduplication spills as needed; final `execution_limit` is a semantic/detection boundary. | An output limit must not become a cap on input examined for distinctness. |
@@ -50,6 +50,22 @@ Callbacks without checkpoints still cannot be interrupted while executing.
 | [Numeric production](../crates/executor/src/numeric.rs), [retained selection](../crates/executor/src/numeric/retained.rs) | A + C + D | Selection honors query limits; production waves resume the iterator. Retained delivery reserves its owner and buffers. | Lifetime/task-reservation qualification is independent of this report inventory. |
 | [Pipeline batches](../crates/executor/src/pipeline.rs), [morsels](../crates/executor/src/morsel.rs), [concurrent work](../crates/executor/src/concurrent.rs) | D + C | Contextual morsel schedulers signal resource exhaustion before joining in-flight workers and preserve the originating typed refusal. The numeric parallel pipeline uses a child context to isolate a reusable parent. | Cancellation is cooperative. Handled reservation refusals do not cancel; generic result-agnostic maps and ordinary callback errors retain their existing behavior. |
 | [Relational runtime](../crates/relational/src/query.rs) and [execution](../crates/relational/src/row_runtime.rs) | A + C | SQL semantic limits are separate from result/working allowances and shared blocking operators. | Preserve structured result-limit causes and spill semantics at the SQL facade. |
+
+The blocking-memory follow-up converts shared tracker growth/transfer, oversized
+items, partial-aggregate state and spill-merge item/fan-in refusals to structured
+`ResourceBudgetExceeded`. The existing refusal messages and spill choices are
+preserved. The effective per-item allowance is reported separately from current
+tracker usage. Counter overflow fails before accounting changes. Ledger/account
+failures retain their own scope and budget origin; malformed spill framing and
+invalid transfers are not reclassified as memory exhaustion.
+
+The embedded regression
+`blocking_memory_refusals_expose_effective_limits_and_preserve_complete_results`
+covers Sort, TopN, partial aggregation and buffered aggregation at a 64-byte
+blocking limit, with complete-result controls at 8192 bytes. Tracker and spill
+regressions cover exact limits, overflow, failed transfers, temporary decode
+cleanup and provenance. These source guards require CI execution; they do not
+establish that every remaining resource failure in this inventory is structured.
 
 ## Search and retrieval
 

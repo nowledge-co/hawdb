@@ -1002,7 +1002,10 @@ fn result_digest(result: &SearchResultSet) -> String {
         hash_optional_usize(&mut hasher, hit.vector_rank);
         hash_optional_usize(&mut hasher, hit.text_rank);
     }
-    format!("sha256:{:x}", hasher.finalize())
+    format!(
+        "sha256:{}",
+        crate::evidence_digest::hex_digest(hasher.finalize().into())
+    )
 }
 
 fn request_digest(query_case: &ProductionSearchQueryCase) -> String {
@@ -1055,7 +1058,10 @@ fn request_digest(query_case: &ProductionSearchQueryCase) -> String {
     } else {
         hasher.update([0]);
     }
-    format!("sha256:{:x}", hasher.finalize())
+    format!(
+        "sha256:{}",
+        crate::evidence_digest::hex_digest(hasher.finalize().into())
+    )
 }
 
 fn hash_field(hasher: &mut Sha256, bytes: &[u8]) {

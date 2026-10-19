@@ -698,7 +698,13 @@ fn stream_graph_result_digest(
         ));
     }
     hash_bytes(&mut hasher, &(row_count as u64).to_le_bytes());
-    Ok((format!("sha256:{:x}", hasher.finalize()), row_count))
+    Ok((
+        format!(
+            "sha256:{}",
+            crate::evidence_digest::hex_digest(hasher.finalize().into())
+        ),
+        row_count,
+    ))
 }
 
 fn hash_graph_result_row(hasher: &mut Sha256, row: &std::collections::BTreeMap<String, Value>) {
@@ -911,7 +917,10 @@ pub(crate) fn parameter_digest(parameters: &std::collections::BTreeMap<String, V
         hash_bytes(&mut hasher, name.as_bytes());
         hash_value(&mut hasher, value);
     }
-    format!("sha256:{:x}", hasher.finalize())
+    format!(
+        "sha256:{}",
+        crate::evidence_digest::hex_digest(hasher.finalize().into())
+    )
 }
 
 #[cfg(test)]
@@ -1038,7 +1047,10 @@ mod tests {
                 &BTreeMap::from([("memory_id".to_string(), Value::Int(7))]),
             );
             hash_bytes(&mut hasher, &1u64.to_le_bytes());
-            format!("sha256:{:x}", hasher.finalize())
+            format!(
+                "sha256:{}",
+                crate::evidence_digest::hex_digest(hasher.finalize().into())
+            )
         };
         let report =
             run_production_graph_storage_qualification(ProductionGraphStorageQualificationConfig {

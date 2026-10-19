@@ -227,6 +227,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     spool_path: context_memory::OwnedPath,
     // Close the spool before stage cleanup, including on Windows.
     spool: Option<BufWriter<File>>,
+    held_spool: Option<spool::HeldSpool>,
     options: context_memory::Options,
     lexical_term_policy: SearchLexicalTermPolicy,
     max_lexical_manifest_bytes: NonZeroU64,
@@ -417,6 +418,7 @@ impl SearchOutOfCoreGenerationWriter {
             io::GenerationIo::new(&memory, &task_context).native(&[&spool_path], || {
                 OpenOptions::new()
                     .create_new(true)
+                    .read(true)
                     .write(true)
                     .open(&spool_path)
             })??,
@@ -440,6 +442,7 @@ impl SearchOutOfCoreGenerationWriter {
             root,
             spool_path,
             spool: Some(spool),
+            held_spool: None,
             stage,
             options,
             lexical_term_policy: SearchLexicalTermPolicy::default(),
@@ -691,22 +694,8 @@ impl SearchOutOfCoreGenerationWriter {
                 "cannot finish a poisoned search generation writer".to_string(),
             ));
         }
-        let mut spool = self.spool.take().ok_or_else(|| {
-            HawDBError::Storage("search generation spool is already closed".to_string())
-        })?;
-        spool.flush()?;
-        spool.get_ref().sync_all()?;
-        drop(spool);
-        self.spool_memory.take();
+        self.seal_input_spool()?;
         checkpoint(&self.task_context)?;
-        let actual_spool_bytes =
-            io::GenerationIo::new(&self.memory, &self.task_context).length(&self.spool_path)?;
-        if actual_spool_bytes != self.spool_bytes {
-            return Err(HawDBError::Storage(format!(
-                "search generation spool length changed: expected {}, got {actual_spool_bytes}",
-                self.spool_bytes
-            )));
-        }
 
         let _publish_lease = super::SearchProjectionPublishLease::acquire_with_context(
             &self.root,
@@ -748,13 +737,7 @@ impl SearchOutOfCoreGenerationWriter {
         {
             return initial::finish(self, generation);
         }
-        let source = SpoolSource {
-            path: &self.spool_path,
-            document_count: self.document_count,
-            max_record_bytes: self.options.max_record_bytes.get(),
-            max_metadata_fields: self.options.max_metadata_fields.get(),
-            memory: self.memory.clone(),
-        };
+        let source = self.input_source()?;
         let artifacts = build(&self, &source, generation)?;
         let publishes_content = self.mutations.is_none() || self.document_count != 0;
         if !compacting
@@ -773,6 +756,8 @@ impl SearchOutOfCoreGenerationWriter {
                 "search content exceeds the configured document or artifact limit".into(),
             ));
         }
+        drop(source);
+        self.held_spool.take();
         let GenerationArtifacts {
             segment: segment_output,
             lexical_artifact_name,
@@ -922,6 +907,38 @@ impl SearchOutOfCoreGenerationWriter {
             cleanup_retry_required: cleanup.is_some_and(|cleanup| cleanup.retry_required)
                 || cleanup_pending_stages != 0,
         })
+    }
+
+    fn input_source(&self) -> Result<SpoolSource<'_>> {
+        let held = self.held_spool.as_ref().ok_or_else(|| {
+            HawDBError::Storage("search input requires the original sealed spool".into())
+        })?;
+        Ok(SpoolSource {
+            held: Some(held.clone()),
+            path: &self.spool_path,
+            document_count: self.document_count,
+            max_record_bytes: self.options.max_record_bytes.get(),
+            max_metadata_fields: self.options.max_metadata_fields.get(),
+            memory: self.memory.clone(),
+        })
+    }
+
+    fn seal_input_spool(&mut self) -> Result<()> {
+        let mut spool = self.spool.take().ok_or_else(|| {
+            HawDBError::Storage("search generation spool is already closed".into())
+        })?;
+        spool.flush()?;
+        spool.get_ref().sync_all()?;
+        let file = spool
+            .into_inner()
+            .map_err(|error| HawDBError::from(error.into_error()))?;
+        self.held_spool = Some(spool::HeldSpool::capture(
+            file,
+            self.spool_bytes,
+            &self.memory,
+        )?);
+        self.spool_memory.take();
+        Ok(())
     }
 
     fn build_artifacts(

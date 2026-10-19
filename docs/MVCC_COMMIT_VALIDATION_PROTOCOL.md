@@ -353,6 +353,36 @@ successful statements, acquiring a new resource against a changed epoch can
 still require retry. Per-key **write** validation does not validate the earlier
 reads of a newly acquired resource and cannot justify removing that guard.
 
+## Future direction: table-scoped version retention
+
+This is a deferred design direction, not an implemented capability or a
+prerequisite for #986. Current relational row/index identities include the
+table name, but the store shares a commit epoch, version index, snapshot-pin
+registry and version-memory admission. Narrow conflict identities do not imply
+independent per-table snapshot retention or reclamation.
+
+A future design may partition conflict metadata, retention pins and reclamation
+by relational table while preserving one transaction commit epoch and atomic
+WAL publication. The intended benefit is to prevent a reader whose access is
+restricted to one table from unnecessarily retaining another table's version
+metadata. It must preserve cross-table snapshot consistency, schema and database
+barriers, index/foreign-key dependencies, recovery and the existing durability
+contract. Per-table accounting must retain an aggregate memory limit; partitioning
+does not remove a hot table's own history pressure or establish an RSS bound.
+
+Safe retention requires a proven access scope. A transaction that can later read
+another table must keep conservative snapshot protection unless the design
+proves that acquiring that table's protection preserves its original snapshot.
+Independent per-table clocks or capturing each table at its first access cannot
+be assumed to provide an atomic cross-table view. Graph entities and adjacency
+also need explicit ownership rules rather than treating labels as disjoint
+relational tables.
+
+Before implementation, define these ownership and retention rules and qualify
+cross-table reads/writes, late table access, long-lived readers, concurrent DDL,
+memory admission, and WAL/checkpoint recovery. No implementation change is
+included in this proposal.
+
 ## Concurrent optimistic commit admission
 
 Optimistic transactions acquire a database `OptimisticCommit` logical lock

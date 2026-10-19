@@ -71,3 +71,71 @@ fn graph_seed_procedure_accepts_a_parameterized_canonical_node_pipeline() {
         assert!(crate::parse(query).is_ok(), "graph seed pipeline must parse: {query}");
     }
 }
+
+#[test]
+fn identity_898_malformed_legacy_clauses_preserve_exact_diagnostics() {
+    use crate::GraphAlgorithmKind::{Louvain, PageRank};
+    for (procedure, algorithm, clause) in [
+        ("page_rank", PageRank, "RETURN other, pagerank_score"),
+        ("page_rank", PageRank, "RETURN node pagerank_score"),
+        ("page_rank", PageRank, "RETURN node, wrong"),
+        ("page_rank", PageRank, "RETURN node, node_id, wrong, rank"),
+        ("page_rank", PageRank, "RETURN node, node_id, , rank"),
+        ("page_rank", PageRank, "RETURN node, rank,"),
+        ("page_rank", PageRank, "RETURN node, rank; AS node_labels"),
+        ("louvain", Louvain, "RETURN node, level, wrong"),
+        ("louvain", Louvain, "RETURN node, node_id, node_label,"),
+    ] {
+        let query = format!("CALL {procedure}('g') {clause}");
+        let mut legacy = Parser::new(&query);
+        legacy.pos = query.find("RETURN").unwrap();
+        let expected = legacy
+            .parse_algorithm_return_clause(algorithm)
+            .and_then(|_| {
+                legacy.consume_char(';');
+                legacy.expect_eof()
+            })
+            .unwrap_err();
+        assert_eq!(
+            crate::parse(&query).unwrap_err().to_string(),
+            expected.to_string(),
+            "{query}"
+        );
+    }
+}
+
+#[test]
+fn identity_898_dispatches_extended_syntax_without_reparsing_legacy_errors() {
+    for clause in [
+        "RETURN node, rank",
+        "RETURN node, node_id, node_label, rank",
+        "RETURN node, pagerank_score;",
+    ] {
+        assert!(matches!(
+            crate::parse(&format!("CALL page_rank('g') {clause}")).unwrap(),
+            crate::Statement::GraphAlgorithm(_)
+        ));
+    }
+    for clause in [
+        "YIELD node_labels AS labels RETURN labels",
+        "WITH node_id AS id RETURN id",
+        "RETURN node, node_id",
+        "RETURN node_label",
+        "RETURN node, node_id, node_label, node_labels, rank",
+        "RETURN rank AS score",
+        "RETURN node, rank ORDER BY rank LIMIT 2",
+        "RETURN node, rank + 1 AS score",
+    ] {
+        assert!(
+            matches!(
+                crate::parse(&format!("CALL page_rank('g') {clause}")).unwrap(),
+                crate::Statement::Pipeline(_)
+            ),
+            "{clause}"
+        );
+    }
+    assert!(crate::parse("CALL page_rank('g') RETURN node AS")
+        .unwrap_err()
+        .to_string()
+        .contains("expected identifier"));
+}

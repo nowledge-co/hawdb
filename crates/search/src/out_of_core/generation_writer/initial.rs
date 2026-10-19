@@ -105,13 +105,7 @@ pub(super) fn finish(
     // project, so its cleanup API can also retry a deferred partition removal.
     let private =
         context_memory::OwnedPath::copy(&writer.stage.path, &writer.memory, &writer.task_context)?;
-    let source = SpoolSource {
-        path: &writer.spool_path,
-        document_count: writer.document_count,
-        max_record_bytes: writer.options.max_record_bytes.get(),
-        max_metadata_fields: writer.options.max_metadata_fields.get(),
-        memory: writer.memory.clone(),
-    };
+    let source = writer.input_source()?;
     let mut cursor = source.cursor(&writer.task_context)?;
     let mut totals = Totals {
         report: None,
@@ -143,6 +137,7 @@ pub(super) fn finish(
     }
     drop(cursor);
     drop(source);
+    writer.held_spool.take();
     let mut report = totals
         .report
         .ok_or_else(|| HawDBError::Storage("initial import has no content".into()))?;

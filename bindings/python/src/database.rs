@@ -239,6 +239,34 @@ impl Database {
         Ok(crate::retained::RetainedCursor::new(cursor, module))
     }
 
+    /// Indexed complete-node views; recursive payload stays in native owners.
+    #[pyo3(signature = (cypher, params = None, *, options = None))]
+    fn execute_retained_node(
+        &mut self,
+        py: Python<'_>,
+        cypher: &str,
+        params: Option<&Bound<'_, PyDict>>,
+        options: Option<PyRef<'_, crate::retained::RetainedOptions>>,
+    ) -> PyResult<crate::retained::node::RetainedNodeCursor> {
+        let options = options.map_or_else(
+            || crate::retained::options(py, None, None, None, true, false),
+            |options| Ok(options.inner),
+        )?;
+        let options = crate::retained::node::node_options(py, options)?;
+        let params = params
+            .map(py_dict_to_params)
+            .transpose()?
+            .unwrap_or_default();
+        let module = py.import("hawdb._hawdb")?.into_any().unbind();
+        let database = self.required()?;
+        let cursor = py
+            .detach(move || database.query_with_params_retained_node(cypher, &params, options))
+            .map_err(|source| crate::retained::error(py, &source))?;
+        Ok(crate::retained::node::RetainedNodeCursor::new(
+            cursor, module,
+        ))
+    }
+
     /// Explicit resource observation; interpreter/application RSS is separate.
     fn retained_snapshot_copy<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
         let database = self
@@ -271,19 +299,29 @@ impl Database {
         sql: &str,
         params: Option<&Bound<'_, PyList>>,
     ) -> PyResult<QueryResult> {
+        #[cfg(feature = "boundary-profiling")]
+        let conversion =
+            crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Parameters);
         let values = match params {
             Some(list) => py_list_to_params(list)?,
             None => Vec::new(),
         };
+        #[cfg(feature = "boundary-profiling")]
+        drop(conversion);
         let database = self.required()?;
         if database.transaction_active() {
             return Err(PyRuntimeError::new_err(
                 "a transaction is open on this database",
             ));
         }
+        #[cfg(feature = "boundary-profiling")]
+        let engine =
+            crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Engine);
         let output = py
             .detach(|| database.database_mut().query_sql_with_params(sql, &values))
             .map_err(|error| format_hawdb_error(&error))?;
+        #[cfg(feature = "boundary-profiling")]
+        drop(engine);
         QueryResult::from_output(py, output)
     }
 
@@ -399,8 +437,8 @@ impl QueryResult {
         for row in output.value_rows() {
             let dict = PyDict::new(py);
             for (index, column) in columns.iter().enumerate() {
-                let value = row.get(index).cloned().unwrap_or(Value::Null);
-                dict.set_item(column, value_to_py(py, &value)?)?;
+                let value = row.get(index).unwrap_or(&Value::Null);
+                dict.set_item(column, value_to_py(py, value)?)?;
             }
             rows.push(dict.unbind());
         }

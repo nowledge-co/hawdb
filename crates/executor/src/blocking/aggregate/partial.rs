@@ -148,9 +148,16 @@ pub(super) fn stream_partial_aggregate_batches(
         "AggregateExec partial state",
         memory.blocking_operator_bytes,
     );
-    let mut tracker = OperatorMemoryTracker::with_account(
+    let mut tracker = OperatorMemoryTracker::with_blocking_account(
         memory.blocking_operator_bytes,
         blocking_account.clone(),
+    );
+    let key_memory = KeyMemory::new(
+        &blocking_account,
+        memory.query_memory_bytes,
+        "ExecutionMemoryConfig.query_memory_bytes",
+        "AggregateExec expressions",
+        "AggregateExec keys",
     );
     let mut spill_budget =
         SpillBudgetTracker::with_ledger("AggregateExec", memory, context.memory_ledger);
@@ -167,13 +174,11 @@ pub(super) fn stream_partial_aggregate_batches(
     source.execute(input, ExecutionLimit::unlimited(), &mut |batch| {
         runtime_checkpoint(context.task_context)?;
         for binding in batch {
-            let key = HashedKey::new(
-                group_keys
-                    .iter()
-                    .map(|item| group_key_value(item, context.catalog, &binding))
-                    .collect::<Vec<_>>(),
-                &key_hasher,
-            );
+            let PreparedKey {
+                mut allocation,
+                values,
+            } = key_memory.group(group_keys, context.catalog, &binding, context.task_context)?;
+            let key = HashedKey::new(values, &key_hasher);
             let incoming = partial_states_for_binding(items, context.catalog, &binding);
 
             if let Some(group) = groups.get(&key) {
@@ -181,7 +186,11 @@ pub(super) fn stream_partial_aggregate_batches(
                 let next_bytes =
                     partial_group_memory_bytes_after_merge(&key.key, &group.states, &incoming)?;
                 if next_bytes > partial_item_limit {
-                    return Err(partial_item_limit_error(next_bytes, partial_item_limit));
+                    return Err(partial_item_limit_error(
+                        &tracker,
+                        next_bytes,
+                        partial_item_limit,
+                    ));
                 }
                 let delta = MemoryDelta::between(
                     previous_bytes,
@@ -202,6 +211,7 @@ pub(super) fn stream_partial_aggregate_batches(
                         ordinal,
                         incoming,
                         &mut tracker,
+                        &mut allocation,
                         partial_item_limit,
                     )?;
                 } else {
@@ -217,7 +227,11 @@ pub(super) fn stream_partial_aggregate_batches(
             } else {
                 let bytes = partial_group_memory_bytes(&key.key, &incoming);
                 if bytes > partial_item_limit {
-                    return Err(partial_item_limit_error(bytes, partial_item_limit));
+                    return Err(partial_item_limit_error(
+                        &tracker,
+                        bytes,
+                        partial_item_limit,
+                    ));
                 }
                 if tracker.would_exceed(
                     groups.insertion_bytes(partial_group_payload_bytes(&key.key, &incoming)),
@@ -236,6 +250,7 @@ pub(super) fn stream_partial_aggregate_batches(
                     ordinal,
                     incoming,
                     &mut tracker,
+                    &mut allocation,
                     partial_item_limit,
                 )?;
             }
@@ -281,8 +296,12 @@ pub(super) fn stream_partial_aggregate_batches(
     merge_partial_runs(&runs, &spill_budget, &blocking_account, context, emit)
 }
 
-fn partial_item_limit_error(bytes: usize, limit: usize) -> HawDBError {
-    HawDBError::Execution(format!(
+fn partial_item_limit_error(
+    tracker: &OperatorMemoryTracker,
+    bytes: usize,
+    limit: usize,
+) -> HawDBError {
+    tracker.limit_error(bytes, 0, limit, format!(
         "AggregateExec partial state uses {bytes} bytes, exceeding its bounded merge allowance {limit}"
     ))
 }
@@ -293,24 +312,29 @@ fn insert_partial_group(
     ordinal: u64,
     states: Vec<AggregateState>,
     tracker: &mut OperatorMemoryTracker,
+    key_allocation: &mut crate::QueryMemoryLease,
     partial_item_limit: usize,
 ) -> Result<()> {
     let bytes = partial_group_memory_bytes(&key.key, &states);
     if bytes > partial_item_limit {
-        return Err(partial_item_limit_error(bytes, partial_item_limit));
+        return Err(partial_item_limit_error(tracker, bytes, partial_item_limit));
     }
     let payload_bytes = partial_group_payload_bytes(&key.key, &states);
     if tracker.would_exceed(groups.insertion_bytes(payload_bytes)) {
-        return Err(HawDBError::Execution(format!(
-            "AggregateExec partial state exceeds blocking_operator_bytes {}",
-            tracker.budget_bytes
-        )));
+        return Err(tracker.state_error(
+            groups.insertion_bytes(payload_bytes),
+            format!(
+                "AggregateExec partial state exceeds blocking_operator_bytes {}",
+                tracker.budget_bytes
+            ),
+        ));
     }
-    groups.insert(
+    groups.insert_prepared(
         key,
         PartialGroup { ordinal, states },
         payload_bytes,
         tracker,
+        Some(key_allocation),
     )
 }
 
@@ -563,7 +587,8 @@ fn merge_partial_run_pair(
 ) -> Result<spill::SpillRun> {
     let mut left_reader = left.reader()?;
     let mut right_reader = right.reader()?;
-    let mut tracker = OperatorMemoryTracker::with_account(memory_budget, blocking_account.clone());
+    let mut tracker =
+        OperatorMemoryTracker::with_blocking_account(memory_budget, blocking_account.clone());
     let mut left_row = read_partial_row(
         &mut left_reader,
         items,
@@ -633,8 +658,10 @@ fn merge_partial_runs(
             "AggregateExec partial merge fan-in exceeds two runs".to_string(),
         ));
     }
-    let mut tracker =
-        OperatorMemoryTracker::with_account(context.memory_budget, blocking_account.clone());
+    let mut tracker = OperatorMemoryTracker::with_blocking_account(
+        context.memory_budget,
+        blocking_account.clone(),
+    );
     let mut left = if let Some(reader) = readers.get_mut(0) {
         read_partial_row(
             reader,

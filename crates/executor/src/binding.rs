@@ -50,11 +50,20 @@ pub struct TopNBinding {
 
 impl TopNBinding {
     pub fn memory_bytes(&self) -> usize {
-        binding_memory_bytes(&self.binding).saturating_add(self.sort_values.iter().fold(
-            std::mem::size_of::<Vec<(Value, SortDirection)>>(),
-            |total, (value, _)| total.saturating_add(value_memory_bytes(value)),
-        ))
+        binding_memory_bytes(&self.binding)
+            .saturating_add(sort_values_memory_bytes(&self.sort_values))
     }
+}
+
+pub(crate) fn sort_values_memory_bytes(values: &Vec<(Value, SortDirection)>) -> usize {
+    let layout = std::mem::size_of::<Vec<(Value, SortDirection)>>().saturating_add(
+        values
+            .capacity()
+            .saturating_mul(std::mem::size_of::<(Value, SortDirection)>()),
+    );
+    values.iter().fold(layout, |total, (value, _)| {
+        total.saturating_add(value_memory_bytes(value).saturating_sub(std::mem::size_of::<Value>()))
+    })
 }
 
 impl Ord for TopNBinding {

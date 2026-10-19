@@ -128,7 +128,29 @@ or a different checkpoint at an already acknowledged epoch is rejected.
 
 Existing status/readiness structs retain their fields and struct-literal
 compatibility. The new reports compose them rather than adding a required field
-to every existing status literal. No new HawDBError variant is required.
+to every existing status literal.
+
+The independent #1092 refusal boundary uses
+`HawDBError::CapabilityUnavailable` with
+`RuntimeCapability::SearchProjectionPublication`. On Windows, consumer
+creation returns it inside `SearchProjectionConsumerError::Database` before
+initialization callbacks, checkpoint writes, directory allocation, or registry
+publication. The internal directory-publication operation returns the same typed
+error while retaining its existing owner, lease and checkpoint receipt. Existing
+method signatures and persisted representations are unchanged. The capability's
+stable name is `search_projection_publication`; existing FFI and Python capability
+error classification applies without a new top-level database error variant.
+
+`RuntimeCapabilities::search_projection_publication` is requested by the default
+host profiles and bounded by compiled platform availability. Hosts can disable
+consumer creation through the existing `with` capability policy. Downstream
+exhaustive `RuntimeCapability` matches and explicit `RuntimeCapabilities` struct
+literals must include the new capability; `HawDBError` matches remain unchanged.
+
+This boundary does not implement Windows stationary generation publication.
+Its positive-publication, uncertain-outcome and replacement-root qualification
+remains open in #1092 and Draft #1039; a no-effect refusal is not evidence for
+those paths. Unix creation and publication continue through the existing path.
 
 ## Initialization and projection ownership
 

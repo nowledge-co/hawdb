@@ -547,6 +547,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
         | PhysicalPlan::HostScoringExec { .. }
         | PhysicalPlan::ProjectGraph { .. }
         | PhysicalPlan::GraphAlgorithm { .. }
+        | PhysicalPlan::GraphAlgorithmOutput(_)
         | PhysicalPlan::VectorSeedScan { .. }
         | PhysicalPlan::GraphSeedScan { .. }
         | PhysicalPlan::TextSeedScan { .. }

@@ -86,7 +86,7 @@ pub fn stream_distinct_batches<P>(
 impl<'a> DistinctOperator<'a> {
     fn new(context: BlockingExecutionContext<'a>) -> Self {
         let blocking_account = context.operator_account("DistinctExec");
-        let tracker = OperatorMemoryTracker::with_account(
+        let tracker = OperatorMemoryTracker::with_blocking_account(
             context.memory.blocking_operator_bytes,
             blocking_account.clone(),
         );
@@ -439,7 +439,7 @@ fn merge_distinct_run_pair(
     }
     let mut left_reader = left.reader()?;
     let mut right_reader = right.reader()?;
-    let mut tracker = OperatorMemoryTracker::with_account(
+    let mut tracker = OperatorMemoryTracker::with_blocking_account(
         memory.blocking_operator_bytes,
         blocking_account.clone(),
     );
@@ -549,7 +549,8 @@ fn emit_distinct_run(
         task_context,
     } = context;
     let mut reader = run.reader()?;
-    let mut tracker = OperatorMemoryTracker::with_account(memory_budget, blocking_account.clone());
+    let mut tracker =
+        OperatorMemoryTracker::with_blocking_account(memory_budget, blocking_account.clone());
     let mut emitted = 0usize;
     loop {
         runtime_checkpoint(task_context)?;

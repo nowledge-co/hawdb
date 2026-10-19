@@ -9586,7 +9586,7 @@ mod tests {
     }
 
     #[test]
-    fn embedded_store_handle_runs_durable_projection_catch_up() {
+    fn embedded_store_handle_1043_refuses_a_prefix_and_retries_complete_projection() {
         let root = unique_nowledge_mem_test_dir("embedded_projection_catch_up");
         let search_path = root.join("search");
         let db = Database::new();
@@ -9605,7 +9605,23 @@ mod tests {
         ))
         .unwrap();
 
-        let report = handle.catch_up_search_projection(1, 4).unwrap();
+        let error = handle.catch_up_search_projection(1, 4).unwrap_err();
+        assert!(matches!(
+            error,
+            HawDBError::Execution(message)
+                if message.contains("differs from source snapshot epoch")
+        ));
+        {
+            let store = handle.read_store().unwrap();
+            let index = store.search_projection().unwrap().index();
+            assert_eq!(index.document_count(), 0);
+            let freshness = index.projection_freshness();
+            assert_eq!(freshness.source_graph_commit_epoch, None);
+            assert_eq!(freshness.durable_source_graph_commit_epoch, None);
+        }
+        assert!(!handle.storage_handle_poisoned().unwrap());
+
+        let report = handle.catch_up_search_projection(2, 1).unwrap();
 
         assert!(report.complete);
         assert_eq!(report.end_applied_epoch, report.end_durable_epoch);
@@ -9613,6 +9629,7 @@ mod tests {
         let reopened = SearchIndex::open(&search_path).unwrap();
         assert!(reopened.document("memory:m1").is_some());
         assert!(reopened.document("memory:m2").is_some());
+        drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -10613,11 +10630,13 @@ mod tests {
     }
 
     #[test]
-    fn embedded_store_scheduled_catch_up_reports_batch_budget_exhaustion() {
+    fn embedded_store_scheduled_catch_up_rejects_partial_source_interval_and_retries() {
         let root = unique_nowledge_mem_test_dir("embedded_scheduled_catch_up_budget");
         let search_path = root.join("search");
+        let database = Database::new();
+        let scheduler = database.local_qos_scheduler();
         let mut graph =
-            NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+            NowledgeMemGraph::from_database(database, NowledgeMemGraphMode::WritableCutover);
         graph
             .query("CREATE (:Memory {id: 'first', title: 'First'})")
             .unwrap();
@@ -10627,19 +10646,46 @@ mod tests {
         let projection =
             NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
         let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
-        let report = store.catch_up_search_projection_scheduled(1, 1).unwrap();
+        let error = store
+            .catch_up_search_projection_scheduled(1, 1)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("complete-through epoch 1 differs from source snapshot epoch 2"),
+            "{error}"
+        );
+        let projection = store.search_projection().unwrap();
+        assert!(projection.index().document("memory:first").is_none());
+        assert!(projection.index().document("memory:second").is_none());
+        let freshness = projection.index().projection_freshness();
+        assert_eq!(freshness.source_graph_commit_epoch, None);
+        assert_eq!(freshness.durable_source_graph_commit_epoch, None);
+        assert!(!freshness.has_uncheckpointed_changes);
+        assert_eq!(scheduler.state().running_background_operations, 0);
 
+        let report = store.catch_up_search_projection_scheduled(2, 1).unwrap();
         assert_eq!(
             report.stop_reason,
-            crate::SearchProjectionCatchUpStopReason::BatchBudgetExhausted
+            crate::SearchProjectionCatchUpStopReason::CaughtUp
         );
-        assert!(!report.catch_up.complete);
+        assert!(report.catch_up.complete);
         assert_eq!(report.catch_up.applied_batch_count, 1);
-        assert_eq!(report.catch_up.applied_operation_count, 1);
-        assert_eq!(report.catch_up.end_durable_epoch, Some(1));
-        let projection = store.search_projection().unwrap();
-        assert!(projection.index().document("memory:first").is_some());
-        assert!(projection.index().document("memory:second").is_none());
+        assert_eq!(report.catch_up.applied_operation_count, 2);
+        assert_eq!(report.catch_up.end_durable_epoch, Some(2));
+        assert_eq!(scheduler.state().running_background_operations, 0);
+        drop(store);
+
+        let reopened = SearchIndex::open(&search_path).unwrap();
+        assert!(reopened.document("memory:first").is_some());
+        assert!(reopened.document("memory:second").is_some());
+        assert_eq!(
+            reopened
+                .projection_freshness()
+                .durable_source_graph_commit_epoch,
+            Some(2)
+        );
+        drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -11437,7 +11483,7 @@ mod tests {
     }
 
     #[test]
-    fn embedded_query_runtime_bounds_vector_seed_graph_fanout() {
+    fn embedded_query_runtime_admits_vector_seed_graph_fanout() {
         let mut index = SearchIndex::in_memory();
         index
             .upsert_projection_row(SearchProjectionRow {
@@ -11472,21 +11518,35 @@ mod tests {
             Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
         )]);
 
-        let error = store
+        let output = store
             .query_with_params_with_report(
                 "CALL vector_search($embedding, topK := 1) YIELD id, score \
                  MATCH (m:Memory)-[:MENTIONS]->(e:Entity) \
                  RETURN e.id AS entity_id",
                 &parameters,
             )
-            .unwrap_err();
+            .unwrap();
+        assert_eq!(output.output.rows.len(), 65);
+        let identities = output
+            .output
+            .rows
+            .iter()
+            .map(|row| match &row["entity_id"] {
+                Value::String(id) => id.clone(),
+                other => panic!("unexpected entity identity: {other:?}"),
+            })
+            .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
-            error,
-            HawDBError::GraphExpansionCandidateLimitExceeded {
-                requested: 65,
-                limit: 64
-            }
+            identities,
+            (0..65).map(|index| format!("entity-{index}")).collect()
         );
+        let report = &output.report.graph_expansion_reports[0];
+        assert_eq!(report.returned_count, 65);
+        assert_eq!(report.expanded_node_count, 65);
+        assert_eq!(report.expanded_edge_count, 65);
+        assert_eq!(report.candidate_limit, usize::MAX);
+        assert_eq!(report.payload_byte_limit, usize::MAX);
+        assert!(!report.truncated());
     }
 
     #[test]

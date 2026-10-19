@@ -3,10 +3,39 @@ name: Native Bindings
 on:
   workflow_dispatch:
     inputs:
+      boundary_comparison:
+        description: "Run the manual Linux ordinary-boundary comparison instead of binding tests"
+        type: boolean
+        default: false
+      benchmark_sizes:
+        description: "Comma-separated row counts; default is the complete three-size matrix"
+        type: string
+        default: "1000,100000,1000000"
+      benchmark_cases:
+        description: "Comma-separated workload cases"
+        type: string
+        default: "select,point,fill,fill_bulk,wide"
+      benchmark_samples:
+        description: "Measured iterations, in addition to one discarded iteration"
+        type: string
+        default: "3"
+      benchmark_layers:
+        description: "Comma-separated language layers; select a shard without changing its workload"
+        type: string
+        default: "rust,python,go"
+      benchmark_backends:
+        description: "Comma-separated storage backends"
+        type: string
+        default: "memory,file"
       rabitq_baseline:
         description: "Run the manual RaBitQ baseline instead of binding checks"
         type: boolean
         default: false
+      windows_power_loss_test_threads:
+        description: "Parallel Windows GC fault groups (repository uses its variable or 4)"
+        type: choice
+        default: "repository"
+        options: ["repository", "1", "2", "4", "8"]
   pull_request:
     paths:
       - "src/**"
@@ -40,18 +69,23 @@ on:
       - ".github/workflows/native-bindings.yml"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.boundary_comparison }}-${{ inputs.benchmark_sizes }}-${{ inputs.benchmark_cases }}-${{ inputs.benchmark_layers }}-${{ inputs.benchmark_backends }}-${{ inputs.benchmark_samples }}
   cancel-in-progress: true
 
 jobs:
   bazel:
-    if: github.event_name != 'workflow_dispatch' || !inputs.rabitq_baseline
+    if: github.event_name != 'workflow_dispatch' || (!inputs.boundary_comparison && !inputs.rabitq_baseline)
     name: Bazel native bindings (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-latest]
+        include:
+          - os: ubuntu-24.04
+            library: libhawdb_ffi.so
+          - os: macos-latest
+            library: libhawdb_ffi.dylib
     env:
       USE_BAZEL_VERSION: "9.3.0"
     steps:
@@ -59,7 +93,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Bazel
-        uses: bazel-contrib/setup-bazel@0.19.0
+        uses: bazel-contrib/setup-bazel@0.19.1
         with:
           bazelisk-cache: true
           repository-cache: true
@@ -69,6 +103,17 @@ jobs:
 
       - name: Test Go against the Bazel-built C ABI
         run: bazel test --test_output=errors --test_arg=-test.v //bindings/go:hawdb_go_tests
+
+      - name: Test original generation spool ownership
+        run: >-
+          bazel test --test_output=errors --test_arg=generation_spool
+          //crates/search:hawdb_search_tests
+
+      - name: Test consumer publication and reopen on Unix
+        run: >-
+          bazel test --test_output=errors
+          //:hawdb_search_projection_consumer_tests
+          //:hawdb_search_projection_consumer_minimal_tests
 
       - name: Test the retained C ABI contract
         run: bazel test --test_output=errors //bindings/ffi:hawdb_ffi_tests
@@ -82,12 +127,14 @@ jobs:
       - name: Check retained read and close concurrency with the race detector
         working-directory: bindings/go
         env:
-          HAWDB_LIBRARY: ${{ github.workspace }}/bazel-bin/bindings/ffi/${{ runner.os == 'macOS' && 'libhawdb_ffi.dylib' || 'libhawdb_ffi.so' }}
+          HAWDB_LIBRARY: ${{ github.workspace }}/bazel-bin/bindings/ffi/${{ matrix.library }}
+          # The race runtime needs cgo; the production package stays purego.
           CGO_ENABLED: "1"
+        # The Go test cache does not qualify the newly built dynamic library.
         run: go test -race -count=1 -run '^TestRetained' ./...
 
   windows-native-contracts:
-    if: github.event_name != 'workflow_dispatch' || !inputs.rabitq_baseline
+    if: github.event_name != 'workflow_dispatch' || (!inputs.boundary_comparison && !inputs.rabitq_baseline)
     name: Windows native contracts
     runs-on: windows-2025
     timeout-minutes: 120
@@ -117,6 +164,41 @@ jobs:
           cargo clippy --locked --workspace --all-targets --all-features -- -D warnings \
             2>&1 | tee windows-native-results/clippy.txt
 
+      - name: Test original generation spool ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/cargo-test-required.sh --locked -p hawdb-search --all-features --lib \
+            -- generation_spool --nocapture --test-threads=1 \
+            2>&1 | tee windows-native-results/held-generation-spool.txt
+
+      - name: Test complete graph algorithm identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/cargo-test-required.sh --locked -p hawdb --lib -- identity_898_ --nocapture --test-threads=1
+          bash scripts/cargo-test-required.sh --locked -p hawdb-executor --lib -- identity_898_ --nocapture --test-threads=1
+          bash scripts/cargo-test-required.sh --locked -p hawdb-cypher --lib -- identity_898_ --nocapture --test-threads=1
+
+      - name: Test explicit consumer publication refusal under retained ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/cargo-test-required.sh --locked -p hawdb-search --all-features --lib \
+            consumer::tests::windows_publication_refusal_preserves_receipt_and_native_lease \
+            -- --exact --nocapture --test-threads=1 \
+            2>&1 | tee windows-native-results/consumer-publication-refusal.txt
+          bash scripts/cargo-test-required.sh --locked -p hawdb --all-features --lib \
+            api::search_projection_consumer::tests::windows_consumer_creation_refuses_before_callback_or_publication \
+            -- --exact --nocapture --test-threads=1 \
+            2>&1 | tee windows-native-results/consumer-creation-refusal.txt
+
+      - name: Test legacy projection source epoch fences
+        shell: bash
+        run: >-
+          bash scripts/cargo-test-required.sh --locked -p hawdb --lib --
+          _1043_ --nocapture --test-threads=1
+
       - name: Build and test the retained Windows C ABI
         shell: bash
         run: |
@@ -139,6 +221,14 @@ jobs:
           HAWDB_LIBRARY="$GITHUB_WORKSPACE/bindings/ffi/target/debug/hawdb_ffi.dll" \
             go test -count=1 -v ./... 2>&1 | tee ../../windows-native-results/go.txt
 
+      - name: Test retained indexed node ownership and task controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/cargo-test-required.sh --locked -p hawdb --features tokio-runtime \
+            --lib api::retained_query::node::tests -- --nocapture \
+            2>&1 | tee windows-native-results/retained-node.txt
+
       - name: Test retained Arrow array and stream contracts
         shell: bash
         run: |
@@ -149,12 +239,24 @@ jobs:
 
       - name: Test abandonment GC power-loss cuts
         shell: bash
+        env:
+          POWER_LOSS_TEST_THREADS: ${{ inputs.windows_power_loss_test_threads != 'repository' && inputs.windows_power_loss_test_threads || vars.HAWDB_WINDOWS_POWER_LOSS_TEST_THREADS || '4' }}
         run: |
           set -euo pipefail
+          case "$POWER_LOSS_TEST_THREADS" in
+            1|2|4|8) ;;
+            *) echo "Windows power-loss test threads must be 1, 2, 4, or 8" >&2; exit 1 ;;
+          esac
+          echo "power_loss_test_threads=$POWER_LOSS_TEST_THREADS" \
+            | tee windows-native-results/abandonment-config.txt
           bash scripts/cargo-test-required.sh --locked -p hawdb --all-features --lib \
-            api::tests::power_loss::branch_abandonment::abandonment_gc_cuts_preserve_quarantine_and_live_branches \
-            -- --exact --nocapture --test-threads=1 \
+            api::tests::power_loss::branch_abandonment:: \
+            -- --nocapture --test-threads="$POWER_LOSS_TEST_THREADS" \
             2>&1 | tee windows-native-results/abandonment.txt
+          # Keep all two-policy/four-cut groups in the required selection.
+          # Adding another test to this module must also update this exact count.
+          grep -Eq '^test result: ok\. 8 passed; 0 failed; 0 ignored;' \
+            windows-native-results/abandonment.txt
 
       - name: Preserve Windows validation evidence
         if: always()
@@ -162,6 +264,52 @@ jobs:
         with:
           name: windows-native-contracts-${{ github.sha }}
           path: windows-native-results
+          if-no-files-found: error
+
+  boundary-comparison:
+    if: github.event_name == 'workflow_dispatch' && inputs.boundary_comparison
+    name: Manual ordinary-boundary comparison (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      USE_BAZEL_VERSION: "9.3.0"
+      BENCHMARK_SIZES: ${{ inputs.benchmark_sizes }}
+      BENCHMARK_CASES: ${{ inputs.benchmark_cases }}
+      BENCHMARK_SAMPLES: ${{ inputs.benchmark_samples }}
+      BENCHMARK_LAYERS: ${{ inputs.benchmark_layers }}
+      BENCHMARK_BACKENDS: ${{ inputs.benchmark_backends }}
+    steps:
+      - name: Checkout the candidate
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Bazel
+        uses: bazel-contrib/setup-bazel@0.19.1
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Install Go for provenance
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: bindings/go/go.mod
+          cache-dependency-path: bindings/go/go.sum
+
+      - name: Compare frozen ordinary producers with unchanged defaults
+        run: |
+          python3 -B bindings/benchmarks/compare.py \
+            --output "$RUNNER_TEMP/hawdb-boundary-comparison" \
+            --sizes "$BENCHMARK_SIZES" --cases "$BENCHMARK_CASES" \
+            --layers "$BENCHMARK_LAYERS" --backends "$BENCHMARK_BACKENDS" \
+            --samples "$BENCHMARK_SAMPLES"
+
+      - name: Preserve complete or partial evidence, including failed outcomes
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ordinary-boundary-comparison-${{ github.sha }}
+          path: ${{ runner.temp }}/hawdb-boundary-comparison/evidence
           if-no-files-found: error
 
   rabitq-baseline:

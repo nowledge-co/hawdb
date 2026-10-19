@@ -1117,3 +1117,150 @@ fn initializer_descriptor_rejection_preserves_typed_cause_and_source() {
         .unwrap();
     assert!(consumer.search_index().document("memory:m1").is_some());
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_consumer_creation_refuses_before_callback_or_publication() {
+    let fixture = Fixture::new();
+    assert_consumer_publication_refusal(&fixture, fixture.database());
+}
+
+#[test]
+fn disabled_consumer_publication_refuses_before_callback_or_publication() {
+    let fixture = Fixture::new();
+    let db = Database::open_with_config(
+        fixture.0.join("database"),
+        crate::DatabaseConfig {
+            runtime_capabilities: hawdb_core::RuntimeCapabilities::shared_host().with(
+                hawdb_core::RuntimeCapability::SearchProjectionPublication,
+                false,
+            ),
+            ..crate::DatabaseConfig::default()
+        },
+    )
+    .unwrap();
+    assert_consumer_publication_refusal(&fixture, db);
+}
+
+fn assert_consumer_publication_refusal(fixture: &Fixture, mut db: Database) {
+    append(&mut db, 1);
+    let epoch = db.commit_epoch().unwrap();
+    let identity = db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .search_projection_database_identity();
+    let registry = fixture.registry_path("database");
+    assert!(!registry.exists());
+    let destination = fixture.0.join("projection");
+    let names = || {
+        let mut names = std::fs::read_dir(&fixture.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    for occupied in [false, true] {
+        if occupied {
+            std::fs::create_dir(&destination).unwrap();
+            std::fs::write(destination.join("foreign"), b"keep").unwrap();
+        }
+        let before = names();
+        for _ in 0..2 {
+            assert!(matches!(
+                db.create_search_projection_consumer(
+                    id("publication-refusal"),
+                    &destination,
+                    options(100),
+                    |_, _| panic!("unsupported publication must refuse before initialization"),
+                ),
+                Err(Error::Database(HawDBError::CapabilityUnavailable {
+                    capability: hawdb_core::RuntimeCapability::SearchProjectionPublication
+                }))
+            ));
+            assert_eq!(names(), before);
+            assert_eq!(db.commit_epoch().unwrap(), epoch);
+            let runtime = db.runtime.get().unwrap();
+            assert_eq!(
+                runtime.store.search_projection_database_identity(),
+                identity
+            );
+            assert!(runtime.projection_consumers.records.is_empty());
+            assert!(runtime.projection_consumers.verified.is_empty());
+            assert!(!registry.exists());
+            if occupied {
+                assert_eq!(std::fs::read(destination.join("foreign")).unwrap(), b"keep");
+            } else {
+                assert!(!destination.exists());
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn legacy_registered_prefix_1043_refuses_before_hydration_and_reopens_complete_retry() {
+    let fixture = Fixture::new();
+    let mut db = fixture.database();
+    db.query("CREATE (:Memory {id: 'm1', content: 'base'})")
+        .unwrap();
+    let path = fixture.0.join("projection");
+    let mut consumer = db
+        .create_search_projection_consumer(id("coherent"), &path, options(100), initialize)
+        .unwrap();
+    let base_epoch = consumer.projection().receipt().source_epoch;
+    db.query("MATCH (m:Memory {id: 'm1'}) SET m.content = 'at-B'")
+        .unwrap();
+    let mut transaction = db.begin_transaction().unwrap();
+    transaction
+        .query("MATCH (m:Memory {id: 'm1'}) SET m.content = 'at-E'")
+        .unwrap();
+    transaction
+        .query("CREATE (:Memory {id: 'm2', content: 'new-at-E'})")
+        .unwrap();
+    transaction.commit().unwrap();
+    let hydrated = std::cell::Cell::new(false);
+    let error = db
+        .catch_up_search_projection_consumer(&mut consumer, 1, 32, 1, |_, _| {
+            hydrated.set(true);
+            Ok(SearchProjectionRelationalDelta::default())
+        })
+        .unwrap_err();
+    assert!(matches!(error, Error::Database(HawDBError::Execution(_))));
+    assert!(!hydrated.get());
+    assert_eq!(
+        consumer
+            .search_index()
+            .document("memory:m1")
+            .unwrap()
+            .content,
+        "base"
+    );
+    assert_eq!(consumer.projection().receipt().source_epoch, base_epoch);
+    assert!(catch_up(&mut db, &mut consumer).unwrap().catch_up.complete);
+    let final_epoch = db.commit_epoch().unwrap();
+    drop(consumer);
+    let reopened = db
+        .open_search_projection_consumer(&id("coherent"), &path)
+        .unwrap();
+    assert_eq!(reopened.search_index().document_count(), 2);
+    assert_eq!(
+        reopened
+            .search_index()
+            .document("memory:m1")
+            .unwrap()
+            .content,
+        "at-E"
+    );
+    assert_eq!(
+        reopened
+            .search_index()
+            .document("memory:m2")
+            .unwrap()
+            .content,
+        "new-at-E"
+    );
+    assert_eq!(reopened.projection().receipt().source_epoch, final_epoch);
+}

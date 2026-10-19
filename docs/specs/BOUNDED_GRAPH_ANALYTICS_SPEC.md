@@ -31,7 +31,8 @@ uses the sum of absolute score changes and a strict `< tolerance` check
 
 Louvain `maxPhases` returns one final assignment per original node, retaining
 only that final vector while phases run. Explicit `maxLevels` preserves the
-hierarchy output contract; the two spellings cannot be combined. Phase caps
+hierarchy output contract; retain `level` when consuming those assignments.
+The two spellings cannot be combined. Phase caps
 0 and 1 both execute one phase, and `maxIterations := 0` leaves the initial
 singleton partition. The default phase cap is 20. Resolution is finite and
 positive (default 1), and contracted adjacency retains aggregate edge weights
@@ -51,8 +52,27 @@ publication coordinator also accepts `PageRankProcedure` and
 `LouvainProcedure` variants when extended options are needed; its legacy
 variants still execute parameterized Cypher using the matching defaults.
 
-Optional `node_id` and `node_label` hydration uses an admitted selected-column
-point read. Only stored `id` and labels are cloned or decoded, after a
+Optional `node_id`, `node_label`, and `node_labels` outputs can be selected
+independently with `YIELD`, aliases, and normal `RETURN` projections. `node`
+remains the internal integer ID; `node_id` preserves the stored `id` type and
+returns null when absent. `node_label` retains its legacy preferred-label
+selection. `node_labels` returns every source-node label, sorted lexically,
+including labels outside the projected graph's selection. All identity data
+comes from the same pinned source/catalog view as the algorithm.
+
+```cypher
+CALL page_rank('UnifiedGraph')
+YIELD node_id AS id, node_labels AS labels, pagerank_score AS score
+RETURN id, labels, score
+```
+
+Mem's compatibility consumer fixture requires exactly one `Entity` or `Memory`
+label before shaping `{id, _LABEL}`. Additional labels such as `Topic` are valid;
+zero supported labels or both business labels produce an explicit error. This
+is a consumer rule, not a database restriction on multi-label nodes.
+
+Identity hydration uses an admitted selected-column point read. Only requested
+stored `id` and label names are cloned or decoded, after a
 conservative allocation estimate has been charged to the query ledger.
 Unrequested property strings are validated without copying their contents.
 Queries without node visibility predicates also scan only node identities and

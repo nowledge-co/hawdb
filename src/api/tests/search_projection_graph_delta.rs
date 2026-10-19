@@ -15,6 +15,7 @@
 use super::*;
 use crate::{
     HawDBError, RelationalValue, SearchProjectionChangeBatch, SearchProjectionRelationalDelta,
+    StorageResidencyMode,
 };
 
 fn hydrate_thread_message_changes(
@@ -543,7 +544,7 @@ fn search_projection_changefeed_tracks_has_label_relationship_metadata() {
 }
 
 #[test]
-fn durable_search_projection_catch_up_resumes_in_bounded_batches() {
+fn durable_search_projection_catch_up_refuses_an_incoherent_prefix_and_retries_complete_head() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'm1', title: 'First'})")
         .unwrap();
@@ -552,17 +553,26 @@ fn durable_search_projection_catch_up_resumes_in_bounded_batches() {
     let path = unique_test_dir("durable_search_projection_catch_up");
     let mut search_index = SearchIndex::open(&path).unwrap();
 
-    let first = db
+    let error = db
         .catch_up_search_projection(&mut search_index, 1, 1)
-        .unwrap();
-    assert_eq!(first.start_durable_epoch, None);
-    assert_eq!(first.applied_batch_count, 1);
-    assert_eq!(first.applied_operation_count, 1);
-    assert!(!first.complete);
-    assert_eq!(first.end_applied_epoch, first.end_durable_epoch);
+        .unwrap_err();
+    assert!(matches!(error, HawDBError::Execution(_)));
+    assert_eq!(search_index.document_count(), 0);
+    assert_eq!(
+        search_index
+            .projection_freshness()
+            .source_graph_commit_epoch,
+        None
+    );
+    assert_eq!(
+        search_index
+            .projection_freshness()
+            .durable_source_graph_commit_epoch,
+        None
+    );
 
     let second = db
-        .catch_up_search_projection(&mut search_index, 1, 4)
+        .catch_up_search_projection(&mut search_index, 2, 1)
         .unwrap();
     assert!(second.applied_batch_count >= 1);
     assert!(second.complete);
@@ -917,8 +927,6 @@ fn unified_projection_catch_up_resumes_from_durable_batch_after_reopen() {
         .unwrap();
     db.query_sql("INSERT INTO thread_messages (id, body) VALUES (1, 'First')")
         .unwrap();
-    db.query_sql("INSERT INTO thread_messages (id, body) VALUES (2, 'Second')")
-        .unwrap();
     let path = unique_test_dir("unified_projection_catch_up_resume");
     let mut search_index = SearchIndex::open(&path).unwrap();
 
@@ -930,7 +938,7 @@ fn unified_projection_catch_up_resumes_from_durable_batch_after_reopen() {
             hydrate_thread_message_changes,
         )
         .unwrap();
-    assert!(!first.complete);
+    assert!(first.complete);
     assert_eq!(first.applied_batch_count, 1);
     assert_eq!(first.applied_operation_count, 1);
     assert_eq!(first.end_applied_epoch, first.end_durable_epoch);
@@ -939,6 +947,10 @@ fn unified_projection_catch_up_resumes_from_durable_batch_after_reopen() {
 
     drop(search_index);
     let mut reopened = SearchIndex::open(&path).unwrap();
+    // The next commit arrives after the first complete, durable snapshot.
+    // A prefix of an already newer head requires a matching pinned snapshot.
+    db.query_sql("INSERT INTO thread_messages (id, body) VALUES (2, 'Second')")
+        .unwrap();
     let second = db
         .catch_up_search_projection_with_relational(
             &mut reopened,
@@ -1620,4 +1632,290 @@ fn scheduled_graph_search_projection_delta_releases_budget_on_build_error() {
     assert!(error.to_string().contains("ahead of graph commit epoch"));
     assert_eq!(scheduler.state().running_background_operations, 0);
     assert!(search_index.document("memory:old").is_some());
+}
+
+#[test]
+fn legacy_prefix_1043_refuses_before_hydration_and_complete_retry_reopens_as_full_rebuild() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'm1', content: 'base'})")
+        .unwrap();
+    let path = unique_test_dir("legacy_prefix_1043");
+    let mut index = SearchIndex::open(&path).unwrap();
+    db.rebuild_search_projection(&mut index, SearchRebuildOptions::default())
+        .unwrap();
+    index.checkpoint().unwrap();
+    let before = index.document("memory:m1").unwrap().clone();
+    let before_epoch = index
+        .projection_freshness()
+        .durable_source_graph_commit_epoch;
+    db.query("MATCH (m:Memory {id: 'm1'}) SET m.content = 'at-B'")
+        .unwrap();
+    let mut transaction = db.begin_transaction().unwrap();
+    transaction
+        .query("MATCH (m:Memory {id: 'm1'}) SET m.content = 'at-E'")
+        .unwrap();
+    transaction
+        .query("CREATE (:Memory {id: 'm2', content: 'new-at-E'})")
+        .unwrap();
+    transaction.commit().unwrap();
+    let hydrated = std::cell::Cell::new(false);
+    let outcome =
+        db.catch_up_search_projection_with_batch_hydrator(&mut index, 1, 32, 1, |_, _| {
+            hydrated.set(true);
+            Ok(SearchProjectionRelationalDelta::default())
+        });
+    let error = outcome.expect_err("prefix must not hydrate at a later head");
+    assert!(
+        matches!(&error, HawDBError::Execution(message) if message.contains("differs from source snapshot epoch")),
+        "{error:?}"
+    );
+    assert!(!hydrated.get());
+    assert_eq!(index.document("memory:m1"), Some(&before));
+    assert!(index.document("memory:m2").is_none());
+    assert_eq!(
+        index
+            .projection_freshness()
+            .durable_source_graph_commit_epoch,
+        before_epoch
+    );
+    assert!(
+        db.catch_up_search_projection(&mut index, 32, 1)
+            .unwrap()
+            .complete
+    );
+    let mut baseline = SearchIndex::in_memory();
+    db.rebuild_search_projection(&mut baseline, SearchRebuildOptions::default())
+        .unwrap();
+    drop(index);
+    let reopened = SearchIndex::open(&path).unwrap();
+    assert_eq!(reopened.document_count(), baseline.document_count());
+    for key in ["memory:m1", "memory:m2"] {
+        assert_eq!(reopened.document(key), baseline.document(key));
+    }
+    assert_eq!(
+        reopened
+            .projection_freshness()
+            .durable_source_graph_commit_epoch,
+        Some(db.commit_epoch().unwrap())
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn legacy_delayed_batch_1043_rejects_hydration_after_the_source_head_advances() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'm1', content: 'base'})")
+        .unwrap();
+    let mut index = SearchIndex::in_memory();
+    db.rebuild_search_projection(&mut index, SearchRebuildOptions::default())
+        .unwrap();
+    let base_epoch = db.commit_epoch().unwrap();
+    let before = index.document("memory:m1").unwrap().clone();
+    db.query("MATCH (m:Memory {id: 'm1'}) SET m.content = 'selected'")
+        .unwrap();
+    let batch = db
+        .build_search_projection_change_batch_after(base_epoch, Some(32))
+        .unwrap()
+        .unwrap();
+    db.query("MATCH (m:Memory {id: 'm1'}) SET m.content = 'future'")
+        .unwrap();
+    let outcome = db.apply_search_projection_change_batch(
+        &mut index,
+        batch,
+        SearchProjectionRelationalDelta::default(),
+    );
+    let error = outcome.expect_err("old cursor must not acknowledge later-head data");
+    assert!(
+        matches!(&error, HawDBError::Execution(message) if message.contains("differs from source snapshot epoch")),
+        "{error:?}"
+    );
+    assert_eq!(index.document("memory:m1"), Some(&before));
+    assert_eq!(
+        index.projection_freshness().source_graph_commit_epoch,
+        Some(base_epoch)
+    );
+}
+
+#[test]
+fn legacy_relational_prefix_1043_refuses_before_host_reads_and_reopens_as_full_source() {
+    let root = unique_test_dir("legacy_relational_prefix_1043");
+    let mut db = Database::open(root.join("database")).unwrap();
+    db.query_sql("CREATE TABLE thread_messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
+        .unwrap();
+    db.query_sql("INSERT INTO thread_messages (id, body) VALUES (1, 'base')")
+        .unwrap();
+    let base_epoch = db.commit_epoch().unwrap();
+    let path = root.join("projection");
+    let mut index = SearchIndex::open(&path).unwrap();
+    index
+        .apply_projection_delta(SearchProjectionDelta {
+            upserts: vec![SearchProjectionRow {
+                kind: SearchProjectionKind::Message,
+                external_id: "1".into(),
+                title: String::new(),
+                body: "base".into(),
+                embedding: None,
+                source_id: None,
+                metadata: BTreeMap::new(),
+            }],
+            source_graph_commit_epoch: Some(base_epoch),
+            ..SearchProjectionDelta::default()
+        })
+        .unwrap();
+    index.checkpoint().unwrap();
+    db.query_sql("UPDATE thread_messages SET body = 'at-B' WHERE id = 1")
+        .unwrap();
+    let mut transaction = db.begin_transaction().unwrap();
+    transaction
+        .query_sql("UPDATE thread_messages SET body = 'at-E' WHERE id = 1")
+        .unwrap();
+    transaction
+        .query_sql("INSERT INTO thread_messages (id, body) VALUES (2, 'new-at-E')")
+        .unwrap();
+    transaction.commit().unwrap();
+    let hydrated = std::cell::Cell::new(false);
+    let error = db
+        .catch_up_search_projection_with_batch_hydrator(&mut index, 1, 32, 1, |snapshot, batch| {
+            hydrated.set(true);
+            hydrate_thread_message_changes(snapshot, batch)
+        })
+        .unwrap_err();
+    assert!(matches!(error, HawDBError::Execution(_)));
+    assert!(!hydrated.get());
+    assert_eq!(index.document("message:1").unwrap().content, "base");
+    assert_eq!(
+        index
+            .projection_freshness()
+            .durable_source_graph_commit_epoch,
+        Some(base_epoch)
+    );
+    assert!(
+        db.catch_up_search_projection_with_relational(
+            &mut index,
+            32,
+            1,
+            hydrate_thread_message_changes
+        )
+        .unwrap()
+        .complete
+    );
+    let full_source = db
+        .query_sql("SELECT id, body FROM thread_messages ORDER BY id")
+        .unwrap();
+    drop(index);
+    let reopened = SearchIndex::open(&path).unwrap();
+    assert_eq!(reopened.document_count(), full_source.rows.len());
+    for row in full_source.rows {
+        let Value::Int(id) = row["id"] else {
+            panic!("expected integer key")
+        };
+        let Value::String(body) = &row["body"] else {
+            panic!("expected body")
+        };
+        assert_eq!(
+            &reopened.document(&format!("message:{id}")).unwrap().content,
+            body
+        );
+    }
+    assert_eq!(
+        reopened
+            .projection_freshness()
+            .durable_source_graph_commit_epoch,
+        Some(db.commit_epoch().unwrap())
+    );
+    drop(reopened);
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn legacy_deleted_prefix_1043_preserves_the_old_checkpoint_until_complete_retry() {
+    for residency in [
+        StorageResidencyMode::Materialized,
+        StorageResidencyMode::OutOfCore,
+    ] {
+        let root = unique_test_dir("legacy_deleted_prefix_1043");
+        let mut db = Database::open_with_config(
+            root.join("database"),
+            DatabaseConfig {
+                storage_residency_mode: residency,
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
+        db.query("CREATE (:Memory {id: 'a', title: 'old'})")
+            .unwrap();
+        db.query("CREATE (:Memory {id: 'survivor', title: 'unchanged'})")
+            .unwrap();
+        let path = root.join("projection");
+        let mut index = SearchIndex::open(&path).unwrap();
+        db.rebuild_search_projection(&mut index, SearchRebuildOptions::default())
+            .unwrap();
+        index.checkpoint().unwrap();
+        let before = index.document("memory:a").unwrap().clone();
+        let base_epoch = db.commit_epoch().unwrap();
+
+        db.query("MATCH (m:Memory {id: 'a'}) SET m.title = 'new'")
+            .unwrap();
+        let prefix_epoch = db.commit_epoch().unwrap();
+        db.query("MATCH (m:Memory {id: 'a'}) DETACH DELETE m")
+            .unwrap();
+        let final_epoch = db.commit_epoch().unwrap();
+        let batch = db
+            .build_search_projection_change_batch_after(base_epoch, Some(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch.complete_through_commit_epoch(), Some(prefix_epoch));
+        let error = db
+            .apply_search_projection_change_batch(
+                &mut index,
+                batch,
+                SearchProjectionRelationalDelta::default(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            HawDBError::Execution(message)
+                if message.contains("differs from source snapshot epoch")
+        ));
+        assert_eq!(index.document("memory:a"), Some(&before));
+        assert_eq!(
+            index.projection_freshness().source_graph_commit_epoch,
+            Some(base_epoch)
+        );
+        assert_eq!(
+            index
+                .projection_freshness()
+                .durable_source_graph_commit_epoch,
+            Some(base_epoch)
+        );
+
+        drop(index);
+        let mut reopened = SearchIndex::open(&path).unwrap();
+        assert_eq!(reopened.document("memory:a"), Some(&before));
+        assert_eq!(
+            reopened
+                .projection_freshness()
+                .durable_source_graph_commit_epoch,
+            Some(base_epoch)
+        );
+        let report = db.catch_up_search_projection(&mut reopened, 32, 1).unwrap();
+        assert!(report.complete);
+        assert_eq!(report.end_durable_epoch, Some(final_epoch));
+        let mut baseline = SearchIndex::in_memory();
+        db.rebuild_search_projection(&mut baseline, SearchRebuildOptions::default())
+            .unwrap();
+        drop(reopened);
+        let complete = SearchIndex::open(&path).unwrap();
+        assert_eq!(complete.document_count(), baseline.document_count());
+        assert_eq!(complete.document_count(), 1);
+        for key in ["memory:a", "memory:survivor"] {
+            assert_eq!(complete.document(key), baseline.document(key));
+        }
+        assert!(complete.document("memory:a").is_none());
+        drop(complete);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

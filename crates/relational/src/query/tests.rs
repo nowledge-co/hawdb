@@ -33,6 +33,23 @@ mod exact_count_planning;
 mod having;
 mod ordinary_aggregate;
 
+fn assert_aggregate_memory_refusal(error: &HawDBError, owner: &str) {
+    let HawDBError::ResourceBudgetExceeded(cause) = error else {
+        panic!("aggregate lost its typed memory refusal: {error}");
+    };
+    assert_eq!(cause.resource, hawdb_core::ResourceBudgetKind::MemoryBytes);
+    assert_eq!(cause.scope, hawdb_core::ResourceBudgetScope::Operator);
+    assert_eq!(cause.owner, owner);
+    assert_eq!(cause.memory_class, Some("blocking_state"));
+    assert_eq!(cause.budget, 1);
+    assert_eq!(cause.used, 0);
+    assert!(cause.requested > cause.budget);
+    assert_eq!(
+        cause.budget_option,
+        "OperatorMemoryTracker::with_account(budget_bytes)"
+    );
+}
+
 #[test]
 fn candidate_work_has_an_independent_budget_and_checkpoint() {
     let limits = RelationalQueryLimits {

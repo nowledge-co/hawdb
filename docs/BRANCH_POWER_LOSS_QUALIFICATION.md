@@ -44,6 +44,27 @@ project-open integration tests and the branch lifecycle suite. These include
 bounded pending-receipt recovery and the native file synchronization path;
 passing cross-target Clippy alone does not establish those runtime results.
 
+The pull-request Native Bindings Windows job also runs all eight abandonment GC
+groups (two durability policies crossed with four cuts). Each group owns its
+fixture and executes every generated fault plan plus the completed-sweep image;
+parallelism does not select a subset. The job requires all eight tests to pass
+without ignored cases and records per-group schedule counts and elapsed time.
+
+By default, up to four groups run concurrently. Set the repository Actions
+variable `HAWDB_WINDOWS_POWER_LOSS_TEST_THREADS` to `1`, `2`, `4`, or `8` to
+adjust pull-request and push runs. The manual workflow input
+`windows_power_loss_test_threads` overrides that variable; selecting `repository`
+retains the repository setting or default. One worker reproduces serial
+execution. More workers increase concurrent scratch images, handles, and memory;
+they do not change durability barriers or recovery assertions. The weekly/manual
+full platform matrix above remains serial.
+
+The equivalent focused local command uses Rust's existing flag:
+
+```sh
+bash scripts/cargo-test-required.sh --locked -p hawdb --all-features --lib api::tests::power_loss::branch_abandonment:: -- --nocapture --test-threads=4
+```
+
 Routine local fuzz remains local-only:
 
 ```sh

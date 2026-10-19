@@ -101,7 +101,7 @@ mod write_tests;
 
 mod decoding;
 mod records;
-pub(super) use records::{SpoolCursor, SpoolRecord};
+pub(super) use records::{HeldSpool, SpoolCursor, SpoolRecord};
 
 #[cfg(test)]
 pub(super) fn decode_line_admitted(
@@ -125,6 +125,7 @@ pub(super) fn decode_line_admitted(
 }
 
 pub(super) struct SpoolSource<'a> {
+    pub(super) held: Option<HeldSpool>,
     pub(super) path: &'a Path,
     pub(super) document_count: usize,
     pub(super) max_record_bytes: u64,
@@ -161,11 +162,26 @@ impl SpoolSource<'_> {
     ) -> Result<()> {
         checkpoint(task_context)?;
         let _buffer_memory = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
-        let file = super::io::GenerationIo::new(&self.memory, task_context)
-            .native(&[self.path], || File::open(self.path))??;
-        #[cfg(test)]
-        let file = read_evidence::track(file);
-        let mut reader = BufReader::with_capacity(SPOOL_BUFFER_BYTES, file);
+        let legacy = if self.held.is_none() {
+            Some(
+                super::io::GenerationIo::new(&self.memory, task_context)
+                    .native(&[self.path], || File::open(self.path))??,
+            )
+        } else {
+            None
+        };
+        let range = match &self.held {
+            Some(held) => held.range()?,
+            None => {
+                let file = legacy.as_ref().expect("legacy spool owner");
+                crate::out_of_core::hydration::RangeReader {
+                    file,
+                    offset: 0,
+                    remaining: file.metadata()?.len(),
+                }
+            }
+        };
+        let mut reader = BufReader::with_capacity(SPOOL_BUFFER_BYTES, read_evidence::track(range));
         let mut header = [0u8; SPOOL_HEADER.len()];
         reader.read_exact(&mut header)?;
         if &header != SPOOL_HEADER {

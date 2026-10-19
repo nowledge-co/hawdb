@@ -31,7 +31,7 @@ pub(super) fn run_external(
         return_node_identity: options.return_node_identity,
         node_visibility_predicate: &options.predicate,
     }
-    .stream_external(
+    .stream_external_with_identity(
         GraphAlgorithmContext {
             catalog: &fixture.catalog,
             store: fixture,
@@ -43,6 +43,9 @@ pub(super) fn run_external(
         ExecutionLimit {
             output_rows: options.output_rows,
         },
+        options
+            .identity
+            .unwrap_or(GraphAlgorithmIdentity::legacy(options.return_node_identity)),
         &mut |batch| {
             live_bytes.push(ledger.snapshot().used_bytes);
             batches.push(batch);

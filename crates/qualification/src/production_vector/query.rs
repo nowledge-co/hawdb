@@ -422,7 +422,10 @@ pub(super) fn request_digest(
     }
     hasher.update((config.top_k as u64).to_le_bytes());
     hasher.update((config.candidate_limit as u64).to_le_bytes());
-    format!("sha256:{:x}", hasher.finalize())
+    format!(
+        "sha256:{}",
+        crate::evidence_digest::hex_digest(hasher.finalize().into())
+    )
 }
 
 pub(super) fn result_digest(result: &SearchResultSet) -> String {
@@ -434,7 +437,10 @@ pub(super) fn result_digest(result: &SearchResultSet) -> String {
         hasher.update(hit.score.to_bits().to_le_bytes());
         hasher.update(hit.vector_score.to_bits().to_le_bytes());
     }
-    format!("sha256:{:x}", hasher.finalize())
+    format!(
+        "sha256:{}",
+        crate::evidence_digest::hex_digest(hasher.finalize().into())
+    )
 }
 
 pub(super) fn candidate_digest(result: &SearchResultSet) -> String {
@@ -449,7 +455,10 @@ pub(super) fn candidate_digest(result: &SearchResultSet) -> String {
             hash_field(&mut hasher, id.as_bytes());
         }
     }
-    format!("sha256:{:x}", hasher.finalize())
+    format!(
+        "sha256:{}",
+        crate::evidence_digest::hex_digest(hasher.finalize().into())
+    )
 }
 
 fn hash_field(hasher: &mut Sha256, bytes: &[u8]) {

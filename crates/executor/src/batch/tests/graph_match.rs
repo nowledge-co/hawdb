@@ -837,6 +837,7 @@ fn optional_seed_null_hop_uses_final_batch_row_size() {
         MissingScoringFeature, ScoreFeature, ScoringCombination, ScoringProgram, ScoringSpec,
         ScoringTerm,
     };
+    use hawdb_core::{ResourceBudgetKind, ResourceBudgetScope};
     use hawdb_plan_cypher::ScoringSeedGraphInput;
     use std::num::NonZeroUsize;
     with_context(None, |context| {
@@ -944,11 +945,19 @@ fn optional_seed_null_hop_uses_final_batch_row_size() {
                 assert_eq!(actual, vec![expected.clone()]);
             } else {
                 let error = result.expect_err("one byte below final row must refuse");
-                assert!(
-                    error.to_string().contains(&format!(
-                        "intermediate row uses {bytes} bytes, exceeding batch_payload_bytes {cap}"
-                    )),
-                    "source refusal must not mask the final-row boundary: {error}"
+                let HawDBError::ResourceBudgetExceeded(cause) = error else {
+                    panic!("expected a typed final-row budget refusal, got {error}");
+                };
+                assert_eq!(cause.resource, ResourceBudgetKind::MemoryBytes);
+                assert_eq!(cause.scope, ResourceBudgetScope::Operator);
+                assert_eq!(cause.owner, "AdjacencyExpandExec output");
+                assert_eq!(cause.memory_class, Some("pipeline_batch"));
+                assert_eq!(cause.requested, bytes as u64);
+                assert_eq!(cause.used, 0);
+                assert_eq!(cause.budget, cap as u64);
+                assert_eq!(
+                    cause.budget_option,
+                    "ExecutionMemoryConfig.batch_payload_bytes"
                 );
                 assert!(actual.is_empty());
             }

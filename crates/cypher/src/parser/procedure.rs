@@ -57,6 +57,26 @@ impl Parser<'_> {
             _ => return Err(self.error("unsupported procedure")),
         };
         let options = self.parse_graph_algorithm_options()?;
+        if self.graph_algorithm_uses_pipeline(algorithm) {
+            let procedure = self.source_node(
+                ProcedureCallKind::GraphAlgorithm {
+                    algorithm,
+                    graph_name,
+                    options: Box::new(options),
+                },
+                procedure_start,
+            );
+            let yields = self.parse_procedure_yields()?;
+            let call = self.source_node(ClauseKind::Call { procedure, yields }, call_start);
+            let mut clauses = vec![call];
+            self.skip_ws();
+            if self.peek_char().is_some_and(|ch| ch != ';') {
+                clauses.extend(self.parse_public_query_pipeline()?.kind.clauses);
+            }
+            return Ok(Statement::Pipeline(Box::new(
+                self.source_node(QueryPipelineKind { clauses }, call_start),
+            )));
+        }
         let (score_column, return_node_identity) = self.parse_algorithm_return_clause(algorithm)?;
         Ok(Statement::GraphAlgorithm(GraphAlgorithm {
             algorithm,
@@ -65,6 +85,94 @@ impl Parser<'_> {
             score_column,
             return_node_identity,
         }))
+    }
+
+    fn graph_algorithm_uses_pipeline(&self, algorithm: GraphAlgorithmKind) -> bool {
+        // Dispatch by syntax before parsing either grammar. Unknown columns and
+        // malformed legacy lists retain the original algorithm-clause diagnostic.
+        let mut lookahead = Parser::new(&self.input[self.pos..]);
+        if lookahead.next_keyword_is("YIELD") || lookahead.next_keyword_is("WITH") {
+            return true;
+        }
+        if !lookahead.consume_keyword("RETURN") {
+            return false;
+        }
+        if lookahead.next_keyword_is("DISTINCT") {
+            return true;
+        }
+        let mut columns = [""; 5];
+        let mut count = 0;
+        loop {
+            lookahead.skip_ws();
+            if lookahead.peek_char().is_some_and(|ch| {
+                ch.is_ascii_digit() || matches!(ch, '\'' | '"' | '$' | '[' | '(' | '+' | '-')
+            }) || lookahead.next_keyword_is("CASE")
+            {
+                return true;
+            }
+            let start = lookahead.pos;
+            while lookahead
+                .peek_char()
+                .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            {
+                lookahead.next_char();
+            }
+            let name = &lookahead.input[start..lookahead.pos];
+            if name.is_empty() {
+                return false;
+            }
+            let column = if name.eq_ignore_ascii_case("node") {
+                "node"
+            } else if name.eq_ignore_ascii_case("node_id") {
+                "node_id"
+            } else if name.eq_ignore_ascii_case("node_label") {
+                "node_label"
+            } else if name.eq_ignore_ascii_case("node_labels") {
+                "node_labels"
+            } else if (algorithm == GraphAlgorithmKind::PageRank
+                && (name.eq_ignore_ascii_case("rank")
+                    || name.eq_ignore_ascii_case("pagerank_score")))
+                || (algorithm == GraphAlgorithmKind::Louvain
+                    && name.eq_ignore_ascii_case("louvain_id"))
+            {
+                "score"
+            } else if algorithm == GraphAlgorithmKind::Louvain && name.eq_ignore_ascii_case("level")
+            {
+                "level"
+            } else {
+                // A function call is explicitly extended expression syntax.
+                lookahead.skip_ws();
+                return lookahead.peek_char() == Some('(');
+            };
+            if count == columns.len() {
+                return true;
+            }
+            columns[count] = column;
+            count += 1;
+            if ["AS", "ORDER", "SKIP", "OFFSET", "LIMIT"]
+                .iter()
+                .any(|keyword| lookahead.next_keyword_is(keyword))
+                || matches!(
+                    lookahead.peek_char(),
+                    Some('.' | '+' | '-' | '*' | '/' | '%' | '^' | '[')
+                )
+            {
+                return true;
+            }
+            if lookahead.consume_char(',') {
+                continue;
+            }
+            if !matches!(lookahead.peek_char(), None | Some(';')) {
+                return false;
+            }
+            return !matches!(
+                &columns[..count],
+                ["node", "score"]
+                    | ["node", "node_id", "node_label", "score"]
+                    | ["node", "level", "score"]
+                    | ["node", "node_id", "node_label", "level", "score"]
+            );
+        }
     }
 
     pub(super) fn parse_graph_seed_search_arguments(&mut self) -> Result<GraphSeedSearch> {

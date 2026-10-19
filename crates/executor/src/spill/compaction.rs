@@ -131,6 +131,23 @@ pub(crate) fn compact_runs_with_memory(
     })
 }
 
+pub(crate) fn compact_runs_serial(
+    runs: Vec<SpillRun>,
+    final_run_count: NonZeroUsize,
+    task_context: Option<&RuntimeTaskContext>,
+    merge_pair: impl Fn(&SpillRun, &SpillRun) -> Result<SpillRun>,
+) -> Result<Vec<SpillRun>> {
+    compact_levels(runs, final_run_count, task_context, |pairs| {
+        pairs
+            .iter()
+            .map(|(left, right)| {
+                runtime_checkpoint(task_context)?;
+                merge_pair(left, right)
+            })
+            .collect()
+    })
+}
+
 fn compact_levels(
     mut runs: Vec<SpillRun>,
     final_run_count: NonZeroUsize,

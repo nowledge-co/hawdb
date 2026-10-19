@@ -33,6 +33,19 @@ impl<'a> ProjectedValue<'a> {
     pub(crate) fn into_owned(self) -> Value {
         self.value.into_owned()
     }
+
+    /// The destination owns its value slot before this payload is moved or copied.
+    /// Computed values and prepared keys use distinct accounts on the same ledger.
+    pub(crate) fn into_owned_accounted(mut self, target: &mut QueryMemoryLease) -> Result<Value> {
+        let payload = crate::binding::value_memory_bytes(&self.value)
+            .saturating_sub(std::mem::size_of::<Value>());
+        if let Some(allocation) = self._allocation.as_mut() {
+            allocation.transfer_to(allocation.bytes(), target, payload)?;
+        } else {
+            target.grow(payload)?;
+        }
+        Ok(self.value.into_owned())
+    }
 }
 
 impl AsRef<Value> for ProjectedValue<'_> {

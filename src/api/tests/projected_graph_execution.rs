@@ -16,6 +16,7 @@ use super::*;
 use crate::StorageResidencyMode;
 
 mod differential;
+mod identity;
 mod review_regressions;
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]

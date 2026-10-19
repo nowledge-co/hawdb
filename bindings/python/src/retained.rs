@@ -23,6 +23,7 @@ use std::ptr;
 use std::sync::{Arc, Mutex};
 
 mod arrow;
+pub(crate) mod node;
 
 fn check_buffer_flags(flags: c_int) -> PyResult<()> {
     if flags & ffi::PyBUF_WRITABLE != 0 {

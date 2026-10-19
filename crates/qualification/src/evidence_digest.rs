@@ -14,6 +14,15 @@
 
 use hawdb::{QueryRow, QueryRows, Row, Value};
 use sha2::{Digest, Sha256};
+use std::fmt::Write;
+
+pub(crate) fn hex_digest(bytes: [u8; 32]) -> String {
+    let mut output = String::with_capacity(64);
+    for byte in bytes {
+        write!(output, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    output
+}
 
 pub(crate) trait EvidenceRows {
     fn row_count(&self) -> usize;
@@ -24,7 +33,7 @@ pub(crate) fn rows_sha256(rows: &(impl EvidenceRows + ?Sized)) -> String {
     let mut hasher = Sha256::new();
     hasher.update((rows.row_count() as u64).to_le_bytes());
     rows.hash_rows(&mut hasher);
-    format!("{:x}", hasher.finalize())
+    crate::evidence_digest::hex_digest(hasher.finalize().into())
 }
 
 impl EvidenceRows for QueryRows {

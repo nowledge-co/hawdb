@@ -219,6 +219,8 @@ pub(super) fn copy(
         capture.output.flush()?;
         drop(capture);
         let mut cursor = SpoolSource {
+            // Auxiliary producer custody remains tracked in #231/#232; this legacy path must migrate.
+            held: None,
             path: &path,
             document_count,
             max_record_bytes: writer.options.max_record_bytes.get(),

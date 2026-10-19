@@ -27,7 +27,56 @@ use std::mem::size_of;
 
 struct SourceFile {
     file: File,
+    length: u64,
     _memory: QueryMemoryLease,
+}
+
+/// The actual completed producer file, shared without reopening or duplicating
+/// a native descriptor. Its writable owner has been consumed before creation.
+#[derive(Clone)]
+pub(in super::super) struct HeldSpool(Shared<SourceFile>);
+
+impl HeldSpool {
+    pub(in super::super) fn capture(
+        file: File,
+        expected: u64,
+        memory: &BuildMemory,
+    ) -> Result<Self> {
+        let charge = memory
+            .spool
+            .reserve(size_of::<SourceFile>() + 2 * size_of::<usize>())?;
+        let actual = file.metadata()?.len();
+        if actual != expected {
+            return Err(HawDBError::Storage(format!(
+                "search generation spool length changed: expected {expected}, got {actual}"
+            )));
+        }
+        Ok(Self(Shared::new(SourceFile {
+            file,
+            length: expected,
+            _memory: charge,
+        })))
+    }
+
+    #[cfg(test)]
+    pub(super) fn range(&self) -> Result<RangeReader<'_>> {
+        self.0.range()
+    }
+}
+
+impl SourceFile {
+    fn range(&self) -> Result<RangeReader<'_>> {
+        if self.file.metadata()?.len() != self.length {
+            return Err(HawDBError::Storage(
+                "held search spool length changed".into(),
+            ));
+        }
+        Ok(RangeReader {
+            file: &self.file,
+            offset: 0,
+            remaining: self.length,
+        })
+    }
 }
 
 pub(in super::super) struct SpoolRecord {
@@ -339,18 +388,25 @@ impl SpoolSource<'_> {
     pub(in super::super) fn cursor(&self, task: &RuntimeTaskContext) -> Result<SpoolCursor> {
         checkpoint(task)?;
         let cursor_memory = self.memory.spool.reserve(size_of::<SpoolCursor>())?;
-        let shared_memory = self
-            .memory
-            .spool
-            .reserve(size_of::<SourceFile>() + 2 * size_of::<usize>())?;
-        let file = super::super::io::GenerationIo::new(&self.memory, task)
-            .native(&[self.path], || File::open(self.path))??;
-        let length = file.metadata()?.len();
-        let input = RangeReader {
-            file: &file,
-            offset: 0,
-            remaining: length,
+        let source = match &self.held {
+            Some(held) => held.0.clone(),
+            None => {
+                let shared_memory = self
+                    .memory
+                    .spool
+                    .reserve(size_of::<SourceFile>() + 2 * size_of::<usize>())?;
+                let file = super::super::io::GenerationIo::new(&self.memory, task)
+                    .native(&[self.path], || File::open(self.path))??;
+                let length = file.metadata()?.len();
+                Shared::new(SourceFile {
+                    file,
+                    length,
+                    _memory: shared_memory,
+                })
+            }
         };
+        let length = source.length;
+        let input = source.range()?;
         #[cfg(test)]
         let mut input = read_evidence::track(input);
         #[cfg(not(test))]
@@ -361,10 +417,7 @@ impl SpoolSource<'_> {
             return Err(HawDBError::Storage("invalid search spool header".into()));
         }
         Ok(SpoolCursor {
-            source: Shared::new(SourceFile {
-                file,
-                _memory: shared_memory,
-            }),
+            source,
             offset: SPOOL_HEADER.len() as u64,
             length,
             ordinal: 0,

@@ -15,6 +15,8 @@
 use super::*;
 use hawdb_optimizer::RelationalOperatorKind;
 
+mod nullable_prefix;
+
 #[test]
 fn relational_cost_selection_preserves_results_and_reports_actual_access() {
     let mut database = Database::new();

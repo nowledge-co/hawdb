@@ -618,6 +618,7 @@ fn estimate_local_operator_cost(
         | PhysicalPlan::CreateRelationshipPropertyExistsConstraint { .. }
         | PhysicalPlan::ProjectGraph { .. }
         | PhysicalPlan::GraphAlgorithm { .. }
+        | PhysicalPlan::GraphAlgorithmOutput(_)
         | PhysicalPlan::CreateNode { .. }
         | PhysicalPlan::MergeNode { .. }
         | PhysicalPlan::MergeRelationship { .. }

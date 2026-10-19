@@ -109,8 +109,10 @@ mod retained_query;
 pub use retained_query::{
     ArrowArray, ArrowArrayStream, ArrowSchema, RetainedArrowCodeOwner, RetainedArrowExport,
     RetainedArrowSchema, RetainedArrowStream, RetainedColumnRole, RetainedColumnSchema,
-    RetainedColumnType, RetainedColumnValues, RetainedQueryBatch, RetainedQueryCursor,
-    RetainedQueryError, RetainedQueryOptions, RetainedQueryProfile, RetainedQueryStatus,
+    RetainedColumnType, RetainedColumnValues, RetainedNodeCursor, RetainedNodeField,
+    RetainedNodeLabels, RetainedNodeSnapshotCursor, RetainedNodeTaskCursor, RetainedNodeView,
+    RetainedQueryBatch, RetainedQueryCursor, RetainedQueryError, RetainedQueryOptions,
+    RetainedQueryProfile, RetainedQueryStatus,
 };
 mod resource_profile;
 mod runtime_cell;
@@ -826,6 +828,7 @@ impl ProjectionRelationalReadBinding {
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct StatementExecutionContext<'a> {
     execution_profile: Option<&'a executor::ReadExecutionProfile>,
+    retained_profile: Option<&'a RetainedQueryProfile>,
     access_control: Option<&'a QueryAccessControlContext>,
     parse_nanos: u64,
 }
@@ -4537,6 +4540,10 @@ impl Database {
         })
     }
 
+    /// Hydrate graph changes from the current source view. A declared complete-through
+    /// watermark must equal that view's commit epoch; a changefeed prefix does not
+    /// provide historical row contents. Requests without a watermark do not claim
+    /// complete coverage and preserve their existing ad hoc behavior.
     pub fn build_search_projection_graph_delta(
         &self,
         request: &SearchProjectionGraphDeltaRequest,
@@ -20002,6 +20009,22 @@ fn knowledge_induced_edge_row_from_query_row(
     })
 }
 
+fn require_search_projection_source_epoch(expected: Option<u64>, actual: u64) -> Result<()> {
+    if let Some(expected) = expected
+        && expected != actual
+    {
+        if expected > actual {
+            return Err(HawDBError::Storage(format!(
+                "search projection graph delta complete-through epoch {expected} is ahead of graph commit epoch {actual}"
+            )));
+        }
+        return Err(HawDBError::Execution(format!(
+            "search projection complete-through epoch {expected} differs from source snapshot epoch {actual}; prepare the complete source interval before publishing its watermark"
+        )));
+    }
+    Ok(())
+}
+
 fn search_projection_graph_delta_for(
     catalog: &Catalog,
     store: &GraphStore,
@@ -20015,14 +20038,12 @@ fn search_projection_graph_delta_for(
                 "search projection graph delta operation count {operation_count} exceeded configured limit {limit}"
             )));
     }
-    if let Some(epoch) = request.complete_through_graph_commit_epoch {
-        let current_epoch = store.commit_epoch();
-        if epoch > current_epoch {
-            return Err(HawDBError::Storage(format!(
-                "search projection graph delta complete-through epoch {epoch} is ahead of graph commit epoch {current_epoch}"
-            )));
-        }
-    }
+    // A changefeed prefix describes IDs, not a historical read view.
+    // Hydrating it from a newer head would publish future data under an old watermark.
+    require_search_projection_source_epoch(
+        request.complete_through_graph_commit_epoch,
+        store.commit_epoch(),
+    )?;
 
     let mut upserts = Vec::new();
     for node_id in &request.upsert_node_ids {
@@ -21696,6 +21717,7 @@ impl DatabaseSession<'_> {
     }
 
     /// Opens a retained numeric cursor using this session's row ceiling.
+    /// Arrow streams derived from it inherit the same terminal-error contract.
     pub fn query_with_params_retained(
         &self,
         cypher: &str,

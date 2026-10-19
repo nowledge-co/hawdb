@@ -39,10 +39,16 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 mod arrow;
+mod node;
 pub use arrow::{
     ArrowArray, ArrowArrayStream, ArrowSchema, RetainedArrowCodeOwner, RetainedArrowExport,
     RetainedArrowSchema, RetainedArrowStream,
 };
+pub use node::{
+    RetainedNodeCursor, RetainedNodeField, RetainedNodeLabels, RetainedNodeSnapshotCursor,
+    RetainedNodeTaskCursor, RetainedNodeView,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RetainedQueryError {
     UnsupportedPlan,

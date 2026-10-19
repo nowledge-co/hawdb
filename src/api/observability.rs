@@ -126,16 +126,37 @@ impl StatementRecordingTarget<'_> {
         result: std::result::Result<&QueryOutput, &HawDBError>,
         context: StatementExecutionContext<'_>,
     ) {
+        self.record_statement_row_count(
+            query_language,
+            query_text,
+            statement_kind,
+            started,
+            result
+                .map(|output| output.rows.len())
+                .map_err(|error| error as &dyn std::fmt::Display),
+            context,
+        );
+    }
+
+    fn record_statement_row_count(
+        &self,
+        query_language: &str,
+        query_text: &str,
+        statement_kind: &str,
+        started: hawdb_core::time::Instant,
+        result: std::result::Result<usize, &dyn std::fmt::Display>,
+        context: StatementExecutionContext<'_>,
+    ) {
         let elapsed_micros = started.elapsed().as_micros();
         let query_identity = hawdb_query::QueryIdentity::new(query_language, query_text);
         let execution = match result {
-            Ok(output) => system_sql::StatementExecution::completed(
+            Ok(row_count) => system_sql::StatementExecution::completed(
                 query_language,
                 query_text,
                 statement_kind,
                 &query_identity,
                 elapsed_micros,
-                output.rows.len(),
+                row_count,
             ),
             Err(error) => system_sql::StatementExecution::failed(
                 query_language,
@@ -157,11 +178,18 @@ impl StatementRecordingTarget<'_> {
                 success: result.is_ok(),
                 elapsed_micros: elapsed_micros.min(u64::MAX as u128) as u64,
                 parse_nanos: context.parse_nanos,
-                row_count: result.map_or(0, |output| output.rows.len()),
+                row_count: result.unwrap_or(0),
                 intermediate_rows: pipeline.map_or(0, |report| report.intermediate_rows),
                 intermediate_payload_bytes: pipeline
                     .map_or(0, |report| report.intermediate_payload_bytes),
-                output_payload_bytes: pipeline.map_or(0, |report| report.output_payload_bytes),
+                output_payload_bytes: pipeline.map_or_else(
+                    || {
+                        context
+                            .retained_profile
+                            .map_or(0, |profile| profile.output_payload_bytes)
+                    },
+                    |report| report.output_payload_bytes,
+                ),
                 steady_resident_bytes: pipeline.and_then(|report| report.steady_resident_bytes),
                 peak_resident_bytes: pipeline.and_then(|report| report.peak_resident_bytes),
                 total_page_faults: pipeline.and_then(|report| report.total_page_faults),
@@ -171,7 +199,7 @@ impl StatementRecordingTarget<'_> {
         }
         self.statement_summary.borrow_mut().record(execution);
 
-        let Ok(output) = result else {
+        let Ok(row_count) = result else {
             return;
         };
         let slow_log_candidate = elapsed_micros >= self.slow_query_log_threshold_micros;
@@ -187,7 +215,7 @@ impl StatementRecordingTarget<'_> {
                     query_text,
                     query_identity: &query_identity,
                     elapsed_micros,
-                    row_count: output.rows.len(),
+                    row_count,
                     success: true,
                     error: None,
                     slow_log_candidate,
@@ -200,6 +228,33 @@ impl StatementRecordingTarget<'_> {
                         .unwrap_or_default(),
                 },
             ));
+    }
+}
+
+impl StatementRecorder {
+    pub(super) fn record_statement_row_count(
+        &self,
+        query_language: &str,
+        query_text: &str,
+        statement_kind: &str,
+        started: hawdb_core::time::Instant,
+        result: std::result::Result<usize, &dyn std::fmt::Display>,
+        context: StatementExecutionContext<'_>,
+    ) {
+        StatementRecordingTarget {
+            slow_query_log: &self.slow_query_log,
+            statement_summary: &self.statement_summary,
+            slow_query_log_threshold_micros: self.slow_query_log_threshold_micros,
+            telemetry: self.telemetry.as_deref(),
+        }
+        .record_statement_row_count(
+            query_language,
+            query_text,
+            statement_kind,
+            started,
+            result,
+            context,
+        );
     }
 }
 
@@ -220,6 +275,33 @@ impl StatementRecorder {
             telemetry: self.telemetry.as_deref(),
         }
         .record_statement_execution(
+            query_language,
+            query_text,
+            statement_kind,
+            started,
+            result,
+            context,
+        );
+    }
+}
+
+impl Database {
+    pub(super) fn record_statement_row_count(
+        &self,
+        query_language: &str,
+        query_text: &str,
+        statement_kind: &str,
+        started: hawdb_core::time::Instant,
+        result: std::result::Result<usize, &dyn std::fmt::Display>,
+        context: StatementExecutionContext<'_>,
+    ) {
+        StatementRecordingTarget {
+            slow_query_log: &self.slow_query_log,
+            statement_summary: &self.statement_summary,
+            slow_query_log_threshold_micros: self.config.slow_query_log_threshold_micros,
+            telemetry: self.telemetry.as_deref(),
+        }
+        .record_statement_row_count(
             query_language,
             query_text,
             statement_kind,

@@ -29,6 +29,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod compaction;
 mod context;
+mod held_spool;
 mod incremental_ownership;
 mod initial;
 mod manifest_budget;
@@ -562,8 +563,8 @@ fn fused_generation_spool_errors_never_publish_partial_sinks() {
         }
         let error = replacement
             .finish_with_artifacts(|input, source, generation| {
-                // Mutate after the initial length check so corruption exercises
-                // scan validation with the other sinks already partially filled.
+                // Same-length corruption still reaches scan validation. Extent
+                // changes now fail at the held-file fence before any sink input.
                 let mut bytes = fs::read(source.path)?;
                 match fault {
                     "checksum" => *bytes.last_mut().unwrap() ^= 1,
@@ -578,7 +579,12 @@ fn fused_generation_spool_errors_never_publish_partial_sinks() {
                 input.build_artifacts(source, generation)
             })
             .unwrap_err();
-        assert!(error.to_string().contains(fault), "{error}");
+        let expected = if matches!(fault, "truncated" | "trailing") {
+            "length changed"
+        } else {
+            fault
+        };
+        assert!(error.to_string().contains(expected), "{fault}: {error}");
         assert_eq!(stage_directories(&root), 0);
         assert_eq!(published_files(&root), before);
         let reader = super::super::SearchOutOfCoreReader::open(&root).unwrap();

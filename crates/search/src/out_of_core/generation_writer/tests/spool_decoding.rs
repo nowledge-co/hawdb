@@ -25,6 +25,7 @@ fn streamed_spool_scan_rejects_unadmitted_lengths_before_decoding() {
     let root = test_dir("streamed_spool_reader_admission");
     fs::create_dir(&root).unwrap();
     let source = SpoolSource {
+        held: None,
         path: &root.join("test.spool"),
         document_count: 1,
         max_record_bytes: 128,
@@ -50,6 +51,7 @@ fn streamed_spool_scan_rejects_unadmitted_lengths_before_decoding() {
     fs::write(source.path, bytes).unwrap();
     for limit in [record.len() - 1, record.len()] {
         let source = SpoolSource {
+            held: None,
             path: source.path,
             document_count: source.document_count,
             max_record_bytes: limit as u64,
@@ -97,18 +99,26 @@ fn streamed_spool_syntax_failures_never_emit_bad_rows_or_publish() {
                     .split('\t')
                     .map(str::to_string)
                     .collect::<Vec<_>>();
-                match field {
-                    0..=2 => fields[field + 1] = "0\u{20ac}".into(),
-                    3 => fields[4] = "1,,2".into(),
-                    4 => fields[5] = "0\u{20ac}=61".into(),
-                    5 => fields[5] = "61=0\u{20ac}".into(),
-                    6 => fields[1] = crate::encode_string(&document(1).id),
+                // Keep the encoded extent unchanged so these cases exercise
+                // syntax/order rejection after the new held-file length fence.
+                let (index, invalid) = match field {
+                    0..=2 => (field + 1, "0\u{20ac}".to_owned()),
+                    3 => (4, "1,,2".to_owned()),
+                    4 => (5, "0\u{20ac}=61".to_owned()),
+                    5 => (5, "61=0\u{20ac}".to_owned()),
+                    6 => (1, crate::encode_string(&document(1).id)),
                     _ => unreachable!(),
-                }
+                };
+                assert!(invalid.len() <= fields[index].len());
+                fields[index] = format!(
+                    "{invalid}{}",
+                    "0".repeat(fields[index].len() - invalid.len())
+                );
                 let second = format!("{}\n", fields.join("\t"));
                 let mut bytes = SPOOL_HEADER.to_vec();
                 append_frame(&mut bytes, first.as_bytes());
                 append_frame(&mut bytes, second.as_bytes());
+                assert_eq!(bytes.len() as u64, input.spool_bytes);
                 fs::write(source.path, bytes)?;
                 let mut consumed = Vec::new();
                 assert!(source

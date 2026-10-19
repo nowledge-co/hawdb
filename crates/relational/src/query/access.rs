@@ -265,6 +265,9 @@ pub(super) fn index_access_candidate(
         return Ok(None);
     }
     let prefix_len = prefix.len();
+    if !index_prefix_covers_matches(schema, columns, prefix_len, unique) {
+        return Ok(None);
+    }
     let (mut order_prefix_len, mut direction) =
         index_order_prefix(order_by, columns, prefix_len, schema, table, qualifier);
     let key = RelationalKey(prefix);
@@ -504,7 +507,7 @@ pub(super) fn choose_join_access(
                 true,
                 &bound,
                 row_count,
-                table,
+                schema,
                 index_read_mode,
             ) {
                 candidates.push(candidate);
@@ -517,7 +520,7 @@ pub(super) fn choose_join_access(
                 index.unique,
                 &bound,
                 row_count,
-                table,
+                schema,
                 index_read_mode,
             ) {
                 candidates.push(candidate);
@@ -564,7 +567,7 @@ pub(super) fn join_index_access_candidate(
     unique: bool,
     bound: &BTreeMap<String, SqlColumnRef>,
     row_count: usize,
-    table: &str,
+    schema: &RelationalTableSchema,
     index_read_mode: RelationalIndexReadMode<
         '_,
         impl crate::index_runtime::RelationalIndexStoreReader,
@@ -583,12 +586,15 @@ pub(super) fn join_index_access_candidate(
         return None;
     }
     let equality_prefix_len = access_columns.len();
+    if !index_prefix_covers_matches(schema, columns, equality_prefix_len, unique) {
+        return None;
+    }
     let unique_point = unique && equality_prefix_len == columns.len();
     let estimated_rows = if unique_point {
         usize::from(row_count != 0)
     } else {
         index_read_mode
-            .probe_statistics(table, &name, equality_prefix_len)
+            .probe_statistics(&schema.name, &name, equality_prefix_len)
             .map(|statistics| {
                 debug_assert!(statistics.distinct_non_null_values <= statistics.non_null_rows);
                 debug_assert!(statistics.fanout <= statistics.non_null_rows);
@@ -620,6 +626,22 @@ pub(super) fn join_index_access_candidate(
             columns: access_columns,
         },
     })
+}
+
+fn index_prefix_covers_matches(
+    schema: &RelationalTableSchema,
+    columns: &[String],
+    prefix_len: usize,
+    unique: bool,
+) -> bool {
+    // Unique indexes omit every key containing NULL. A non-NULL equality
+    // prefix is complete only when the remaining key columns cannot be NULL.
+    !unique
+        || columns[prefix_len..].iter().all(|name| {
+            schema
+                .column_position(name)
+                .is_some_and(|position| !schema.columns[position].nullable)
+        })
 }
 
 pub(super) fn bound_join_key(

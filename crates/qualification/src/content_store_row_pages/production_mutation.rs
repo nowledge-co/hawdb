@@ -1206,7 +1206,10 @@ fn statement_digest(sql: &str) -> String {
         b"hawdb-production-content-store-mutation-statement-v1",
     );
     hash_bytes(&mut hasher, sql.as_bytes());
-    format!("sha256:{:x}", hasher.finalize())
+    format!(
+        "sha256:{}",
+        crate::evidence_digest::hex_digest(hasher.finalize().into())
+    )
 }
 
 fn parameter_digest(parameters: &[Value]) -> String {
@@ -1219,7 +1222,10 @@ fn parameter_digest(parameters: &[Value]) -> String {
     for value in parameters {
         hash_value(&mut hasher, value);
     }
-    format!("sha256:{:x}", hasher.finalize())
+    format!(
+        "sha256:{}",
+        crate::evidence_digest::hex_digest(hasher.finalize().into())
+    )
 }
 
 fn valid_sha256(value: &str) -> bool {

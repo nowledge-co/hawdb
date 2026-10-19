@@ -1143,7 +1143,10 @@ fn statement_digest(domain: &[u8], sql: &str) -> String {
     let mut hasher = Sha256::new();
     hash_bytes(&mut hasher, domain);
     hash_bytes(&mut hasher, sql.as_bytes());
-    format!("sha256:{:x}", hasher.finalize())
+    format!(
+        "sha256:{}",
+        crate::evidence_digest::hex_digest(hasher.finalize().into())
+    )
 }
 
 fn regression_per_million(observed: u64, reference: u64) -> u64 {

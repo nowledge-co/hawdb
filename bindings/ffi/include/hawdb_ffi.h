@@ -86,6 +86,26 @@
 
 #define HAWDB_RETAINED_VALIDITY_U64_LSB 2
 
+#define HAWDB_RETAINED_NODE 1
+
+#define HAWDB_RETAINED_NULL 2
+
+#define HAWDB_RETAINED_BOOL 3
+
+#define HAWDB_RETAINED_NODE_INT64 4
+
+#define HAWDB_RETAINED_NODE_FLOAT64 5
+
+#define HAWDB_RETAINED_UTF8 6
+
+#define HAWDB_RETAINED_BINARY 7
+
+#define HAWDB_RETAINED_UUID 8
+
+#define HAWDB_RETAINED_LIST 9
+
+#define HAWDB_RETAINED_MAP 10
+
 /**
  * An open HawDB database handle. Opaque to C callers.
  */
@@ -228,6 +248,25 @@ typedef struct HawdbRetainedStateV1 {
   uint64_t source_pinned_rows;
   uint64_t source_pinned_pages;
 } HawdbRetainedStateV1;
+
+/**
+ * All pointers borrow this independently releasable owner. Scalars are original
+ * native-endian storage, not descriptor copies. Names are UTF-8, not NUL-ended.
+ * Containers and NULL have no data buffer. These are row views, not Arrow arrays.
+ */
+typedef struct HawdbRetainedNodeV1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint64_t owner_namespace;
+  uint64_t owner_id;
+  uint32_t kind;
+  uint32_t flags;
+  uint64_t child_count;
+  const void *data;
+  uint64_t byte_length;
+  const char *name;
+  uint64_t name_len;
+} HawdbRetainedNodeV1;
 
 #if defined(HAWDB_BOUNDARY_PROFILING)
 /**
@@ -470,3 +509,71 @@ uint32_t hawdb_retained_cursor_close(uint64_t owner_namespace, uint64_t owner_id
  * InvalidHandle without dereferencing caller-provided addresses.
  */
 uint32_t hawdb_retained_release(uint64_t owner_namespace, uint64_t owner_id);
+
+/**
+ * Open a strict single-match indexed node cursor. Input parameters use JSON;
+ * results never do. All layout refusals are inherited from the native planner.
+ *
+ * # Safety
+ * db/request must be valid for this call. out must be aligned and writable for
+ * out_size bytes. The library mapping must outlive every returned owner.
+ */
+uint32_t hawdb_retained_node_query(struct HawdbDatabase *db,
+                                   const struct HawdbRetainedQueryV1 *request,
+                                   uint32_t request_size,
+                                   struct HawdbRetainedCursorV1 *out,
+                                   uint32_t out_size);
+
+/**
+ * Pull one independently owned node. EOF completes provisional values. A failed
+ * registration aborts delivery rather than allowing a later successful EOF.
+ *
+ * # Safety
+ * out must be aligned/writable for out_size bytes. Returned pointers remain
+ * readable until their owner is released; synchronize release with all reads.
+ */
+uint32_t hawdb_retained_node_next(uint64_t owner_namespace,
+                                  uint64_t owner_id,
+                                  struct HawdbRetainedNodeV1 *out,
+                                  uint32_t out_size);
+
+/**
+ * Create an independent child owner. Node ordering is _id, labels, then native
+ * sorted properties. Lists use index order; maps use native sorted key order.
+ *
+ * # Safety
+ * out must be aligned/writable for out_size bytes. Synchronize pointer reads
+ * with release. A child survives release of all its ancestors and database.
+ */
+uint32_t hawdb_retained_node_child(uint64_t owner_namespace,
+                                   uint64_t owner_id,
+                                   uint64_t index,
+                                   struct HawdbRetainedNodeV1 *out,
+                                   uint32_t out_size);
+
+/**
+ * Look up a node/map field without cloning its key or payload. Missing fields
+ * return InvalidColumn and an empty output; other payload kinds refuse.
+ *
+ * # Safety
+ * name must be readable UTF-8 for name_len bytes. out must be aligned/writable
+ * for out_size bytes. Synchronize returned pointer reads with owner release.
+ */
+uint32_t hawdb_retained_node_field(uint64_t owner_namespace,
+                                   uint64_t owner_id,
+                                   const char *name,
+                                   uint64_t name_len,
+                                   struct HawdbRetainedNodeV1 *out,
+                                   uint32_t out_size);
+
+/**
+ * Retain an independent owner, preserving pointer identity and path.
+ *
+ * # Safety
+ * out must be aligned/writable for out_size bytes. Release its owner only after
+ * all pointer reads finish, independently of the original owner.
+ */
+uint32_t hawdb_retained_node_retain(uint64_t owner_namespace,
+                                    uint64_t owner_id,
+                                    struct HawdbRetainedNodeV1 *out,
+                                    uint32_t out_size);

@@ -368,7 +368,7 @@ fn validate_content_store_schema() -> Result<()> {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::evidence_digest::hex_digest(Sha256::digest(bytes).into())
 }
 
 fn validate_statement(statement: &ContentStoreSqlStatementSpec) -> Result<()> {

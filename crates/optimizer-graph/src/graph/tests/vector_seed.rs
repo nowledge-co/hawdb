@@ -153,7 +153,7 @@ fn vector_seed_preserves_optimizer_resource_hints_across_lowering_modes() {
 }
 
 #[test]
-fn vector_seeded_expand_receives_bounded_graph_budget() {
+fn vector_seeded_expand_uses_admitted_memory_without_implicit_cumulative_caps() {
     let logical = LogicalPlan::Expand {
         source_variable: "m".to_string(),
         source_label: "Memory".to_string(),
@@ -185,17 +185,19 @@ fn vector_seeded_expand_receives_bounded_graph_budget() {
     let (physical, trace) = CascadesOptimizer::new(OptimizerConfig { max_groups: 16 })
         .optimize_with_catalog(&logical, &OptimizerCatalog::default());
 
+    assert!(physical
+        .explain(0)
+        .contains("graph_budget=execution_memory"));
     let PhysicalPlan::AdjacencyExpandExec {
         graph_budget: Some(graph_budget),
         ..
     } = physical
     else {
-        panic!("expected bounded adjacency expansion");
+        panic!("expected admitted seeded adjacency expansion");
     };
-    assert_eq!(graph_budget.candidate_limit, 1024);
-    assert_eq!(graph_budget.payload_byte_limit, 8 * 1024 * 1024);
-    assert!(trace
-        .decisions
-        .iter()
-        .any(|decision| decision.contains("bound vector-seeded graph expansion")));
+    assert_eq!(graph_budget.candidate_limit, usize::MAX);
+    assert_eq!(graph_budget.payload_byte_limit, usize::MAX);
+    assert!(trace.decisions.iter().any(|decision| {
+        decision.contains("admit vector-seeded graph expansion using execution memory budgets")
+    }));
 }

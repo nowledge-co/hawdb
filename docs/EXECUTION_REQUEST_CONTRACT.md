@@ -71,11 +71,26 @@ counter bounds process RSS or memory subsequently retained by host callbacks.
 
 ## Resource refusal metadata
 
-Memory-ledger and spill-quota admission failures expose
+Memory-ledger, operator-tracker and spill-quota admission failures expose
 `HawDBError::ResourceBudgetExceeded`. Rust, FFI JSON, and Python preserve the
 resource kind, refusing scope, owner, memory class, additional request, current
 usage, effective budget, and `budget_option`. Rejected reservations do not charge
 the account. Query-level ownership transfers report their net additional charge.
+
+Sort, TopN, Distinct and aggregation retain their blocking configuration origin
+for tracker and oversized-item refusals. Derived single-item merge allowances
+report the actual smaller limit (for example, one third of the blocking budget
+for partial aggregation), with the whole item as `requested` and zero `used`.
+Tracker-growth refusals report the additional charge and current tracker usage.
+Spill decode reports usage before releasing its temporary decoded state on error.
+Counter overflow is a refusal even when the configured limit is `usize::MAX`.
+Generic tracker constructors identify their explicit argument, rather than
+inventing a connection to the database configuration. The public
+`merge_sort_runs(memory_budget)` entrypoint uses the explicit
+`OperatorMemoryTracker::with_account(budget_bytes)` origin for its merge-state
+tracker; configured Sort/TopN paths retain their blocking configuration origin.
+Corrupt spill records and
+invalid ownership transfers remain ordinary execution errors.
 
 When a typed resource refusal escapes a contextual morsel worker or its ordered
 consumer, the scheduler signals `RuntimeCancellationReason::ResourceExhausted`
@@ -85,6 +100,8 @@ not the secondary cancellation error. Memory, spill, descriptor exhaustion, read
 budgets, and graph expansion limits participate. Invalid resource configuration
 and ordinary callback errors do not signal resource exhaustion. A reservation
 refusal handled inside an operator (for example, by spilling) does not cancel it.
+Typed blocking-operator refusals now participate in this sibling cancellation;
+spill decisions made through `would_exceed` before charging remain handled pressure.
 The Tokio operation wrapper also preserves an operation error after a resource
 stop; an operation that returns success after that signal is still rejected.
 Explicit user cancellation and deadlines keep their existing precedence.
@@ -113,7 +130,10 @@ origins:
 | `ExecutionMemoryConfig.query_memory_bytes` | Configured query root, source account, retrieval pipeline, or result-memory limit. |
 | `RuntimeTaskContext.memory_reservation.memory_bytes` | Runtime-admitted query root; increasing configuration does not widen this grant. |
 | `RuntimeTaskContext.memory_reservation.result_bytes` | Runtime-admitted result-memory limit when it is no larger than the configured query-memory limit. |
-| `ExecutionMemoryConfig.blocking_operator_bytes` | Configured blocking-state account limit. |
+| `ExecutionMemoryConfig.blocking_operator_bytes` | Configured blocking-state limit or a derived operator/merge-item allowance; `budget` reports the effective limit. |
+| `ExecutionMemoryConfig.batch_payload_bytes` | Output batch allowance; a single expansion row exceeding it is an operator-local per-row refusal. |
+| `OperatorMemoryTracker::new(budget_bytes)` | Explicit unaccounted operator limit. |
+| `OperatorMemoryTracker::with_account(budget_bytes)` | Explicit tracker limit, independent of its backing account limit. |
 | `QueryMemoryLedger::new(budget_bytes)` | Explicit query-root constructor argument. |
 | `QueryMemoryLedger::account(budget_bytes)` | Explicit account constructor argument, including derived limits. |
 | `KnowledgeRetrievalPipelineBudget::new(query_memory_budget)` | Explicit retrieval pipeline root and account allowance. |
@@ -140,6 +160,13 @@ unchecked sum to interpret the refusal.
 Existing descriptor errors retain their separate type. Operator-local checks
 that have not been converted may still return `Execution`; this metadata contract
 does not claim that every execution limit uses the new variant.
+
+An expansion row that cannot fit an empty output batch reports `scope: Operator`,
+`requested` equal to that row's retained bytes, and `used: 0`. The boundary is the
+row itself, independent of any rows already buffered. There is no separate
+per-item scope; the message identifies this per-row ceiling explicitly. Releasing
+other account ownership or retrying the unchanged row cannot satisfy it. Raising
+`batch_payload_bytes` still does not widen a smaller query or runtime grant.
 
 ## Model and evidence boundaries
 

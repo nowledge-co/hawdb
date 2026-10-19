@@ -759,6 +759,8 @@ rust_test(
 # External embedded-library consumer for the stable execution request contract.
 rust_test(
     name = "hawdb_execution_request_contract_tests",
+    # Full 100k-row fixtures peak above 500 MiB; preserve resource scheduling.
+    size = "enormous",
     crate_root = "tests/execution_request_contract.rs",
     srcs = ["tests/execution_request_contract.rs"],
     edition = "2024",

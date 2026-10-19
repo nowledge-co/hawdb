@@ -90,6 +90,8 @@ fn _hawdb(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<retained::RetainedOptions>()?;
     module.add_class::<retained::RetainedBatch>()?;
     module.add_class::<retained::RetainedBuffer>()?;
+    module.add_class::<retained::node::RetainedNodeCursor>()?;
+    module.add_class::<retained::node::RetainedNodeView>()?;
     module.add_function(wrap_pyfunction!(open, module)?)?;
     module.add_function(wrap_pyfunction!(capabilities, module)?)?;
 

@@ -43,7 +43,9 @@ impl PhysicalPlan {
                 PhysicalPlanKind::CreateRelationshipPropertyExistsConstraint
             }
             PhysicalPlan::ProjectGraph { .. } => PhysicalPlanKind::ProjectGraph,
-            PhysicalPlan::GraphAlgorithm { .. } => PhysicalPlanKind::GraphAlgorithm,
+            PhysicalPlan::GraphAlgorithm { .. } | PhysicalPlan::GraphAlgorithmOutput(_) => {
+                PhysicalPlanKind::GraphAlgorithm
+            }
             PhysicalPlan::VectorSeedScan { .. } => PhysicalPlanKind::VectorSeedScan,
             PhysicalPlan::GraphSeedScan { .. } => PhysicalPlanKind::GraphSeedScan,
             PhysicalPlan::TextSeedScan { .. } => PhysicalPlanKind::TextSeedScan,
@@ -167,6 +169,7 @@ impl PhysicalPlan {
             | PhysicalPlan::CreateRelationshipPropertyExistsConstraint { .. }
             | PhysicalPlan::ProjectGraph { .. }
             | PhysicalPlan::GraphAlgorithm { .. }
+            | PhysicalPlan::GraphAlgorithmOutput(_)
             | PhysicalPlan::VectorSeedScan { .. }
             | PhysicalPlan::GraphSeedScan { .. }
             | PhysicalPlan::TextSeedScan { .. }

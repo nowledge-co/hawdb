@@ -162,8 +162,24 @@ impl<K: Eq, V> HashGroups<K, V> {
         payload_bytes: usize,
         tracker: &mut OperatorMemoryTracker,
     ) -> Result<()> {
+        self.insert_prepared(key, value, payload_bytes, tracker, None)
+    }
+
+    pub(super) fn insert_prepared(
+        &mut self,
+        key: HashedKey<K>,
+        value: V,
+        payload_bytes: usize,
+        tracker: &mut OperatorMemoryTracker,
+        key_allocation: Option<&mut crate::QueryMemoryLease>,
+    ) -> Result<()> {
         debug_assert!(self.find(&key).is_none());
-        tracker.try_charge(self.insertion_bytes(payload_bytes))?;
+        let bytes = self.insertion_bytes(payload_bytes);
+        if let Some(allocation) = key_allocation {
+            tracker.try_charge_from(allocation, bytes)?;
+        } else {
+            tracker.try_charge(bytes)?;
+        }
         if self.entries.len() == self.buckets.len() {
             let capacity = self.next_capacity();
             let old_bytes = Self::array_bytes(self.buckets.len());

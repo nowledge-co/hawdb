@@ -165,6 +165,7 @@ impl PhysicalPlan {
             }
             PhysicalPlan::ProjectGraph { .. }
             | PhysicalPlan::GraphAlgorithm { .. }
+            | PhysicalPlan::GraphAlgorithmOutput(_)
             | PhysicalPlan::VectorSeedScan { .. }
             | PhysicalPlan::GraphSeedScan { .. }
             | PhysicalPlan::TextSeedScan { .. }

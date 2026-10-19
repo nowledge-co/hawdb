@@ -152,6 +152,7 @@ pub enum LogicalPlan {
         return_node_identity: bool,
         node_visibility_predicate: Option<Predicate>,
     },
+    GraphAlgorithmOutput(Box<GraphAlgorithmOutput>),
     GraphSeed {
         query_parameter: String,
         label: String,
@@ -442,6 +443,49 @@ pub enum LogicalPlan {
 pub enum GraphAlgorithmKind {
     PageRank,
     Louvain,
+}
+
+/// Explicit result selection, separate from legacy algorithm option literals.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GraphAlgorithmIdentity {
+    pub node_id: bool,
+    pub node_label: bool,
+    pub node_labels: bool,
+}
+
+impl GraphAlgorithmIdentity {
+    pub fn legacy(enabled: bool) -> Self {
+        Self {
+            node_id: enabled,
+            node_label: enabled,
+            node_labels: false,
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        !(self.node_id || self.node_label || self.node_labels)
+    }
+
+    pub fn columns(self) -> impl Iterator<Item = &'static str> {
+        [
+            ("node_id", self.node_id),
+            ("node_label", self.node_label),
+            ("node_labels", self.node_labels),
+        ]
+        .into_iter()
+        .filter_map(|(name, selected)| selected.then_some(name))
+    }
+}
+
+/// Algorithm source with an explicit, independently selected identity projection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphAlgorithmOutput {
+    pub algorithm: GraphAlgorithmKind,
+    pub graph_name: String,
+    pub options: GraphAlgorithmOptions,
+    pub score_column: String,
+    pub identity: GraphAlgorithmIdentity,
+    pub node_visibility_predicate: Option<Predicate>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

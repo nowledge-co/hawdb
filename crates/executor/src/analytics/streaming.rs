@@ -108,10 +108,11 @@ impl AnalyticsEdgeSource for EdgeSource<'_> {
 }
 
 impl GraphAlgorithmSpec<'_> {
-    pub(super) fn stream_external(
+    pub(super) fn stream_external_with_identity(
         self,
         context: GraphAlgorithmContext<'_>,
         execution_limit: ExecutionLimit,
+        identity: GraphAlgorithmIdentity,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
         let definition = context
@@ -273,7 +274,7 @@ impl GraphAlgorithmSpec<'_> {
                 ),
             );
             let mut identities = BTreeMap::new();
-            if self.return_node_identity {
+            if !identity.is_empty() {
                 identity_tracker.try_charge(1024)?;
                 for (ordinal, node) in rows
                     .node_ids()
@@ -292,20 +293,20 @@ impl GraphAlgorithmSpec<'_> {
                         context,
                         node,
                         &definition.node_labels,
+                        identity,
                         &source_account,
                     )?;
-                    let id = values
-                        .remove("node_id")
-                        .expect("identity helper fills node_id");
-                    let label = values
-                        .remove("node_label")
-                        .expect("identity helper fills node_label");
-                    let bytes = std::mem::size_of::<(NodeId, (Value, Value))>()
-                        .saturating_mul(3)
-                        .saturating_add(value_memory_bytes(&id))
-                        .saturating_add(value_memory_bytes(&label));
+                    let values = [
+                        values.remove("node_id"),
+                        values.remove("node_label"),
+                        values.remove("node_labels"),
+                    ];
+                    let bytes = identity_entries(&values).fold(
+                        std::mem::size_of::<(NodeId, [Option<Value>; 3])>().saturating_mul(3),
+                        |bytes, (_, value)| bytes.saturating_add(value_memory_bytes(value)),
+                    );
                     identity_tracker.try_charge(bytes)?;
-                    identities.insert(node, (id, label));
+                    identities.insert(node, values);
                     drop(hydration);
                 }
             }
@@ -319,6 +320,39 @@ impl GraphAlgorithmSpec<'_> {
                     context.memory.query_memory_bytes,
                 ),
             );
+            // Identity-bearing results must reject every row and output admission
+            // before the first callback, including a large identity at the end.
+            let staged_output = !identity.is_empty();
+            if staged_output {
+                let mut peak = 0usize;
+                let mut bytes = 0usize;
+                let mut count = 0usize;
+                for (ordinal, node) in rows
+                    .node_ids()
+                    .take(execution_limit.output_rows.unwrap_or(usize::MAX))
+                    .enumerate()
+                {
+                    if ordinal.is_multiple_of(1024) {
+                        runtime_checkpoint(context.task_context)?;
+                    }
+                    let row_bytes = rows.binding_bytes(self.score_column, &identities[&node]);
+                    check_algorithm_row_payload(
+                        row_bytes,
+                        context.memory.batch_payload_bytes.get(),
+                    )?;
+                    if count == context.memory.batch_rows.get()
+                        || bytes.saturating_add(row_bytes)
+                            > context.memory.batch_payload_bytes.get()
+                    {
+                        peak = peak.max(bytes);
+                        bytes = 0;
+                        count = 0;
+                    }
+                    bytes = bytes.saturating_add(row_bytes);
+                    count += 1;
+                }
+                output_tracker.try_charge(peak.max(bytes))?;
+            }
             for (ordinal, mut row) in rows
                 .bindings(self.score_column)
                 .take(execution_limit.output_rows.unwrap_or(usize::MAX))
@@ -327,7 +361,7 @@ impl GraphAlgorithmSpec<'_> {
                 if ordinal.is_multiple_of(1024) {
                     runtime_checkpoint(context.task_context)?;
                 }
-                let identity = if self.return_node_identity {
+                let identity = if !identity.is_empty() {
                     let Some(Value::Int(node)) = row.values.get("node") else {
                         return Err(HawDBError::StorageIntegrity(
                             "graph algorithm returned an invalid node identity".into(),
@@ -342,35 +376,33 @@ impl GraphAlgorithmSpec<'_> {
                     row.values
                         .iter()
                         .map(|(name, value)| (name.as_str(), value))
-                        .chain(
-                            identity
-                                .into_iter()
-                                .flat_map(|(id, label)| [("node_id", id), ("node_label", label)]),
-                        ),
+                        .chain(identity.into_iter().flat_map(identity_entries)),
                 );
-                if bytes > context.memory.batch_payload_bytes.get() {
-                    return Err(HawDBError::Execution(
-                        "GraphAlgorithm result row exceeds batch_payload_bytes".into(),
-                    ));
-                }
+                check_algorithm_row_payload(bytes, context.memory.batch_payload_bytes.get())?;
                 if !batch.is_empty()
                     && (batch.len() == context.memory.batch_rows.get()
                         || batch_bytes.saturating_add(bytes)
                             > context.memory.batch_payload_bytes.get()
-                        || output_tracker.would_exceed(bytes))
+                        || (!staged_output && output_tracker.would_exceed(bytes)))
                 {
                     let control = emit(std::mem::take(&mut batch))?;
-                    output_tracker.reset();
+                    if !staged_output {
+                        output_tracker.reset();
+                    }
                     batch_bytes = 0;
                     if control == BatchControl::Stop {
                         return Ok(BatchControl::Stop);
                     }
                     runtime_checkpoint(context.task_context)?;
                 }
-                output_tracker.try_charge(bytes)?;
-                if let Some((id, label)) = identity {
-                    row.values.insert("node_id".into(), id.clone());
-                    row.values.insert("node_label".into(), label.clone());
+                if !staged_output {
+                    output_tracker.try_charge(bytes)?;
+                }
+                if let Some(values) = identity {
+                    row.values.extend(
+                        identity_entries(values)
+                            .map(|(name, value)| (name.to_string(), value.clone())),
+                    );
                 }
                 batch_bytes = batch_bytes.saturating_add(bytes);
                 crate::pipeline::reserve_binding_slot(&mut batch);
@@ -388,6 +420,13 @@ impl GraphAlgorithmSpec<'_> {
         context.observer.record_blocking_memory_report(report);
         result
     }
+}
+
+fn identity_entries(values: &[Option<Value>; 3]) -> impl Iterator<Item = (&str, &Value)> {
+    ["node_id", "node_label", "node_labels"]
+        .into_iter()
+        .zip(values)
+        .filter_map(|(name, value)| value.as_ref().map(|value| (name, value)))
 }
 
 enum AlgorithmRows {
@@ -412,6 +451,23 @@ impl AlgorithmRows {
                 hawdb_analytics::HierarchicalCommunityAssignment,
             >(rows.len()),
         }
+    }
+
+    fn binding_bytes(&self, score_column: &str, identity: &[Option<Value>; 3]) -> usize {
+        let scalar = Value::Int(0);
+        let score = if matches!(self, Self::Louvain(_)) {
+            "louvain_id"
+        } else {
+            score_column
+        };
+        crate::binding::binding_memory_bytes_with_parts(
+            [("node", &scalar), (score, &scalar)]
+                .into_iter()
+                .chain(matches!(self, Self::Louvain(_)).then_some(("level", &scalar)))
+                .chain(identity_entries(identity)),
+            std::iter::empty(),
+            std::iter::empty(),
+        )
     }
 
     fn bindings(self, score_column: &str) -> Box<dyn Iterator<Item = Binding> + '_> {

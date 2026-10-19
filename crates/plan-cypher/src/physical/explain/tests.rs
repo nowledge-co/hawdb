@@ -19,6 +19,32 @@ use crate::{
 use hawdb_cypher::RelationshipDirection;
 use std::collections::BTreeMap;
 
+#[test]
+fn identity_898_selection_is_visible_in_explain_and_instance_fingerprints() {
+    let plan = |identity| {
+        PhysicalPlan::GraphAlgorithmOutput(Box::new(crate::GraphAlgorithmOutput {
+            algorithm: crate::GraphAlgorithmKind::PageRank,
+            graph_name: "identity".into(),
+            options: crate::GraphAlgorithmOptions::default(),
+            score_column: "pagerank_score".into(),
+            identity,
+            node_visibility_predicate: None,
+        }))
+    };
+    let labels = plan(crate::GraphAlgorithmIdentity {
+        node_labels: true,
+        ..Default::default()
+    });
+    let id = plan(crate::GraphAlgorithmIdentity {
+        node_id: true,
+        ..Default::default()
+    });
+    assert_ne!(labels.instance_fingerprint(), id.instance_fingerprint());
+    assert!(labels.instance_fingerprint().contains("node_labels"));
+    assert!(!id.instance_fingerprint().contains("node_labels"));
+    assert!(labels.explain(0).contains("node_labels: true"));
+}
+
 struct Fixture {
     plan: PhysicalPlan,
     lines: Vec<(usize, String)>,

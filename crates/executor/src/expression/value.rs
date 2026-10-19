@@ -34,14 +34,6 @@ pub fn evaluate_projection_expression(
     evaluate_projection_borrowed(expression, catalog, binding, None).map(ProjectedValue::into_owned)
 }
 
-pub(super) fn project_expression_value(
-    expression: &ProjectionExpression,
-    catalog: &Catalog,
-    binding: &Binding,
-) -> Result<Value> {
-    evaluate_projection_expression(expression, catalog, binding)
-}
-
 fn coalesce_difference(
     binding: &Binding,
     variable: &str,
@@ -81,10 +73,6 @@ fn integer_value(value: &Value, context: &str) -> Result<i64> {
             "{context} requires an integer value, got {value:?}"
         ))),
     }
-}
-
-pub fn group_key_value(item: &Projection, catalog: &Catalog, binding: &Binding) -> Value {
-    project_value(item, catalog, binding).unwrap_or(Value::Null)
 }
 
 fn timestamp_date_part(part: DatePart, nanos: i64) -> i64 {

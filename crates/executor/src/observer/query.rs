@@ -228,6 +228,7 @@ fn collect_blocking_operator_kinds(plan: &PhysicalPlan, output: &mut BTreeSet<St
         if matches!(
             operator,
             PhysicalPlan::GraphAlgorithm { .. }
+                | PhysicalPlan::GraphAlgorithmOutput(_)
                 | PhysicalPlan::VectorSeedScan { .. }
                 | PhysicalPlan::GraphSeedScan { .. }
                 | PhysicalPlan::TextSeedScan { .. }

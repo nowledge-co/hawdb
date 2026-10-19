@@ -28,24 +28,35 @@ struct SortOperator<'plan, 'runtime> {
     task_context: Option<&'runtime RuntimeTaskContext>,
     observer: &'runtime dyn ExecutionObserver,
     blocking_account: QueryMemoryAccount,
-    tracker: OperatorMemoryTracker,
+    key_memory: KeyMemory,
     spill_budget: SpillBudgetTracker,
     rows: Vec<SortRunRow>,
+    tracker: OperatorMemoryTracker,
     runs: Vec<spill::SpillRun>,
     input_rows: u64,
 }
 
 impl SortRunRow {
-    fn new(catalog: &Catalog, items: &[SortItem], ordinal: u64, binding: Binding) -> Self {
-        let sort_values = items
-            .iter()
-            .map(|item| (sort_value(catalog, &binding, &item.key), item.direction))
-            .collect();
-        Self {
-            sort_values,
-            ordinal,
-            binding,
-        }
+    fn new(
+        catalog: &Catalog,
+        items: &[SortItem],
+        ordinal: u64,
+        binding: Binding,
+        key_memory: &KeyMemory,
+        task_context: Option<&RuntimeTaskContext>,
+    ) -> Result<PreparedKey<Self>> {
+        let PreparedKey {
+            allocation,
+            values: sort_values,
+        } = key_memory.sort(items, catalog, &binding, task_context)?;
+        Ok(PreparedKey {
+            values: Self {
+                sort_values,
+                ordinal,
+                binding,
+            },
+            allocation,
+        })
     }
 
     fn cmp_key(&self, other: &Self) -> Ordering {
@@ -54,10 +65,8 @@ impl SortRunRow {
     }
 
     fn memory_bytes(&self) -> usize {
-        binding_memory_bytes(&self.binding).saturating_add(self.sort_values.iter().fold(
-            std::mem::size_of::<Vec<(Value, SortDirection)>>(),
-            |total, (value, _)| total.saturating_add(value_memory_bytes(value)),
-        ))
+        binding_memory_bytes(&self.binding)
+            .saturating_add(crate::binding::sort_values_memory_bytes(&self.sort_values))
     }
 }
 
@@ -129,7 +138,14 @@ pub fn stream_sort_batches(
 impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
     fn new(items: &'plan [SortItem], context: BlockingExecutionContext<'runtime>) -> Self {
         let blocking_account = context.operator_account("SortExec");
-        let tracker = OperatorMemoryTracker::with_account(
+        let key_memory = KeyMemory::new(
+            &blocking_account,
+            context.memory.query_memory_bytes,
+            "ExecutionMemoryConfig.query_memory_bytes",
+            "SortExec expressions",
+            "SortExec keys",
+        );
+        let tracker = OperatorMemoryTracker::with_blocking_account(
             context.memory.blocking_operator_bytes,
             blocking_account.clone(),
         );
@@ -141,6 +157,7 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
             task_context: context.task_context,
             observer: context.observer,
             blocking_account,
+            key_memory,
             tracker,
             spill_budget: SpillBudgetTracker::with_ledger(
                 "SortExec",
@@ -154,7 +171,17 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
     }
 
     fn push(&mut self, binding: Binding) -> Result<()> {
-        let row = SortRunRow::new(self.catalog, self.items, self.input_rows, binding);
+        let PreparedKey {
+            mut allocation,
+            values: row,
+        } = SortRunRow::new(
+            self.catalog,
+            self.items,
+            self.input_rows,
+            binding,
+            &self.key_memory,
+            self.task_context,
+        )?;
         let bytes = row.memory_bytes();
         ensure_operator_item_fits("SortExec", bytes, &self.tracker)?;
         if self.tracker.would_exceed(bytes) {
@@ -165,7 +192,7 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
             )?);
             self.tracker.reset();
         }
-        self.tracker.try_charge(bytes)?;
+        self.tracker.try_charge_from(&mut allocation, bytes)?;
         self.rows.push(row);
         self.input_rows = self.input_rows.saturating_add(1);
         Ok(())
@@ -220,9 +247,12 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
             &self.runs,
             self.items,
             self.catalog,
-            self.memory.blocking_operator_bytes,
+            OperatorMemoryTracker::with_blocking_account(
+                self.memory.blocking_operator_bytes,
+                self.blocking_account.clone(),
+            ),
             &self.spill_budget,
-            &self.blocking_account,
+            &self.key_memory,
             AccountedBindingBatch::with_ledger(
                 "SortExec",
                 self.memory.batch_rows.get(),
@@ -287,10 +317,11 @@ struct TopNOperator<'plan, 'runtime> {
     task_context: Option<&'runtime RuntimeTaskContext>,
     observer: &'runtime dyn ExecutionObserver,
     blocking_account: QueryMemoryAccount,
-    tracker: OperatorMemoryTracker,
+    key_memory: KeyMemory,
     spill_budget: SpillBudgetTracker,
     runs: Vec<spill::SpillRun>,
     heap: BinaryHeap<TopNBinding>,
+    tracker: OperatorMemoryTracker,
     input_rows: u64,
     spilled_rows: usize,
 }
@@ -303,7 +334,14 @@ impl<'plan, 'runtime> TopNOperator<'plan, 'runtime> {
         context: BlockingExecutionContext<'runtime>,
     ) -> Self {
         let blocking_account = context.operator_account("TopNExec");
-        let tracker = OperatorMemoryTracker::with_account(
+        let key_memory = KeyMemory::new(
+            &blocking_account,
+            context.memory.query_memory_bytes,
+            "ExecutionMemoryConfig.query_memory_bytes",
+            "TopNExec expressions",
+            "TopNExec keys",
+        );
+        let tracker = OperatorMemoryTracker::with_blocking_account(
             context.memory.blocking_operator_bytes,
             blocking_account.clone(),
         );
@@ -318,6 +356,7 @@ impl<'plan, 'runtime> TopNOperator<'plan, 'runtime> {
             task_context: context.task_context,
             observer: context.observer,
             blocking_account,
+            key_memory,
             tracker,
             spill_budget: SpillBudgetTracker::with_ledger(
                 "TopNExec",
@@ -332,16 +371,12 @@ impl<'plan, 'runtime> TopNOperator<'plan, 'runtime> {
     }
 
     fn push(&mut self, binding: Binding) -> Result<()> {
-        let sort_values = self
-            .items
-            .iter()
-            .map(|item| {
-                (
-                    sort_value(self.catalog, &binding, &item.key),
-                    item.direction,
-                )
-            })
-            .collect();
+        let PreparedKey {
+            mut allocation,
+            values: sort_values,
+        } = self
+            .key_memory
+            .sort(self.items, self.catalog, &binding, self.task_context)?;
         let candidate = TopNBinding {
             sort_values,
             ordinal: self.input_rows,
@@ -354,7 +389,7 @@ impl<'plan, 'runtime> TopNOperator<'plan, 'runtime> {
             if self.tracker.would_exceed(bytes) {
                 self.spill_heap()?;
             }
-            self.tracker.try_charge(bytes)?;
+            self.tracker.try_charge_from(&mut allocation, bytes)?;
             self.heap.push(candidate);
         } else if self.heap.peek().is_some_and(|worst| candidate < *worst) {
             let worst_bytes = self.heap.peek().map(TopNBinding::memory_bytes).unwrap_or(0);
@@ -370,7 +405,7 @@ impl<'plan, 'runtime> TopNOperator<'plan, 'runtime> {
                 self.heap.pop();
                 self.tracker.release(worst_bytes);
             }
-            self.tracker.try_charge(bytes)?;
+            self.tracker.try_charge_from(&mut allocation, bytes)?;
             self.heap.push(candidate);
         }
         Ok(())
@@ -410,9 +445,12 @@ impl<'plan, 'runtime> TopNOperator<'plan, 'runtime> {
                 &self.runs,
                 self.items,
                 self.catalog,
-                self.memory.blocking_operator_bytes,
+                OperatorMemoryTracker::with_blocking_account(
+                    self.memory.blocking_operator_bytes,
+                    self.blocking_account.clone(),
+                ),
                 &self.spill_budget,
-                &self.blocking_account,
+                &self.key_memory,
                 AccountedBindingBatch::with_ledger(
                     "TopNExec",
                     self.memory.batch_rows.get(),
@@ -475,6 +513,7 @@ fn emit_sorted_output(
     for (ordinal, (source_bytes, binding)) in rows.into_iter().enumerate() {
         runtime_checkpoint(task_context)?;
         if ordinal < offset {
+            drop(binding);
             tracker.release(source_bytes);
             continue;
         }
@@ -546,6 +585,30 @@ pub fn compact_sort_runs(
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<spill::SpillRun>> {
+    if items
+        .iter()
+        .any(|item| matches!(item.key, hawdb_plan_cypher::SortKey::Expression(_)))
+    {
+        // Record-size child allowances cannot bound expression scratch space.
+        // Share the query root serially until merges can reserve both separately.
+        return spill::compact_runs_serial(
+            runs,
+            NonZeroUsize::new(2).unwrap(),
+            task_context,
+            |left, right| {
+                merge_sort_run_pair(
+                    left,
+                    right,
+                    items,
+                    catalog,
+                    memory,
+                    spill_budget,
+                    blocking_account,
+                    task_context,
+                )
+            },
+        );
+    }
     spill::compact_runs_with_memory(
         runs,
         NonZeroUsize::new(2).expect("two-way merge fan-in"),
@@ -583,10 +646,17 @@ fn merge_sort_run_pair(
 ) -> Result<spill::SpillRun> {
     runtime_checkpoint(task_context)?;
     let mut readers = [left.reader()?, right.reader()?];
-    let mut heap = BinaryHeap::new();
-    let mut tracker = OperatorMemoryTracker::with_account(
+    let mut tracker = OperatorMemoryTracker::with_blocking_account(
         memory.blocking_operator_bytes,
         blocking_account.clone(),
+    );
+    let mut heap = BinaryHeap::new();
+    let key_memory = KeyMemory::new(
+        blocking_account,
+        memory.query_memory_bytes,
+        "ExecutionMemoryConfig.query_memory_bytes",
+        "SortExec merge expressions",
+        "SortExec merge keys",
     );
     let per_row_budget = memory.blocking_operator_bytes.get() / 2;
     for (run_index, reader) in readers.iter_mut().enumerate() {
@@ -599,6 +669,8 @@ fn merge_sort_run_pair(
             per_row_budget,
             spill_budget,
             &mut tracker,
+            &key_memory,
+            task_context,
         )? {
             heap.push(entry);
         }
@@ -609,7 +681,9 @@ fn merge_sort_run_pair(
         let run_index = entry.run_index;
         writer.note_merge_record_bytes(entry.row.memory_bytes());
         writer.write(entry.row.ordinal, &entry.row.binding, spill_budget)?;
-        tracker.release(entry.row.memory_bytes());
+        let bytes = entry.row.memory_bytes();
+        drop(entry);
+        tracker.release(bytes);
         if let Some(next) = read_sort_merge_entry(
             &mut readers[run_index],
             run_index,
@@ -619,6 +693,8 @@ fn merge_sort_run_pair(
             per_row_budget,
             spill_budget,
             &mut tracker,
+            &key_memory,
+            task_context,
         )? {
             heap.push(next);
         }
@@ -654,13 +730,20 @@ pub fn merge_sort_runs(
             memory_budget,
         ),
     );
+    let key_memory = KeyMemory::new(
+        blocking_account,
+        memory_budget,
+        "merge_sort_runs(memory_budget)",
+        "SortExec merge expressions",
+        "SortExec merge keys",
+    );
     merge_sort_runs_with_output(
         runs,
         items,
         catalog,
-        memory_budget,
+        OperatorMemoryTracker::with_account(memory_budget, blocking_account.clone()),
         spill_budget,
-        blocking_account,
+        &key_memory,
         output,
         skip_rows,
         output_rows,
@@ -674,9 +757,9 @@ fn merge_sort_runs_with_output(
     runs: &[spill::SpillRun],
     items: &[SortItem],
     catalog: &Catalog,
-    memory_budget: NonZeroUsize,
+    mut tracker: OperatorMemoryTracker,
     spill_budget: &SpillBudgetTracker,
-    blocking_account: &QueryMemoryAccount,
+    key_memory: &KeyMemory,
     mut output: AccountedBindingBatch,
     skip_rows: usize,
     output_rows: usize,
@@ -688,8 +771,8 @@ fn merge_sort_runs_with_output(
         .iter()
         .map(spill::SpillRun::reader)
         .collect::<Result<Vec<_>>>()?;
+    let memory_budget = tracker.budget_bytes;
     let mut heap = BinaryHeap::new();
-    let mut tracker = OperatorMemoryTracker::with_account(memory_budget, blocking_account.clone());
     for (run_index, reader) in readers.iter_mut().enumerate() {
         runtime_checkpoint(task_context)?;
         if let Some(entry) = read_sort_merge_entry(
@@ -697,10 +780,12 @@ fn merge_sort_runs_with_output(
             run_index,
             items,
             catalog,
-            memory_budget.get(),
-            memory_budget.get(),
+            memory_budget,
+            memory_budget,
             spill_budget,
             &mut tracker,
+            key_memory,
+            task_context,
         )? {
             heap.push(entry);
         }
@@ -713,17 +798,19 @@ fn merge_sort_runs_with_output(
     while let Some(entry) = heap.pop() {
         runtime_checkpoint(task_context)?;
         let run_index = entry.run_index;
+        let bytes = entry.row.memory_bytes();
         if skipped < skip_rows {
-            tracker.release(entry.row.memory_bytes());
+            drop(entry);
+            tracker.release(bytes);
             skipped = skipped.saturating_add(1);
         } else {
-            if output.transfer_from(
-                &mut tracker,
-                entry.row.memory_bytes(),
-                entry.row.binding,
-                emit,
-            )? == BatchControl::Stop
-            {
+            let SortRunRow {
+                sort_values,
+                binding,
+                ..
+            } = entry.row;
+            drop(sort_values);
+            if output.transfer_from(&mut tracker, bytes, binding, emit)? == BatchControl::Stop {
                 return Ok(BatchControl::Stop);
             }
             emitted = emitted.saturating_add(1);
@@ -733,10 +820,12 @@ fn merge_sort_runs_with_output(
             run_index,
             items,
             catalog,
-            memory_budget.get(),
-            memory_budget.get(),
+            memory_budget,
+            memory_budget,
             spill_budget,
             &mut tracker,
+            key_memory,
+            task_context,
         )? {
             heap.push(next);
         }
@@ -765,19 +854,29 @@ fn read_sort_merge_entry(
     max_item_bytes: usize,
     spill_budget: &SpillBudgetTracker,
     tracker: &mut OperatorMemoryTracker,
+    key_memory: &KeyMemory,
+    task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Option<SortMergeEntry>> {
     reader
         .read_binding_record(max_record_bytes, spill_budget)?
         .map(|record| {
-            record.try_map(
+            record.try_map_with_key_memory(
                 "SortExec merge",
                 max_item_bytes,
                 tracker,
                 |ordinal, binding| {
-                    Ok(SortMergeEntry {
-                        row: SortRunRow::new(catalog, items, ordinal, binding),
-                        run_index,
-                    })
+                    let PreparedKey {
+                        allocation,
+                        values: row,
+                    } = SortRunRow::new(
+                        catalog,
+                        items,
+                        ordinal,
+                        binding,
+                        key_memory,
+                        task_context,
+                    )?;
+                    Ok((SortMergeEntry { row, run_index }, Some(allocation)))
                 },
                 |entry| entry.row.memory_bytes(),
             )

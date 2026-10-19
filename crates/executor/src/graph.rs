@@ -411,4 +411,57 @@ mod tests {
         drop(state);
         assert_eq!(ledger.snapshot().used_bytes, 0);
     }
+    #[test]
+    fn unlimited_expansion_retains_reports_and_fails_at_admitted_memory() {
+        let entry_bytes = std::mem::size_of::<NodeId>() + 3 * std::mem::size_of::<usize>();
+        for admitted_nodes in [2, 3] {
+            let limit = std::num::NonZeroUsize::new(entry_bytes * admitted_nodes).unwrap();
+            let ledger = crate::QueryMemoryLedger::new(limit);
+            let account = ledger.account(
+                crate::QueryMemoryClass::BlockingState,
+                "seeded expansion",
+                limit,
+            );
+            let mut state = GraphExpansionExecutionState::with_memory_account(
+                Some(GraphExpansionBudget {
+                    candidate_limit: usize::MAX,
+                    payload_byte_limit: usize::MAX,
+                }),
+                1,
+                0,
+                &account,
+            )
+            .unwrap();
+            let payload_bytes = 8 * 1024 * 1024 + 1;
+            for id in [NodeId(1), NodeId(2), NodeId(1)] {
+                assert!(state.try_admit_payload(payload_bytes, Some(id), 1).unwrap());
+            }
+            assert_eq!(ledger.snapshot().used_bytes, entry_bytes * 2);
+            let before = ledger.snapshot();
+            let result = state.try_admit_payload(payload_bytes, Some(NodeId(3)), 1);
+            if admitted_nodes == 2 {
+                let HawDBError::ResourceBudgetExceeded(cause) = result.unwrap_err() else {
+                    panic!("expected a typed memory refusal");
+                };
+                assert_eq!(cause.resource, hawdb_core::ResourceBudgetKind::MemoryBytes);
+                assert_eq!(cause.owner, "seeded expansion");
+                assert_eq!(cause.requested, entry_bytes as u64);
+                assert_eq!(cause.used, (entry_bytes * 2) as u64);
+                assert_eq!(cause.budget, limit.get() as u64);
+                assert_eq!(ledger.snapshot(), before);
+            } else {
+                assert!(result.unwrap());
+            }
+            let rows = admitted_nodes + 1;
+            let report = state.report("LINK", 1, 1, state.returned_count()).unwrap();
+            assert_eq!(report.seed_count, 1);
+            assert_eq!(report.expanded_node_count, admitted_nodes);
+            assert_eq!(report.returned_count, rows);
+            assert_eq!(report.expanded_edge_count, rows);
+            assert_eq!(report.payload_bytes_used, rows * payload_bytes);
+            assert!(!report.truncated());
+            drop(state);
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+        }
+    }
 }

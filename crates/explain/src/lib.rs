@@ -391,6 +391,7 @@ fn access_object(plan: &PhysicalPlan) -> String {
         | PhysicalPlan::OptionalDegreeExec { rel_type, .. }
         | PhysicalPlan::ShortestPathExec { rel_type, .. } => format!("rel:{rel_type}"),
         PhysicalPlan::GraphAlgorithm { graph_name, .. } => format!("graph:{graph_name}"),
+        PhysicalPlan::GraphAlgorithmOutput(output) => format!("graph:{}", output.graph_name),
         _ => String::new(),
     }
 }

@@ -805,7 +805,10 @@ fn content_store_statement_digest(statement_name: &str, mutation: bool) -> Strin
     let mut hasher = Sha256::new();
     hash_bytes(&mut hasher, domain);
     hash_bytes(&mut hasher, statement.sql.as_bytes());
-    format!("sha256:{:x}", hasher.finalize())
+    format!(
+        "sha256:{}",
+        crate::evidence_digest::hex_digest(hasher.finalize().into())
+    )
 }
 
 fn content_store_memory_profiles(identity: &ProductionQualificationIdentity) -> Value {

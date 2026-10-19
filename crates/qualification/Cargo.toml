@@ -55,10 +55,3 @@ path = "src/bin/graph_index_qualification.rs"
 [[bin]]
 name = "hawdb-graph-storage-qualification"
 path = "src/bin/graph_storage_qualification.rs"
-
-# The aarch64 hardware SHA-256 backend is only reachable through this feature;
-# x86 already detects SHA-NI at runtime and needs nothing here. `sha2-asm`
-# ships GNU-syntax `.S` sources, which MSVC cannot assemble, so the activation
-# excludes that environment rather than the whole platform.
-[target.'cfg(all(target_arch = "aarch64", not(target_env = "msvc")))'.dependencies]
-sha2 = { version = "0.10", default-features = false, features = ["asm"] }

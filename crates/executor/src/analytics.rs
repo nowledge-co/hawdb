@@ -26,8 +26,11 @@ use hawdb_analytics::{
     LouvainProcedureOptions, PageRankProcedureOptions, ProjectedGraph, ProjectionLayout,
     ProjectionMemoryBudget,
 };
-use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
-use hawdb_plan_cypher::{GraphAlgorithmKind, Predicate};
+use hawdb_core::{
+    Catalog, HawDBError, ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
+    RuntimeTaskContext, Value,
+};
+use hawdb_plan_cypher::{GraphAlgorithmIdentity, GraphAlgorithmKind, Predicate};
 use hawdb_storage::{NodeId, NodeRecord, RelRecord};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -114,12 +117,27 @@ impl GraphAlgorithmSpec<'_> {
         execution_limit: ExecutionLimit,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
+        self.stream_with_identity(
+            context,
+            execution_limit,
+            GraphAlgorithmIdentity::legacy(self.return_node_identity),
+            emit,
+        )
+    }
+
+    pub(crate) fn stream_with_identity(
+        self,
+        context: GraphAlgorithmContext<'_>,
+        execution_limit: ExecutionLimit,
+        identity: GraphAlgorithmIdentity,
+        emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+    ) -> Result<BatchControl> {
         let Self {
             algorithm,
             graph_name,
             options: _,
             score_column,
-            return_node_identity,
+            return_node_identity: _,
             node_visibility_predicate,
         } = self;
         let Some(definition) = context.store.projected_graph_definition(graph_name) else {
@@ -198,13 +216,23 @@ impl GraphAlgorithmSpec<'_> {
                 if estimate.total_peak_bytes > context.memory.blocking_operator_bytes.get() {
                     drop(graph);
                     drop(source);
-                    return self.stream_external(context, execution_limit, emit);
+                    return self.stream_external_with_identity(
+                        context,
+                        execution_limit,
+                        identity,
+                        emit,
+                    );
                 }
                 graph
             }
             Err(error) if error.storage_error.is_none() => {
                 drop(source);
-                return self.stream_external(context, execution_limit, emit);
+                return self.stream_external_with_identity(
+                    context,
+                    execution_limit,
+                    identity,
+                    emit,
+                );
             }
             Err(error) => {
                 // ProjectionSource transports scan errors as strings. Preserve
@@ -258,12 +286,13 @@ impl GraphAlgorithmSpec<'_> {
                             ("node".to_string(), Value::Int(score.node.0 as i64)),
                             (score_column.to_owned(), Value::Float(score.score)),
                         ]);
-                        let hydration = if return_node_identity {
+                        let hydration = if !identity.is_empty() {
                             Some(append_node_identity(
                                 &mut values,
                                 context,
                                 score.node,
                                 &definition.node_labels,
+                                identity,
                                 &source_account,
                             )?)
                         } else {
@@ -314,12 +343,13 @@ impl GraphAlgorithmSpec<'_> {
                                 Value::Int(assignment.community.0 as i64),
                             ),
                         ]);
-                        let hydration = if return_node_identity {
+                        let hydration = if !identity.is_empty() {
                             Some(append_node_identity(
                                 &mut values,
                                 context,
                                 assignment.node,
                                 &definition.node_labels,
+                                identity,
                                 &source_account,
                             )?)
                         } else {
@@ -351,8 +381,36 @@ impl GraphAlgorithmSpec<'_> {
                 context.memory,
             ));
         let bindings = execution_result?;
+        if !identity.is_empty() {
+            for binding in &bindings {
+                runtime_checkpoint(context.task_context)?;
+                check_algorithm_row_payload(
+                    crate::binding::binding_memory_bytes(binding),
+                    context.memory.batch_payload_bytes.get(),
+                )?;
+            }
+        }
         emit_owned_binding_batches(bindings, context.memory.batch_rows.get(), emit)
     }
+}
+
+fn check_algorithm_row_payload(bytes: usize, budget: usize) -> Result<()> {
+    if bytes > budget {
+        return Err(ResourceBudgetError {
+            resource: ResourceBudgetKind::MemoryBytes,
+            scope: ResourceBudgetScope::Operator,
+            owner: "GraphAlgorithm output".into(),
+            memory_class: Some(QueryMemoryClass::ResultMaterialization.as_str()),
+            requested: bytes as u64,
+            used: 0,
+            budget: budget as u64,
+            budget_option: "ExecutionMemoryConfig.batch_payload_bytes",
+            message: format!(
+                "graph algorithm result row uses {bytes} bytes, exceeding the per-row batch_payload_bytes ceiling {budget}; releasing buffered rows cannot make this row fit"
+            ),
+        }.into());
+    }
+    Ok(())
 }
 
 fn append_node_identity(
@@ -360,50 +418,89 @@ fn append_node_identity(
     context: GraphAlgorithmContext<'_>,
     node_id: NodeId,
     preferred_labels: &[String],
+    identity: GraphAlgorithmIdentity,
     source_account: &crate::QueryMemoryAccount,
 ) -> Result<crate::QueryMemoryLease> {
-    let mut hydration = source_account.reserve(0)?;
+    runtime_checkpoint(context.task_context)?;
+    let map_bytes = identity.columns().fold(0usize, |bytes, column| {
+        bytes
+            .saturating_add(std::mem::size_of::<(String, Value)>().saturating_mul(3))
+            .saturating_add(column.len())
+    });
+    let mut hydration = source_account.reserve(map_bytes)?;
+    let properties = if identity.node_id {
+        BTreeSet::from(["id".to_string()])
+    } else {
+        BTreeSet::new()
+    };
     let mut node = context
         .store
-        .projected_node_owned_admitted(
-            node_id,
-            &BTreeSet::from(["id".to_string()]),
-            &mut |bytes| {
-                runtime_checkpoint(context.task_context)?;
-                hydration.grow(bytes)?;
-                Ok(())
-            },
-        )?
+        .projected_node_owned_admitted(node_id, &properties, &mut |bytes| {
+            runtime_checkpoint(context.task_context)?;
+            hydration.grow(bytes)?;
+            Ok(())
+        })?
         .ok_or_else(|| {
             HawDBError::Execution(format!(
                 "graph algorithm result references missing node {}",
                 node_id.0
             ))
         })?;
-    let external_id = node.properties.remove("id").unwrap_or(Value::Null);
-    let label = preferred_labels
-        .iter()
-        .find(|label| {
-            context
+    if identity.node_id {
+        values.insert(
+            "node_id".to_string(),
+            node.properties.remove("id").unwrap_or(Value::Null),
+        );
+    }
+    if identity.node_label {
+        let label = preferred_labels
+            .iter()
+            .find(|label| {
+                context
+                    .catalog
+                    .label_id(label)
+                    .is_some_and(|label_id| node.labels.contains(&label_id))
+            })
+            .map(String::as_str)
+            .or_else(|| {
+                node.labels
+                    .iter()
+                    .find_map(|label_id| context.catalog.label_name(*label_id))
+            });
+        let label_bytes = label
+            .map_or(0, str::len)
+            .saturating_add(std::mem::size_of::<Value>());
+        hydration.grow(label_bytes)?;
+        let label = label
+            .map(|label| Value::String(label.to_string()))
+            .unwrap_or(Value::Null);
+        values.insert("node_label".to_string(), label);
+    }
+    if identity.node_labels {
+        let bytes = node.labels.iter().try_fold(
+            std::mem::size_of::<Value>().saturating_mul(node.labels.len()),
+            |bytes, label| {
+                let name = context.catalog.label_name(*label).ok_or_else(|| {
+                    HawDBError::StorageIntegrity(
+                        "graph algorithm node references an unknown label".into(),
+                    )
+                })?;
+                Ok::<_, HawDBError>(bytes.saturating_add(name.len()))
+            },
+        )?;
+        hydration.grow(bytes)?;
+        let mut labels = Vec::with_capacity(node.labels.len());
+        for label in &node.labels {
+            runtime_checkpoint(context.task_context)?;
+            let name = context
                 .catalog
-                .label_id(label)
-                .is_some_and(|label_id| node.labels.contains(&label_id))
-        })
-        .map(String::as_str)
-        .or_else(|| {
-            node.labels
-                .iter()
-                .find_map(|label_id| context.catalog.label_name(*label_id))
-        });
-    let label_bytes = label
-        .map_or(0, str::len)
-        .saturating_add(std::mem::size_of::<Value>());
-    hydration.grow(label_bytes)?;
-    let label = label
-        .map(|label| Value::String(label.to_string()))
-        .unwrap_or(Value::Null);
-    values.insert("node_id".to_string(), external_id);
-    values.insert("node_label".to_string(), label);
+                .label_name(*label)
+                .expect("labels validated before admission");
+            labels.push(Value::String(name.to_string()));
+        }
+        labels.sort_unstable();
+        values.insert("node_labels".to_string(), Value::List(labels));
+    }
     Ok(hydration)
 }
 

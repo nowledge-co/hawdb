@@ -221,6 +221,22 @@ impl PhysicalPlan {
                 }
                 output.push(')');
             }
+            PhysicalPlan::GraphAlgorithmOutput(plan) => {
+                write_graph_algorithm(
+                    output,
+                    &plan.algorithm,
+                    &plan.graph_name,
+                    &plan.options,
+                    &plan.score_column,
+                    false,
+                    &plan.node_visibility_predicate,
+                );
+                output.push_str(":identity=");
+                for column in plan.identity.columns() {
+                    write_identifier(output, column);
+                    output.push(':');
+                }
+            }
             PhysicalPlan::GraphAlgorithm {
                 algorithm,
                 graph_name,
@@ -229,52 +245,15 @@ impl PhysicalPlan {
                 return_node_identity,
                 node_visibility_predicate,
             } => {
-                output.push_str("GraphAlgorithm(");
-                output.push_str(match algorithm {
-                    GraphAlgorithmKind::PageRank => "page_rank",
-                    GraphAlgorithmKind::Louvain => "louvain",
-                });
-                output.push(':');
-                write_identifier(output, graph_name);
-                output.push_str(":damping=");
-                if let Some(damping) = options.damping {
-                    output.push_str(&damping.to_bits().to_string());
-                }
-                output.push_str(":iterations=");
-                if let Some(iterations) = options.max_iterations {
-                    output.push_str(&iterations.to_string());
-                }
-                output.push_str(":phases=");
-                if let Some(phases) = options.max_phases {
-                    output.push_str(&phases.to_string());
-                }
-                output.push_str(":levels=");
-                if let Some(levels) = options.max_levels {
-                    output.push_str(&levels.to_string());
-                }
-                output.push_str(":tolerance=");
-                if let Some(tolerance) = options.tolerance {
-                    output.push_str(&tolerance.to_bits().to_string());
-                }
-                output.push_str(":normalize_initial=");
-                if let Some(normalize_initial) = options.normalize_initial {
-                    output.push_str(if normalize_initial { "true" } else { "false" });
-                }
-                output.push_str(":resolution=");
-                if let Some(resolution) = options.resolution {
-                    output.push_str(&resolution.to_bits().to_string());
-                }
-                output.push_str(":score=");
-                write_identifier(output, score_column);
-                output.push_str(":node_identity=");
-                output.push_str(if *return_node_identity {
-                    "true"
-                } else {
-                    "false"
-                });
-                output.push_str(":node_visibility=");
-                write_optional_predicate(output, node_visibility_predicate.as_ref());
-                output.push(')');
+                write_graph_algorithm(
+                    output,
+                    algorithm,
+                    graph_name,
+                    options,
+                    score_column,
+                    *return_node_identity,
+                    node_visibility_predicate,
+                );
             }
             PhysicalPlan::GraphSeedScan {
                 query_parameter,
@@ -1528,6 +1507,63 @@ fn write_node_projection_access(output: &mut String, access: &NodeProjectionAcce
             output.push(')');
         }
     }
+}
+
+fn write_graph_algorithm(
+    output: &mut String,
+    algorithm: &GraphAlgorithmKind,
+    graph_name: &str,
+    options: &crate::GraphAlgorithmOptions,
+    score_column: &str,
+    return_node_identity: bool,
+    node_visibility_predicate: &Option<Predicate>,
+) {
+    output.push_str("GraphAlgorithm(");
+    output.push_str(match algorithm {
+        GraphAlgorithmKind::PageRank => "page_rank",
+        GraphAlgorithmKind::Louvain => "louvain",
+    });
+    output.push(':');
+    write_identifier(output, graph_name);
+    output.push_str(":damping=");
+    if let Some(damping) = options.damping {
+        output.push_str(&damping.to_bits().to_string());
+    }
+    output.push_str(":iterations=");
+    if let Some(iterations) = options.max_iterations {
+        output.push_str(&iterations.to_string());
+    }
+    output.push_str(":phases=");
+    if let Some(phases) = options.max_phases {
+        output.push_str(&phases.to_string());
+    }
+    output.push_str(":levels=");
+    if let Some(levels) = options.max_levels {
+        output.push_str(&levels.to_string());
+    }
+    output.push_str(":tolerance=");
+    if let Some(tolerance) = options.tolerance {
+        output.push_str(&tolerance.to_bits().to_string());
+    }
+    output.push_str(":normalize_initial=");
+    if let Some(normalize_initial) = options.normalize_initial {
+        output.push_str(if normalize_initial { "true" } else { "false" });
+    }
+    output.push_str(":resolution=");
+    if let Some(resolution) = options.resolution {
+        output.push_str(&resolution.to_bits().to_string());
+    }
+    output.push_str(":score=");
+    write_identifier(output, score_column);
+    output.push_str(":node_identity=");
+    output.push_str(if return_node_identity {
+        "true"
+    } else {
+        "false"
+    });
+    output.push_str(":node_visibility=");
+    write_optional_predicate(output, node_visibility_predicate.as_ref());
+    output.push(')');
 }
 
 #[cfg(test)]

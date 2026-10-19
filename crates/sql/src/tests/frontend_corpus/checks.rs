@@ -90,7 +90,7 @@ pub(super) fn manifest(corpus: &Corpus) -> Check {
         }
         let bytes =
             source_bytes(&source.path).ok_or_else(|| format!("unknown source {}", source.path))?;
-        if format!("{:x}", Sha256::digest(bytes)) != source.sha256 {
+        if crate::tests::sha256_hex(bytes) != source.sha256 {
             return Err(format!("source inventory needs review: {}", source.path));
         }
         for id in &source.case_ids {

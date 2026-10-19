@@ -33,6 +33,11 @@ mod tests {
         assert_eq!(capabilities, hawdb_search::compiled_runtime_capabilities());
 
         assert_eq!(
+            capabilities.is_enabled(RuntimeCapability::SearchProjectionPublication),
+            cfg!(not(windows))
+        );
+
+        assert_eq!(
             capabilities.is_enabled(RuntimeCapability::AccessControl),
             cfg!(feature = "acl")
         );

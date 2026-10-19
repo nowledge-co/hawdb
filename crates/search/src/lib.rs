@@ -165,6 +165,7 @@ pub const fn compiled_runtime_capabilities() -> RuntimeCapabilities {
     RuntimeCapabilities {
         access_control: cfg!(feature = "acl"),
         full_text_search: cfg!(feature = "full-text-search"),
+        search_projection_publication: cfg!(not(windows)),
         vector_search: cfg!(feature = "vector-search"),
         graph_analytics: cfg!(feature = "graph-analytics"),
         background_maintenance: cfg!(feature = "background-maintenance"),

@@ -511,18 +511,51 @@ These errors propagate from the expansion admission owner before accepting the
 next row. A scorer is never invoked with a resource-truncated cohort. An explicit
 Cypher LIMIT or declared retrieval result window retains its query semantics.
 
-The default expansion allowance is
-`max(topK, min(max(topK, 1) * max(hops, 1) * 64, 8192))` rows and 8 MiB of
-cumulative logical payload. These values double the previous allowances. A
-host can set `DatabaseConfig.execution_memory.graph_expansion_budget` to
-`Some(GraphExpansionBudget { candidate_limit, payload_byte_limit })`; `None`
-uses the optimizer-derived allowance. This override applies to the actual
-execution of each budgeted expansion, including reused plans. The error names
-the matching configuration field and its unit. Raising either expansion limit
-does not raise `query_memory_bytes`, `blocking_operator_bytes` or
-`batch_payload_bytes`; live allocations must still fit those memory budgets.
-The cumulative expansion payload limit bounds traversal work, rather than
-measuring current resident memory after filtering.
+Default seeded expansion has no seed-count-derived candidate ceiling or fixed
+cumulative payload ceiling. Its source reads, retained traversal/identity state,
+and output batches remain admitted through the existing query ledger. The
+query or runtime-granted reservation and `blocking_operator_bytes` /
+`batch_payload_bytes` govern simultaneous ownership. Expansion state does not
+spill: if a live reservation cannot fit, the query fails with typed
+`ResourceBudgetExceeded` metadata. An oversized output row identifies
+`ExecutionMemoryConfig.batch_payload_bytes`; it is rejected before construction.
+
+A host can additionally set
+`DatabaseConfig.execution_memory.graph_expansion_budget` to
+`Some(GraphExpansionBudget { candidate_limit, payload_byte_limit })` to bound
+visited rows or cumulative logical payload independently of resident memory.
+`None` adds no cumulative limit. This override applies to each seeded expansion,
+including reused plans, and excess remains a typed refusal rather than partial
+success. Raising a cumulative cap does not raise an admitted memory grant.
+
+The physical plan retains the seeded-expansion marker so identity admission and
+seed/node/edge/payload counters remain active. Default cumulative limit fields
+use their existing `usize::MAX` representation; EXPLAIN describes this as
+`graph_budget=execution_memory`. Explicit Cypher LIMIT and seed/final top-K keep
+their semantic meanings. A high-fanout query can now perform more work than the
+old implicit ceiling allowed; hosts requiring a traversal-work cap should set
+it explicitly rather than relying on an optimizer fanout heuristic.
+
+Memory admission does not bound elapsed time or cumulative traversal work.
+The intended elapsed-time boundary is a host-supplied `RuntimeTaskContext`
+deadline, observed cooperatively at the existing traversal and batch checkpoints.
+It is not an interrupt for a blocking OS call or a callback that never checks its
+context. `RuntimeTaskContext::default()` has no deadline. The bounded snapshot
+convenience methods use that default; hosts needing a deadline must use
+`with_bounded_read_snapshot_context` or
+`with_bounded_graph_read_snapshot_context`. Row/payload result budgets and
+semantic LIMIT do not substitute for this execution-time boundary.
+
+Mem integration audit at
+[`0b8fb240`](https://github.com/nowledge-co/mem/tree/0b8fb240e6847c642f3bace52e52d54be5d414bc):
+the embedded HawDB integration and server adapters do not set
+`graph_expansion_budget` or pass a `RuntimeTaskContext`. Community/content reads
+use the bounded snapshot convenience methods. Identity reads also check a
+two-second elapsed budget before and after each query, which cannot interrupt
+an in-flight query. Thus this revision has neither an explicit expansion-work
+cap nor an in-query deadline through these adapters. Host deadline adoption and
+its route-level qualification remain open under #996; this kernel change does
+not claim a bounded Mem query latency or authorize stable activation.
 
 Shared `binding_memory_bytes` now estimates retained resident ownership,
 including property-map container storage and nested List/Map values. Sort,

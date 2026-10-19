@@ -71,7 +71,7 @@ host is unlimited. Explicit host ceilings continue to bound SQL intermediate
 work; a session's result ceiling does not lower that intermediate-work budget.
 
 `max_read_result_payload_bytes` remains 64 MiB by default. The default embedded
-runtime governor independently allows 16 MiB of result capacity;
+runtime governor independently allows 16 MiB of retained/result capacity;
 physical query memory and plan-derived admitted reservations remain enforced.
 A result may therefore refuse a byte budget despite having no row-count limit.
 Native SQL `RETURNING` validates the smaller of the configured payload ceiling
@@ -86,8 +86,8 @@ Python `hawdb.open()` inherits these database defaults. Rust hosts can use the
 existing configured constructors and typed runtime-governor configuration.
 
 Raising query-memory bytes alone does not enlarge a plan's admitted reservation.
-Record effective admission and execution batch/operator allowances when
-qualifying large results. Historical
+Record effective admission, execution batch/operator allowances and separately
+charged retained source capacity when qualifying large results. Historical
 100,000-row default-refusal evidence describes its original source only; it is
 not evidence for this changed default. Configured large-result measurements
 remain separate from default-budget measurements.
@@ -103,4 +103,21 @@ statement/callback does not commit its partial writes.
 The execution-request regressions cover session isolation, reset and captured
 transaction settings; positive host ceilings across Cypher mutations, COMMIT
 and SQL RETURNING; SQL LIMIT 0; complete aggregates; and SQL output above the
-former default. Retained and foreign delivery qualification belongs to #986.
+former default. Retained and foreign delivery qualification remains separate from ordinary policy checks.
+
+Retained cursors opened through `DatabaseSession::query_with_params_retained`
+and Arrow streams derived from them capture the session ceiling. They may emit
+valid prefix batches before a terminal row/payload refusal. Consumers must
+treat that error as incomplete execution, never successful EOF. Failures remain
+sticky and release the source pin. Arrow reports a nonzero stream error with
+diagnostic text. Batch size is not a total-row limit. Dropping all cursor and
+batch owners releases their charges. Retained delivery inside an explicit
+Cypher transaction remains unsupported and refuses explicitly.
+
+Registered execution-request consumer tests cover default and explicit host
+limits across 99,999/100,000/100,001 rows on memory/file databases; complete
+owned/retained/Arrow values; sticky refusals; released ownership; unchanged read
+epochs; query LIMIT; complete counts; subsequent writes; session isolation,
+reset and transaction inheritance; SQL mutation rollback; and SQL output above
+the former default, including ordered blocking projection. Targeted unit tests
+also preserve independent file-I/O/payload budgets and final EXPLAIN admission.

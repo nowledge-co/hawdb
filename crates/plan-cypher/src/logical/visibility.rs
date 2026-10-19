@@ -133,6 +133,10 @@ pub fn apply_node_visibility_predicates(
             }),
             variable,
         },
+        LogicalPlan::GraphAlgorithmOutput(mut output) => {
+            output.node_visibility_predicate = Some(predicate_for("node"));
+            LogicalPlan::GraphAlgorithmOutput(output)
+        }
         LogicalPlan::GraphAlgorithm {
             algorithm,
             graph_name,

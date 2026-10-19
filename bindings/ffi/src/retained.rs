@@ -18,6 +18,9 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+mod node;
+pub use node::*;
+
 pub const HAWDB_RETAINED_ABI_V1: u32 = 1;
 pub const HAWDB_RETAINED_OK: u32 = 0;
 pub const HAWDB_RETAINED_EOF: u32 = 1;
@@ -171,6 +174,8 @@ struct CursorState {
 }
 enum Object {
     Cursor(Box<Mutex<CursorState>>),
+    NodeCursor(Box<Mutex<node::NodeCursorState>>),
+    Node(node::NodeValue),
     Batch(RetainedQueryBatch),
     Column {
         batch: RetainedQueryBatch,
@@ -253,7 +258,7 @@ fn lookup(owner_namespace: u64, id: u64) -> Result<Arc<Object>> {
 }
 fn register(id: u64, object: Object) {
     #[cfg(test)]
-    if matches!(&object, Object::Batch(_)) {
+    if matches!(&object, Object::Batch(_) | Object::Node(_)) {
         PANIC_ON_BATCH_REGISTRATION.with(|flag| {
             assert!(!flag.replace(false), "injected batch registration panic");
         });
@@ -634,6 +639,7 @@ pub unsafe extern "C" fn hawdb_retained_schema(
                     }
                     Ok(schema_descriptor(&batch.schema()[index]))
                 }
+                _ => Err(HAWDB_RETAINED_INVALID_HANDLE),
             }
         })
     }
@@ -804,6 +810,18 @@ pub unsafe extern "C" fn hawdb_retained_state(
                 Object::Batch(batch) | Object::Column { batch, .. } => {
                     descriptor.status = batch.status() as u32
                 }
+                Object::NodeCursor(state) => {
+                    let state = state.lock().map_err(|_| HAWDB_RETAINED_PANIC)?;
+                    let profile = state.cursor.profile();
+                    descriptor.status = state.cursor.status() as u32;
+                    descriptor.terminal_code = state.terminal_code;
+                    descriptor.visited_rows = profile.visited_rows as u64;
+                    descriptor.emitted_rows = profile.emitted_rows as u64;
+                    descriptor.source_constructed_bytes = profile.source_constructed_bytes as u64;
+                    descriptor.source_pinned_rows = profile.source_pinned_rows as u64;
+                    descriptor.source_pinned_pages = profile.source_pinned_pages as u64;
+                }
+                Object::Node(value) => descriptor.status = value.view.status() as u32,
             }
             Ok(descriptor)
         })
@@ -818,6 +836,11 @@ pub extern "C" fn hawdb_retained_cursor_close(owner_namespace: u64, owner_id: u6
         let object = lookup(owner_namespace, owner_id)?;
         match object.as_ref() {
             Object::Cursor(state) => state
+                .lock()
+                .map_err(|_| HAWDB_RETAINED_PANIC)?
+                .cursor
+                .close(),
+            Object::NodeCursor(state) => state
                 .lock()
                 .map_err(|_| HAWDB_RETAINED_PANIC)?
                 .cursor
@@ -842,6 +865,13 @@ pub extern "C" fn hawdb_retained_release(owner_namespace: u64, owner_id: u64) ->
             .remove(owner_id)?;
         // Drop payload and charges outside the registry lock.
         if let Object::Cursor(state) = object.as_ref() {
+            state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .cursor
+                .close();
+        }
+        if let Object::NodeCursor(state) = object.as_ref() {
             state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())

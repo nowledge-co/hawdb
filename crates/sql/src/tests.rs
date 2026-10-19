@@ -797,3 +797,14 @@ fn clear_select_source_spans(select: &mut crate::SelectStatement) {
             .expect("infallible source reset");
     }
 }
+
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+
+    let mut output = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        write!(output, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    output
+}

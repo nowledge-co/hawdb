@@ -403,6 +403,11 @@ fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
             }
             marker_use
         }
+        LogicalPlan::GraphAlgorithmOutput(output) => output
+            .node_visibility_predicate
+            .as_ref()
+            .map(|predicate| marker_use_in_predicate(predicate, name))
+            .unwrap_or(MarkerUse::None),
         LogicalPlan::GraphAlgorithm {
             node_visibility_predicate,
             ..
@@ -586,6 +591,9 @@ fn marker_use_in_projection_expression(
 
 fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Value>) -> Result<()> {
     match plan {
+        PhysicalPlan::GraphAlgorithmOutput(output) => {
+            bind_optional_predicate(&mut output.node_visibility_predicate, parameters)?
+        }
         PhysicalPlan::GraphAlgorithm {
             node_visibility_predicate,
             ..
@@ -821,6 +829,9 @@ fn bind_composite_range_seek(
 
 fn bind_logical_plan(plan: &mut LogicalPlan, parameters: &BTreeMap<String, Value>) -> Result<()> {
     match plan {
+        LogicalPlan::GraphAlgorithmOutput(output) => {
+            bind_optional_predicate(&mut output.node_visibility_predicate, parameters)?
+        }
         LogicalPlan::GraphAlgorithm {
             node_visibility_predicate,
             ..

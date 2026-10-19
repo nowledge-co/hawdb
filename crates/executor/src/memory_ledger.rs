@@ -565,12 +565,24 @@ impl QueryMemoryAccount {
         owner: impl Into<Arc<str>>,
         budget_bytes: NonZeroUsize,
     ) -> Self {
-        let mut account = self.ledger.account_with_budget_option(
+        self.sibling_with_budget_option(
             class,
             owner,
             budget_bytes,
             "QueryMemoryAccount::sibling(budget_bytes)",
-        );
+        )
+    }
+
+    pub(crate) fn sibling_with_budget_option(
+        &self,
+        class: QueryMemoryClass,
+        owner: impl Into<Arc<str>>,
+        budget_bytes: NonZeroUsize,
+        budget_option: &'static str,
+    ) -> Self {
+        let mut account =
+            self.ledger
+                .account_with_budget_option(class, owner, budget_bytes, budget_option);
         account.backing = self.backing.clone();
         account
     }
@@ -595,6 +607,25 @@ pub struct QueryMemoryLease {
 }
 
 impl QueryMemoryLease {
+    pub(crate) fn operator_budget_error(
+        &self,
+        requested: usize,
+        used: usize,
+        budget: usize,
+        budget_option: &'static str,
+        message: String,
+    ) -> HawDBError {
+        let state = lock_recover(&self.account.ledger.inner.state);
+        state.accounts[&self.account.account_id].budget_error(
+            ResourceBudgetScope::Operator,
+            requested,
+            used,
+            budget,
+            budget_option,
+            message,
+        )
+    }
+
     pub(crate) fn belongs_to(&self, account: &QueryMemoryAccount) -> bool {
         self.account.account_id == account.account_id
             && Arc::ptr_eq(&self.account.ledger.inner, &account.ledger.inner)

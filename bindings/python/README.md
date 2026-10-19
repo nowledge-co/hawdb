@@ -98,7 +98,8 @@ source capacity admitted to query/runtime memory before cursor creation,
 `source_preflight_rows`, the cold capacity-walk work, and `query_peak_bytes`.
 The source bound includes unrelated labels and unrequested property capacities;
 close or EOF releases it while already produced numeric views remain readable.
-The peak is historical. Source capacity is charged per cursor, including shared
+The peak is historical and can grow when Arrow descriptors are admitted without
+advancing the cursor. Source capacity is charged per cursor, including shared
 pages; an unchanged source can reuse its cached bound without rescanning rows.
 
 Close batches/exporters explicitly and release each memoryview when finished.
@@ -137,7 +138,11 @@ consumers may stop after any stream error.
 
 Cursor pull, close and Arrow adoption are serialized. `close()` waits for an
 in-flight pull while releasing the GIL; it is idempotent. Batches already
-delivered by that pull remain independently readable. Indexed complete-node views remain a separate delivery.
+delivered by that pull remain independently readable. For point queries and
+row consumers, see the [layout and measurement discussion](../../docs/RETAINED_NUMERIC_FOUNDATION.md#point-lookups-row-reads-and-columnar-delivery).
+Indexed complete-node views use `Database.execute_retained_node()` with a unique
+constraint on the seek property; see [the indexed-node API](../../docs/PYTHON_RETAINED_NODE_VIEWS.md)
+and [its ownership contract](../../docs/PYTHON_RETAINED_NODE_OWNERSHIP.md).
 
 With optional PyArrow installed, use its public protocol APIs:
 
@@ -169,7 +174,8 @@ PYTHONPATH="$PWD/bazel-bin/bindings/python/hawdb_python_tests.runfiles/_main/bin
 This is experimental. Whole-operation source/planning qualification, opaque derived-view
 and allocator/RSS accounting, platform and performance qualification remain
 open. Current native result-buffer evidence does not bound whole-operation or
-interpreter RSS. See [the full scope and remaining gates](../../docs/RETAINED_ARROW.md).
+interpreter RSS. See [the Arrow contract](../../docs/RETAINED_ARROW.md) and
+[the full scope and remaining gates](../../docs/RETAINED_NUMERIC_FOUNDATION.md).
 
 ## Build from source
 

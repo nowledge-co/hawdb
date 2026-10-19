@@ -715,6 +715,31 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
             }
             .stream(context, _execution_limit, emit)
         }),
+        PhysicalPlan::GraphAlgorithmOutput(output) => {
+            dispatch.supported(|context, execution_limit, emit| {
+                GraphAlgorithmSpec {
+                    algorithm: &output.algorithm,
+                    graph_name: &output.graph_name,
+                    options: &output.options,
+                    score_column: &output.score_column,
+                    return_node_identity: false,
+                    node_visibility_predicate: &output.node_visibility_predicate,
+                }
+                .stream_with_identity(
+                    GraphAlgorithmContext {
+                        catalog: context.catalog,
+                        store: context.store,
+                        memory: context.memory,
+                        memory_ledger: context.memory_ledger,
+                        task_context: context.task_context,
+                        observer: context.observer,
+                    },
+                    execution_limit,
+                    output.identity,
+                    emit,
+                )
+            })
+        }
         PhysicalPlan::GraphAlgorithm {
             algorithm,
             graph_name,

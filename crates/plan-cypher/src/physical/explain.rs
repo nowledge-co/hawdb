@@ -128,6 +128,10 @@ impl PhysicalPlan {
                     "{pad}ProjectGraph name={name} node_labels={node_labels:?} rel_types={rel_types:?} relationship_predicates={relationship_predicates:?}"
                 )
             }
+            PhysicalPlan::GraphAlgorithmOutput(output) => format!(
+                "{pad}GraphAlgorithm algorithm={:?} graph={} options={:?} score_column={} identity={:?}",
+                output.algorithm, output.graph_name, output.options, output.score_column, output.identity
+            ),
             PhysicalPlan::GraphAlgorithm {
                 algorithm,
                 graph_name,
@@ -505,10 +509,16 @@ impl PhysicalPlan {
                     .unwrap_or_else(|| format!(" rel_type={rel_type}"));
                 let budget = graph_budget
                     .map(|budget| {
-                        format!(
-                            " graph_candidate_limit={} graph_payload_byte_limit={}",
-                            budget.candidate_limit, budget.payload_byte_limit
-                        )
+                        if budget.candidate_limit == usize::MAX
+                            && budget.payload_byte_limit == usize::MAX
+                        {
+                            " graph_budget=execution_memory".to_string()
+                        } else {
+                            format!(
+                                " graph_candidate_limit={} graph_payload_byte_limit={}",
+                                budget.candidate_limit, budget.payload_byte_limit
+                            )
+                        }
                     })
                     .unwrap_or_default();
                 format!(

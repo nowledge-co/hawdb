@@ -106,8 +106,52 @@ and foreign-memory admission requirements remain separate acceptance gates.
 The complete user read-performance gate also requires the representative host
 matrix and retained/Arrow qualification. Write cases remain regression controls;
 they do not require Arrow to improve commit performance. A faster point result
-alone cannot mark PR #986 or issues #976/#987 complete. Historical measurements and retained limits remain source-qualified in
-[#992](https://github.com/nowledge-co/hawdb/issues/992) and
-[#986](https://github.com/nowledge-co/hawdb/pull/986). They do not qualify this
-main-based extraction. Canonical retained-source record reuse stays in #986
-because it depends on that feature foundation.
+alone cannot mark PR #986 or issues #976/#987 complete. Measurements and retained
+limits are recorded in [POINT_RESULTS.md](../bindings/benchmarks/POINT_RESULTS.md).
+
+## Canonical record reuse
+
+Canonical projected point admission previously located and framed the same
+record twice: once to estimate the selected allocation and once to decode it.
+The private `with_node_input` callback now keeps one immutable segment read
+alive across both phases. `CanonicalNodeInput::decode_selected` measures the
+selected properties, calls admission, then constructs the owned projection
+from that same payload. Both the direct point read and `ProjectionAdmission`
+use this internal contract; no public API or persistent format changes.
+
+For an immutable canonical generation G and record R, the old path computes
+`A_S(R)` and, on admission, later decodes `P_S(R)`. The new path computes the
+same `A_S(R)` and `P_S(R)` while the record borrow remains alive. Successful
+values and allocation charges are therefore equal under the existing selected
+codec and immutable-generation invariants. A missing record invokes no callback.
+An admission refusal constructs no projection, retains its original typed
+HawDB error, and does not poison the reader. Physical corruption still passes
+through the existing fail-closed error handling. Live overlays and tombstones
+retain their earlier precedence. This is a source-level equivalence argument,
+not a machine-checked durability proof.
+
+The source cache lease now overlaps admission and selected decoding. It is
+released when the callback exits, including refusal; it must not be confused
+with the caller's independently accounted owned-result reservation. Reusing a
+record does not remove selected-value allocations, property preflight/decoding
+walks, or necessarily repeated property-spill reads. It does not establish
+zero-copy delivery or a whole-process memory bound.
+
+The frozen [canonical point controls](../bindings/benchmarks/evidence/README.md#canonical-projected-point-controls-20261012)
+compare the `9bbffbcf` parent with the recorded uncommitted production patch.
+They checkpoint and reopen 256 nodes with zero live delta, project one or 16
+integer properties at three record positions, and alternate producer order
+across nine paired rounds. The longer matrix contains 108 raw process results
+at 20,000 calls per result. Paired median speedups range from 1.21 to 1.69;
+all 54 longer pairs improve. The original 1,000-call matrix, including its
+negative pairs, is preserved rather than discarded. Selected admission bytes
+match; measured cache accesses fall from four to two per call, with no cache
+misses or residual pins in these warm controls. Cache accesses are not physical
+IO counts. These measurements exclude query planning/index seek, cold latency,
+consumer/drop work, write throughput, foreign delivery and Arrow qualification.
+They do not satisfy the comprehensive PR performance gate.
+
+Regression coverage rejects canonical point admission and retries successfully
+with the same charge and selected values, preserves a typed execution refusal,
+checks missing records never call admission, and excludes an unrequested
+128-KiB property from the selected allocation.

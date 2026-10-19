@@ -39,14 +39,15 @@ type ffiBuffer struct {
 // unloaded: Go frames may return into the shared library's code, so the
 // mapping has to live for the process lifetime.
 type Library struct {
-	open       func(path *byte, pathLen uintptr, options *byte, optionsLen uintptr, errOut *ffiBuffer) unsafe.Pointer
-	close      func(db unsafe.Pointer)
-	query      func(db unsafe.Pointer, text *byte, textLen uintptr, params *byte, paramsLen uintptr, result, errOut *ffiBuffer) bool
-	querySQL   func(db unsafe.Pointer, text *byte, textLen uintptr, params *byte, paramsLen uintptr, result, errOut *ffiBuffer) bool
-	bufferFree func(buffer *ffiBuffer)
-	version    func(out *ffiBuffer)
-	openMemory func(errOut *ffiBuffer) unsafe.Pointer
-	retained   *retainedFunctions
+	open         func(path *byte, pathLen uintptr, options *byte, optionsLen uintptr, errOut *ffiBuffer) unsafe.Pointer
+	close        func(db unsafe.Pointer)
+	query        func(db unsafe.Pointer, text *byte, textLen uintptr, params *byte, paramsLen uintptr, result, errOut *ffiBuffer) bool
+	querySQL     func(db unsafe.Pointer, text *byte, textLen uintptr, params *byte, paramsLen uintptr, result, errOut *ffiBuffer) bool
+	bufferFree   func(buffer *ffiBuffer)
+	version      func(out *ffiBuffer)
+	openMemory   func(errOut *ffiBuffer) unsafe.Pointer
+	retained     *retainedFunctions
+	retainedNode *retainedNodeFunctions
 }
 
 // LoadLibrary loads libhawdb_ffi from path. Missing libraries and
@@ -69,6 +70,7 @@ func LoadLibrary(path string) (*Library, error) {
 		purego.RegisterFunc(&lib.openMemory, symbol)
 	}
 	lib.retained = loadRetainedFunctions(handle)
+	lib.retainedNode = loadRetainedNodeFunctions(handle)
 	return lib, nil
 }
 

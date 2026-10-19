@@ -31,13 +31,13 @@ const QUERY: &str =
  WITH candidate, 999.0 AS score, 999.0 AS pagerank, 999 AS hop \
  WITH candidate, score, pagerank, hop RETURN candidate.id AS id, score, pagerank, hop ORDER BY id";
 
-struct Seeds {
+pub(super) struct Seeds {
     rows: Vec<(&'static str, f64)>,
     calls: usize,
     admitted_rows: Vec<usize>,
 }
 impl Seeds {
-    fn new(rows: Vec<(&'static str, f64)>) -> Self {
+    pub(super) fn new(rows: Vec<(&'static str, f64)>) -> Self {
         Self {
             rows,
             calls: 0,

@@ -851,3 +851,103 @@ fn read_transaction_exposes_borrowed_rows_to_immediate_consumers() {
     assert_eq!(report.output_rows, 1);
     assert_eq!(observed, vec![(Some(7), Some("borrowed payload".into()))]);
 }
+
+#[test]
+fn blocking_memory_refusals_expose_effective_limits_and_preserve_complete_results() {
+    use crate::{HawDBError, ResourceBudgetKind, ResourceBudgetScope};
+    use std::num::NonZeroUsize;
+
+    let cases = [
+        ("SortExec", "MATCH (m:Memory) RETURN m.id AS id ORDER BY m.payload", 64, vec![2, 1]),
+        ("TopNExec", "MATCH (m:Memory) RETURN m.id AS id ORDER BY m.payload LIMIT 1", 64, vec![2]),
+        ("AggregateExec", "MATCH (m:Memory) WITH m.payload AS payload, COUNT(*) AS total RETURN payload, total", 21, vec![]),
+        ("AggregateExec", "MATCH (m:Memory) WITH m.payload AS payload, COUNT(DISTINCT m.id) AS total RETURN payload, total", 64, vec![]),
+    ];
+    for budget in [64, 8192] {
+        let mut db = Database::new_with_config(DatabaseConfig {
+            execution_memory: crate::executor::ExecutionMemoryConfig {
+                blocking_operator_bytes: NonZeroUsize::new(budget).unwrap(),
+                query_memory_bytes: NonZeroUsize::new(65536).unwrap(),
+                batch_rows: NonZeroUsize::MIN,
+                batch_payload_bytes: NonZeroUsize::new(4096).unwrap(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let payloads = [
+            format!("b{}", "x".repeat(256)),
+            format!("a{}", "x".repeat(256)),
+        ];
+        for (id, payload) in payloads.iter().enumerate() {
+            db.query_with_params(
+                "CREATE (:Memory {id: $id, payload: $payload})",
+                &BTreeMap::from([
+                    ("id".into(), Value::Int(id as i64 + 1)),
+                    ("payload".into(), Value::String(payload.clone())),
+                ]),
+            )
+            .unwrap();
+        }
+        for (owner, query, effective_limit, expected_ids) in &cases {
+            if budget == 64 {
+                let error = db.query(query).unwrap_err();
+                let HawDBError::ResourceBudgetExceeded(cause) = error else {
+                    panic!("{query}: expected typed memory refusal, got {error}");
+                };
+                assert_eq!(cause.resource, ResourceBudgetKind::MemoryBytes);
+                assert_eq!(cause.scope, ResourceBudgetScope::Operator);
+                assert!(cause.owner.starts_with(owner), "{cause:?}");
+                assert_eq!(cause.memory_class, Some("blocking_state"));
+                assert_eq!(cause.budget, *effective_limit);
+                assert_eq!(cause.used, 0);
+                assert!(cause.requested > cause.budget);
+                assert_eq!(
+                    cause.budget_option,
+                    "ExecutionMemoryConfig.blocking_operator_bytes"
+                );
+                // Refusal must leave the database usable and the source rows intact.
+                assert_eq!(
+                    db.query("MATCH (m:Memory) RETURN m.payload AS payload")
+                        .unwrap()
+                        .rows
+                        .len(),
+                    2
+                );
+            } else {
+                let result = db.query(query).unwrap();
+                if expected_ids.is_empty() {
+                    assert_eq!(result.rows.len(), 2);
+                    let mut actual = result
+                        .rows
+                        .iter()
+                        .map(|row| {
+                            assert_eq!(row.get("total"), Some(&Value::Int(1)));
+                            let Some(Value::String(payload)) = row.get("payload") else {
+                                panic!("missing group key");
+                            };
+                            payload.clone()
+                        })
+                        .collect::<Vec<_>>();
+                    actual.sort();
+                    let mut expected = payloads.to_vec();
+                    expected.sort();
+                    assert_eq!(actual, expected);
+                } else {
+                    let actual = result
+                        .rows
+                        .iter()
+                        .map(|row| row.get("id").unwrap().clone())
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        actual,
+                        expected_ids
+                            .iter()
+                            .copied()
+                            .map(Value::Int)
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
+    }
+}

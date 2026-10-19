@@ -32,6 +32,9 @@ pub(super) fn lower(
             rel_types: rel_types.clone(),
             relationship_predicates: relationship_predicates.clone(),
         }),
+        LogicalPlan::GraphAlgorithmOutput(output) => {
+            Some(PhysicalPlan::GraphAlgorithmOutput(output.clone()))
+        }
         LogicalPlan::GraphAlgorithm {
             algorithm,
             graph_name,

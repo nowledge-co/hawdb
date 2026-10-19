@@ -1538,11 +1538,13 @@ Current implemented slice:
   `CALL louvain('Graph', maxPhases := 20, resolution := 1.0)
   RETURN node, node_id, node_label, louvain_id`; the optional identity columns
   are resolved inside the bounded procedure execution rather than through
-  caller-side per-result scans
-- hierarchical Louvain execution with `maxLevels := N` or `maxPhases := N`,
-  configurable resolution, and optional
-  `RETURN node, level, louvain_id`
-- PageRank scoring over projected snapshots with dangling-node redistribution
+  caller-side per-result scans; optional `node_labels` returns all source labels
+  in lexical order, with independent `YIELD`/alias/`RETURN` selection
+- hierarchical Louvain execution with `maxLevels := N`, configurable resolution,
+  and `RETURN node, level, louvain_id`; `maxPhases := N` returns one final
+  assignment per original node
+- PageRank procedures follow the pinned Ladybug dangling-mass behavior; the
+  legacy typed projected-graph helper retains dangling-node redistribution
 - reverse traversal over incoming CSC sources for analytics and compatibility
   checks
 - deterministic Louvain-compatible community assignment over projected snapshots

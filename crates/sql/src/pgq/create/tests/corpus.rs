@@ -14,7 +14,6 @@
 
 use super::*;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 const FRONTEND: &str = include_str!("../../../../fixtures/frontend_corpus_v1.jsonl");
 const BINDINGS: &str = include_str!("../../../../fixtures/frontend_create_bindings_v1.json");
@@ -84,7 +83,7 @@ fn graph_json(graph: &PropertyGraphSchema) -> Value {
 fn check_fixture(fixture: &Value) -> std::result::Result<(), String> {
     if fixture["protocol"] != "hawdb-pgq-create-corpus-v1"
         || fixture["postgres_revision"] != "3d00537feb565c410baf41bb301eee338e4b2317"
-        || fixture["source_corpus_sha256"] != format!("{:x}", Sha256::digest(FRONTEND.as_bytes()))
+        || fixture["source_corpus_sha256"] != crate::tests::sha256_hex(FRONTEND.as_bytes())
     {
         return Err("creation corpus provenance drift".into());
     }
@@ -132,7 +131,7 @@ fn check_fixture(fixture: &Value) -> std::result::Result<(), String> {
             .find(|case| case["id"] == id)
             .ok_or("unreferenced creation binding")?;
         let sql = case["sql"].as_str().ok_or("missing SQL")?;
-        if binding["sql_sha256"] != format!("{:x}", Sha256::digest(sql.as_bytes())) {
+        if binding["sql_sha256"] != crate::tests::sha256_hex(sql.as_bytes()) {
             return Err("creation SQL drift".into());
         }
         let actual = match parse_postgres_statement(sql) {

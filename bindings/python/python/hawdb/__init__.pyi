@@ -1,4 +1,4 @@
-from hawdb._hawdb import Database, QueryResult, RetainedOptions, RetainedCursor, RetainedBatch, RetainedBuffer, exceptions, open
+from hawdb._hawdb import Database, QueryResult, RetainedOptions, RetainedCursor, RetainedBatch, RetainedBuffer, RetainedNodeCursor, RetainedNodeView, exceptions, open
 from hawdb import pydantic as pydantic
 
 connect = open
@@ -10,6 +10,8 @@ __all__ = [
     "RetainedCursor",
     "RetainedBatch",
     "RetainedBuffer",
+    "RetainedNodeCursor",
+    "RetainedNodeView",
     "connect",
     "exceptions",
     "open",

@@ -113,9 +113,9 @@ pub struct ExecutionMemoryConfig {
     /// aggregation, deduplication, graph traversal state and selected top-K.
     /// Source reads use the shared query budget independently of this cap.
     pub blocking_operator_bytes: NonZeroUsize,
-    /// Override the row and cumulative payload limits of each seeded expansion.
-    /// Live allocations still obey the operator, batch and shared query budgets.
-    /// `None` uses the optimizer's seed-window-derived limits.
+    /// Optional row and cumulative payload limits for each seeded expansion.
+    /// `None` adds no cumulative cap; live allocations still obey the operator,
+    /// batch and shared query budgets, including runtime-admitted reservations.
     pub graph_expansion_budget: Option<GraphExpansionBudget>,
     /// Maximum cumulative serialized spill bytes, including merge passes.
     pub max_spill_bytes: NonZeroU64,
@@ -368,6 +368,7 @@ fn retains_blocking_state(plan: &PhysicalPlan) -> bool {
     matches!(
         plan,
         PhysicalPlan::GraphAlgorithm { .. }
+            | PhysicalPlan::GraphAlgorithmOutput(_)
             | PhysicalPlan::VectorSeedScan { .. }
             | PhysicalPlan::GraphSeedScan { .. }
             | PhysicalPlan::TextSeedScan { .. }

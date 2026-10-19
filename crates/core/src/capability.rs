@@ -18,6 +18,7 @@ use crate::{HawDBError, Result};
 pub enum RuntimeCapability {
     AccessControl,
     FullTextSearch,
+    SearchProjectionPublication,
     VectorSearch,
     GraphAnalytics,
     BackgroundMaintenance,
@@ -28,6 +29,7 @@ impl RuntimeCapability {
         match self {
             Self::AccessControl => "access_control",
             Self::FullTextSearch => "full_text_search",
+            Self::SearchProjectionPublication => "search_projection_publication",
             Self::VectorSearch => "vector_search",
             Self::GraphAnalytics => "graph_analytics",
             Self::BackgroundMaintenance => "background_maintenance",
@@ -39,6 +41,7 @@ impl RuntimeCapability {
 pub struct RuntimeCapabilities {
     pub access_control: bool,
     pub full_text_search: bool,
+    pub search_projection_publication: bool,
     pub vector_search: bool,
     pub graph_analytics: bool,
     pub background_maintenance: bool,
@@ -49,6 +52,7 @@ impl RuntimeCapabilities {
         Self {
             access_control: false,
             full_text_search: true,
+            search_projection_publication: true,
             vector_search: true,
             graph_analytics: true,
             background_maintenance: true,
@@ -59,6 +63,7 @@ impl RuntimeCapabilities {
         Self {
             access_control: false,
             full_text_search: true,
+            search_projection_publication: true,
             vector_search: true,
             graph_analytics: false,
             background_maintenance: false,
@@ -69,6 +74,7 @@ impl RuntimeCapabilities {
         match capability {
             RuntimeCapability::AccessControl => self.access_control,
             RuntimeCapability::FullTextSearch => self.full_text_search,
+            RuntimeCapability::SearchProjectionPublication => self.search_projection_publication,
             RuntimeCapability::VectorSearch => self.vector_search,
             RuntimeCapability::GraphAnalytics => self.graph_analytics,
             RuntimeCapability::BackgroundMaintenance => self.background_maintenance,
@@ -86,6 +92,9 @@ impl RuntimeCapabilities {
         match capability {
             RuntimeCapability::AccessControl => self.access_control = enabled,
             RuntimeCapability::FullTextSearch => self.full_text_search = enabled,
+            RuntimeCapability::SearchProjectionPublication => {
+                self.search_projection_publication = enabled
+            }
             RuntimeCapability::VectorSearch => self.vector_search = enabled,
             RuntimeCapability::GraphAnalytics => self.graph_analytics = enabled,
             RuntimeCapability::BackgroundMaintenance => self.background_maintenance = enabled,
@@ -97,6 +106,8 @@ impl RuntimeCapabilities {
         Self {
             access_control: self.access_control && available.access_control,
             full_text_search: self.full_text_search && available.full_text_search,
+            search_projection_publication: self.search_projection_publication
+                && available.search_projection_publication,
             vector_search: self.vector_search && available.vector_search,
             graph_analytics: self.graph_analytics && available.graph_analytics,
             background_maintenance: self.background_maintenance && available.background_maintenance,
@@ -144,12 +155,14 @@ mod tests {
     fn requested_capabilities_are_bounded_by_compiled_availability() {
         let available = RuntimeCapabilities::shared_host()
             .with(RuntimeCapability::AccessControl, true)
+            .with(RuntimeCapability::SearchProjectionPublication, false)
             .with(RuntimeCapability::GraphAnalytics, false)
             .with(RuntimeCapability::BackgroundMaintenance, false);
         let effective = RuntimeCapabilities::shared_host().intersection(available);
 
         assert!(!effective.access_control);
         assert!(effective.full_text_search);
+        assert!(!effective.search_projection_publication);
         assert!(effective.vector_search);
         assert!(!effective.graph_analytics);
         assert!(!effective.background_maintenance);

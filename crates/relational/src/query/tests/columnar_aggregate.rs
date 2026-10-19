@@ -212,6 +212,8 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
                     if cause.resource == resource && cause.limit == limit),
                 "columnar aggregate lost its result budget cause: {error}"
             );
+        } else if message == "blocking_operator_bytes" {
+            assert_aggregate_memory_refusal(&error, "RelationalColumnarAggregate");
         } else {
             assert!(matches!(error, HawDBError::Execution(_)), "{error}");
         }

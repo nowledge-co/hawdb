@@ -56,9 +56,11 @@ pub use plan_node::PhysicalPlanChildren;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphExpansionBudget {
     /// Maximum output rows visited by one seeded adjacency expansion.
+    /// `usize::MAX` adds no limit below the address-space counter ceiling.
     pub candidate_limit: usize,
     /// Maximum cumulative logical payload bytes of those rows, distinct from
     /// the live resident-memory limits in ExecutionMemoryConfig.
+    /// `usize::MAX` adds no limit below the address-space counter ceiling.
     pub payload_byte_limit: usize,
 }
 
@@ -232,6 +234,7 @@ pub enum PhysicalPlan {
         return_node_identity: bool,
         node_visibility_predicate: Option<Predicate>,
     },
+    GraphAlgorithmOutput(Box<crate::GraphAlgorithmOutput>),
     GraphSeedScan {
         query_parameter: String,
         label: String,

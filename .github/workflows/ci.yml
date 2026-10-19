@@ -61,6 +61,12 @@ jobs:
       - name: Test synchronous query entrypoints
         run: cargo test -p hawdb --features tokio-runtime --lib embedded::tests
 
+      - name: Test native indexed node view ownership
+        run: cargo test --locked -p hawdb --features tokio-runtime --lib api::retained_query::node::tests -- --nocapture
+
+      - name: Test immutable catalog symbol ownership
+        run: cargo test --locked -p hawdb-core --lib schema::tests
+
       - name: Test Tokio query entrypoints
         run: cargo test -p hawdb --features tokio-runtime --lib embedded_tokio::tests
 

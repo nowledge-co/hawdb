@@ -278,6 +278,8 @@ fn having_rejection_does_not_bypass_work_memory_or_output_limits() {
                     if cause.resource == resource && cause.limit == limit),
                 "aggregate output lost its result budget cause: {error}"
             );
+        } else if expected == "blocking_operator_bytes" {
+            assert_aggregate_memory_refusal(&error, "RelationalAggregate");
         } else {
             assert!(matches!(error, HawDBError::Execution(_)), "{error}");
         }
