@@ -44,20 +44,43 @@ project-open integration tests and the branch lifecycle suite. These include
 bounded pending-receipt recovery and the native file synchronization path;
 passing cross-target Clippy alone does not establish those runtime results.
 
-The pull-request Native Bindings Windows job also runs all eight abandonment GC
-groups (two durability policies crossed with four cuts). Each group owns its
+The Native Bindings workflow runs standalone Windows abandonment GC qualification
+once daily at 18:17 UTC (02:17 Asia/Singapore) against the latest default-branch
+revision. Pull-request and ordinary push runs retain the other Windows native
+contracts but do not run this expensive fault matrix. This cadence is an explicit
+coverage tradeoff: the daily result qualifies its recorded revision, not every
+intervening pull-request head. The weekly full-platform matrix remains unchanged.
+
+The daily job runs all eight abandonment GC groups (two durability policies
+crossed with four cuts). Each group owns its
 fixture and executes every generated fault plan plus the completed-sweep image;
 parallelism does not select a subset. The job requires all eight tests to pass
 without ignored cases and records per-group schedule counts and elapsed time.
 
 By default, up to four groups run concurrently. Set the repository Actions
 variable `HAWDB_WINDOWS_POWER_LOSS_TEST_THREADS` to `1`, `2`, `4`, or `8` to
-adjust pull-request and push runs. The manual workflow input
+adjust the standalone qualification. The manual workflow input
 `windows_power_loss_test_threads` overrides that variable; selecting `repository`
 retains the repository setting or default. One worker reproduces serial
 execution. More workers increase concurrent scratch images, handles, and memory;
 they do not change durability barriers or recovery assertions. The weekly/manual
 full platform matrix above remains serial.
+
+For immediate qualification of a selected ref, trigger the existing workflow:
+
+```sh
+gh workflow run native-bindings.yml --repo nowledge-co/hawdb --ref <ref> \
+  -f windows_abandonment_qualification=true \
+  -f windows_power_loss_test_threads=repository
+```
+
+Qualification-only dispatch runs only the standalone Windows job. Without that
+option, the existing normal and benchmark dispatch modes retain their selection.
+Daily, normal push, and qualification-only manual runs have separate concurrency
+identities, so a main push cannot cancel daily qualification. The standalone job
+always uploads `windows-abandonment-gc-<sha>` with source commit/tree/parents,
+toolchain, worker configuration, schedule counts and test output. A cancelled or
+failed run is not a passing qualification receipt.
 
 The equivalent focused local command uses Rust's existing flag:
 

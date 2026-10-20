@@ -1,8 +1,15 @@
 name: Native Bindings
 
 on:
+  schedule:
+    # Daily default-branch qualification at 02:17 Asia/Singapore.
+    - cron: "17 18 * * *"
   workflow_dispatch:
     inputs:
+      windows_abandonment_qualification:
+        description: "Run only the complete Windows abandonment GC power-loss qualification"
+        type: boolean
+        default: false
       boundary_comparison:
         description: "Run the manual Linux ordinary-boundary comparison instead of binding tests"
         type: boolean
@@ -69,12 +76,15 @@ on:
       - ".github/workflows/native-bindings.yml"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.boundary_comparison }}-${{ inputs.benchmark_sizes }}-${{ inputs.benchmark_cases }}-${{ inputs.benchmark_layers }}-${{ inputs.benchmark_backends }}-${{ inputs.benchmark_samples }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.windows_abandonment_qualification }}-${{ inputs.boundary_comparison }}-${{ inputs.benchmark_sizes }}-${{ inputs.benchmark_cases }}-${{ inputs.benchmark_layers }}-${{ inputs.benchmark_backends }}-${{ inputs.benchmark_samples }}
   cancel-in-progress: true
 
 jobs:
   bazel:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.boundary_comparison && !inputs.rabitq_baseline)
+    if: >-
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' ||
+       (!inputs.windows_abandonment_qualification && !inputs.boundary_comparison && !inputs.rabitq_baseline))
     name: Bazel native bindings (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -134,7 +144,10 @@ jobs:
         run: go test -race -count=1 -run '^TestRetained' ./...
 
   windows-native-contracts:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.boundary_comparison && !inputs.rabitq_baseline)
+    if: >-
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' ||
+       (!inputs.windows_abandonment_qualification && !inputs.boundary_comparison && !inputs.rabitq_baseline))
     name: Windows native contracts
     runs-on: windows-2025
     timeout-minutes: 120
@@ -237,6 +250,38 @@ jobs:
             api::retained_query::tests::arrow -- --nocapture \
             2>&1 | tee windows-native-results/retained-arrow.txt
 
+      - name: Preserve Windows validation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-native-contracts-${{ github.sha }}
+          path: windows-native-results
+          if-no-files-found: error
+
+  windows-abandonment-qualification:
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.windows_abandonment_qualification)
+    name: Windows abandonment GC power-loss qualification
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Record tested source and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p windows-abandonment-results
+          git log -1 --format='%H%n%T%n%P' > windows-abandonment-results/source.txt
+          rustc --version --verbose > windows-abandonment-results/toolchain.txt
+
       - name: Test abandonment GC power-loss cuts
         shell: bash
         env:
@@ -248,26 +293,26 @@ jobs:
             *) echo "Windows power-loss test threads must be 1, 2, 4, or 8" >&2; exit 1 ;;
           esac
           echo "power_loss_test_threads=$POWER_LOSS_TEST_THREADS" \
-            | tee windows-native-results/abandonment-config.txt
+            | tee windows-abandonment-results/abandonment-config.txt
           bash scripts/cargo-test-required.sh --locked -p hawdb --all-features --lib \
             api::tests::power_loss::branch_abandonment:: \
             -- --nocapture --test-threads="$POWER_LOSS_TEST_THREADS" \
-            2>&1 | tee windows-native-results/abandonment.txt
+            2>&1 | tee windows-abandonment-results/abandonment.txt
           # Keep all two-policy/four-cut groups in the required selection.
           # Adding another test to this module must also update this exact count.
           grep -Eq '^test result: ok\. 8 passed; 0 failed; 0 ignored;' \
-            windows-native-results/abandonment.txt
+            windows-abandonment-results/abandonment.txt
 
-      - name: Preserve Windows validation evidence
+      - name: Preserve Windows abandonment qualification evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: windows-native-contracts-${{ github.sha }}
-          path: windows-native-results
+          name: windows-abandonment-gc-${{ github.sha }}
+          path: windows-abandonment-results
           if-no-files-found: error
 
   boundary-comparison:
-    if: github.event_name == 'workflow_dispatch' && inputs.boundary_comparison
+    if: github.event_name == 'workflow_dispatch' && !inputs.windows_abandonment_qualification && inputs.boundary_comparison
     name: Manual ordinary-boundary comparison (Linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -313,7 +358,7 @@ jobs:
           if-no-files-found: error
 
   rabitq-baseline:
-    if: github.event_name == 'workflow_dispatch' && inputs.rabitq_baseline
+    if: github.event_name == 'workflow_dispatch' && !inputs.windows_abandonment_qualification && inputs.rabitq_baseline
     name: Manual RaBitQ baseline (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
