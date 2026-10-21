@@ -154,7 +154,8 @@ fn checkpoint_units_descriptor_abort_io_reference_buffer_is_discarded_after_exec
     );
     fixture.observe_write(&paths(&fixture.root).ref_run(0));
     assert_eq!(governor.snapshot().active_background_io_slots, 0);
-    assert_eq!(fixture.model.project().metrics().open, 2);
+    // Two private writers plus the recorder's counted native root.
+    assert_eq!(fixture.model.project().metrics().open, 3);
     drop(permit);
     assert_eq!(governor.snapshot().active_background_tasks, 0);
     assert_eq!(governor.snapshot().active_background_io_slots, 0);
@@ -164,7 +165,7 @@ fn checkpoint_units_descriptor_abort_io_reference_buffer_is_discarded_after_exec
         observed.is_none(),
         "private reference-run abort must discard buffered bytes rather than write after execution/I/O admission closes"
     );
-    assert_eq!(fixture.model.project().metrics().open, 0);
+    assert_eq!(fixture.model.project().metrics().open, 1);
     assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
     assert_eq!(fs::read_dir(&fixture.root).unwrap().count(), 0);
 }
@@ -194,7 +195,7 @@ fn checkpoint_units_descriptor_abort_io_page_buffer_is_discarded_after_execution
         observed.is_none(),
         "private descriptor-page abort must discard buffered bytes rather than write after execution/I/O admission closes"
     );
-    assert_eq!(fixture.model.project().metrics().open, 0);
+    assert_eq!(fixture.model.project().metrics().open, 1);
     assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
     assert_eq!(fs::read_dir(&fixture.root).unwrap().count(), 0);
 }

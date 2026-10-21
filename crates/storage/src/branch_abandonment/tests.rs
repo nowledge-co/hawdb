@@ -222,6 +222,11 @@ fn abandonment_retries_each_publication_boundary_and_freezes_recovery() {
         let catalog =
             branch_catalog::read_catalog(&fixture.directory().join("catalog.hawdb")).unwrap();
         reclamation_evidence(&fixture.directory(), &catalog, Default::default()).unwrap();
+        // Metadata keeps its original directory authority, but no child handle.
+        assert_eq!(fixture.files.metrics().open, 1);
+        assert_eq!(fixture.files.metrics().transient_handles, 1);
+        assert_eq!(fixture.files.metrics().reserved, 0);
+        drop(metadata);
         assert_eq!(fixture.files.metrics().open, 0);
     }
 }

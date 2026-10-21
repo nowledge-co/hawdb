@@ -495,7 +495,9 @@ fn slow_query_export_uses_source_budget_without_admitting_deferred_runtime() {
     std::fs::write(&destination, b"retain on admission failure").unwrap();
     let mut options = OpenOptions::new();
     options.read(true);
-    let held = (0..32)
+    let initial = files.metrics();
+    assert_eq!(initial.open, 1); // Original project directory remains captured.
+    let held = (initial.open..initial.limit)
         .map(|_| {
             files
                 .io_context()
@@ -529,8 +531,10 @@ fn slow_query_export_uses_source_budget_without_admitting_deferred_runtime() {
         std::fs::read_to_string(&destination).unwrap(),
         database.slow_query_log_jsonl().unwrap()
     );
-    assert_eq!(files.metrics().open, 0);
+    assert_eq!(files.metrics().open, initial.open);
     assert_no_runtime(&database);
+    drop(database);
+    assert_eq!(files.metrics().open, 0);
 }
 
 #[derive(Debug, Default)]
@@ -596,7 +600,7 @@ fn ordinary_open_bootstraps_main_and_reopens_its_private_wal() {
         assert_no_runtime(&database);
         let main = main_id(&database);
         let selector = std::fs::read(project.0.join("manifest.hawdb")).unwrap();
-        assert!(selector.starts_with(b"HAWDB_BRANCH_PROJECT_V1\n"));
+        assert!(selector.starts_with(b"HAWDB_BRANCH_PROJECT_V2\n"));
         let current = database.query_sql("SHOW CURRENT BRANCH").unwrap();
         assert_eq!(current.rows[0]["branch_id"], Value::Uuid(main));
         database
@@ -690,7 +694,14 @@ fn metadata_open_and_show_survive_busy_main_and_data_admission_can_retry() {
     let mut metadata = Database::open(&project.0).unwrap();
     assert_eq!(
         metadata.file_descriptor_metrics().unwrap().open,
-        before.open
+        before.open + 1
+    );
+    assert_eq!(
+        metadata
+            .file_descriptor_metrics()
+            .unwrap()
+            .transient_handles,
+        before.transient_handles + 1
     );
     assert_eq!(
         metadata
@@ -1042,7 +1053,9 @@ fn unopened_catalog_scale_keeps_native_and_project_descriptors_bounded() {
     };
     let project = Project::new();
     let limited = DatabaseConfig {
-        max_open_files: 12,
+        // One captured project root leaves ten slots, below the eleven-slot
+        // cold-admission floor. The former 12-slot fixture is now admissible.
+        max_open_files: 11,
         ..Default::default()
     };
     let before = native_count();
@@ -1057,10 +1070,10 @@ fn unopened_catalog_scale_keeps_native_and_project_descriptors_bounded() {
         Value::Int(i64::try_from(main.source_commit_epoch).unwrap()),
         Value::String("descriptor-denied".into()),
     ];
-    assert!(matches!(
-        rejected.query_sql_with_params(sql, &parameters),
-        Err(HawDBError::FileDescriptors(_))
-    ));
+    let error = rejected
+        .query_sql_with_params(sql, &parameters)
+        .unwrap_err();
+    assert!(matches!(error, HawDBError::FileDescriptors(_)), "{error}");
     assert_no_runtime(&rejected);
     assert_eq!(
         rejected
@@ -1070,10 +1083,13 @@ fn unopened_catalog_scale_keeps_native_and_project_descriptors_bounded() {
             .len(),
         1
     );
-    assert_eq!(native_count(), before);
+    assert_eq!(rejected.file_descriptor_metrics().unwrap().open, 1);
+    assert_eq!(rejected.file_descriptor_metrics().unwrap().reserved, 0);
+    assert_eq!(native_count(), before + 1);
     drop(rejected);
-    // Cold creation explicitly reserves 23 descriptors for its recovery and
-    // sealing path. A finite limit of 32 admits that path; 12 above proves
+    assert_eq!(native_count(), before);
+    // Cold admission reserves eleven slots independently of later query read
+    // waves. A finite limit of 32 admits repeated creation; 11 above proves
     // exhaustion fails before catalog mutation and releases the reservation.
     let config = DatabaseConfig {
         max_open_files: 32,
@@ -1105,10 +1121,15 @@ fn unopened_catalog_scale_keeps_native_and_project_descriptors_bounded() {
         assert!(database.query_sql_with_params(sql, &conflicting).is_err());
         assert_no_runtime(&database);
         let metrics = database.file_descriptor_metrics().unwrap();
-        assert_eq!(metrics.open, 0);
+        assert_eq!(metrics.open, 1);
+        assert_eq!(metrics.transient_handles, 1);
         assert_eq!(metrics.reserved, 0);
         assert!(metrics.high_water <= 32);
-        assert_eq!(native_count(), before, "branch {id} retained a native FD");
+        assert_eq!(
+            native_count(),
+            before + 1,
+            "branch {id} retained a native FD"
+        );
     }
     for _ in 0..8 {
         assert_eq!(
@@ -1119,10 +1140,11 @@ fn unopened_catalog_scale_keeps_native_and_project_descriptors_bounded() {
                 .len(),
             65
         );
-        assert_eq!(native_count(), before);
+        assert_eq!(native_count(), before + 1);
         assert_no_runtime(&database);
     }
     drop(database);
+    assert_eq!(native_count(), before);
     let mut reopened = Database::open_with_config(&project.0, config).unwrap();
     assert_eq!(
         reopened
@@ -1133,6 +1155,9 @@ fn unopened_catalog_scale_keeps_native_and_project_descriptors_bounded() {
         65
     );
     assert_no_runtime(&reopened);
+    assert_eq!(reopened.file_descriptor_metrics().unwrap().open, 1);
+    assert_eq!(native_count(), before + 1);
+    drop(reopened);
     assert_eq!(native_count(), before);
 }
 
@@ -1587,7 +1612,9 @@ fn writable_open_recovers_pending_children_with_aggregate_limits_and_no_runtime(
         let mut metadata = Database::open_with_config(
             &project.0,
             DatabaseConfig {
-                max_open_files: 4,
+                // Captured project root + child directory/lock + catalog
+                // directory/lock + one sequential dependency read.
+                max_open_files: 6,
                 branch_create_recovery_limits: limits,
                 ..Default::default()
             },
@@ -1631,13 +1658,81 @@ fn writable_open_recovers_pending_children_with_aggregate_limits_and_no_runtime(
             );
         }
         assert_no_runtime(&metadata);
-        assert!(metadata.file_descriptor_metrics().unwrap().high_water <= 4);
+        assert!(metadata.file_descriptor_metrics().unwrap().high_water <= 6);
         assert!(metadata
             .recover_pending_branch_creates(BranchCreateRecoveryLimits::default())
             .unwrap()
             .entries
             .is_empty());
     }
+}
+
+#[test]
+fn pending_child_recovery_preserves_evidence_at_four_descriptors_and_retries() {
+    use hawdb::{BranchCreateRecoveryLimits, BranchCreateRecoveryStatus};
+
+    let project = Project::new();
+    let mut writer = Database::open(&project.0).unwrap();
+    let children = pending_children(&project.0, &mut writer, 2);
+    drop(writer);
+    let catalog_path = project.0.join("branches/catalog.hawdb");
+    let before = std::fs::read(&catalog_path).unwrap();
+    let mut metadata = Database::open_with_config(
+        &project.0,
+        DatabaseConfig {
+            max_open_files: 4,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for report in [
+        metadata.branch_create_recovery_report().unwrap().clone(),
+        metadata
+            .recover_pending_branch_creates(BranchCreateRecoveryLimits::default())
+            .unwrap(),
+    ] {
+        assert_eq!(report.pending_at_start, 2);
+        assert_eq!(report.entries.len(), 2);
+        assert!(report.entries.iter().all(|entry| {
+            entry.status == BranchCreateRecoveryStatus::Retained && entry.error.is_some()
+        }));
+        assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+        assert_no_runtime(&metadata);
+        let metrics = metadata.file_descriptor_metrics().unwrap();
+        assert_eq!(metrics.open, 1);
+        assert_eq!(metrics.transient_handles, 1);
+        assert_eq!(metrics.reserved, 0);
+        assert!(metrics.high_water <= 4);
+    }
+    drop(metadata);
+    let metadata = Database::open_with_config(
+        &project.0,
+        DatabaseConfig {
+            max_open_files: 6,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let report = metadata.branch_create_recovery_report().unwrap();
+    assert_eq!(report.pending_at_start, 2);
+    assert_eq!(report.entries.len(), 2);
+    assert!(report.entries.iter().all(|entry| {
+        entry.status == BranchCreateRecoveryStatus::Completed && entry.error.is_none()
+    }));
+    for id in children {
+        assert_eq!(
+            metadata
+                .describe_branch(BranchSelector::Id(id))
+                .unwrap()
+                .state,
+            hawdb::BranchLifecycleState::Ready
+        );
+    }
+    assert_no_runtime(&metadata);
+    let metrics = metadata.file_descriptor_metrics().unwrap();
+    assert_eq!(metrics.open, 1);
+    assert_eq!(metrics.reserved, 0);
+    assert!(metrics.high_water <= 6);
 }
 
 #[test]

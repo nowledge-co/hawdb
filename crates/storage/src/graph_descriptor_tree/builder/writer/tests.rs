@@ -152,7 +152,8 @@ fn checkpoint_units_descriptor_abort_io_related_ordinary_drop_preserves_buffered
     drop(actual);
     assert!(fixture.model.take_observation().unwrap().is_some());
     assert_eq!(fs::read(&path).unwrap(), b"ordinary buffered bytes");
-    assert_eq!(fixture.model.project().metrics().open, 0);
+    // The recorder retains one counted native root until the fixture closes.
+    assert_eq!(fixture.model.project().metrics().open, 1);
 }
 
 #[test]
@@ -208,7 +209,7 @@ fn checkpoint_units_descriptor_abort_io_related_complete_private_publish_flushes
     );
     drop(output);
     drop(permit);
-    assert_eq!(fixture.model.project().metrics().open, 0);
+    assert_eq!(fixture.model.project().metrics().open, 1);
     assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
 }
 
@@ -249,6 +250,6 @@ fn checkpoint_units_descriptor_abort_io_related_failed_flush_is_not_retried_duri
         "a private failed flush must not retry a native write from drop after admission closes"
     );
     assert!(fs::read(&path).unwrap().is_empty());
-    assert_eq!(fixture.model.project().metrics().open, 0);
+    assert_eq!(fixture.model.project().metrics().open, 1);
     assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
 }
