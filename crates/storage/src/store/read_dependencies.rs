@@ -345,8 +345,10 @@ impl GraphStore {
         match durable.synchronize_source_prefix() {
             Ok(epoch) => Ok(epoch),
             Err(error) => {
-                self.post_wal_apply_poisoned
-                    .store(true, AtomicOrdering::Release);
+                if matches!(error, HawDBError::StorageIntegrity(_)) {
+                    self.post_wal_apply_poisoned
+                        .store(true, AtomicOrdering::Release);
+                }
                 Err(error)
             }
         }
@@ -964,6 +966,53 @@ mod tests {
         assert_eq!(reopened.known_source_durable_epoch(), Some(0));
         assert_eq!(reopened.synchronize_source_prefix().unwrap(), epoch);
         assert_eq!(reopened.known_source_durable_epoch(), Some(epoch));
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn source_sync_descriptor_refusal_preserves_the_handle_and_retries() {
+        use crate::config::DurabilityPolicy;
+        let (path, _, store) = source_fixture(DurabilityPolicy::SyncOnCheckpoint);
+        let epoch = store.commit_epoch();
+        drop(store);
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        let snapshot = store.snapshot();
+        let files = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .project_file_descriptors()
+            .clone();
+        let metrics = files.metrics();
+        let available = metrics.limit - metrics.open - metrics.reserved + metrics.cached_handles;
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let competitor = files.clone();
+        let held = std::thread::spawn(move || {
+            let _reservation = competitor.reserve(available).unwrap();
+            ready_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        ready_rx.recv().unwrap();
+        let error = store.synchronize_source_prefix().unwrap_err();
+        assert!(matches!(error, HawDBError::FileDescriptors(_)), "{error}");
+        store.ensure_usable().unwrap();
+        snapshot.ensure_usable().unwrap();
+        assert_eq!(store.known_source_durable_epoch(), Some(0));
+        assert_eq!(store.commit_epoch(), epoch);
+        release_tx.send(()).unwrap();
+        held.join().unwrap();
+        assert_eq!(store.synchronize_source_prefix().unwrap(), epoch);
+        store
+            .commit_mutations(&mut catalog, vec![update(0, 2)])
+            .unwrap();
+        drop(snapshot);
+        drop(store);
+        let mut catalog = Catalog::default();
+        let reopened = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(reopened.commit_epoch(), epoch + 1);
         drop(reopened);
         std::fs::remove_dir_all(path).unwrap();
     }

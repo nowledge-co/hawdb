@@ -2,8 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 //! Durable, bounded reservations independent of the rebuildable Consumer cache.
-//! Reservations are not directory birth or publication receipts. Pending records
-//! remain until a later native-custody protocol can settle their actual effects.
+//! Reservations are not directory birth or publication receipts. Unresolved
+//! records remain until native custody settles their actual effects; completed
+//! predecessors can be compacted without deleting their physical generations.
 
 use crate::branch_catalog::BranchId;
 use crate::branch_project::{CapturedProject, ProjectSelector};
@@ -142,11 +143,13 @@ struct SelectedRoot {
 #[serde(deny_unknown_fields)]
 struct PublicationIntent {
     previous: Option<SelectedRoot>,
-    #[serde(default, skip_serializing_if = "is_false")]
+    // Encode every flag before selection so completion/revocation only shrinks
+    // the image, including when the prepared ledger is at its byte limit.
+    #[serde(default)]
     receipt_complete: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     unregistered: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     not_selected: bool,
 }
 
@@ -156,8 +159,41 @@ impl PublicationIntent {
     }
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
+// Completed predecessor receipts do not authorize deletion of their physical
+// generations. Native read pins retain those independently. Keep every current
+// selected birth, the initial birth that owns its logical target lease,
+// unresolved operation and the operation whose completion may still lose its
+// reply. Issued identities remain protected by high_water.
+fn compact_completed(ledger: &mut Ledger, completing: Option<u64>) {
+    ledger.pending.retain(|row| {
+        completing == Some(row.operation)
+            || ledger.selected.iter().any(|root| {
+                root.operation == row.operation
+                    || (root.matches_consumer(row)
+                        && root.registration_uuid == row.registration_uuid
+                        && root.target_incarnation == row.target_incarnation
+                        && row.operation.checked_sub(2) == Some(row.target_incarnation))
+            })
+            || row
+                .publication_intent
+                .as_ref()
+                .is_none_or(|intent| !intent.receipt_complete && !intent.not_selected)
+    });
+}
+
+fn pending_capacity_exhausted(used: usize) -> HawDBError {
+    hawdb_core::ResourceBudgetError {
+        resource: hawdb_core::ResourceBudgetKind::MetadataEntries,
+        scope: hawdb_core::ResourceBudgetScope::SharedPool,
+        owner: "Consumer allocation ledger".into(),
+        memory_class: None,
+        requested: 1,
+        used: used as u64,
+        budget: MAX_PENDING as u64,
+        budget_option: "consumer_allocation::MAX_PENDING",
+        message: "Consumer allocation ledger has no free pending reservation slots".into(),
+    }
+    .into()
 }
 
 impl SelectedRoot {
@@ -461,6 +497,7 @@ impl ConsumerAllocationSource {
             ledger
                 .policies
                 .retain(|policy| policy.key() != (branch.as_str(), database.as_str(), consumer));
+            compact_completed(&mut ledger, None);
             validate(&ledger)?;
             let bytes = encode(&ledger)?;
             let name = format!("consumer-unregister-{}.tmp", hawdb_core::generate_uuidv7()?);
@@ -1028,6 +1065,7 @@ pub(crate) fn reserve(
     let checkpoint = hawdb_core::generate_uuidv7()?;
     let operation = project.with_locked_catalog(|root, context, catalog| {
         let mut ledger = check_source(project, &owner, branch, root, context, &catalog)?;
+        compact_completed(&mut ledger, None);
         let key = (branch.as_uuid().to_string(), database.to_string(), consumer);
         let active = ledger
             .selected
@@ -1048,7 +1086,7 @@ pub(crate) fn reserve(
             return Err(HawDBError::ProjectionBusy);
         }
         if ledger.pending.len() >= MAX_PENDING {
-            return Err(invalid("pending reservation budget exhausted"));
+            return Err(pending_capacity_exhausted(ledger.pending.len()));
         }
         let lease = match previous {
             Some(receipt) => ledger

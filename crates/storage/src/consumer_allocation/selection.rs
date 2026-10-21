@@ -382,6 +382,7 @@ pub(super) fn complete_outcome(
                 .expect("checked intent");
             intent.receipt_complete = published;
             intent.not_selected = !published;
+            compact_completed(&mut ledger, Some(next.operation));
             validate(&ledger)?;
             let bytes = encode(&ledger)?;
             let name = format!("consumer-receipt-{}.tmp", hawdb_core::generate_uuidv7()?);

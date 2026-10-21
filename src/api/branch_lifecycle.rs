@@ -24,6 +24,7 @@ const BRANCH_CATALOG_FILE: &str = "catalog.hawdb";
 #[cfg(test)]
 std::thread_local! {
     static INTERRUPT_MAIN_BOOTSTRAP_AFTER_HEAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static AFTER_BRANCH_SOURCE_SEAL: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -665,6 +666,90 @@ mod tests {
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
         std::fs::remove_dir_all(spill_path).unwrap();
+    }
+
+    #[test]
+    fn cold_branch_mid_operation_descriptor_refusal_preserves_catalog_and_retries() {
+        let path = test_directory("cold-branch-mid-operation-fd");
+        let mut writer = Database::open(&path).unwrap();
+        writer.query("CREATE (:Memory {id: 'preserved'})").unwrap();
+        writer.checkpoint().unwrap();
+        let epoch = writer.commit_epoch().unwrap();
+        drop(writer);
+        let mut database = Database::open_with_config(
+            &path,
+            crate::DatabaseConfig {
+                max_open_files: 32,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let main = published_main(&database);
+        let request = BranchCreateRequest {
+            name: Some("mid-operation".into()),
+            parent: BranchSelector::Id(main.id),
+            expected_source_commit_epoch: epoch,
+            owner: None,
+            idempotency_key: "mid-operation-fd".into(),
+        };
+        let catalog_path = database.branch_catalog_path().unwrap();
+        let before = std::fs::read(&catalog_path).unwrap();
+        let files =
+            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_existing(&path, 32)
+                .unwrap();
+        let baseline = files.metrics();
+        let competitor = files.clone();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = Arc::new(Mutex::new(None));
+        let captured_worker = Arc::clone(&worker);
+        AFTER_BRANCH_SOURCE_SEAL.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let metrics = competitor.metrics();
+                let available =
+                    metrics.limit - metrics.open - metrics.reserved + metrics.cached_handles;
+                let (ready_tx, ready_rx) = mpsc::channel();
+                let held = std::thread::spawn(move || {
+                    let _reservation = competitor.reserve(available).unwrap();
+                    ready_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                });
+                ready_rx.recv().unwrap();
+                *captured_worker.lock().unwrap() = Some(held);
+            }));
+        });
+        let result = database
+            .create_branch(request.clone())
+            .map_err(HawDBError::from);
+        release_tx.send(()).unwrap();
+        worker.lock().unwrap().take().unwrap().join().unwrap();
+        assert!(
+            matches!(result, Err(HawDBError::FileDescriptors(_))),
+            "{result:?}"
+        );
+        assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+        assert_eq!(database.list_branches().unwrap().len(), 1);
+        assert!(database.runtime.peek().is_none());
+        let after = files.metrics();
+        assert_eq!(after.open, baseline.open);
+        assert_eq!(after.reserved, baseline.reserved);
+        assert!(after.budget_rejections > baseline.budget_rejections);
+        assert!(after.high_water <= 32);
+        drop(database);
+        drop(files);
+        let mut retry = Database::open_with_config(
+            &path,
+            crate::DatabaseConfig {
+                max_open_files: 64,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let created = retry.create_branch(request.clone()).unwrap();
+        assert_eq!(retry.create_branch(request).unwrap().id, created.id);
+        assert_eq!(retry.list_branches().unwrap().len(), 2);
+        assert!(retry.runtime.peek().is_none());
+        drop(retry);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
@@ -3519,6 +3604,12 @@ impl Database {
                 .map_err(BranchLifecycleError::Admission)?,
             )
         };
+        #[cfg(test)]
+        AFTER_BRANCH_SOURCE_SEAL.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook();
+            }
+        });
         let parent_head = branch_head::read_branch_head(&parent_head_path)
             .map_err(|error| BranchLifecycleError::CatalogIo(std::io::Error::other(error)))?;
         if parent_head.logical_commit_epoch != request.expected_source_commit_epoch {

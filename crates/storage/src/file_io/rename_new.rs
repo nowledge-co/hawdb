@@ -62,15 +62,15 @@ fn wide_absolute(path: &Path) -> io::Result<Vec<u16>> {
 pub(super) fn native(source: &Path, destination: &Path) -> io::Result<()> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        #[link_name = "MoveFileW"]
-        fn move_file(source: *const u16, destination: *const u16) -> i32;
+        #[link_name = "MoveFileExW"]
+        fn move_file(source: *const u16, destination: *const u16, flags: u32) -> i32;
     }
     let source = wide_absolute(source)?;
     let destination = wide_absolute(destination)?;
     // SAFETY: NUL-terminated UTF-16 buffers live through the synchronous call.
-    // MoveFileW rejects an existing destination and cannot copy directories
-    // across volumes. No replace or copy/delete fallback is requested.
-    if unsafe { move_file(source.as_ptr(), destination.as_ptr()) } != 0 {
+    // Flags zero excludes replacement and cross-volume copy, including if the
+    // source entry changes after earlier namespace validation.
+    if unsafe { move_file(source.as_ptr(), destination.as_ptr(), 0) } != 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())

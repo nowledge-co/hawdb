@@ -139,7 +139,7 @@ impl ConsumerReadSlot {
                 || metadata.operation() != binding.operation
                 || metadata.source_epoch() != native.receipt().source_epoch()
             {
-                return Err(invalid(
+                return Err(integrity(
                     "Consumer reopened metadata differs from selected receipt",
                 ));
             }
@@ -201,7 +201,7 @@ impl ConsumerReadSlot {
             },
         )?;
         if view.source_epoch() != Some(native.receipt().source_epoch()) {
-            return Err(invalid("Consumer reopened reader source epoch differs"));
+            return Err(integrity("Consumer reopened reader source epoch differs"));
         }
         let io = task
             .acquire_io_wave(std::num::NonZeroUsize::MIN)
@@ -269,7 +269,7 @@ pub(super) fn verify_generation_contents(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
             Ok(_) => {
-                return Err(invalid(
+                return Err(integrity(
                     "Consumer resident snapshot violates manifest absence proof",
                 ))
             }

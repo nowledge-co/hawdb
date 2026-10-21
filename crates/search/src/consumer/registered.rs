@@ -445,7 +445,7 @@ impl ConsumerProjection {
         if index.consumer_binding.as_ref() != Some(&binding(selected.binding()))
             || index.source_graph_commit_epoch != Some(selected.source_epoch())
         {
-            return Err(invalid(
+            return Err(integrity(
                 "reopened Consumer resident snapshot differs from selected generation",
             ));
         }

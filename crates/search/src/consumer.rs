@@ -852,7 +852,13 @@ fn verify_candidate_child(
     buffer: &mut [u8; crate::build_memory::SPOOL_BUFFER_BYTES],
     mut capture: Option<&mut Vec<u8>>,
 ) -> Result<()> {
-    let mut file = target.open_child(context, name)?;
+    let mut file = target.open_child(context, name).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            integrity("declared Consumer generation child is missing")
+        } else {
+            error.into()
+        }
+    })?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() != expected.byte_length {
         return Err(HawDBError::StorageIntegrity(
@@ -1385,6 +1391,10 @@ fn canonical_uuid(raw: &str) -> Result<Uuid> {
 }
 fn invalid(detail: &str) -> HawDBError {
     HawDBError::Storage(format!("projection consumer: {detail}"))
+}
+
+fn integrity(detail: &str) -> HawDBError {
+    HawDBError::StorageIntegrity(format!("projection consumer: {detail}"))
 }
 
 #[cfg(test)]

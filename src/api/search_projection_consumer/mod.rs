@@ -405,16 +405,19 @@ impl Database {
             &context,
         )
         .map_err(HawDBError::from)?;
-        let projection = match ConsumerProjection::open_registered(
-            request,
-            parent,
-            &destination,
-            permit,
-            RuntimeTaskContext::default(),
-            RegisteredConsumerLimits::default(),
-        ) {
+        let projection = match (|| {
+            publication_failpoint(PublicationStage::BeforeReopen)?;
+            ConsumerProjection::open_registered(
+                request,
+                parent,
+                &destination,
+                permit,
+                RuntimeTaskContext::default(),
+                RegisteredConsumerLimits::default(),
+            )
+        })() {
             Ok(projection) => projection,
-            Err(HawDBError::StorageIntegrity(_) | HawDBError::Storage(_)) => {
+            Err(HawDBError::StorageIntegrity(_)) => {
                 self.runtime
                     .get_mut()?
                     .projection_consumers
@@ -987,6 +990,7 @@ fn normalize_consumer_target(destination: &Path) -> Result<PathBuf> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicationStage {
+    BeforeReopen,
     BeforeCheckpoint,
     AfterCheckpoint,
     BeforeSelector,

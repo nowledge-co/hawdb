@@ -153,6 +153,9 @@ impl DurableStore {
             byte_count,
             pressure_signals,
         )?;
+        // Native ownership checks and namespace barriers may open temporary
+        // handles. Fund those before any record bytes can reach the WAL.
+        let _descriptors = self.reserve_wal_operation_resources()?;
         process_crash_failpoint("before_wal_append");
         let sync_deferred = self.wal_sync_group.is_some();
         let result = match self.take_wal_append() {
@@ -293,6 +296,7 @@ impl DurableStore {
                 "cannot synchronize a read-only source".into(),
             ));
         }
+        let _descriptors = self.reserve_wal_operation_resources()?;
         // Recovered databases need not have an append handle yet. Never create
         // an empty WAL to replace missing recovery evidence.
         let file = if let Some(file) = &self.wal_append_file {
@@ -319,22 +323,29 @@ impl DurableStore {
                 "projection source WAL length changed outside the committed boundary".into(),
             ));
         }
-        #[cfg(test)]
-        crate::store::read_dependencies::source_sync_failpoint(
-            crate::store::read_dependencies::SourceSyncFailure::Wal,
-        )?;
-        file.sync_data()?;
-        // Relaxed creation can leave the WAL name unsynchronized even though
-        // every complete transaction was flushed to the OS.
-        if !self.wal_namespace_known_durable {
+        let synchronization: Result<()> = (|| {
             #[cfg(test)]
             crate::store::read_dependencies::source_sync_failpoint(
-                crate::store::read_dependencies::SourceSyncFailure::Directory,
+                crate::store::read_dependencies::SourceSyncFailure::Wal,
             )?;
-            self.sync_wal_namespace()?;
-            self.wal_namespace_known_durable = true;
-        }
-        self.require_captured_wal_append(&file)?;
+            file.sync_data()?;
+            // Relaxed creation can leave the WAL name unsynchronized even
+            // though the complete transaction was flushed to the OS.
+            if !self.wal_namespace_known_durable {
+                #[cfg(test)]
+                crate::store::read_dependencies::source_sync_failpoint(
+                    crate::store::read_dependencies::SourceSyncFailure::Directory,
+                )?;
+                self.sync_wal_namespace()?;
+                self.wal_namespace_known_durable = true;
+            }
+            self.require_captured_wal_append(&file)
+        })();
+        synchronization.map_err(|error| {
+            HawDBError::StorageIntegrity(format!(
+                "projection source synchronization outcome is uncertain: {error}"
+            ))
+        })?;
         self.known_durable_commit_epoch = self.wal_commit_epoch;
         Ok(self.known_durable_commit_epoch)
     }
@@ -471,6 +482,22 @@ impl DurableStore {
         self.wal_free_space_probe.probe_count
     }
 
+    fn reserve_wal_operation_resources(
+        &self,
+    ) -> Result<Option<crate::file_descriptors::DescriptorReservation>> {
+        let needed = if self.wal_append_owner.is_some() {
+            // Includes Windows directory/identity reopen and rollback checks.
+            4
+        } else {
+            usize::from(self.wal_append_file.is_none())
+                + usize::from(!self.wal_namespace_known_durable)
+        };
+        (needed != 0)
+            .then(|| self.project_files.reserve_admission(needed))
+            .transpose()
+            .map_err(Into::into)
+    }
+
     fn require_captured_wal_append(&self, file: &File) -> Result<()> {
         if let Some(owner) = &self.wal_append_owner {
             let parent = self.wal_path.parent().ok_or_else(|| {
@@ -603,6 +630,58 @@ mod tests {
             "hawdb-held-wal-rollback-{}",
             hawdb_core::generate_uuidv7().unwrap()
         ))
+    }
+
+    #[test]
+    fn captured_wal_append_prepays_post_write_descriptor_checks() {
+        let root = path();
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&root, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Record", BTreeMap::new())
+            .unwrap();
+        let durable = store.durable.as_mut().unwrap();
+        durable.wal_append_owner = Some(Arc::clone(&durable._directory_lease));
+        let files = durable.project_file_descriptors().clone();
+        let baseline = files.metrics();
+        let competitor = files.clone();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = Arc::new(std::sync::Mutex::new(None));
+        let captured_worker = Arc::clone(&worker);
+        super::super::AFTER_CAPTURED_WAL_APPEND_OPEN.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let metrics = competitor.metrics();
+                let available =
+                    metrics.limit - metrics.open - metrics.reserved + metrics.cached_handles;
+                let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+                let held = std::thread::spawn(move || {
+                    let _reservation = competitor.reserve(available).unwrap();
+                    ready_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                });
+                ready_rx.recv().unwrap();
+                *captured_worker.lock().unwrap() = Some(held);
+            }));
+        });
+        // A competing owner takes every unreserved descriptor after the append
+        // handle has been acquired. Post-write checks must use prepaid capacity.
+        let result = store.create_node(&mut catalog, "Record", BTreeMap::new());
+        release_tx.send(()).unwrap();
+        worker.lock().unwrap().take().unwrap().join().unwrap();
+        result.unwrap();
+        store.ensure_usable().unwrap();
+        assert_eq!(files.metrics().reserved, baseline.reserved);
+        assert_eq!(files.metrics().open, baseline.open);
+        store
+            .create_node(&mut catalog, "Record", BTreeMap::new())
+            .unwrap();
+        drop(store);
+        let mut catalog = Catalog::default();
+        let reopened = GraphStore::open(&root, &mut catalog).unwrap();
+        assert_eq!(reopened.scan_nodes(None).count(), 3);
+        drop(reopened);
+        drop(files);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]

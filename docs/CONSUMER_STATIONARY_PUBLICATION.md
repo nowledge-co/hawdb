@@ -4,7 +4,8 @@ Issue Number: ref #1092, ref #1106
 
 ## Scope
 
-Registered Consumers use immutable generations on Unix and Windows. Creation
+Registered Consumers implement immutable generations on Unix and Windows. Exact
+revision qualification depends on the native workflow evidence below. Creation
 writes directly into a newly born final target; catch-up writes a fresh sibling
 generation. Publication changes a selector in the source allocation ledger. It
 does not move a directory containing a live reader or publication lock.
@@ -93,7 +94,9 @@ from the native ledger after a lost cache response, missing file, corruption or 
 foreign copied cache. Cache bytes cannot create a registration or advance a
 cursor. Reopen verifies the original birth, complete binding, metadata reference,
 manifest and every declared artifact before becoming Active. A missing artifact
-requires rebuilding and is not silently repaired. A source-only backup restores
+requires rebuilding and is not silently repaired. Transient IO and resource
+refusals propagate without making a registration permanently RebuildRequired;
+verified integrity mismatches remain fail-closed. A source-only backup restores
 source identity/data but does not import external Consumer custody; copying a
 cache into that restore does not authorize adopting a newer external generation.
 
@@ -107,10 +110,16 @@ target; existing unpublished directories are not silently adopted or deleted.
 Ordinary initializer errors attempt cleanup through the known-created native
 scratch and retire an unsealed birth only after all producer owners close and
 only the original birth marker remains. Cleanup resource refusal preserves
-unpublished evidence. Allocation/debt storage is bounded (256 retained rows,
-1 MiB ledger); exhausted native debt refuses further allocation instead of losing
-recovery evidence. Automated completed-debt/old-generation reclamation is a
-remaining qualification/integration item, distinct from the 64-registration limit.
+unpublished evidence. Allocation/debt storage is bounded (256 current or unresolved
+rows, 1 MiB ledger). Completion keeps each registration's initial birth and current
+selected root, compacts other completed predecessors, and unregister releases
+completed logical rows. The monotonic allocator high water never moves
+backward. Unresolved debt is retained and exhaustion returns a typed
+`ResourceBudgetExceeded(MetadataEntries)` refusal. Successful catch-up is not
+limited to 256 lifetime operations. Outcome flags are encoded before selection,
+so the later completion/revocation flags cannot grow an admitted ledger image.
+Compaction does not delete physical files: automated old-generation reclamation
+remains a separate qualification/integration item from the 64-registration limit.
 
 ## Limits and remaining integration
 
@@ -138,7 +147,16 @@ or all MVCC work complete.
 - Storage native-directory family: native rename/barrier custody, lost responses,
   torn/reordered power-loss models and original-handle cleanup.
 - Native Windows workflow: positive registered creation and recovery stay enabled;
-  the separate legacy relocation refusal remains an executable check.
+  the separate legacy relocation refusal remains an executable check. A competing
+  FD owner exhausts unreserved capacity after opening the captured WAL writer;
+  post-write native checks must use the capacity admitted before record writes.
+
+Local regression fixtures include 260 actual catch-up publications while retaining
+an old read pin, typed refusal for 256 genuinely unresolved allocation rows,
+transient-reopen retry, and mid-operation cold branch refusal at a 32-FD limit
+followed by a successful higher-budget retry. The long ledger fixture suspends
+periodic automatic checkpoint publication to isolate allocation capacity; separate
+checkpoint fixtures retain concurrency coverage.
 
 Local GNU cross-checking is compile/lint evidence only. Native Windows execution
 is required before positive Windows qualification is claimed. The owner's Windows

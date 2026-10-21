@@ -68,7 +68,7 @@ fn check_candidate_budget(resource: ResourceBudgetKind) {
         ResourceBudgetKind::SpillBytes => {
             constrained.max_candidate_spill_bytes = NonZeroU64::new(109).unwrap();
         }
-        ResourceBudgetKind::SpillRuns => unreachable!(),
+        ResourceBudgetKind::SpillRuns | ResourceBudgetKind::MetadataEntries => unreachable!(),
     }
     let reader = SearchOutOfCoreReader::open_with_config(&path, constrained).unwrap();
     assert_eq!(reader.segments.len(), 1);
@@ -99,7 +99,7 @@ fn check_candidate_budget(resource: ResourceBudgetKind) {
             budget_option: "SearchOutOfCoreConfig.max_candidate_spill_bytes",
             message: "search candidate spill requires 110 bytes, exceeding 109".to_string(),
         },
-        ResourceBudgetKind::SpillRuns => unreachable!(),
+        ResourceBudgetKind::SpillRuns | ResourceBudgetKind::MetadataEntries => unreachable!(),
     };
     for _ in 0..2 {
         let error = reader

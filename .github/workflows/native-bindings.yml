@@ -232,6 +232,9 @@ jobs:
           bash scripts/cargo-test-required.sh --locked -p hawdb --all-features --lib \
             registered_stationary -- --nocapture --test-threads=1 \
             2>&1 | tee windows-native-results/consumer-stationary-recovery.txt
+          bash scripts/cargo-test-required.sh --locked -p hawdb-storage --all-features --lib \
+            captured_wal_append_prepays_post_write_descriptor_checks -- --nocapture --test-threads=1 \
+            2>&1 | tee windows-native-results/consumer-wal-admission.txt
 
       - name: Test legacy projection source epoch fences
         shell: bash
