@@ -625,7 +625,7 @@ impl StableIdentityMappingReader {
             let offset = page_offset(page_id, self.header)?;
             let mut bytes = vec![0; self.config.page_bytes.get()];
             read_exact_at(self.file()?, &mut bytes, offset)
-                .map_err(durability("scrub stable identity page"))?;
+                .map_err(read_error("scrub stable identity page"))?;
             let page = decode_page_slot(&bytes, self.header.generation, page_id, self.config)?;
             if previous_key.is_some_and(|previous| previous >= page.first_key) {
                 return Err(StableIdentityMappingError::Corrupt(format!(
@@ -757,7 +757,7 @@ impl StableIdentityMappingReader {
         let offset = page_offset(page_id, self.header)?;
         let mut bytes = vec![0; page_bytes];
         read_exact_at(self.file()?, &mut bytes, offset)
-            .map_err(durability("read stable identity page"))?;
+            .map_err(read_error("read stable identity page"))?;
 
         let value = consumer(decode_page_slot(
             &bytes,
@@ -800,7 +800,7 @@ impl StableIdentityMappingReader {
             return Ok(file);
         }
         let opened = File::open(&self.artifact_path)
-            .map_err(durability("open stable identity generation artifact"))?;
+            .map_err(read_error("open stable identity generation artifact"))?;
         let _ = self.file.set(opened);
         self.file.get().ok_or_else(|| {
             StableIdentityMappingError::Durability(
@@ -1282,10 +1282,10 @@ fn read_selector(
     path: &Path,
     config: StableIdentityMappingConfig,
 ) -> Result<StableIdentitySelector, StableIdentityMappingError> {
-    let mut file = File::open(path).map_err(durability("open stable identity selector"))?;
+    let mut file = File::open(path).map_err(read_error("open stable identity selector"))?;
     let actual_len = file
         .metadata()
-        .map_err(durability("inspect stable identity selector"))?
+        .map_err(read_error("inspect stable identity selector"))?
         .len();
     if actual_len != SELECTOR_BYTES as u64 {
         return Err(StableIdentityMappingError::Corrupt(format!(
@@ -1294,7 +1294,7 @@ fn read_selector(
     }
     let mut encoded = [0u8; SELECTOR_BYTES];
     file.read_exact(&mut encoded)
-        .map_err(durability("read stable identity selector"))?;
+        .map_err(read_error("read stable identity selector"))?;
     decode_selector(&encoded, config)
 }
 
@@ -1302,14 +1302,14 @@ fn open_and_read_header(
     path: &Path,
     config: StableIdentityMappingConfig,
 ) -> Result<(File, StableIdentityMappingHeader), StableIdentityMappingError> {
-    let mut file = File::open(path).map_err(durability("open stable identity header"))?;
+    let mut file = File::open(path).map_err(read_error("open stable identity header"))?;
     let mut encoded = [0u8; FILE_HEADER_BYTES];
     file.read_exact(&mut encoded)
-        .map_err(durability("read stable identity header"))?;
+        .map_err(read_error("read stable identity header"))?;
     let header = decode_header(&encoded, config)?;
     let actual_len = file
         .metadata()
-        .map_err(durability("inspect stable identity mapping"))?
+        .map_err(read_error("inspect stable identity mapping"))?
         .len();
     let expected_len = expected_file_len(header)?;
     if expected_len > config.max_artifact_bytes.get() {
@@ -1767,8 +1767,32 @@ fn durability(context: &'static str) -> impl FnOnce(std::io::Error) -> StableIde
     move |error| StableIdentityMappingError::Durability(format!("{context}: {error}"))
 }
 
+fn read_error(context: &'static str) -> impl FnOnce(std::io::Error) -> StableIdentityMappingError {
+    move |error| {
+        if crate::reader_failure::is_admission_or_cancellation(&error) {
+            StableIdentityMappingError::Admission(format!("{context}: {error}"))
+        } else {
+            StableIdentityMappingError::Durability(format!("{context}: {error}"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn io_refusal_classification_precedes_diagnostic_erasure() {
+        for error in crate::reader_failure::tests::refusals() {
+            assert!(matches!(
+                super::read_error("read page")(error),
+                super::StableIdentityMappingError::Admission(_)
+            ));
+        }
+        assert!(matches!(
+            super::read_error("read page")(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
+            super::StableIdentityMappingError::Durability(_)
+        ));
+    }
     mod sharded_cache_benchmark;
 
     use super::*;

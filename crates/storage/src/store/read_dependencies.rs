@@ -314,6 +314,44 @@ impl GraphStore {
         self.read_dependency_validation_failures.snapshot()
     }
 
+    /// A completed checkpoint or WAL barrier, not an inference from configured
+    /// durability. Replayed WAL starts above the known checkpoint floor.
+    #[doc(hidden)]
+    pub fn known_source_durable_epoch(&self) -> Option<u64> {
+        self.durable
+            .as_ref()
+            .map(|durable| durable.known_durable_commit_epoch().min(self.commit_epoch))
+    }
+
+    /// Explicit publication dependency barrier. It does not change the host's
+    /// policy for future writes and must stay under the publication owner.
+    #[doc(hidden)]
+    pub fn synchronize_source_prefix(&mut self) -> Result<u64> {
+        self.ensure_usable()?;
+        if self.version_snapshot_pin.is_some() || self.wal_sync_group_active() {
+            return Err(HawDBError::Execution(
+                "source synchronization requires canonical ownership outside a WAL sync group"
+                    .into(),
+            ));
+        }
+        let durable = self.durable.as_mut().ok_or_else(|| {
+            HawDBError::Execution("source synchronization requires persistent storage".into())
+        })?;
+        if durable.read_only {
+            return Err(HawDBError::Execution(
+                "source synchronization requires writable storage".into(),
+            ));
+        }
+        match durable.synchronize_source_prefix() {
+            Ok(epoch) => Ok(epoch),
+            Err(error) => {
+                self.post_wal_apply_poisoned
+                    .store(true, AtomicOrdering::Release);
+                Err(error)
+            }
+        }
+    }
+
     /// Capture only from a live canonical owner. Register before that owner's
     /// borrow escapes, then capture/query its snapshot under the same owner.
     /// Starting from an older ordinary snapshot is forbidden: summaries were
@@ -864,6 +902,165 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    fn source_fixture(
+        policy: crate::config::DurabilityPolicy,
+    ) -> (std::path::PathBuf, Catalog, GraphStore) {
+        static NEXT_ROOT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "hawdb_source_barrier_{}_{}_{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, AtomicOrdering::Relaxed),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability(&path, &mut catalog, policy).unwrap();
+        assert_eq!(store.known_source_durable_epoch(), Some(0));
+        store
+            .commit_mutations(&mut catalog, vec![create("Memory")])
+            .unwrap();
+        (path, catalog, store)
+    }
+
+    #[test]
+    fn explicit_source_barrier_covers_relaxed_prefix_without_changing_write_policy() {
+        use crate::config::DurabilityPolicy;
+        let (path, mut catalog, mut store) = source_fixture(DurabilityPolicy::SyncOnCheckpoint);
+        assert_eq!(store.known_source_durable_epoch(), Some(0));
+        let first = store.commit_epoch();
+        assert_eq!(store.synchronize_source_prefix().unwrap(), first);
+        store
+            .commit_mutations(&mut catalog, vec![update(0, 2)])
+            .unwrap();
+        assert!(store.commit_epoch() > first);
+        assert_eq!(store.known_source_durable_epoch(), Some(first));
+        store.checkpoint(&catalog).unwrap();
+        assert_eq!(
+            store.known_source_durable_epoch(),
+            Some(store.commit_epoch())
+        );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn replay_and_future_sync_policy_do_not_certify_recovered_wal() {
+        use crate::config::DurabilityPolicy;
+        let (path, _, store) = source_fixture(DurabilityPolicy::SyncOnCheckpoint);
+        let epoch = store.commit_epoch();
+        drop(store);
+        let mut catalog = Catalog::default();
+        let mut reopened = GraphStore::open_with_durability(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::SyncOnEveryWrite,
+        )
+        .unwrap();
+        assert_eq!(reopened.commit_epoch(), epoch);
+        assert_eq!(reopened.known_source_durable_epoch(), Some(0));
+        assert_eq!(reopened.synchronize_source_prefix().unwrap(), epoch);
+        assert_eq!(reopened.known_source_durable_epoch(), Some(epoch));
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn source_sync_failures_do_not_advance_floor_and_poison_publication() {
+        use crate::config::DurabilityPolicy;
+        for failure in [SourceSyncFailure::Wal, SourceSyncFailure::Directory] {
+            let (path, _, mut store) = source_fixture(DurabilityPolicy::SyncOnCheckpoint);
+            let captured = capture(&store, VersionKey::ReadNodeDomain(Some("Memory".into())));
+            let wal_path = store.durable.as_ref().unwrap().wal_path.clone();
+            let wal = std::fs::read(&wal_path).unwrap();
+            SOURCE_SYNC_FAILURE.set(Some(failure));
+            assert!(store.synchronize_source_prefix().is_err());
+            assert_eq!(store.known_source_durable_epoch(), Some(0));
+            assert_eq!(std::fs::read(wal_path).unwrap(), wal);
+            assert!(matches!(
+                store.validate_read_dependencies(&captured),
+                Err(GraphReadDependencyError::Unavailable(_))
+            ));
+            assert!(store.synchronize_source_prefix().is_err());
+            drop(captured);
+            drop(store);
+            let mut catalog = Catalog::default();
+            let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+            assert_eq!(recovered.node_count_for_label(None), 1);
+            assert_eq!(recovered.known_source_durable_epoch(), Some(0));
+            drop(recovered);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn first_sync_write_after_reopen_requires_namespace_barrier_for_existing_wal() {
+        use crate::config::DurabilityPolicy;
+        let (path, _, store) = source_fixture(DurabilityPolicy::SyncOnCheckpoint);
+        let before = store.commit_epoch();
+        drop(store);
+        let mut catalog = Catalog::default();
+        let mut reopened = GraphStore::open(&path, &mut catalog).unwrap();
+        let captured = capture(&reopened, VersionKey::ReadNodeDomain(Some("Memory".into())));
+        SOURCE_SYNC_FAILURE.set(Some(SourceSyncFailure::Directory));
+        assert!(reopened
+            .commit_mutations(&mut catalog, vec![update(0, 2)])
+            .is_err());
+        assert_eq!(SOURCE_SYNC_FAILURE.get(), None);
+        assert_eq!(reopened.known_source_durable_epoch(), Some(0));
+        assert!(matches!(
+            reopened.validate_read_dependencies(&captured),
+            Err(GraphReadDependencyError::Unavailable(_))
+        ));
+        drop(captured);
+        drop(reopened);
+        let mut catalog = Catalog::default();
+        let mut recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        // The failed response retained a complete, uncertain WAL suffix. It is
+        // not permission to roll back or discard a complete recovered record.
+        assert_eq!(recovered.commit_epoch(), before + 1);
+        assert_eq!(recovered.known_source_durable_epoch(), Some(0));
+        assert_eq!(recovered.synchronize_source_prefix().unwrap(), before + 1);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn group_sync_advances_known_floor_only_after_shared_flush() {
+        use crate::config::DurabilityPolicy;
+        let (path, mut catalog, mut store) = source_fixture(DurabilityPolicy::SyncOnEveryWrite);
+        let before = store.commit_epoch();
+        assert_eq!(store.known_source_durable_epoch(), Some(before));
+        assert!(store.begin_wal_sync_group().unwrap());
+        store
+            .commit_mutations(&mut catalog, vec![update(0, 2)])
+            .unwrap();
+        assert_eq!(store.known_source_durable_epoch(), Some(before));
+        assert!(store.synchronize_source_prefix().is_err());
+        store.ensure_usable().unwrap();
+        assert!(store.finish_wal_sync_group().unwrap().fsync_performed);
+        assert_eq!(
+            store.known_source_durable_epoch(),
+            Some(store.commit_epoch())
+        );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn missing_wal_is_not_recreated_by_source_synchronization() {
+        use crate::config::DurabilityPolicy;
+        let (path, _, mut store) = source_fixture(DurabilityPolicy::SyncOnCheckpoint);
+        let wal_path = store.durable.as_ref().unwrap().wal_path.clone();
+        std::fs::remove_file(&wal_path).unwrap();
+        assert!(store.synchronize_source_prefix().is_err());
+        assert!(!wal_path.exists());
+        assert_eq!(store.known_source_durable_epoch(), Some(0));
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

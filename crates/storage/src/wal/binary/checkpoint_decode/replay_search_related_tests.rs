@@ -142,49 +142,64 @@ fn assert_complete(
 }
 
 #[test]
-fn checkpoint_units_wal_replay_search_capture_admits_nonmatching_relationship_prefix() {
-    let (mut store, mut catalog) = source(2, 1057);
-    let base_epoch = store.commit_epoch();
-    let mut expected = store.snapshot();
-    let mut expected_catalog = catalog.clone();
-    expected
-        .apply_replayed_wal_transaction(&mut expected_catalog, operation(1057))
-        .unwrap();
-    let governor = governor();
-    let permit = governor
-        .try_admit(RuntimeWorkRequest::background_maintenance(4 * 1024 * 1024))
-        .unwrap();
-    let scheduler = scheduler();
-    let probe = Arc::new(CheckpointWorkProbe::default());
-    scheduler.set_telemetry_sink(Some(probe.clone()));
-    let work = CheckpointWorkContext::new(permit.bind_task_context(RuntimeTaskContext::default()))
-        .with_scheduler(scheduler.clone());
-    store
-        .apply_replayed_checkpoint_wal_transaction(&mut catalog, operation(1057), &work)
-        .unwrap();
-    assert_complete(
-        &store,
-        &catalog,
-        &expected,
-        &expected_catalog,
-        2,
-        1059,
-        base_epoch,
-    );
-    assert!(
-        probe.completed.load(Ordering::SeqCst) >= 1057,
-        "nonmatching relationships must not be hidden inside Iterator::next"
-    );
-    probe.assert_released(&scheduler);
-    drop(store);
-    drop(work);
-    drop(permit);
-    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+fn checkpoint_units_wal_replay_search_capture_skips_unrelated_indexed_relationships() {
+    let mut baseline_units = None;
+    for unrelated in [0, 1057] {
+        let (mut store, mut catalog) = source(2, unrelated);
+        let base_epoch = store.commit_epoch();
+        let mut expected = store.snapshot();
+        let mut expected_catalog = catalog.clone();
+        expected
+            .apply_replayed_wal_transaction(&mut expected_catalog, operation(unrelated))
+            .unwrap();
+        let governor = governor();
+        let permit = governor
+            .try_admit(RuntimeWorkRequest::background_maintenance(4 * 1024 * 1024))
+            .unwrap();
+        let scheduler = scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        scheduler.set_telemetry_sink(Some(probe.clone()));
+        let work =
+            CheckpointWorkContext::new(permit.bind_task_context(RuntimeTaskContext::default()))
+                .with_scheduler(scheduler.clone());
+        store
+            .apply_replayed_checkpoint_wal_transaction(&mut catalog, operation(unrelated), &work)
+            .unwrap();
+        assert_complete(
+            &store,
+            &catalog,
+            &expected,
+            &expected_catalog,
+            2,
+            unrelated + 2,
+            base_epoch,
+        );
+        // Endpoint/type adjacency lookup visits both HAS_LABEL directions
+        // without admitting or hiding a scan of unrelated OTHER edges.
+        let units = probe.completed.load(Ordering::SeqCst);
+        assert!(units > 0);
+        if let Some(baseline) = baseline_units {
+            assert_eq!(units, baseline, "unrelated edges must not add capture work");
+        } else {
+            baseline_units = Some(units);
+        }
+        probe.assert_released(&scheduler);
+        drop(store);
+        drop(work);
+        drop(permit);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    }
 }
 
 #[test]
 fn checkpoint_units_wal_replay_search_capture_cancels_every_unit_and_retries_both_directions() {
-    let (source, catalog) = source(32, 4);
+    for memories in [32, 1025] {
+        assert_capture_cancellation_and_retry(memories);
+    }
+}
+
+fn assert_capture_cancellation_and_retry(memories: u64) {
+    let (source, catalog) = source(memories, 4);
     let base_epoch = source.commit_epoch();
     let original = encode_binary_wal_record(
         &WalEntry {
@@ -218,12 +233,12 @@ fn checkpoint_units_wal_replay_search_capture_cancels_every_unit_and_retries_bot
         &replay_catalog,
         &expected,
         &expected_catalog,
-        32,
-        36,
+        memories,
+        memories + 4,
         base_epoch,
     );
     let units = probe.completed.load(Ordering::SeqCst);
-    assert!(units >= 36);
+    assert!(units > 0);
     probe.assert_released(&scheduler);
     drop(store);
     drop(work);
@@ -258,8 +273,8 @@ fn checkpoint_units_wal_replay_search_capture_cancels_every_unit_and_retries_bot
             &retry_catalog,
             &expected,
             &expected_catalog,
-            32,
-            36,
+            memories,
+            memories + 4,
             base_epoch,
         );
         assert_eq!(governor.snapshot().admissions, 1);

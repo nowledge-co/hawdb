@@ -95,8 +95,21 @@ pub use transaction_read_dependencies::{
 };
 mod dependency_read;
 pub use dependency_read::{
-    PreparedRead, PreparedReadDependencies, PreparedReadLimits, ProjectionPublicationError,
-    ReadDependencyValidationFailures,
+    PreparedProjectionFeed, PreparedProjectionFullSource, PreparedRead, PreparedReadDependencies,
+    PreparedReadLimits, ProjectionBaselineComparisonConfig, ProjectionBaselineComparisonSession,
+    ProjectionBaselineComparisonStep, ProjectionBaselineMappingContext,
+    ProjectionBaselineMappingFunction, ProjectionBaselineMappingLimits, ProjectionCoverageConfig,
+    ProjectionCoverageSession, ProjectionCoverageStep, ProjectionCoveredUpdate,
+    ProjectionFeedError, ProjectionFeedItem, ProjectionFeedLimits, ProjectionFeedRead,
+    ProjectionFeedResource, ProjectionFeedStep, ProjectionFeedUsage, ProjectionFullRebuildConfig,
+    ProjectionFullRebuildSession, ProjectionFullRebuildStep, ProjectionFullSourceItem,
+    ProjectionFullSourceLimits, ProjectionMappingContext, ProjectionMappingFunction,
+    ProjectionMappingInput, ProjectionMappingLimits, ProjectionMappingStatus,
+    ProjectionMappingUsage, ProjectionMatchedBaseline, ProjectionOutputVerificationContext,
+    ProjectionOutputVerificationFunction, ProjectionOutputVerificationSession,
+    ProjectionPreparedFullRebuild, ProjectionPublicationError, ProjectionSourceDurability,
+    ProjectionStagedInputs, ProjectionStagingSession, ProjectionStagingSessionConfig,
+    ProjectionStagingSessionStep, ReadDependencyValidationFailures,
 };
 mod explain;
 mod graph_analytics;

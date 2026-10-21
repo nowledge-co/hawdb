@@ -139,12 +139,7 @@ impl GraphStore {
                 ),
         );
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(
-            &working_catalog,
-            self.commit_epoch + 1,
-            &ops,
-        );
+        self.append_graph_wal_and_capture(&working_catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -255,15 +250,17 @@ impl GraphStore {
         );
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
 
+        let staged_projection_change = self.prepare_search_projection_changes_for_ops(
+            &working_catalog,
+            target_commit_epoch,
+            &ops,
+            None,
+        )?;
         // The mapping is durable before the WAL batch; recovery never observes imported
         // graph rows without the stable identities required to address them.
         self.replace_stable_id_mapping_for_epoch(stable_id_mapping, target_commit_epoch)?;
         self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(
-            &working_catalog,
-            target_commit_epoch,
-            &ops,
-        );
+        self.install_search_projection_change(staged_projection_change);
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
@@ -1026,7 +1023,7 @@ impl GraphStore {
                 epoch,
                 operations,
                 relational_changes,
-            );
+            )?;
             match operation {
                 WalOp::Batch(operations) => {
                     for operation in operations {

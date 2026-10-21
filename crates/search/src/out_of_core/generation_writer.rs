@@ -59,6 +59,15 @@ mod governed;
 mod initial;
 pub(super) mod io;
 mod mutations;
+mod unordered;
+pub use unordered::{
+    SearchBaselineComparisonLimits, SearchBaselineComparisonReport, SearchMatchedBaseline,
+    SearchMutationInspectionInput, SearchMutationInspectionStep, SearchMutationSortStep,
+    SearchMutationSortStepLimits, SearchMutationSortStepUsage, SearchOutOfCoreBaselineComparison,
+    SearchOutOfCoreDeltaComparison, SearchOutOfCoreUnorderedMutationWriter,
+    SearchOutOfCoreUnorderedReplacementWriter, SearchUnorderedMutationLimits,
+    SearchUnorderedMutationReport,
+};
 mod prepared;
 mod publication;
 mod rabitq;
@@ -810,7 +819,6 @@ impl SearchOutOfCoreGenerationWriter {
             && self.document_count > self.options.max_content_documents.get()
         {
             let report = initial::prepare(&self, generation)?;
-            self.held_spool.take();
             return Ok(SearchOutOfCorePreparedGeneration::partitioned(
                 self, base, generation, report,
             ));
@@ -829,7 +837,6 @@ impl SearchOutOfCoreGenerationWriter {
                 drop(artifacts);
                 drop(source);
                 let report = initial::prepare(&self, generation)?;
-                self.held_spool.take();
                 return Ok(SearchOutOfCorePreparedGeneration::partitioned(
                     self, base, generation, report,
                 ));
@@ -1176,6 +1183,22 @@ impl SearchOutOfCoreGenerationWriter {
             next_field_bytes,
             last_id_memory,
         })
+    }
+
+    fn push_spool_record(&mut self, record: spool::SpoolRecord, needs_chinese: bool) -> Result<()> {
+        let record_bytes = record.encoded_bytes;
+        let prepared = self.prepare_record(record.header.header(), record_bytes)?;
+        let output = self
+            .spool
+            .as_mut()
+            .ok_or_else(|| HawDBError::Storage("search generation spool is closed".into()))?;
+        output.write_all(&record_bytes.to_le_bytes())?;
+        output.write_all(&record.checksum().to_le_bytes())?;
+        record.write_to(output, &self.memory, &self.task_context)?;
+        record.add_digest(&mut self.documents_digest);
+        self.needs_chinese_analyzer |= needs_chinese;
+        self.commit_record(record.header.header, record_bytes, prepared);
+        Ok(())
     }
 
     fn push_inner(&mut self, document: AdmittedDocument) -> Result<()> {

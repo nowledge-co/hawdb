@@ -17,6 +17,10 @@ use crate::cow::CowSegment;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+#[path = "search_projection_change_log/cursor.rs"]
+mod cursor;
+pub use cursor::*;
+
 const PAGE_ENTRIES: usize = 64;
 type ChangePage = CowSegment<VecDeque<Arc<SearchProjectionGraphChange>>>;
 
@@ -31,6 +35,19 @@ pub(super) struct SearchProjectionChangeLog {
 impl SearchProjectionChangeLog {
     pub(super) fn len(&self) -> usize {
         self.len
+    }
+
+    // Only the first and last pages can be partial. Prefix trim preserves this.
+    fn get(&self, index: usize) -> Option<&Arc<SearchProjectionGraphChange>> {
+        let first = self.pages.front()?;
+        if index < first.len() {
+            first.get(index)
+        } else {
+            let offset = index - first.len();
+            self.pages
+                .get(1 + offset / PAGE_ENTRIES)?
+                .get(offset % PAGE_ENTRIES)
+        }
     }
 
     pub(super) fn first(&self) -> Option<&Arc<SearchProjectionGraphChange>> {

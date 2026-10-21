@@ -119,6 +119,50 @@ impl SearchGenerationAdmission {
         super::mutations::SearchOutOfCoreMutationWriter::create(reader, options, task, memory)
     }
 
+    /// Owns unordered intake, sorting and its prepared artifact under one permit.
+    pub fn prepare_unordered_update<'reader>(
+        self,
+        reader: &'reader SearchOutOfCoreReader,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        limits: super::SearchUnorderedMutationLimits,
+        task: RuntimeTaskContext,
+    ) -> Result<super::SearchOutOfCoreUnorderedMutationWriter<'reader>> {
+        let task = self.permit.bind_task_context(task);
+        let mut memory = crate::build_memory::BuildMemory::new(&task)?;
+        memory.host_admission = Some(self.permit.clone());
+        let inner =
+            super::mutations::SearchOutOfCoreMutationWriter::create(reader, options, task, memory)?;
+        super::unordered::from_inner(
+            inner,
+            limits,
+            reader.config().max_document_header_bytes.get(),
+        )
+    }
+
+    /// Complete replacement: no old targets or mutation closure are retained.
+    pub fn prepare_unordered_replacement(
+        self,
+        reader: &SearchOutOfCoreReader,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        limits: super::SearchUnorderedMutationLimits,
+        task: RuntimeTaskContext,
+    ) -> Result<super::SearchOutOfCoreUnorderedReplacementWriter> {
+        let source_epoch = options.source_graph_commit_epoch;
+        let task = self.permit.bind_task_context(task);
+        let mut memory = crate::build_memory::BuildMemory::new(&task)?;
+        memory.host_admission = Some(self.permit.clone());
+        let inner = super::mutations::SearchOutOfCoreMutationWriter::create_replacement(
+            reader, options, task, memory,
+        )?;
+        super::unordered::replacement::from_inner(
+            inner,
+            limits,
+            source_epoch,
+            reader.config().max_document_header_bytes.get(),
+        )
+    }
+
+    /// Prepares a governed update with a default task context.
     pub fn prepare_update(
         self,
         reader: &SearchOutOfCoreReader,

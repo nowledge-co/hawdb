@@ -451,44 +451,6 @@ impl GraphStore {
             .reserve_project_bootstrap_identity(proposed)
     }
 
-    /// A completed checkpoint or WAL barrier, not an inference from configured
-    /// durability. Replayed WAL starts above the known checkpoint floor.
-    #[doc(hidden)]
-    pub fn known_source_durable_epoch(&self) -> Option<u64> {
-        self.durable
-            .as_ref()
-            .map(|durable| durable.known_durable_commit_epoch().min(self.commit_epoch))
-    }
-
-    /// Explicit publication dependency barrier. It does not change the host's
-    /// policy for future writes and must stay under the publication owner.
-    #[doc(hidden)]
-    pub fn synchronize_source_prefix(&mut self) -> Result<u64> {
-        self.ensure_usable()?;
-        if self.version_snapshot_pin.is_some() || self.wal_sync_group_active() {
-            return Err(HawDBError::Execution(
-                "source synchronization requires canonical ownership outside a WAL sync group"
-                    .into(),
-            ));
-        }
-        let durable = self.durable.as_mut().ok_or_else(|| {
-            HawDBError::Execution("source synchronization requires persistent storage".into())
-        })?;
-        if durable.read_only {
-            return Err(HawDBError::Execution(
-                "source synchronization requires writable storage".into(),
-            ));
-        }
-        match durable.synchronize_source_prefix() {
-            Ok(epoch) => Ok(epoch),
-            Err(error) => {
-                self.post_wal_apply_poisoned
-                    .store(true, super::AtomicOrdering::Release);
-                Err(error)
-            }
-        }
-    }
-
     /// Reserve persistent Consumer identities before native creation/callbacks.
     /// The receipt does not authorize birth, adoption or publication.
     #[doc(hidden)]

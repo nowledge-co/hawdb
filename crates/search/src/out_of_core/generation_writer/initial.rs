@@ -159,6 +159,7 @@ pub(super) fn publish(
 ) -> Result<SearchOutOfCoreGenerationBuildReport> {
     // The candidate rechecked its real-root selector under the publication
     // lease. This install retains that lease through manifest-last publication.
+    writer.held_spool.take();
     let private =
         context_memory::OwnedPath::copy(&writer.stage.path, &writer.memory, &writer.task_context)?;
     let cleanup = PreparedCleanup::prepare(&writer.root, &writer.memory, &writer.task_context)?;

@@ -46,6 +46,7 @@ canonical contracts above govern supported behavior.
 
 | Proposal | Scope and adoption boundary |
 | --- | --- |
+| [`SOURCE_COHERENT_SEARCH_CATCH_UP_SPEC.md`](SOURCE_COHERENT_SEARCH_CATCH_UP_SPEC.md) | Additive fixed-E private staging and complete-source verification for #1043; conservative full-source cost, all post-E writes refused, registered Consumer/host integration still unqualified |
 | [`MATERIALIZED_VIEWS_SPEC.md`](MATERIALIZED_VIEWS_SPEC.md) | Mem-driven graph/relational incremental views for Entity usage and Memory inventories first; exact source epochs, derived state, serving indexes, and later Community/Source/Thread/search consumers require implementation and separate qualification |
 | [`MVCC_COW_EVOLUTION_SPEC.md`](MVCC_COW_EVOLUTION_SPEC.md) | Proposed COW snapshot/retention and persistent Consumer lifecycle work, followed by complete transaction read dependencies and separately qualified opt-in serializability; existing SI/publication contracts remain authoritative |
 | [`ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md`](ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md) | Measurement-first, opt-in strict zero-copy delivery with bounded pull and Go/Python ownership; producer-layout, SIMD, graph, and FTS extensions require separate workload evidence and implementation scope |

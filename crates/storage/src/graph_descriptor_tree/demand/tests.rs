@@ -449,3 +449,19 @@ fn find_leaf_for_prefix(
         }
     }
 }
+
+#[test]
+fn nested_resource_and_cancellation_refusals_preserve_the_demand_reader() {
+    let directory = TestDirectory::new("refusal-classification");
+    build(directory.path());
+    let reader = open_reader(directory.path(), 128 * 1024);
+    for error in crate::reader_failure::tests::refusals() {
+        reader.poison_on_physical_failure::<()>(&Err(GraphDescriptorTreeError::Io(error)));
+        assert!(!reader.is_poisoned());
+    }
+    assert_eq!(scan_group(&reader, 0, limits()).unwrap().0.len(), 100);
+    reader.poison_on_physical_failure::<()>(&Err(GraphDescriptorTreeError::Io(
+        std::io::Error::from(std::io::ErrorKind::UnexpectedEof),
+    )));
+    assert!(reader.is_poisoned());
+}

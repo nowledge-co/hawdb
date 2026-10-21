@@ -460,8 +460,7 @@ impl GraphStore {
         if ops.is_empty() {
             return Ok(actions);
         }
-        self.append_durable_wal_batch(&ops)?;
-        self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
+        self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_schema_maintenance_op(catalog, op);
         }

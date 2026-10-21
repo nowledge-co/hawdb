@@ -2162,6 +2162,20 @@ impl RelationalRowPages {
         self.pages.iter().flat_map(|page| page.iter())
     }
 
+    fn first_key_after(&self, after: Option<&RelationalKey>) -> Option<&RelationalKey> {
+        let Some(after) = after else {
+            return self.pages.first()?.first_key_value().map(|(key, _)| key);
+        };
+        let page = self
+            .pages
+            .partition_point(|page| page.last_key_value().is_none_or(|(last, _)| last <= after));
+        self.pages
+            .get(page)?
+            .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
+            .next()
+            .map(|(key, _)| key)
+    }
+
     fn values(&self) -> impl DoubleEndedIterator<Item = &RelationalRow> {
         self.iter().map(|(_, row)| row)
     }
@@ -5394,6 +5408,21 @@ impl RelationalState {
             .get(table)
             .into_iter()
             .flat_map(|segment| segment.rows.iter())
+    }
+
+    /// Metadata-only ordered seek for native full-source enumeration. A sparse
+    /// row state must use its pinned canonical row reader, never an empty map.
+    #[doc(hidden)]
+    pub fn first_primary_key_after(
+        &self,
+        table: &str,
+        after: Option<&RelationalKey>,
+    ) -> Result<Option<&RelationalKey>, RelationalError> {
+        self.require_materialized_rows("full-source primary-key enumeration")?;
+        Ok(self
+            .segments
+            .get(table)
+            .and_then(|segment| segment.rows.first_key_after(after)))
     }
 
     /// Packs the current relational snapshot into bounded immutable row pages

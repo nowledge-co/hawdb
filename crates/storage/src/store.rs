@@ -141,13 +141,21 @@ pub use immutable_root::{
 #[path = "store/pending_nodes.rs"]
 mod pending_nodes;
 use pending_nodes::{PendingMatch, PendingNodes};
+#[path = "store/projection_full_source.rs"]
+mod projection_full_source;
 #[path = "store/relational_index_shadow.rs"]
 mod relational_index_shadow;
 #[path = "store/relational_row_pages.rs"]
 #[doc(hidden)]
 pub mod relational_row_pages;
+#[path = "store/search_projection_capture.rs"]
+mod search_projection_capture;
 #[path = "store/search_projection_change_log.rs"]
 mod search_projection_change_log;
+#[doc(hidden)]
+pub use projection_full_source::{
+    ProjectionFullSourceCursor, ProjectionFullSourceItem, ProjectionFullSourceLimits,
+};
 #[path = "store/statistics_refresh.rs"]
 mod statistics_refresh;
 #[path = "store/statistics_state.rs"]
@@ -379,6 +387,11 @@ use relational_row_pages::RelationalRowPageState;
 #[doc(hidden)]
 pub use relational_row_pages::RelationalTransactionRowView;
 use search_projection_change_log::SearchProjectionChangeLog;
+#[doc(hidden)]
+pub use search_projection_change_log::{
+    ProjectionFeedCursor, ProjectionFeedError, ProjectionFeedItem, ProjectionFeedLimits,
+    ProjectionFeedResource, ProjectionFeedStep, ProjectionFeedUsage,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
@@ -1085,7 +1098,11 @@ pub use hawdb_storage::{
 pub use hawdb_storage::graph_overlay::{GraphNodeIterator, GraphRelationshipIterator};
 
 fn canonical_segment_error(error: CanonicalSegmentError) -> HawDBError {
-    HawDBError::StorageIntegrity(error.to_string())
+    let refused = crate::reader_failure::is_admission_or_cancellation(&error);
+    match HawDBError::from_storage_error(error) {
+        HawDBError::Storage(message) if !refused => HawDBError::StorageIntegrity(message),
+        error => error,
+    }
 }
 
 /// Result of reading Source scan sidecar candidates. The rows have passed
@@ -2023,6 +2040,23 @@ impl GraphStore {
             .filter(|change| change.commit_epoch > commit_epoch)
             .map(|change| change.as_ref().clone())
             .collect()
+    }
+
+    /// Captures immutable feed input. Completion is not projection authorization.
+    #[doc(hidden)]
+    pub fn capture_projection_feed(
+        &self,
+        start_epoch: u64,
+        limits: ProjectionFeedLimits,
+    ) -> std::result::Result<ProjectionFeedCursor, ProjectionFeedError> {
+        self.ensure_usable().map_err(ProjectionFeedError::Source)?;
+        ProjectionFeedCursor::capture(
+            &self.search_projection_graph_changes,
+            self.search_projection_change_log_start_epoch,
+            self.commit_epoch,
+            start_epoch,
+            limits,
+        )
     }
 
     pub fn search_projection_changes_after(

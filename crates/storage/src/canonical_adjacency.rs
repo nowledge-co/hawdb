@@ -2459,6 +2459,10 @@ fn read_block_uncached(
 }
 
 fn error_requires_poison(error: &CanonicalAdjacencyError) -> bool {
+    // Resource refusal and cancellation do not imply damaged bytes.
+    if crate::reader_failure::is_admission_or_cancellation(error) {
+        return false;
+    }
     match error {
         CanonicalAdjacencyError::Io(_)
         | CanonicalAdjacencyError::Read(_)
@@ -2799,6 +2803,23 @@ fn write_double_hashed(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn nested_resource_and_cancellation_refusals_do_not_poison() {
+        for error in crate::reader_failure::tests::refusals() {
+            assert!(!super::error_requires_poison(
+                &super::CanonicalAdjacencyError::Io(error)
+            ));
+        }
+        assert!(super::error_requires_poison(
+            &super::CanonicalAdjacencyError::Io(std::io::Error::from(
+                std::io::ErrorKind::UnexpectedEof
+            ),)
+        ));
+        assert!(super::error_requires_poison(
+            &super::CanonicalAdjacencyError::Corrupt("damaged bytes".into())
+        ));
+    }
     use super::*;
     use crate::RelId;
     use std::collections::BTreeMap;

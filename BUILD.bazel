@@ -593,6 +593,12 @@ test_suite(
         ":hawdb_mvcc_projection_publication_minimal_tests",
         ":hawdb_mvcc_joined_reads_tests",
         ":hawdb_mvcc_joined_reads_minimal_tests",
+        ":hawdb_mvcc_staging_session_tests",
+        ":hawdb_mvcc_staging_session_minimal_tests",
+        ":hawdb_mvcc_baseline_comparison_tests",
+        ":hawdb_mvcc_baseline_comparison_minimal_tests",
+        ":hawdb_mvcc_full_source_tests",
+        ":hawdb_mvcc_full_source_minimal_tests",
         ":hawdb_branch_project_open_tests",
         ":hawdb_branch_project_open_minimal_tests",
         ":hawdb_default_consumer_tests",
@@ -746,6 +752,54 @@ rust_test(
         ],
         edition = "2024",
         deps = [library],
+    )
+    for suffix, library in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]
+
+# Full-source baseline input is separate from retained-feed and JOIN actions.
+[
+    rust_test(
+        name = "hawdb_mvcc_full_source" + suffix + "_tests",
+        crate_root = "tests/mvcc_full_source.rs",
+        srcs = [
+            "tests/mvcc_full_source.rs",
+            "tests/support/mvcc_fixture.rs",
+        ],
+        edition = "2024",
+        deps = [library],
+    )
+    for suffix, library in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]
+
+# Complete canonical baseline comparison owns independent unique expected output.
+[
+    rust_test(
+        name = "hawdb_mvcc_baseline_comparison" + suffix + "_tests",
+        crate_root = "tests/mvcc_baseline_comparison.rs",
+        srcs = ["tests/mvcc_baseline_comparison.rs", "tests/mvcc_baseline_comparison/full_rebuild.rs"],
+        edition = "2024",
+        deps = [library],
+    )
+    for suffix, library in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]
+
+# Joint graph/relational intake and stage custody, separate from publication.
+[
+    rust_test(
+        name = "hawdb_mvcc_staging_session" + suffix + "_tests",
+        crate_root = "tests/mvcc_staging_session.rs",
+        srcs = ["tests/mvcc_staging_session.rs", "tests/support/projection_coverage.rs"],
+        edition = "2024",
+        deps = [library, "//crates/storage:hawdb_storage"],
     )
     for suffix, library in [
         ("", ":hawdb"),

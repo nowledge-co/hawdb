@@ -1457,6 +1457,9 @@ fn read_spill_block_uncached(
 }
 
 fn property_spill_error_requires_poison(error: &PropertySpillError) -> bool {
+    if crate::reader_failure::is_admission_or_cancellation(error) {
+        return false;
+    }
     match error {
         PropertySpillError::Io(_)
         | PropertySpillError::Read(_)
@@ -1567,6 +1570,21 @@ fn write_double_hashed(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn nested_resource_and_cancellation_refusals_do_not_poison() {
+        for error in crate::reader_failure::tests::refusals() {
+            assert!(!super::property_spill_error_requires_poison(
+                &super::PropertySpillError::Io(error)
+            ));
+        }
+        assert!(super::property_spill_error_requires_poison(
+            &super::PropertySpillError::Io(std::io::Error::from(std::io::ErrorKind::UnexpectedEof),)
+        ));
+        assert!(super::property_spill_error_requires_poison(
+            &super::PropertySpillError::Corrupt("damaged bytes".into())
+        ));
+    }
     use super::*;
 
     #[test]

@@ -161,7 +161,6 @@ pub(super) struct DurableStore {
     // maintenance result. A checkpoint-source clone must not hide a failed
     // reclamation from admission, pressure reports, or the next retry.
     generation_reclamation_debt: Arc<std::sync::Mutex<GenerationReclamationDebt>>,
-
     wal_free_space_probe: WalFreeSpaceProbeState,
 }
 

@@ -168,14 +168,30 @@ fn system_graph_statistics_exposes_index_samples() {
 fn system_sql_exposes_projected_graph_and_changefeed_state() {
     let path = unique_test_dir("system_projection_introspection");
     let projection_epoch;
+    let resume_floor;
     {
         let mut db = Database::open(&path).unwrap();
         db.query(
             "CREATE (:Memory {id: 1, title: 'Root'})-[:LINKS]->(:Entity {id: 2, name: 'Leaf'})",
         )
         .unwrap();
+        assert_eq!(
+            db.search_projection_changefeed_status()
+                .unwrap()
+                .retained_mutation_count,
+            1
+        );
+        resume_floor = db
+            .search_projection_changefeed_status()
+            .unwrap()
+            .resume_floor_commit_epoch;
         db.query("CALL project_graph('EntityGraph', ['Memory', 'Entity'], ['LINKS'])")
             .unwrap();
+        // Named projections are outside the tracked source domain. Registering
+        // one must preserve the canonical point feed and its resume floor.
+        let status = db.search_projection_changefeed_status().unwrap();
+        assert_eq!(status.retained_mutation_count, 1);
+        assert_eq!(status.resume_floor_commit_epoch, resume_floor);
         db.checkpoint().unwrap();
         projection_epoch = db.projected_graph_statuses().unwrap()[0]
             .projection_epoch
@@ -212,6 +228,10 @@ fn system_sql_exposes_projected_graph_and_changefeed_state() {
             )
             .unwrap();
         assert_eq!(changefeed.rows.len(), 1);
+        let status = db.search_projection_changefeed_status().unwrap();
+        assert_eq!(status.resume_floor_commit_epoch, resume_floor);
+        db.build_search_projection_graph_delta_request_after(0, None)
+            .unwrap();
         assert_eq!(
             changefeed.rows[0].get("graph_commit_epoch"),
             Some(&Value::Int(graph_commit_epoch as i64))

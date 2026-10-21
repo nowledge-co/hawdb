@@ -4117,7 +4117,8 @@ mod tests {
     #[test]
     fn background_maintenance_report_can_prove_projection_qos_deferral() {
         let mut db = Database::new();
-        db.query("CREATE NODE TABLE Memory").unwrap();
+        // Keep this a complete point-delta fixture. Explicit DDL publishes a
+        // rebuild floor, which cannot produce an executable incremental plan.
         db.query("CREATE (:Memory {id: 1, title: 'Graph delta one'})")
             .unwrap();
         db.query("CREATE (:Memory {id: 2, title: 'Graph delta two'})")

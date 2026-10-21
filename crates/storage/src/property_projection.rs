@@ -3011,6 +3011,9 @@ fn read_projection_block_uncached(
 }
 
 fn property_projection_error_requires_poison(error: &PersistentPropertyProjectionError) -> bool {
+    if crate::reader_failure::is_admission_or_cancellation(error) {
+        return false;
+    }
     match error {
         PersistentPropertyProjectionError::Io(_)
         | PersistentPropertyProjectionError::Read(_)
@@ -3613,6 +3616,23 @@ mod hex_tests;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn nested_resource_and_cancellation_refusals_do_not_poison() {
+        for error in crate::reader_failure::tests::refusals() {
+            assert!(!super::property_projection_error_requires_poison(
+                &super::PersistentPropertyProjectionError::Io(error)
+            ));
+        }
+        assert!(super::property_projection_error_requires_poison(
+            &super::PersistentPropertyProjectionError::Io(std::io::Error::from(
+                std::io::ErrorKind::UnexpectedEof
+            ),)
+        ));
+        assert!(super::property_projection_error_requires_poison(
+            &super::PersistentPropertyProjectionError::Corrupt("damaged bytes".into())
+        ));
+    }
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 

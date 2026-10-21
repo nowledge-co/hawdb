@@ -23,8 +23,34 @@ use hawdb_storage::store::{GraphReadDependencies, GraphReadDependencyError};
 use hawdb_storage::version::VersionKey;
 use std::fmt;
 
+#[path = "dependency_read/full_source.rs"]
+mod full_source;
+#[path = "dependency_read/staging_session.rs"]
+mod staging_session;
+pub use staging_session::{
+    ProjectionBaselineComparisonConfig, ProjectionBaselineComparisonSession,
+    ProjectionBaselineComparisonStep, ProjectionBaselineMappingContext,
+    ProjectionBaselineMappingFunction, ProjectionBaselineMappingLimits, ProjectionCoverageConfig,
+    ProjectionCoverageSession, ProjectionCoverageStep, ProjectionCoveredUpdate,
+    ProjectionFullRebuildConfig, ProjectionFullRebuildSession, ProjectionFullRebuildStep,
+    ProjectionMappingContext, ProjectionMappingFunction, ProjectionMappingInput,
+    ProjectionMappingLimits, ProjectionMappingStatus, ProjectionMappingUsage,
+    ProjectionMatchedBaseline, ProjectionOutputVerificationContext,
+    ProjectionOutputVerificationFunction, ProjectionOutputVerificationSession,
+    ProjectionPreparedFullRebuild, ProjectionStagedInputs, ProjectionStagingSession,
+    ProjectionStagingSessionConfig, ProjectionStagingSessionStep,
+};
 #[path = "dependency_read/graph_match.rs"]
 mod graph_match;
+#[path = "dependency_read/projection_feed.rs"]
+mod projection_feed;
+pub use full_source::{
+    PreparedProjectionFullSource, ProjectionFullSourceItem, ProjectionFullSourceLimits,
+};
+pub use projection_feed::{
+    PreparedProjectionFeed, ProjectionFeedError, ProjectionFeedItem, ProjectionFeedLimits,
+    ProjectionFeedRead, ProjectionFeedResource, ProjectionFeedStep, ProjectionFeedUsage,
+};
 #[path = "dependency_read/relational.rs"]
 pub(super) mod relational;
 #[cfg(test)]
@@ -39,6 +65,15 @@ pub struct PreparedReadLimits {
     pub dependency_bytes: NonZeroUsize,
     pub statement_rows: NonZeroUsize,
     pub statement_payload_bytes: NonZeroUsize,
+}
+
+/// Source durability required by one projection publication. Synchronization
+/// covers a complete WAL prefix and does not alter subsequent write policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProjectionSourceDurability {
+    #[default]
+    RequireKnownDurable,
+    Synchronize,
 }
 
 /// A pinned query context with no untracked mutable read escape hatch.
@@ -400,6 +435,8 @@ fn predicate_reads_relationships(predicate: &crate::planner::Predicate) -> bool 
 pub enum ProjectionPublicationError {
     SourceChanged,
     SourceNotDurable,
+    SourceWatermarkMissing,
+    SourceWatermarkRegression { previous: u64, staged: u64 },
     SourceEpochMismatch { captured: u64, staged: u64 },
     Dependency(GraphReadDependencyError),
     Storage(HawDBError),
@@ -410,6 +447,13 @@ impl fmt::Display for ProjectionPublicationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SourceChanged => f.write_str("projection source database instance changed"),
+            Self::SourceWatermarkMissing => {
+                f.write_str("prepared Search publication requires an explicit source watermark")
+            }
+            Self::SourceWatermarkRegression { previous, staged } => write!(
+                f,
+                "prepared Search watermark {staged} regresses the active watermark {previous}"
+            ),
             Self::SourceNotDurable => {
                 f.write_str("projection source requires a completed durability barrier")
             }
@@ -470,12 +514,27 @@ impl Database {
     /// Validates and durably publishes a full generation under one exclusive
     /// database borrow. The catalog's expected-head CAS remains authoritative.
     /// Host bindings/cursors need their additional owner fence before calling.
-    /// Relaxed source writes are refused until source-barrier integration is
-    /// qualified; this API never silently changes the host durability policy.
+    /// Requires an observed source durability barrier. Use the explicit policy
+    /// variant to synchronize an uncovered relaxed/recovered source prefix.
+    /// After reopen, even `SyncOnEveryWrite` WAL replay does not establish an
+    /// observed barrier: checkpoint or explicitly select `Synchronize` first.
     pub fn publish_prepared_projection(
         &mut self,
         dependencies: &PreparedReadDependencies,
         sealed: &SealedProjectionGeneration,
+    ) -> std::result::Result<ProjectionGenerationPublishReport, ProjectionPublicationError> {
+        self.publish_prepared_projection_with_source_durability(
+            dependencies,
+            sealed,
+            ProjectionSourceDurability::RequireKnownDurable,
+        )
+    }
+
+    pub fn publish_prepared_projection_with_source_durability(
+        &mut self,
+        dependencies: &PreparedReadDependencies,
+        sealed: &SealedProjectionGeneration,
+        source_durability: ProjectionSourceDurability,
     ) -> std::result::Result<ProjectionGenerationPublishReport, ProjectionPublicationError> {
         use ProjectionPublicationError as E;
         self.ensure_writable().map_err(E::Storage)?;
@@ -485,25 +544,104 @@ impl Database {
         if let Some(receipt) = catalog.published_receipt(sealed).map_err(E::Generation)? {
             return Ok(receipt);
         }
+        self.validate_prepared_projection_source(
+            dependencies,
+            sealed.manifest().begin.source_watermark,
+            source_durability,
+        )?;
+        catalog.publish(sealed).map_err(E::Generation)
+    }
+
+    /// Activates one closed Search candidate under the source database's
+    /// exclusive borrow. The host must also retain its target/binding authority
+    /// through this call. No arbitrary mutation callback can enter this fence.
+    /// This fence validates source/dependency/durability/selector identity only;
+    /// it proves nothing about candidate content or complete source coverage.
+    /// Use `publish_projection_covered_update` for a complete-E content proof.
+    pub fn publish_prepared_search<P: crate::search::PreparedSearchPublication>(
+        &mut self,
+        dependencies: &PreparedReadDependencies,
+        candidate: P,
+    ) -> std::result::Result<P::Report, ProjectionPublicationError> {
+        self.publish_prepared_search_with_source_durability(
+            dependencies,
+            candidate,
+            ProjectionSourceDurability::RequireKnownDurable,
+        )
+    }
+
+    /// Explicitly covers an uncovered source WAL prefix before Search activation.
+    /// Requires the candidate watermark to equal its captured source epoch;
+    /// bounded changefeed prefixes need their additional batch/receipt contract.
+    pub fn publish_prepared_search_with_source_durability<
+        P: crate::search::PreparedSearchPublication,
+    >(
+        &mut self,
+        dependencies: &PreparedReadDependencies,
+        candidate: P,
+        source_durability: ProjectionSourceDurability,
+    ) -> std::result::Result<P::Report, ProjectionPublicationError> {
+        let watermark = candidate
+            .source_graph_commit_epoch()
+            .ok_or(ProjectionPublicationError::SourceWatermarkMissing)?;
+        if let Some(previous) = candidate
+            .source_watermark_floor()
+            .map_err(ProjectionPublicationError::Storage)?
+            && watermark < previous
+        {
+            return Err(ProjectionPublicationError::SourceWatermarkRegression {
+                previous,
+                staged: watermark,
+            });
+        }
+        self.validate_prepared_projection_source(dependencies, watermark, source_durability)?;
+        candidate
+            .publish()
+            .map_err(ProjectionPublicationError::Storage)
+    }
+
+    fn validate_prepared_projection_source(
+        &mut self,
+        dependencies: &PreparedReadDependencies,
+        staged: u64,
+        source_durability: ProjectionSourceDurability,
+    ) -> std::result::Result<(), ProjectionPublicationError> {
+        use ProjectionPublicationError as E;
+        self.ensure_writable().map_err(E::Storage)?;
         if self.instance_identity().map_err(E::Storage)? != dependencies.source {
             return Err(E::SourceChanged);
         }
         let captured = dependencies.source_epoch();
-        let staged = sealed.manifest().begin.source_watermark;
         if captured != staged {
             return Err(E::SourceEpochMismatch { captured, staged });
         }
-        let runtime = self.runtime.get().map_err(E::Storage)?;
+        let mut runtime = self.runtime.get_mut().map_err(E::Storage)?;
         runtime
             .store
             .validate_read_dependencies(&dependencies.graph)
             .map_err(E::Dependency)?;
-        if self.durability != DurabilityPolicy::SyncOnEveryWrite
-            || runtime.store.wal_sync_group_active()
-        {
+        if runtime.store.wal_sync_group_active() {
             return Err(E::SourceNotDurable);
         }
-        catalog.publish(sealed).map_err(E::Generation)
+        if runtime
+            .store
+            .known_source_durable_epoch()
+            .is_none_or(|epoch| epoch < captured)
+        {
+            match source_durability {
+                ProjectionSourceDurability::RequireKnownDurable => return Err(E::SourceNotDurable),
+                ProjectionSourceDurability::Synchronize => {
+                    let covered = runtime
+                        .store
+                        .synchronize_source_prefix()
+                        .map_err(E::Storage)?;
+                    if covered < captured {
+                        return Err(E::SourceNotDurable);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 

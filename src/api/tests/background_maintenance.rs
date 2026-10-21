@@ -537,7 +537,8 @@ fn background_maintenance_skips_over_limit_search_projection_graph_delta() {
 #[test]
 fn background_maintenance_includes_stale_search_projection_graph_delta() {
     let mut db = Database::new();
-    db.query("CREATE NODE TABLE Memory").unwrap();
+    // Implicit creation has complete point effects; explicit DDL publishes a
+    // rebuild floor and is covered separately below.
     db.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")
         .unwrap();
     let search_index = SearchIndex::in_memory();
@@ -1013,4 +1014,28 @@ fn background_maintenance_ranks_hawdb_lightning_against_import_lane_budget() {
         .reasons
         .iter()
         .any(|reason| reason.contains("above class limit")));
+}
+
+#[test]
+fn schema_gap_maintenance_never_advertises_an_executable_partial_delta() {
+    let mut db = Database::new();
+    db.query("CREATE NODE TABLE Memory").unwrap();
+    db.query("CREATE (:Memory {id: 1, title: 'After schema barrier'})")
+        .unwrap();
+    let index = SearchIndex::in_memory();
+    let status = db.search_projection_changefeed_status().unwrap();
+    assert!(status.resume_floor_commit_epoch > 0);
+    assert!(db
+        .build_search_projection_graph_delta_request_from_freshness(&index, None)
+        .is_err());
+    let candidates = db
+        .background_maintenance_candidates(Some(&index), BackgroundMaintenanceOptions::default())
+        .unwrap();
+    let lag = candidates
+        .iter()
+        .find(|candidate| candidate.kind == BackgroundMaintenanceKind::SearchProjectionGraphDelta)
+        .unwrap();
+    assert!(lag.search_projection_graph_delta.is_none());
+    assert!(lag.plan.hint.source_graph_commit_lag > 0);
+    assert!(lag.plan.request.estimated_operations > 0);
 }

@@ -75,6 +75,16 @@ commits because the consumer hydrates canonical current state. Its
 every relevant identity through that epoch has been delivered, while a
 hydrated value may already reflect a later canonical commit.
 
+That selection cursor is not publication authority. The legacy apply/catch-up
+entry points reject a complete-through epoch different from the pinned
+hydration epoch before calling the host or mutating Search. Repeated bounded
+prefix selection cannot bypass this fence by increasing only the batch count.
+The additive [source-coherent preparation path](SOURCE_COHERENT_SEARCH_CATCH_UP_SPEC.md)
+keeps intermediate C..E cursors private and verifies the complete resulting E
+set before publication. Its conservative full-source cost and remaining host
+integration gates are explicit; existing Consumer APIs do not adopt it
+automatically.
+
 The graph-only builder MUST fail when the selected range contains relational
 changes. It MUST NOT publish a watermark that silently skips relational work.
 

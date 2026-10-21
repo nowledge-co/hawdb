@@ -3139,6 +3139,9 @@ fn read_encoded_string(cursor: &mut SliceCursor<'_>) -> Result<String, Canonical
 }
 
 fn canonical_error_requires_poison(error: &CanonicalSegmentError) -> bool {
+    if crate::reader_failure::is_admission_or_cancellation(error) {
+        return false;
+    }
     match error {
         CanonicalSegmentError::Io(_)
         | CanonicalSegmentError::Read(_)
@@ -4499,6 +4502,23 @@ fn write_hashed(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn nested_resource_and_cancellation_refusals_do_not_poison() {
+        for error in crate::reader_failure::tests::refusals() {
+            assert!(!super::canonical_error_requires_poison(
+                &super::CanonicalSegmentError::Io(error)
+            ));
+        }
+        assert!(super::canonical_error_requires_poison(
+            &super::CanonicalSegmentError::Io(std::io::Error::from(
+                std::io::ErrorKind::UnexpectedEof
+            ),)
+        ));
+        assert!(super::canonical_error_requires_poison(
+            &super::CanonicalSegmentError::Corrupt("damaged bytes".into())
+        ));
+    }
     use super::*;
     use crate::property_spill::{PersistentPropertySpillDescriptorTree, PropertySpillConfig};
 

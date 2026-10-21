@@ -69,6 +69,15 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
         Self::create_mode(reader, options, task, memory, true)
     }
 
+    pub(super) fn create_replacement(
+        reader: &'reader SearchOutOfCoreReader,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task: RuntimeTaskContext,
+        memory: BuildMemory,
+    ) -> Result<Self> {
+        Self::create_mode(reader, options, task, memory, false)
+    }
+
     fn create_mode(
         reader: &'reader SearchOutOfCoreReader,
         options: SearchOutOfCoreGenerationBuildOptions,
@@ -124,6 +133,37 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
         })
     }
 
+    pub(super) fn base_reader(&self) -> &'reader SearchOutOfCoreReader {
+        self.reader.expect("delta writer owns its base reader")
+    }
+
+    /// Complete replacement needs copied policies/base identity, not old data.
+    /// Strip the unused reader lifetime only after checking the full sink is
+    /// pristine; ordinary mutation batches cannot enter this conversion.
+    pub(super) fn into_owned_replacement(self) -> Result<SearchOutOfCoreMutationWriter<'static>> {
+        if self.reader.is_some()
+            || self.writer.mutations.is_some()
+            || self.writer.active_manifest_update.is_some()
+            || self.writer.document_count != 0
+            || self.writer.poisoned
+            || self.operations != 0
+            || self.last_id.is_some()
+        {
+            return Err(HawDBError::Storage(
+                "full replacement requires a pristine complete sink".into(),
+            ));
+        }
+        Ok(SearchOutOfCoreMutationWriter {
+            reader: None,
+            writer: self.writer,
+            last_id: self.last_id,
+            operations: self.operations,
+            deleted: self.deleted,
+            epoch_updated: self.epoch_updated,
+            metrics: self.metrics,
+            _report_memory: self._report_memory,
+        })
+    }
     pub fn upsert_reader(
         &mut self,
         header: SearchDocumentHeader,

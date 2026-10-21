@@ -613,6 +613,12 @@ impl GraphDescriptorTreeDemandReader {
     }
 
     fn poison_on_physical_failure<T>(&self, result: &Result<T, GraphDescriptorTreeError>) {
+        if result
+            .as_ref()
+            .is_err_and(|error| crate::reader_failure::is_admission_or_cancellation(error))
+        {
+            return;
+        }
         if matches!(
             result,
             Err(GraphDescriptorTreeError::Io(_))
