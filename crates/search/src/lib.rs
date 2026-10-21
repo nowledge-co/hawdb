@@ -30,9 +30,8 @@ pub use hawdb_evidence::{
 };
 use hawdb_integrity::checksum_u64;
 use hawdb_optimizer_predicate::{
-    normalize_search_enum_value, push_search_predicates, search_field_is_enum_like,
-    SearchPredicate, SearchPredicateOp, SearchPredicateSet, SearchScalarValue,
-    SearchScanPredicateSupport,
+    normalize_search_enum_value, search_field_is_enum_like, SearchPredicate, SearchPredicateOp,
+    SearchPredicateSet, SearchScalarValue,
 };
 use hawdb_optimizer_vector::{
     select_adaptive_vector_backend, AdaptiveVectorBackend, AdaptiveVectorBackendDecision,
@@ -168,7 +167,7 @@ pub const fn compiled_runtime_capabilities() -> RuntimeCapabilities {
     RuntimeCapabilities {
         access_control: cfg!(feature = "acl"),
         full_text_search: cfg!(feature = "full-text-search"),
-        search_projection_publication: cfg!(not(windows)),
+        search_projection_publication: cfg!(any(unix, windows)),
         vector_search: cfg!(feature = "vector-search"),
         graph_analytics: cfg!(feature = "graph-analytics"),
         background_maintenance: cfg!(feature = "background-maintenance"),
@@ -191,11 +190,11 @@ use analyzer_lexicon::{CORE_SEMANTIC_ALIAS_RULES, NOWLEDGE_MEMORY_SEMANTIC_ALIAS
 use analyzer_stream::{document_token_fields, visit_token_list, TokenOccurrence};
 #[cfg(test)]
 use cjk_tokenizer::is_cjk_search_char;
+use generation_cleanup::SearchProjectionCleanupState;
 pub use generation_cleanup::{
     SearchProjectionCleanupOptions, SearchProjectionCleanupReport,
     SEARCH_PROJECTION_CLEANUP_PROTOCOL,
 };
-use generation_cleanup::{SearchProjectionCleanupState, SearchProjectionGenerations};
 pub use knowledge_retrieval_pipeline::{KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage};
 use lexical_projection::{
     analyzer_digest as lexical_analyzer_digest, documents_digest as lexical_documents_digest,
@@ -210,17 +209,18 @@ pub use lexical_readiness::{
 pub use lexical_source_policy::SearchLexicalSourcePolicy;
 pub use lexical_term_policy::SearchLexicalTermPolicy;
 pub use out_of_core::{
-    GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter,
+    GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter, PreparedSearchPublication,
     ScheduledSearchOutOfCoreSegmentCompactionReport, SearchBodyReadOptions,
     SearchGenerationAdmission, SearchOutOfCoreCandidate, SearchOutOfCoreConfig,
     SearchOutOfCoreExecutionContext, SearchOutOfCoreGenerationBuildOptions,
     SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
     SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
-    SearchOutOfCoreMutationWriter, SearchOutOfCoreOutput, SearchOutOfCoreReader,
-    SearchOutOfCoreRefreshReport, SearchOutOfCoreSegmentCompaction,
-    SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
-    SearchOutOfCoreSegmentCompactionStopReason, SearchStagingCleanupReport, SearchTextSeedOutput,
-    SearchTextSeedReport, SearchVerifiedBody,
+    SearchOutOfCoreMutationWriter, SearchOutOfCoreOutput, SearchOutOfCorePreparedGeneration,
+    SearchOutOfCorePreparedUpdate, SearchOutOfCoreReader, SearchOutOfCoreRefreshReport,
+    SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
+    SearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreSegmentCompactionStopReason,
+    SearchQueryError, SearchQueryResult, SearchRetainedOutput, SearchStagingCleanupReport,
+    SearchTextSeedOutput, SearchTextSeedReport, SearchVerifiedBody,
 };
 pub use resident_text_seed::SearchResidentTextSeedOutput;
 // These are internal ownership seams. Hosts continue to use the embedded facade.
@@ -1437,7 +1437,8 @@ pub struct SearchIndex {
     documents: BTreeMap<String, SearchDocument>,
     consumer_binding: Option<consumer::ConsumerBinding>,
     consumer_binding_valid: bool,
-    consumer_owned_mutation: bool,
+    consumer_owner: std::sync::Weak<consumer::MutationOwner>,
+    consumer_mutation_generation: Option<u64>,
     consumer_receipt: Mutex<Option<consumer::CheckpointReceipt>>,
     path: Option<PathBuf>,
     _project_files: Option<hawdb_storage::file_descriptors::ProjectFileDescriptors>,
@@ -1479,29 +1480,48 @@ impl SearchIndex {
             )?;
         fs::create_dir_all(path.as_ref())?;
         let _lease = out_of_core::SearchProjectionPublishLease::acquire(path.as_ref())?;
-        let mut index = Self::open_under_lease(path.as_ref(), false)?;
+        let mut index = Self::open_under_lease(path.as_ref(), false, &_lease)?;
         index._project_files = Some(project_files);
         Ok(index)
     }
 
-    fn open_under_lease(path: &Path, registered: bool) -> Result<Self> {
+    fn open_under_lease(
+        path: &Path,
+        registered: bool,
+        publication: &out_of_core::SearchProjectionPublishLease,
+    ) -> Result<Self> {
         let mut index = Self {
             path: Some(path.to_path_buf()),
-            _project_files: Some(
+            _project_files: Some(if registered {
+                publication.with_captured_directory(|directory| {
+                    hawdb_storage::file_descriptors::ProjectFileDescriptors::from_open_context(
+                        &directory.operation_context(),
+                    )
+                })
+            } else {
                 hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_component(
                     path, false,
-                )?,
-            ),
+                )?
+            }),
             ..Self::default()
         };
-        index.load_snapshot().map_err(|error| {
+        let loaded = if registered {
+            index.load_snapshot_from_publication(publication)
+        } else {
+            index.load_snapshot()
+        };
+        loaded.map_err(|error| {
             if registered && !matches!(error, HawDBError::FileDescriptors(_)) {
                 HawDBError::StorageIntegrity(error.to_string())
             } else {
                 error
             }
         })?;
-        out_of_core::validate_resident_snapshot_identity(&index, path)?;
+        if registered {
+            out_of_core::validate_captured_resident_snapshot_identity(&index, publication)?;
+        } else {
+            out_of_core::validate_resident_snapshot_identity(&index, path)?;
+        }
         if index.consumer_binding.is_some() != registered {
             return Err(HawDBError::Storage(
                 "projection consumer lifecycle does not match snapshot binding".into(),
@@ -1509,7 +1529,7 @@ impl SearchIndex {
         }
         if registered {
             index
-                .validate_registered_artifacts()
+                .validate_registered_artifacts(publication)
                 .map_err(|error| match error {
                     HawDBError::FileDescriptors(_) => error,
                     _ => HawDBError::StorageIntegrity(error.to_string()),
@@ -1520,23 +1540,26 @@ impl SearchIndex {
         }
         #[cfg(feature = "vector-search")]
         if registered {
-            index.load_registered_rabitq_projection()?;
+            index.load_registered_rabitq_projection(publication)?;
         } else {
             index.load_rabitq_projection()?;
         }
-        index.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
+        index.retry_projection_cleanup_under_publication(
+            SearchProjectionCleanupOptions::default(),
+            publication,
+        );
         Ok(index)
     }
 
     pub fn with_analyzer_lexicon(mut self, analyzer_lexicon: SearchAnalyzerLexicon) -> Self {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.analyzer_lexicon = analyzer_lexicon;
         self.invalidate_lexical_projection();
         self
     }
 
     pub fn set_analyzer_lexicon(&mut self, analyzer_lexicon: SearchAnalyzerLexicon) {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.analyzer_lexicon = analyzer_lexicon;
         self.invalidate_lexical_projection();
     }
@@ -1589,12 +1612,27 @@ impl SearchIndex {
         Ok(())
     }
 
+    fn load_lexical_projection_under_publication(
+        &self,
+        publication: &out_of_core::SearchProjectionPublishLease,
+    ) -> Result<()> {
+        let projection = LexicalProjectionReader::load_under_publication(
+            publication,
+            self.source_graph_commit_epoch,
+            lexical_analyzer_digest(&self.analyzer_lexicon),
+            lexical_documents_digest(&self.documents),
+            self.lexical_config,
+        )?;
+        self.replace_lexical_projection(projection);
+        Ok(())
+    }
+
     #[cfg(feature = "vector-search")]
     pub fn set_rabitq_projection_build_options(
         &mut self,
         options: RaBitQCandidateProjectionBuildOptions,
     ) {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.rabitq_build_options = options;
         self.invalidate_rabitq_projection();
     }
@@ -1746,7 +1784,7 @@ impl SearchIndex {
     }
 
     pub fn set_telemetry_sink(&mut self, telemetry: Option<Arc<dyn TelemetrySink>>) {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.telemetry = telemetry;
     }
 
@@ -1755,7 +1793,7 @@ impl SearchIndex {
     }
 
     pub fn set_range_read_config(&mut self, config: SearchRangeReadConfig) {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.range_read_config = config;
     }
 
@@ -1764,7 +1802,7 @@ impl SearchIndex {
     }
 
     pub fn set_runtime_capabilities(&mut self, capabilities: RuntimeCapabilities) {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.runtime_capabilities =
             crate::compiled_capabilities::effective_runtime_capabilities(capabilities);
     }
@@ -1774,7 +1812,7 @@ impl SearchIndex {
     }
 
     pub fn upsert(&mut self, document: SearchDocument) -> Result<()> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         if let Some(embedding) = &document.embedding {
             self.validate_or_set_dimension(embedding.len())?;
         }
@@ -1791,7 +1829,7 @@ impl SearchIndex {
     }
 
     pub fn delete(&mut self, id: &str) {
-        self.mark_untracked_consumer_mutation();
+        let _consumer_mutation = self.mark_untracked_consumer_mutation();
         self.record_lexical_delete(id);
         self.documents.remove(id);
         #[cfg(feature = "vector-search")]
@@ -1803,7 +1841,7 @@ impl SearchIndex {
         &mut self,
         delta: SearchProjectionDelta,
     ) -> Result<SearchProjectionDeltaReport> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         let operation_count = delta.operation_count();
         if let Some(limit) = delta.max_operations
             && operation_count > limit
@@ -2004,7 +2042,7 @@ impl SearchIndex {
     /// Records immutable provenance for an external graph bootstrap. The
     /// mutable local projection cursor remains independent.
     pub fn record_import_source_graph_commit_epoch(&mut self, epoch: u64) -> Result<()> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         self.validate_import_source_graph_commit_epoch(epoch)?;
         self.import_source_graph_commit_epoch = Some(epoch);
         Ok(())
@@ -2114,7 +2152,7 @@ impl SearchIndex {
     }
 
     pub fn apply_embedding_manifest(&mut self, manifest: SearchEmbeddingManifest) -> Result<()> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         if let Some(existing) = &self.embedding_manifest {
             if existing == &manifest {
                 return Ok(());
@@ -2143,7 +2181,7 @@ impl SearchIndex {
         store: &S,
         options: SearchRebuildOptions,
     ) -> Result<SearchRebuildSummary> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         let started = hawdb_core::time::Instant::now();
         let mut next_documents = BTreeMap::new();
         let mut scanned_nodes = 0;
@@ -2312,7 +2350,7 @@ impl SearchIndex {
         store: &S,
         options: MetadataRepairOptions,
     ) -> Result<MetadataRepairSummary> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         let started = hawdb_core::time::Instant::now();
         let mut repairs = Vec::new();
         let mut scanned_nodes = 0;
@@ -2483,44 +2521,40 @@ impl SearchIndex {
         let Some(path) = &self.path else {
             return self.projection_cleanup_report();
         };
-        let (published, out_of_core_discovery_failed) =
-            match out_of_core::published_artifact_generations(path, &self.analyzer_lexicon) {
-                Ok(generations) => (generations, false),
-                Err(_) => (None, true),
-            };
-        let generations = SearchProjectionGenerations {
-            lexical: self
-                .lexical_projection
+        if self.consumer_binding_valid
+            && self.consumer_binding.is_some()
+            && let Ok(consumer_mutation) = self.borrow_consumer_mutation()
+        {
+            return self.retry_projection_cleanup_under_publication(
+                options,
+                consumer_mutation.publication(),
+            );
+        }
+        let Ok(_publication) = out_of_core::SearchProjectionPublishLease::acquire_for_cleanup(path)
+        else {
+            return self
+                .cleanup_state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .as_ref()
-                .map(|projection| projection.generation()),
-            out_of_core: published.as_ref().map(|value| value.active_generation),
-            #[cfg(feature = "vector-search")]
-            rabitq: self
-                .rabitq_projection()
-                .map(|projection| projection.manifest().identity.generation),
-            #[cfg(not(feature = "vector-search"))]
-            rabitq: None,
-            rabitq_remove_all: self
-                .documents
-                .values()
-                .all(|document| document.embedding.is_none()),
-            out_of_core_discovery_failed,
-            retained_lexical: published
-                .as_ref()
-                .map_or_else(Default::default, |value| value.lexical_generations.clone()),
-            retained_out_of_core: published.as_ref().map_or_else(Default::default, |value| {
-                value.out_of_core_generations.clone()
-            }),
-            retained_rabitq: published
-                .as_ref()
-                .map_or_else(Default::default, |value| value.rabitq_generations.clone()),
+                .defer_for_publication(options);
+        };
+        self.retry_projection_cleanup_under_publication(options, &_publication)
+    }
+
+    // Caller retains the same root's publication authority through discovery
+    // and sweep. Checkpoint already owns that authority and must not reacquire.
+    fn retry_projection_cleanup_under_publication(
+        &self,
+        options: SearchProjectionCleanupOptions,
+        publication: &out_of_core::SearchProjectionPublishLease,
+    ) -> SearchProjectionCleanupReport {
+        let Some(path) = &self.path else {
+            return self.projection_cleanup_report();
         };
         self.cleanup_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .run(path, generations, options)
+            .run_under_publication(path, options, publication, &self.analyzer_lexicon, None)
     }
 
     pub fn checkpoint(&self) -> Result<()> {
@@ -2529,20 +2563,26 @@ impl SearchIndex {
 
     pub fn checkpoint_with_report(&self) -> Result<SearchCheckpointReport> {
         self.require_unregistered_publication()?;
-        self.checkpoint_with_lease(false)
+        self.checkpoint_with_lease(None)
     }
 
-    fn checkpoint_with_lease(&self, registered: bool) -> Result<SearchCheckpointReport> {
+    fn checkpoint_with_lease(
+        &self,
+        publication: Option<&out_of_core::SearchProjectionPublishLease>,
+    ) -> Result<SearchCheckpointReport> {
         let Some(path) = &self.path else {
             return Ok(SearchCheckpointReport::in_memory(self.documents.len()));
         };
         let started = hawdb_core::time::Instant::now();
         let result = (|| {
-            let _publish_lease = if registered {
+            let owned_publication = if publication.is_some() {
                 None
             } else {
                 Some(out_of_core::SearchProjectionPublishLease::acquire(path)?)
             };
+            let publication_lease = publication
+                .or(owned_publication.as_ref())
+                .expect("checkpoint retains publication authority");
             let snapshot_path = path.join(SEARCH_SNAPSHOT_FILE);
             let snapshot = write_search_snapshot(
                 &snapshot_path,
@@ -2553,22 +2593,34 @@ impl SearchIndex {
                 self.consumer_binding.as_ref(),
                 self.documents.values(),
             )?;
-            let segment_bytes_written = self.write_segment_artifacts(path)?;
-            let lexical_bytes_written = self.write_lexical_projection(path)?;
-            let publication = out_of_core::publish_out_of_core_projection(self, path)?;
+            let generation =
+                out_of_core::next_generation(path, self.lexical_config.max_manifest_bytes.get())?;
             #[cfg(feature = "vector-search")]
-            let rabitq_bytes_written = self.write_rabitq_projection(path)?;
+            let (generation, rabitq_bytes_written, rabitq) =
+                self.write_rabitq_projection(path, generation)?;
             #[cfg(not(feature = "vector-search"))]
             let rabitq_bytes_written = 0;
-            let projection_bytes_written = segment_bytes_written
-                .saturating_add(lexical_bytes_written)
-                .saturating_add(publication.bytes_written)
+            let publication = out_of_core::write_resident_artifacts(
+                self,
+                path,
+                &snapshot,
+                out_of_core::ResidentPublicationPlan {
+                    generation,
+                    #[cfg(feature = "vector-search")]
+                    rabitq,
+                },
+            )?;
+            let projection_bytes_written = publication
+                .bytes_written
                 .saturating_add(rabitq_bytes_written);
             *self
                 .durable_source_graph_commit_epoch
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.source_graph_commit_epoch;
-            self.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
+            self.retry_projection_cleanup_under_publication(
+                SearchProjectionCleanupOptions::default(),
+                publication_lease,
+            );
             if let Some(binding) = &self.consumer_binding {
                 *self
                     .consumer_receipt
@@ -2610,34 +2662,19 @@ impl SearchIndex {
         result
     }
 
-    fn write_lexical_projection(&self, path: &Path) -> Result<u64> {
-        let generation =
-            out_of_core::next_generation(path, self.lexical_config.max_manifest_bytes.get())?;
-        let projection = LexicalProjectionWriter::new(self.lexical_config).write(
-            path,
-            generation,
-            self.source_graph_commit_epoch,
-            lexical_analyzer_digest(&self.analyzer_lexicon),
-            lexical_documents_digest(&self.documents),
-            self.documents.values(),
-            &self.analyzer_lexicon,
-        )?;
-        let bytes_written = projection
-            .artifact_len()
-            .saturating_add(fs::metadata(path.join(lexical_projection::MANIFEST_FILE))?.len());
-        self.replace_lexical_projection(Some(projection));
-        Ok(bytes_written)
-    }
-
     #[cfg(feature = "vector-search")]
-    fn write_rabitq_projection(&self, path: &Path) -> Result<u64> {
+    fn write_rabitq_projection(
+        &self,
+        path: &Path,
+        minimum_generation: u64,
+    ) -> Result<(u64, u64, Option<out_of_core::ResidentRaBitQArtifact>)> {
         if self
             .documents
             .values()
             .all(|document| document.embedding.is_none())
         {
             self.invalidate_rabitq_projection();
-            return Ok(0);
+            return Ok((minimum_generation, 0, None));
         }
         let loaded_generation = self
             .rabitq_projection()
@@ -2646,7 +2683,9 @@ impl SearchIndex {
         let artifact_generation = latest_rabitq_artifact(path)?
             .map(|(generation, _)| generation)
             .unwrap_or(0);
-        let generation = loaded_generation.max(artifact_generation).saturating_add(1);
+        let generation = minimum_generation
+            .max(loaded_generation.saturating_add(1))
+            .max(artifact_generation.saturating_add(1));
         let artifact_path = path.join(rabitq_artifact_file(generation));
         let projection = RaBitQCandidateProjection::write_from_documents(
             &artifact_path,
@@ -2661,11 +2700,24 @@ impl SearchIndex {
             )
         })?;
         let bytes_written = fs::metadata(&artifact_path)?.len();
+        let (reference, checksum) = projection.file_artifact_reference().ok_or_else(|| {
+            HawDBError::StorageIntegrity(
+                "resident RaBitQ producer did not return an artifact reference".into(),
+            )
+        })?;
+        let artifact = out_of_core::ResidentRaBitQArtifact {
+            reference,
+            checksum,
+            source_digest: projection.manifest().source_digest,
+            vector_document_count: projection.manifest().document_count,
+            payload_checksum: projection.manifest().payload_checksum,
+            peak_build_working_bytes: projection.manifest().peak_build_working_bytes,
+        };
         *self
             .rabitq_projection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(projection));
-        Ok(bytes_written)
+        Ok((generation, bytes_written, Some(artifact)))
     }
 
     /// Searches resident documents, returning unavailable-capability and execution errors.
@@ -3936,7 +3988,24 @@ impl SearchIndex {
             return Ok(());
         }
         let text = read_search_snapshot_text(&snapshot_path)?;
-        let (body, checksum) = split_checksum(&text)?;
+        self.parse_snapshot_text(&text)
+    }
+
+    /// Read the registered snapshot through the original native directory.
+    /// A saved pathname may now designate another projection namespace.
+    fn load_snapshot_from_publication(
+        &mut self,
+        publication: &out_of_core::SearchProjectionPublishLease,
+    ) -> Result<()> {
+        let mut file = publication.open_captured_child(SEARCH_SNAPSHOT_FILE)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let text = decode_search_snapshot_envelope(&bytes)?;
+        self.parse_snapshot_text(&text)
+    }
+
+    fn parse_snapshot_text(&mut self, text: &str) -> Result<()> {
+        let (body, checksum) = split_checksum(text)?;
         let actual = checksum_bytes(body.as_bytes());
         if checksum != actual {
             return Err(HawDBError::Storage(format!(
@@ -4071,21 +4140,12 @@ impl SearchIndex {
         Ok(())
     }
 
-    fn write_segment_artifacts(&self, path: &Path) -> Result<u64> {
-        let mut descriptor = SearchSegmentDescriptor::build(&self.documents);
-        write_search_segment_payloads(path, &self.documents, &mut descriptor)?;
-        let descriptor_bytes =
-            write_search_segment_descriptor_bounded(path, &descriptor, u64::MAX)?;
-        let payload_bytes = fs::metadata(path.join(SEARCH_SEGMENT_PAYLOAD_FILE))?.len();
-        Ok(descriptor_bytes.saturating_add(payload_bytes))
-    }
-
     fn marker_path(&self, name: &str) -> Option<PathBuf> {
         self.path.as_ref().map(|path| path.join(name))
     }
 
     fn append_marker(&self, name: &str, reason: &str) -> Result<()> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _marker_authority = self.require_marker_mutation()?;
         {
             let mut marker_lines = self
                 .marker_lines
@@ -4113,7 +4173,7 @@ impl SearchIndex {
     }
 
     fn write_marker(&self, name: &str, reason: &str) -> Result<()> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _marker_authority = self.require_marker_mutation()?;
         self.marker_lines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -4126,7 +4186,7 @@ impl SearchIndex {
     }
 
     fn clear_marker(&self, name: &str) -> Result<()> {
-        self.require_owned_mutation_or_unregistered()?;
+        let _marker_authority = self.require_marker_mutation()?;
         self.marker_lines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -4167,7 +4227,8 @@ impl Default for SearchIndex {
             documents: BTreeMap::new(),
             consumer_binding: None,
             consumer_binding_valid: true,
-            consumer_owned_mutation: false,
+            consumer_owner: std::sync::Weak::new(),
+            consumer_mutation_generation: None,
             consumer_receipt: Mutex::new(None),
             path: None,
             _project_files: None,
@@ -4239,6 +4300,28 @@ fn rabitq_artifacts_descending(path: &Path) -> Result<Vec<(u64, PathBuf)>> {
             artifacts.push((generation, entry.path()));
         }
     }
+    artifacts.sort_unstable_by_key(|(generation, _)| std::cmp::Reverse(*generation));
+    Ok(artifacts)
+}
+
+#[cfg(feature = "vector-search")]
+fn rabitq_artifacts_descending_under_publication(
+    publication: &out_of_core::SearchProjectionPublishLease,
+) -> Result<Vec<(u64, String)>> {
+    const MAX_REGISTERED_ARTIFACT_NAMES: usize = 4096;
+    let mut artifacts = Vec::new();
+    publication.with_captured_directory(|directory| {
+        directory.visit_children(
+            &directory.operation_context(),
+            MAX_REGISTERED_ARTIFACT_NAMES,
+            |name| {
+                if let Some(generation) = rabitq_artifact_generation(name) {
+                    artifacts.push((generation, name.to_owned()));
+                }
+                Ok(())
+            },
+        )
+    })?;
     artifacts.sort_unstable_by_key(|(generation, _)| std::cmp::Reverse(*generation));
     Ok(artifacts)
 }
@@ -4939,7 +5022,10 @@ pub fn projection_row_from_node_with_graph_metadata<S: SearchProjectionSource + 
     Ok(Some(row))
 }
 
-fn projection_row_from_node_with_business_labels(
+/// Shapes one canonical node with already collected business-label values.
+/// The caller must establish label completeness and source validity separately.
+#[doc(hidden)]
+pub fn projection_row_from_node_with_business_labels(
     catalog: &Catalog,
     node: &NodeRecord,
     labels: &[String],
@@ -4968,7 +5054,18 @@ fn projection_business_labels_for_node<S: SearchProjectionSource + ?Sized>(
 
 #[doc(hidden)]
 pub fn projection_business_label_value(label: &NodeRecord) -> Option<String> {
-    first_non_empty_string_property(label, &["canonical_name", "name", "id"])
+    projection_business_label_value_from_properties(&label.properties)
+}
+
+/// Applies the canonical business-label precedence to a decoded query node.
+#[doc(hidden)]
+pub fn projection_business_label_value_from_properties(
+    properties: &BTreeMap<String, Value>,
+) -> Option<String> {
+    ["canonical_name", "name", "id"]
+        .into_iter()
+        .filter_map(|key| properties.get(key).map(value_to_projection_string))
+        .find(|value| !value.is_empty())
 }
 
 fn search_projection_kind_from_label(label: &str) -> Option<SearchProjectionKind> {
@@ -5277,17 +5374,22 @@ pub fn search_metadata_predicate_pushdown(
         Ok(predicates) => (predicates, None),
         Err(error) => (SearchPredicateSet::unsatisfiable(), Some(error.to_string())),
     };
-    let input_predicate_count = filters.len();
-    let pushdown = push_search_predicates(&predicates, SearchScanPredicateSupport::default());
-    debug_assert!(
-        pushdown.residual().is_empty(),
-        "default search scan support should push every metadata predicate"
-    );
+    metadata_predicate_pushdown(filters.len(), predicates, parse_error)
+}
+
+fn metadata_predicate_pushdown(
+    input_predicate_count: usize,
+    predicates: SearchPredicateSet,
+    parse_error: Option<String>,
+) -> SearchMetadataPredicatePushdown {
+    // The metadata scan implements every SearchPredicateOp. Move its complete
+    // set rather than cloning it twice through an all-supported optimizer
+    // partition whose RuleEvents are immediately discarded.
     let report = SearchPredicatePushdownReport {
         input_predicate_count,
-        pushed_predicate_count: pushdown.pushed().predicates().len(),
-        residual_predicate_count: pushdown.residual().predicates().len(),
-        unsatisfiable: pushdown.pushed().is_unsatisfiable(),
+        pushed_predicate_count: predicates.predicates().len(),
+        residual_predicate_count: 0,
+        unsatisfiable: predicates.is_unsatisfiable(),
         parse_error,
         segment_count: 0,
         pruned_segment_count: 0,
@@ -5300,10 +5402,7 @@ pub fn search_metadata_predicate_pushdown(
         physical_bytes_read: 0,
         field_summaries: Vec::new(),
     };
-    SearchMetadataPredicatePushdown {
-        predicates: pushdown.pushed().clone(),
-        report,
-    }
+    SearchMetadataPredicatePushdown { predicates, report }
 }
 
 fn search_document_matches_predicates(
@@ -6016,6 +6115,27 @@ impl SearchSegmentDescriptor {
         match fs::metadata(path.join(SEARCH_SEGMENT_PAYLOAD_FILE)) {
             Ok(metadata) => {
                 Ok(metadata.len() >= last_range.offset.saturating_add(last_range.length))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn payload_artifact_is_available_under_publication(
+        &self,
+        publication: &out_of_core::SearchProjectionPublishLease,
+    ) -> Result<bool> {
+        let Some(last_range) = self
+            .segments
+            .iter()
+            .filter_map(|segment| segment.payload_range)
+            .next_back()
+        else {
+            return Ok(true);
+        };
+        match publication.open_captured_child(SEARCH_SEGMENT_PAYLOAD_FILE) {
+            Ok(file) => {
+                Ok(file.metadata()?.len() >= last_range.offset.saturating_add(last_range.length))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error.into()),
@@ -7125,16 +7245,23 @@ fn decode_search_document_line(line: &str) -> Result<SearchDocument> {
     }
 }
 
-fn write_search_segment_payloads(
+fn write_search_segment_payloads<T>(
     path: &Path,
     documents: &BTreeMap<String, SearchDocument>,
     descriptor: &mut SearchSegmentDescriptor,
-) -> Result<()> {
+    finish: impl FnOnce(&mut File) -> Result<T>,
+) -> Result<T> {
     let artifact_path = path.join(SEARCH_SEGMENT_PAYLOAD_FILE);
     let tmp_path = artifact_path.with_extension("hawdb.tmp");
     let mut offset = 0u64;
+    let reference;
     {
-        let mut file = File::create(&tmp_path)?;
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp_path)?;
         for segment in &mut descriptor.segments {
             let mut body = String::from("HAWDB_SEARCH_SEGMENT_V1\n");
             for document in documents
@@ -7162,9 +7289,10 @@ fn write_search_segment_payloads(
             })?;
         }
         file.sync_all()?;
+        reference = finish(&mut file)?;
     }
     durable_replace_file(&tmp_path, &artifact_path)?;
-    Ok(())
+    Ok(reference)
 }
 
 fn write_search_segment_descriptor(
@@ -7179,17 +7307,36 @@ fn write_search_segment_descriptor_bounded(
     descriptor: &SearchSegmentDescriptor,
     max_bytes: u64,
 ) -> Result<u64> {
+    write_search_segment_descriptor_output(path, descriptor, max_bytes, |_| Ok(()))
+        .map(|(length, ())| length)
+}
+
+fn write_search_segment_descriptor_output<T>(
+    path: &Path,
+    descriptor: &SearchSegmentDescriptor,
+    max_bytes: u64,
+    finish: impl FnOnce(&mut File) -> Result<T>,
+) -> Result<(u64, T)> {
     let encoding = document_encoding::DescriptorEncoding::new(descriptor, max_bytes)?;
     let descriptor_path = path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE);
     let tmp_path = descriptor_path.with_extension("hawdb.tmp");
+    let reference;
     {
-        let mut file = std::io::BufWriter::new(File::create(&tmp_path)?);
+        let mut file = std::io::BufWriter::new(
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)?,
+        );
         encoding.write_to(&mut file)?;
         file.flush()?;
         file.get_ref().sync_all()?;
+        reference = finish(file.get_mut())?;
     }
     durable_replace_file(&tmp_path, &descriptor_path)?;
-    Ok(encoding.len() as u64)
+    Ok((encoding.len() as u64, reference))
 }
 
 fn read_search_segment_descriptor(path: &Path) -> Result<Option<SearchSegmentDescriptor>> {
@@ -7198,6 +7345,19 @@ fn read_search_segment_descriptor(path: &Path) -> Result<Option<SearchSegmentDes
         return Ok(None);
     }
     let text = fs::read_to_string(&descriptor_path)?;
+    decode_search_segment_descriptor_text(&text).map(Some)
+}
+
+fn read_captured_search_segment_descriptor(
+    publication: &out_of_core::SearchProjectionPublishLease,
+) -> Result<Option<SearchSegmentDescriptor>> {
+    let mut file = match publication.open_captured_child(SEARCH_SEGMENT_DESCRIPTOR_FILE) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
     decode_search_segment_descriptor_text(&text).map(Some)
 }
 
@@ -7248,8 +7408,20 @@ fn encode_search_segment_descriptor_body(descriptor: &SearchSegmentDescriptor) -
 }
 
 fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDescriptor> {
+    decode_search_segment_descriptor_with_context(text, None)
+}
+
+fn decode_search_segment_descriptor_with_context(
+    text: &str,
+    task: Option<&hawdb_core::RuntimeTaskContext>,
+) -> Result<SearchSegmentDescriptor> {
     let (body, checksum) = split_checksum(text)?;
-    let actual = checksum_bytes(body.as_bytes());
+    let mut hasher = hawdb_integrity::Crc32cHasher::new();
+    for chunk in body.as_bytes().chunks(8192) {
+        task.map_or(Ok(()), build_control::checkpoint)?;
+        hasher.update(chunk);
+    }
+    let actual = hasher.finish();
     if checksum != actual {
         return Err(HawDBError::Storage(format!(
             "search segment descriptor checksum mismatch: expected {checksum}, got {actual}"
@@ -7262,14 +7434,28 @@ fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDesc
     let mut current_segment = None::<SearchSegmentDescriptorEntry>;
 
     for line in body.lines() {
+        task.map_or(Ok(()), build_control::checkpoint)?;
         if line == "HAWDB_SEARCH_SEGMENTS_V1"
             || line == "HAWDB_SEARCH_SEGMENTS_V2"
             || line == "HAWDB_SEARCH_SEGMENTS_V3"
         {
             continue;
         }
-        let fields = line.split('\t').collect::<Vec<_>>();
-        match fields.as_slice() {
+        // The longest descriptor production has nine fields. Keep the field
+        // table on the stack: rejected input may contain a tab per byte, and
+        // collecting those borrowed slices would amplify it into a large Vec.
+        let mut fields = [""; 9];
+        let mut count = 0;
+        for field in line.split('\t') {
+            let Some(slot) = fields.get_mut(count) else {
+                return Err(HawDBError::Storage(format!(
+                    "invalid search segment descriptor line: {line}"
+                )));
+            };
+            *slot = field;
+            count += 1;
+        }
+        match &fields[..count] {
             ["target_documents", raw] => {
                 target_documents = Some(parse_usize(raw, "search segment target documents")?);
             }
@@ -7666,12 +7852,16 @@ fn search_snapshot_compression_header(
 
 fn read_search_snapshot_text(path: &Path) -> Result<String> {
     let bytes = fs::read(path)?;
+    decode_search_snapshot_envelope(&bytes)
+}
+
+fn decode_search_snapshot_envelope(bytes: &[u8]) -> Result<String> {
     if !bytes.starts_with(SEARCH_COMPRESSION_HEADER.as_bytes()) {
         return Err(HawDBError::Storage(
             "search projection is missing the V1 compressed envelope".to_string(),
         ));
     }
-    decode_search_snapshot_text(&bytes)
+    decode_search_snapshot_text(bytes)
 }
 
 fn decode_search_snapshot_text(bytes: &[u8]) -> Result<String> {
@@ -10884,13 +11074,13 @@ mod tests {
         assert_eq!(probe["compressed_vector_projection"]["ready"], true);
         assert_eq!(probe["compressed_vector_projection"]["generation"], 1);
         assert!(!latest.exists());
-        assert!(!std::fs::read_dir(&path).unwrap().flatten().any(|entry| {
+        assert!(std::fs::read_dir(&path).unwrap().flatten().any(|entry| {
             entry
                 .file_name()
                 .to_string_lossy()
                 .starts_with("search_rabitq.2.hawdb.corrupt.")
         }));
-        assert!(index.projection_cleanup_report().deleted_files >= 1);
+        assert!(index.projection_cleanup_report().retry_required);
 
         let result = index
             .search_with_options_compressed_vector_projection_mode(

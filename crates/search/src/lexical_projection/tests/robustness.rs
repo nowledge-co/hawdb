@@ -128,6 +128,69 @@ fn document_membership_reads_a_validated_mapping_block() {
     assert!(error.to_string().contains("checksum mismatch"));
 }
 
+#[test]
+fn query_document_membership_refunds_refusal_and_validates_the_complete_block() {
+    let fixture = Fixture::new("query-document-membership");
+    let grant = NonZeroUsize::new(1024 * 1024).unwrap();
+    let ledger = hawdb_executor::QueryMemoryLedger::new(grant);
+    let account = ledger.account(
+        hawdb_executor::QueryMemoryClass::ExternalRead,
+        "document probe",
+        grant,
+    );
+    let task = RuntimeTaskContext::default();
+    let query = QueryContext {
+        memory: &account,
+        task: &task,
+        execution: None,
+        io_scope: None,
+    };
+    let block = fixture
+        .reader
+        .manifest
+        .blocks
+        .iter()
+        .find(|block| block.kind == BlockKind::Documents)
+        .unwrap();
+    let blocker = account
+        .reserve(grant.get() - block.length as usize + 1)
+        .unwrap();
+    assert!(matches!(
+        fixture.reader.probe_document_id_with_query("a", query),
+        Err(HawDBError::ResourceBudgetExceeded(_))
+    ));
+    assert_eq!(ledger.snapshot().used_bytes, blocker.bytes());
+    drop(blocker);
+    for id in ["a", "b", "aa", "c"] {
+        assert_eq!(
+            fixture
+                .reader
+                .probe_document_id_with_query(id, query)
+                .unwrap(),
+            fixture.reader.probe_document_id(id).unwrap()
+        );
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+    let path = fixture.root.join(&fixture.reader.manifest.artifact_file);
+    let mut artifact = fs::OpenOptions::new().write(true).open(path).unwrap();
+    artifact
+        .seek(SeekFrom::Start(block.offset + block.length - 1))
+        .unwrap();
+    artifact.write_all(&[255]).unwrap();
+    artifact.sync_all().unwrap();
+    assert!(fixture
+        .reader
+        .probe_document_id_with_query("a", query)
+        .is_err());
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    task.cancellation().cancel();
+    assert!(fixture
+        .reader
+        .probe_document_id_with_query("c", query)
+        .is_err());
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+}
+
 fn assert_delta_snapshot(
     fixture: &Fixture,
     delta: &LexicalMiniDelta,

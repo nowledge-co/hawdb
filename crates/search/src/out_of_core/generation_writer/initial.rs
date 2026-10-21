@@ -94,13 +94,12 @@ impl Totals {
     }
 }
 
-pub(super) fn finish(
-    mut writer: SearchOutOfCoreGenerationWriter,
+pub(super) fn prepare(
+    writer: &SearchOutOfCoreGenerationWriter,
     generation: u64,
 ) -> Result<SearchOutOfCoreGenerationBuildReport> {
-    // The caller has flushed the one captured source and owns the real root's
-    // publication lease. Prefix selectors below live only in this private stage.
-    let active = discovery::active(&writer.root, &writer.memory, &writer.task_context)?;
+    // The real root is not locked during partition construction. Every prefix
+    // selector below lives only in this writer's uniquely owned private stage.
     // Every stage has flat contents. Partition stages are siblings in the real
     // project, so its cleanup API can also retry a deferred partition removal.
     let private =
@@ -124,7 +123,7 @@ pub(super) fn finish(
             break;
         }
         build_range(
-            &writer,
+            writer,
             &private,
             &source,
             Range {
@@ -137,8 +136,7 @@ pub(super) fn finish(
     }
     drop(cursor);
     drop(source);
-    writer.held_spool.take();
-    let mut report = totals
+    let report = totals
         .report
         .ok_or_else(|| HawDBError::Storage("initial import has no content".into()))?;
     if report.document_count != writer.document_count
@@ -150,9 +148,21 @@ pub(super) fn finish(
             "initial partition identity differs from captured source".into(),
         ));
     }
+    Ok(report)
+}
+
+pub(super) fn publish(
+    mut writer: SearchOutOfCoreGenerationWriter,
+    active: Option<u64>,
+    mut report: SearchOutOfCoreGenerationBuildReport,
+    publication: &super::super::SearchProjectionPublishLease,
+) -> Result<SearchOutOfCoreGenerationBuildReport> {
+    // The candidate rechecked its real-root selector under the publication
+    // lease. This install retains that lease through manifest-last publication.
+    let private =
+        context_memory::OwnedPath::copy(&writer.stage.path, &writer.memory, &writer.task_context)?;
     let cleanup = PreparedCleanup::prepare(&writer.root, &writer.memory, &writer.task_context)?;
-    let (generations, manifest_bytes, retention_memory) =
-        install::publish(&writer, &private, active, &mut report)?;
+    let manifest_bytes = install::publish(&writer, &private, active, &mut report)?;
     report.manifest_bytes = manifest_bytes;
     report.generation_bytes = report
         .generation_bytes
@@ -165,13 +175,21 @@ pub(super) fn finish(
         crate::generation_cleanup::once::evidence::Point::AfterCommit,
         &writer.memory,
     );
-    let cleanup = cleanup.run(
+    let cleanup_admission = writer.memory.host_admission.as_deref().map(|permit| {
+        crate::build_memory::read::ReadAdmission {
+            memory: &writer.memory,
+            task: &writer.task_context,
+            permit: crate::build_memory::read::ReadPermit::Governed(permit),
+        }
+    });
+    let cleanup = cleanup.run_under_publication(
         &writer.root,
-        generations,
         writer.options.cleanup_options,
         &writer.task_context,
+        publication,
+        &writer.options.analyzer_lexicon,
+        cleanup_admission.as_ref(),
     );
-    drop(retention_memory);
     report.cleanup_deleted_files = cleanup.deleted_files;
     report.cleanup_pending_files = cleanup.pending_files;
     report.cleanup_pending_stages = report

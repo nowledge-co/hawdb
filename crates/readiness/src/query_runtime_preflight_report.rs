@@ -363,6 +363,7 @@ pub const fn hawdb_error_class(error: &HawDBError) -> &'static str {
         HawDBError::Storage(_)
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
+        | HawDBError::ProjectionBusy
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",

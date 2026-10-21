@@ -134,6 +134,7 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
             attributes.err().unwrap_or(exception)
         }),
         HawDBError::Execution(_)
+        | HawDBError::ProjectionBusy
         | HawDBError::TransactionReadDependencyRefused { .. }
         | HawDBError::BranchEvidenceBudgetExceeded { .. }
         | HawDBError::ReadBudgetExceeded(_)

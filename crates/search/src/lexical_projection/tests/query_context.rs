@@ -174,6 +174,8 @@ fn lexical_query_context_preserves_real_bm25_and_retains_result_charge() {
     let ledger = QueryMemoryLedger::new(budget);
     let account = ledger.account(QueryMemoryClass::ExternalRead, "text producer", budget);
     let context = QueryContext {
+        io_scope: None,
+        execution: None,
         memory: &account,
         task: &task,
     };
@@ -229,6 +231,8 @@ fn lexical_query_context_refuses_competing_budget_before_candidate_callbacks_and
     let account = ledger.account(QueryMemoryClass::ExternalRead, "text producer", budget);
     let competitor = ledger.account(QueryMemoryClass::BlockingState, "other operator", budget);
     let context = QueryContext {
+        io_scope: None,
+        execution: None,
         memory: &account,
         task: &task,
     };
@@ -280,6 +284,8 @@ fn lexical_query_context_cancellation_before_and_during_scoring_releases_every_o
         let cancellation = RuntimeCancellationToken::new();
         let task = RuntimeTaskContext::without_deadline(cancellation.clone());
         let context = QueryContext {
+            io_scope: None,
+            execution: None,
             memory: &account,
             task: &task,
         };
@@ -304,6 +310,8 @@ fn lexical_query_context_cancellation_before_and_during_scoring_releases_every_o
                 &reader,
                 &delta,
                 QueryContext {
+                    io_scope: None,
+                    execution: None,
                     memory: &account,
                     task: &task,
                 },
@@ -345,6 +353,8 @@ fn lexical_query_context_delta_ids_admit_before_copy_and_drop_unretained_ids() {
         drop(account.reserve(1).unwrap());
         let task = RuntimeTaskContext::default();
         let context = QueryContext {
+            io_scope: None,
+            execution: None,
             memory: &account,
             task: &task,
         };
@@ -394,6 +404,8 @@ fn lexical_query_context_delta_ids_admit_before_copy_and_drop_unretained_ids() {
                     &reader,
                     &delta,
                     QueryContext {
+                        io_scope: None,
+                        execution: None,
                         memory: &large_account,
                         task: &task,
                     },
@@ -441,6 +453,8 @@ fn lexical_query_context_cancellation_during_final_materialization_refuses_and_r
     drop(account.reserve(1).unwrap());
     let healthy = RuntimeTaskContext::default();
     let context = QueryContext {
+        io_scope: None,
+        execution: None,
         memory: &account,
         task: &healthy,
     };
@@ -488,6 +502,8 @@ fn lexical_query_context_cancellation_during_final_materialization_refuses_and_r
                     &reader,
                     &delta,
                     QueryContext {
+                        io_scope: None,
+                        execution: None,
                         memory: &account,
                         task: &task,
                     },
@@ -536,6 +552,8 @@ fn lexical_raw_query_terms_and_real_bm25_preserve_parity_and_retained_ownership(
     let ledger = QueryMemoryLedger::new(budget);
     let account = ledger.account(QueryMemoryClass::ExternalRead, "raw text", budget);
     let context = QueryContext {
+        io_scope: None,
+        execution: None,
         memory: &account,
         task: &task,
     };
@@ -628,6 +646,8 @@ fn lexical_raw_query_retained_charge_covers_actual_term_and_set_allocations() {
                     &analyzer,
                     reader.config.max_term_bytes,
                     QueryContext {
+                        io_scope: None,
+                        execution: None,
                         memory: &account,
                         task: &task,
                     },
@@ -673,6 +693,8 @@ fn lexical_raw_query_competing_root_refuses_before_token_copy_and_recovers() {
     let competitor = ledger.account(QueryMemoryClass::PipelineBatch, "other operator", budget);
     let competing = competitor.reserve(budget.get() - 16 * 1024).unwrap();
     let context = QueryContext {
+        io_scope: None,
+        execution: None,
         memory: &account,
         task: &task,
     };
@@ -726,6 +748,8 @@ fn lexical_raw_query_pre_and_mid_normalization_cancellation_refuse_and_recover()
     for precancel in [true, false] {
         let task = RuntimeTaskContext::default();
         let context = QueryContext {
+            io_scope: None,
+            execution: None,
             memory: &account,
             task: &task,
         };
@@ -766,6 +790,8 @@ fn lexical_raw_query_pre_and_mid_normalization_cancellation_refuse_and_recover()
                 &analyzer,
                 reader.config.max_term_bytes,
                 QueryContext {
+                    io_scope: None,
+                    execution: None,
                     memory: &account,
                     task: &healthy,
                 },
@@ -826,6 +852,8 @@ fn lexical_raw_query_cjk_uses_shared_root_and_retains_workspace_until_native_joi
             &analyzer,
             reader.config.max_term_bytes,
             QueryContext {
+                io_scope: None,
+                execution: None,
                 memory: &account,
                 task: &task,
             },
@@ -841,6 +869,8 @@ fn lexical_raw_query_cjk_uses_shared_root_and_retains_workspace_until_native_joi
             &analyzer,
             reader.config.max_term_bytes,
             QueryContext {
+                io_scope: None,
+                execution: None,
                 memory: &account,
                 task: &task,
             },

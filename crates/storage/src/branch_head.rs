@@ -525,13 +525,22 @@ impl BranchHead {
 
 /// Reads a bounded, checksummed branch head.
 pub fn read_branch_head(path: &Path) -> Result<BranchHead, BranchHeadError> {
-    let length = map_io("read branch head metadata", fs::metadata(path))?.len();
+    read_branch_head_file(map_io("open branch head", File::open(path))?)
+}
+
+pub(crate) fn read_branch_head_file(file: File) -> Result<BranchHead, BranchHeadError> {
+    let length = map_io("read branch head metadata", file.metadata())?.len();
     if length > MAX_HEAD_BYTES {
         return Err(BranchHeadError::TooLarge);
     }
-    let mut file = map_io("open branch head", File::open(path))?;
     let mut bytes = Vec::with_capacity(usize::try_from(length).unwrap_or(usize::MAX));
-    map_io("read branch head", file.read_to_end(&mut bytes))?;
+    map_io(
+        "read branch head",
+        file.take(MAX_HEAD_BYTES + 1).read_to_end(&mut bytes),
+    )?;
+    if bytes.len() as u64 > MAX_HEAD_BYTES {
+        return Err(BranchHeadError::TooLarge);
+    }
     BranchHead::decode(&bytes)
 }
 
@@ -586,21 +595,45 @@ pub fn validate_active_wal_prefix_from_file(
     if expected.generation == 0 || expected.byte_length > max_bytes {
         return Err(BranchHeadError::InvalidWalIdentity);
     }
-    let length = map_io("read active WAL metadata", fs::metadata(path))?.len();
+    validate_active_wal_prefix_from_open_file(
+        map_io("open active WAL", File::open(path))?,
+        expected,
+        max_bytes,
+    )
+    .map(drop)
+}
+
+/// Return the same admitted handle for subsequent recovery. Hash the selected
+/// prefix in bounded scratch rather than allocating its declared byte length.
+pub(crate) fn validate_active_wal_prefix_from_open_file(
+    mut file: File,
+    expected: ActiveWalIdentity,
+    max_bytes: u64,
+) -> Result<File, BranchHeadError> {
+    if expected.generation == 0 || expected.byte_length > max_bytes {
+        return Err(BranchHeadError::InvalidWalIdentity);
+    }
+    let length = map_io("read active WAL metadata", file.metadata())?.len();
     if length < expected.byte_length || length > max_bytes {
         return Err(BranchHeadError::InvalidWalIdentity);
     }
-    let prefix_len =
-        usize::try_from(expected.byte_length).map_err(|_| BranchHeadError::InvalidWalIdentity)?;
-    let mut prefix = vec![0; prefix_len];
-    let mut file = map_io("open active WAL", File::open(path))?;
-    map_io("read active WAL prefix", file.read_exact(&mut prefix))?;
+    map_io("rewind active WAL", std::io::Seek::rewind(&mut file))?;
+    let mut remaining = expected.byte_length;
+    let mut bytes = [0u8; 8 * 1024];
     let mut hasher = IntegrityHasher::new();
-    hasher.update(&prefix);
+    while remaining != 0 {
+        let take = usize::try_from(remaining.min(bytes.len() as u64)).unwrap();
+        map_io(
+            "read active WAL prefix",
+            file.read_exact(&mut bytes[..take]),
+        )?;
+        hasher.update(&bytes[..take]);
+        remaining -= take as u64;
+    }
     if hasher.finish().sha256 != expected.sha256 {
         return Err(BranchHeadError::InvalidWalIdentity);
     }
-    Ok(())
+    Ok(file)
 }
 
 /// Switches a branch head after [`PreparedWalRotation`] has made the
@@ -818,6 +851,76 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("hawdb-head-{label}-{nanos}"))
+    }
+
+    #[test]
+    fn opened_head_reader_keeps_original_file_after_namespace_replacement() {
+        let path = path("held-reader");
+        let moved = path.with_extension("held");
+        let original = sample();
+        fs::write(&path, original.encode().unwrap()).unwrap();
+        let file = File::open(&path).unwrap();
+        std::fs::rename(&path, &moved).unwrap();
+        let mut replacement = original;
+        replacement.logical_commit_epoch += 1;
+        fs::write(&path, replacement.encode().unwrap()).unwrap();
+        assert_eq!(read_branch_head_file(file).unwrap(), original);
+        assert_eq!(read_branch_head(&path).unwrap(), replacement);
+        fs::remove_file(path).unwrap();
+        fs::remove_file(moved).unwrap();
+    }
+
+    #[test]
+    fn opened_head_reader_bounds_the_held_file_instead_of_replacement_length() {
+        let path = path("held-length");
+        let moved = path.with_extension("held");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_HEAD_BYTES + 1).unwrap();
+        drop(file);
+        let held = File::open(&path).unwrap();
+        std::fs::rename(&path, &moved).unwrap();
+        fs::write(&path, sample().encode().unwrap()).unwrap();
+        assert!(matches!(
+            read_branch_head_file(held),
+            Err(BranchHeadError::TooLarge)
+        ));
+        assert_eq!(read_branch_head(&path).unwrap(), sample());
+        fs::remove_file(path).unwrap();
+        fs::remove_file(moved).unwrap();
+    }
+
+    #[test]
+    fn opened_wal_prefix_returns_same_file_for_cursor_after_replacement() {
+        let path = path("held-wal");
+        let moved = path.with_extension("held");
+        let bytes = crate::wal::frame::encode_binary_wal_header(7, 42);
+        fs::write(&path, &bytes).unwrap();
+        let expected = ActiveWalIdentity {
+            generation: 7,
+            replay_start_lsn: 42,
+            byte_length: bytes.len() as u64,
+            sha256: hawdb_integrity::sha256(&bytes),
+        };
+        let held = File::open(&path).unwrap();
+        std::fs::rename(&path, &moved).unwrap();
+        fs::write(&path, b"foreign WAL must not be read").unwrap();
+        let held = validate_active_wal_prefix_from_open_file(held, expected, 1024).unwrap();
+        let crate::wal::WalOpenOutcome::Cursor(mut cursor) =
+            crate::wal::WalRecordCursor::from_file(held, None).unwrap()
+        else {
+            panic!("original header lost");
+        };
+        assert_eq!(cursor.generation(), 7);
+        assert_eq!(cursor.start_lsn(), 42);
+        assert!(matches!(
+            cursor.next().unwrap(),
+            crate::wal::WalCursorEvent::Eof
+        ));
+        assert!(cursor.require_native_path(&path).is_err());
+        drop(cursor.into_file());
+        assert!(validate_active_wal_prefix_from_file(&path, expected, 1024).is_err());
+        fs::remove_file(path).unwrap();
+        fs::remove_file(moved).unwrap();
     }
 
     #[test]

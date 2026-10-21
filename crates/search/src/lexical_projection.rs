@@ -52,16 +52,20 @@ pub(crate) use source::DocumentSource;
 mod documents;
 use documents::DocumentLookup;
 mod query_context;
-use query_context::AccountedQueryReport;
+pub(super) use query_context::AccountedQueryReport;
 pub(super) use query_context::{QueryContext, ScoringInputs};
 mod corpus_query;
 pub(super) use corpus_query::AccountedCorpusStatistics;
 mod raw_query;
 mod spill_control;
+#[cfg(test)]
+pub(crate) use spill_control::take_captured_io;
 use spill_control::Control as SpillControl;
 mod spill_memory;
 use spill_memory::{PendingPostings, RunPosting};
 mod manifest_encoding;
+mod reader_admission;
+pub(super) use reader_admission::{Identity as ReaderIdentity, OpenContext as ReaderOpenContext};
 mod posting_codec;
 
 #[cfg(test)]
@@ -132,6 +136,41 @@ pub(super) fn analyzer_digest(analyzer: &SearchAnalyzerLexicon) -> u64 {
         digest.update(&[0]);
     }
     digest.finish()
+}
+
+pub(super) fn analyzer_digest_with_context(
+    analyzer: &SearchAnalyzerLexicon,
+    task: &RuntimeTaskContext,
+) -> Result<u64> {
+    let mut digest = Digest::new();
+    let mut update = |bytes: &[u8]| -> Result<()> {
+        for chunk in bytes.chunks(8192) {
+            checkpoint(task)?;
+            digest.update(chunk);
+        }
+        Ok(())
+    };
+    checkpoint(task)?;
+    update(ANALYZER_FORMAT_VERSION)?;
+    for rule in &analyzer.alias_rules {
+        checkpoint(task)?;
+        for input in &rule.inputs {
+            update(input.as_bytes())?;
+            update(&[0])?;
+        }
+        update(&[1])?;
+        for alias in &rule.aliases {
+            update(alias.as_bytes())?;
+            update(&[0])?;
+        }
+        update(&[2])?;
+    }
+    for stopword in &analyzer.stopwords {
+        update(stopword.as_bytes())?;
+        update(&[0])?;
+    }
+    checkpoint(task)?;
+    Ok(digest.finish())
 }
 
 /// An order-independent document-set identity used to join immutable search artifacts.
@@ -410,9 +449,10 @@ impl ManifestBody {
 
     fn decode_with_context(bytes: &[u8], task: Option<&RuntimeTaskContext>) -> Result<Self> {
         task.map_or(Ok(()), checkpoint)?;
-        let envelope: ManifestEnvelope = serde_json::from_slice(bytes)
-            .map_err(|error| HawDBError::Storage(format!("invalid lexical manifest: {error}")))?;
+        let envelope = serde_json::from_slice::<ManifestEnvelope>(bytes);
         task.map_or(Ok(()), checkpoint)?;
+        let envelope = envelope
+            .map_err(|error| HawDBError::Storage(format!("invalid lexical manifest: {error}")))?;
         if manifest_encoding::checksum_with_context(&envelope.body, task)? != envelope.checksum {
             return Err(HawDBError::Storage(
                 "lexical projection manifest checksum mismatch".to_string(),
@@ -1023,17 +1063,35 @@ impl LexicalCorpusStatistics {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ProducerReferences {
+    pub(super) manifest: hawdb_storage::immutable_object::ObjectReference,
+    pub(super) artifact: hawdb_storage::immutable_object::ObjectReference,
+}
+
 #[derive(Debug)]
 pub(super) struct LexicalProjectionReader {
     manifest: ManifestBody,
     file: Arc<File>,
     config: LexicalProjectionConfig,
     required_term_bytes: u64,
+    producer_references: Option<ProducerReferences>,
     // Only build-created readers retain an operation-owned metadata lease.
     _build_memory: Option<QueryMemoryLease>,
+    // Admitted immutable readers retain capacity without construction execution.
+    _reader_memory: Option<crate::build_memory::read::ReaderMemory>,
+}
+
+enum ManifestFile<'a> {
+    Path(&'a Path),
+    Held(File),
 }
 
 impl LexicalProjectionReader {
+    pub(super) fn producer_references(&self) -> Option<ProducerReferences> {
+        self.producer_references
+    }
+
     /// Reconstruct a version's exact contribution with this reader's analyzer
     /// admission limits. Used before accepting an immutable mutation retraction.
     #[cfg(test)]
@@ -1074,6 +1132,37 @@ impl LexicalProjectionReader {
             expected_analyzer_digest,
             expected_documents_digest,
             config,
+        )
+    }
+
+    pub(super) fn load_under_publication(
+        publication: &crate::out_of_core::SearchProjectionPublishLease,
+        expected_source_epoch: Option<u64>,
+        expected_analyzer_digest: u64,
+        expected_documents_digest: u64,
+        config: LexicalProjectionConfig,
+    ) -> Result<Option<Arc<Self>>> {
+        let file = match publication.open_captured_child(MANIFEST_FILE) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let bytes = crate::bounded_file::read_bounded_open_file(
+            file,
+            MANIFEST_FILE,
+            config.max_manifest_bytes.get(),
+        )?;
+        let manifest = ManifestBody::decode(&bytes)?;
+        let artifact = publication.open_captured_child(&manifest.artifact_file)?;
+        Self::load_decoded_manifest(
+            ManifestFile::Held(artifact),
+            manifest,
+            expected_source_epoch,
+            expected_analyzer_digest,
+            expected_documents_digest,
+            config,
+            None,
+            None,
         )
     }
 
@@ -1125,7 +1214,39 @@ impl LexicalProjectionReader {
         let manifest = ManifestBody::decode(bytes)?;
         let artifact_path = root.join(&manifest.artifact_file);
         Self::load_decoded_manifest(
-            &artifact_path,
+            ManifestFile::Path(&artifact_path),
+            manifest,
+            expected_source_epoch,
+            expected_analyzer_digest,
+            expected_documents_digest,
+            config,
+            None,
+            None,
+        )
+    }
+
+    pub(super) fn load_captured_manifest_bytes(
+        bytes: &[u8],
+        expected_source_epoch: Option<u64>,
+        expected_analyzer_digest: u64,
+        expected_documents_digest: u64,
+        config: LexicalProjectionConfig,
+        file: File,
+        generation: u64,
+    ) -> Result<Option<Arc<Self>>> {
+        if bytes.len() as u64 > config.max_manifest_bytes.get() {
+            return Err(HawDBError::Execution(
+                "captured lexical manifest exceeds read ceiling".into(),
+            ));
+        }
+        let manifest = ManifestBody::decode(bytes)?;
+        if manifest.generation != generation {
+            return Err(HawDBError::StorageIntegrity(
+                "captured lexical generation mismatch".into(),
+            ));
+        }
+        Self::load_decoded_manifest(
+            ManifestFile::Held(file),
             manifest,
             expected_source_epoch,
             expected_analyzer_digest,
@@ -1138,7 +1259,7 @@ impl LexicalProjectionReader {
 
     #[allow(clippy::too_many_arguments)]
     fn load_decoded_manifest(
-        artifact_path: &Path,
+        artifact_file: ManifestFile<'_>,
         decoded: ManifestBody,
         expected_source_epoch: Option<u64>,
         expected_analyzer_digest: u64,
@@ -1168,7 +1289,10 @@ impl LexicalProjectionReader {
                 ));
             }
         }
-        let file = File::open(artifact_path)?;
+        let file = match artifact_file {
+            ManifestFile::Path(path) => File::open(path)?,
+            ManifestFile::Held(file) => file,
+        };
         if file.metadata()?.len() != manifest.artifact_len {
             return Err(HawDBError::Storage(
                 "lexical projection artifact length mismatch".to_string(),
@@ -1200,7 +1324,9 @@ impl LexicalProjectionReader {
             file: Arc::new(file),
             config,
             required_term_bytes,
+            producer_references: None,
             _build_memory: build_memory,
+            _reader_memory: None,
         })))
     }
 
@@ -2579,6 +2705,7 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
             manifest,
             artifact.memory,
             &paths,
+            artifact.object,
             self.config,
             &memory,
             &task,
@@ -2591,6 +2718,7 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
 struct RemoveOnDrop {
     path: PathBuf,
     armed: bool,
+    control: Option<SpillControl>,
     _memory: Option<crate::build_memory::reserved::Grant>,
 }
 
@@ -2600,6 +2728,11 @@ impl RemoveOnDrop {
     }
 
     fn remove(&mut self) -> Result<()> {
+        if let Some(control) = &self.control {
+            control.with_path(&self.path, || control.remove(&self.path))?;
+            self.disarm();
+            return Ok(());
+        }
         native_path::with_scratch(
             self._memory.as_ref().map(Grant::reservation),
             &self.path,
@@ -2639,22 +2772,47 @@ trait SpillIo {
 
     fn create(&mut self, path: &Path) -> Result<Self::Writer>;
     fn remove(&mut self, path: &Path) -> Result<()>;
+    fn create_in(&mut self, path: &Path, control: &SpillControl) -> Result<Self::Writer> {
+        if control.captured() {
+            return Err(HawDBError::Execution(
+                "spill I/O backend does not support captured creation".into(),
+            ));
+        }
+        self.create(path)
+    }
+    fn remove_in(&mut self, path: &Path, control: &SpillControl) -> Result<()> {
+        if control.captured() {
+            return Err(HawDBError::Execution(
+                "spill I/O backend does not support captured removal".into(),
+            ));
+        }
+        self.remove(path)
+    }
 }
 
 struct FileSpillIo;
 
 impl SpillIo for FileSpillIo {
-    type Writer = BufWriter<File>;
+    type Writer = BufWriter<crate::out_of_core::SpillFile>;
 
     fn create(&mut self, path: &Path) -> Result<Self::Writer> {
         Ok(BufWriter::with_capacity(
             SPILL_IO_BUFFER_BYTES,
-            File::create(path)?,
+            crate::out_of_core::SpillFile::Legacy(File::create(path)?),
         ))
     }
 
     fn remove(&mut self, path: &Path) -> Result<()> {
         Ok(fs::remove_file(path)?)
+    }
+    fn create_in(&mut self, path: &Path, control: &SpillControl) -> Result<Self::Writer> {
+        Ok(BufWriter::with_capacity(
+            SPILL_IO_BUFFER_BYTES,
+            control.create(path)?,
+        ))
+    }
+    fn remove_in(&mut self, path: &Path, control: &SpillControl) -> Result<()> {
+        control.remove(path)
     }
 }
 
@@ -2689,7 +2847,7 @@ impl<W: Write> SpillRunWriter<W> {
         control.check()?;
         let total_bytes = checked_spill_bytes(previous_bytes, RUN_HEADER.len() as u64, limit)?;
         let buffer_memory = control.reserve(SPILL_IO_BUFFER_BYTES)?;
-        let mut writer = control.with_path(path, || io.create(path))?;
+        let mut writer = control.with_path(path, || io.create_in(path, control))?;
         writer.write_all(RUN_HEADER)?;
         Ok(Self {
             writer,
@@ -2828,7 +2986,7 @@ impl SpillRuns {
                     native_path::with_scratch(
                         source._memory.as_ref().map(Grant::reservation),
                         &source.path,
-                        || io.remove(&source.path),
+                        || io.remove_in(&source.path, &self.control),
                     )?;
                     source.disarm();
                 }
@@ -2858,7 +3016,7 @@ impl SpillRuns {
 }
 
 struct RunReader {
-    reader: BufReader<File>,
+    reader: BufReader<crate::out_of_core::SpillFile>,
     config: LexicalProjectionConfig,
     control: SpillControl,
     _buffer_memory: Option<crate::build_memory::reserved::Grant>,
@@ -2877,7 +3035,7 @@ impl RunReader {
     ) -> Result<Self> {
         control.check()?;
         let memory = control.reserve(SPILL_IO_BUFFER_BYTES)?;
-        let file = control.with_path(path, || Ok(File::open(path)?))?;
+        let file = control.with_path(path, || control.open(path))?;
         let mut reader = BufReader::with_capacity(SPILL_IO_BUFFER_BYTES, file);
         let mut header = [0u8; 8];
         reader.read_exact(&mut header)?;
@@ -3334,13 +3492,17 @@ impl<'a> SliceCursor<'a> {
     }
 
     fn string(&mut self, max: u64) -> Result<String> {
+        self.borrowed_string(max).map(str::to_owned)
+    }
+
+    fn borrowed_string(&mut self, max: u64) -> Result<&'a str> {
         let length = self.u32()? as usize;
         if length as u64 > max {
             return Err(HawDBError::Storage(format!(
                 "lexical string uses {length} bytes, exceeding {max}"
             )));
         }
-        String::from_utf8(self.bytes(length)?.to_vec())
+        std::str::from_utf8(self.bytes(length)?)
             .map_err(|error| HawDBError::Storage(format!("invalid lexical UTF-8: {error}")))
     }
 

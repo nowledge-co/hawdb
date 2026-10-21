@@ -727,12 +727,14 @@ mod tests {
         let error = database
             .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child.id)])
             .unwrap_err();
+        // Admission funds three directory/lock pairs, one WAL and four
+        // temporaries. Query read waves obtain capacity after admission.
         assert!(
             matches!(
                 error,
                 HawDBError::FileDescriptors(
                     hawdb_core::error::FileDescriptorError::BudgetExceeded {
-                        requested: 24,
+                        requested: 11,
                         available: 4,
                         limit: 32
                     }
@@ -2729,6 +2731,19 @@ fn request_fingerprint(request: &BranchCreateRequest) -> [u8; 32] {
 }
 
 impl Database {
+    fn project_metadata_for_mutation(
+        &self,
+    ) -> crate::error::Result<hawdb_storage::branch_project::ProjectMetadata> {
+        if let Some(project) = self.runtime.captured_project() {
+            project.require_original_namespace()?;
+            return project.metadata();
+        }
+        let root = self.project_root_path.as_ref().ok_or_else(|| {
+            HawDBError::Storage("branch metadata requires a persistent project".into())
+        })?;
+        hawdb_storage::branch_project::ProjectMetadata::open(root, self.config.max_open_files)
+    }
+
     /// The last pending-create scan, including incomplete outcomes. Read-only
     /// and in-memory opens do not scan and return `None`. This admits no data.
     pub fn branch_create_recovery_report(&self) -> Option<&super::BranchCreateRecoveryReport> {
@@ -2742,11 +2757,7 @@ impl Database {
         limits: super::BranchCreateRecoveryLimits,
     ) -> crate::error::Result<super::BranchCreateRecoveryReport> {
         self.ensure_branch_writable()?;
-        let root = self.project_root_path.as_ref().ok_or_else(|| {
-            HawDBError::Storage("pending branch recovery requires a persistent project".into())
-        })?;
-        let metadata =
-            hawdb_storage::branch_project::ProjectMetadata::open(root, self.config.max_open_files)?;
+        let metadata = self.project_metadata_for_mutation()?;
         let report = metadata.recover_pending_creates(limits)?;
         self.branch_create_recovery = Some(report.clone());
         Ok(report)
@@ -2762,11 +2773,7 @@ impl Database {
     ) -> crate::error::Result<BranchAbandonmentPlan> {
         self.ensure_branch_writable()?;
         self.ensure_branch_work_idle()?;
-        let root = self.project_root_path.as_ref().ok_or_else(|| {
-            HawDBError::Storage("branch abandonment requires a persistent project".into())
-        })?;
-        let metadata =
-            hawdb_storage::branch_project::ProjectMetadata::open(root, self.config.max_open_files)?;
+        let metadata = self.project_metadata_for_mutation()?;
         metadata.inspect_pending_branch_abandonment(branch_id, limits)
     }
 
@@ -2778,11 +2785,7 @@ impl Database {
     ) -> crate::error::Result<BranchAbandonmentReport> {
         self.ensure_branch_writable()?;
         self.ensure_branch_work_idle()?;
-        let root = self.project_root_path.as_ref().ok_or_else(|| {
-            HawDBError::Storage("branch abandonment requires a persistent project".into())
-        })?;
-        let metadata =
-            hawdb_storage::branch_project::ProjectMetadata::open(root, self.config.max_open_files)?;
+        let metadata = self.project_metadata_for_mutation()?;
         metadata.abandon_pending_branch(acknowledgement)
     }
 
@@ -2890,6 +2893,19 @@ impl Database {
         &self,
         record: &storage::BranchRecord,
     ) -> Result<hawdb_storage::store::AdmittedBranchStore, BranchLifecycleError> {
+        if let Some(project) = self.runtime.captured_project() {
+            return hawdb_storage::store::GraphStore::admit_captured_branch(
+                hawdb_storage::store::CapturedBranchAdmissionRequest {
+                    project,
+                    branch_id: record.id,
+                    expected_metadata_revision: record.metadata_revision,
+                    durability: self.durability,
+                    replay_config: self.branch_replay_config(),
+                    read_only: self.config.read_only,
+                },
+            )
+            .map_err(BranchLifecycleError::Admission);
+        }
         let catalog_path = self.branch_catalog_path()?;
         let head_path = self.branch_head_path(record.id.as_uuid())?;
         let objects = catalog_path
@@ -3021,6 +3037,9 @@ impl Database {
                 candidate.runtime_governor.clone(),
             )
             .map_err(BranchLifecycleError::Runtime)?;
+        candidate
+            .runtime
+            .retain_project_capture(self.runtime.captured_project().cloned());
         self.runtime = candidate.runtime;
         Ok(())
     }
@@ -3046,6 +3065,12 @@ impl Database {
     }
 
     fn read_branch_catalog(&self) -> Result<storage::Catalog, BranchLifecycleError> {
+        if let Some(project) = self.runtime.captured_project() {
+            return project
+                .metadata()
+                .map(hawdb_storage::branch_project::ProjectMetadata::into_catalog)
+                .map_err(BranchLifecycleError::Runtime);
+        }
         storage::read_catalog(&self.branch_catalog_path()?).map_err(BranchLifecycleError::CatalogIo)
     }
 

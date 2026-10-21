@@ -14,13 +14,12 @@
 
 //! Complete reads use the same held artifact closure and visibility as serving.
 
+use super::hydration::read_record;
 use super::*;
 use crate::build_memory::{reserve_capacity, BuildMemory};
 use crate::projection_scan::{add, checkpoint, payload_bytes};
 use crate::{SearchProjectionScanBudget, SearchProjectionScanReport};
 use hawdb_core::RuntimeTaskContext;
-use hawdb_executor::QueryMemoryLease;
-use std::io::BufRead;
 
 type ProjectionVisitor<'a> = &'a mut dyn FnMut(&SearchDocument) -> Result<()>;
 
@@ -196,46 +195,6 @@ impl SearchOutOfCoreReader {
 
 fn invalid(reason: &str) -> HawDBError {
     HawDBError::Storage(format!("projection scan {reason}"))
-}
-
-fn read_record(
-    text: &mut dyn BufRead,
-    line: &mut Vec<u8>,
-    limit: usize,
-    task: &RuntimeTaskContext,
-    memory: &mut QueryMemoryLease,
-) -> Result<bool> {
-    line.clear();
-    loop {
-        checkpoint(task)?;
-        let available = text.fill_buf()?;
-        if available.is_empty() {
-            return Ok(!line.is_empty());
-        }
-        let count = available
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(available.len(), |at| at + 1);
-        if add(line.len(), count)? > limit {
-            return Err(invalid("encoded record exceeds scratch cap"));
-        }
-        let chunk = std::str::from_utf8(&available[..count])
-            .map_err(|_| invalid("non-ASCII encoded record"))?;
-        if !chunk.is_ascii() {
-            return Err(invalid("non-ASCII encoded record"));
-        }
-        let required = add(line.len(), count)?;
-        if required > line.capacity() {
-            let capacity = required.max(line.capacity().saturating_mul(2)).min(limit);
-            reserve_capacity(line, capacity, memory)?;
-        }
-        line.extend_from_slice(chunk.as_bytes());
-        let done = chunk.ends_with('\n');
-        text.consume(count);
-        if done {
-            return Ok(true);
-        }
-    }
 }
 
 fn encoded_record_size(record: &str) -> Result<(&str, usize, usize)> {

@@ -4,17 +4,6 @@
 use super::*;
 use crate::document_encoding::legacy_encode;
 
-fn assert_record(
-    record: &spool::SpoolRecord,
-    expected: &SearchDocument,
-    memory: &BuildMemory,
-    task: &RuntimeTaskContext,
-) {
-    let mut encoded = Vec::new();
-    record.write_to(&mut encoded, memory, task).unwrap();
-    assert_eq!(encoded, legacy_encode(expected).as_bytes());
-}
-
 fn replacement_input_keeps_original_documents(partitioned: bool) {
     let root = test_dir("held_generation_spool");
     struct Cleanup(PathBuf);
@@ -75,15 +64,12 @@ fn held_generation_spool_partitioned_ignores_same_length_valid_foreign_input() {
 #[test]
 fn held_generation_spool_cursors_share_one_file_and_keep_independent_positions() {
     use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+    use hawdb_storage::file_io::SourceDirectory;
     let root = test_dir("held_generation_spool_cursors");
-    let project = ProjectFileDescriptors::acquire(&root, 1).unwrap();
+    let project = ProjectFileDescriptors::acquire(&root, 2).unwrap();
     let context = project.io_context();
-    let mut file = context
-        .open(
-            OpenOptions::new().create_new(true).read(true).write(true),
-            &root.join("input.hawdb"),
-        )
-        .unwrap();
+    let directory = SourceDirectory::capture(&root, &context).unwrap();
+    let mut file = directory.create_child_new(&context, "input.hawdb").unwrap();
     let mut bytes = SPOOL_HEADER.to_vec();
     let documents = [document(0), document(1)];
     for doc in &documents {
@@ -107,38 +93,42 @@ fn held_generation_spool_cursors_share_one_file_and_keep_independent_positions()
     };
     let mut left = source.cursor(&task).unwrap();
     let mut right = source.cursor(&task).unwrap();
-    assert_eq!(project.metrics().open, 1);
+    assert_eq!(project.metrics().open, 2);
     let retained_record = left.next().unwrap().unwrap();
-    assert_record(&retained_record, &documents[0], &memory, &task);
-    assert_record(
-        &left.next().unwrap().unwrap(),
-        &documents[1],
-        &memory,
-        &task,
-    );
-    assert_record(
-        &right.next().unwrap().unwrap(),
-        &documents[0],
-        &memory,
-        &task,
-    );
+    retained_record
+        .require_document(&documents[0], &memory, &task)
+        .unwrap();
+    left.next()
+        .unwrap()
+        .unwrap()
+        .require_document(&documents[1], &memory, &task)
+        .unwrap();
+    right
+        .next()
+        .unwrap()
+        .unwrap()
+        .require_document(&documents[0], &memory, &task)
+        .unwrap();
     drop(source);
-    assert_eq!(project.metrics().open, 1);
-    assert_record(
-        &right.next().unwrap().unwrap(),
-        &documents[1],
-        &memory,
-        &task,
-    );
+    assert_eq!(project.metrics().open, 2);
+    right
+        .next()
+        .unwrap()
+        .unwrap()
+        .require_document(&documents[1], &memory, &task)
+        .unwrap();
     assert!(left.next().unwrap().is_none());
     assert!(right.next().unwrap().is_none());
     drop((left, right));
     // A record/body reference is also a real native owner after its cursor ends.
-    assert_eq!(project.metrics().open, 1);
-    assert_record(&retained_record, &documents[0], &memory, &task);
+    assert_eq!(project.metrics().open, 2);
+    retained_record
+        .require_document(&documents[0], &memory, &task)
+        .unwrap();
     drop(retained_record);
-    assert_eq!(project.metrics().open, 0);
+    assert_eq!(project.metrics().open, 1);
     assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    drop(directory);
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -153,7 +143,8 @@ fn held_generation_spool_requires_its_live_owner_instead_of_falling_back_to_a_pa
     assert!(writer.input_source().is_ok());
     writer.held_spool.take();
     assert!(writer.input_source().is_err());
-    assert!(super::super::initial::finish(writer, 1).is_err());
+    assert!(super::super::initial::prepare(&writer, 1).is_err());
+    drop(writer);
     std::fs::remove_dir_all(root).unwrap();
 }
 

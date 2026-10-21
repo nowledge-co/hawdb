@@ -161,6 +161,22 @@ fn verified_build_reader_retains_metadata_until_its_last_clone_drops() {
     let fixture = Fixture::new();
     let (memory, task) = context(16 * 1024 * 1024);
     let reader = write(&fixture, 1, &memory, &task).unwrap();
+    let producer = reader
+        .producer_references()
+        .expect("writer holds original references");
+    for (name, reference) in [
+        (MANIFEST_FILE, producer.manifest),
+        (reader.manifest.artifact_file.as_str(), producer.artifact),
+    ] {
+        assert_eq!(
+            reference,
+            hawdb_storage::immutable_object::ObjectReference::for_bytes(
+                hawdb_storage::immutable_object::ObjectKind::CheckpointArtifact,
+                1,
+                &fs::read(fixture.0.join(name)).unwrap()
+            )
+        );
+    }
     let actual = retained_bytes(&reader.manifest, &task).unwrap();
     assert_eq!(memory.ledger.snapshot().used_bytes, actual);
     let other = Arc::clone(&reader);
@@ -170,6 +186,10 @@ fn verified_build_reader_retains_metadata_until_its_last_clone_drops() {
         LexicalProjectionReader::load(&fixture.0, None, 11, 13, Default::default())
             .unwrap()
             .unwrap();
+    assert!(
+        default_reader.producer_references().is_none(),
+        "reopen cannot mint producer custody"
+    );
     assert_eq!(other.manifest, default_reader.manifest);
     let query = other
         .tokenize_query(
@@ -264,6 +284,7 @@ fn decode_output_and_scratch_admission_precede_manifest_file_creation() {
             body,
             artifact.memory,
             &paths,
+            artifact.object,
             Default::default(),
             &memory,
             &task,

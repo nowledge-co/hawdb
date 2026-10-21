@@ -13,8 +13,11 @@
 // limitations under the License.
 
 use super::{BoundedScoreCollector, CandidateSet, SearchOutOfCoreMetrics, SearchOutOfCoreReader};
+use crate::build_memory::{checked_add as add, SET_ENTRY_BYTES};
 use crate::error::{HawDBError, Result};
+use crate::lexical_projection::QueryContext;
 use crate::{cosine_similarity, CompressedVectorSearchMode, SearchFallbackReasonCode};
+use hawdb_executor::QueryMemoryLease;
 #[cfg(feature = "vector-search")]
 use std::cmp::{Ordering, Reverse};
 #[cfg(feature = "vector-search")]
@@ -185,7 +188,7 @@ impl BoundedLayeredProjectionHits {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct VectorScoreScan {
     pub(super) scores: BTreeMap<String, f64>,
     pub(super) matching_count: usize,
@@ -207,6 +210,7 @@ pub(super) struct VectorScoreScan {
     pub(super) candidate_scan_admitted_working_bytes: usize,
     pub(super) fallback_reason_codes: Vec<SearchFallbackReasonCode>,
     pub(super) fallback_reasons: Vec<String>,
+    pub(super) _memory: Option<QueryMemoryLease>,
 }
 
 impl Default for VectorScoreScan {
@@ -232,29 +236,37 @@ impl Default for VectorScoreScan {
             candidate_scan_admitted_working_bytes: 0,
             fallback_reason_codes: Vec::new(),
             fallback_reasons: Vec::new(),
+            _memory: None,
         }
     }
+}
+
+pub(super) struct ScanOptions<'a> {
+    pub(super) compressed: CompressedVectorSearchMode,
+    pub(super) execution: super::VectorSearchExecutionOptions<'a>,
+    pub(super) query: Option<QueryContext<'a>>,
 }
 
 impl SearchOutOfCoreReader {
     pub(super) fn scan_vector_scores(
         &self,
         query_embedding: &[f32],
-        candidate_set: &CandidateSet,
+        candidate_set: &CandidateSet<'_>,
         retained_limit: Option<usize>,
-        compressed_vector_search_mode: CompressedVectorSearchMode,
-        vector_execution_options: super::VectorSearchExecutionOptions<'_>,
+        options: ScanOptions<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
+        let vector_execution_options = options.execution;
         let task_context = vector_execution_options.task_context;
         checkpoint_vector_task(task_context)?;
-        match compressed_vector_search_mode {
+        match options.compressed {
             CompressedVectorSearchMode::Disabled => self.scan_scalar_vector_scores(
                 query_embedding,
                 candidate_set,
                 retained_limit,
                 vector_execution_options,
                 metrics,
+                options.query,
             ),
             CompressedVectorSearchMode::Preferred => {
                 #[cfg(feature = "vector-search")]
@@ -279,6 +291,7 @@ impl SearchOutOfCoreReader {
                                 retained_limit,
                                 vector_execution_options,
                                 metrics,
+                                options.query,
                             )?;
                             scan.fallback_reason_codes
                                 .push(SearchFallbackReasonCode::CompressedVectorBudgetExceeded);
@@ -301,6 +314,7 @@ impl SearchOutOfCoreReader {
                     retained_limit,
                     vector_execution_options,
                     metrics,
+                    options.query,
                 )?;
                 scan.fallback_reason_codes
                     .push(SearchFallbackReasonCode::CompressedVectorProjectionUnavailable);
@@ -338,10 +352,11 @@ impl SearchOutOfCoreReader {
     fn scan_scalar_vector_scores(
         &self,
         query_embedding: &[f32],
-        candidate_set: &CandidateSet,
+        candidate_set: &CandidateSet<'_>,
         retained_limit: Option<usize>,
         vector_execution_options: super::VectorSearchExecutionOptions<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
+        context: Option<QueryContext<'_>>,
     ) -> Result<VectorScoreScan> {
         let task_context = vector_execution_options.task_context;
         let max_scored_documents = admitted_score_entries(
@@ -353,9 +368,19 @@ impl SearchOutOfCoreReader {
                 "search vector uniqueness check exceeds the admitted working memory".to_string(),
             ));
         }
-        let mut collector = BoundedScoreCollector::new(retained_limit, max_scored_documents)?;
+        let mut collector = match context {
+            Some(context) => BoundedScoreCollector::with_context(
+                retained_limit,
+                max_scored_documents,
+                Some(context),
+            )?,
+            None => BoundedScoreCollector::new(retained_limit, max_scored_documents)?,
+        };
         let mut vector_document_count = 0usize;
         let mut segment_scan_count = 0usize;
+        let mut id_memory = context
+            .map(|context| context.memory.reserve(0))
+            .transpose()?;
         let mut scored_document_ids = BTreeSet::new();
         for (layer, artifact) in self.segments.iter().enumerate() {
             for segment in &artifact.descriptor.segments {
@@ -364,45 +389,72 @@ impl SearchOutOfCoreReader {
                     continue;
                 }
                 segment_scan_count = segment_scan_count.saturating_add(1);
-                let documents = self.read_vector_segment(artifact, segment, metrics)?;
-                for document in &documents {
+                let mut vector_bytes_read = 0u64;
+                let mut candidate_metrics = SearchOutOfCoreMetrics::default();
+                let mut score = |document: &super::SearchVectorDocument| {
                     if !self
                         .visibility
                         .is_visible(artifact.content_segment_id, &document.id)
-                        || !candidate_set.contains(&document.id, metrics)?
+                        || !candidate_set.contains(&document.id, &mut candidate_metrics)?
                     {
-                        continue;
+                        return Ok(());
                     }
                     let embedding = document.embedding.as_slice();
                     if embedding.len() != query_embedding.len() || embedding.is_empty() {
-                        continue;
+                        return Ok(());
                     }
-                    if !scored_document_ids.insert(document.id.clone()) {
+                    if scored_document_ids.contains(&document.id) {
                         return Err(HawDBError::Storage(format!(
                             "search out-of-core segment set has duplicate document {}",
                             document.id
                         )));
                     }
-                    if scored_document_ids.len() > max_scored_documents {
+                    if scored_document_ids.len() == max_scored_documents {
                         return Err(HawDBError::Storage(format!(
                             "search vector uniqueness check requires more than {max_scored_documents} document ids"
                         )));
                     }
+                    if let Some(memory) = &mut id_memory {
+                        memory.grow(add(SET_ENTRY_BYTES, document.id.len())?)?;
+                    }
+                    scored_document_ids.insert(document.id.clone());
                     vector_document_count = vector_document_count.saturating_add(1);
-                    metrics.vector_bytes_read = metrics.vector_bytes_read.saturating_add(
+                    vector_bytes_read = vector_bytes_read.saturating_add(
                         (embedding.len() as u64).saturating_mul(std::mem::size_of::<f32>() as u64),
                     );
                     if let Some(score) = cosine_similarity(query_embedding, embedding)
                         && score > 0.0
                     {
-                        collector.push(document.id.clone(), score)?;
+                        if context.is_some() {
+                            collector.push_borrowed(&document.id, score)?;
+                        } else {
+                            collector.push(document.id.clone(), score)?;
+                        }
+                    }
+                    Ok(())
+                };
+                if let Some(context) = context {
+                    self.visit_query_vector_segment(artifact, segment, metrics, context, score)?;
+                } else {
+                    for document in self.read_vector_segment(artifact, segment, metrics)? {
+                        score(&document)?;
                     }
                 }
+                metrics.vector_bytes_read =
+                    metrics.vector_bytes_read.saturating_add(vector_bytes_read);
+                metrics.candidate_block_reads = metrics
+                    .candidate_block_reads
+                    .saturating_add(candidate_metrics.candidate_block_reads);
+                metrics.candidate_bytes_read = metrics
+                    .candidate_bytes_read
+                    .saturating_add(candidate_metrics.candidate_bytes_read);
             }
         }
         let matching_count = collector.matching_count;
+        let scores = collector.finish()?;
         Ok(VectorScoreScan {
-            scores: collector.finish(),
+            scores: scores.values,
+            _memory: scores.memory,
             matching_count,
             vector_document_count,
             segment_scan_count,
@@ -419,7 +471,7 @@ impl SearchOutOfCoreReader {
     fn scan_rabitq_vector_scores(
         &self,
         query_embedding: &[f32],
-        candidate_set: &CandidateSet,
+        candidate_set: &CandidateSet<'_>,
         retained_limit: Option<usize>,
         vector_execution_options: super::VectorSearchExecutionOptions<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
@@ -536,7 +588,7 @@ impl SearchOutOfCoreReader {
             vector_document_count = vector_document_count.saturating_add(
                 allowlist
                     .as_ref()
-                    .map_or(projection.manifest().document_count, Vec::len),
+                    .map_or(projection.manifest().document_count, |ids| ids.len()),
             );
             generated_candidate_count =
                 generated_candidate_count.saturating_add(projection_report.candidate_count);
@@ -683,8 +735,10 @@ impl SearchOutOfCoreReader {
             .into());
         }
         let matching_count = collector.matching_count;
+        let scores = collector.finish()?;
         Ok(VectorScoreScan {
-            scores: collector.finish(),
+            scores: scores.values,
+            _memory: scores.memory,
             matching_count,
             vector_document_count,
             segment_scan_count: raw_segment_scan_count,

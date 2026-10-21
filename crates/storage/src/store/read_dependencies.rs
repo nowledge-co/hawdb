@@ -37,6 +37,29 @@ mod relational_indexes;
 mod relationship_domains;
 use indexed_nodes::{record_stamp, IndexedNodeReadInvalidations};
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SourceSyncFailure {
+    Wal,
+    Directory,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_SYNC_FAILURE: std::cell::Cell<Option<SourceSyncFailure>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn source_sync_failpoint(point: SourceSyncFailure) -> Result<()> {
+    if SOURCE_SYNC_FAILURE.get() == Some(point) {
+        SOURCE_SYNC_FAILURE.set(None);
+        return Err(HawDBError::Storage(
+            "injected source durability barrier failure".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Opaque, bounded dependencies captured from the canonical source. Not Clone:
 /// one registration owns its source-history pin and summary-tracking lease.
 #[derive(Debug)]

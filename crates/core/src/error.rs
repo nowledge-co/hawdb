@@ -89,6 +89,8 @@ pub enum HawDBError {
     Storage(String),
     FileDescriptors(FileDescriptorError),
     StorageIntegrity(String),
+    /// A registered Search target is retained by another native operation.
+    ProjectionBusy,
     Execution(String),
     /// Box the diagnostic so successful Result values do not grow with its fields.
     ResourceBudgetExceeded(Box<ResourceBudgetError>),
@@ -150,6 +152,7 @@ impl Display for HawDBError {
             HawDBError::StorageIntegrity(message) => {
                 write!(f, "storage integrity error: {message}")
             }
+            HawDBError::ProjectionBusy => f.write_str("search projection operation is busy"),
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),
             HawDBError::ResourceBudgetExceeded(error) => write!(f, "execution error: {error}"),
             HawDBError::ReadBudgetExceeded(error) => write!(f, "execution error: {error}"),

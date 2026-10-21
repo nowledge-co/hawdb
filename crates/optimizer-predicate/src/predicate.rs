@@ -16,6 +16,9 @@ use hawdb_cascades::{RuleEvent, RuleOutcome};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+mod construction;
+pub use construction::SearchPredicateConstructionError;
+
 const IN_SUFFIX: &str = "__in";
 const NOT_IN_SUFFIX: &str = "__not_in";
 const GT_SUFFIX: &str = "__gt";
@@ -119,35 +122,28 @@ impl SearchScalarValue {
 impl SearchPredicate {
     pub fn eq(field: impl Into<String>, value: impl Into<String>) -> Self {
         let field = field.into();
+        let op = SearchPredicateOp::Eq(search_scalar_value_for_field(&field, value.into()));
         Self {
-            field: SearchFieldRef::new(field.clone()),
-            op: SearchPredicateOp::Eq(search_scalar_value_for_field(&field, value.into())),
+            field: SearchFieldRef::new(field),
+            op,
         }
     }
 
     pub fn in_list(field: impl Into<String>, values: impl IntoIterator<Item = String>) -> Self {
         let field = field.into();
+        let values = search_scalar_set_for_field(&field, values);
         Self {
-            field: SearchFieldRef::new(field.clone()),
-            op: SearchPredicateOp::In(
-                values
-                    .into_iter()
-                    .map(|value| search_scalar_value_for_field(&field, value))
-                    .collect(),
-            ),
+            field: SearchFieldRef::new(field),
+            op: SearchPredicateOp::In(values),
         }
     }
 
     pub fn not_in_list(field: impl Into<String>, values: impl IntoIterator<Item = String>) -> Self {
         let field = field.into();
+        let values = search_scalar_set_for_field(&field, values);
         Self {
-            field: SearchFieldRef::new(field.clone()),
-            op: SearchPredicateOp::NotIn(
-                values
-                    .into_iter()
-                    .map(|value| search_scalar_value_for_field(&field, value))
-                    .collect(),
-            ),
+            field: SearchFieldRef::new(field),
+            op: SearchPredicateOp::NotIn(values),
         }
     }
 
@@ -215,12 +211,30 @@ impl SearchPredicate {
     }
 }
 
-fn search_scalar_value_for_field(field: &str, value: String) -> SearchScalarValue {
+fn search_scalar_value_for_field(field: &str, mut value: String) -> SearchScalarValue {
     if search_field_is_enum_like(field) {
-        SearchScalarValue::enumeration(normalize_search_enum_value(&value))
+        // Preserve the original allocation, including Unicode trim boundaries.
+        let leading = value.len() - value.trim_start().len();
+        let end = value.trim_end().len().max(leading);
+        value.truncate(end);
+        value.drain(..leading);
+        value.make_ascii_lowercase();
+        SearchScalarValue::enumeration(value)
     } else {
         SearchScalarValue::string(value)
     }
+}
+
+fn search_scalar_set_for_field(
+    field: &str,
+    values: impl IntoIterator<Item = String>,
+) -> BTreeSet<SearchScalarValue> {
+    // Insert directly; BTreeSet::from_iter also builds a temporary sorting Vec.
+    let mut output = BTreeSet::new();
+    for value in values {
+        output.insert(search_scalar_value_for_field(field, value));
+    }
+    output
 }
 
 pub fn search_field_is_enum_like(field: &str) -> bool {
@@ -256,8 +270,38 @@ impl SearchPredicateSet {
     pub fn from_metadata_filters(
         filters: &BTreeMap<String, String>,
     ) -> Result<Self, SearchPredicateParseError> {
-        let mut predicates = Vec::new();
+        use std::convert::Infallible;
+        match Self::from_metadata_filters_with_admission(filters, |_| Ok::<_, Infallible>(())) {
+            Ok(predicates) => Ok(predicates),
+            Err(SearchPredicateConstructionError::Parse(error)) => Err(error),
+            Err(SearchPredicateConstructionError::Admission(never)) => match never {},
+            Err(SearchPredicateConstructionError::SizeOverflow) => Err(SearchPredicateParseError {
+                filter_key: String::new(),
+                reason: "metadata predicate construction size overflow",
+            }),
+        }
+    }
+
+    /// Admit construction capacity before allocation. The caller must retain
+    /// every admitted byte until the returned predicate set and parse error are
+    /// destroyed. This includes conservative transient parser capacity; it is
+    /// not an allocator or RSS measurement. Admission errors fail the query,
+    /// whereas parse errors retain the usual unsatisfiable-filter semantics.
+    #[doc(hidden)]
+    pub fn from_metadata_filters_with_admission<E>(
+        filters: &BTreeMap<String, String>,
+        mut admit: impl FnMut(usize) -> Result<(), E>,
+    ) -> Result<Self, SearchPredicateConstructionError<E>> {
+        let slots = filters
+            .len()
+            .checked_mul(std::mem::size_of::<SearchPredicate>())
+            .ok_or(SearchPredicateConstructionError::SizeOverflow)?;
+        admit(slots).map_err(SearchPredicateConstructionError::Admission)?;
+        let mut predicates = Vec::with_capacity(filters.len());
         for (key, value) in filters {
+            let bytes = construction::filter_capacity(key, value)
+                .ok_or(SearchPredicateConstructionError::SizeOverflow)?;
+            admit(bytes).map_err(SearchPredicateConstructionError::Admission)?;
             if let Some(predicate) = mem_search_filter_alias_predicate(key, value)? {
                 predicates.push(predicate);
                 continue;
@@ -419,6 +463,17 @@ fn parse_string_list_filter(
     filter_key: &str,
     value: &str,
 ) -> Result<Vec<String>, SearchPredicateParseError> {
+    // Reject other top-level types before Serde can format an arbitrarily long
+    // unexpected string into its own diagnostic allocation.
+    if !value
+        .trim_start_matches([' ', '\t', '\r', '\n'])
+        .starts_with('[')
+    {
+        return Err(SearchPredicateParseError {
+            filter_key: filter_key.to_string(),
+            reason: "expected JSON string array",
+        });
+    }
     serde_json::from_str::<Vec<String>>(value).map_err(|_| SearchPredicateParseError {
         filter_key: filter_key.to_string(),
         reason: "expected JSON string array",
@@ -474,12 +529,12 @@ fn reject_boolean_alias_range_filter(
 fn normalize_search_filter_values(
     filter_key: &str,
     field: &str,
-    values: Vec<String>,
+    mut values: Vec<String>,
 ) -> Result<Vec<String>, SearchPredicateParseError> {
-    values
-        .into_iter()
-        .map(|value| normalize_search_filter_value(filter_key, field, value))
-        .collect()
+    for value in &mut values {
+        *value = normalize_search_filter_value(filter_key, field, std::mem::take(value))?;
+    }
+    Ok(values)
 }
 
 fn normalize_search_filter_value(
@@ -508,27 +563,31 @@ fn invert_history_filter_value(
     value: &str,
 ) -> Result<String, SearchPredicateParseError> {
     let value = parse_bool_filter_value(filter_key, value)?;
-    Ok((!value).to_string())
+    Ok(if value { "false" } else { "true" }.to_owned())
 }
 
 fn normalize_bool_filter_value(
     filter_key: &str,
     value: &str,
 ) -> Result<String, SearchPredicateParseError> {
-    parse_bool_filter_value(filter_key, value).map(|value| value.to_string())
+    parse_bool_filter_value(filter_key, value)
+        .map(|value| if value { "true" } else { "false" }.to_owned())
 }
 
 fn parse_bool_filter_value(
     filter_key: &str,
     value: &str,
 ) -> Result<bool, SearchPredicateParseError> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" => Ok(true),
-        "false" | "0" => Ok(false),
-        _ => Err(SearchPredicateParseError {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("true") || value == "1" {
+        Ok(true)
+    } else if value.eq_ignore_ascii_case("false") || value == "0" {
+        Ok(false)
+    } else {
+        Err(SearchPredicateParseError {
             filter_key: filter_key.to_string(),
             reason: "expected boolean filter value",
-        }),
+        })
     }
 }
 

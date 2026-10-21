@@ -20,6 +20,7 @@ use crate::build_memory::{directory, BuildMemory};
 use crate::Result;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
+#[cfg(test)]
 use hawdb_storage::file_io as fs;
 use std::io;
 use std::path::Path;
@@ -28,6 +29,7 @@ pub(crate) struct PreparedCleanup {
     // Reserve before publication; the complete synchronous pass uses no fresh
     // admission even if another owner fills the root after the commit fence.
     memory: Option<QueryMemoryLease>,
+    verification_memory: BuildMemory,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -51,9 +53,77 @@ impl PreparedCleanup {
         // retry; it must not convert an otherwise successful commit into failure.
         Ok(Self {
             memory: memory.spool.reserve(bytes).ok(),
+            verification_memory: memory.clone(),
         })
     }
 
+    pub(crate) fn run_under_publication(
+        self,
+        root: &Path,
+        options: SearchProjectionCleanupOptions,
+        task: &RuntimeTaskContext,
+        publication: &crate::out_of_core::SearchProjectionPublishLease,
+        analyzer: &crate::SearchAnalyzerLexicon,
+        admission: Option<&crate::build_memory::read::ReadAdmission<'_>>,
+    ) -> CleanupResult {
+        let memory = self.verification_memory.clone();
+        let governed = memory.host_admission.as_deref().map(|permit| {
+            crate::build_memory::read::ReadAdmission {
+                memory: &memory,
+                task,
+                permit: crate::build_memory::read::ReadPermit::Governed(permit),
+            }
+        });
+        let synchronous = (!task.has_resource_controllers() && task.memory_reservation().is_some())
+            .then_some(crate::build_memory::read::ReadAdmission {
+                memory: &memory,
+                task,
+                permit: crate::build_memory::read::ReadPermit::Synchronous(publication),
+            });
+        let admission = admission.or(governed.as_ref()).or(synchronous.as_ref());
+        super::source::VerifiedRetention::verify(
+            root,
+            publication,
+            analyzer,
+            options,
+            task,
+            admission,
+        )
+        .and_then(|verified| {
+            verified.with_source(|source, generations| {
+                self.run_with_policy(root, generations, options, task, Some(source), |name| {
+                    source.remove(name)
+                })
+            })
+        })
+        .unwrap_or(CleanupResult {
+            retry_required: true,
+            ..Default::default()
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn run_with_bound_test_generations(
+        self,
+        root: &Path,
+        generations: SearchProjectionGenerations,
+        options: SearchProjectionCleanupOptions,
+        task: &RuntimeTaskContext,
+        publication: &crate::out_of_core::SearchProjectionPublishLease,
+    ) -> CleanupResult {
+        publication
+            .with_cleanup_source(root, |source| {
+                self.run_with_policy(root, generations, options, task, Some(source), |name| {
+                    source.remove(name)
+                })
+            })
+            .unwrap_or(CleanupResult {
+                retry_required: true,
+                ..Default::default()
+            })
+    }
+
+    #[cfg(test)]
     pub(crate) fn run(
         self,
         root: &Path,
@@ -66,6 +136,7 @@ impl PreparedCleanup {
         })
     }
 
+    #[cfg(test)]
     fn run_with_remover(
         self,
         root: &Path,
@@ -73,6 +144,20 @@ impl PreparedCleanup {
         options: SearchProjectionCleanupOptions,
         task: &RuntimeTaskContext,
         mut remove: impl FnMut(&Path) -> io::Result<()>,
+    ) -> CleanupResult {
+        self.run_with_policy(root, generations, options, task, None, |name| {
+            remove(&root.join(name))
+        })
+    }
+
+    fn run_with_policy(
+        self,
+        root: &Path,
+        generations: SearchProjectionGenerations,
+        options: SearchProjectionCleanupOptions,
+        task: &RuntimeTaskContext,
+        source: Option<super::source::CleanupSource<'_>>,
+        mut remove: impl FnMut(&str) -> io::Result<()>,
     ) -> CleanupResult {
         let mut result = CleanupResult {
             retry_required: generations.out_of_core_discovery_failed,
@@ -82,50 +167,43 @@ impl PreparedCleanup {
             result.retry_required = true;
             return result;
         }
-        let mut entries = match fs::read_dir(root) {
-            Ok(entries) => entries,
-            Err(_) => {
-                result.retry_required = true;
-                return result;
-            }
-        };
         let mut attempts = 0;
-        loop {
+        let scan = super::source::visit_names(root, source, &mut |name| {
             if task.checkpoint().is_err() {
-                result.retry_required = true;
-                break;
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "cleanup cancelled",
+                ));
             }
-            let Some(entry) = entries.next() else {
-                break;
-            };
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(_) => {
-                    result.retry_required = true;
-                    continue;
-                }
-            };
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
             let Some(candidate) = CleanupCandidate::parse(name) else {
-                continue;
+                return Ok(());
             };
+            if generations.rabitq_discovery_failed
+                && candidate.kind == super::CleanupArtifactKind::RaBitQ
+            {
+                result.retry_required = true;
+            }
             if !candidate.is_obsolete(&generations) {
-                continue;
+                return Ok(());
+            }
+            if source.is_some_and(|source| source.protects(&candidate)) {
+                result.defer(options);
+                return Ok(());
             }
             if attempts == options.max_delete_attempts.get() {
                 result.defer(options);
-                continue;
+                return Ok(());
             }
             attempts += 1;
-            let path = root.join(name);
-            match remove(&path) {
+            match remove(name) {
                 Ok(()) => result.deleted_files = result.deleted_files.saturating_add(1),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(_) => result.defer(options),
             }
+            Ok(())
+        });
+        if scan.is_err() {
+            result.retry_required = true;
         }
         // A cancellation arriving during the last successful unlink still
         // reports a retry, without undoing its completed deletion count.

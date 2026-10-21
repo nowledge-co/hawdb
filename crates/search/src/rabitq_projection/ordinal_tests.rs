@@ -600,7 +600,11 @@ fn descriptor_exhaustion_is_a_retryable_resource_error_and_never_quarantines_pro
         .unwrap(),
     );
     let before = fs::read(&path).unwrap();
-    let held = (0..4)
+    let publication =
+        crate::out_of_core::SearchProjectionPublishLease::acquire_for_consumer(&root).unwrap();
+    let remaining = 4 - project.metrics().open;
+    assert!(remaining > 0);
+    let held = (0..remaining)
         .map(|_| {
             project
                 .io_context()
@@ -622,7 +626,7 @@ fn descriptor_exhaustion_is_a_retryable_resource_error_and_never_quarantines_pro
     ));
     assert!(index.rabitq_projection().is_none());
     assert!(matches!(
-        index.load_registered_rabitq_projection(),
+        index.load_registered_rabitq_projection(&publication),
         Err(HawDBError::FileDescriptors(_))
     ));
     let rejected = root.join(crate::rabitq_artifact_file(2));
@@ -637,10 +641,24 @@ fn descriptor_exhaustion_is_a_retryable_resource_error_and_never_quarantines_pro
     ));
     assert!(!rejected.exists());
     assert_eq!(fs::read(&path).unwrap(), before);
-    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    assert_eq!(
+        fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .and_then(crate::rabitq_artifact_generation)
+                    .is_some()
+            })
+            .count(),
+        1
+    );
     drop(held);
     index.load_rabitq_projection().unwrap();
     assert!(index.rabitq_projection().is_some());
+    drop(publication);
     assert_eq!(project.metrics().open, 0);
     assert!(project.metrics().high_water <= 4);
     drop(index);

@@ -28,6 +28,9 @@ use std::ops::Deref;
 // Conservative B-tree node/split allowances, not allocator or RSS measurements.
 pub(crate) const MAP_ENTRY_BYTES: usize = 2048;
 pub(crate) const SET_ENTRY_BYTES: usize = 1024;
+// Allowance for the three fixed build accounts and their shared ledger metadata.
+// Retained owners must cover it after the operation's working grant is released.
+pub(crate) const ACCOUNT_METADATA_BYTES: usize = 4096;
 pub(crate) const SPOOL_BUFFER_BYTES: usize = 8192;
 
 pub(crate) mod capacity;
@@ -35,6 +38,7 @@ pub(crate) mod compression;
 pub(crate) mod decoder;
 pub(crate) mod directory;
 pub(crate) mod path;
+pub(crate) mod read;
 pub(crate) mod reserved;
 pub(crate) mod shared;
 

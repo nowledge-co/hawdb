@@ -19,7 +19,6 @@ use super::super::{
 use super::{
     artifact_name::Name, RaBitQGenerationArtifact, STAGE_METADATA_FILE, STAGE_VECTOR_FILE,
 };
-use crate::bounded_file::read_bounded_file;
 use crate::build_control::json;
 use crate::build_memory::BuildMemory;
 use crate::error::{HawDBError, Result};
@@ -62,6 +61,8 @@ pub(super) enum ActiveManifestUpdate {
 pub(super) struct PublishGenerationInput<'a> {
     pub(super) root: &'a Path,
     pub(super) stage: &'a Path,
+    pub(super) resident_snapshot: Option<super::super::ResidentSnapshot>,
+    pub(super) resident_snapshot_absent: bool,
     pub(super) generation: u64,
     pub(super) document_count: usize,
     pub(super) documents_digest: u64,
@@ -89,11 +90,44 @@ pub(super) struct PublishedGeneration {
     pub(super) documents_digest: u64,
 }
 
+// Dependency installation is separate from selecting a visible closure. This
+// internal value alone owns neither publication exclusion nor cleanup custody;
+// a future consumer-installed token must retain both before exposing the split.
+pub(super) struct InstalledGeneration {
+    head: json::EncodedManifest,
+    publication: PublishedGeneration,
+}
+
+impl InstalledGeneration {
+    fn publish(
+        self,
+        root: &Path,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<PublishedGeneration> {
+        let io = GenerationIo::new(memory, task);
+        io.write(
+            &io.path(root, Path::new(OUT_OF_CORE_MANIFEST_FILE))?,
+            &self.head.bytes,
+        )?;
+        Ok(self.publication)
+    }
+}
+
 pub(super) fn publish_generation(
     input: PublishGenerationInput<'_>,
     memory: &BuildMemory,
     task: &RuntimeTaskContext,
 ) -> Result<PublishedGeneration> {
+    let root = input.root;
+    install_generation(input, memory, task)?.publish(root, memory, task)
+}
+
+pub(super) fn install_generation(
+    input: PublishGenerationInput<'_>,
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+) -> Result<InstalledGeneration> {
     let io = GenerationIo::new(memory, task);
     let generation = input.generation;
     let descriptor_file = Name::generated("search_projection_segments.", generation, memory, task)?;
@@ -130,10 +164,14 @@ pub(super) fn publish_generation(
     let vector_source = io.path(input.stage, Path::new(STAGE_VECTOR_FILE))?;
     let lexical_artifact_source = io.path(input.stage, Path::new(input.lexical_artifact_name))?;
     let lexical_manifest_source = io.path(input.stage, Path::new(LEXICAL_MANIFEST_FILE))?;
-    let (descriptor_len, descriptor_checksum) = io.checksum(&descriptor_source)?;
-    let payload_len = io.length(&payload_source)?;
-    let metadata_payload_len = io.length(&metadata_source)?;
-    let vector_payload_len = io.length(&vector_source)?;
+    let (descriptor_seal, descriptor_checksum) = io.seal_with_checksum(&descriptor_source)?;
+    let descriptor_len = descriptor_seal.length;
+    let payload_seal = io.seal(&payload_source)?;
+    let payload_len = payload_seal.length;
+    let metadata_seal = io.seal(&metadata_source)?;
+    let metadata_payload_len = metadata_seal.length;
+    let vector_seal = io.seal(&vector_source)?;
+    let vector_payload_len = vector_seal.length;
     for (name, actual, expected) in [
         ("document", payload_len, input.payload_bytes),
         (
@@ -149,9 +187,11 @@ pub(super) fn publish_generation(
             )));
         }
     }
-    let (lexical_manifest_len, lexical_manifest_checksum) =
-        io.checksum(&lexical_manifest_source)?;
-    let lexical_artifact_len = io.length(&lexical_artifact_source)?;
+    let (lexical_manifest_seal, lexical_manifest_checksum) =
+        io.seal_with_checksum(&lexical_manifest_source)?;
+    let lexical_manifest_len = lexical_manifest_seal.length;
+    let lexical_artifact_seal = io.seal(&lexical_artifact_source)?;
+    let lexical_artifact_len = lexical_artifact_seal.length;
     let layout = json::prepare(
         input.layout,
         u64::MAX,
@@ -222,17 +262,28 @@ pub(super) fn publish_generation(
     if let (Some(budget), Some(entries)) = (reopen_budget, mutation_entries) {
         budget.admit_entries(entries)?;
     }
+    // Keep decoded ownership admitted after the branch moves its vectors into
+    // the final manifest. This guard precedes every payload it accounts for.
+    let mut _active_decode = None;
     let mut mutation_runs = Vec::new();
+    let resident_snapshot = input.resident_snapshot;
+    let resident_snapshot_absent = input.resident_snapshot_absent;
     let (mut segments, document_count, documents_digest, segment_id, level, compact_range) =
         match input.active_manifest_update {
             Some(ActiveManifestUpdate::Mutate {
                 expected_generation,
             }) => {
-                let active_bytes = read_bounded_file(
-                    &input.root.join(OUT_OF_CORE_MANIFEST_FILE),
+                let active_bytes = io.read(
+                    &io.path(input.root, Path::new(OUT_OF_CORE_MANIFEST_FILE))?,
                     MAX_OUT_OF_CORE_MANIFEST_BYTES,
                 )?;
-                let active = SearchOutOfCoreManifestBody::decode(&active_bytes)?;
+                _active_decode = Some(memory.spool.reserve(
+                    SearchOutOfCoreManifestBody::decode_capacity(&active_bytes.bytes, task)?,
+                )?);
+                let active = SearchOutOfCoreManifestBody::decode_with_context(
+                    &active_bytes.bytes,
+                    Some(task),
+                )?;
                 if active.generation != *expected_generation {
                     return Err(super::generation_changed(
                         *expected_generation,
@@ -277,11 +328,17 @@ pub(super) fn publish_generation(
             Some(ActiveManifestUpdate::Append {
                 expected_generation,
             }) => {
-                let active_bytes = read_bounded_file(
-                    &input.root.join(OUT_OF_CORE_MANIFEST_FILE),
+                let active_bytes = io.read(
+                    &io.path(input.root, Path::new(OUT_OF_CORE_MANIFEST_FILE))?,
                     MAX_OUT_OF_CORE_MANIFEST_BYTES,
                 )?;
-                let active = SearchOutOfCoreManifestBody::decode(&active_bytes)?;
+                _active_decode = Some(memory.spool.reserve(
+                    SearchOutOfCoreManifestBody::decode_capacity(&active_bytes.bytes, task)?,
+                )?);
+                let active = SearchOutOfCoreManifestBody::decode_with_context(
+                    &active_bytes.bytes,
+                    Some(task),
+                )?;
                 if active.generation != *expected_generation {
                     return Err(super::generation_changed(
                         *expected_generation,
@@ -327,11 +384,17 @@ pub(super) fn publish_generation(
                         "search segment compaction requires at least two source segments".into(),
                     ));
                 }
-                let active_bytes = read_bounded_file(
-                    &input.root.join(OUT_OF_CORE_MANIFEST_FILE),
+                let active_bytes = io.read(
+                    &io.path(input.root, Path::new(OUT_OF_CORE_MANIFEST_FILE))?,
                     MAX_OUT_OF_CORE_MANIFEST_BYTES,
                 )?;
-                let active = SearchOutOfCoreManifestBody::decode(&active_bytes)?;
+                _active_decode = Some(memory.spool.reserve(
+                    SearchOutOfCoreManifestBody::decode_capacity(&active_bytes.bytes, task)?,
+                )?);
+                let active = SearchOutOfCoreManifestBody::decode_with_context(
+                    &active_bytes.bytes,
+                    Some(task),
+                )?;
                 if active.generation != *expected_generation {
                     return Err(super::generation_changed(
                         *expected_generation,
@@ -415,6 +478,38 @@ pub(super) fn publish_generation(
             ),
         };
     let new_segment = SearchOutOfCoreSegmentManifest {
+        objects: super::super::SegmentObjects {
+            lexical_generation: match super::super::artifact_key::ArtifactKey::from_file_name(
+                input.lexical_artifact_name,
+            ) {
+                Some(super::super::artifact_key::ArtifactKey::Lexical(generation)) => generation,
+                _ => {
+                    return Err(HawDBError::StorageIntegrity(
+                        "invalid staged lexical name".into(),
+                    ))
+                }
+            },
+            descriptor: super::super::ArtifactObject::from_reference(descriptor_seal.reference)?,
+            payload: super::super::ArtifactObject::from_reference(payload_seal.reference)?,
+            metadata: super::super::ArtifactObject::from_reference(metadata_seal.reference)?,
+            vector: super::super::ArtifactObject::from_reference(vector_seal.reference)?,
+            layout: super::super::ArtifactObject::from_reference(layout.artifact_reference(task)?)?,
+            lexical_manifest: super::super::ArtifactObject::from_reference(
+                lexical_manifest_seal.reference,
+            )?,
+            lexical_payload: super::super::ArtifactObject::from_reference(
+                lexical_artifact_seal.reference,
+            )?,
+            rabitq: input
+                .rabitq
+                .map(|artifact| -> Result<_> {
+                    super::super::ArtifactObject::from_reference(
+                        io.seal(&io.path(input.stage, artifact.file_name.as_ref())?)?
+                            .reference,
+                    )
+                })
+                .transpose()?,
+        },
         segment_id,
         level,
         generation,
@@ -448,6 +543,7 @@ pub(super) fn publish_generation(
         documents_digest: input.documents_digest,
         source_graph_commit_epoch: input.source_graph_commit_epoch,
     };
+    let objects = new_segment.objects;
     let publish_content = input.mutations.is_none() || input.document_count != 0;
     if !publish_content {
         // Delete-only/no-op mutation publication reuses all immutable content.
@@ -477,6 +573,9 @@ pub(super) fn publish_generation(
                 ));
             }
             mutation_runs.push(super::super::SearchOutOfCoreMutationRunManifest {
+                object: super::super::ArtifactObject::from_reference(
+                    encoded.artifact_reference(task)?,
+                )?,
                 generation,
                 file: name.as_str().to_owned(),
                 len: encoded.len() as u64,
@@ -491,6 +590,8 @@ pub(super) fn publish_generation(
     let manifest = SearchOutOfCoreManifestBody {
         format: OUT_OF_CORE_FORMAT.to_string(),
         generation,
+        resident_snapshot,
+        resident_snapshot_absent,
         segments,
         mutation_runs,
         document_count,
@@ -596,50 +697,58 @@ pub(super) fn publish_generation(
             &layout_bytes.bytes,
         )?;
 
-        io.verify(
+        #[cfg(test)]
+        AFTER_CONTENT_INSTALL.with(|hook| {
+            let callback = hook.borrow_mut().take();
+            if let Some(callback) = callback {
+                callback(input.root);
+            }
+        });
+
+        io.verify_artifact(
             &io.path(input.root, descriptor_file.as_ref())?,
             descriptor_len,
+            objects.descriptor,
             Some(descriptor_checksum),
             "descriptor",
         )?;
         if let Some(rabitq) = input.rabitq {
-            io.verify(
+            io.verify_artifact(
                 &io.path(input.root, rabitq.file_name.as_ref())?,
                 rabitq.artifact_bytes,
+                objects.rabitq.expect("validated vector reference"),
                 Some(rabitq.artifact_checksum),
                 "RaBitQ artifact",
             )?;
         }
-        io.verify(
+        io.verify_seal(
             &io.path(input.root, payload_file.as_ref())?,
-            payload_len,
-            None,
+            payload_seal,
             "document payload",
         )?;
-        io.verify(
+        io.verify_seal(
             &io.path(input.root, metadata_payload_file.as_ref())?,
-            metadata_payload_len,
-            None,
+            metadata_seal,
             "metadata payload",
         )?;
-        io.verify(
+        io.verify_seal(
             &io.path(input.root, vector_payload_file.as_ref())?,
-            vector_payload_len,
-            None,
+            vector_seal,
             "vector payload",
         )?;
-        io.verify(
+        io.verify_artifact(
             &io.path(input.root, lexical_manifest_file.as_ref())?,
             lexical_manifest_len,
+            objects.lexical_manifest,
             Some(lexical_manifest_checksum),
             "lexical manifest",
         )?;
-        io.verify(
+        io.verify_seal(
             &io.path(input.root, Path::new(input.lexical_artifact_name))?,
-            lexical_artifact_len,
-            None,
+            lexical_artifact_seal,
             "lexical artifact",
         )?;
+        io.verify_object(&io.path(input.root, layout_file.as_ref())?, objects.layout)?;
     }
     if let (Some(name), Some(encoded)) = (&mutation_name, &mutation_bytes) {
         let staged = io.path(input.stage, name.as_ref())?;
@@ -654,25 +763,26 @@ pub(super) fn publish_generation(
         file.sync_all()?;
         drop(file);
         io.link(&staged, &published)?;
-        io.verify(
+        io.verify_artifact(
             &published,
             encoded.len() as u64,
+            super::super::ArtifactObject::from_reference(encoded.artifact_reference(task)?)?,
             Some(encoded.checksum()),
             "mutation run",
         )?;
     }
 
-    io.write(
-        &io.path(input.root, Path::new(OUT_OF_CORE_MANIFEST_FILE))?,
-        &manifest_bytes.bytes,
-    )?;
-    Ok(PublishedGeneration {
+    let publication = PublishedGeneration {
         content_published: publish_content,
         lexical_generation,
         manifest_bytes: manifest_bytes.bytes.len() as u64,
         generation_bytes,
         document_count,
         documents_digest,
+    };
+    Ok(InstalledGeneration {
+        head: manifest_bytes,
+        publication,
     })
 }
 
@@ -690,4 +800,11 @@ pub(super) fn file_len_checksum_with_context(
     task: &RuntimeTaskContext,
 ) -> Result<(u64, u64)> {
     GenerationIo::new(memory, task).checksum(path)
+}
+
+#[cfg(test)]
+type ContentInstallHook = std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>>;
+#[cfg(test)]
+thread_local! {
+    pub(super) static AFTER_CONTENT_INSTALL: ContentInstallHook = const { std::cell::RefCell::new(None) };
 }

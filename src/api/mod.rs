@@ -1466,21 +1466,19 @@ impl Database {
             Some(metadata.recover_pending_creates(config.branch_create_recovery_limits)?)
         };
         let files = metadata.file_descriptors().clone();
-        let selector = metadata.selector();
         let project_root_path = Some(files.root().to_path_buf());
-        drop(metadata);
+        let project = metadata.into_capture();
         let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
         Ok(Self {
             runtime: runtime_cell::BranchRuntimeCell::deferred(
                 runtime_cell::DeferredBranchAdmission {
-                    files,
-                    selector,
                     config: config.clone(),
                     durability,
                     scheduler: local_qos_scheduler.clone(),
                     telemetry: None,
                     governor: None,
                 },
+                project,
             ),
             project_root_path,
             durability,

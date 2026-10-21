@@ -17,17 +17,17 @@ use hawdb_core::{HawDBError, Result, Uuid};
 use hawdb_integrity::IntegrityHasher;
 use hawdb_storage::file_io::{File, OpenOptions};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 pub const MAX_CONSUMERS: usize = 64;
 const MAX_REGISTRY_BYTES: usize = 64 * 1024;
 const REGISTRY_FILE: &str = "projection_consumers.meta";
-const PROTOCOL: &str = "hawdb-projection-consumers-v1";
+const PROTOCOL: &str = "hawdb-projection-consumers-v2";
 
 // Declaration order is lexicographic for canonical payload serialization.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Record {
     pub checkpoint_uuid: String,
@@ -63,9 +63,45 @@ pub struct ConsumerRegistry {
     pub verified: BTreeMap<String, SearchProjectionConsumerState>,
     pub database_uuid: Option<Uuid>,
     pub unavailable: bool,
+    pub pending: BTreeSet<String>,
+    pub needs_publication: bool,
 }
 
 impl ConsumerRegistry {
+    pub fn from_native(
+        snapshot: hawdb_storage::consumer_allocation::ConsumerRegistrySnapshot,
+        identity: Option<Uuid>,
+    ) -> Result<Self> {
+        if snapshot.entries.len() > MAX_CONSUMERS {
+            return Err(invalid("native registry exceeds registration capacity"));
+        }
+        let mut registry = Self {
+            database_uuid: identity,
+            pending: snapshot.pending.into_iter().collect(),
+            ..Self::default()
+        };
+        for entry in snapshot.entries {
+            let binding = entry.receipt.binding();
+            if Some(binding.database_uuid) != identity {
+                return Err(invalid("native registry database identity differs"));
+            }
+            let metadata = entry.receipt.metadata_reference();
+            let record = Record {
+                id: binding.consumer_id.to_owned(),
+                registration_uuid: binding.registration_uuid.to_string(),
+                projection_uuid: binding.projection_uuid.to_string(),
+                checkpoint_uuid: binding.checkpoint_uuid.to_string(),
+                durable_complete_through_epoch: entry.receipt.source_epoch(),
+                snapshot_encoded_len: metadata.byte_length,
+                snapshot_sha256: metadata.sha256.to_string(),
+                max_idle_commits: entry.policy.max_idle_commits,
+                expires_at_commit_epoch: entry.policy.expires_at_commit_epoch,
+            };
+            registry.records.insert(record.id.clone(), record);
+        }
+        Ok(registry)
+    }
+
     pub fn load(root: Option<&Path>, identity: Option<Uuid>) -> Self {
         let Some(root) = root else {
             return Self::default();
@@ -116,16 +152,7 @@ impl ConsumerRegistry {
         }
     }
 
-    pub fn publish<BeforeReplace, AfterReplace>(
-        &self,
-        root: &Path,
-        before_replace: BeforeReplace,
-        after_replace: AfterReplace,
-    ) -> Result<()>
-    where
-        BeforeReplace: FnOnce() -> Result<()>,
-        AfterReplace: FnOnce() -> Result<()>,
-    {
+    fn encoded(&self) -> Result<Vec<u8>> {
         let identity = self
             .database_uuid
             .ok_or_else(|| invalid("missing database identity"))?;
@@ -147,6 +174,44 @@ impl ConsumerRegistry {
         if bytes.len() > MAX_REGISTRY_BYTES {
             return Err(invalid("encoded file exceeds byte limit"));
         }
+        Ok(bytes)
+    }
+
+    pub fn publish_captured<Before, After>(
+        &self,
+        directory: &hawdb_storage::file_io::SourceDirectory,
+        before: Before,
+        after: After,
+    ) -> Result<()>
+    where
+        Before: FnOnce() -> Result<()>,
+        After: FnOnce() -> Result<()>,
+    {
+        let bytes = self.encoded()?;
+        let context = directory.operation_context();
+        let name = format!(
+            "projection-consumers-{}.tmp",
+            hawdb_core::generate_uuidv7()?
+        );
+        let mut candidate = directory.create_control_candidate(&context, &name)?;
+        candidate.write_all(&bytes)?;
+        candidate.seal()?;
+        before()?;
+        candidate.replace_head(&context, REGISTRY_FILE)?;
+        after()
+    }
+
+    pub fn publish<BeforeReplace, AfterReplace>(
+        &self,
+        root: &Path,
+        before_replace: BeforeReplace,
+        after_replace: AfterReplace,
+    ) -> Result<()>
+    where
+        BeforeReplace: FnOnce() -> Result<()>,
+        AfterReplace: FnOnce() -> Result<()>,
+    {
+        let bytes = self.encoded()?;
         let target = root.join(REGISTRY_FILE);
         let temporary = target.with_extension("meta.tmp");
         // Database writer exclusion owns this fixed temporary across restarts.
@@ -363,8 +428,8 @@ mod tests {
             ),
             text.replacen("\"id\":", "\"id\":\"shadow\",\"id\":", 1),
             text.replacen(
-                "hawdb-projection-consumers-v1",
                 "hawdb-projection-consumers-v2",
+                "hawdb-projection-consumers-v3",
                 1,
             ),
             format!("{text}\n"),

@@ -13,8 +13,10 @@
 // limitations under the License.
 
 use super::*;
+mod decode;
 use crate::build_control::{checkpoint, CheckedWriter};
 use crate::{SearchSegmentDescriptor, SearchSegmentDescriptorEntry, SearchSegmentPayloadRange};
+pub(crate) use decode::DecodedDescriptor;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_integrity::Crc32cHasher;
 use std::io::Write as _;

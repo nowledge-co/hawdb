@@ -58,6 +58,8 @@ pub mod config;
 #[doc(hidden)]
 pub mod consistency;
 #[doc(hidden)]
+pub mod consumer_allocation;
+#[doc(hidden)]
 pub mod cow;
 pub mod derived_repair;
 pub mod doctor;
@@ -89,6 +91,7 @@ pub mod index_page;
 #[doc(hidden)]
 pub mod io;
 pub mod mutation;
+mod native_file_identity;
 #[doc(hidden)]
 pub mod ownership;
 #[cfg(any(test, feature = "test-support"))]

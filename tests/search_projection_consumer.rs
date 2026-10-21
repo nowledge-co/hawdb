@@ -131,16 +131,21 @@ fn public_consumer_initializes_mixed_content_catches_up_and_reopens() {
         .unwrap();
     assert_eq!(consumer.id(), &id);
     assert_eq!(db.commit_epoch().unwrap(), epoch);
-    assert_eq!(consumer.search_index().document_count(), 2);
+    assert_eq!(consumer.search_index().unwrap().document_count(), 2);
     assert_eq!(
         consumer
             .search_index()
+            .unwrap()
             .document("message:1")
             .unwrap()
             .content,
         "first"
     );
-    assert!(consumer.search_index().document("memory:m1").is_some());
+    assert!(consumer
+        .search_index()
+        .unwrap()
+        .document("memory:m1")
+        .is_some());
     db.query_sql("UPDATE consumer_messages SET body = 'second' WHERE id = 1")
         .unwrap();
     let report = db
@@ -152,6 +157,7 @@ fn public_consumer_initializes_mixed_content_catches_up_and_reopens() {
     assert_eq!(
         consumer
             .search_index()
+            .unwrap()
             .document("message:1")
             .unwrap()
             .content,
@@ -184,6 +190,7 @@ fn public_consumer_initializes_mixed_content_catches_up_and_reopens() {
     assert_eq!(
         consumer
             .search_index()
+            .unwrap()
             .document("message:1")
             .unwrap()
             .content,

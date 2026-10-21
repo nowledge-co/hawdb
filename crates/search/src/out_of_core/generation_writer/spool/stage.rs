@@ -30,7 +30,8 @@ static NEXT_RETRY_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 const AUTOMATIC_RETRY_STAGES: usize = 4;
 const AUTOMATIC_CLEANUP_BATCHES: usize = 4;
 // Bound the three shared ledger accounts retained by path and metadata leases.
-const CLEANUP_ACCOUNT_METADATA_BYTES: usize = 4096;
+use crate::build_memory::ACCOUNT_METADATA_BYTES as CLEANUP_ACCOUNT_METADATA_BYTES;
+mod captured;
 
 enum Slot {
     Active,
@@ -43,6 +44,7 @@ struct Owner {
     last_retry: u64,
     _memory: QueryMemoryLease,
     _host_memory: Option<hawdb_qos::RuntimeRetainedMemory>,
+    captured_funding: Option<crate::out_of_core::scratch_directory::Funding>,
 }
 
 struct Registration {
@@ -120,6 +122,7 @@ struct TicketFields {
     source_root: OwnedPath,
     disk_reservation: u64,
     error: Option<CleanupFailure>,
+    captured: Option<Box<captured::Custody>>,
 }
 
 enum CleanupFailure {
@@ -165,6 +168,15 @@ impl CleanupAttempt {
 impl Drop for CleanupAttempt {
     fn drop(&mut self) {
         if let Some(ticket) = self.ticket.take() {
+            if ticket
+                .captured
+                .as_ref()
+                .is_some_and(|native| !native.candidate.may_own_entry())
+            {
+                drop(ticket);
+                drop(self.registration.take());
+                return;
+            }
             self.registration
                 .take()
                 .expect("registered cleanup attempt")
@@ -193,9 +205,16 @@ pub(in crate::out_of_core) fn retry_staging_cleanup(
     root: &Path,
     max_attempts: usize,
 ) -> Result<SearchStagingCleanupReport> {
-    let task = RuntimeTaskContext::default();
-    let memory = BuildMemory::new(&task)?;
-    let root = OwnedPath::absolute(root, &memory, &task)?;
+    retry_staging_cleanup_with_context(root, max_attempts, &RuntimeTaskContext::default())
+}
+
+pub(in crate::out_of_core) fn retry_staging_cleanup_with_context(
+    root: &Path,
+    max_attempts: usize,
+    task: &RuntimeTaskContext,
+) -> Result<SearchStagingCleanupReport> {
+    let memory = BuildMemory::new(task)?;
+    let root = OwnedPath::absolute(root, &memory, task)?;
     // The original absolute spelling also needs no descriptor. In particular,
     // Windows may add a verbatim prefix when canonicalizing the same directory.
     let (pending, exact) = {
@@ -213,10 +232,10 @@ pub(in crate::out_of_core) fn retry_staging_cleanup(
         return Ok(SearchStagingCleanupReport::default());
     }
     if exact {
-        retry_registered(&root, max_attempts, usize::MAX, &memory, &task)
+        retry_registered(&root, max_attempts, usize::MAX, &memory, task)
     } else {
-        let root = OwnedPath::canonicalize(&root, &memory, &task)?;
-        retry_registered(&root, max_attempts, usize::MAX, &memory, &task)
+        let root = OwnedPath::canonicalize(&root, &memory, task)?;
+        retry_registered(&root, max_attempts, usize::MAX, &memory, task)
     }
 }
 
@@ -298,6 +317,19 @@ fn retry_registered(
             // errors below replace it with their concrete disposition.
             attempt.ticket().error = Some(CleanupFailure::Other);
             let result = (|| {
+                if let Some(native) = &attempt.ticket().captured {
+                    let _host = task
+                        .reserve_working_memory(_workspace.bytes() as u64)
+                        .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                    if native.governed && _host.is_none() {
+                        return Err(HawDBError::Execution(
+                            "governed scratch retry requires fresh memory admission".into(),
+                        ));
+                    }
+                    let _io =
+                        crate::out_of_core::scratch_directory::io_scope(task, native.governed)?;
+                    return attempt.ticket().remove_batches(max_batches);
+                }
                 let _project = ProjectFileDescriptors::acquire_component(
                     attempt
                         .ticket()
@@ -331,6 +363,12 @@ fn retry_registered(
             report.retained_memory_bytes = report
                 .retained_memory_bytes
                 .saturating_add(owner._memory.bytes())
+                .saturating_add(
+                    owner
+                        .captured_funding
+                        .as_ref()
+                        .map_or(0, |fund| fund.bytes()),
+                )
                 .saturating_add(owner.root.retained_bytes())
                 .saturating_add(ticket.path.retained_bytes())
                 .saturating_add(ticket.source_root.retained_bytes());
@@ -352,7 +390,10 @@ impl Ticket {
         self.path.parent() == Some(root) || &*self.source_root == root
     }
 
-    fn remove_batches(&self, max_batches: usize) -> Result<bool> {
+    fn remove_batches(&mut self, max_batches: usize) -> Result<bool> {
+        if let Some(native) = &mut self.captured {
+            return native.remove_batches(max_batches);
+        }
         // Cleanup is resumable: each counted step can defer without losing the
         // owner. Close the iterator before unlinking its bounded batch.
         // No operation-wide descriptor reservation or busy retry is needed.
@@ -405,6 +446,8 @@ pub(in crate::out_of_core) struct StageDirectory {
     cleanup_memory: Option<QueryMemoryLease>,
     project: Option<ProjectFileDescriptors>,
     admission: Option<Arc<hawdb_qos::RuntimePermit>>,
+    native: Option<Arc<crate::out_of_core::ScratchDirectory>>,
+    captured_task: Option<RuntimeTaskContext>,
 }
 
 impl StageDirectory {
@@ -479,6 +522,7 @@ impl StageDirectory {
                 last_retry: 0,
                 _memory: metadata,
                 _host_memory: host_memory,
+                captured_funding: None,
             })?;
             let created = super::super::io::GenerationIo::new(memory, task)
                 .native(&[&path], || fs::create_dir(&path))?;
@@ -493,11 +537,14 @@ impl StageDirectory {
                                 source_root,
                                 disk_reservation: 0,
                                 error: None,
+                                captured: None,
                             }),
                         }),
                         cleanup_memory: Some(cleanup),
                         project: Some(project),
                         admission: memory.host_admission.clone(),
+                        native: None,
+                        captured_task: None,
                     };
                     checkpoint(task)?;
                     return Ok(stage);
@@ -530,10 +577,30 @@ impl StageDirectory {
         let Some(ticket) = self.ticket.take() else {
             return false;
         };
+        self.native.take();
         let registration = self.registration.take().expect("registered private stage");
         let mut attempt = CleanupAttempt::new(registration, ticket);
         attempt.ticket().error = Some(CleanupFailure::Other);
-        let pending = match attempt.ticket().remove_batches(usize::MAX) {
+        let result = (|| {
+            let governed = attempt
+                .ticket()
+                .captured
+                .as_ref()
+                .is_some_and(|native| native.governed);
+            let _io = self
+                .captured_task
+                .as_ref()
+                .map(|task| crate::out_of_core::scratch_directory::io_scope(task, governed))
+                .transpose()?;
+            attempt
+                .ticket()
+                .remove_batches(if self.captured_task.is_some() {
+                    AUTOMATIC_CLEANUP_BATCHES
+                } else {
+                    usize::MAX
+                })
+        })();
+        let pending = match result {
             Ok(true) => {
                 attempt.complete();
                 false
@@ -549,6 +616,7 @@ impl StageDirectory {
         self.cleanup_memory.take();
         self.project.take();
         self.admission.take();
+        self.captured_task.take();
         pending
     }
 }
@@ -702,13 +770,13 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let task = RuntimeTaskContext::default();
         let memory = BuildMemory::new(&task).unwrap();
-        let stage = StageDirectory::create(&root, &memory, &task).unwrap();
+        let mut stage = StageDirectory::create(&root, &memory, &task).unwrap();
         for index in 0..33 {
             fs::write(stage.path.join(format!("partial-{index}")), b"partial").unwrap();
         }
         // Keep this ticket active so unrelated concurrent admissions cannot
         // accelerate cleanup and invalidate the per-attempt observation.
-        let ticket = stage.ticket.as_ref().unwrap();
+        let ticket = stage.ticket.as_mut().unwrap();
         for remaining in [17, 1, 0] {
             assert_eq!(
                 ticket.remove_batches(AUTOMATIC_CLEANUP_BATCHES).unwrap(),

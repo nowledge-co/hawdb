@@ -25,9 +25,38 @@ use std::io::{BufRead, BufReader, Read, Seek, Write};
 #[derive(Debug)]
 pub(crate) struct TermFile {
     pub(super) file: File,
+    pub(super) expected_length: Option<u64>,
+    _source_pin: Option<super::super::root_registry::ArtifactPin>,
     _memory: Option<QueryMemoryLease>,
+    _reader_memory: Option<crate::build_memory::read::ReaderMemory>,
 }
 impl TermFile {
+    pub(super) fn requires_execution(&self) -> bool {
+        self._reader_memory
+            .as_ref()
+            .is_some_and(|memory| memory.requires_execution())
+    }
+    pub(super) fn requires_context(&self) -> bool {
+        self._reader_memory.is_some()
+    }
+
+    pub(super) fn new_admitted(
+        file: File,
+        expected_length: u64,
+        admission: &crate::build_memory::read::ReadAdmission<'_>,
+        source_pin: Option<super::super::root_registry::ArtifactPin>,
+    ) -> Result<Shared<Self>> {
+        let lease = admission
+            .retained(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>() + 4096)?;
+        Ok(Shared::new(Self {
+            file,
+            expected_length: Some(expected_length),
+            _source_pin: source_pin,
+            _memory: None,
+            _reader_memory: Some(lease),
+        }))
+    }
+
     pub(crate) fn new(file: File, memory: Option<&BuildMemory>) -> Result<Shared<Self>> {
         let lease = memory
             .map(|memory| {
@@ -37,8 +66,11 @@ impl TermFile {
             })
             .transpose()?;
         Ok(Shared::new(Self {
+            _source_pin: None,
             file,
+            expected_length: None,
             _memory: lease,
+            _reader_memory: None,
         }))
     }
 }
@@ -80,17 +112,20 @@ impl Terms {
     pub(crate) fn workspace_bytes(&self) -> Result<u64> {
         match self {
             Self::Owned(terms) => Ok(terms.iter().map(String::len).max().unwrap_or(0) as u64),
-            Self::Stored { scalar_bytes, .. } => add(8192, multiply(*scalar_bytes as u64, 8)?),
+            Self::Stored { scalar_bytes, .. } => add(
+                add(8192, std::mem::size_of::<StoredReader<'_>>() as u64)?,
+                multiply(*scalar_bytes as u64, 8)?,
+            ),
         }
     }
     pub(in crate::out_of_core) fn cursor(&self) -> Result<Cursor<'_>> {
         self.cursor_with_query_context(None)
     }
 
-    fn cursor_with_query_context(
-        &self,
-        context: Option<crate::lexical_projection::QueryContext<'_>>,
-    ) -> Result<Cursor<'_>> {
+    pub(in crate::out_of_core) fn cursor_with_query_context<'a>(
+        &'a self,
+        context: Option<crate::lexical_projection::QueryContext<'a>>,
+    ) -> Result<Cursor<'a>> {
         match self {
             Self::Owned(terms) => Ok(Cursor::Owned(terms.iter())),
             Self::Stored {
@@ -102,6 +137,16 @@ impl Terms {
                 checksum,
                 memory,
             } => {
+                // Synchronous cleanup borrows publication and its original budget;
+                // only retained serving state also requires fresh execution.
+                if (file.requires_context() && context.is_none())
+                    || (file.requires_execution()
+                        && context.is_none_or(|context| context.execution.is_none()))
+                {
+                    return Err(HawDBError::Execution(
+                        "admitted mutation terms require a fresh query context".into(),
+                    ));
+                }
                 let lease = match context {
                     Some(context) => {
                         context.checkpoint()?;
@@ -118,16 +163,15 @@ impl Terms {
                         })
                         .transpose()?,
                 };
-                let mut reader = BufReader::with_capacity(
+                let mut reader = Box::new(BufReader::with_capacity(
                     8192,
-                    super::super::hydration::CheckedReader::new(
-                        super::super::hydration::RangeReader {
-                            file: &file.file,
-                            offset: *offset,
-                            remaining: *bytes,
-                        },
-                    ),
-                );
+                    super::super::hydration::CheckedReader::new(super::read::Range {
+                        file,
+                        offset: *offset,
+                        remaining: *bytes,
+                        context,
+                    }),
+                ));
                 expect(&mut reader, b'[')?;
                 Ok(Cursor::Stored {
                     reader,
@@ -136,6 +180,7 @@ impl Terms {
                     checksum: *checksum,
                     first: true,
                     ended: false,
+                    context,
                     _memory: lease,
                 })
             }
@@ -170,9 +215,12 @@ impl Terms {
         checkpoint()?;
         Ok(())
     }
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub(super) fn validate_with_query_context(
+        &self,
+        context: Option<crate::lexical_projection::QueryContext<'_>>,
+    ) -> Result<()> {
         let mut previous = None;
-        let mut cursor = self.cursor()?;
+        let mut cursor = self.cursor_with_query_context(context)?;
         while let Some(term) = cursor.next()? {
             if term.is_empty()
                 || previous
@@ -187,17 +235,18 @@ impl Terms {
     }
 }
 
+type StoredReader<'a> = BufReader<super::super::hydration::CheckedReader<super::read::Range<'a>>>;
+
 pub(in crate::out_of_core) enum Cursor<'a> {
     Owned(std::slice::Iter<'a, String>),
     Stored {
-        reader: BufReader<
-            super::super::hydration::CheckedReader<super::super::hydration::RangeReader<'a>>,
-        >,
+        reader: Box<StoredReader<'a>>,
         remaining: usize,
         scalar_bytes: usize,
         checksum: u64,
         first: bool,
         ended: bool,
+        context: Option<crate::lexical_projection::QueryContext<'a>>,
         _memory: Option<QueryMemoryLease>,
     },
 }
@@ -212,8 +261,10 @@ impl Cursor<'_> {
                 checksum,
                 first,
                 ended,
+                context,
                 ..
             } => {
+                context.map_or(Ok(()), |context| context.checkpoint())?;
                 if *ended {
                     return Ok(None);
                 }
@@ -240,10 +291,10 @@ impl Cursor<'_> {
                 skip_space(reader)?;
                 let mut limited = reader.take(*scalar_bytes as u64);
                 let term =
-                    String::deserialize(&mut serde_json::Deserializer::from_reader(&mut limited))
-                        .map_err(|error| {
-                        HawDBError::Storage(format!("invalid mutation term: {error}"))
-                    })?;
+                    String::deserialize(&mut serde_json::Deserializer::from_reader(&mut limited));
+                context.map_or(Ok(()), |context| context.checkpoint())?;
+                let term =
+                    term.map_err(|error| super::read::json_error(error, "invalid mutation term"))?;
                 *remaining -= 1;
                 Ok(Some(term))
             }
@@ -277,6 +328,37 @@ fn invalid_terms() -> HawDBError {
         "search mutation-run retraction terms are not strictly ordered or valid".into(),
     )
 }
+pub(super) struct WithContext<'a> {
+    pub(super) terms: &'a Terms,
+    pub(super) context: crate::lexical_projection::QueryContext<'a>,
+    pub(super) error: &'a std::cell::RefCell<Option<HawDBError>>,
+}
+impl Serialize for WithContext<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(self.terms.len()))?;
+        let mut output_error = None;
+        let result = self
+            .terms
+            .visit_with_query_context(Some(self.context), |term| {
+                sequence.serialize_element(term).map_err(|error| {
+                    output_error = Some(error);
+                    HawDBError::Execution("mutation checksum output failed".into())
+                })
+            });
+        if let Some(error) = output_error {
+            return Err(error);
+        }
+        if let Err(error) = result {
+            *self.error.borrow_mut() = Some(error);
+            return Err(serde::ser::Error::custom("mutation term read failed"));
+        }
+        sequence.end()
+    }
+}
+
 impl Serialize for Terms {
     fn serialize<S: serde::Serializer>(
         &self,
@@ -420,6 +502,7 @@ impl<W: Write> Write for Hashed<'_, W> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn range_checksum(file: &File, offset: u64, bytes: u64) -> Result<u64> {
     let mut input = super::super::hydration::RangeReader {
         file,

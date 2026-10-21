@@ -16,7 +16,8 @@
 
 use super::{
     SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationUpdate,
-    SearchOutOfCoreGenerationWriter,
+    SearchOutOfCoreGenerationWriter, SearchOutOfCorePreparedGeneration,
+    SearchOutOfCorePreparedUpdate,
 };
 use crate::{
     Result, SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreMetrics, SearchOutOfCoreReader,
@@ -118,7 +119,6 @@ impl SearchGenerationAdmission {
         super::mutations::SearchOutOfCoreMutationWriter::create(reader, options, task, memory)
     }
 
-    /// Prepares a governed update with a default task context.
     pub fn prepare_update(
         self,
         reader: &SearchOutOfCoreReader,
@@ -171,6 +171,16 @@ impl GovernedSearchGenerationWriter {
         &mut self.writer
     }
 
+    /// Builds an invisible candidate that retains this governor permit through
+    /// its owned build memory and stage. Queuing, activation and drop cleanup
+    /// remain admitted even after this wrapper has been consumed.
+    pub fn prepare_publication(self) -> Result<SearchOutOfCorePreparedGeneration> {
+        let Self { writer, admission } = self;
+        let candidate = writer.prepare_publication();
+        drop(admission);
+        candidate
+    }
+
     /// Finalizes the generation and releases admission after immediate cleanup.
     /// Deferred debt keeps only its separately accounted metadata and disk limits.
     pub fn finish(self) -> Result<SearchOutOfCoreGenerationBuildReport> {
@@ -199,6 +209,15 @@ impl GovernedSearchGenerationUpdate {
         &mut self.update
     }
 
+    /// Builds an invisible update retaining the shared admission until its
+    /// candidate and immediate cleanup have completed.
+    pub fn prepare_publication(self) -> Result<SearchOutOfCorePreparedUpdate> {
+        let Self { update, admission } = self;
+        let candidate = update.prepare_publication();
+        drop(admission);
+        candidate
+    }
+
     /// Finalizes the update and releases admission after immediate cleanup.
     /// Deferred debt keeps only its separately accounted metadata and disk limits.
     pub fn finish(
@@ -214,3 +233,6 @@ impl GovernedSearchGenerationUpdate {
         result
     }
 }
+
+#[cfg(feature = "vector-search")]
+mod reader;

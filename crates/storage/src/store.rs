@@ -136,7 +136,7 @@ mod immutable_root;
 #[doc(hidden)]
 pub use immutable_root::{
     AdmittedBranchStore, BranchAdmissionError, BranchAdmissionRequest,
-    PreparedImmutableRootHandoff, SealedBranchSource,
+    CapturedBranchAdmissionRequest, PreparedImmutableRootHandoff, SealedBranchSource,
 };
 #[path = "store/pending_nodes.rs"]
 mod pending_nodes;

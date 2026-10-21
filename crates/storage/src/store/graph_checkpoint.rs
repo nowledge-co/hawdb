@@ -630,7 +630,9 @@ impl GraphStore {
         let mut source = self.snapshot();
         source.checkpoint_capture_started = Some(captured_at);
         source.durable = self.durable.clone();
-        if let Some(durable) = &mut source.durable {
+        if let Some(durable) = &mut source.durable
+            && durable.wal_append_owner.is_none()
+        {
             durable.wal_append_file = None;
         }
         source

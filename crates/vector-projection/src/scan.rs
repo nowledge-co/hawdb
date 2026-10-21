@@ -217,7 +217,7 @@ impl SegmentReader for InMemoryProjection {
     }
 }
 
-impl SegmentReader for FileProjection {
+impl<Memory: Send + Sync> SegmentReader for FileProjection<Memory> {
     fn manifest(&self) -> &ProjectionManifest {
         FileProjection::manifest(self)
     }
@@ -279,7 +279,7 @@ impl InMemoryProjection {
     }
 }
 
-impl FileProjection {
+impl<Memory: Send + Sync> FileProjection<Memory> {
     pub fn search(
         &self,
         query: &[f32],

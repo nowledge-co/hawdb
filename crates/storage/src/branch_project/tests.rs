@@ -67,11 +67,11 @@ fn selector_rejects_torn_noncanonical_and_unknown_encodings() {
     assert_eq!(
         bytes,
         concat!(
-            "HAWDB_BRANCH_PROJECT_V1\n",
+            "HAWDB_BRANCH_PROJECT_V2\n",
             "project_id\t00000000-0000-0000-0000-000000000001\n",
             "main_branch_id\t00000000-0000-0000-0000-000000000002\n",
             "catalog_format\t2\n",
-            "checksum\t4139119803\n",
+            "checksum\t4233522556\n",
         )
         .as_bytes(),
     );
@@ -81,7 +81,7 @@ fn selector_rejects_torn_noncanonical_and_unknown_encodings() {
     }
     let text = String::from_utf8(bytes).unwrap();
     for invalid in [
-        text.replace(PROJECT_HEADER, "HAWDB_BRANCH_PROJECT_V2"),
+        text.replace(PROJECT_HEADER, "HAWDB_BRANCH_PROJECT_V3"),
         text.replace("catalog_format\t2", "catalog_format\t1"),
         text.replace("main_branch_id\t", "project_id\t"),
         text.replace(
@@ -131,7 +131,7 @@ fn manifest_probe_only_recognizes_the_exact_legacy_header() {
 
 #[test]
 fn metadata_opens_while_main_is_busy_without_reading_its_wal() {
-    let fixture = Fixture::new(4);
+    let fixture = Fixture::new(6);
     let selector = identity(11, 12);
     fixture.publish_metadata(selector);
     let main_directory = fixture
@@ -147,13 +147,16 @@ fn metadata_opens_while_main_is_busy_without_reading_its_wal() {
     .unwrap();
     let writer = DatabaseDirectoryLease::acquire(&main_directory).unwrap();
     let before = fixture.files.metrics();
-    assert_eq!(before.open, 1);
-    let first = ProjectMetadata::open(fixture.root(), 4).unwrap();
-    let second = ProjectMetadata::open(fixture.root(), 4).unwrap();
+    assert_eq!(before.open, 2);
+    assert_eq!(before.ownership_locks, 1);
+    assert_eq!(before.transient_handles, 1);
+    let first = ProjectMetadata::open(fixture.root(), 6).unwrap();
+    let second = ProjectMetadata::open(fixture.root(), 6).unwrap();
     assert_eq!(first.selector(), selector);
     assert_eq!(first.main().source_commit_epoch, 42);
     assert_eq!(second.main().id, selector.main_branch_id);
-    assert_eq!(first.file_descriptors().metrics().open, before.open);
+    assert_eq!(first.file_descriptors().metrics().open, before.open + 2);
+    assert_eq!(fixture.files.metrics().high_water, 6);
     assert_eq!(fixture.files.metrics().mutable_wals, 0);
     assert_eq!(fixture.files.metrics().admitted_runtimes, 0);
     assert!(!main_directory.join("head.hawdb").exists());
@@ -162,8 +165,10 @@ fn metadata_opens_while_main_is_busy_without_reading_its_wal() {
         b"corrupt data; must not be read on metadata open",
     );
     drop(writer);
-    assert_eq!(fixture.files.metrics().open, 0);
+    assert_eq!(fixture.files.metrics().open, 2);
     assert_eq!(first.refresh().unwrap().catalog().revision, 2);
+    drop((first, second));
+    assert_eq!(fixture.files.metrics().open, 0);
 }
 
 #[test]
@@ -223,7 +228,7 @@ fn metadata_exhaustion_preserves_files_and_can_be_retried() {
     drop(handles);
     let metadata = ProjectMetadata::open(fixture.root(), 4).unwrap();
     assert_eq!(metadata.selector(), selector);
-    assert_eq!(metadata.file_descriptors().metrics().open, 0);
+    assert_eq!(metadata.file_descriptors().metrics().open, 1);
     assert!(metadata.file_descriptors().metrics().high_water <= 4);
     assert!(matches!(
         ProjectMetadata::open(fixture.root(), 5).unwrap_err(),
@@ -233,7 +238,7 @@ fn metadata_exhaustion_preserves_files_and_can_be_retried() {
 
 #[test]
 fn bootstrap_lost_response_reuses_the_original_durable_identity() {
-    let fixture = Fixture::new(4);
+    let fixture = Fixture::new(8);
     let original = identity(51, 52);
     reserve_bootstrap_identity(&fixture.files, original).unwrap();
     let path = fixture.root().join(BOOTSTRAP_FILE);
@@ -251,9 +256,10 @@ fn bootstrap_lost_response_reuses_the_original_durable_identity() {
 }
 
 #[test]
-fn bootstrap_uses_existing_development_catalog_identity_and_checks_conflicts() {
-    let fixture = Fixture::new(4);
+fn bootstrap_uses_reserved_development_catalog_identity_and_checks_conflicts() {
+    let fixture = Fixture::new(8);
     let existing = identity(71, 72);
+    reserve_bootstrap_identity(&fixture.files, existing).unwrap();
     initialize_catalog_file(
         &catalog_path(fixture.root()),
         existing.project_id,
@@ -283,7 +289,7 @@ fn bootstrap_uses_existing_development_catalog_identity_and_checks_conflicts() {
 
 #[test]
 fn damaged_bootstrap_intent_is_retained_instead_of_replaced() {
-    let fixture = Fixture::new(4);
+    let fixture = Fixture::new(8);
     let original = identity(101, 102);
     reserve_bootstrap_identity(&fixture.files, original).unwrap();
     let path = fixture.root().join(BOOTSTRAP_FILE);
@@ -299,13 +305,12 @@ fn damaged_bootstrap_intent_is_retained_instead_of_replaced() {
 #[test]
 #[cfg(not(windows))]
 fn uncertain_intent_publication_keeps_identity_available_for_reopen() {
-    let fixture = Fixture::new(4);
+    let fixture = Fixture::new(8);
     let selector = identity(121, 122);
-    let path = fixture.root().join(BOOTSTRAP_FILE);
-    {
-        let _failure = durability::fail_sync_directory_for(fixture.root());
-        assert!(publish_bootstrap_intent(&path, selector).is_err());
-    }
+    AFTER_BOOTSTRAP_INTENT.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(|| Err(integrity("lost intent response"))))
+    });
+    assert!(reserve_bootstrap_identity(&fixture.files, selector).is_err());
     assert_eq!(
         reserve_bootstrap_identity(&fixture.files, identity(131, 132)).unwrap(),
         selector,
@@ -315,7 +320,7 @@ fn uncertain_intent_publication_keeps_identity_available_for_reopen() {
 
 #[test]
 fn busy_metadata_rejects_bootstrap_without_publishing_an_identity() {
-    let fixture = Fixture::new(4);
+    let fixture = Fixture::new(8);
     let directory = fixture.root().join(BRANCH_DIRECTORY);
     std::fs::create_dir(&directory).unwrap();
     let lease = CatalogMetadataLease::acquire(&directory).unwrap();
@@ -347,4 +352,183 @@ fn legacy_store_rejects_project_selector_before_wal_or_reclamation() {
         b"preserve old generation",
     );
     assert_eq!(fixture.files.metrics().open, 0);
+}
+
+#[test]
+fn metadata_capture_and_refresh_ignore_replacement_even_with_matching_selector() {
+    let fixture = Fixture::new(4);
+    let selector = identity(121, 122);
+    fixture.publish_metadata(selector);
+    let moved = fixture.root().with_extension("moved");
+    let original = fixture.root().to_path_buf();
+    let renamed = moved.clone();
+    let mut replacement_catalog = branch_catalog::read_catalog(&catalog_path(&original)).unwrap();
+    replacement_catalog.revision = 900;
+    let replacement_bytes = replacement_catalog.encode().unwrap();
+    AFTER_METADATA_CAPTURE.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            // No child handle is open while the empty-handle directory moves,
+            // so this boundary is supported on native Windows too.
+            std::fs::rename(&original, &renamed).unwrap();
+            std::fs::create_dir_all(original.join(BRANCH_DIRECTORY)).unwrap();
+            std::fs::write(original.join(MANIFEST_FILE), selector.encode()).unwrap();
+            std::fs::write(catalog_path(&original), replacement_bytes).unwrap();
+        }));
+    });
+    let metadata = ProjectMetadata::open(fixture.root(), 4).unwrap();
+    assert_eq!(metadata.catalog().revision, 2);
+    assert_eq!(fixture.files.metrics().open, 1);
+    let replacement = std::fs::read(catalog_path(fixture.root())).unwrap();
+    let mut updated = metadata.catalog().clone();
+    updated.revision = 3;
+    std::fs::write(catalog_path(&moved), updated.encode().unwrap()).unwrap();
+    let refreshed = metadata.refresh().unwrap();
+    assert_eq!(refreshed.catalog().revision, 3);
+    // Refresh borrows the same counted root rather than opening another one.
+    assert_eq!(fixture.files.metrics().open, 1);
+    assert_eq!(
+        std::fs::read(catalog_path(fixture.root())).unwrap(),
+        replacement
+    );
+    std::fs::remove_file(fixture.root().join(MANIFEST_FILE)).unwrap();
+    assert_eq!(metadata.refresh().unwrap().catalog().revision, 3);
+    std::fs::write(fixture.root().join(MANIFEST_FILE), selector.encode()).unwrap();
+    std::fs::write(moved.join(MANIFEST_FILE), identity(131, 132).encode()).unwrap();
+    assert!(metadata.refresh().is_err());
+    assert_eq!(fixture.files.metrics().open, 1);
+    drop((metadata, refreshed));
+    assert_eq!(fixture.files.metrics().open, 0);
+    std::fs::remove_dir_all(moved).unwrap();
+}
+
+#[test]
+fn transferred_project_capture_rejects_same_uuid_replacement_without_recapture() {
+    let fixture = Fixture::new(4);
+    let selector = identity(151, 152);
+    fixture.publish_metadata(selector);
+    let metadata = ProjectMetadata::open(fixture.root(), 4).unwrap();
+    let capture = metadata.into_capture();
+    let shared = capture.clone();
+    assert_eq!(fixture.files.metrics().open, 1);
+    capture.require_original_namespace().unwrap();
+    let moved = fixture.root().with_extension("transferred");
+    std::fs::rename(fixture.root(), &moved).unwrap();
+    std::fs::create_dir_all(fixture.root().join(BRANCH_DIRECTORY)).unwrap();
+    std::fs::write(fixture.root().join(MANIFEST_FILE), selector.encode()).unwrap();
+    let mut replacement = branch_catalog::read_catalog(&catalog_path(&moved)).unwrap();
+    replacement.revision = 900;
+    let replacement = replacement.encode().unwrap();
+    std::fs::write(catalog_path(fixture.root()), &replacement).unwrap();
+    assert!(matches!(
+        capture.require_original_namespace(),
+        Err(HawDBError::StorageIntegrity(message))
+            if message == "captured project directory was replaced"
+    ));
+    assert_eq!(shared.metadata().unwrap().catalog().revision, 2);
+    assert_eq!(shared.locked_catalog().unwrap().revision, 2);
+    assert_eq!(fixture.files.metrics().open, 1);
+    assert_eq!(
+        std::fs::read(catalog_path(fixture.root())).unwrap(),
+        replacement
+    );
+    std::fs::remove_dir_all(fixture.root()).unwrap();
+    std::fs::rename(&moved, fixture.root()).unwrap();
+    capture.require_original_namespace().unwrap();
+    drop(capture);
+    assert_eq!(fixture.files.metrics().open, 1);
+    assert_eq!(shared.metadata().unwrap().catalog().revision, 2);
+    drop(shared);
+    assert_eq!(fixture.files.metrics().open, 0);
+}
+
+#[test]
+fn captured_metadata_descriptor_refusal_preserves_original_and_retries() {
+    let fixture = Fixture::new(4);
+    let selector = identity(141, 142);
+    fixture.publish_metadata(selector);
+    let original = std::fs::read(catalog_path(fixture.root())).unwrap();
+    let metadata = ProjectMetadata::open(fixture.root(), 4).unwrap();
+    let blockers = (0..2)
+        .map(|_| File::open(fixture.root().join(MANIFEST_FILE)).unwrap())
+        .collect::<Vec<_>>();
+    // The selector read fits. Capturing branches then opening its catalog must
+    // refuse in the original domain, refunding only the attempted handles.
+    assert!(matches!(
+        metadata.refresh().unwrap_err(),
+        HawDBError::FileDescriptors(FileDescriptorError::BudgetExceeded { limit: 4, .. })
+    ));
+    assert_eq!(fixture.files.metrics().open, 3);
+    assert_eq!(
+        std::fs::read(catalog_path(fixture.root())).unwrap(),
+        original
+    );
+    drop(blockers);
+    assert_eq!(metadata.refresh().unwrap().selector(), selector);
+    assert_eq!(fixture.files.metrics().open, 1);
+    drop(metadata);
+    assert_eq!(fixture.files.metrics().open, 0);
+}
+
+#[test]
+fn bootstrap_initialized_missing_ledger_never_recreates_empty_evidence() {
+    let fixture = Fixture::new(8);
+    let selected = identity(151, 152);
+    reserve_bootstrap_identity(&fixture.files, selected).unwrap();
+    let intent = std::fs::read(fixture.root().join(BOOTSTRAP_FILE)).unwrap();
+    let ledger = fixture.root().join(crate::consumer_allocation::LEDGER_FILE);
+    std::fs::remove_file(&ledger).unwrap();
+    assert!(reserve_bootstrap_identity(&fixture.files, identity(153, 154)).is_err());
+    assert!(!ledger.exists());
+    assert_eq!(
+        std::fs::read(fixture.root().join(BOOTSTRAP_FILE)).unwrap(),
+        intent
+    );
+    assert_eq!(fixture.files.metrics().open, 0);
+}
+
+#[test]
+fn bootstrap_catalog_without_ledger_is_not_virgin_evidence() {
+    let fixture = Fixture::new(8);
+    let selected = identity(161, 162);
+    initialize_catalog_file(
+        &catalog_path(fixture.root()),
+        selected.project_id,
+        selected.main_branch_id,
+    )
+    .unwrap();
+    let before = std::fs::read(catalog_path(fixture.root())).unwrap();
+    assert!(reserve_bootstrap_identity(&fixture.files, selected).is_err());
+    assert!(!fixture
+        .root()
+        .join(crate::consumer_allocation::LEDGER_FILE)
+        .exists());
+    assert!(!fixture.root().join(BOOTSTRAP_FILE).exists());
+    assert_eq!(std::fs::read(catalog_path(fixture.root())).unwrap(), before);
+}
+
+#[test]
+fn bootstrap_descriptor_refusal_preserves_empty_ledger_for_original_identity_retry() {
+    let root = std::env::temp_dir().join(format!(
+        "hawdb-bootstrap-budget-{}",
+        hawdb_core::generate_uuidv7().unwrap()
+    ));
+    let selected = identity(171, 172);
+    let ledger = root.join(crate::consumer_allocation::LEDGER_FILE);
+    let evidence = {
+        let files = ProjectFileDescriptors::acquire(&root, 4).unwrap();
+        let error = reserve_bootstrap_identity(&files, selected).unwrap_err();
+        assert!(matches!(error, HawDBError::FileDescriptors(_)), "{error}");
+        assert_eq!(files.metrics().open, 0);
+        assert!(!root.join(BOOTSTRAP_FILE).exists());
+        std::fs::read(&ledger).unwrap()
+    };
+    let files = ProjectFileDescriptors::acquire(&root, 8).unwrap();
+    assert_eq!(
+        reserve_bootstrap_identity(&files, identity(173, 174)).unwrap(),
+        selected
+    );
+    assert_eq!(std::fs::read(&ledger).unwrap(), evidence);
+    assert_eq!(files.metrics().open, 0);
+    drop(files);
+    std::fs::remove_dir_all(root).unwrap();
 }

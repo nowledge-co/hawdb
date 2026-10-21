@@ -294,6 +294,18 @@ impl ProjectFileDescriptors {
         }
     }
 
+    /// Retain the descriptor domain of an already captured native directory.
+    /// Registered readers must not resolve a saved path again after acquiring
+    /// the original directory, since that label may now name another root.
+    #[doc(hidden)]
+    pub fn from_open_context(context: &FileOpenContext) -> Self {
+        let state = Arc::clone(&context.state);
+        Self {
+            immutable_handles: state.immutable_handles(),
+            state,
+        }
+    }
+
     /// Internal runtimes and maintenance borrow the containing project domain.
     /// They must never turn a branch/runtime subdirectory into a second budget.
     pub(crate) fn acquire_containing(root: &Path, limit: usize) -> Result<Self, HawDBError> {
@@ -419,6 +431,12 @@ impl ProjectFileDescriptors {
             immutable_handles: state.immutable_handles(),
             state,
         })
+    }
+
+    /// Borrow the same admitted domain, preserving the existing exact-config
+    /// conflict check without resolving a saved namespace again.
+    pub(crate) fn with_configured_limit(&self, limit: usize) -> Result<Self, HawDBError> {
+        configured_state(Arc::clone(&self.state), limit)
     }
 
     pub fn root(&self) -> &Path {
@@ -594,6 +612,36 @@ pub(crate) fn absolute_path(path: &Path) -> io::Result<PathBuf> {
     Ok(normalized)
 }
 
+thread_local! {
+    static COMPONENT_CONTEXTS: RefCell<Vec<(PathBuf, FileOpenContext)>> = const { RefCell::new(Vec::new()) };
+}
+
+impl FileOpenContext {
+    /// Charge synchronous private producer I/O to its original project domain.
+    /// This is admission only; callers retain and validate native ownership.
+    #[doc(hidden)]
+    pub fn with_component_context<T>(
+        &self,
+        label: &Path,
+        action: impl FnOnce() -> T,
+    ) -> io::Result<T> {
+        let label = absolute_path(label)?;
+        struct Scope;
+        impl Drop for Scope {
+            fn drop(&mut self) {
+                COMPONENT_CONTEXTS.with(|contexts| {
+                    contexts.borrow_mut().pop();
+                });
+            }
+        }
+        COMPONENT_CONTEXTS.with(|contexts| contexts.borrow_mut().push((label, self.clone())));
+        let scope = Scope;
+        let output = action();
+        drop(scope);
+        Ok(output)
+    }
+}
+
 pub(crate) fn context_for_path(path: &Path) -> io::Result<FileOpenContext> {
     // Path comparisons already normalize separators and CurDir components.
     // Borrow absolute paths so admission does not allocate an unaccounted path
@@ -605,6 +653,16 @@ pub(crate) fn context_for_path(path: &Path) -> io::Result<FileOpenContext> {
         owned = absolute_path(path)?;
         &owned
     };
+    if let Some(context) = COMPONENT_CONTEXTS.with(|contexts| {
+        contexts
+            .borrow()
+            .iter()
+            .rev()
+            .find(|(root, _)| absolute.starts_with(root))
+            .map(|(_, context)| context.for_operation())
+    }) {
+        return Ok(context);
+    }
     let projects = PROJECTS.lock().unwrap_or_else(|error| error.into_inner());
     let state = projects
         .iter()
@@ -691,6 +749,21 @@ pub struct FileOpenContext {
 }
 
 impl FileOpenContext {
+    /// Borrow this domain's current operation inventory, without changing the
+    /// project registry or keeping the original operation's reservation alive.
+    pub(crate) fn for_operation(&self) -> Self {
+        Self::from_state(self.state.clone())
+    }
+
+    /// Retain project identity without retaining an operation's FD inventory.
+    /// Long-lived authorities must take fresh operation contexts for later I/O.
+    pub(crate) fn without_inventory(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            inventory: None,
+        }
+    }
+
     pub(crate) fn project_root(&self) -> &Path {
         &self.state.root
     }

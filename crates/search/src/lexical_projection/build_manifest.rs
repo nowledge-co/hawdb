@@ -86,8 +86,16 @@ struct DecodePlan {
 impl DecodePlan {
     fn new(body: &ManifestBody, task: &RuntimeTaskContext) -> Result<Self> {
         checkpoint(task)?;
-        let mut strings = add(body.format.len(), body.artifact_file.len())?;
-        let mut largest = body.format.len().max(body.artifact_file.len()).max(64);
+        let mut strings = add(
+            add(body.format.len(), body.layout.len())?,
+            body.artifact_file.len(),
+        )?;
+        let mut largest = body
+            .format
+            .len()
+            .max(body.layout.len())
+            .max(body.artifact_file.len())
+            .max(64);
         for value in body
             .blocks
             .iter()
@@ -115,14 +123,17 @@ impl DecodePlan {
     }
 }
 
-fn reader_bytes() -> usize {
+pub(super) fn reader_bytes() -> usize {
     size_of::<LexicalProjectionReader>() + size_of::<File>() + 4 * size_of::<usize>()
 }
 
 fn retained_bytes(body: &ManifestBody, task: &RuntimeTaskContext) -> Result<usize> {
     let mut bytes = add(
         reader_bytes(),
-        add(body.format.capacity(), body.artifact_file.capacity())?,
+        add(
+            add(body.format.capacity(), body.layout.capacity())?,
+            body.artifact_file.capacity(),
+        )?,
     )?;
     bytes = add(
         bytes,
@@ -143,6 +154,7 @@ pub(super) fn finish(
     input_body: ManifestBody,
     directory_memory: DirectoryMemory,
     paths: &Paths,
+    artifact_reference: hawdb_storage::immutable_object::ObjectReference,
     config: LexicalProjectionConfig,
     memory: &BuildMemory,
     task: &RuntimeTaskContext,
@@ -165,6 +177,22 @@ pub(super) fn finish(
         memory,
         task,
     )?;
+    let mut manifest_object = hawdb_storage::immutable_object::ObjectReferenceWriter::new(
+        hawdb_storage::immutable_object::ObjectKind::CheckpointArtifact,
+        1,
+        encoded.bytes.len() as u64,
+    )
+    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+    for chunk in encoded.bytes.chunks(SPILL_IO_BUFFER_BYTES) {
+        checkpoint(task)?;
+        manifest_object.write_all(chunk)?;
+    }
+    let references = super::ProducerReferences {
+        manifest: manifest_object
+            .finish()
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?,
+        artifact: artifact_reference,
+    };
     drop(body);
     drop(directory_memory);
     drop(_validation);
@@ -193,8 +221,8 @@ pub(super) fn finish(
     output_memory.shrink(output_memory.bytes() - actual);
     drop(decode_scratch);
     drop(encoded);
-    let reader = LexicalProjectionReader::load_decoded_manifest(
-        &paths.artifact_tmp,
+    let mut reader = LexicalProjectionReader::load_decoded_manifest(
+        super::ManifestFile::Path(&paths.artifact_tmp),
         decoded,
         identity.0,
         identity.1,
@@ -204,6 +232,9 @@ pub(super) fn finish(
         Some(output_memory),
     )?
     .ok_or_else(|| HawDBError::Storage("built lexical projection identity mismatch".into()))?;
+    Arc::get_mut(&mut reader)
+        .expect("private build has one reader owner")
+        .producer_references = Some(references);
     // Both paths and platform rename scratch are admitted before publication.
     let _rename_memory = rename_memory(paths, memory)?;
     checkpoint(task)?;

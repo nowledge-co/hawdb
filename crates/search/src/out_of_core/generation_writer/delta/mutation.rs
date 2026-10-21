@@ -178,6 +178,7 @@ impl Prepared {
                     reader.analyzer_lexicon(),
                     crate::lexical_projection::retraction::RetractionContext {
                         root: stage,
+                        scratch: None,
                         memory,
                         task,
                         needs_chinese: document.needs_chinese,

@@ -18,6 +18,7 @@ use super::*;
 
 pub(crate) struct RetractionContext<'a> {
     pub(crate) root: &'a Path,
+    pub(crate) scratch: Option<std::sync::Arc<crate::out_of_core::ScratchDirectory>>,
     pub(crate) memory: &'a BuildMemory,
     pub(crate) task: &'a RuntimeTaskContext,
     pub(crate) needs_chinese: bool,
@@ -33,6 +34,7 @@ impl LexicalProjectionReader {
     ) -> Result<u64> {
         let RetractionContext {
             root,
+            scratch,
             memory,
             task,
             needs_chinese,
@@ -52,6 +54,9 @@ impl LexicalProjectionReader {
         }
         let mut analyze = |workspace: Option<&crate::analyzer_workspace::Workspace>| {
             let mut pool = SpillRuns::with_context(root, 0, config, memory.clone(), task.clone())?;
+            if let Some(directory) = &scratch {
+                pool.control = pool.control.with_scratch(directory.clone());
+            }
             let mut pending = PendingPostings::new(Some(memory))?;
             let analyzed = document_frequency::analyze_with_control(
                 document,

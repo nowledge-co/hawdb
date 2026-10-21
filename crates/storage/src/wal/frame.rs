@@ -275,6 +275,10 @@ enum FragmentParse {
 }
 
 impl<R: Read> BinaryWalReader<R> {
+    pub(crate) fn reader_ref(&self) -> &R {
+        &self.reader
+    }
+
     pub(crate) fn into_reader(self) -> R {
         self.reader
     }

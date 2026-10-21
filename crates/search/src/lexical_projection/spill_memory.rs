@@ -121,6 +121,7 @@ impl SpillRuns {
         Ok(RemoveOnDrop {
             path,
             armed: true,
+            control: self.control.captured().then(|| self.control.clone()),
             _memory: memory,
         })
     }

@@ -89,8 +89,17 @@ impl SearchProjectionConsumer {
         &mut self.projection
     }
 
-    pub fn search_index(&self) -> &SearchIndex {
-        self.projection.index()
+    pub fn search_index(&self) -> Result<&SearchIndex> {
+        self.projection.require_completed_view()?;
+        Ok(self.projection.index())
+    }
+
+    /// Retain this immutable native version across a later publication.
+    pub fn pin(
+        &self,
+        permit: &hawdb_qos::RuntimePermit,
+    ) -> Result<crate::consumer::ConsumerReadPin> {
+        self.projection.pin(permit)
     }
 }
 

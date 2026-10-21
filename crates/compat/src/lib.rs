@@ -425,6 +425,7 @@ impl ExpectedErrorClass {
             HawDBError::FileDescriptors(_) => Self::FileDescriptors,
             HawDBError::Storage(_)
             | HawDBError::StorageIntegrity(_)
+            | HawDBError::ProjectionBusy
             | HawDBError::AppendSequenceExhausted { .. }
             | HawDBError::BranchBusy { .. }
             | HawDBError::BranchReclamationBlocked { .. } => Self::Storage,

@@ -128,6 +128,53 @@ impl SpoolRecord {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(in super::super) fn require_document(
+        &self,
+        expected: &SearchDocument,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<()> {
+        self.require_source(expected, memory, task)
+    }
+    #[cfg(test)]
+    pub(in super::super) fn require_source(
+        &self,
+        expected: &impl crate::document_encoding::RecordSource,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<()> {
+        if expected.encoded_len(Some(task))? as u64 != self.encoded_bytes {
+            return Err(HawDBError::Execution(
+                "staged document differs from expected document".into(),
+            ));
+        }
+        let _scratch = memory.spool.reserve(2 * SPOOL_BUFFER_BYTES)?;
+        let mut compare = EncodedComparison {
+            input: RangeReader {
+                file: &self.source.file,
+                offset: self.offset,
+                remaining: self.encoded_bytes,
+            },
+            task,
+            buffer: [0; SPOOL_BUFFER_BYTES],
+            digest: Crc32cHasher::new(),
+            equal: true,
+        };
+        expected.write_encoded(&mut compare)?;
+        if compare.input.remaining != 0 || compare.digest.finish() != self.checksum {
+            return Err(HawDBError::Storage(
+                "immutable spool record checksum changed".into(),
+            ));
+        }
+        if !compare.equal {
+            return Err(HawDBError::Execution(
+                "staged document differs from expected document".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn body(&self) -> Result<RangeReader<'_>> {
         Ok(RangeReader {
             file: &self.source.file,
@@ -137,6 +184,30 @@ impl SpoolRecord {
                 .checked_mul(2)
                 .ok_or_else(|| HawDBError::Storage("spool body extent overflow".into()))?,
         })
+    }
+}
+
+#[cfg(test)]
+struct EncodedComparison<'a> {
+    input: RangeReader<'a>,
+    task: &'a RuntimeTaskContext,
+    buffer: [u8; SPOOL_BUFFER_BYTES],
+    digest: Crc32cHasher,
+    equal: bool,
+}
+#[cfg(test)]
+impl Write for EncodedComparison<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        for part in bytes.chunks(SPOOL_BUFFER_BYTES) {
+            checkpoint(self.task).map_err(io::Error::other)?;
+            self.input.read_exact(&mut self.buffer[..part.len()])?;
+            self.digest.update(&self.buffer[..part.len()]);
+            self.equal &= part == &self.buffer[..part.len()];
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 

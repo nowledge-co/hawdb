@@ -702,6 +702,7 @@ fn error_class(error: &crate::HawDBError) -> String {
         crate::HawDBError::Storage(_)
         | crate::HawDBError::FileDescriptors(_)
         | crate::HawDBError::StorageIntegrity(_)
+        | crate::HawDBError::ProjectionBusy
         | crate::HawDBError::AppendSequenceExhausted { .. }
         | crate::HawDBError::BranchBusy { .. }
         | crate::HawDBError::BranchReclamationBlocked { .. } => "storage",

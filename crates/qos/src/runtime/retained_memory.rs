@@ -30,6 +30,12 @@ impl RuntimeRetainedMemory {
         self.bytes
     }
 
+    /// Check whether new work belongs to the governor paying for this state.
+    /// This is an identity check only; it grants no execution or memory capacity.
+    pub fn shares_governor_with(&self, permit: &RuntimePermit) -> bool {
+        Arc::ptr_eq(&self.governor, &permit.governor)
+    }
+
     pub(super) fn merge(&mut self, incoming: &mut Self) -> bool {
         if !Arc::ptr_eq(&self.governor, &incoming.governor) {
             return false;

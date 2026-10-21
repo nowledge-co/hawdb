@@ -29,9 +29,14 @@
 pub mod image;
 
 use crate::file_descriptors::{absolute_path_ref, FileOpenContext, ProjectFileDescriptors};
-use image::{CrashImage, CrashPlan, ImageEngine, ImageLimits, InodeId, UncoveredWrite};
+#[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+use image::InodeId;
+use image::{CrashImage, CrashPlan, ImageEngine, ImageLimits, UncoveredWrite};
+#[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Read};
+use std::io;
+#[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -82,6 +87,7 @@ struct Observation {
 #[derive(Debug)]
 pub(crate) struct ModelCore {
     root: PathBuf,
+    root_anchor: crate::file_io::PowerLossRoot,
     engine: Mutex<ImageEngine>,
     observation: Mutex<Option<Observation>>,
 }
@@ -108,13 +114,12 @@ impl PowerLossModel {
                 "attach power-loss capture before acquiring project handles",
             ));
         }
-        if std::fs::read_dir(project.root())?.next().is_some() {
-            return Err(invalid(
-                "power-loss capture requires an empty project directory",
-            ));
-        }
+        let root_anchor =
+            crate::file_io::PowerLossRoot::capture(project.root(), &project.io_context())?;
+        root_anchor.require_empty(project.root())?;
         let core = Arc::new(ModelCore {
             root: project.root().to_path_buf(),
+            root_anchor,
             engine: Mutex::new(engine),
             observation: Mutex::new(None),
         });
@@ -127,11 +132,13 @@ impl PowerLossModel {
 
     pub fn capture(&self) -> io::Result<PowerLossSnapshot> {
         let engine = self.core.lock()?;
-        verify_native_tree(
-            &self.core.root,
-            &engine.crash(&engine.persist_all_plan())?,
-            &self.project.io_context(),
-        )?;
+        self.core.root_anchor.require_path(&self.core.root)?;
+        let image = engine.crash(&engine.persist_all_plan())?;
+        #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+        verification::verify(&self.core.root_anchor, &image)?;
+        #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+        verify_native_tree(&self.core.root, &image, &self.project.io_context())?;
+        self.core.root_anchor.require_path(&self.core.root)?;
         Ok(PowerLossSnapshot {
             engine: engine.clone(),
             observed_path: None,
@@ -309,7 +316,11 @@ pub(crate) fn for_path(
         .map_err(|_| poisoned())?
         .upgrade();
     match core {
-        Some(core) if core.relative_path(path)?.is_some() => Ok(Some(core)),
+        Some(core) if core.relative_path(path)?.is_some() => {
+            core.root_anchor
+                .require_path_with_context(&core.root, context)?;
+            Ok(Some(core))
+        }
         _ => Ok(None),
     }
 }
@@ -382,6 +393,7 @@ pub(crate) fn create_directories(engine: &mut ImageEngine, path: &Path) -> io::R
     Ok(())
 }
 
+#[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
 fn verify_native_tree(
     root: &Path,
     image: &CrashImage,
@@ -489,8 +501,12 @@ fn poisoned() -> io::Error {
     invalid("power-loss capture was interrupted while recording IO")
 }
 
-mod identity;
+pub(crate) mod identity;
 mod native;
+mod native_directory;
+pub(crate) use native_directory::NativeDirectoryTrace;
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+mod verification;
 pub(crate) use native::NativeTrace;
 
 #[cfg(all(test, any(unix, windows)))]

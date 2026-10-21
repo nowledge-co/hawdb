@@ -89,6 +89,66 @@ impl ObjectReference {
     }
 }
 
+/// Streaming kind/version/length-separated identity, with no payload buffer.
+/// A description only: callers own memory/I/O admission, immutable source
+/// authority, synchronization and publication. `flush` performs no I/O.
+pub struct ObjectReferenceWriter {
+    kind: ObjectKind,
+    format_version: u16,
+    byte_length: u64,
+    written: u64,
+    hasher: IntegrityHasher,
+}
+impl ObjectReferenceWriter {
+    pub fn new(
+        kind: ObjectKind,
+        format_version: u16,
+        byte_length: u64,
+    ) -> Result<Self, ImmutableObjectError> {
+        if format_version == 0 {
+            return Err(ImmutableObjectError::InvalidFormatVersion);
+        }
+        Ok(Self {
+            kind,
+            format_version,
+            byte_length,
+            written: 0,
+            hasher: identity_hasher(kind, format_version, byte_length),
+        })
+    }
+    pub fn finish(self) -> Result<ObjectReference, ImmutableObjectError> {
+        if self.written != self.byte_length {
+            return Err(ImmutableObjectError::ReferenceMismatch);
+        }
+        Ok(ObjectReference {
+            kind: self.kind,
+            format_version: self.format_version,
+            byte_length: self.byte_length,
+            sha256: self.hasher.finish().sha256,
+        })
+    }
+}
+impl Write for ObjectReferenceWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let next = self
+            .written
+            .checked_add(bytes.len() as u64)
+            .filter(|next| *next <= self.byte_length)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "object exceeds declared identity length",
+                )
+            })?;
+        self.hasher.update(bytes);
+        self.written = next;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishOutcome {
     Published,
@@ -1009,6 +1069,46 @@ mod tests {
     use super::*;
     use crate::sealed_root::{CheckpointArtifactBinding, SealedRoot, SealedWalReference};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn streaming_reference_matches_complete_bytes_for_all_chunk_boundaries() {
+        let bytes = vec![17; 2 * 8192 + 3];
+        for kind in [
+            ObjectKind::CheckpointArtifact,
+            ObjectKind::Checkpoint,
+            ObjectKind::SealedWal,
+        ] {
+            for version in [1, 2, u16::MAX] {
+                for chunk in [1, 8192, bytes.len()] {
+                    let mut writer =
+                        ObjectReferenceWriter::new(kind, version, bytes.len() as u64).unwrap();
+                    for bytes in bytes.chunks(chunk) {
+                        writer.write_all(bytes).unwrap();
+                    }
+                    assert_eq!(
+                        writer.finish().unwrap(),
+                        ObjectReference::for_bytes(kind, version, &bytes)
+                    );
+                }
+            }
+        }
+        assert!(matches!(
+            ObjectReferenceWriter::new(ObjectKind::CheckpointArtifact, 0, 0),
+            Err(ImmutableObjectError::InvalidFormatVersion)
+        ));
+        let empty = ObjectReferenceWriter::new(ObjectKind::CheckpointArtifact, 1, 0).unwrap();
+        assert_eq!(
+            empty.finish().unwrap(),
+            ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, &[])
+        );
+        let mut short = ObjectReferenceWriter::new(ObjectKind::CheckpointArtifact, 1, 2).unwrap();
+        short.write_all(&[0]).unwrap();
+        assert!(short.write_all(&[1, 2]).is_err());
+        assert!(matches!(
+            short.finish(),
+            Err(ImmutableObjectError::ReferenceMismatch)
+        ));
+    }
 
     fn test_root(label: &str) -> PathBuf {
         let nanos = SystemTime::now()

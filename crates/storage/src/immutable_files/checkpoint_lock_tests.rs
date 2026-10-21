@@ -307,8 +307,8 @@ fn checkpoint_units_immutable_opening_cold_and_warm_reads_preserve_lru_eviction(
         assert_eq!(fixture.project.metrics().cached_handles, 2);
         assert_eq!(handles.evict_idle(1), 1);
         let cached = handles.handles.lock().unwrap();
-        assert!(cached.contains_key(&fixture.background_binding.reference));
-        assert!(!cached.contains_key(&foreground.reference));
+        assert!(cached.contains_key(&CacheKey::Managed(fixture.background_binding.reference)));
+        assert!(!cached.contains_key(&CacheKey::Managed(foreground.reference)));
     }
     assert_eq!(handles.evict_idle(1), 1);
     assert_eq!(fixture.project.metrics().open, 0);
@@ -378,7 +378,7 @@ fn checkpoint_units_immutable_opening_reuses_a_foreground_published_handle_of_th
         .handles
         .lock()
         .unwrap()
-        .get(&fixture.background_binding.reference)
+        .get(&CacheKey::Managed(fixture.background_binding.reference))
         .unwrap()
         .file
         .clone();

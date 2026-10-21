@@ -217,7 +217,7 @@ jobs:
           bash scripts/cargo-test-required.sh --locked -p hawdb-executor --lib -- identity_898_ --nocapture --test-threads=1
           bash scripts/cargo-test-required.sh --locked -p hawdb-cypher --lib -- identity_898_ --nocapture --test-threads=1
 
-      - name: Test explicit consumer publication refusal under retained ownership
+      - name: Test stationary Consumer publication and retained legacy refusal
         shell: bash
         run: |
           set -euo pipefail
@@ -226,9 +226,12 @@ jobs:
             -- --exact --nocapture --test-threads=1 \
             2>&1 | tee windows-native-results/consumer-publication-refusal.txt
           bash scripts/cargo-test-required.sh --locked -p hawdb --all-features --lib \
-            api::search_projection_consumer::tests::windows_consumer_creation_refuses_before_callback_or_publication \
+            api::search_projection_consumer::tests::windows_registered_stationary_creation_catch_up_and_reopen \
             -- --exact --nocapture --test-threads=1 \
-            2>&1 | tee windows-native-results/consumer-creation-refusal.txt
+            2>&1 | tee windows-native-results/consumer-stationary-create.txt
+          bash scripts/cargo-test-required.sh --locked -p hawdb --all-features --lib \
+            registered_stationary -- --nocapture --test-threads=1 \
+            2>&1 | tee windows-native-results/consumer-stationary-recovery.txt
 
       - name: Test legacy projection source epoch fences
         shell: bash

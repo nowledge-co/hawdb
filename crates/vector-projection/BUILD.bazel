@@ -21,7 +21,7 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
-    deps = all_crate_deps(normal = True) + ["//crates/core:hawdb_core", "//crates/storage:hawdb_storage"],
+    deps = all_crate_deps(normal = True) + ["//crates/core:hawdb_core", "//crates/integrity:hawdb_integrity", "//crates/storage:hawdb_storage"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
@@ -31,6 +31,6 @@ rust_test(
     crate_features = ["storage-io"],
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal_dev = True),
+    deps = all_crate_deps(normal_dev = True) + ["//crates/integrity:hawdb_integrity"],
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )

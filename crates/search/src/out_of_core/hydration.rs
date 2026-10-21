@@ -18,6 +18,10 @@ use hawdb_core::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope};
 use hawdb_integrity::Crc32cHasher;
 use std::io::{self, BufRead, BufReader};
 
+pub(super) mod query;
+mod record;
+pub(super) use record::read_record;
+
 const INPUT_BYTES: usize = 8192;
 
 pub(super) struct RangeReader<'a> {
@@ -157,6 +161,13 @@ pub(super) struct ReadAdmission<'a> {
     pub(super) max_header_bytes: usize,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct DecodeAdmission<'a> {
+    pub(super) memory: &'a hawdb_executor::QueryMemoryAccount,
+    pub(super) task: &'a hawdb_core::RuntimeTaskContext,
+    pub(super) max_header_bytes: usize,
+}
+
 pub(super) fn read_validated<T>(
     input: impl Read,
     length: u64,
@@ -165,9 +176,31 @@ pub(super) fn read_validated<T>(
     admission: Option<ReadAdmission<'_>>,
     select: impl FnOnce(&mut dyn BufRead) -> Result<T>,
 ) -> Result<T> {
+    read_validated_with_account(
+        input,
+        length,
+        checksum,
+        max_uncompressed_bytes,
+        admission.map(|admission| DecodeAdmission {
+            memory: &admission.memory.spool,
+            task: admission.task,
+            max_header_bytes: admission.max_header_bytes,
+        }),
+        select,
+    )
+}
+
+pub(super) fn read_validated_with_account<T>(
+    input: impl Read,
+    length: u64,
+    checksum: u64,
+    max_uncompressed_bytes: u64,
+    admission: Option<DecodeAdmission<'_>>,
+    select: impl FnOnce(&mut dyn BufRead) -> Result<T>,
+) -> Result<T> {
     // Three buffered readers coexist; draining also owns bounded copy scratch.
     let _buffers = admission
-        .map(|admission| admission.memory.spool.reserve(4 * INPUT_BYTES))
+        .map(|admission| admission.memory.reserve(4 * INPUT_BYTES))
         .transpose()?;
     let mut range = CheckedReader::new(input.take(length));
     let mut buffered = BufReader::with_capacity(INPUT_BYTES, &mut range);
@@ -182,7 +215,7 @@ pub(super) fn read_validated<T>(
         crate::build_control::checkpoint(admission.task)?;
     }
     // Preserve range-integrity precedence even if header parsing fails early.
-    io::copy(&mut buffered, &mut io::sink())?;
+    io::copy(&mut buffered, &mut io::sink()).map_err(crate::build_memory::read::io_error)?;
     drop(buffered);
     if range.count != length {
         return Err(invalid("payload length mismatch"));
@@ -200,11 +233,11 @@ fn read_envelope<T>(
     buffered: &mut impl BufRead,
     length: u64,
     max_uncompressed_bytes: u64,
-    admission: Option<ReadAdmission<'_>>,
+    admission: Option<DecodeAdmission<'_>>,
     select: impl FnOnce(&mut dyn BufRead) -> Result<T>,
 ) -> Result<T> {
     let mut header_memory = admission
-        .map(|admission| admission.memory.spool.reserve(0))
+        .map(|admission| admission.memory.reserve(0))
         .transpose()?;
     let mut header = Vec::new();
     // The governed path admits the bounded envelope before copying each chunk.
@@ -214,7 +247,7 @@ fn read_envelope<T>(
         }
         let available = match buffered.fill_buf() {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => result?,
+            result => result.map_err(crate::build_memory::read::io_error)?,
         };
         if available.is_empty() {
             return Err(invalid("compressed envelope missing header terminator"));
@@ -248,13 +281,10 @@ fn read_envelope<T>(
                     header.len(),
                     2 * std::mem::size_of::<&str>(),
                 )?;
-                admission
-                    .memory
-                    .spool
-                    .reserve(crate::build_memory::checked_add(
-                        slots,
-                        6 * crate::build_memory::SET_ENTRY_BYTES,
-                    )?)
+                admission.memory.reserve(crate::build_memory::checked_add(
+                    slots,
+                    6 * crate::build_memory::SET_ENTRY_BYTES,
+                )?)
             })
             .transpose()?;
         parse_snapshot_header(header)?
@@ -282,7 +312,7 @@ fn read_envelope<T>(
     let compressed_input = BufReader::with_capacity(INPUT_BYTES, &mut compressed);
     let (selected, drained, inflated_count, inflated_checksum) = if let Some(admission) = admission
     {
-        let decoder = crate::build_memory::decoder::Decoder::new(
+        let decoder = crate::build_memory::decoder::Decoder::with_account(
             compressed_input,
             admission.memory,
             admission.task,
@@ -298,7 +328,7 @@ fn read_envelope<T>(
     let compressed_drained = io::copy(&mut compressed, &mut io::sink());
     let compressed_count = compressed.count;
     let compressed_checksum = compressed.digest.finish();
-    compressed_drained?;
+    compressed_drained.map_err(crate::build_memory::read::io_error)?;
     if compressed_count != expected_compressed_len
         || compressed_checksum != expected_compressed_checksum
     {
@@ -307,7 +337,7 @@ fn read_envelope<T>(
     if let Err(error) = drained {
         // A failed decoder admission or sink can leave no resumable decoder.
         // Preserve that first failure instead of replacing it with a drain error.
-        return selected.and_then(|_| Err(error.into()));
+        return selected.and_then(|_| Err(crate::build_memory::read::io_error(error)));
     }
     if inflated_count != expected_len {
         return Err(invalid("uncompressed length mismatch"));

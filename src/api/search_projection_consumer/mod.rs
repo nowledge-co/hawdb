@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub use hawdb_search::consumer::ConsumerReadPin as SearchProjectionConsumerReadPin;
 pub(super) use hawdb_search::projection_consumer::ConsumerRegistry;
 pub use hawdb_search::projection_consumer::{
     SearchProjectionConsumer, SearchProjectionConsumerCatchUpReport, SearchProjectionConsumerError,
@@ -26,10 +27,14 @@ use crate::{
     SearchProjectionChangeBatch, SearchProjectionRelationalDelta,
 };
 use hawdb_core::uuidv7::generate_uuidv7;
-use hawdb_search::consumer::{CheckpointReceipt, ConsumerBinding, ConsumerProjection};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_search::consumer::{
+    CheckpointReceipt, ConsumerProjection, RegisteredConsumerLimits, RegisteredConsumerPreparation,
+};
 use hawdb_search::projection_consumer::{Record, MAX_CONSUMERS};
 use hawdb_storage::file_io as fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use SearchProjectionConsumerError as Error;
 use SearchProjectionConsumerRebuildReason as Reason;
 use SearchProjectionConsumerState as State;
@@ -94,6 +99,47 @@ impl Database {
                 return Err(Error::RebuildRequired(Reason::DatabaseIdentityMismatch));
             }
         }
+        if self
+            .runtime
+            .get()?
+            .projection_consumers
+            .pending
+            .contains(id.as_str())
+        {
+            let destination = normalize_consumer_target(projection_directory)?;
+            let permit = self.consumer_publication_permit()?;
+            let (request, context) = {
+                let runtime = self.runtime.get()?;
+                (
+                    runtime.store.prepare_search_consumer_reopen(id.as_str())?,
+                    runtime
+                        .store
+                        .file_descriptor_context()
+                        .ok_or(Error::SourceNotDurable)?,
+                )
+            };
+            let parent = fs::SourceDirectory::capture(
+                destination.parent().ok_or(Error::InvalidHandle)?,
+                &context,
+            )
+            .map_err(HawDBError::from)?;
+            let recovered = ConsumerProjection::open_registered(
+                request,
+                parent,
+                &destination,
+                permit,
+                RuntimeTaskContext::default(),
+                RegisteredConsumerLimits::default(),
+            );
+            match recovered {
+                Ok(projection) => drop(projection),
+                Err(HawDBError::StorageIntegrity(_) | HawDBError::Storage(_)) => {
+                    return Err(Error::RebuildRequired(Reason::CheckpointMismatch))
+                }
+                Err(error) => return Err(error.into()),
+            }
+            self.reload_consumer_registry_if_unavailable()?;
+        }
         match self.search_projection_consumer_status(&id) {
             Ok(_) => self.open_search_projection_consumer(&id, projection_directory),
             Err(Error::InvalidHandle) => self.create_consumer_with_capacity::<CAPACITY, F>(
@@ -109,7 +155,7 @@ impl Database {
     /// Initializes a complete application projection from one pinned source
     /// snapshot. The initializer must propagate incomplete hydration and budget
     /// errors; it owns the mapping of graph and relational rows into documents.
-    /// The initializer must retain the staging index and its default analyzer;
+    /// The initializer must retain the in-memory builder and its default analyzer;
     /// custom analyzer rules are not persisted by the current snapshot format.
     /// Unavailable publication returns `HawDBError::CapabilityUnavailable`
     /// with `RuntimeCapability::SearchProjectionPublication`
@@ -143,10 +189,15 @@ impl Database {
         F: FnOnce(&mut DatabaseReadTransaction, &mut SearchIndex) -> Result<()>,
     {
         let root = self.consumer_writable_root()?;
-        // Refuse before user callbacks or durable writes: the final directory
-        // cannot move while the initialized consumer retains its child lease.
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::SearchProjectionPublication)?;
         self.reload_consumer_registry_if_unavailable()?;
+        self.runtime
+            .get()?
+            .store
+            .verify_search_consumer_allocation_evidence()?;
+        let destination = normalize_consumer_target(destination)?;
+        let destination = destination.as_path();
+        let permit = self.consumer_publication_permit()?;
         if destination.try_exists().map_err(HawDBError::from)? {
             return Err(HawDBError::Storage(
                 "consumer projection destination already exists".into(),
@@ -211,47 +262,68 @@ impl Database {
         };
         // Also retry this checkpoint after an earlier identity publication error.
         self.checkpoint()?;
-        let registration_uuid = generate_uuidv7()?;
-        let binding = ConsumerBinding {
-            database_uuid,
-            projection_uuid: generate_uuidv7()?,
-            consumer_id: id.as_str().into(),
-            registration_uuid,
-            checkpoint_uuid: generate_uuidv7()?,
-        };
-        let stage = parent.join(format!(".hawdb-consumer-{registration_uuid}.stage"));
-        fs::create_dir(&stage).map_err(HawDBError::from)?;
-        let stage_guard = StageDirectory(stage.clone());
+        if reinitialize_registry {
+            self.runtime
+                .get()?
+                .store
+                .forget_search_consumer_selection(id.as_str())?;
+        }
+        let allocation = self
+            .runtime
+            .get()?
+            .store
+            .reserve_registered_search_consumer(
+                id.as_str(),
+                destination,
+                hawdb_storage::consumer_allocation::ConsumerLeasePolicy {
+                    max_idle_commits: options.max_idle_commits().get(),
+                    expires_at_commit_epoch,
+                },
+            )?;
+        let registration_uuid = allocation.registration_uuid();
+        let mut birth = allocation.prepare_initial_generation(parent)?;
+        birth.create()?;
         let mut snapshot = self.begin_read_transaction()?;
         let epoch = snapshot.commit_epoch();
-        let initialized = (|| -> Result<ConsumerProjection> {
-            let mut projection = ConsumerProjection::initialize(&stage, binding, epoch, |index| {
-                initialize(&mut snapshot, index)
-            })?;
-            publication_failpoint(PublicationStage::AfterCheckpoint)?;
-            projection.publish_directory(destination)?;
-            Ok(projection)
-        })();
+        let prepared = ConsumerProjection::prepare_registered(
+            birth,
+            RegisteredConsumerPreparation {
+                locator: destination,
+                epoch,
+                permit: Arc::clone(&permit),
+                task: RuntimeTaskContext::default(),
+                limits: RegisteredConsumerLimits::default(),
+                previous: None,
+            },
+            |index| initialize(&mut snapshot, index),
+        );
         drop(snapshot);
-        let projection = match initialized {
-            Ok(projection) => {
-                stage_guard.cleanup()?;
-                projection
-            }
-            Err(error) => {
-                if let Err(cleanup) = stage_guard.cleanup() {
-                    // An exhausted cleanup must retain the stage and remain
-                    // retryable even if initialization failed for another reason.
-                    if let Some(resource) = hawdb_core::error::file_descriptor_error(&error)
-                        .or_else(|| hawdb_core::error::file_descriptor_error(&cleanup))
-                    {
-                        return Err(HawDBError::FileDescriptors(resource).into());
-                    }
-                    return Err(HawDBError::Storage(format!("consumer initialization failed: {error}; staging cleanup failed: {cleanup}")).into());
-                }
-                return Err(error.into());
-            }
+        let mut prepared = prepared?;
+        publication_failpoint(PublicationStage::AfterCheckpoint)?;
+        self.runtime.get_mut()?.store.synchronize_source_prefix()?;
+        let report = prepared.report();
+        let receipt = {
+            let runtime = self.runtime.get()?;
+            super::require_search_projection_source_epoch(
+                Some(report.source_epoch),
+                runtime.store.commit_epoch(),
+            )?;
+            runtime.store.verify_search_consumer_candidate_source(
+                prepared.reservation_binding()?,
+                report.source_epoch,
+                report.metadata_reference,
+            )?;
+            let mut attempt =
+                prepared.admit_selection(Arc::clone(&permit), RuntimeTaskContext::default())?;
+            publication_failpoint(PublicationStage::BeforeSelector)?;
+            let pending = attempt.select()?;
+            drop(runtime);
+            publication_failpoint(PublicationStage::AfterSelector)?;
+            let receipt = pending.finish()?;
+            publication_failpoint(PublicationStage::AfterSelectorBarrier)?;
+            receipt
         };
+        let projection = prepared.complete(receipt)?;
         let receipt = projection.receipt();
         // Invalid foreign/corrupt records have no authority in this database.
         // Replace them only after explicit initialization actually succeeds.
@@ -290,13 +362,59 @@ impl Database {
     ) -> SearchProjectionConsumerResult<SearchProjectionConsumer> {
         self.ensure_writable()?;
         self.reload_consumer_registry_if_unavailable()?;
-        let status = self.search_projection_consumer_status(id)?;
-        if let State::RebuildRequired(reason) = status.state {
-            return Err(Error::RebuildRequired(reason));
+        if !self
+            .runtime
+            .get()?
+            .projection_consumers
+            .pending
+            .contains(id.as_str())
+        {
+            let status = self.search_projection_consumer_status(id)?;
+            if let State::RebuildRequired(reason) = status.state {
+                return Err(Error::RebuildRequired(reason));
+            }
         }
-        let projection = match ConsumerProjection::open(projection_directory.as_ref()) {
+        let destination = normalize_consumer_target(projection_directory.as_ref())?;
+        if self
+            .runtime
+            .get()?
+            .store
+            .search_consumer_registry_snapshot()?
+            .entries
+            .iter()
+            .any(|entry| {
+                entry.receipt.binding().consumer_id == id.as_str()
+                    && Path::new(entry.receipt.binding().target_locator) != destination
+            })
+        {
+            return Err(Error::InvalidHandle);
+        }
+        let permit = self.consumer_publication_permit()?;
+        let (request, context) = {
+            let runtime = self.runtime.get()?;
+            (
+                runtime.store.prepare_search_consumer_reopen(id.as_str())?,
+                runtime
+                    .store
+                    .file_descriptor_context()
+                    .ok_or(Error::SourceNotDurable)?,
+            )
+        };
+        let parent = fs::SourceDirectory::capture(
+            destination.parent().ok_or(Error::InvalidHandle)?,
+            &context,
+        )
+        .map_err(HawDBError::from)?;
+        let projection = match ConsumerProjection::open_registered(
+            request,
+            parent,
+            &destination,
+            permit,
+            RuntimeTaskContext::default(),
+            RegisteredConsumerLimits::default(),
+        ) {
             Ok(projection) => projection,
-            Err(HawDBError::StorageIntegrity(_)) => {
+            Err(HawDBError::StorageIntegrity(_) | HawDBError::Storage(_)) => {
                 self.runtime
                     .get_mut()?
                     .projection_consumers
@@ -310,6 +428,8 @@ impl Database {
             Err(error) => return Err(error.into()),
         };
         let consumer = SearchProjectionConsumer::from_projection(id.clone(), projection);
+        self.reload_consumer_registry_if_unavailable()?;
+        self.reconcile_consumer_checkpoint(&consumer)?;
         if let Err(error) = self.validate_consumer_receipt(&consumer) {
             if let Error::RebuildRequired(reason) = &error {
                 self.runtime
@@ -343,6 +463,7 @@ impl Database {
         ) -> Result<SearchProjectionRelationalDelta>,
     {
         let root = self.consumer_writable_root()?;
+        self.reload_consumer_registry_if_unavailable()?;
         self.validate_consumer_receipt(consumer)?;
         self.runtime
             .get_mut()?
@@ -358,13 +479,13 @@ impl Database {
             )
             .into());
         }
-        let start = consumer.search_index().projection_freshness();
+        let start = consumer.search_index()?.projection_freshness();
         let graph_commit_epoch = self.runtime.get()?.store.commit_epoch();
         let mut applied_batch_count = 0usize;
         let mut applied_operation_count = 0usize;
         while applied_batch_count < max_batches {
             let Some(mut batch) = self.build_search_projection_change_batch_from_freshness(
-                consumer.search_index(),
+                consumer.search_index()?,
                 Some(max_change_operations_per_batch),
             )?
             else {
@@ -379,22 +500,70 @@ impl Database {
             let hydrated = batch_hydrator(&mut snapshot, &batch)?;
             drop(snapshot);
             batch.graph_delta_mut().max_operations = Some(max_projection_operations_per_batch);
-            consumer
-                .projection_mut()
-                .apply(|index| self.apply_search_projection_change_batch(index, batch, hydrated))?;
-            // Any error from this point leaves an applied or durable projection
-            // that must not be silently paired with the previous cursor receipt.
-            self.runtime
-                .get_mut()?
-                .projection_consumers
-                .verified
-                .insert(
-                    consumer.id().as_str().into(),
-                    State::RebuildRequired(Reason::CheckpointMismatch),
-                );
             publication_failpoint(PublicationStage::BeforeCheckpoint)?;
-            let receipt = consumer.projection_mut().checkpoint()?;
-            publication_failpoint(PublicationStage::AfterCheckpoint)?;
+            let permit = self.consumer_publication_permit()?;
+            let allocation = self
+                .runtime
+                .get()?
+                .store
+                .reserve_search_consumer_update(consumer.projection().stationary_receipt()?)?;
+            let mut birth = consumer.projection().prepare_successor_birth(allocation)?;
+            birth.create()?;
+            let destination = consumer.projection().registered_locator()?.to_owned();
+            let source_epoch = batch.complete_through_commit_epoch().ok_or_else(|| {
+                HawDBError::StorageIntegrity("Consumer batch has no complete source epoch".into())
+            })?;
+            let mut prepared = ConsumerProjection::prepare_registered(
+                birth,
+                RegisteredConsumerPreparation {
+                    locator: &destination,
+                    epoch: source_epoch,
+                    permit: Arc::clone(&permit),
+                    task: RuntimeTaskContext::default(),
+                    limits: RegisteredConsumerLimits::default(),
+                    previous: Some(consumer.projection()),
+                },
+                |index| {
+                    consumer.projection().copy_completed_documents_into(index)?;
+                    self.apply_search_projection_change_batch(index, batch, hydrated)
+                        .map(|_| ())
+                },
+            )?;
+            let report = prepared.report();
+            let selection = (|| -> Result<_> {
+                publication_failpoint(PublicationStage::AfterCheckpoint)?;
+                self.runtime.get_mut()?.store.synchronize_source_prefix()?;
+                let runtime = self.runtime.get()?;
+                super::require_search_projection_source_epoch(
+                    Some(report.source_epoch),
+                    runtime.store.commit_epoch(),
+                )?;
+                runtime.store.verify_search_consumer_candidate_source(
+                    prepared.reservation_binding()?,
+                    report.source_epoch,
+                    report.metadata_reference,
+                )?;
+                let mut attempt =
+                    prepared.admit_selection(Arc::clone(&permit), RuntimeTaskContext::default())?;
+                publication_failpoint(PublicationStage::BeforeSelector)?;
+                let pending = attempt.select()?;
+                drop(runtime);
+                publication_failpoint(PublicationStage::AfterSelector)?;
+                let receipt = pending.finish()?;
+                publication_failpoint(PublicationStage::AfterSelectorBarrier)?;
+                Ok(receipt)
+            })();
+            let selected = match selection {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    consumer
+                        .projection_mut()
+                        .retain_pending_publication(prepared)?;
+                    return Err(error.into());
+                }
+            };
+            *consumer.projection_mut() = prepared.complete(selected)?;
+            let receipt = consumer.projection().receipt();
             self.acknowledge_consumer_checkpoint(consumer.id(), &receipt)?;
             self.publish_consumer_registry(&root)?;
             self.runtime
@@ -405,7 +574,7 @@ impl Database {
             applied_batch_count = applied_batch_count.saturating_add(1);
             applied_operation_count = applied_operation_count.saturating_add(operation_count);
         }
-        let end = consumer.search_index().projection_freshness();
+        let end = consumer.search_index()?.projection_freshness();
         Ok(SearchProjectionConsumerCatchUpReport {
             catch_up: SearchProjectionCatchUpReport {
                 graph_commit_epoch,
@@ -426,6 +595,7 @@ impl Database {
         consumer: &SearchProjectionConsumer,
     ) -> SearchProjectionConsumerResult<SearchProjectionConsumerStatus> {
         let root = self.consumer_writable_root()?;
+        self.reload_consumer_registry_if_unavailable()?;
         self.validate_consumer_receipt(consumer)?;
         self.runtime
             .get_mut()?
@@ -433,6 +603,10 @@ impl Database {
             .verified
             .insert(consumer.id().as_str().into(), State::Active);
         let epoch = self.runtime.get()?.store.commit_epoch();
+        self.runtime
+            .get()?
+            .store
+            .renew_search_consumer_lease(consumer.projection().stationary_receipt()?)?;
         {
             let mut runtime = self.runtime.get_mut()?;
             let record = runtime
@@ -464,6 +638,10 @@ impl Database {
         if self.runtime.get_mut()?.projection_consumers.unavailable {
             return Err(Error::RebuildRequired(Reason::RegistryUnavailable));
         }
+        self.runtime
+            .get()?
+            .store
+            .forget_search_consumer_selection(id.as_str())?;
         if self
             .runtime
             .get_mut()?
@@ -486,6 +664,14 @@ impl Database {
         &self,
         id: &SearchProjectionConsumerId,
     ) -> SearchProjectionConsumerResult<SearchProjectionConsumerStatus> {
+        let native = self
+            .runtime
+            .get()?
+            .store
+            .search_consumer_registry_snapshot()?;
+        if native.pending.iter().any(|pending| pending == id.as_str()) {
+            return Err(HawDBError::ProjectionBusy.into());
+        }
         if self.runtime.get()?.projection_consumers.unavailable {
             return Err(Error::RebuildRequired(Reason::RegistryUnavailable));
         }
@@ -549,7 +735,7 @@ impl Database {
             Err(Error::RebuildRequired(reason)) => status.state = State::RebuildRequired(reason),
             Err(error) => return Err(error),
         }
-        let freshness = consumer.search_index().projection_freshness();
+        let freshness = consumer.search_index()?.projection_freshness();
         let changefeed = status.changefeed.readiness_after(
             freshness.source_graph_commit_epoch,
             freshness.durable_source_graph_commit_epoch,
@@ -562,19 +748,86 @@ impl Database {
         })
     }
 
-    fn reload_consumer_registry_if_unavailable(&mut self) -> SearchProjectionConsumerResult<()> {
-        if self.runtime.get()?.projection_consumers.unavailable {
-            let mut runtime = self.runtime.get_mut()?;
-            let root = runtime
-                .store
-                .search_projection_registry_root()
-                .ok_or(Error::SourceNotDurable)?;
-            let registry = ConsumerRegistry::load(
-                Some(root),
-                runtime.store.search_projection_database_identity(),
-            );
-            runtime.projection_consumers = registry;
+    /// Resolve a retained selection with fresh admission and mirror its actual
+    /// completed receipt. Later graph writes do not invalidate the old outcome.
+    pub fn resolve_search_projection_consumer_publication(
+        &mut self,
+        consumer: &mut SearchProjectionConsumer,
+    ) -> SearchProjectionConsumerResult<()> {
+        let root = self.consumer_writable_root()?;
+        let permit = self.consumer_publication_permit()?;
+        consumer
+            .projection_mut()
+            .resolve_registered_publication(permit, RuntimeTaskContext::default())?;
+        self.reconcile_consumer_checkpoint(consumer)?;
+        self.publish_consumer_registry(&root)
+    }
+
+    fn reconcile_consumer_checkpoint(
+        &mut self,
+        consumer: &SearchProjectionConsumer,
+    ) -> SearchProjectionConsumerResult<()> {
+        consumer.projection().stationary_receipt()?;
+        self.reload_consumer_registry_if_unavailable()?;
+        self.validate_consumer_receipt(consumer)?;
+        if self.runtime.get()?.projection_consumers.needs_publication {
+            let root = self.consumer_writable_root()?;
+            self.publish_consumer_registry(&root)?;
         }
+        Ok(())
+    }
+
+    /// Hosts can obtain query admission from the same database governor used
+    /// for Consumer construction; a configured host governor is always reused.
+    pub fn search_projection_consumer_read_permit(
+        &mut self,
+        request: hawdb_qos::RuntimeWorkRequest,
+    ) -> Result<hawdb_qos::RuntimePermit> {
+        self.consumer_governor()?
+            .try_admit(request)
+            .map_err(|error| HawDBError::Execution(error.to_string()))
+    }
+
+    fn consumer_governor(&mut self) -> Result<hawdb_qos::RuntimeGovernor> {
+        let governor = self
+            .retained_runtime
+            .governor(2)
+            .map_err(|error| HawDBError::Execution(error.to_string()))?
+            .clone();
+        if self.runtime_governor.is_none() {
+            self.set_runtime_governor(governor.clone());
+        }
+        Ok(governor)
+    }
+
+    fn consumer_publication_permit(&mut self) -> Result<Arc<hawdb_qos::RuntimePermit>> {
+        self.consumer_governor()?
+            .try_admit(
+                hawdb_qos::RuntimeWorkRequest::background_maintenance(64 * 1024 * 1024)
+                    .with_io_wave_slots(1),
+            )
+            .map(Arc::new)
+            .map_err(|error| HawDBError::Execution(error.to_string()))
+    }
+
+    fn reload_consumer_registry_if_unavailable(&mut self) -> SearchProjectionConsumerResult<()> {
+        let mut runtime = self.runtime.get_mut()?;
+        let identity = runtime.store.search_projection_database_identity();
+        let snapshot = runtime.store.search_consumer_registry_snapshot()?;
+        let mut recovered = ConsumerRegistry::from_native(snapshot, identity)?;
+        let previous = &runtime.projection_consumers;
+        recovered.needs_publication = previous.needs_publication
+            || previous.unavailable
+            || previous.database_uuid != identity
+            || previous.records != recovered.records;
+        for (id, state) in &previous.verified {
+            if previous.records.get(id) == recovered.records.get(id)
+                && recovered.records.contains_key(id)
+            {
+                recovered.verified.insert(id.clone(), state.clone());
+            }
+        }
+        runtime.projection_consumers = recovered;
         Ok(())
     }
 
@@ -595,6 +848,7 @@ impl Database {
         &self,
         consumer: &SearchProjectionConsumer,
     ) -> SearchProjectionConsumerResult<()> {
+        consumer.projection().require_completed_view()?;
         let status = self.search_projection_consumer_status(consumer.id())?;
         let runtime = self.runtime.get()?;
         let record = runtime
@@ -634,7 +888,7 @@ impl Database {
         if !consumer.projection().binding_is_valid() {
             return Err(Error::RebuildRequired(Reason::UntrackedProjectionMutation));
         }
-        let freshness = consumer.search_index().projection_freshness();
+        let freshness = consumer.search_index()?.projection_freshness();
         if freshness.source_graph_commit_epoch != Some(receipt.source_epoch)
             || freshness.has_uncheckpointed_changes
         {
@@ -648,6 +902,28 @@ impl Database {
         id: &SearchProjectionConsumerId,
         receipt: &CheckpointReceipt,
     ) -> SearchProjectionConsumerResult<()> {
+        let native = self
+            .runtime
+            .get()?
+            .store
+            .search_consumer_registry_snapshot()?;
+        let actual = native
+            .entries
+            .iter()
+            .find(|entry| entry.receipt.binding().consumer_id == id.as_str())
+            .ok_or(Error::RebuildRequired(Reason::CheckpointMismatch))?;
+        let binding = actual.receipt.binding();
+        let metadata = actual.receipt.metadata_reference();
+        if receipt.binding.database_uuid != binding.database_uuid
+            || receipt.binding.registration_uuid != binding.registration_uuid
+            || receipt.binding.projection_uuid != binding.projection_uuid
+            || receipt.binding.checkpoint_uuid != binding.checkpoint_uuid
+            || receipt.source_epoch != actual.receipt.source_epoch()
+            || receipt.encoded_len != metadata.byte_length
+            || receipt.sha256 != metadata.sha256.to_string()
+        {
+            return Err(Error::RebuildRequired(Reason::CheckpointMismatch));
+        }
         let identity = self
             .runtime
             .get()?
@@ -680,40 +956,42 @@ impl Database {
         Ok(())
     }
 
-    fn publish_consumer_registry(&mut self, root: &Path) -> SearchProjectionConsumerResult<()> {
+    fn publish_consumer_registry(&mut self, _root: &Path) -> SearchProjectionConsumerResult<()> {
         let mut runtime = self.runtime.get_mut()?;
-        if let Err(error) = runtime.projection_consumers.publish(
-            root,
+        let directory = runtime
+            .store
+            .captured_search_consumer_registry_directory()?;
+        if let Err(error) = runtime.projection_consumers.publish_captured(
+            &directory,
             || publication_failpoint(PublicationStage::BeforeRegistry),
             || publication_failpoint(PublicationStage::AfterRegistry),
         ) {
             runtime.projection_consumers.unavailable = true;
             return Err(error.into());
         }
+        runtime.projection_consumers.needs_publication = false;
         Ok(())
     }
 }
 
-struct StageDirectory(PathBuf);
-impl StageDirectory {
-    fn cleanup(self) -> Result<()> {
-        match fs::remove_dir_all(&self.0) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
-    }
-}
-impl Drop for StageDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+fn normalize_consumer_target(destination: &Path) -> Result<PathBuf> {
+    let name = destination.file_name().ok_or_else(|| {
+        HawDBError::Semantic("Consumer target requires a final child name".into())
+    })?;
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    Ok(parent.canonicalize()?.join(name))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicationStage {
     BeforeCheckpoint,
     AfterCheckpoint,
+    BeforeSelector,
+    AfterSelector,
+    AfterSelectorBarrier,
     BeforeRegistry,
     AfterRegistry,
 }

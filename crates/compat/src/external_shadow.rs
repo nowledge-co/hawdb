@@ -455,6 +455,7 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         HawDBError::Parse(message) => json_error("parse", message),
         HawDBError::Semantic(message) => json_error("semantic", message),
         HawDBError::Storage(message) => json_error("storage", message),
+        HawDBError::ProjectionBusy => json_error("storage", "search projection operation is busy"),
         HawDBError::StorageIntegrity(message) => json_error("storage", message),
         HawDBError::Execution(message) => json_error("execution", message),
         error @ HawDBError::BranchEvidenceBudgetExceeded {

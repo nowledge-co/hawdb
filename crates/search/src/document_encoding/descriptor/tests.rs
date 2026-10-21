@@ -19,6 +19,31 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+#[test]
+fn malformed_descriptor_does_not_allocate_a_field_per_tab() {
+    use crate::test_allocation as allocation;
+
+    let _serial = allocation::serial();
+    assert_eq!(allocation::live(), 0);
+    let line = format!("malformed{}", "\t".repeat(65_536));
+    let body =
+        format!("HAWDB_SEARCH_SEGMENTS_V3\ntarget_documents\t256\ndocument_count\t0\n{line}\n");
+    let encoded = format!(
+        "{body}checksum\t{}\n",
+        crate::checksum_bytes(body.as_bytes())
+    );
+    let (error, peak) =
+        allocation::measure(|| crate::decode_search_segment_descriptor_text(&encoded).unwrap_err());
+    assert!(matches!(&error, HawDBError::Storage(message)
+        if message.starts_with("invalid search segment descriptor line:") && message.ends_with(&line)));
+    assert!(
+        peak <= 2 * encoded.len() + 4096,
+        "rejecting a malformed line must not allocate one pointer per tab: {peak}"
+    );
+    drop(error);
+    assert_eq!(allocation::live(), 0);
+}
+
 thread_local! {
     static CANCEL_DIGEST: std::cell::RefCell<Option<(usize, hawdb_core::RuntimeCancellationToken)>> = const { std::cell::RefCell::new(None) };
 }

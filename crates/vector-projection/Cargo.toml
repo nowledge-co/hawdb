@@ -11,7 +11,7 @@ homepage.workspace = true
 [features]
 # Standalone vector consumers keep their existing small dependency surface.
 # Embedded search enables the shared storage admission and file operations.
-storage-io = ["dep:hawdb-storage", "hawdb-storage/artifact-mmap"]
+storage-io = ["dep:hawdb-storage", "dep:hawdb-integrity", "hawdb-storage/artifact-mmap"]
 
 [dependencies]
 crc32fast = "1"
@@ -19,4 +19,5 @@ memmap2 = "0.9.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hawdb-core = { path = "../core", version = "0.11.0" }
+hawdb-integrity = { path = "../integrity", version = "0.11.0", optional = true }
 hawdb-storage = { path = "../storage", version = "0.11.0", optional = true }

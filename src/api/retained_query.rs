@@ -162,7 +162,7 @@ impl RetainedRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(governor);
     }
-    fn governor(&self, minimum_handles: usize) -> Result<&RuntimeGovernor> {
+    pub(super) fn governor(&self, minimum_handles: usize) -> Result<&RuntimeGovernor> {
         let minimum_handles = minimum_handles.max(2);
         if let Some(governor) = self.bound.get() {
             if governor.retained_result_snapshot().handle_limit < minimum_handles {

@@ -19,9 +19,10 @@ use super::{
 use crate::error::{HawDBError, Result};
 use hawdb_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
 use hawdb_storage::durability::durable_replace_file;
-use hawdb_storage::file_io::{self as fs, File};
+use hawdb_storage::file_io::{self as fs, File, OpenOptions};
+use hawdb_storage::immutable_object::{ObjectKind, ObjectReference, ObjectReferenceWriter};
 use serde::Serialize;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -65,6 +66,8 @@ pub(super) struct SearchSnapshotWriteReport {
     peak_record_bytes: u64,
     pub(super) encoded_len: u64,
     pub(super) encoded_sha256: Sha256Digest,
+    pub(super) encoded_object: ObjectReference,
+    pub(super) vector_document_count: usize,
 }
 
 impl SearchSnapshotWriteReport {
@@ -96,7 +99,12 @@ pub(super) fn write_search_snapshot<'a>(
 ) -> Result<SearchSnapshotWriteReport> {
     let compressed_path = target.with_extension("hawdb.zstd.tmp");
     let mut compressed_guard = TemporaryFile::new(compressed_path.clone());
-    let compressed_file = File::create(&compressed_path)?;
+    let compressed_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&compressed_path)?;
     let counted = CountingChecksumWriter::new(compressed_file);
     let mut encoder =
         hawdb_storage::compression::Encoder::new(counted, SEARCH_COMPRESSION_LEVEL)
@@ -169,6 +177,7 @@ pub(super) fn write_search_snapshot<'a>(
     }
 
     let mut document_count = 0usize;
+    let mut vector_document_count = 0usize;
     for document in documents {
         let record = encode_search_document_line(document);
         peak_record_bytes = peak_record_bytes.max(record.len() as u64);
@@ -180,6 +189,8 @@ pub(super) fn write_search_snapshot<'a>(
             record.as_bytes(),
         )?;
         document_count = document_count.saturating_add(1);
+        vector_document_count =
+            vector_document_count.saturating_add(usize::from(document.embedding.is_some()));
     }
 
     let footer = format!("checksum\t{}\n", body_checksum.finish());
@@ -192,11 +203,9 @@ pub(super) fn write_search_snapshot<'a>(
     let counted = encoder
         .finish()
         .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
-    let (compressed_bytes, compressed_checksum) = {
-        let (compressed_file, compressed_bytes, compressed_checksum) = counted.finish()?;
-        compressed_file.sync_all()?;
-        (compressed_bytes, compressed_checksum)
-    };
+    let (mut compressed_file, compressed_bytes, compressed_checksum) = counted.finish()?;
+    compressed_file.sync_all()?;
+    compressed_file.seek(SeekFrom::Start(0))?;
 
     let temporary = target.with_extension("hawdb.tmp");
     let mut target_guard = TemporaryFile::new(temporary.clone());
@@ -205,14 +214,19 @@ pub(super) fn write_search_snapshot<'a>(
         uncompressed_checksum.finish()
     );
     let encoded_sha256;
+    let encoded_object;
+    let encoded_len = (header.len() as u64)
+        .checked_add(compressed_bytes)
+        .ok_or_else(|| HawDBError::Storage("snapshot encoded length overflow".into()))?;
     {
         let mut output = DigestWriter {
             file: File::create(&temporary)?,
             hasher: IntegrityHasher::new(),
+            object: ObjectReferenceWriter::new(ObjectKind::CheckpointArtifact, 1, encoded_len)
+                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?,
         };
         output.write_all(header.as_bytes())?;
-        let mut compressed = File::open(&compressed_path)?;
-        let copied = std::io::copy(&mut compressed, &mut output)?;
+        let copied = std::io::copy(&mut compressed_file, &mut output)?;
         if copied != compressed_bytes {
             return Err(HawDBError::Storage(format!(
                 "search checkpoint copied {copied} compressed bytes, expected {compressed_bytes}"
@@ -220,7 +234,12 @@ pub(super) fn write_search_snapshot<'a>(
         }
         output.file.sync_all()?;
         encoded_sha256 = output.hasher.finish().sha256;
+        encoded_object = output
+            .object
+            .finish()
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
     }
+    drop(compressed_file);
     fs::remove_file(&compressed_path)?;
     compressed_guard.disarm();
     durable_replace_file(&temporary, target)?;
@@ -231,7 +250,9 @@ pub(super) fn write_search_snapshot<'a>(
         uncompressed_bytes,
         compressed_bytes,
         peak_record_bytes,
-        encoded_len: header.len() as u64 + compressed_bytes,
+        encoded_len,
+        encoded_object,
+        vector_document_count,
         encoded_sha256,
     })
 }
@@ -239,12 +260,14 @@ pub(super) fn write_search_snapshot<'a>(
 struct DigestWriter {
     file: File,
     hasher: IntegrityHasher,
+    object: ObjectReferenceWriter,
 }
 
 impl Write for DigestWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let written = self.file.write(bytes)?;
         self.hasher.update(&bytes[..written]);
+        self.object.write_all(&bytes[..written])?;
         Ok(written)
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -389,6 +412,13 @@ mod tests {
         assert!(text.contains("import_source_graph_commit_epoch\t7\n"));
         assert!(text.contains("doc\t6d656d6f72793a61\t"));
         assert_eq!(report.document_count, 2);
+        assert_eq!(report.vector_document_count, 1);
+        let bytes = fs::read(&target).unwrap();
+        assert_eq!(
+            report.encoded_object,
+            ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, &bytes)
+        );
+        assert_eq!(report.encoded_object.byte_length, report.encoded_len);
         assert_eq!(report.uncompressed_bytes, text.len() as u64);
         assert!(report.compressed_bytes > 0);
         assert!(report.peak_record_bytes < report.uncompressed_bytes);

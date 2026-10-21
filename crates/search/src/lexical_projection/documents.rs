@@ -133,49 +133,144 @@ impl LexicalProjectionReader {
     /// callers from retaining a complete artifact ID set merely to resolve a
     /// newer segment's version of a document.
     pub(crate) fn probe_document_id(&self, document_id: &str) -> Result<DocumentIdProbe> {
-        let blocks = &self.manifest.blocks;
-        let index = blocks.partition_point(|block| {
-            block.kind == BlockKind::Documents && block.max_key.as_str() < document_id
-        });
-        let Some(block) = blocks.get(index) else {
+        self.probe_document_id_with_admission(document_id, None)
+    }
+
+    pub(crate) fn probe_document_id_with_admission(
+        &self,
+        document_id: &str,
+        admission: Option<(&crate::build_memory::read::ReadAdmission<'_>, u64)>,
+    ) -> Result<DocumentIdProbe> {
+        let context =
+            admission.map(|(admission, _)| super::QueryContext::from_read_admission(admission));
+        super::query_context::check(context)?;
+        let Some(block) = self.document_id_probe_block(document_id) else {
             return Ok(DocumentIdProbe {
                 present: false,
                 bytes_read: 0,
             });
         };
-        if block.kind != BlockKind::Documents || block.min_key.as_str() > document_id {
+
+        let _decode = admission
+            .map(|(admission, _)| admission.scratch(self.document_id_probe_memory_bytes()?))
+            .transpose()?;
+        if block.length > self.config.max_block_bytes.get() {
+            return Err(HawDBError::Storage(
+                "lexical document block exceeds read budget".into(),
+            ));
+        }
+        let bytes = match admission {
+            Some((admission, maximum)) => admission.read_file_range(
+                &self.file,
+                self.manifest.artifact_len,
+                maximum,
+                crate::build_memory::read::FileRange {
+                    offset: block.offset,
+                    length: block.length,
+                    checksum: block.checksum,
+                },
+            )?,
+            None => crate::build_memory::read::ReadBytes::unaccounted(self.read_block(block)?),
+        };
+        probe_document_bytes(
+            &bytes,
+            self.manifest.generation,
+            block,
+            document_id,
+            context,
+        )
+    }
+
+    /// Borrow one query-funded block under the original task's I/O scope.
+    pub(crate) fn probe_document_id_with_query(
+        &self,
+        document_id: &str,
+        context: super::QueryContext<'_>,
+    ) -> Result<DocumentIdProbe> {
+        context.checkpoint()?;
+        let Some(block) = self.document_id_probe_block(document_id) else {
             return Ok(DocumentIdProbe {
                 present: false,
                 bytes_read: 0,
             });
+        };
+        if block.length > self.config.max_block_bytes.get()
+            || block
+                .offset
+                .checked_add(block.length)
+                .is_none_or(|end| end > self.manifest.artifact_len)
+        {
+            return Err(HawDBError::Storage(
+                "lexical document range exceeds its artifact or read budget".into(),
+            ));
         }
-
-        let bytes = self.read_block(block)?;
-        let bytes_read = bytes.len() as u64;
-        validate_document_block(&bytes, self.manifest.generation, block)?;
-        let mut cursor = SliceCursor::new(&bytes);
-        let count = decode_block_header(
-            &mut cursor,
+        let length = usize::try_from(block.length)
+            .map_err(|_| HawDBError::Execution("document ID probe exceeds address space".into()))?;
+        let _memory = context.memory.reserve(length)?;
+        let mut bytes = vec![0; length];
+        let mut input = crate::build_memory::read::QueryFileRange {
+            file: &self.file,
+            expected_length: Some(self.manifest.artifact_len),
+            offset: block.offset,
+            remaining: block.length,
+            context,
+            require_execution: context.execution.is_some(),
+        };
+        std::io::Read::read_exact(&mut input, &mut bytes)
+            .map_err(crate::build_memory::read::io_error)?;
+        if super::checksum(&bytes) != block.checksum {
+            return Err(HawDBError::Storage(
+                "lexical document block checksum mismatch".into(),
+            ));
+        }
+        let result = probe_document_bytes(
+            &bytes,
             self.manifest.generation,
             block,
-            BlockKind::Documents,
+            document_id,
+            Some(context),
         )?;
-        for _ in 0..count {
-            let id = cursor.string(1024 * 1024)?;
-            let ordering = id.as_str().cmp(document_id);
-            if ordering.is_ge() {
-                return Ok(DocumentIdProbe {
-                    present: ordering.is_eq(),
-                    bytes_read,
-                });
-            }
-            let _length = cursor.u32()?;
-        }
-        Ok(DocumentIdProbe {
-            present: false,
-            bytes_read,
+        context.checkpoint()?;
+        Ok(result)
+    }
+
+    fn document_id_probe_block(&self, document_id: &str) -> Option<&BlockDescriptor> {
+        let blocks = &self.manifest.blocks;
+        let index = blocks.partition_point(|block| {
+            block.kind == BlockKind::Documents && block.max_key.as_str() < document_id
+        });
+        blocks.get(index).filter(|block| {
+            block.kind == BlockKind::Documents && block.min_key.as_str() <= document_id
         })
     }
+}
+
+fn probe_document_bytes(
+    bytes: &[u8],
+    generation: u64,
+    block: &BlockDescriptor,
+    document_id: &str,
+    context: Option<super::QueryContext<'_>>,
+) -> Result<DocumentIdProbe> {
+    validate_document_block_with_context(bytes, generation, block, context)?;
+    let mut cursor = SliceCursor::new(bytes);
+    let count = decode_block_header(&mut cursor, generation, block, BlockKind::Documents)?;
+    for _ in 0..count {
+        super::query_context::check(context)?;
+        let id = cursor.borrowed_string(1024 * 1024)?;
+        let ordering = id.cmp(document_id);
+        if ordering.is_ge() {
+            return Ok(DocumentIdProbe {
+                present: ordering.is_eq(),
+                bytes_read: bytes.len() as u64,
+            });
+        }
+        let _length = cursor.u32()?;
+    }
+    Ok(DocumentIdProbe {
+        present: false,
+        bytes_read: bytes.len() as u64,
+    })
 }
 
 pub(super) fn validate_document_block(
@@ -183,27 +278,34 @@ pub(super) fn validate_document_block(
     generation: u64,
     descriptor: &BlockDescriptor,
 ) -> Result<()> {
+    validate_document_block_with_context(bytes, generation, descriptor, None)
+}
+
+fn validate_document_block_with_context(
+    bytes: &[u8],
+    generation: u64,
+    descriptor: &BlockDescriptor,
+    context: Option<super::QueryContext<'_>>,
+) -> Result<()> {
     let mut cursor = SliceCursor::new(bytes);
     let count = decode_block_header(&mut cursor, generation, descriptor, BlockKind::Documents)?;
     let mut first = None;
     let mut previous = None;
     for _ in 0..count {
-        let id = cursor.string(1024 * 1024)?;
+        super::query_context::check(context)?;
+        let id = cursor.borrowed_string(1024 * 1024)?;
         let _length = cursor.u32()?;
-        if previous
-            .as_ref()
-            .is_some_and(|previous: &String| previous >= &id)
-        {
+        if previous.is_some_and(|previous: &str| previous >= id) {
             return Err(HawDBError::Storage(
                 "lexical document IDs are not ordered".to_string(),
             ));
         }
-        first.get_or_insert_with(|| id.clone());
+        first.get_or_insert(id);
         previous = Some(id);
     }
     if !cursor.is_empty()
-        || first.as_deref() != Some(descriptor.min_key.as_str())
-        || previous.as_deref() != Some(descriptor.max_key.as_str())
+        || first != Some(descriptor.min_key.as_str())
+        || previous != Some(descriptor.max_key.as_str())
     {
         return Err(HawDBError::Storage(
             "lexical document mapping bounds are invalid".to_string(),

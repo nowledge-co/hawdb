@@ -12,18 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::file_io::{self as fs, File, OpenOptions, TryLockError};
-use std::collections::HashSet;
+use crate::file_io::{
+    self as fs, File, SourceDirectory, SourceDirectoryIdentity, SourceDirectoryLockMode,
+    TryLockError,
+};
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 pub const DATABASE_DIRECTORY_LOCK_FILE: &str = "owner.hawdb.lock";
 
-static ACTIVE_DATABASE_DIRECTORIES: LazyLock<Mutex<HashSet<PathBuf>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+static ACTIVE_DATABASE_DIRECTORIES: LazyLock<Mutex<BTreeSet<SourceDirectoryIdentity>>> =
+    LazyLock::new(|| Mutex::new(BTreeSet::new()));
 
 #[derive(Debug)]
 pub enum DatabaseDirectoryLeaseError {
@@ -67,36 +70,49 @@ impl Error for DatabaseDirectoryLeaseError {
 
 /// Holds exclusive ownership of one durable database directory.
 ///
-/// The process-local registry rejects duplicate handles before they reach the
-/// operating system. The file lock rejects other cooperating applications. The
+/// The process-local registry is keyed by a live captured directory identity
+/// and rejects aliases before opening another process-lock descriptor. The file lock rejects other cooperating applications. The
 /// sidecar remains in place after close so every process locks the same inode.
 #[derive(Debug)]
 pub struct DatabaseDirectoryLease {
-    canonical_path: PathBuf,
-    lock_file: File,
+    lock_file: Option<File>,
+    // Registration drops after the lock closes and before its identity pin.
+    _registration: ProcessRegistration,
+    directory: SourceDirectory,
 }
 
 impl DatabaseDirectoryLease {
     pub(crate) fn owns_directory(&self, path: &Path) -> io::Result<bool> {
-        Ok(fs::canonicalize(path)? == self.canonical_path)
+        self.captured_directory().matches_namespace(path)
+    }
+
+    /// Borrow the original directory while this actual native owner is live.
+    /// The returned handle is not a persisted identity or a publication receipt.
+    pub(crate) fn captured_directory(&self) -> &SourceDirectory {
+        &self.directory
     }
 
     pub fn acquire(path: &Path) -> Result<Self, DatabaseDirectoryLeaseError> {
         let canonical_path =
             fs::canonicalize(path).map_err(DatabaseDirectoryLeaseError::Canonicalize)?;
-        if !register_process_lease(&canonical_path) {
-            return Err(DatabaseDirectoryLeaseError::AlreadyOpen);
-        }
+        let directory = SourceDirectory::capture_for_path(&canonical_path)
+            .map_err(DatabaseDirectoryLeaseError::OpenLockFile)?;
+        Self::from_captured(directory)
+    }
 
-        let lock_file = match open_lock_file(&canonical_path) {
-            Ok(file) => file,
-            Err(error) => {
-                unregister_process_lease(&canonical_path);
-                return Err(DatabaseDirectoryLeaseError::OpenLockFile(error));
-            }
-        };
+    /// Acquire the native lock through an already admitted physical directory.
+    pub(crate) fn from_captured(
+        directory: SourceDirectory,
+    ) -> Result<Self, DatabaseDirectoryLeaseError> {
+        #[cfg(test)]
+        if let Some(hook) = AFTER_CAPTURE.with(|hook| hook.borrow_mut().take()) {
+            hook();
+        }
+        let registration = ProcessRegistration::acquire(directory.identity())?;
+        let lock_file =
+            open_lock_file(&directory).map_err(DatabaseDirectoryLeaseError::OpenLockFile)?;
         if let Err(error) = lock_file.try_lock() {
-            unregister_process_lease(&canonical_path);
+            drop(lock_file);
             return match error {
                 TryLockError::WouldBlock => Err(DatabaseDirectoryLeaseError::AlreadyOpen),
                 TryLockError::Error(error) => Err(DatabaseDirectoryLeaseError::Lock(error)),
@@ -104,54 +120,83 @@ impl DatabaseDirectoryLease {
         }
 
         Ok(Self {
-            canonical_path,
-            lock_file,
+            lock_file: Some(lock_file),
+            _registration: registration,
+            directory,
         })
     }
 }
 
 impl Drop for DatabaseDirectoryLease {
     fn drop(&mut self) {
-        let _ = File::unlock(&self.lock_file);
-        unregister_process_lease(&self.canonical_path);
+        if let Some(file) = self.lock_file.take() {
+            let _ = File::unlock(&file);
+            // Closing a POSIX process-lock descriptor must precede admitting
+            // the next owner, whose lock that close could otherwise release.
+            drop(file);
+        }
+        #[cfg(test)]
+        if let Some(hook) = AFTER_LOCK_CLOSE.with(|hook| hook.borrow_mut().take()) {
+            hook();
+        }
     }
 }
 
-fn open_lock_file(canonical_path: &Path) -> io::Result<File> {
-    let lock_path = canonical_path.join(DATABASE_DIRECTORY_LOCK_FILE);
-    OpenOptions::new()
-        .descriptor_kind(crate::file_descriptors::DescriptorKind::OwnershipLock)
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
+#[cfg(test)]
+type OwnershipHook = std::cell::RefCell<Option<Box<dyn FnOnce()>>>;
+#[cfg(test)]
+thread_local! {
+    static AFTER_CAPTURE: OwnershipHook = const { std::cell::RefCell::new(None) };
+    static AFTER_LOCK_CLOSE: OwnershipHook = const { std::cell::RefCell::new(None) };
+}
+
+#[derive(Debug)]
+struct ProcessRegistration {
+    identity: SourceDirectoryIdentity,
+}
+impl ProcessRegistration {
+    fn acquire(identity: SourceDirectoryIdentity) -> Result<Self, DatabaseDirectoryLeaseError> {
+        if !register_process_lease(identity) {
+            return Err(DatabaseDirectoryLeaseError::AlreadyOpen);
+        }
+        Ok(Self { identity })
+    }
+}
+impl Drop for ProcessRegistration {
+    fn drop(&mut self) {
+        unregister_process_lease(self.identity);
+    }
+}
+
+fn open_lock_file(directory: &SourceDirectory) -> io::Result<File> {
+    let context = directory.operation_context();
+    directory
+        .open_database_ownership_lock(&context, SourceDirectoryLockMode::ReadWriteCreate)
         .or_else(|error| {
             if error.kind() == io::ErrorKind::PermissionDenied {
-                OpenOptions::new()
-                    .descriptor_kind(crate::file_descriptors::DescriptorKind::OwnershipLock)
-                    .read(true)
-                    .open(lock_path)
+                directory
+                    .open_database_ownership_lock(&context, SourceDirectoryLockMode::ReadExisting)
             } else {
                 Err(error)
             }
         })
 }
 
-fn register_process_lease(path: &Path) -> bool {
-    active_database_directories().insert(path.to_path_buf())
+fn register_process_lease(identity: SourceDirectoryIdentity) -> bool {
+    active_database_directories().insert(identity)
 }
 
-fn unregister_process_lease(path: &Path) {
-    active_database_directories().remove(path);
+fn unregister_process_lease(identity: SourceDirectoryIdentity) {
+    active_database_directories().remove(&identity);
 }
 
 #[cfg(test)]
 pub(crate) fn has_process_lease(path: &Path) -> bool {
-    active_database_directories().contains(path)
+    SourceDirectory::capture_for_path(path)
+        .is_ok_and(|directory| active_database_directories().contains(&directory.identity()))
 }
 
-fn active_database_directories() -> MutexGuard<'static, HashSet<PathBuf>> {
+fn active_database_directories() -> MutexGuard<'static, BTreeSet<SourceDirectoryIdentity>> {
     ACTIVE_DATABASE_DIRECTORIES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -169,6 +214,127 @@ mod tests {
     const CHILD_DATABASE_PATH: &str = "HAWDB_TEST_CHILD_DATABASE_PATH";
     const CHILD_READY_PATH: &str = "HAWDB_TEST_CHILD_READY_PATH";
     const CHILD_RELEASE_PATH: &str = "HAWDB_TEST_CHILD_RELEASE_PATH";
+
+    #[test]
+    fn lock_creation_refusal_releases_capture_and_process_registration() {
+        use crate::file_descriptors::ProjectFileDescriptors;
+        use crate::file_io::SourceDirectory;
+        let base = unique_test_dir("capture-admission");
+        let project = ProjectFileDescriptors::acquire(&base, 2).unwrap();
+        let path = base.join("database");
+        fs::create_dir(&path).unwrap();
+        let blocker = SourceDirectory::capture(&base, &project.io_context()).unwrap();
+        let error = DatabaseDirectoryLease::acquire(&path).unwrap_err();
+        assert!(
+            matches!(error, DatabaseDirectoryLeaseError::OpenLockFile(ref error)
+            if hawdb_core::error::file_descriptor_error(error).is_some())
+        );
+        assert_eq!(project.metrics().open, 1);
+        assert!(!path.join(super::DATABASE_DIRECTORY_LOCK_FILE).exists());
+        drop(blocker);
+        let owner = DatabaseDirectoryLease::acquire(&path).unwrap();
+        assert_eq!(project.metrics().open, 2);
+        drop(owner);
+        assert_eq!(project.metrics().open, 0);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn captured_root_opens_owner_lock_off_a_replacement_label() {
+        use crate::file_descriptors::ProjectFileDescriptors;
+        let base = unique_test_dir("original-root-lock");
+        let project = ProjectFileDescriptors::acquire(&base, 8).unwrap();
+        let path = base.join("database");
+        let moved = base.join("original");
+        fs::create_dir(&path).unwrap();
+        let source = path.clone();
+        let original = moved.clone();
+        super::AFTER_CAPTURE.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                // No child is open yet, so Windows reaches the lock operation.
+                fs::rename(&source, &original).unwrap();
+                fs::create_dir(&source).unwrap();
+            }));
+        });
+        let owner = DatabaseDirectoryLease::acquire(&path).unwrap();
+        assert!(owner.owns_directory(&moved).unwrap());
+        assert!(!owner.owns_directory(&path).unwrap());
+        assert!(moved.join(super::DATABASE_DIRECTORY_LOCK_FILE).is_file());
+        assert!(!path.join(super::DATABASE_DIRECTORY_LOCK_FILE).exists());
+        assert!(matches!(
+            DatabaseDirectoryLease::acquire(&moved),
+            Err(DatabaseDirectoryLeaseError::AlreadyOpen)
+        ));
+        let replacement = DatabaseDirectoryLease::acquire(&path).unwrap();
+        assert!(replacement.owns_directory(&path).unwrap());
+        drop(replacement);
+        drop(owner);
+        assert_eq!(project.metrics().open, 0);
+        let reopened = DatabaseDirectoryLease::acquire(&moved).unwrap();
+        drop(reopened);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn native_close_precedes_process_slot_release_even_on_drop_unwind() {
+        use crate::file_descriptors::ProjectFileDescriptors;
+        let path = unique_test_dir("close-order");
+        let project = ProjectFileDescriptors::acquire(&path, 4).unwrap();
+        let owner = DatabaseDirectoryLease::acquire(&path).unwrap();
+        assert_eq!(project.metrics().open, 2);
+        let label = path.clone();
+        let observed = project.clone();
+        super::AFTER_LOCK_CLOSE.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                assert_eq!(
+                    observed.metrics().open,
+                    1,
+                    "lock already closed; directory remains pinned"
+                );
+                assert!(matches!(
+                    DatabaseDirectoryLease::acquire(&label),
+                    Err(DatabaseDirectoryLeaseError::AlreadyOpen)
+                ));
+                panic!("injected after native close before registry release");
+            }));
+        });
+        let panic =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(owner))).unwrap_err();
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"injected after native close before registry release")
+        );
+        assert_eq!(project.metrics().open, 0);
+        let retry = DatabaseDirectoryLease::acquire(&path).unwrap();
+        drop(retry);
+        assert_eq!(project.metrics().open, 0);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renamed_live_owner_rejects_alias_before_opening_another_lock_file() {
+        let base = unique_test_dir("renamed-live-owner");
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("database");
+        let moved = base.join("original");
+        fs::create_dir(&path).unwrap();
+        let owner = DatabaseDirectoryLease::acquire(&path).unwrap();
+        fs::rename(&path, &moved).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(owner.owns_directory(&moved).unwrap());
+        assert!(!owner.owns_directory(&path).unwrap());
+        assert!(matches!(
+            DatabaseDirectoryLease::acquire(&moved),
+            Err(DatabaseDirectoryLeaseError::AlreadyOpen)
+        ));
+        let replacement = DatabaseDirectoryLease::acquire(&path).unwrap();
+        drop(replacement);
+        drop(owner);
+        let reopened = DatabaseDirectoryLease::acquire(&moved).unwrap();
+        drop(reopened);
+        fs::remove_dir_all(base).unwrap();
+    }
 
     #[test]
     fn rejects_duplicate_process_local_lease_until_drop() {

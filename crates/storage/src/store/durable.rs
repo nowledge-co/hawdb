@@ -82,6 +82,7 @@ pub(super) struct DurableStore {
     project_files: crate::file_descriptors::ProjectFileDescriptors,
     _directory_lease: Arc<DatabaseDirectoryLease>,
     pub(super) branch_runtime: Option<super::immutable_root::BranchRuntimeBinding>,
+    pub(super) allocation_project: Option<crate::branch_project::CapturedProject>,
     // UUID-leased branch admission may reconstruct derived row/index deltas
     // even for read-only queries. This never authorizes WAL or head writes.
     pub(super) recovery_artifact_writes_allowed: bool,
@@ -92,6 +93,9 @@ pub(super) struct DurableStore {
     stable_id_mapping_path: PathBuf,
     pub(super) wal_path: PathBuf,
     pub(super) wal_append_file: Option<Arc<File>>,
+    // Current captured generation only. Explicit checkpoint/rotation transitions
+    // still use their legacy paths and clear this custody until native adoption.
+    pub(super) wal_append_owner: Option<Arc<DatabaseDirectoryLease>>,
     #[cfg(test)]
     pub(super) wal_append_open_count: usize,
     pub(super) checkpoint_encoded_len: Option<u64>,
@@ -148,10 +152,16 @@ pub(super) struct DurableStore {
     max_batch_operations: Option<usize>,
     pub(super) telemetry: Option<Arc<dyn StorageTelemetrySink>>,
     wal_sync_group: Option<WalSyncGroupState>,
+    // Process-local knowledge, initialized only from the durable checkpoint.
+    // Reading/replaying a WAL or choosing a synchronous future write policy
+    // does not prove that the recovered WAL prefix has completed a barrier.
+    known_durable_commit_epoch: u64,
+    wal_namespace_known_durable: bool,
     // The selected frontend and off-gate retirement source observe the same
     // maintenance result. A checkpoint-source clone must not hide a failed
     // reclamation from admission, pressure reports, or the next retry.
     generation_reclamation_debt: Arc<std::sync::Mutex<GenerationReclamationDebt>>,
+
     wal_free_space_probe: WalFreeSpaceProbeState,
 }
 
@@ -274,7 +284,24 @@ impl DurableStore {
         // This DurableStore owns the original directory lease. Keep it alive
         // while choosing identities for metadata adoption; no source copy or
         // second branch runtime is needed.
-        crate::branch_project::reserve_bootstrap_identity(&self.project_files, proposed)
+        crate::branch_project::reserve_bootstrap_identity_captured(
+            &self.project_files,
+            self._directory_lease.captured_directory(),
+            proposed,
+        )
+    }
+
+    pub(super) fn verify_consumer_allocation_domain(
+        &self,
+        selector: crate::branch_project::ProjectSelector,
+    ) -> Result<()> {
+        crate::consumer_allocation::bootstrap(
+            self._directory_lease.captured_directory(),
+            &self.project_files.io_context(),
+            selector,
+            false,
+        )
+        .map(|_| ())
     }
 
     pub(super) fn file_descriptor_context(&self) -> crate::file_descriptors::FileOpenContext {
@@ -542,6 +569,7 @@ impl DurableStore {
             project_files,
             _directory_lease: Arc::new(directory_lease),
             branch_runtime: None,
+            allocation_project: None,
             recovery_artifact_writes_allowed: !read_only,
             root_path: artifact_path.to_path_buf(),
             checkpoint_path,
@@ -550,6 +578,7 @@ impl DurableStore {
             stable_id_mapping_path: artifact_path.join(STABLE_ID_MAPPING_FILE),
             wal_path,
             wal_append_file: None,
+            wal_append_owner: None,
             #[cfg(test)]
             wal_append_open_count: 0,
             checkpoint_encoded_len: manifest.checkpoint_encoded_len,
@@ -607,6 +636,8 @@ impl DurableStore {
             max_batch_operations,
             telemetry: None,
             wal_sync_group: None,
+            known_durable_commit_epoch: manifest.checkpoint_commit_epoch,
+            wal_namespace_known_durable: false,
             generation_reclamation_debt: Arc::new(std::sync::Mutex::new(
                 GenerationReclamationDebt::default(),
             )),
@@ -775,4 +806,11 @@ impl DurableStore {
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(in crate::store) static AFTER_CAPTURED_WAL_APPEND_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
+        std::cell::RefCell::new(None)
+    };
 }

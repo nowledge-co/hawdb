@@ -428,6 +428,7 @@ impl DurableStore {
     ) -> Result<()> {
         let generation = manifest.checkpoint_epoch;
         self.wal_append_file = None;
+        self.wal_append_owner = None;
         self.checkpoint_path = manifest.checkpoint_path(&self.root_path);
         self.wal_path = manifest.wal_path(&self.root_path);
         self.checkpoint_encoded_len = manifest.checkpoint_encoded_len;
@@ -463,6 +464,8 @@ impl DurableStore {
         self.wal_generation = manifest.wal_generation;
         self.checkpoint_epoch = manifest.checkpoint_epoch;
         self.checkpoint_commit_epoch = manifest.checkpoint_commit_epoch;
+        self.known_durable_commit_epoch = manifest.checkpoint_commit_epoch;
+        self.wal_namespace_known_durable = true;
         self.oldest_reader_commit_epoch = manifest.oldest_reader_commit_epoch;
         self.safe_reclaim_commit_epoch = manifest.safe_reclaim_commit_epoch;
         self.wal_replay_start_lsn = manifest.wal_replay_start_lsn;

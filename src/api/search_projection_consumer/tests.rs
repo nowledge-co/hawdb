@@ -17,7 +17,6 @@ use crate::SearchRebuildOptions;
 use std::any::TypeId;
 use std::num::NonZeroU64;
 
-#[cfg(not(windows))]
 mod lifecycle;
 
 struct Fixture(PathBuf);
@@ -131,7 +130,7 @@ fn creation_checkpoint_catch_up_and_reopen_use_real_receipts() {
         )
         .unwrap();
     assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), epoch);
-    assert_eq!(consumer.search_index().document_count(), 1);
+    assert_eq!(consumer.search_index().unwrap().document_count(), 1);
     assert!(db
         .search_projection_consumer_readiness(&consumer, None)
         .unwrap()
@@ -140,7 +139,7 @@ fn creation_checkpoint_catch_up_and_reopen_use_real_receipts() {
     let report = catch_up(&mut db, &mut consumer).unwrap();
     assert_eq!(report.catch_up.applied_batch_count, 1);
     assert!(report.catch_up.complete);
-    assert_eq!(consumer.search_index().document_count(), 2);
+    assert_eq!(consumer.search_index().unwrap().document_count(), 2);
     assert_eq!(
         report.consumer.minimum_valid_consumer_commit_epoch,
         Some(db.runtime.get().unwrap().store.commit_epoch())
@@ -169,7 +168,7 @@ fn creation_checkpoint_catch_up_and_reopen_use_real_receipts() {
     let consumer = db
         .open_search_projection_consumer(&id("main"), fixture.0.join("projection"))
         .unwrap();
-    assert_eq!(consumer.search_index().document_count(), 2);
+    assert_eq!(consumer.search_index().unwrap().document_count(), 2);
     assert_eq!(
         db.search_projection_consumer_status(&id("main"))
             .unwrap()
@@ -179,15 +178,10 @@ fn creation_checkpoint_catch_up_and_reopen_use_real_receipts() {
 }
 
 #[test]
-fn empty_source_epoch_zero_and_repeated_catch_up_are_valid() {
+fn empty_source_and_repeated_catch_up_are_valid() {
     let fixture = Fixture::new();
-    let mut db = Database::default();
-    {
-        let mut runtime = db.runtime.get_mut().unwrap();
-        runtime.store =
-            crate::store::GraphStore::open(fixture.0.join("database"), &mut runtime.catalog)
-                .unwrap();
-    }
+    let mut db = fixture.database();
+    let initial_epoch = db.commit_epoch().unwrap();
     let mut consumer = db
         .create_search_projection_consumer(
             id("empty"),
@@ -196,7 +190,7 @@ fn empty_source_epoch_zero_and_repeated_catch_up_are_valid() {
             initialize,
         )
         .unwrap();
-    assert_eq!(consumer.projection().receipt().source_epoch, 0);
+    assert_eq!(consumer.projection().receipt().source_epoch, initial_epoch);
     let before = std::fs::read(fixture.registry_path("database")).unwrap();
     let report = catch_up(&mut db, &mut consumer).unwrap();
     assert!(report.catch_up.complete);
@@ -216,7 +210,7 @@ fn initialization_failure_cleans_stage_and_preserves_existing_destination() {
         fixture.0.join("projection"),
         options(100),
         |_, index| {
-            assert!(index.is_persistent());
+            assert!(!index.is_persistent());
             Err(HawDBError::Execution("incomplete initialization".into()))
         },
     );
@@ -254,9 +248,10 @@ fn owned_projection_excludes_other_publishers_and_releases_lease_on_drop() {
             initialize,
         )
         .unwrap();
-    assert!(consumer.search_index().checkpoint().is_err());
+    assert!(consumer.search_index().unwrap().checkpoint().is_err());
     assert!(consumer
         .search_index()
+        .unwrap()
         .mark_full_reindex_needed("external")
         .is_err());
     assert!(SearchIndex::open(fixture.0.join("projection")).is_err());
@@ -465,12 +460,12 @@ fn identity_survives_database_rename_and_rejects_copied_registry() {
     let mut replacement = fixture.database();
     assert!(matches!(
         replacement.open_search_projection_consumer(&id("main"), fixture.0.join("projection")),
-        Err(Error::RebuildRequired(Reason::DatabaseIdentityMismatch))
+        Err(Error::InvalidHandle)
     ));
 }
 
 #[test]
-fn registry_publication_error_never_adopts_the_unacknowledged_checkpoint() {
+fn lost_registry_reply_reopens_only_the_completed_native_receipt() {
     let fixture = Fixture::new();
     let mut db = fixture.database();
     let mut consumer = db
@@ -496,6 +491,7 @@ fn registry_publication_error_never_adopts_the_unacknowledged_checkpoint() {
     assert_eq!(
         consumer
             .search_index()
+            .unwrap()
             .projection_freshness()
             .durable_source_graph_commit_epoch,
         Some(db.runtime.get().unwrap().store.commit_epoch())
@@ -503,19 +499,23 @@ fn registry_publication_error_never_adopts_the_unacknowledged_checkpoint() {
     drop(consumer);
     drop(db);
     let mut db = fixture.database();
-    assert!(matches!(
-        db.open_search_projection_consumer(&id("main"), fixture.0.join("projection")),
-        Err(Error::RebuildRequired(Reason::CheckpointMismatch))
-    ));
-    assert!(matches!(
-        db.open_or_create_search_projection_consumer(
+    let recovered = db
+        .open_or_create_search_projection_consumer(
             id("main"),
             fixture.0.join("projection"),
-            options(100),
-            |_, _| panic!("mismatched receipt must not initialize"),
-        ),
-        Err(Error::RebuildRequired(Reason::CheckpointMismatch))
-    ));
+            options(999),
+            |_, _| panic!("completed native receipt must not initialize"),
+        )
+        .unwrap();
+    assert_eq!(
+        recovered.projection().receipt().source_epoch,
+        db.commit_epoch().unwrap()
+    );
+    assert_eq!(recovered.search_index().unwrap().document_count(), 1);
+    assert!(db
+        .search_projection_consumer_readiness(&recovered, None)
+        .unwrap()
+        .is_ready());
 }
 
 #[test]
@@ -531,6 +531,11 @@ fn missing_and_corrupt_registry_leave_ordinary_database_writes_available() {
                 initialize,
             )
             .unwrap();
+        let receipt = consumer.projection().receipt();
+        let expiry = db
+            .search_projection_consumer_status(&id("main"))
+            .unwrap()
+            .expires_at_commit_epoch;
         drop(consumer);
         drop(db);
         let registry = fixture.registry_path("database");
@@ -540,32 +545,34 @@ fn missing_and_corrupt_registry_leave_ordinary_database_writes_available() {
             std::fs::remove_file(&registry).unwrap();
         }
         let mut db = fixture.database();
-        assert!(matches!(
-            db.open_search_projection_consumer(&id("main"), fixture.0.join("projection")),
-            Err(Error::RebuildRequired(Reason::RegistryUnavailable))
-        ));
-        for name in ["main", "absent"] {
-            assert!(matches!(
-                db.open_or_create_search_projection_consumer(
-                    id(name),
-                    fixture.0.join("unexpected"),
-                    options(100),
-                    |_, _| panic!("unavailable registry must not initialize"),
-                ),
-                Err(Error::RebuildRequired(Reason::RegistryUnavailable))
-            ));
-        }
-        assert!(!fixture.0.join("unexpected").exists());
-        append(&mut db, 1);
-        let replacement = db
-            .create_search_projection_consumer(
+        let recovered = db
+            .open_or_create_search_projection_consumer(
                 id("main"),
-                fixture.0.join("rebuilt"),
-                options(100),
-                initialize,
+                fixture.0.join("projection"),
+                options(999),
+                |_, _| panic!("native receipt must restore the disposable cache"),
             )
             .unwrap();
-        assert_eq!(replacement.search_index().document_count(), 1);
+        assert_eq!(recovered.projection().receipt(), receipt);
+        assert_eq!(
+            db.search_projection_consumer_status(&id("main"))
+                .unwrap()
+                .expires_at_commit_epoch,
+            expiry
+        );
+        append(&mut db, 1);
+        assert_eq!(recovered.search_index().unwrap().document_count(), 0);
+        assert!(!fixture.0.join("unexpected").exists());
+        drop(recovered);
+        drop(db);
+        let mut db = fixture.database();
+        assert_eq!(
+            db.open_search_projection_consumer(&id("main"), fixture.0.join("projection"))
+                .unwrap()
+                .projection()
+                .receipt(),
+            receipt
+        );
     }
 }
 
@@ -664,24 +671,21 @@ fn process_crashes_observe_checkpoint_before_registry_ordering() {
         assert_eq!(status.code(), Some(86));
         let mut db = fixture.database();
         let opened = db.open_search_projection_consumer(&id("main"), fixture.0.join("projection"));
-        if stage == "after_checkpoint" {
-            assert!(matches!(
-                opened,
-                Err(Error::RebuildRequired(Reason::CheckpointMismatch))
-            ));
-        } else {
-            let mut consumer = opened.unwrap();
-            assert_eq!(
-                consumer.projection().receipt().source_epoch,
-                if stage == "before_checkpoint" {
-                    old_epoch
-                } else {
-                    source_epoch
-                }
-            );
-            assert!(catch_up(&mut db, &mut consumer).unwrap().catch_up.complete);
-            assert_eq!(consumer.search_index().document_count(), 1);
-        }
+        let mut consumer = opened.unwrap();
+        assert_eq!(
+            consumer.projection().receipt().source_epoch,
+            if stage == "after_registry" {
+                source_epoch
+            } else {
+                old_epoch
+            }
+        );
+        assert_eq!(
+            consumer.search_index().unwrap().document_count(),
+            usize::from(stage == "after_registry")
+        );
+        assert!(catch_up(&mut db, &mut consumer).unwrap().catch_up.complete);
+        assert_eq!(consumer.search_index().unwrap().document_count(), 1);
     }
 }
 
@@ -699,9 +703,7 @@ fn missing_mandatory_projection_artifact_requires_rebuild_without_repair() {
         .unwrap();
     drop(consumer);
     drop(db);
-    let descriptor = fixture
-        .0
-        .join("projection/search_projection_segments.hawdb");
+    let descriptor = fixture.0.join("projection/consumer-generation.meta.hawdb");
     assert!(descriptor.exists());
     std::fs::remove_file(&descriptor).unwrap();
     let mut db = fixture.database();
@@ -748,7 +750,7 @@ fn failed_registration_retry_preserves_other_durable_consumers() {
         .unwrap();
     assert_eq!(
         db.runtime.get().unwrap().projection_consumers.records.len(),
-        2
+        3
     );
     assert!(db
         .runtime
@@ -906,7 +908,7 @@ fn byte_retention_limit_does_not_wait_for_registry_io() {
 }
 
 #[test]
-fn backup_restores_identity_and_rejects_a_cursor_ahead_of_the_restored_source() {
+fn source_backup_restores_identity_without_adopting_external_consumer_authority() {
     let fixture = Fixture::new();
     let mut db = fixture.database();
     let mut consumer = db
@@ -940,7 +942,7 @@ fn backup_restores_identity_and_rejects_a_cursor_ahead_of_the_restored_source() 
     );
     assert!(matches!(
         restored.open_search_projection_consumer(&id("main"), fixture.0.join("projection")),
-        Err(Error::RebuildRequired(Reason::RegistryUnavailable))
+        Err(Error::InvalidHandle)
     ));
     drop(restored);
     std::fs::copy(
@@ -950,14 +952,18 @@ fn backup_restores_identity_and_rejects_a_cursor_ahead_of_the_restored_source() 
     .unwrap();
     let mut restored = Database::open(fixture.0.join("restored")).unwrap();
     assert!(matches!(
-        restored.open_or_create_search_projection_consumer(
-            id("main"),
-            fixture.0.join("projection"),
-            options(100),
-            |_, _| panic!("rewound source must not initialize"),
-        ),
-        Err(Error::RebuildRequired(Reason::SourceRewound))
+        restored.open_search_projection_consumer(&id("main"), fixture.0.join("projection")),
+        Err(Error::InvalidHandle)
     ));
+    let rebuilt = restored
+        .open_or_create_search_projection_consumer(
+            id("main"),
+            fixture.0.join("restored-projection"),
+            options(100),
+            initialize,
+        )
+        .unwrap();
+    assert_eq!(rebuilt.search_index().unwrap().document_count(), 0);
 }
 
 #[test]
@@ -987,25 +993,11 @@ fn foreign_registry_reinitializes_only_after_the_new_projection_is_complete() {
     std::fs::write(&registry, &foreign_bytes).unwrap();
     let mut replacement = Database::open(fixture.0.join("replacement-database")).unwrap();
     let epoch = replacement.commit_epoch();
-    for name in ["main", "absent"] {
-        assert!(matches!(
-            replacement.open_or_create_search_projection_consumer(
-                id(name),
-                fixture.0.join("unexpected"),
-                options(100),
-                |_, _| panic!("foreign registry must not initialize"),
-            ),
-            Err(Error::RebuildRequired(Reason::DatabaseIdentityMismatch))
-        ));
-        assert_eq!(std::fs::read(&registry).unwrap(), foreign_bytes);
-    }
     assert!(matches!(
-        replacement
-            .search_projection_consumer_status(&id("main"))
-            .unwrap()
-            .state,
-        State::RebuildRequired(Reason::DatabaseIdentityMismatch)
+        replacement.open_search_projection_consumer(&id("main"), fixture.0.join("original")),
+        Err(Error::InvalidHandle)
     ));
+    assert_eq!(std::fs::read(&registry).unwrap(), foreign_bytes);
     assert!(replacement
         .create_search_projection_consumer(
             id("main"),
@@ -1015,13 +1007,6 @@ fn foreign_registry_reinitializes_only_after_the_new_projection_is_complete() {
         )
         .is_err());
     assert_eq!(std::fs::read(&registry).unwrap(), foreign_bytes);
-    assert!(matches!(
-        replacement
-            .search_projection_consumer_status(&id("main"))
-            .unwrap()
-            .state,
-        State::RebuildRequired(Reason::DatabaseIdentityMismatch)
-    ));
     let rebuilt = replacement
         .create_search_projection_consumer(
             id("main"),
@@ -1040,8 +1025,16 @@ fn foreign_registry_reinitializes_only_after_the_new_projection_is_complete() {
             .search_projection_database_identity(),
         source_identity
     );
-    assert!(rebuilt.search_index().document("memory:m2").is_some());
-    assert!(rebuilt.search_index().document("memory:m1").is_none());
+    assert!(rebuilt
+        .search_index()
+        .unwrap()
+        .document("memory:m2")
+        .is_some());
+    assert!(rebuilt
+        .search_index()
+        .unwrap()
+        .document("memory:m1")
+        .is_none());
     assert!(matches!(
         replacement.renew_search_projection_consumer(&original),
         Err(Error::RebuildRequired(Reason::DatabaseIdentityMismatch))
@@ -1052,48 +1045,6 @@ fn foreign_registry_reinitializes_only_after_the_new_projection_is_complete() {
     replacement
         .open_search_projection_consumer(&id("main"), fixture.0.join("rebuilt"))
         .unwrap();
-}
-
-#[test]
-fn stage_cleanup_preserves_unpublished_files_until_descriptor_capacity_returns() {
-    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
-    use hawdb_storage::file_io as counted;
-    let fixture = Fixture::new();
-    let project = ProjectFileDescriptors::acquire(&fixture.0, 4).unwrap();
-    for explicit in [true, false] {
-        let stage = fixture.0.join(format!("stage-{explicit}"));
-        counted::create_dir(&stage).unwrap();
-        let evidence = stage.join("unpublished");
-        counted::write(&evidence, b"retain unpublished bytes").unwrap();
-        let mut held = (0..4)
-            .map(|_| counted::File::open(&evidence).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(project.metrics().open, 4);
-        let rejections = project.metrics().budget_rejections;
-        let guard = StageDirectory(stage.clone());
-        if explicit {
-            assert!(matches!(
-                guard.cleanup(),
-                Err(HawDBError::FileDescriptors(_))
-            ));
-        } else {
-            drop(guard);
-        }
-        assert_eq!(
-            std::fs::read(&evidence).unwrap(),
-            b"retain unpublished bytes"
-        );
-        assert!(project.metrics().budget_rejections > rejections);
-        assert_eq!(project.metrics().open, 4);
-        assert_eq!(project.metrics().reserved, 0);
-        drop(held.pop());
-        StageDirectory(stage.clone()).cleanup().unwrap();
-        assert!(!stage.exists());
-        assert_eq!(project.metrics().open, 3);
-        drop(held);
-    }
-    assert_eq!(project.metrics().open, 0);
-    assert!(project.metrics().high_water <= 4);
 }
 
 #[test]
@@ -1120,17 +1071,8 @@ fn initializer_descriptor_rejection_preserves_typed_cause_and_source() {
     let mut evidence = None;
     let error = db
         .create_search_projection_consumer(id("fd-retry"), &destination, options(100), |_, _| {
-            let stage = std::fs::read_dir(&root)
-                .unwrap()
-                .map(|entry| entry.unwrap().path())
-                .find(|path| {
-                    path.file_name()
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .ends_with(".stage")
-                })
-                .unwrap();
+            let stage = destination.join(".consumer-producer");
+            assert!(stage.is_dir());
             let file = stage.join("unpublished");
             counted::write(&file, b"retain initializer evidence").unwrap();
             let error = loop {
@@ -1168,7 +1110,11 @@ fn initializer_descriptor_rejection_preserves_typed_cause_and_source() {
     let consumer = db
         .create_search_projection_consumer(id("fd-retry"), &destination, options(100), initialize)
         .unwrap();
-    assert!(consumer.search_index().document("memory:m1").is_some());
+    assert!(consumer
+        .search_index()
+        .unwrap()
+        .document("memory:m1")
+        .is_some());
     assert!(db
         .search_projection_consumer_readiness(&consumer, None)
         .unwrap()
@@ -1187,14 +1133,17 @@ fn initializer_descriptor_rejection_preserves_typed_cause_and_source() {
     let consumer = reopened
         .open_search_projection_consumer(&id("fd-retry"), &destination)
         .unwrap();
-    assert!(consumer.search_index().document("memory:m1").is_some());
+    assert!(consumer
+        .search_index()
+        .unwrap()
+        .document("memory:m1")
+        .is_some());
 }
 
 #[cfg(windows)]
 #[test]
-fn windows_consumer_creation_refuses_before_callback_or_publication() {
-    let fixture = Fixture::new();
-    assert_consumer_publication_refusal(&fixture, fixture.database());
+fn windows_registered_stationary_creation_catch_up_and_reopen() {
+    stationary::assert_native_create_catch_up_and_reopen();
 }
 
 #[test]
@@ -1282,7 +1231,6 @@ fn assert_consumer_publication_refusal(fixture: &Fixture, mut db: Database) {
     }
 }
 
-#[cfg(not(windows))]
 #[test]
 fn legacy_registered_prefix_1043_refuses_before_hydration_and_reopens_complete_retry() {
     let fixture = Fixture::new();
@@ -1316,6 +1264,7 @@ fn legacy_registered_prefix_1043_refuses_before_hydration_and_reopens_complete_r
     assert_eq!(
         consumer
             .search_index()
+            .unwrap()
             .document("memory:m1")
             .unwrap()
             .content,
@@ -1328,10 +1277,11 @@ fn legacy_registered_prefix_1043_refuses_before_hydration_and_reopens_complete_r
     let reopened = db
         .open_search_projection_consumer(&id("coherent"), &path)
         .unwrap();
-    assert_eq!(reopened.search_index().document_count(), 2);
+    assert_eq!(reopened.search_index().unwrap().document_count(), 2);
     assert_eq!(
         reopened
             .search_index()
+            .unwrap()
             .document("memory:m1")
             .unwrap()
             .content,
@@ -1340,6 +1290,7 @@ fn legacy_registered_prefix_1043_refuses_before_hydration_and_reopens_complete_r
     assert_eq!(
         reopened
             .search_index()
+            .unwrap()
             .document("memory:m2")
             .unwrap()
             .content,
@@ -1347,3 +1298,5 @@ fn legacy_registered_prefix_1043_refuses_before_hydration_and_reopens_complete_r
     );
     assert_eq!(reopened.projection().receipt().source_epoch, final_epoch);
 }
+
+mod stationary;

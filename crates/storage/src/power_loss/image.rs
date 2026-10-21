@@ -27,7 +27,7 @@
 //! barriers and atomic same-directory rename, not an atomic multi-file commit.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
@@ -185,8 +185,35 @@ impl ImageEngine {
         matches!(self.inodes.get(&inode), Some(Inode::Directory { .. }))
     }
 
+    /// Capture a directory inode before releasing namespace exclusion. Like
+    /// file inode IDs, this belongs to this logical engine and its candidates.
+    /// Later child operations follow this inode even if its pathname moves.
+    pub fn directory_inode(&self, path: &Path) -> io::Result<InodeId> {
+        let inode = self.inode(path)?;
+        self.current_directory(inode)?;
+        Ok(inode)
+    }
+
+    /// Resolve exactly one normalized component in a captured directory.
+    pub fn child_inode(&self, directory: InodeId, name: &Path) -> io::Result<InodeId> {
+        self.current_directory(directory)?
+            .get(child_name(name)?)
+            .copied()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "image child is absent"))
+    }
+
     pub fn create_file(&mut self, path: &Path) -> io::Result<InodeId> {
         let (parent, name) = self.parent(path)?;
+        self.create_file_in_directory(parent, name)
+    }
+
+    /// Create a file in the captured directory, without re-resolving its path.
+    pub fn create_file_at(&mut self, directory: InodeId, name: &Path) -> io::Result<InodeId> {
+        let name = child_name(name)?.to_os_string();
+        self.create_file_in_directory(directory, name)
+    }
+
+    fn create_file_in_directory(&mut self, parent: InodeId, name: OsString) -> io::Result<InodeId> {
         self.require_absent(parent, &name)?;
         self.admit_new_inode()?;
         self.admit_operation(0)?;
@@ -204,6 +231,19 @@ impl ImageEngine {
 
     pub fn create_directory(&mut self, path: &Path) -> io::Result<InodeId> {
         let (parent, name) = self.parent(path)?;
+        self.create_directory_in_directory(parent, name)
+    }
+
+    /// Create one directory in a captured parent without resolving its label.
+    pub fn create_directory_at(&mut self, parent: InodeId, name: &Path) -> io::Result<InodeId> {
+        self.create_directory_in_directory(parent, child_name(name)?.to_os_string())
+    }
+
+    fn create_directory_in_directory(
+        &mut self,
+        parent: InodeId,
+        name: OsString,
+    ) -> io::Result<InodeId> {
         self.require_absent(parent, &name)?;
         self.admit_new_inode()?;
         self.admit_operation(0)?;
@@ -233,6 +273,15 @@ impl ImageEngine {
             value: Some(inode),
         }])?;
         Ok(())
+    }
+
+    /// The no-replace directory operation must reject every occupied target,
+    /// including an empty directory or an alias of the source itself.
+    pub fn rename_directory_new(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
+        self.directory_inode(source)?;
+        let (parent, name) = self.parent(destination)?;
+        self.require_absent(parent, &name)?;
+        self.rename(source, destination)
     }
 
     pub fn rename(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
@@ -302,6 +351,84 @@ impl ImageEngine {
         self.namespace(vec![EntryChange {
             directory: parent,
             name,
+            value: None,
+        }])?;
+        Ok(())
+    }
+
+    /// Replace a regular control entry atomically inside the captured directory.
+    pub fn replace_file_at(
+        &mut self,
+        directory: InodeId,
+        source: &Path,
+        target: &Path,
+    ) -> io::Result<()> {
+        let inode = self.child_inode(directory, source)?;
+        if self.is_directory(inode) {
+            return Err(invalid("control candidate is a directory"));
+        }
+        let target_name = child_name(target)?.to_os_string();
+        if let Some(existing) = self.current_directory(directory)?.get(&target_name)
+            && self.is_directory(*existing)
+        {
+            return Err(invalid("control head is a directory"));
+        }
+        let source_name = child_name(source)?.to_os_string();
+        if source_name == target_name {
+            return Ok(());
+        }
+        if self.current_directory(directory)?.get(&target_name) == Some(&inode) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "control head aliases its candidate",
+            ));
+        }
+        self.admit_operation(0)?;
+        self.namespace(vec![
+            EntryChange {
+                directory,
+                name: source_name,
+                value: None,
+            },
+            EntryChange {
+                directory,
+                name: target_name,
+                value: Some(inode),
+            },
+        ])?;
+        Ok(())
+    }
+
+    /// Unlink one file entry, preserving any other hard links to its inode.
+    /// Directories are rejected even when empty, matching file-only unlink.
+    pub fn remove_file_at(&mut self, directory: InodeId, name: &Path) -> io::Result<()> {
+        let inode = self.child_inode(directory, name)?;
+        if !matches!(self.inodes.get(&inode), Some(Inode::File { .. })) {
+            return Err(invalid("relative file removal target is not a file"));
+        }
+        self.admit_operation(0)?;
+        self.namespace(vec![EntryChange {
+            directory,
+            name: child_name(name)?.to_os_string(),
+            value: None,
+        }])?;
+        Ok(())
+    }
+
+    /// Remove only an empty directory entry through a captured parent. The
+    /// directory inode remains distinct from any later reuse of that name.
+    pub fn remove_directory_at(&mut self, directory: InodeId, name: &Path) -> io::Result<()> {
+        let inode = self.child_inode(directory, name)?;
+        if !self.current_directory(inode)?.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::DirectoryNotEmpty,
+                "relative directory removal target is not empty",
+            ));
+        }
+        self.admit_operation(0)?;
+        self.namespace(vec![EntryChange {
+            directory,
+            name: child_name(name)?.to_os_string(),
             value: None,
         }])?;
         Ok(())
@@ -612,6 +739,20 @@ fn apply_entry(entries: &mut BTreeMap<OsString, InodeId>, change: &EntryChange) 
     }
 }
 
+fn child_name(path: &Path) -> io::Result<&OsStr> {
+    let mut components = path.components();
+    match components.next() {
+        Some(Component::Normal(name))
+            if components.next().is_none()
+                && path.as_os_str() == name
+                && name.as_encoded_bytes().len() <= 255 =>
+        {
+            Ok(name)
+        }
+        _ => Err(invalid("image child name must be one normalized component")),
+    }
+}
+
 fn relative_components(path: &Path) -> io::Result<Vec<OsString>> {
     if path.as_os_str().as_encoded_bytes().len() > 4096 {
         return Err(invalid("power-loss path exceeds its admission limit"));
@@ -719,6 +860,274 @@ impl CrashImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ReplacedDirectory {
+        engine: ImageEngine,
+        captured: InodeId,
+        foreign: InodeId,
+        original_file: InodeId,
+        foreign_file: InodeId,
+    }
+
+    impl ReplacedDirectory {
+        fn new(sync_replacement: bool) -> Self {
+            let mut engine = ImageEngine::new(ImageLimits::default()).unwrap();
+            engine.create_directory(Path::new("selected")).unwrap();
+            let captured = engine.directory_inode(Path::new("selected")).unwrap();
+            let original_file = engine
+                .create_file_at(captured, Path::new("payload"))
+                .unwrap();
+            engine.write(original_file, 0, b"original").unwrap();
+            engine.sync_file(original_file).unwrap();
+            engine.sync_directory(captured).unwrap();
+            engine.sync_directory(1).unwrap();
+            engine
+                .rename(Path::new("selected"), Path::new("moved"))
+                .unwrap();
+            let foreign = engine.create_directory(Path::new("selected")).unwrap();
+            let foreign_file = engine
+                .create_file_at(foreign, Path::new("payload"))
+                .unwrap();
+            engine.write(foreign_file, 0, b"foreign").unwrap();
+            engine.sync_file(foreign_file).unwrap();
+            engine.sync_directory(foreign).unwrap();
+            if sync_replacement {
+                engine.sync_directory(1).unwrap();
+            }
+            Self {
+                engine,
+                captured,
+                foreign,
+                original_file,
+                foreign_file,
+            }
+        }
+    }
+
+    #[test]
+    fn relative_unlink_uses_captured_directory_after_durable_path_replacement() {
+        let mut fixture = ReplacedDirectory::new(true);
+        let engine = &mut fixture.engine;
+        assert_eq!(
+            engine
+                .child_inode(fixture.captured, Path::new("payload"))
+                .unwrap(),
+            fixture.original_file
+        );
+        assert_eq!(
+            engine
+                .child_inode(fixture.foreign, Path::new("payload"))
+                .unwrap(),
+            fixture.foreign_file
+        );
+        engine
+            .remove_file_at(fixture.captured, Path::new("payload"))
+            .unwrap();
+        assert!(engine
+            .child_inode(fixture.captured, Path::new("payload"))
+            .is_err());
+        assert_eq!(
+            engine.current_bytes(fixture.foreign_file).unwrap(),
+            b"foreign"
+        );
+        let lost_unlink = engine.crash(&CrashPlan::default()).unwrap();
+        assert_eq!(
+            lost_unlink.bytes(Path::new("moved/payload")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            lost_unlink.bytes(Path::new("selected/payload")).unwrap(),
+            b"foreign"
+        );
+        let persisted_unlink = engine.crash(&engine.persist_all_plan()).unwrap();
+        assert!(persisted_unlink.bytes(Path::new("moved/payload")).is_none());
+        assert_eq!(
+            persisted_unlink
+                .bytes(Path::new("selected/payload"))
+                .unwrap(),
+            b"foreign"
+        );
+        // An open inode remains readable after unlink; a new name must receive
+        // a distinct inode and cannot overwrite that retained old file.
+        let replacement = engine
+            .create_file_at(fixture.captured, Path::new("payload"))
+            .unwrap();
+        assert_ne!(replacement, fixture.original_file);
+        assert_eq!(
+            engine.current_bytes(fixture.original_file).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            engine.current_bytes(fixture.foreign_file).unwrap(),
+            b"foreign"
+        );
+    }
+
+    #[test]
+    fn captured_unlink_can_persist_before_or_after_unsynced_parent_rename() {
+        let mut fixture = ReplacedDirectory::new(false);
+        let engine = &mut fixture.engine;
+        let namespace = engine.pending_operations();
+        assert_eq!(namespace.len(), 2);
+        engine
+            .remove_file_at(fixture.captured, Path::new("payload"))
+            .unwrap();
+        let operations = engine.pending_operations();
+        assert_eq!(operations.len(), 3);
+        for order in [[2, 0, 1], [0, 1, 2]] {
+            let image = engine
+                .crash(&CrashPlan {
+                    persistence: order
+                        .into_iter()
+                        .map(|index| PersistOperation::Whole(operations[index]))
+                        .collect(),
+                })
+                .unwrap();
+            assert!(image.bytes(Path::new("moved/payload")).is_none());
+            assert_eq!(
+                image.bytes(Path::new("selected/payload")).unwrap(),
+                b"foreign"
+            );
+        }
+        let only_unlink = engine
+            .crash(&CrashPlan {
+                persistence: vec![PersistOperation::Whole(operations[2])],
+            })
+            .unwrap();
+        assert!(only_unlink.bytes(Path::new("selected/payload")).is_none());
+        assert!(!only_unlink
+            .directory_paths()
+            .any(|path| path == Path::new("moved")));
+        let lost_all = engine.crash(&CrashPlan::default()).unwrap();
+        assert_eq!(
+            lost_all.bytes(Path::new("selected/payload")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            engine.current_bytes(fixture.foreign_file).unwrap(),
+            b"foreign"
+        );
+    }
+
+    #[test]
+    fn relative_namespace_admission_rejects_without_partial_creation_or_removal() {
+        let mut fixture = ReplacedDirectory::new(true);
+        let engine = &mut fixture.engine;
+        engine.limits.max_pending_operations = 0;
+        assert!(engine
+            .create_file_at(fixture.captured, Path::new("new"))
+            .is_err());
+        assert!(engine
+            .create_directory_at(fixture.captured, Path::new("new-directory"))
+            .is_err());
+        assert!(engine
+            .child_inode(fixture.captured, Path::new("new-directory"))
+            .is_err());
+        assert!(engine
+            .remove_file_at(fixture.captured, Path::new("payload"))
+            .is_err());
+        assert!(engine
+            .child_inode(fixture.captured, Path::new("new"))
+            .is_err());
+        assert_eq!(
+            engine
+                .child_inode(fixture.captured, Path::new("payload"))
+                .unwrap(),
+            fixture.original_file
+        );
+        assert!(engine.pending_operations().is_empty());
+        engine.limits.max_pending_operations = 100;
+        engine.limits.max_inodes = engine.inodes.len();
+        assert!(engine
+            .create_file_at(fixture.captured, Path::new("new"))
+            .is_err());
+        assert!(engine
+            .create_directory_at(fixture.captured, Path::new("new-directory"))
+            .is_err());
+        assert!(engine
+            .child_inode(fixture.captured, Path::new("new-directory"))
+            .is_err());
+        let image = engine.crash(&CrashPlan::default()).unwrap();
+        assert_eq!(
+            image.bytes(Path::new("moved/payload")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            image.bytes(Path::new("selected/payload")).unwrap(),
+            b"foreign"
+        );
+        assert!(engine.pending_operations().is_empty());
+    }
+
+    #[test]
+    fn relative_children_reject_traversal_and_non_directory_or_directory_targets() {
+        let mut fixture = ReplacedDirectory::new(true);
+        let engine = &mut fixture.engine;
+        for name in [
+            "",
+            ".",
+            "..",
+            "../payload",
+            "a/b",
+            "/absolute",
+            "./payload",
+            "payload/",
+        ] {
+            assert!(
+                engine
+                    .child_inode(fixture.captured, Path::new(name))
+                    .is_err(),
+                "{name}"
+            );
+            assert!(
+                engine
+                    .create_file_at(fixture.captured, Path::new(name))
+                    .is_err(),
+                "{name}"
+            );
+            assert!(
+                engine
+                    .remove_file_at(fixture.captured, Path::new(name))
+                    .is_err(),
+                "{name}"
+            );
+        }
+        assert!(engine
+            .create_file_at(fixture.captured, Path::new(&"x".repeat(256)))
+            .is_err());
+        assert!(engine
+            .child_inode(fixture.original_file, Path::new("payload"))
+            .is_err());
+        assert!(engine
+            .create_file_at(fixture.original_file, Path::new("new"))
+            .is_err());
+        assert!(engine
+            .remove_file_at(fixture.original_file, Path::new("payload"))
+            .is_err());
+        assert!(engine
+            .directory_inode(Path::new("selected/payload"))
+            .is_err());
+        let empty = engine.create_directory(Path::new("moved/empty")).unwrap();
+        engine.sync_directory(fixture.captured).unwrap();
+        assert!(engine
+            .remove_file_at(fixture.captured, Path::new("empty"))
+            .is_err());
+        assert_eq!(
+            engine
+                .child_inode(fixture.captured, Path::new("empty"))
+                .unwrap(),
+            empty
+        );
+        assert!(engine.pending_operations().is_empty());
+        assert_eq!(
+            engine.current_bytes(fixture.original_file).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            engine.current_bytes(fixture.foreign_file).unwrap(),
+            b"foreign"
+        );
+    }
 
     fn durable_file(engine: &mut ImageEngine, path: &str, bytes: &[u8]) -> InodeId {
         let inode = engine.create_file(Path::new(path)).unwrap();

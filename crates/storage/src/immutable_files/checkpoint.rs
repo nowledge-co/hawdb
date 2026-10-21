@@ -175,13 +175,13 @@ impl ImmutableFileHandles {
                 .handles
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if let Some(handle) = handles.get_mut(&binding.reference) {
+            if let Some(handle) = handles.get_mut(&CacheKey::Managed(binding.reference)) {
                 handle.last_used = self.next_tick();
                 handle.file.clone()
             } else {
                 let file = Arc::new(candidate.take().expect("validated candidate is present"));
                 handles.insert(
-                    binding.reference,
+                    CacheKey::Managed(binding.reference),
                     CachedHandle {
                         file: file.clone(),
                         last_used: self.next_tick(),

@@ -17,6 +17,7 @@
 pub mod predicate;
 pub use predicate::{
     normalize_search_enum_value, push_search_predicates, search_field_is_enum_like, SearchFieldRef,
-    SearchPredicate, SearchPredicateOp, SearchPredicateParseError, SearchPredicatePushdown,
-    SearchPredicateSet, SearchScalarValue, SearchScanPredicateSupport,
+    SearchPredicate, SearchPredicateConstructionError, SearchPredicateOp,
+    SearchPredicateParseError, SearchPredicatePushdown, SearchPredicateSet, SearchScalarValue,
+    SearchScanPredicateSupport,
 };

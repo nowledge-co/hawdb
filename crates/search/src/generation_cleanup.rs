@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
 use hawdb_storage::file_io as fs;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::Path;
+
+pub(crate) mod source;
 
 pub const SEARCH_PROJECTION_CLEANUP_PROTOCOL: &str =
     "hawdb-search-projection-generation-cleanup-v1";
@@ -25,6 +28,9 @@ pub const SEARCH_PROJECTION_CLEANUP_PROTOCOL: &str =
 pub struct SearchProjectionCleanupOptions {
     pub max_pending_files: NonZeroUsize,
     pub max_delete_attempts: NonZeroUsize,
+    /// Declared bytes covered by one captured verification pass, before unlink.
+    pub max_verification_bytes: NonZeroU64,
+    pub max_verification_files: NonZeroUsize,
 }
 
 impl Default for SearchProjectionCleanupOptions {
@@ -32,6 +38,8 @@ impl Default for SearchProjectionCleanupOptions {
         Self {
             max_pending_files: NonZeroUsize::new(256).expect("cleanup capacity is non-zero"),
             max_delete_attempts: NonZeroUsize::new(256).expect("cleanup delete budget is non-zero"),
+            max_verification_bytes: NonZeroU64::new(128 * 1024 * 1024).unwrap(),
+            max_verification_files: NonZeroUsize::new(4096).unwrap(),
         }
     }
 }
@@ -136,6 +144,7 @@ pub(super) struct SearchProjectionGenerations {
     pub retained_rabitq: BTreeSet<u64>,
     pub rabitq_remove_all: bool,
     pub out_of_core_discovery_failed: bool,
+    pub rabitq_discovery_failed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -149,6 +158,93 @@ impl SearchProjectionCleanupState {
         self.report.clone()
     }
 
+    pub(crate) fn defer_for_publication(
+        &mut self,
+        options: SearchProjectionCleanupOptions,
+    ) -> SearchProjectionCleanupReport {
+        self.defer(options, "publication_exclusion_unavailable")
+    }
+
+    fn defer(
+        &mut self,
+        options: SearchProjectionCleanupOptions,
+        reason: &str,
+    ) -> SearchProjectionCleanupReport {
+        let pending_before = self.pending.len();
+        let overflow = pending_before.saturating_sub(options.max_pending_files.get());
+        // Omitted retry names are rediscovered by the next full sweep; no file
+        // is removed while publication authority is unavailable.
+        self.pending.truncate(options.max_pending_files.get());
+        let mut report = SearchProjectionCleanupReport {
+            max_pending_files: options.max_pending_files.get(),
+            max_delete_attempts: options.max_delete_attempts.get(),
+            pending_before,
+            pending_after: self.pending.len(),
+            deferred_files: pending_before,
+            queue_overflow_files: overflow,
+            retry_required: true,
+            ..Default::default()
+        };
+        record_failure(&mut report, reason);
+        self.report = report.clone();
+        report
+    }
+
+    pub(super) fn run_under_publication(
+        &mut self,
+        root: &Path,
+        options: SearchProjectionCleanupOptions,
+        publication: &crate::out_of_core::SearchProjectionPublishLease,
+        analyzer: &crate::SearchAnalyzerLexicon,
+        admission: Option<&crate::build_memory::read::ReadAdmission<'_>>,
+    ) -> SearchProjectionCleanupReport {
+        let default_task = hawdb_core::RuntimeTaskContext::default();
+        let task = admission.map_or(&default_task, |admission| admission.task);
+        let result = source::VerifiedRetention::verify(
+            root,
+            publication,
+            analyzer,
+            options,
+            task,
+            admission,
+        )
+        .and_then(|verified| {
+            verified.with_source(|source, generations| {
+                self.run_with_policy(root, generations, options, Some(source), |name| {
+                    source.remove(name)
+                })
+            })
+        });
+        match result {
+            Ok(report) => report,
+            Err(_) => {
+                let mut report = self.defer(options, "captured_closure_unverified");
+                report.generation_discovery_failures = 1;
+                self.report = report.clone();
+                report
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn run_with_bound_test_generations(
+        &mut self,
+        root: &Path,
+        generations: SearchProjectionGenerations,
+        options: SearchProjectionCleanupOptions,
+        publication: &crate::out_of_core::SearchProjectionPublishLease,
+    ) -> SearchProjectionCleanupReport {
+        match publication.with_cleanup_source(root, |source| {
+            self.run_with_policy(root, generations, options, Some(source), |name| {
+                source.remove(name)
+            })
+        }) {
+            Ok(report) => report,
+            Err(_) => self.defer(options, "captured_namespace_unavailable"),
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn run(
         &mut self,
         root: &Path,
@@ -158,6 +254,7 @@ impl SearchProjectionCleanupState {
         self.run_with_remover(root, generations, options, |path| fs::remove_file(path))
     }
 
+    #[cfg(test)]
     fn run_with_remover<F>(
         &mut self,
         root: &Path,
@@ -167,6 +264,22 @@ impl SearchProjectionCleanupState {
     ) -> SearchProjectionCleanupReport
     where
         F: FnMut(&Path) -> io::Result<()>,
+    {
+        self.run_with_policy(root, generations, options, None, |name| {
+            remove(&root.join(name))
+        })
+    }
+
+    fn run_with_policy<F>(
+        &mut self,
+        root: &Path,
+        generations: SearchProjectionGenerations,
+        options: SearchProjectionCleanupOptions,
+        source: Option<source::CleanupSource<'_>>,
+        mut remove: F,
+    ) -> SearchProjectionCleanupReport
+    where
+        F: FnMut(&str) -> io::Result<()>,
     {
         let capacity = options.max_pending_files.get();
         let delete_limit = options.max_delete_attempts.get();
@@ -194,8 +307,11 @@ impl SearchProjectionCleanupState {
                 continue;
             }
             report.eligible_files = report.eligible_files.saturating_add(1);
+            if source.is_some_and(|source| source.protects(&candidate)) {
+                defer_candidate(candidate, capacity, &mut pending, &mut report);
+                continue;
+            }
             process_candidate(
-                root,
                 candidate,
                 capacity,
                 delete_limit,
@@ -205,43 +321,42 @@ impl SearchProjectionCleanupState {
             );
         }
 
-        match fs::read_dir(root) {
-            Ok(entries) => {
-                for entry in entries {
-                    report.scanned_entries = report.scanned_entries.saturating_add(1);
-                    let entry = match entry {
-                        Ok(entry) => entry,
-                        Err(error) => {
-                            report.scan_failures = report.scan_failures.saturating_add(1);
-                            record_failure(&mut report, io_error_code(&error));
-                            continue;
-                        }
-                    };
-                    let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-                        continue;
-                    };
-                    let Some(candidate) = CleanupCandidate::parse(name) else {
-                        continue;
-                    };
-                    if known.contains(&candidate.name) || !candidate.is_obsolete(&generations) {
-                        continue;
-                    }
-                    report.eligible_files = report.eligible_files.saturating_add(1);
-                    process_candidate(
-                        root,
-                        candidate,
-                        capacity,
-                        delete_limit,
-                        &mut pending,
-                        &mut report,
-                        &mut remove,
-                    );
-                }
+        let scan = source::visit_names(root, source, &mut |name| {
+            report.scanned_entries = report.scanned_entries.saturating_add(1);
+            let Some(candidate) = CleanupCandidate::parse(name.to_string()) else {
+                return Ok(());
+            };
+            if generations.rabitq_discovery_failed
+                && candidate.kind == CleanupArtifactKind::RaBitQ
+                && !report
+                    .failure_kinds
+                    .contains_key("rabitq_retention_unverified")
+            {
+                report.generation_discovery_failures =
+                    report.generation_discovery_failures.saturating_add(1);
+                record_failure(&mut report, "rabitq_retention_unverified");
             }
-            Err(error) => {
-                report.scan_failures = report.scan_failures.saturating_add(1);
-                record_failure(&mut report, io_error_code(&error));
+            if known.contains(&candidate.name) || !candidate.is_obsolete(&generations) {
+                return Ok(());
             }
+            report.eligible_files = report.eligible_files.saturating_add(1);
+            if source.is_some_and(|source| source.protects(&candidate)) {
+                defer_candidate(candidate, capacity, &mut pending, &mut report);
+                return Ok(());
+            }
+            process_candidate(
+                candidate,
+                capacity,
+                delete_limit,
+                &mut pending,
+                &mut report,
+                &mut remove,
+            );
+            Ok(())
+        });
+        if let Err(error) = scan {
+            report.scan_failures = report.scan_failures.saturating_add(1);
+            record_failure(&mut report, io_error_code(&error));
         }
 
         report.pending_after = pending.len();
@@ -274,56 +389,45 @@ struct CleanupCandidate<S = String> {
 }
 
 impl<S: AsRef<str>> CleanupCandidate<S> {
+    fn artifact_key(&self) -> crate::out_of_core::artifact_key::ArtifactKey {
+        let name = quarantined_artifact_name(self.name.as_ref()).unwrap_or(self.name.as_ref());
+        crate::out_of_core::artifact_key::ArtifactKey::from_file_name(name)
+            .expect("parsed cleanup candidate has a canonical artifact key")
+    }
+
     fn parse(name: S) -> Option<Self> {
-        const OUT_OF_CORE_PREFIXES: &[&str] = &[
-            "search_projection_segments.",
-            "search_projection_segment_payloads.",
-            "search_projection_metadata_payloads.",
-            "search_projection_vector_payloads.",
-            "search_projection_out_of_core_layout.",
-            "search_projection_mutation_run.",
-        ];
+        use crate::out_of_core::artifact_key::ArtifactKey;
         let (artifact_name, quarantined) = match quarantined_artifact_name(name.as_ref()) {
             Some(artifact_name) => (artifact_name, true),
             None => (name.as_ref(), false),
         };
-        if let Some(generation) = parse_generation(artifact_name, "search_lexical.")
-            .or_else(|| parse_generation(artifact_name, "search_lexical.manifest."))
-        {
-            return Some(Self {
-                name,
-                kind: CleanupArtifactKind::Lexical,
-                generation,
-                quarantined,
-            });
-        }
-        if let Some(generation) = parse_generation(artifact_name, "search_rabitq.") {
-            return Some(Self {
-                name,
-                kind: CleanupArtifactKind::RaBitQ,
-                generation,
-                quarantined,
-            });
-        }
-        let generation = OUT_OF_CORE_PREFIXES
-            .iter()
-            .find_map(|prefix| parse_generation(artifact_name, prefix))?;
+        let key = ArtifactKey::from_file_name(artifact_name)?;
+        let kind = match key {
+            ArtifactKey::Content(_) | ArtifactKey::MutationRun(_) => CleanupArtifactKind::OutOfCore,
+            ArtifactKey::Lexical(_) => CleanupArtifactKind::Lexical,
+            ArtifactKey::RaBitQ(_) => CleanupArtifactKind::RaBitQ,
+        };
         Some(Self {
             name,
-            kind: CleanupArtifactKind::OutOfCore,
-            generation,
+            kind,
+            generation: key.generation(),
             quarantined,
         })
     }
 
     fn is_obsolete(&self, generations: &SearchProjectionGenerations) -> bool {
-        if self.quarantined {
-            return true;
-        }
         // Without a validated active closure, its retained generations are
         // unknown. A current generation number alone cannot prove obsolescence.
         if generations.out_of_core_discovery_failed {
             return false;
+        }
+        if generations.rabitq_discovery_failed && self.kind == CleanupArtifactKind::RaBitQ {
+            return false;
+        }
+        // Quarantine is evidence when selector discovery is uncertain. Only a
+        // known active closure permits the ordinary diagnostic-file cleanup.
+        if self.quarantined {
+            return true;
         }
         match self.kind {
             CleanupArtifactKind::Lexical => obsolete_generation(
@@ -336,6 +440,11 @@ impl<S: AsRef<str>> CleanupCandidate<S> {
                 generations.out_of_core,
                 &generations.retained_out_of_core,
             ),
+            CleanupArtifactKind::RaBitQ
+                if generations.retained_rabitq.contains(&self.generation) =>
+            {
+                false
+            }
             CleanupArtifactKind::RaBitQ if generations.rabitq_remove_all => true,
             CleanupArtifactKind::RaBitQ => obsolete_generation(
                 self.generation,
@@ -358,7 +467,6 @@ fn quarantined_artifact_name(name: &str) -> Option<&str> {
 }
 
 fn process_candidate<F>(
-    root: &Path,
     candidate: CleanupCandidate,
     capacity: usize,
     delete_limit: usize,
@@ -366,14 +474,14 @@ fn process_candidate<F>(
     report: &mut SearchProjectionCleanupReport,
     remove: &mut F,
 ) where
-    F: FnMut(&Path) -> io::Result<()>,
+    F: FnMut(&str) -> io::Result<()>,
 {
     if report.delete_attempts >= delete_limit {
         defer_candidate(candidate, capacity, pending, report);
         return;
     }
     report.delete_attempts = report.delete_attempts.saturating_add(1);
-    match remove(&root.join(&candidate.name)) {
+    match remove(&candidate.name) {
         Ok(()) => report.deleted_files = report.deleted_files.saturating_add(1),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             report.already_absent_files = report.already_absent_files.saturating_add(1);
@@ -397,13 +505,6 @@ fn defer_candidate(
     } else {
         report.queue_overflow_files = report.queue_overflow_files.saturating_add(1);
     }
-}
-
-fn parse_generation(name: &str, prefix: &str) -> Option<u64> {
-    name.strip_prefix(prefix)?
-        .strip_suffix(".hawdb")?
-        .parse()
-        .ok()
 }
 
 fn older_than_previous(generation: u64, current: Option<u64>) -> bool {

@@ -189,6 +189,7 @@ fn pending_retry_queue_is_bounded_and_reports_overflow() {
         SearchProjectionCleanupOptions {
             max_pending_files: NonZeroUsize::new(2).unwrap(),
             max_delete_attempts: NonZeroUsize::new(2).unwrap(),
+            ..Default::default()
         },
         |_| Err(io::Error::new(io::ErrorKind::PermissionDenied, "pinned")),
     );
@@ -269,4 +270,121 @@ fn test_root(name: &str) -> std::path::PathBuf {
         "hawdb-search-projection-cleanup-{name}-{}-{sequence}",
         std::process::id()
     ))
+}
+
+#[test]
+fn explicit_vector_references_override_a_remove_all_hint() {
+    let candidate = CleanupCandidate::parse("search_rabitq.5.hawdb".to_string()).unwrap();
+    let generations = SearchProjectionGenerations {
+        rabitq_remove_all: true,
+        retained_rabitq: BTreeSet::from([5]),
+        ..Default::default()
+    };
+    assert!(!candidate.is_obsolete(&generations));
+}
+
+#[test]
+fn publication_deferral_bounds_retry_names_and_next_sweep_rediscovers_omissions() {
+    let root = test_root("publication_deferral_queue");
+    fs::create_dir_all(&root).unwrap();
+    for generation in 1..=3 {
+        fs::write(
+            root.join(format!("search_lexical.{generation}.hawdb")),
+            b"artifact",
+        )
+        .unwrap();
+    }
+    let mut state = SearchProjectionCleanupState::default();
+    let generations = SearchProjectionGenerations {
+        lexical: Some(10),
+        ..Default::default()
+    };
+    let initial = state.run_with_remover(
+        &root,
+        generations.clone(),
+        SearchProjectionCleanupOptions::default(),
+        |_| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+    );
+    assert_eq!(initial.pending_after, 3);
+    let options = SearchProjectionCleanupOptions {
+        max_pending_files: NonZeroUsize::new(1).unwrap(),
+        ..Default::default()
+    };
+    let deferred = state.defer_for_publication(options);
+    assert_eq!(deferred.pending_before, 3);
+    assert_eq!(deferred.pending_after, 1);
+    assert_eq!(deferred.queue_overflow_files, 2);
+    assert_eq!(deferred.delete_attempts, 0);
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 3);
+    let retried = state.run(&root, generations, options);
+    assert_eq!(retried.deleted_files, 3);
+    assert_eq!(retried.pending_after, 0);
+    assert!(!retried.retry_required);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn uncertain_closure_retains_quarantine_evidence_and_normal_artifacts() {
+    let root = test_root("uncertain_quarantine");
+    fs::create_dir_all(&root).unwrap();
+    let names = [
+        "search_rabitq.5.hawdb",
+        "search_lexical.manifest.7.hawdb.corrupt.123.456",
+    ];
+    for name in names {
+        fs::write(root.join(name), b"evidence").unwrap();
+    }
+    let report = SearchProjectionCleanupState::default().run(
+        &root,
+        SearchProjectionGenerations {
+            rabitq_remove_all: true,
+            out_of_core_discovery_failed: true,
+            ..Default::default()
+        },
+        Default::default(),
+    );
+    assert_eq!(report.delete_attempts, 0);
+    assert!(report.retry_required);
+    for name in names {
+        assert!(root.join(name).exists());
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unverified_resident_vector_retention_preserves_artifacts_and_reports_retry() {
+    let root = test_root("unverified_resident_vector");
+    fs::create_dir_all(&root).unwrap();
+    let names = [
+        "search_rabitq.1.hawdb",
+        "search_rabitq.1.hawdb.corrupt.42.9",
+    ];
+    for name in names {
+        fs::write(root.join(name), b"retained evidence").unwrap();
+    }
+    let generations = SearchProjectionGenerations {
+        rabitq_remove_all: true,
+        rabitq_discovery_failed: true,
+        ..Default::default()
+    };
+    let mut state = SearchProjectionCleanupState::default();
+    let report = state.run(&root, generations.clone(), Default::default());
+    assert!(report.retry_required);
+    assert_eq!(report.generation_discovery_failures, 1);
+    assert_eq!(
+        report.failure_kinds.get("rabitq_retention_unverified"),
+        Some(&1)
+    );
+    assert_eq!(report.delete_attempts, 0);
+    let task = hawdb_core::RuntimeTaskContext::default();
+    let memory = crate::build_memory::BuildMemory::new(&task).unwrap();
+    let report = once::PreparedCleanup::prepare(&root, &memory, &task)
+        .unwrap()
+        .run(&root, generations, Default::default(), &task);
+    assert!(report.retry_required);
+    assert_eq!(report.deleted_files, 0);
+    for name in names {
+        assert_eq!(fs::read(root.join(name)).unwrap(), b"retained evidence");
+    }
+    fs::remove_dir_all(root).unwrap();
 }

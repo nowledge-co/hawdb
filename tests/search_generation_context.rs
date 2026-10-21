@@ -589,9 +589,21 @@ fn governed_writer_preserves_registered_consumer_and_releases_publication() {
         .unwrap();
     assert!(report.catch_up.complete);
     assert_eq!(report.catch_up.applied_batch_count, 1);
-    assert!(consumer.search_index().document("memory:owned").is_some());
-    assert!(consumer.search_index().document("memory:next").is_some());
-    assert!(consumer.search_index().document("memory:outside").is_none());
+    assert!(consumer
+        .search_index()
+        .unwrap()
+        .document("memory:owned")
+        .is_some());
+    assert!(consumer
+        .search_index()
+        .unwrap()
+        .document("memory:next")
+        .is_some());
+    assert!(consumer
+        .search_index()
+        .unwrap()
+        .document("memory:outside")
+        .is_none());
     files(&projection);
 }
 

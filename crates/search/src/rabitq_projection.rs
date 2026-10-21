@@ -15,6 +15,7 @@
 use super::SearchDocument;
 use crate::error::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
+use hawdb_storage::file_io::File;
 use hawdb_vector_projection::{
     FileProjection, InMemoryProjection, KernelPreference, ProjectionBuildConfig,
     ProjectionBuildReport, ProjectionBuilder, ProjectionError, ProjectionIdentity,
@@ -96,7 +97,7 @@ pub struct RaBitQCandidateProjection {
 // couple the search facade to scan buffers and per-segment execution details.
 #[derive(Debug)]
 enum RaBitQCandidateProjectionStorage {
-    InMemory(InMemoryProjection),
+    InMemory(Box<InMemoryProjection>),
     File(FileProjection),
 }
 
@@ -153,7 +154,7 @@ impl RaBitQCandidateProjection {
         let projection = builder.finish().map_err(projection_error)?;
         let build_report = projection.build_report().clone();
         Ok(Some(Self {
-            storage: RaBitQCandidateProjectionStorage::InMemory(projection),
+            storage: RaBitQCandidateProjectionStorage::InMemory(Box::new(projection)),
             ordinal_to_document_id,
             document_to_ordinal,
             build_report,
@@ -211,6 +212,25 @@ impl RaBitQCandidateProjection {
         expected_identity: &ProjectionIdentity,
     ) -> std::result::Result<Self, RaBitQCandidateProjectionLoadError> {
         let projection = FileProjection::open(artifact_path).map_err(classify_load_error)?;
+        Self::load_projection_classified(projection, documents, expected_identity)
+    }
+
+    pub(crate) fn load_from_file_classified(
+        file: File,
+        identity_path: &Path,
+        documents: &BTreeMap<String, SearchDocument>,
+        expected_identity: &ProjectionIdentity,
+    ) -> std::result::Result<Self, RaBitQCandidateProjectionLoadError> {
+        let projection =
+            FileProjection::open_file(file, identity_path).map_err(classify_load_error)?;
+        Self::load_projection_classified(projection, documents, expected_identity)
+    }
+
+    fn load_projection_classified(
+        projection: FileProjection,
+        documents: &BTreeMap<String, SearchDocument>,
+        expected_identity: &ProjectionIdentity,
+    ) -> std::result::Result<Self, RaBitQCandidateProjectionLoadError> {
         let Some(RaBitQDocumentIdMap {
             dimension,
             ordinal_to_document_id,
@@ -407,6 +427,17 @@ impl RaBitQCandidateProjection {
         }
     }
 
+    pub(crate) fn file_artifact_reference(
+        &self,
+    ) -> Option<(hawdb_storage::immutable_object::ObjectReference, u64)> {
+        match &self.storage {
+            RaBitQCandidateProjectionStorage::InMemory(_) => None,
+            RaBitQCandidateProjectionStorage::File(projection) => projection
+                .object_reference()
+                .zip(projection.artifact_checksum()),
+        }
+    }
+
     pub fn build_report(&self) -> &ProjectionBuildReport {
         &self.build_report
     }
@@ -488,8 +519,9 @@ fn classify_load_error(error: ProjectionError) -> RaBitQCandidateProjectionLoadE
         ProjectionError::Io(error)
             if matches!(error.kind(), std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof)
     );
+    let admission = matches!(&error, ProjectionError::Admission(_));
     let error = projection_error(error);
-    if matches!(error, HawDBError::FileDescriptors(_)) {
+    if admission || matches!(error, HawDBError::FileDescriptors(_)) {
         RaBitQCandidateProjectionLoadError::Resource(error)
     } else if corrupt {
         RaBitQCandidateProjectionLoadError::Corrupt(error)
@@ -506,6 +538,7 @@ fn projection_error(error: ProjectionError) -> HawDBError {
 // typed IO cause. Keep their diagnostic context separate from classification.
 pub(crate) fn map_projection_error(error: ProjectionError, context: &str) -> HawDBError {
     match error {
+        ProjectionError::Admission(error) => error,
         ProjectionError::Io(error) => HawDBError::from_storage_error(error),
         error => HawDBError::Storage(format!("{context}: {error}")),
     }

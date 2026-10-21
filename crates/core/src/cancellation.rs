@@ -402,6 +402,13 @@ impl RuntimeTaskContext {
         self.memory_reservation
     }
 
+    /// Whether execution carries dynamic resource controllers rather than only
+    /// a static ceiling. Synchronous adapters must preserve these controllers
+    /// and must not replace an originating governor admission with a local cap.
+    pub fn has_resource_controllers(&self) -> bool {
+        self.memory_controller.is_some() || self.io_wave_controller.is_some()
+    }
+
     /// Binds actual allocation ownership to an already admitted task.
     pub fn with_memory_controller(mut self, controller: Arc<dyn RuntimeMemoryController>) -> Self {
         self.memory_controller = Some(controller);

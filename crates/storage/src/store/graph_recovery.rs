@@ -642,6 +642,17 @@ impl GraphStore {
         config: WalReplayConfig,
         relational_recovery_source: &mut RelationalRecoverySourceBuilder,
     ) -> Result<StorageRecoveryReport> {
+        self.replay_wal_interval_with_file(catalog, config, relational_recovery_source, &mut None)
+    }
+
+    pub(super) fn replay_wal_interval_with_file(
+        &mut self,
+        catalog: &mut Catalog,
+        config: WalReplayConfig,
+        relational_recovery_source: &mut RelationalRecoverySourceBuilder,
+        captured_file: &mut Option<fs::File>,
+    ) -> Result<StorageRecoveryReport> {
+        let captured = captured_file.is_some();
         let Some(durable) = &self.durable else {
             return Ok(StorageRecoveryReport::default());
         };
@@ -658,8 +669,8 @@ impl GraphStore {
         let checkpoint_present = durable.checkpoint_path.exists();
         let mut replayed_entries = 0_usize;
         let mut replayed_bytes = 0u64;
-        let wal_present = wal_path.exists();
-        if !wal_path.exists() {
+        let wal_present = captured || wal_path.exists();
+        if !wal_present {
             if checkpoint_epoch > 0 {
                 return Err(HawDBError::Storage(format!(
                     "manifest WAL generation {wal_generation} is missing"
@@ -687,14 +698,21 @@ impl GraphStore {
                 recovered_commit_epoch: self.commit_epoch,
             });
         }
-        let wal_len = fs::metadata(&wal_path)?.len();
+        let wal_len = match captured_file.as_ref() {
+            Some(file) => file.metadata()?.len(),
+            None => fs::metadata(&wal_path)?.len(),
+        };
         if config.max_bytes.is_some_and(|limit| wal_len > limit) {
             return Err(HawDBError::Storage(format!(
                 "WAL replay byte limit exceeded: max_wal_replay_bytes={}",
                 config.max_bytes.unwrap_or_default()
             )));
         }
-        let mut cursor = match WalRecordCursor::open(&wal_path, config.max_record_bytes)? {
+        let opened = match captured_file.take() {
+            Some(file) => WalRecordCursor::from_file(file, config.max_record_bytes)?,
+            None => WalRecordCursor::open(&wal_path, config.max_record_bytes)?,
+        };
+        let cursor = match opened {
             WalOpenOutcome::Cursor(cursor) => cursor,
             WalOpenOutcome::MissingHeader => {
                 return Err(HawDBError::Storage(format!(
@@ -705,7 +723,8 @@ impl GraphStore {
                 return Err(HawDBError::Storage(reason));
             }
             WalOpenOutcome::HeaderCorrupt { reason } => {
-                return reject_corrupt_wal_record(
+                return reject_wal_source_corruption(
+                    captured,
                     &wal_path,
                     wal_generation,
                     read_only,
@@ -722,17 +741,25 @@ impl GraphStore {
                 cursor.start_lsn()
             )));
         }
+        let mut cursor = Some(cursor);
         let mut expected_lsn = wal_replay_start_lsn;
         loop {
             let (entry, record_start, record_encoded_len, payload_len, payload_sha256) =
-                match cursor.next()? {
+                match cursor.as_mut().expect("active WAL cursor").next()? {
                     WalCursorEvent::Eof => break,
                     WalCursorEvent::TornTail { reason, .. }
                         if config.recovery_mode == RecoveryMode::AutoRepairTornTail
                             && !read_only =>
                     {
-                        // Release the read handle before resizing the WAL on Windows.
-                        drop(cursor);
+                        let owned = cursor.take().expect("active WAL cursor");
+                        if captured {
+                            owned.require_native_path(&wal_path)?;
+                            // Native captured child opens share reads/writes/delete;
+                            // retain custody through the guarded legacy repair.
+                            *captured_file = Some(owned.into_file());
+                        } else {
+                            drop(owned);
+                        }
                         let durable = self.durable.as_mut().expect("durable WAL replay");
                         let repair_directory = durable.wal_path.parent().ok_or_else(|| {
                             HawDBError::StorageIntegrity(
@@ -755,7 +782,8 @@ impl GraphStore {
                     )));
                     }
                     WalCursorEvent::Corrupt { offset, reason } => {
-                        return reject_corrupt_wal_record(
+                        return reject_wal_source_corruption(
+                            captured,
                             &wal_path,
                             wal_generation,
                             read_only,
@@ -779,12 +807,14 @@ impl GraphStore {
                     ),
                 };
             if entry.lsn != expected_lsn {
-                quarantine_corrupt_wal(
-                    &wal_path,
-                    wal_generation,
-                    read_only,
-                    config.max_quarantine_bytes,
-                )?;
+                if !captured {
+                    quarantine_corrupt_wal(
+                        &wal_path,
+                        wal_generation,
+                        read_only,
+                        config.max_quarantine_bytes,
+                    )?;
+                }
                 return Err(HawDBError::Storage(format!(
                     "WAL LSN sequence mismatch at byte offset {record_start}: expected {expected_lsn}, got {}",
                     entry.lsn
@@ -816,6 +846,9 @@ impl GraphStore {
                 .checked_add(1)
                 .ok_or_else(|| HawDBError::Storage("WAL LSN overflow during replay".to_string()))?;
             self.apply_replayed_wal_transaction(catalog, entry.op)?;
+        }
+        if captured && captured_file.is_none() {
+            *captured_file = cursor.map(WalRecordCursor::into_file);
         }
         if let Some(durable) = &mut self.durable {
             durable.next_lsn = expected_lsn;
@@ -1243,5 +1276,32 @@ impl GraphStore {
                 Ok(())
             }
         }
+    }
+}
+
+// A captured source's original WAL remains the evidence. Do not copy whatever
+// a saved pathname names into quarantine after reading a different held file.
+fn reject_wal_source_corruption<T>(
+    captured: bool,
+    path: &Path,
+    generation: u64,
+    read_only: bool,
+    max_quarantine_bytes: u64,
+    record_start: u64,
+    reason: impl std::fmt::Display,
+) -> Result<T> {
+    if captured {
+        Err(HawDBError::Storage(format!(
+            "WAL corruption at byte offset {record_start}: {reason}"
+        )))
+    } else {
+        reject_corrupt_wal_record(
+            path,
+            generation,
+            read_only,
+            max_quarantine_bytes,
+            record_start,
+            reason,
+        )
     }
 }

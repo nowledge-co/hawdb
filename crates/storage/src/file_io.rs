@@ -26,6 +26,22 @@ use std::sync::Arc;
 
 pub use std::fs::{FileType, Metadata, Permissions, TryLockError};
 
+mod source_directory;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use source_directory::PowerLossRoot;
+#[doc(hidden)]
+pub use source_directory::{
+    CapturedControlCandidate, CapturedDirectoryCandidate, PendingControlPublication,
+    SourceDirectory, SourceDirectoryIdentity, SourceDirectoryLockMode,
+};
+
+pub(crate) mod captured_immutable;
+
+mod read;
+mod wal_rollback;
+#[doc(hidden)]
+pub use read::{AdmittedFileRead, ReadAdmissionControl};
+
 /// A mutable native handle or an immutable logical reference. Logical files
 /// retain their object identity and cursor without retaining a native handle.
 #[derive(Debug)]
@@ -36,8 +52,9 @@ pub struct File {
 /// A publication scope owns lock release, independently of descriptor copies
 /// retained by a concurrent fork before close-on-exec. Construct only after
 /// successful acquisition; failed acquisition must never unlock another owner.
+#[doc(hidden)]
 #[derive(Debug)]
-pub(crate) struct PublicationLockGuard(File);
+pub struct PublicationLockGuard(File);
 
 impl PublicationLockGuard {
     pub(crate) fn new(locked: File) -> Self {
@@ -64,6 +81,11 @@ impl Drop for PublicationLockGuard {
 enum FileBacking {
     Native(NativeFile),
     Immutable(Box<ImmutableFile>),
+    Captured {
+        // A pinned native lease closes before its logical custody can retire.
+        pinned: Option<Arc<File>>,
+        file: hawdb_core::SharedAllocation<ImmutableFile>,
+    },
 }
 
 #[derive(Debug)]
@@ -87,15 +109,28 @@ impl NativeFile {
 
 #[derive(Debug, Clone)]
 struct ImmutableFile {
-    binding: crate::immutable_files::ImmutableFileBinding,
+    binding: Option<crate::immutable_files::ImmutableFileBinding>,
     handles: Arc<crate::immutable_files::ImmutableFileHandles>,
     context: FileOpenContext,
+    // Explicit construction scopes can pin an admitted native lease. Ordinary
+    // logical files remain lazy and evictable until a read acquires a lease.
+    pinned: Option<Arc<File>>,
     // Match File::try_clone: clones share the logical sequential cursor. All
     // positioned reads bypass it and retain a cache lease for the entire read.
     cursor: Arc<std::sync::Mutex<u64>>,
+    // Last: all logical-file metadata dies before custody/memory receipts.
+    source: Option<hawdb_core::SharedAllocation<captured_immutable::CapturedSource>>,
 }
 
 impl File {
+    fn immutable(&self) -> Option<(&ImmutableFile, Option<&Arc<File>>)> {
+        match &self.backing {
+            FileBacking::Native(_) => None,
+            FileBacking::Immutable(file) => Some((file, file.pinned.as_ref())),
+            FileBacking::Captured { file, pinned } => Some((file, pinned.as_ref())),
+        }
+    }
+
     pub fn options() -> OpenOptions {
         OpenOptions::new()
     }
@@ -142,6 +177,10 @@ impl File {
     pub fn try_clone(&self) -> io::Result<Self> {
         let backing = match &self.backing {
             FileBacking::Immutable(file) => FileBacking::Immutable(file.clone()),
+            FileBacking::Captured { file, pinned } => FileBacking::Captured {
+                file: file.clone(),
+                pinned: pinned.clone(),
+            },
             FileBacking::Native(file) => {
                 let permit = file.permit.context.acquire(file.permit.kind())?;
                 let inner = file
@@ -165,9 +204,14 @@ impl File {
     ) -> io::Result<T> {
         match &self.backing {
             FileBacking::Native(file) => file.io(operation),
-            FileBacking::Immutable(file) => {
-                let lease = file.handles.get(&file.binding, &file.context)?;
-                lease.with_native(operation)
+            _ => {
+                let (file, pinned) = self.immutable().expect("logical immutable file");
+                if let Some(lease) = pinned {
+                    lease.with_native(operation)
+                } else {
+                    let lease = file.get()?;
+                    lease.with_native(operation)
+                }
             }
         }
     }
@@ -180,13 +224,16 @@ impl File {
     ) -> io::Result<(T, u64)> {
         match &self.backing {
             FileBacking::Native(file) => file.io(operation).map(|value| (value, 0)),
-            FileBacking::Immutable(file) => {
-                let (lease, validation_bytes) =
-                    file.handles
-                        .get_admitted(&file.binding, &file.context, admit_validation)?;
-                lease
-                    .with_native(operation)
-                    .map(|value| (value, validation_bytes))
+            _ => {
+                let (file, pinned) = self.immutable().expect("logical immutable file");
+                if let Some(lease) = pinned {
+                    lease.with_native(operation).map(|value| (value, 0))
+                } else {
+                    let (lease, validation_bytes) = file.get_admitted(admit_validation)?;
+                    lease
+                        .with_native(operation)
+                        .map(|value| (value, validation_bytes))
+                }
             }
         }
     }
@@ -194,7 +241,7 @@ impl File {
     fn writable_native(&self) -> io::Result<&std::fs::File> {
         match &self.backing {
             FileBacking::Native(file) => Ok(&file.inner),
-            FileBacking::Immutable(_) => Err(io::Error::new(
+            _ => Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "immutable logical file cannot be modified",
             )),
@@ -217,6 +264,33 @@ impl File {
     pub fn metadata(&self) -> io::Result<Metadata> {
         self.with_native(std::fs::File::metadata)
     }
+    /// Compares this held file with the native file currently named by `path`.
+    /// Follows symlinks; it does not reserve that path or prove logical identity.
+    /// For native Unix handles, path lookup uses metadata without opening and closing another descriptor
+    /// for the same inode, which can release process-owned POSIX record locks.
+    /// Windows uses a counted validation handle and the full 128-bit file ID.
+    pub fn matches_native_path(&self, path: impl AsRef<Path>) -> io::Result<bool> {
+        let identity = self.with_native(crate::native_file_identity::of_file)?;
+        let path = path.as_ref();
+        #[cfg(unix)]
+        {
+            Ok(identity == crate::native_file_identity::of_metadata(&metadata(path)?))
+        }
+        #[cfg(windows)]
+        {
+            let named = Self::open(path)?;
+            Ok(identity == named.with_native(crate::native_file_identity::of_file)?)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (identity, path);
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "native path identity requires Unix or Windows",
+            ))
+        }
+    }
+
     pub fn sync_all(&self) -> io::Result<()> {
         self.synchronize(false)
     }
@@ -243,6 +317,15 @@ impl File {
             .map_err(TryLockError::Error)?
             .try_lock()
     }
+    /// Own successful acquisition and explicit unlock independently of native
+    /// descriptions inherited by a fork before close-on-exec. A failed acquire
+    /// closes the input handle without constructing an unlock owner.
+    #[doc(hidden)]
+    pub fn try_lock_owned(self) -> Result<PublicationLockGuard, TryLockError> {
+        self.try_lock()?;
+        Ok(PublicationLockGuard::new(self))
+    }
+
     pub fn unlock(&self) -> io::Result<()> {
         self.writable_native()?.unlock()
     }
@@ -250,21 +333,31 @@ impl File {
     fn read_sequential(&self, buffer: &mut [u8]) -> io::Result<usize> {
         match &self.backing {
             FileBacking::Native(file) => file.io(|mut inner| inner.read(buffer)),
-            FileBacking::Immutable(file) => {
+            _ => {
+                let (file, pinned) = self.immutable().expect("logical immutable file");
                 let mut cursor = file
                     .cursor
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                let available = file.binding.reference.byte_length.saturating_sub(*cursor);
+                let available = file.byte_length().saturating_sub(*cursor);
                 let length = buffer
                     .len()
                     .min(usize::try_from(available).unwrap_or(usize::MAX));
                 if length == 0 {
                     return Ok(0);
                 }
-                crate::io::read_exact_at(self, &mut buffer[..length], *cursor)?;
-                *cursor += length as u64;
-                Ok(length)
+                let read = if pinned.is_some() {
+                    // A controlled constructor must observe short reads and
+                    // EINTR between its own cancellation checkpoints.
+                    self.with_native(|native| {
+                        crate::io::read_native_at_once(native, &mut buffer[..length], *cursor)
+                    })?
+                } else {
+                    crate::io::read_exact_at(self, &mut buffer[..length], *cursor)?;
+                    length
+                };
+                *cursor += read as u64;
+                Ok(read)
             }
         }
     }
@@ -272,8 +365,7 @@ impl File {
     fn read_sequential_vectored(&self, buffers: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
         match &self.backing {
             FileBacking::Native(file) => file.io(|mut inner| inner.read_vectored(buffers)),
-            FileBacking::Immutable(_) => match buffers.iter_mut().find(|buffer| !buffer.is_empty())
-            {
+            _ => match buffers.iter_mut().find(|buffer| !buffer.is_empty()) {
                 Some(buffer) => self.read_sequential(buffer),
                 None => Ok(0),
             },
@@ -283,7 +375,8 @@ impl File {
     fn seek_sequential(&self, position: SeekFrom) -> io::Result<u64> {
         match &self.backing {
             FileBacking::Native(file) => file.io(|mut inner| inner.seek(position)),
-            FileBacking::Immutable(file) => {
+            _ => {
+                let (file, _) = self.immutable().expect("logical immutable file");
                 let mut cursor = file
                     .cursor
                     .lock()
@@ -291,9 +384,7 @@ impl File {
                 let next = match position {
                     SeekFrom::Start(offset) => i128::from(offset),
                     SeekFrom::Current(offset) => i128::from(*cursor) + i128::from(offset),
-                    SeekFrom::End(offset) => {
-                        i128::from(file.binding.reference.byte_length) + i128::from(offset)
-                    }
+                    SeekFrom::End(offset) => i128::from(file.byte_length()) + i128::from(offset),
                 };
                 *cursor = u64::try_from(next).map_err(|_| {
                     io::Error::new(
@@ -322,10 +413,13 @@ impl File {
                 }
                 sync()
             }
-            FileBacking::Immutable(file) => file
-                .handles
-                .get(&file.binding, &file.context)?
-                .synchronize(data_only),
+            _ => {
+                let (file, pinned) = self.immutable().expect("logical immutable file");
+                match pinned {
+                    Some(lease) => lease.synchronize(data_only),
+                    None => file.get()?.synchronize(data_only),
+                }
+            }
         }
     }
 
@@ -491,10 +585,12 @@ impl OpenOptions {
         {
             return Ok(File {
                 backing: FileBacking::Immutable(Box::new(ImmutableFile {
-                    binding,
+                    binding: Some(binding),
                     handles: handles.clone(),
                     context: context.clone(),
+                    pinned: None,
                     cursor: Arc::new(std::sync::Mutex::new(0)),
+                    source: None,
                 })),
             });
         }
@@ -709,6 +805,7 @@ enum NamespaceOperation {
     CreateDirectories,
     Remove,
     Rename,
+    RenameNew,
     HardLink,
 }
 
@@ -724,10 +821,14 @@ fn namespace_io<T>(
     {
         let context = context_for_path(path)?;
         match operation {
-            NamespaceOperation::Rename | NamespaceOperation::HardLink => {
+            NamespaceOperation::Rename
+            | NamespaceOperation::RenameNew
+            | NamespaceOperation::HardLink => {
                 let destination = destination.expect("two-path namespace operation has a target");
                 let event = match operation {
-                    NamespaceOperation::Rename => crate::power_loss::IoEvent::Rename,
+                    NamespaceOperation::Rename | NamespaceOperation::RenameNew => {
+                        crate::power_loss::IoEvent::Rename
+                    }
                     _ => crate::power_loss::IoEvent::HardLink,
                 };
                 crate::power_loss::two_paths(
@@ -738,6 +839,9 @@ fn namespace_io<T>(
                     Some(event),
                     |engine, source, destination| match operation {
                         NamespaceOperation::Rename => engine.rename(source, destination),
+                        NamespaceOperation::RenameNew => {
+                            engine.rename_directory_new(source, destination)
+                        }
                         _ => engine.hard_link(source, destination),
                     },
                     native,
@@ -825,6 +929,56 @@ pub fn rename(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Re
     }
     Ok(())
 }
+/// Atomically move a directory only if the destination name is absent.
+/// No existence-check/remove/rename fallback is used. Unsupported kernels or
+/// filesystems refuse. Success still needs both parent-directory barriers.
+/// An error may follow a completed move; callers must retain custody/evidence.
+#[doc(hidden)]
+pub fn rename_directory_new(
+    source: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+) -> io::Result<()> {
+    let source = source.as_ref();
+    let destination = destination.as_ref();
+    two_paths(source, destination, || {
+        namespace_io(
+            NamespaceOperation::RenameNew,
+            source,
+            Some(destination),
+            || {
+                if !std::fs::symlink_metadata(source)?.is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "directory move requires a direct directory",
+                    ));
+                }
+                // Darwin can report a successful no-op when both names denote
+                // the same entry, even with RENAME_EXCL. Reject existing names
+                // early; the exclusive syscall still closes the ensuing race.
+                match std::fs::symlink_metadata(destination) {
+                    Ok(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "directory move target already exists",
+                        ))
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+                #[cfg(test)]
+                rename_new::after_destination_check();
+                rename_new::native(source, destination)
+            },
+        )
+    })?;
+    for path in [source, destination] {
+        unbind_immutable_path(path)?;
+    }
+    Ok(())
+}
+
+mod rename_new;
+
 pub fn hard_link(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
     two_paths(source.as_ref(), destination.as_ref(), || {
         namespace_io(

@@ -51,6 +51,8 @@ pub use advisor::{
     AutoIndexPolicy, IndexAction, IndexAdvisor, IndexPlanner, IndexRecommendation, QueryPath,
     WorkloadSample,
 };
+#[doc(hidden)]
+pub use artifact::ProjectionReadAdmission;
 pub use artifact::{FileProjection, ProjectionWriter};
 pub use build::{source_digest, ProjectionBuilder};
 pub use delta::{search_with_delta, DeltaBuffer, DeltaMergedSearchOutput};

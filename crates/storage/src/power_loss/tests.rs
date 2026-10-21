@@ -79,6 +79,38 @@ fn observations_capture_actual_file_barriers_before_later_flushes() {
     }
 }
 
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+#[test]
+fn native_verification_covers_unicode_hard_links_and_cross_chunk_bytes() {
+    let fixture = Fixture::new(ImageLimits::default());
+    fs::create_dir_all(fixture.root.join("目录")).unwrap();
+    let relative = Path::new("目录/данные");
+    let bytes: Vec<u8> = (0..16_397).map(|offset| (offset % 251) as u8).collect();
+    let mut file = fs::File::create(fixture.root.join(relative)).unwrap();
+    file.write_all(&bytes).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    fs::hard_link(fixture.root.join(relative), fixture.root.join("alias")).unwrap();
+    let snapshot = fixture.model.capture().unwrap();
+    let image = snapshot.crash(&snapshot.persist_all_plan()).unwrap();
+    assert_eq!(image.bytes(relative).unwrap(), bytes);
+    assert_eq!(image.bytes(Path::new("alias")).unwrap(), bytes);
+    assert_eq!(
+        image.file_inode(relative),
+        image.file_inode(Path::new("alias"))
+    );
+    // A same-length unrecorded write beyond the first scratch chunk must still
+    // refuse. Both hard-link names expose that same altered physical inode.
+    let mut altered = bytes.clone();
+    altered[8192] ^= 1;
+    std::fs::write(fixture.root.join(relative), &altered).unwrap();
+    assert!(fixture.model.capture().is_err());
+    std::fs::write(fixture.root.join(relative), &bytes).unwrap();
+    fixture.model.capture().unwrap();
+    assert_eq!(fixture.model.project().metrics().open, 1);
+    assert_eq!(fixture.model.project().metrics().reserved, 0);
+}
+
 #[test]
 fn actual_io_barriers_and_aliases_drive_crash_images() {
     let fixture = Fixture::new(ImageLimits::default());
@@ -116,7 +148,8 @@ fn actual_io_barriers_and_aliases_drive_crash_images() {
         b"committedrelaxed"
     );
     drop(wal);
-    assert_eq!(fixture.model.project().metrics().open, 0);
+    // The recorder retains its counted root after operation handles close.
+    assert_eq!(fixture.model.project().metrics().open, 1);
 }
 
 #[test]
@@ -176,7 +209,8 @@ fn capture_verifies_empty_files_without_releasing_their_exclusive_locks() {
     ));
     drop(contender);
     drop(lease);
-    assert_eq!(fixture.model.project().metrics().open, 0);
+    // The recorder retains its counted root after operation handles close.
+    assert_eq!(fixture.model.project().metrics().open, 1);
 }
 
 #[test]
@@ -193,7 +227,8 @@ fn capture_rejects_uncaptured_bytes_in_an_expected_empty_locked_file() {
         .to_string()
         .contains("uncaptured native length at lease"));
     drop(lease);
-    assert_eq!(fixture.model.project().metrics().open, 0);
+    // The recorder retains its counted root after operation handles close.
+    assert_eq!(fixture.model.project().metrics().open, 1);
 }
 
 #[test]
@@ -340,7 +375,8 @@ fn immutable_publication_persists_every_new_directory_name() {
         .crash(&CrashPlan::default())
         .unwrap();
     assert_eq!(image.bytes(&relative).unwrap(), payload);
-    assert_eq!(fixture.model.project().metrics().open, 0);
+    // The recorder retains its counted root after operation handles close.
+    assert_eq!(fixture.model.project().metrics().open, 1);
     assert!(fixture.model.project().metrics().high_water <= 32);
 }
 
@@ -465,7 +501,8 @@ fn capture_rejects_an_unrecorded_hard_link_between_equal_files() {
     std::fs::remove_file(&second).unwrap();
     std::fs::write(&second, b"same bytes").unwrap();
     fixture.model.capture().unwrap();
-    assert_eq!(fixture.model.project().metrics().open, 0);
+    // The recorder retains its counted root after operation handles close.
+    assert_eq!(fixture.model.project().metrics().open, 1);
 }
 
 #[test]
@@ -486,7 +523,8 @@ fn capture_rejects_an_unrecorded_copy_replacing_a_hard_link() {
     std::fs::remove_file(&second).unwrap();
     std::fs::hard_link(&first, &second).unwrap();
     fixture.model.capture().unwrap();
-    assert_eq!(fixture.model.project().metrics().open, 0);
+    // The recorder retains its counted root after operation handles close.
+    assert_eq!(fixture.model.project().metrics().open, 1);
 }
 
 #[test]
@@ -555,5 +593,189 @@ fn directory_capture_flags_never_hide_an_opaque_open_option() {
     assert!(error.to_string().contains("custom native open flags"));
     assert!(!candidate.exists());
     fixture.model.capture().unwrap();
-    assert_eq!(fixture.model.project().metrics().open, 0);
+    // The recorder retains its counted root after operation handles close.
+    assert_eq!(fixture.model.project().metrics().open, 1);
+}
+
+#[test]
+fn retained_model_root_refuses_identical_foreign_tree_and_path_mutations_after_replacement() {
+    let fixture = Fixture::new(ImageLimits::default());
+    let mut file = fs::File::create(fixture.root.join("wal")).unwrap();
+    file.write_all(b"committed").unwrap();
+    file.sync_all().unwrap();
+    crate::durability::sync_directory(&fixture.root).unwrap();
+    drop(file);
+    fixture.model.capture().unwrap();
+    assert_eq!(fixture.model.project().metrics().open, 1);
+    let moved = fixture.root.with_extension("captured");
+    std::fs::rename(&fixture.root, &moved).unwrap();
+    struct Restore {
+        original: PathBuf,
+        moved: PathBuf,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.original).unwrap();
+            std::fs::rename(&self.moved, &self.original).unwrap();
+        }
+    }
+    let restore = Restore {
+        original: fixture.root.clone(),
+        moved,
+    };
+    std::fs::create_dir(&fixture.root).unwrap();
+    // Content equality cannot substitute for the captured physical root.
+    std::fs::write(fixture.root.join("wal"), b"committed").unwrap();
+    assert_eq!(
+        fixture.model.capture().unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert!(fs::OpenOptions::new()
+        .append(true)
+        .open(fixture.root.join("wal"))
+        .is_err());
+    assert!(fs::remove_file(fixture.root.join("wal")).is_err());
+    assert!(fs::File::create(fixture.root.join("new")).is_err());
+    assert_eq!(fixture.model.project().metrics().open, 1);
+    assert_eq!(
+        std::fs::read(fixture.root.join("wal")).unwrap(),
+        b"committed"
+    );
+    assert_eq!(
+        std::fs::read(restore.moved.join("wal")).unwrap(),
+        b"committed"
+    );
+    assert!(!fixture.root.join("new").exists());
+    drop(restore);
+    fixture.model.capture().unwrap();
+}
+
+#[test]
+fn model_root_capacity_outlives_model_handle_until_last_traced_file_closes() {
+    let root = std::env::temp_dir().join(format!(
+        "hawdb-root-retention-{}",
+        hawdb_core::generate_uuidv7().unwrap()
+    ));
+    let project = ProjectFileDescriptors::acquire(&root, 8).unwrap();
+    let model = PowerLossModel::attach(&project, ImageLimits::default()).unwrap();
+    assert_eq!(project.metrics().open, 1);
+    let mut file = fs::File::create(root.join("wal")).unwrap();
+    file.write_all(b"retained").unwrap();
+    assert_eq!(project.metrics().open, 2);
+    drop(model);
+    assert_eq!(project.metrics().open, 2);
+    file.sync_all().unwrap();
+    drop(file);
+    assert_eq!(project.metrics().open, 0);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn root_attachment_admission_and_nonempty_refusal_leave_no_registered_recorder_or_handles() {
+    for (limit, nonempty) in [(1, false), (8, true)] {
+        let root = std::env::temp_dir().join(format!(
+            "hawdb-root-refusal-{}",
+            hawdb_core::generate_uuidv7().unwrap()
+        ));
+        let project = ProjectFileDescriptors::acquire(&root, limit).unwrap();
+        if nonempty {
+            std::fs::write(root.join("prior"), b"retained").unwrap();
+        }
+        assert!(PowerLossModel::attach(&project, ImageLimits::default()).is_err());
+        assert_eq!(project.metrics().open, 0);
+        assert_eq!(project.metrics().reserved, 0);
+        // A failed attachment must not leave a recorder which rejects native
+        // creation at this project's unchanged one-descriptor limit.
+        let mut file = fs::File::create(root.join("after-refusal")).unwrap();
+        file.write_all(b"native").unwrap();
+        drop(file);
+        assert_eq!(project.metrics().open, 0);
+        if nonempty {
+            assert_eq!(std::fs::read(root.join("prior")).unwrap(), b"retained");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn retained_file_io_stays_in_captured_scope_after_root_path_replacement() {
+    let fixture = Fixture::new(ImageLimits::default());
+    let mut file = fs::File::create(fixture.root.join("wal")).unwrap();
+    file.write_all(b"old").unwrap();
+    file.sync_all().unwrap();
+    crate::durability::sync_directory(&fixture.root).unwrap();
+    let moved = fixture.root.with_extension("held-file");
+    std::fs::rename(&fixture.root, &moved).unwrap();
+    std::fs::create_dir(&fixture.root).unwrap();
+    std::fs::write(fixture.root.join("wal"), b"foreign").unwrap();
+    assert!(fixture.model.capture().is_err());
+    // This file is already bound to the captured logical inode and native
+    // handle. Its recorded I/O must not resolve the replaced root pathname.
+    file.write_all(b"new").unwrap();
+    file.sync_all().unwrap();
+    assert_eq!(std::fs::read(moved.join("wal")).unwrap(), b"oldnew");
+    assert_eq!(std::fs::read(fixture.root.join("wal")).unwrap(), b"foreign");
+    assert_eq!(fixture.model.project().metrics().open, 2);
+    std::fs::remove_dir_all(&fixture.root).unwrap();
+    std::fs::rename(moved, &fixture.root).unwrap();
+    let snapshot = fixture.model.capture().unwrap();
+    assert_eq!(
+        snapshot
+            .crash(&CrashPlan::default())
+            .unwrap()
+            .bytes(Path::new("wal"))
+            .unwrap(),
+        b"oldnew"
+    );
+    drop(file);
+    assert_eq!(fixture.model.project().metrics().open, 1);
+}
+
+#[test]
+fn relative_directory_create_is_recorded_before_a_later_open_and_parent_barrier() {
+    use crate::file_io::SourceDirectory;
+    let fixture = Fixture::new(ImageLimits::default());
+    let project = fixture.model.project();
+    fs::create_dir(fixture.root.join("source")).unwrap();
+    crate::durability::sync_directory(&fixture.root).unwrap();
+    let source =
+        SourceDirectory::capture(&fixture.root.join("source"), &project.io_context()).unwrap();
+    fixture
+        .model
+        .observe(ObservationPoint {
+            event: IoEvent::CreateDirectory,
+            relative_path: PathBuf::from("source/component"),
+            boundary: ObservationBoundary::After,
+            skip_matches: 0,
+            include_descendants: false,
+            keep_last: false,
+        })
+        .unwrap();
+    source
+        .create_directory_new(&project.io_context(), "component")
+        .unwrap();
+    let cut = fixture.model.take_observation().unwrap().unwrap();
+    assert_eq!(cut.observed_path(), Some(Path::new("source/component")));
+    fixture.model.capture().unwrap();
+    let lost = cut.crash(&CrashPlan::default()).unwrap();
+    assert!(!lost
+        .directory_paths()
+        .any(|p| p == Path::new("source/component")));
+    // The new directory may survive before the parent barrier, too.
+    let retained = cut.crash(&cut.persist_all_plan()).unwrap();
+    assert!(retained
+        .directory_paths()
+        .any(|p| p == Path::new("source/component")));
+    source.sync(&project.io_context()).unwrap();
+    let durable = fixture
+        .model
+        .capture()
+        .unwrap()
+        .crash(&CrashPlan::default())
+        .unwrap();
+    assert!(durable
+        .directory_paths()
+        .any(|p| p == Path::new("source/component")));
+    assert_eq!(project.metrics().open, 2); // recorder anchor plus source directory
 }

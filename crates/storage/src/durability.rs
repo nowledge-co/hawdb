@@ -303,7 +303,7 @@ pub(crate) fn sync_directory_tree_with_context(
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn durable_replace_file_windows(source: &Path, destination: &Path) -> io::Result<()> {
     // Rust 1.97.1's Windows rename uses FileRenameInfoEx POSIX replacement when
     // the ordinary move cannot replace an open destination. Calling our old
@@ -372,6 +372,59 @@ mod tests {
         assert_eq!(project.metrics().reserved, 0);
         assert_eq!(project.metrics().high_water, 1);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_replacement_policy_funds_held_candidate_and_rename_together() {
+        use crate::file_descriptors::ProjectFileDescriptors;
+        use crate::file_io::File as ManagedFile;
+        use hawdb_core::error::{file_descriptor_error, FileDescriptorError};
+        use std::io::Read;
+
+        for limit in [5, 6] {
+            let root = unique_test_dir();
+            let project = ProjectFileDescriptors::acquire(&root, limit).unwrap();
+            let candidate = root.join("candidate.hawdb");
+            let published = root.join("published.hawdb");
+            write_synced(&candidate, b"new");
+            write_synced(&published, b"old");
+            // Represent the retained project root, child ownership pair and
+            // catalog lock. No owner is released to fund replacement.
+            let mut holders = (0..4)
+                .map(|_| ManagedFile::open(&published).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(project.metrics().open, 4);
+            let result = durable_replace_file_windows(&candidate, &published);
+            if limit == 5 {
+                let error = result.unwrap_err();
+                assert!(matches!(
+                    file_descriptor_error(&error),
+                    Some(FileDescriptorError::BudgetExceeded {
+                        requested: 1,
+                        available: 0,
+                        limit: 5,
+                    })
+                ));
+                // The rename admission refuses before namespace mutation.
+                assert_eq!(fs::read(&candidate).unwrap(), b"new");
+                assert_eq!(fs::read(&published).unwrap(), b"old");
+            } else {
+                result.unwrap();
+                assert!(!candidate.exists());
+                assert_eq!(fs::read(&published).unwrap(), b"new");
+                for reader in &mut holders {
+                    let mut original = Vec::new();
+                    reader.read_to_end(&mut original).unwrap();
+                    assert_eq!(original, b"old");
+                }
+            }
+            assert_eq!(project.metrics().open, 4);
+            assert_eq!(project.metrics().reserved, 0);
+            assert_eq!(project.metrics().high_water, limit);
+            drop(holders);
+            assert_eq!(project.metrics().open, 0);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

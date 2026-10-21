@@ -203,21 +203,200 @@ impl Read for CancelReader<'_> {
 }
 
 #[test]
-fn checksum_and_copy_stop_at_the_next_bounded_io_checkpoint() {
-    for copy in [false, true] {
+fn checksum_copy_and_combined_seal_stop_at_the_next_bounded_io_checkpoint() {
+    for operation in ["checksum", "copy", "combined seal"] {
         let task = RuntimeTaskContext::default();
         let mut reader = CancelReader {
             bytes: Cursor::new(vec![1; 8 * SPOOL_BUFFER_BYTES]),
             task: &task,
             reads: 0,
         };
-        let result = if copy {
-            copy_reader(&mut reader, &mut io::sink(), &task).map(|length| (length, 0))
-        } else {
-            checksum_reader(&mut reader, &task)
+        let result = match operation {
+            "copy" => copy_reader(&mut reader, &mut io::sink(), &task).map(|_| ()),
+            "checksum" => checksum_reader(&mut reader, &task).map(|_| ()),
+            _ => seal_reader(
+                &mut reader,
+                (8 * SPOOL_BUFFER_BYTES) as u64,
+                &task,
+                Some(&mut Crc32cHasher::new()),
+            )
+            .map(|_| ()),
         };
         assert!(result.unwrap_err().to_string().contains("cancel"));
         assert_eq!(reader.reads, 1);
+    }
+}
+
+struct CountedReader<'a> {
+    input: Cursor<&'a [u8]>,
+    bytes_read: usize,
+}
+
+impl Read for CountedReader<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        assert!(output.len() <= SPOOL_BUFFER_BYTES);
+        let count = self.input.read(output)?;
+        self.bytes_read += count;
+        Ok(count)
+    }
+}
+
+#[test]
+fn combined_seal_reads_once_and_matches_separate_crc_and_object_scans() {
+    for length in [0, SPOOL_BUFFER_BYTES - 1, 3 * SPOOL_BUFFER_BYTES + 11] {
+        let bytes = vec![37; length];
+        let task = RuntimeTaskContext::default();
+        let mut reader = CountedReader {
+            input: Cursor::new(bytes.as_slice()),
+            bytes_read: 0,
+        };
+        let (_, expected_checksum) = checksum_reader(&mut reader, &task).unwrap();
+        reader.input.set_position(0);
+        let expected_seal = seal_reader(&mut reader, length as u64, &task, None).unwrap();
+        assert_eq!(reader.bytes_read, 2 * length);
+        assert_eq!(
+            expected_seal.reference,
+            ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, &bytes)
+        );
+
+        reader.input.set_position(0);
+        reader.bytes_read = 0;
+        let mut checksum = Crc32cHasher::new();
+        let seal = seal_reader(&mut reader, length as u64, &task, Some(&mut checksum)).unwrap();
+        assert_eq!(seal, expected_seal);
+        assert_eq!(checksum.finish(), expected_checksum);
+        assert_eq!(reader.bytes_read, length);
+    }
+}
+
+#[test]
+fn staged_checksum_and_seal_match_independent_artifact_identities() {
+    let root = Directory::new();
+    let source = root.0.join("source");
+    let (memory, task) = context(256 * 1024);
+    let io = GenerationIo::new(&memory, &task);
+    for length in [0, SPOOL_BUFFER_BYTES - 1, 3 * SPOOL_BUFFER_BYTES + 11] {
+        let bytes = vec![37; length];
+        fs::write(&source, &bytes).unwrap();
+        let (seal, checksum) = io.seal_with_checksum(&source).unwrap();
+        assert_eq!(seal.length, length as u64);
+        assert_eq!(
+            seal.reference,
+            ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, &bytes)
+        );
+        assert_eq!(checksum, crate::checksum_bytes(&bytes));
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
+}
+
+#[test]
+fn combined_verification_rejects_independent_checksum_reference_and_length_mismatches() {
+    let root = Directory::new();
+    let source = root.0.join("source");
+    let bytes = vec![37; 3 * SPOOL_BUFFER_BYTES + 11];
+    fs::write(&source, &bytes).unwrap();
+    let object = crate::out_of_core::ArtifactObject::for_bytes(&bytes);
+    let checksum = crate::checksum_bytes(&bytes);
+    let (memory, task) = context(256 * 1024);
+    let io = GenerationIo::new(&memory, &task);
+    io.verify_artifact(
+        &source,
+        bytes.len() as u64,
+        object,
+        Some(checksum),
+        "payload",
+    )
+    .unwrap();
+    assert!(matches!(
+        io.verify_artifact(
+            &source,
+            bytes.len() as u64,
+            object,
+            Some(checksum ^ 1),
+            "payload"
+        ),
+        Err(HawDBError::Storage(_))
+    ));
+    let mut changed = bytes.clone();
+    *changed.last_mut().unwrap() ^= 1;
+    fs::write(&source, &changed).unwrap();
+    for checksum in [None, Some(crate::checksum_bytes(&changed))] {
+        assert!(matches!(
+            io.verify_artifact(&source, bytes.len() as u64, object, checksum, "payload"),
+            Err(HawDBError::StorageIntegrity(_))
+        ));
+    }
+    for length in [bytes.len() - 1, bytes.len() + 1] {
+        fs::write(&source, vec![37; length]).unwrap();
+        assert!(matches!(
+            io.verify_artifact(
+                &source,
+                bytes.len() as u64,
+                object,
+                Some(checksum),
+                "payload"
+            ),
+            Err(HawDBError::Storage(_))
+        ));
+    }
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn staged_and_installed_verification_admit_one_buffer_and_refund_failures() {
+    let root = Directory::new();
+    let source = root.0.join("source");
+    let bytes = vec![37; SPOOL_BUFFER_BYTES + 11];
+    fs::write(&source, &bytes).unwrap();
+    let object = crate::out_of_core::ArtifactObject::for_bytes(&bytes);
+    let checksum = crate::checksum_bytes(&bytes);
+    let held = 1024;
+    let exact = held + SPOOL_BUFFER_BYTES + native_path::bytes(&source).unwrap();
+    for short in [1, 0] {
+        let (memory, task) = context(exact - short);
+        let other = memory.input.reserve(held).unwrap();
+        let io = GenerationIo::new(&memory, &task);
+        let staged = io.seal_with_checksum(&source);
+        if short == 1 {
+            assert!(staged.unwrap_err().to_string().contains("query memory"));
+        } else {
+            let (seal, actual_checksum) = staged.unwrap();
+            assert_eq!(seal.reference, object.reference());
+            assert_eq!(actual_checksum, checksum);
+        }
+        assert_eq!(memory.ledger.snapshot().used_bytes, held);
+        let result = io.verify_artifact(
+            &source,
+            bytes.len() as u64,
+            object,
+            Some(checksum),
+            "payload",
+        );
+        if short == 1 {
+            assert!(result.unwrap_err().to_string().contains("query memory"));
+        } else {
+            result.unwrap();
+            task.cancellation().cancel();
+            assert!(io
+                .seal_with_checksum(&source)
+                .unwrap_err()
+                .to_string()
+                .contains("cancel"));
+            assert!(io
+                .verify_artifact(
+                    &source,
+                    bytes.len() as u64,
+                    object,
+                    Some(checksum),
+                    "payload"
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("cancel"));
+        }
+        assert_eq!(memory.ledger.snapshot().used_bytes, held);
+        drop(other);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
     }
 }
 
@@ -237,6 +416,63 @@ fn native_path_scratch_is_admitted_before_the_operation() {
         let result = GenerationIo::new(&memory, &task).native(&[&path], || invoked.set(true));
         assert_eq!(result.is_ok(), short == 0);
         assert_eq!(invoked.get(), short == 0);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
+}
+
+#[test]
+fn staged_byte_seals_detect_same_length_changes_including_the_last_chunk() {
+    let root = Directory::new();
+    let source = root.0.join("source");
+    let target = root.0.join("target");
+    let bytes = vec![37; 3 * SPOOL_BUFFER_BYTES + 11];
+    fs::write(&source, &bytes).unwrap();
+    let (memory, task) = context(256 * 1024);
+    let io = GenerationIo::new(&memory, &task);
+    let expected = io.seal(&source).unwrap();
+    assert_eq!(expected.length, bytes.len() as u64);
+    for offset in [0, SPOOL_BUFFER_BYTES, bytes.len() - 1] {
+        let mut changed = bytes.clone();
+        changed[offset] ^= 1;
+        fs::write(&target, &changed).unwrap();
+        assert!(matches!(
+            io.verify_seal(&target, expected, "payload"),
+            Err(HawDBError::StorageIntegrity(_))
+        ));
+    }
+    fs::write(&target, &bytes).unwrap();
+    io.verify_seal(&target, expected, "payload").unwrap();
+    // The seal is a value captured before installation, not a live expectation
+    // that a later source-name mutation can silently replace.
+    fs::write(&source, vec![38; bytes.len()]).unwrap();
+    assert_ne!(io.seal(&source).unwrap(), expected);
+    io.verify_seal(&target, expected, "payload").unwrap();
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn staged_byte_seal_admission_cancellation_and_empty_files_refund_scratch() {
+    let root = Directory::new();
+    let source = root.0.join("source");
+    fs::write(&source, []).unwrap();
+    let held = 1024;
+    let exact = held + SPOOL_BUFFER_BYTES + native_path::bytes(&source).unwrap();
+    for short in [1, 0] {
+        let (memory, task) = context(exact - short);
+        let other = memory.input.reserve(held).unwrap();
+        let io = GenerationIo::new(&memory, &task);
+        let result = io.seal(&source);
+        if short == 1 {
+            assert!(result.unwrap_err().to_string().contains("query memory"));
+        } else {
+            let seal = result.unwrap();
+            assert_eq!(seal.length, 0);
+            io.verify_seal(&source, seal, "empty").unwrap();
+            task.cancellation().cancel();
+            assert!(io.seal(&source).unwrap_err().to_string().contains("cancel"));
+        }
+        assert_eq!(memory.ledger.snapshot().used_bytes, held);
+        drop(other);
         assert_eq!(memory.ledger.snapshot().used_bytes, 0);
     }
 }

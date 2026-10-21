@@ -273,7 +273,7 @@ fn failed_payload_io_poisoning_prevents_continuing_the_artifact() {
     builder.writer.flush().unwrap();
     // A read-only file deterministically fails when the block reaches the device.
     builder.writer =
-        BufWriter::with_capacity(SPILL_IO_BUFFER_BYTES, File::open(&builder.path).unwrap());
+        BufWriter::with_capacity(SPILL_IO_BUFFER_BYTES, File::open(&builder._path).unwrap());
     assert!(builder.finish_documents().is_err());
     assert!(builder.blocks.is_empty());
     assert!(builder

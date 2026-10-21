@@ -34,7 +34,7 @@ const MAX_NAME_BYTES: usize = 128;
 const MAX_OWNER_BYTES: usize = 256;
 const MAX_REQUEST_KEY_BYTES: usize = 256;
 const DIGEST_BYTES: usize = 32;
-const METADATA_LOCK_FILE: &str = "metadata.hawdb.lock";
+pub(crate) const METADATA_LOCK_FILE: &str = "metadata.hawdb.lock";
 static CANDIDATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Stable project-scoped branch identity.
@@ -628,11 +628,14 @@ impl Catalog {
 
 /// Read a published catalog after applying the same byte bound as the decoder.
 pub fn read_catalog(path: &Path) -> io::Result<Catalog> {
-    let length = fs::metadata(path)?.len();
+    read_catalog_file(fs::File::open(path)?)
+}
+
+pub(crate) fn read_catalog_file(file: File) -> io::Result<Catalog> {
+    let length = file.metadata()?.len();
     if length > MAX_CATALOG_BYTES as u64 {
         return Err(invalid_data("branch catalog exceeds its byte limit"));
     }
-    let file = fs::File::open(path)?;
     let mut encoded = Vec::with_capacity(length as usize);
     file.take((MAX_CATALOG_BYTES + 1) as u64)
         .read_to_end(&mut encoded)?;
@@ -1803,6 +1806,16 @@ impl CatalogMetadataLease {
             .create(true)
             .truncate(false)
             .open(project_directory.join(METADATA_LOCK_FILE))?;
+        Self::try_lock_file(file)
+    }
+
+    pub(crate) fn acquire_captured(
+        directory: &crate::file_io::SourceDirectory,
+    ) -> io::Result<Self> {
+        Self::try_lock_file(directory.open_catalog_metadata_lock(&directory.operation_context())?)
+    }
+
+    fn try_lock_file(file: File) -> io::Result<Self> {
         match file.try_lock() {
             Ok(()) => Ok(Self { file }),
             Err(TryLockError::WouldBlock) => Err(io::Error::new(
@@ -2747,10 +2760,18 @@ mod tests {
             image::{CrashPlan, ImageLimits},
             PowerLossModel,
         };
+        let recorder_root_fds = if cfg!(any(target_os = "linux", target_vendor = "apple", windows))
+        {
+            1
+        } else {
+            0
+        };
         for inject_failure in [false, true] {
             let (directory, catalog_path) = temporary_catalog_path();
             let project = ProjectFileDescriptors::acquire(&directory, 32).unwrap();
+            assert_eq!(project.metrics().open, 0);
             let model = PowerLossModel::attach(&project, ImageLimits::default()).unwrap();
+            assert_eq!(project.metrics().open, recorder_root_fds);
             write_catalog(&catalog_path, &catalog()).unwrap();
             let root = ObjectReference::for_bytes(ObjectKind::SealedRoot, 1, b"root");
             let mut request = create_request();
@@ -2826,6 +2847,11 @@ mod tests {
                     .state,
                 BranchState::Ready
             );
+            // Recovery returned all operation files; the recorder still owns
+            // its captured directory until the model itself closes.
+            assert_eq!(project.metrics().open, recorder_root_fds);
+            assert_eq!(project.metrics().reserved, 0);
+            drop(model);
             assert_eq!(project.metrics().open, 0);
             assert!(project.metrics().high_water <= 32);
             std::fs::remove_dir_all(directory).unwrap();

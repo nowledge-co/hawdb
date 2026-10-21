@@ -1,5 +1,12 @@
 # Durable search projection consumers: proposed public contract
 
+> Implementation update (#1092/#1106): registered stationary publication, native
+> authority, fallible compatibility access and v2 cache recovery are described in
+> [the current protocol](CONSUMER_STATIONARY_PUBLICATION.md). That contract
+> supersedes this proposal's legacy staging, v1 cache authority and Windows
+> refusal descriptions. The lower unregistered relocation refusal is retained.
+
+
 Status: approved by the owner on September 15, 2026; production implementation in progress.
 This proposal addresses [issue #455](https://github.com/nowledge-co/hawdb/issues/455).
 The approved proposal was based on main
@@ -234,7 +241,7 @@ fn projection_lifecycle(root: &Path) -> SearchProjectionConsumerResult<()> {
         return Err(HawDBError::Execution("projection is not ready to serve".into()).into());
     }
     for query in ["memory", "document"] {
-        let _hits = consumer.search_index().search(query, None, SearchMode::Text, 8)?;
+        let _hits = consumer.search_index()?.search(query, None, SearchMode::Text, 8)?;
     }
     db.renew_search_projection_consumer(&consumer)?;
     drop(consumer);

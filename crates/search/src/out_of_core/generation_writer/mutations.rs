@@ -29,8 +29,8 @@ use std::io::Read;
 /// once, and any failed operation poisons the batch. Publication keeps the
 /// existing expected-generation check and never overwrites a newer head.
 pub struct SearchOutOfCoreMutationWriter<'reader> {
-    reader: &'reader SearchOutOfCoreReader,
-    writer: SearchOutOfCoreGenerationWriter,
+    reader: Option<&'reader SearchOutOfCoreReader>,
+    pub(super) writer: SearchOutOfCoreGenerationWriter,
     last_id: Option<Term>,
     operations: usize,
     deleted: usize,
@@ -66,6 +66,16 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
         task: RuntimeTaskContext,
         memory: BuildMemory,
     ) -> Result<Self> {
+        Self::create_mode(reader, options, task, memory, true)
+    }
+
+    fn create_mode(
+        reader: &'reader SearchOutOfCoreReader,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task: RuntimeTaskContext,
+        memory: BuildMemory,
+        incremental: bool,
+    ) -> Result<Self> {
         checkpoint(&task)?;
         let epoch_updated = options.source_graph_commit_epoch.is_some();
         let epoch = options
@@ -87,21 +97,23 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
         writer.set_max_lexical_manifest_bytes(reader.config.max_lexical_manifest_bytes)?;
         writer.embedding_dimension = reader.manifest.embedding_dimension;
         writer.expected_active_generation = Some(reader.generation());
-        writer
-            .stage
-            .reserve_additional_disk(delta::mutation::Prepared::disk_reservation(reader)?)?;
-        writer.mutations = Some(delta::mutation::Prepared::new(
-            reader,
-            &writer.stage.path,
-            &writer.memory,
-            &writer.task_context,
-            true,
-        )?);
-        writer.active_manifest_update = Some(ActiveManifestUpdate::Mutate {
-            expected_generation: reader.generation(),
-        });
+        if incremental {
+            writer
+                .stage
+                .reserve_additional_disk(delta::mutation::Prepared::disk_reservation(reader)?)?;
+            writer.mutations = Some(delta::mutation::Prepared::new(
+                reader,
+                &writer.stage.path,
+                &writer.memory,
+                &writer.task_context,
+                true,
+            )?);
+            writer.active_manifest_update = Some(ActiveManifestUpdate::Mutate {
+                expected_generation: reader.generation(),
+            });
+        }
         Ok(Self {
-            reader,
+            reader: incremental.then_some(reader),
             writer,
             last_id: None,
             operations: 0,
@@ -137,7 +149,10 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
         result
     }
 
-    fn target(&mut self, id: &str, operation: SearchMutationOperation) -> Result<()> {
+    pub(super) fn target(&mut self, id: &str, operation: SearchMutationOperation) -> Result<()> {
+        let reader = self
+            .reader
+            .ok_or_else(|| HawDBError::Storage("full replacement has no mutation reader".into()))?;
         if self.writer.poisoned {
             return Err(HawDBError::Storage(
                 "streamed mutation batch is poisoned".into(),
@@ -154,7 +169,7 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
                 "streamed mutation IDs must be nonempty and strictly increasing".into(),
             ));
         }
-        if id.len() > self.reader.config.max_document_header_bytes.get() {
+        if id.len() > reader.config.max_document_header_bytes.get() {
             return Err(HawDBError::Storage(
                 "mutation ID exceeds header admission".into(),
             ));
@@ -169,9 +184,9 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
             .writer
             .mutations
             .as_mut()
-            .expect("mutation writer owns a run")
+            .ok_or_else(|| HawDBError::Storage("full replacement has no mutation run".into()))?
             .push_target(
-                self.reader,
+                reader,
                 &id,
                 operation,
                 &self.writer.stage.path,
@@ -203,14 +218,22 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
         SearchOutOfCoreGenerationBuildReport,
         SearchOutOfCoreMetrics,
     )> {
+        self.prepare_publication()?.publish()
+    }
+
+    /// Builds an invisible candidate while retaining the original base selector.
+    pub fn prepare_publication(self) -> Result<SearchOutOfCorePreparedUpdate> {
+        let reader = self
+            .reader
+            .ok_or_else(|| HawDBError::Storage("full replacement has no mutation reader".into()))?;
         let retracted = self
             .writer
             .mutations
             .as_ref()
-            .expect("mutation writer owns a run")
+            .ok_or_else(|| HawDBError::Storage("full replacement has no mutation run".into()))?
             .entries
             .len();
-        let before = self.reader.document_count();
+        let before = reader.document_count();
         let upserts = self.writer.document_count;
         let after = before
             .checked_sub(retracted)
@@ -226,12 +249,17 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
             upserted_documents: upserts,
             deleted_documents: self.deleted,
             operation_count: self.operations,
-            source_graph_commit_epoch_before: self.reader.source_graph_commit_epoch(),
+            source_graph_commit_epoch_before: reader.source_graph_commit_epoch(),
             source_graph_commit_epoch_after: epoch,
             source_graph_commit_epoch_updated: self.epoch_updated,
         };
-        let build = self.writer.finish()?;
-        Ok((report, build, self.metrics))
+        let candidate = self.writer.prepare_publication()?;
+        Ok(SearchOutOfCorePreparedUpdate::from_streamed(
+            candidate,
+            report,
+            self.metrics,
+            self._report_memory,
+        ))
     }
 }
 

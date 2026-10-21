@@ -154,7 +154,7 @@ pub(super) fn write_run(
         writer: HashWriter {
             inner: pool
                 .control
-                .with_path(&guard.path, || io.create(&guard.path))?,
+                .with_path(&guard.path, || io.create_in(&guard.path, &pool.control))?,
             digest: Digest::new(),
         },
         total_bytes,
@@ -213,7 +213,7 @@ pub(super) fn write_run(
 }
 
 struct HashRead<'a> {
-    reader: &'a mut BufReader<File>,
+    reader: &'a mut BufReader<crate::out_of_core::SpillFile>,
     remaining: &'a mut u64,
     digest: &'a mut Digest,
 }
@@ -231,7 +231,7 @@ impl Read for HashRead<'_> {
 }
 
 pub(super) struct FrequencyRunReader {
-    reader: BufReader<File>,
+    reader: BufReader<crate::out_of_core::SpillFile>,
     remaining: u64,
     digest: Digest,
     records: u64,
@@ -263,7 +263,7 @@ impl FrequencyRunReader {
         control: &SpillControl,
     ) -> Result<Self> {
         control.check()?;
-        let file = control.with_path(path, || Ok(File::open(path)?))?;
+        let file = control.with_path(path, || control.open(path))?;
         let length = file.metadata()?.len();
         if length < HEADER.len() as u64 + FOOTER_BYTES || length > config.max_spill_bytes.get() {
             return Err(HawDBError::Storage(

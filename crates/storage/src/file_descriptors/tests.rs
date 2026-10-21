@@ -1125,3 +1125,31 @@ fn cross_project_rename_admits_both_domains_before_mutation() {
     assert_eq!(source_project.project.metrics().open, 0);
     assert_eq!(destination_project.project.metrics().open, 0);
 }
+
+#[test]
+fn component_scope_charges_the_original_domain_and_restores_after_unwind() {
+    let original = Fixture::new(2);
+    let foreign = Fixture::new(4);
+    let file = foreign.root.join("component-file");
+    std::fs::write(&file, b"component").unwrap();
+    let context = original.project.io_context();
+    let held = context
+        .with_component_context(&foreign.root, || {
+            let first = File::open(&file).unwrap();
+            let second = File::open(&file).unwrap();
+            assert!(file_descriptor_error(&File::open(&file).unwrap_err()).is_some());
+            assert_eq!(foreign.project.metrics().open, 0);
+            (first, second)
+        })
+        .unwrap();
+    assert_eq!(original.project.metrics().open, 2);
+    drop(held);
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = context.with_component_context(&foreign.root, || panic!("restore scoped context"));
+    }));
+    assert!(panic.is_err());
+    let file = File::open(&file).unwrap();
+    assert_eq!(original.project.metrics().open, 0);
+    assert_eq!(foreign.project.metrics().open, 1);
+    drop(file);
+}

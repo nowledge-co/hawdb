@@ -23,6 +23,10 @@ pub(crate) fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>> 
     read_file(path, max_bytes, None)
 }
 
+pub(crate) fn read_bounded_open_file(file: File, name: &str, max_bytes: u64) -> Result<Vec<u8>> {
+    read_open_file(file, Path::new(name), max_bytes, None)
+}
+
 /// Read an immutable artifact whose exact length is bound by its manifest.
 ///
 /// Reserving that admitted length once avoids geometric reallocations. On some
@@ -35,7 +39,16 @@ pub(crate) fn read_bound_file(path: &Path, expected_bytes: u64, name: &str) -> R
 fn read_file(path: &Path, max_bytes: u64, expected_bytes: Option<(u64, &str)>) -> Result<Vec<u8>> {
     // Admission and reading must refer to the same opened file, even if its
     // pathname is replaced while a generation is being published.
-    let mut file = File::open(path)?;
+    let file = File::open(path)?;
+    read_open_file(file, path, max_bytes, expected_bytes)
+}
+
+fn read_open_file(
+    mut file: File,
+    path: &Path,
+    max_bytes: u64,
+    expected_bytes: Option<(u64, &str)>,
+) -> Result<Vec<u8>> {
     let length = file.metadata()?.len();
     if length > max_bytes {
         return Err(HawDBError::Storage(format!(

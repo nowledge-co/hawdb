@@ -57,10 +57,10 @@ pub(super) fn install(observation: Option<WorkerExit>) {
     WORKER_EXIT.with(|slot| *slot.borrow_mut() = observation);
 }
 
-pub(super) struct Observe(Arc<Mutex<Observation>>);
+pub(crate) struct Observe(Arc<Mutex<Observation>>);
 
 impl Observe {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let observation = Arc::new(Mutex::new(Observation::default()));
         OBSERVING.with(|current| {
             assert!(current.replace(Some(Arc::clone(&observation))).is_none());
@@ -68,7 +68,7 @@ impl Observe {
         Self(observation)
     }
 
-    pub(super) fn assert_joined(&self, workers: usize) {
+    pub(crate) fn assert_joined(&self, workers: usize) {
         let observation = self.0.lock().unwrap();
         assert_eq!(observation.exits.len(), workers);
         for (worker, bytes, _) in &observation.exits {
@@ -80,7 +80,7 @@ impl Observe {
         }
     }
 
-    pub(super) fn assert_released(&self) {
+    pub(crate) fn assert_released(&self) {
         for (_, _, ledger) in &self.0.lock().unwrap().exits {
             assert_eq!(ledger.snapshot().used_bytes, 0);
         }

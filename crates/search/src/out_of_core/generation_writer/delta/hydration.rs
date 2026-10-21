@@ -28,7 +28,7 @@ pub(super) fn visit_target(
     consumer: &mut dyn FnMut(
         u64,
         &crate::lexical_projection::LexicalProjectionReader,
-        crate::out_of_core::hydration::source::Source,
+        crate::out_of_core::hydration::source::Source<'static>,
     ) -> Result<()>,
 ) -> Result<SearchOutOfCoreMetrics> {
     checkpoint(task)?;

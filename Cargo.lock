@@ -801,6 +801,7 @@ version = "0.11.0"
 dependencies = [
  "crc32fast",
  "hawdb-core",
+ "hawdb-integrity",
  "hawdb-storage",
  "memmap2",
  "serde",

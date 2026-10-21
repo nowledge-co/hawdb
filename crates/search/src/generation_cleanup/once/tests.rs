@@ -92,6 +92,7 @@ fn one_shot_counts_match_the_existing_retry_state_without_retaining_candidates()
                 let options = SearchProjectionCleanupOptions {
                     max_pending_files: NonZeroUsize::new(2).unwrap(),
                     max_delete_attempts: NonZeroUsize::new(limit).unwrap(),
+                    ..Default::default()
                 };
                 let remove = |_: &Path| {
                     if result == io::ErrorKind::Other {

@@ -267,7 +267,19 @@ pub struct WalRecordCursor {
 
 impl WalRecordCursor {
     pub fn open(path: &Path, max_record_bytes: Option<usize>) -> Result<WalOpenOutcome> {
-        let mut reader = std::io::BufReader::new(File::open(path)?);
+        Self::read_header(File::open(path)?, max_record_bytes)
+    }
+
+    pub(crate) fn from_file(
+        mut file: File,
+        max_record_bytes: Option<usize>,
+    ) -> Result<WalOpenOutcome> {
+        std::io::Seek::rewind(&mut file)?;
+        Self::read_header(file, max_record_bytes)
+    }
+
+    fn read_header(file: File, max_record_bytes: Option<usize>) -> Result<WalOpenOutcome> {
+        let mut reader = std::io::BufReader::new(file);
         let mut header = [0u8; frame::WAL_BINARY_FILE_HEADER_BYTES];
         let mut filled = 0usize;
         while filled < header.len() {
@@ -298,6 +310,24 @@ impl WalRecordCursor {
             start_lsn,
             reader: frame::BinaryWalReader::new(reader, generation, max_record_bytes),
         }))
+    }
+
+    pub(crate) fn into_file(self) -> File {
+        self.reader.into_reader().into_inner()
+    }
+
+    pub(crate) fn require_native_path(&self, path: &Path) -> Result<()> {
+        if !self
+            .reader
+            .reader_ref()
+            .get_ref()
+            .matches_native_path(path)?
+        {
+            return Err(HawDBError::StorageIntegrity(
+                "captured active WAL was replaced".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub const fn generation(&self) -> u64 {

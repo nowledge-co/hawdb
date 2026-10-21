@@ -23,8 +23,9 @@ use crate::build_control::{checkpoint, CheckedWriter};
 use crate::build_memory::{checked_add, grow_slots, path::OwnedPath, BuildMemory};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
-use hawdb_storage::file_io::File;
-use std::io::{BufWriter, Read, Write};
+use hawdb_storage::file_io::{File, OpenOptions};
+use hawdb_storage::immutable_object::{ObjectKind, ObjectReference, ObjectReferenceWriter};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -34,7 +35,7 @@ mod tests;
 
 pub(super) struct ArtifactBuilder {
     writer: BufWriter<File>,
-    path: OwnedPath,
+    _path: OwnedPath,
     generation: u64,
     config: LexicalProjectionConfig,
     offset: u64,
@@ -65,6 +66,7 @@ pub(super) struct ArtifactBuilder {
 
 pub(super) struct ArtifactSummary {
     pub(super) len: u64,
+    pub(super) object: ObjectReference,
     pub(super) checksum: u64,
     pub(super) posting_count: u64,
     pub(super) legacy_posting_bytes: u64,
@@ -109,13 +111,21 @@ impl ArtifactBuilder {
         checkpoint(&task)?;
         let path = OwnedPath::copy(path, &memory, &task)?;
         let writer_memory = memory.spool.reserve(SPILL_IO_BUFFER_BYTES)?;
-        let mut writer = BufWriter::with_capacity(SPILL_IO_BUFFER_BYTES, File::create(&path)?);
+        let mut writer = BufWriter::with_capacity(
+            SPILL_IO_BUFFER_BYTES,
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)?,
+        );
         let mut output = CheckedWriter::new(&mut writer, Some(&task));
         output.write_all(ARTIFACT_HEADER)?;
         output.write_all(&generation.to_le_bytes())?;
         Ok(Self {
             writer,
-            path,
+            _path: path,
             generation,
             config,
             offset: ARTIFACT_HEADER.len() as u64 + 8,
@@ -342,7 +352,10 @@ impl ArtifactBuilder {
         // Retain the writer buffer through this independently admitted digest pass.
         let _scratch_memory = self.memory.spool.reserve(SPILL_IO_BUFFER_BYTES)?;
         let mut scratch = vec![0u8; SPILL_IO_BUFFER_BYTES];
-        let mut file = File::open(&self.path)?;
+        let file = self.writer.get_mut();
+        file.seek(SeekFrom::Start(0))?;
+        let mut object = ObjectReferenceWriter::new(ObjectKind::CheckpointArtifact, 1, self.offset)
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         let mut digest = Digest::new();
         let mut length = 0u64;
         loop {
@@ -352,6 +365,7 @@ impl ArtifactBuilder {
                 break;
             }
             digest.update(&scratch[..count]);
+            object.write_all(&scratch[..count])?;
             length = length
                 .checked_add(count as u64)
                 .ok_or_else(|| HawDBError::Storage("lexical artifact length exceeds u64".into()))?;
@@ -359,6 +373,9 @@ impl ArtifactBuilder {
         checkpoint(&self.task)?;
         Ok(ArtifactSummary {
             len: length,
+            object: object
+                .finish()
+                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?,
             checksum: digest.finish(),
             posting_count: self.posting_count,
             legacy_posting_bytes: self.legacy_posting_bytes,

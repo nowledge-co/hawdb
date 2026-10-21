@@ -30,7 +30,10 @@ fn startup_reuses_registration_across_queries_handles_and_processes() {
     let before = std::fs::read(fixture.registry_path("database")).unwrap();
     let epoch = db.commit_epoch().unwrap();
     for _ in 0..8 {
-        for index in [consumer.search_index(), consumer.search_index()] {
+        for index in [
+            consumer.search_index().unwrap(),
+            consumer.search_index().unwrap(),
+        ] {
             assert_eq!(
                 db.query("MATCH (m:Memory) RETURN m.id LIMIT 1")
                     .unwrap()
@@ -134,7 +137,7 @@ fn reopen_child() {
                 |_, _| panic!("must reopen"),
             )
             .unwrap();
-        assert_eq!(consumer.search_index().document_count(), 2);
+        assert_eq!(consumer.search_index().unwrap().document_count(), 2);
         assert_eq!(
             db.runtime.get().unwrap().projection_consumers.records.len(),
             1
@@ -295,36 +298,24 @@ fn uncertain_create_reconciles_durable_evidence_without_reinitializing() {
             options(100),
             |_, _| panic!("retry must not initialize over published evidence"),
         );
-        if stage == PublicationStage::AfterRegistry {
-            let consumer = retry.unwrap();
-            assert_eq!(
-                consumer
-                    .projection()
-                    .binding()
-                    .registration_uuid
-                    .to_string(),
-                attempted_uuid
-            );
-            assert!(db
-                .search_projection_consumer_readiness(&consumer, None)
-                .unwrap()
-                .is_ready());
-        } else {
-            assert!(matches!(
-                retry,
-                Err(Error::Database(HawDBError::Storage(_)))
-            ));
-            assert_eq!(
+        let consumer = retry.unwrap();
+        assert_eq!(
+            consumer
+                .projection()
+                .binding()
+                .registration_uuid
+                .to_string(),
+            attempted_uuid
+        );
+        assert!(db
+            .search_projection_consumer_readiness(&consumer, None)
+            .unwrap()
+            .is_ready());
+        if stage == PublicationStage::BeforeRegistry {
+            assert_ne!(
                 std::fs::read(fixture.registry_path("database")).unwrap(),
                 before
             );
-            assert!(!db
-                .runtime
-                .get()
-                .unwrap()
-                .projection_consumers
-                .records
-                .contains_key("memory-v1"));
         }
         assert_eq!(other.projection().receipt(), receipt);
         db.renew_search_projection_consumer(&other).unwrap();
@@ -356,27 +347,28 @@ fn explicit_open_reconciles_uncertain_progress_without_advancing_the_receipt() {
         let registry = std::fs::read(fixture.registry_path("database")).unwrap();
         drop(consumer);
         let reopened = db.open_search_projection_consumer(&id("memory-v1"), &path);
-        if stage == PublicationStage::AfterRegistry {
-            let consumer = reopened.unwrap();
-            assert_eq!(consumer.projection().receipt(), receipt);
-            assert_eq!(
-                consumer.projection().binding().registration_uuid,
-                registration
-            );
-            assert!(db
-                .search_projection_consumer_readiness(&consumer, None)
-                .unwrap()
-                .is_ready());
-        } else {
-            assert!(matches!(
-                reopened,
-                Err(Error::RebuildRequired(Reason::CheckpointMismatch))
-            ));
-        }
+        let consumer = reopened.unwrap();
+        assert_eq!(consumer.projection().receipt(), receipt);
         assert_eq!(
-            std::fs::read(fixture.registry_path("database")).unwrap(),
-            registry
+            consumer.projection().binding().registration_uuid,
+            registration
         );
+        assert_eq!(consumer.search_index().unwrap().document_count(), 1);
+        assert!(db
+            .search_projection_consumer_readiness(&consumer, None)
+            .unwrap()
+            .is_ready());
+        if stage == PublicationStage::AfterRegistry {
+            assert_eq!(
+                std::fs::read(fixture.registry_path("database")).unwrap(),
+                registry
+            );
+        } else {
+            assert_ne!(
+                std::fs::read(fixture.registry_path("database")).unwrap(),
+                registry
+            );
+        }
     }
 }
 
