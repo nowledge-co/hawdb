@@ -46,11 +46,61 @@ fn registered_stationary_transient_reopen_failure_does_not_require_rebuild() {
             .state,
         State::Active
     );
-    let reopened = db
+    let mut reopened = db
         .open_search_projection_consumer(&id("retry-open"), &path)
         .unwrap();
     assert_eq!(reopened.projection().receipt(), before);
     assert_eq!(reopened.search_index().unwrap().document_count(), 1);
+
+    // Startup must also propagate transient errors while reacquiring an
+    // unresolved native publication, before the ordinary registered-open path.
+    append(&mut db, 2);
+    let epoch = db.commit_epoch().unwrap();
+    PUBLICATION_FAILURE.set(Some((PublicationStage::AfterSelector, false)));
+    assert!(matches!(
+        catch_up(&mut db, &mut reopened),
+        Err(Error::Database(HawDBError::Storage(_)))
+    ));
+    drop(reopened);
+    drop(db);
+    let mut db = fixture.database();
+    assert!(db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .search_consumer_registry_snapshot()
+        .unwrap()
+        .pending
+        .iter()
+        .any(|pending| pending == "retry-open"));
+    PUBLICATION_FAILURE.set(Some((PublicationStage::BeforeReopen, false)));
+    assert!(matches!(
+        db.open_or_create_search_projection_consumer(
+            id("retry-open"),
+            &path,
+            options(100),
+            |_, _| panic!("startup recovery must not reinitialize")
+        ),
+        Err(Error::Database(HawDBError::Storage(_)))
+    ));
+    assert_eq!(
+        db.query("MATCH (m:Memory) RETURN m.id").unwrap().rows.len(),
+        2
+    );
+    let recovered = db
+        .open_or_create_search_projection_consumer(id("retry-open"), &path, options(100), |_, _| {
+            panic!("retry must recover the original publication")
+        })
+        .unwrap();
+    assert_eq!(recovered.projection().receipt().source_epoch, epoch);
+    assert_eq!(recovered.search_index().unwrap().document_count(), 2);
+    assert_eq!(
+        db.search_projection_consumer_status(&id("retry-open"))
+            .unwrap()
+            .state,
+        State::Active
+    );
 }
 
 #[test]

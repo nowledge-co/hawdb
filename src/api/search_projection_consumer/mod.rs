@@ -123,17 +123,20 @@ impl Database {
                 &context,
             )
             .map_err(HawDBError::from)?;
-            let recovered = ConsumerProjection::open_registered(
-                request,
-                parent,
-                &destination,
-                permit,
-                RuntimeTaskContext::default(),
-                RegisteredConsumerLimits::default(),
-            );
+            let recovered = (|| {
+                publication_failpoint(PublicationStage::BeforeReopen)?;
+                ConsumerProjection::open_registered(
+                    request,
+                    parent,
+                    &destination,
+                    permit,
+                    RuntimeTaskContext::default(),
+                    RegisteredConsumerLimits::default(),
+                )
+            })();
             match recovered {
                 Ok(projection) => drop(projection),
-                Err(HawDBError::StorageIntegrity(_) | HawDBError::Storage(_)) => {
+                Err(HawDBError::StorageIntegrity(_)) => {
                     return Err(Error::RebuildRequired(Reason::CheckpointMismatch))
                 }
                 Err(error) => return Err(error.into()),
