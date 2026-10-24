@@ -41,7 +41,7 @@ mod predicate;
 mod projection;
 mod value;
 
-pub(crate) use key::{KeyMemory, PreparedKey};
+pub(crate) use key::{KeyMemory, PreparedKey, SortKeyValues};
 pub use predicate::*;
 pub(crate) use projection::{
     prepare_borrowed_projection, push_borrowed_projection, SmallBorrowedProjection,

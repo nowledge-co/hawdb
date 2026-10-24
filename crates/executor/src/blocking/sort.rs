@@ -14,8 +14,50 @@
 
 use super::*;
 
+impl SortKeyValues {
+    fn cmp_key(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            #[cfg(target_pointer_width = "64")]
+            (Self::Integer(left, direction), Self::Integer(right, other_direction)) => {
+                debug_assert_eq!(direction, other_direction);
+                match direction {
+                    SortDirection::Asc => left.cmp(right),
+                    SortDirection::Desc => left.cmp(right).reverse(),
+                }
+            }
+            #[cfg(target_pointer_width = "64")]
+            (Self::Integer(value, direction), Self::Owned(right)) => {
+                compare_sort_values(&[(Value::Int(*value), *direction)], right)
+            }
+            #[cfg(target_pointer_width = "64")]
+            (Self::Owned(left), Self::Integer(value, direction)) => {
+                compare_sort_values(left, &[(Value::Int(*value), *direction)])
+            }
+            (Self::Owned(left), Self::Owned(right)) => compare_sort_values(left, right),
+        }
+    }
+
+    fn memory_bytes(&self) -> usize {
+        let layout = std::mem::size_of::<Vec<(Value, SortDirection)>>();
+        match self {
+            #[cfg(target_pointer_width = "64")]
+            Self::Integer(..) => {
+                layout.saturating_add(std::mem::size_of::<(Value, SortDirection)>())
+            }
+            Self::Owned(values) => values.iter().fold(
+                layout.saturating_add(std::mem::size_of_val(values.as_ref())),
+                |total, (value, _)| {
+                    total.saturating_add(
+                        value_memory_bytes(value).saturating_sub(std::mem::size_of::<Value>()),
+                    )
+                },
+            ),
+        }
+    }
+}
+
 struct SortRunRow {
-    sort_values: Vec<(Value, SortDirection)>,
+    sort_values: SortKeyValues,
     ordinal: u64,
     binding: Binding,
 }
@@ -48,7 +90,7 @@ impl SortRunRow {
         let PreparedKey {
             allocation,
             values: sort_values,
-        } = key_memory.sort(items, catalog, &binding, task_context)?;
+        } = key_memory.sort_run(items, catalog, &binding, task_context)?;
         Ok(PreparedKey {
             values: Self {
                 sort_values,
@@ -60,13 +102,13 @@ impl SortRunRow {
     }
 
     fn cmp_key(&self, other: &Self) -> Ordering {
-        compare_sort_values(&self.sort_values, &other.sort_values)
+        self.sort_values
+            .cmp_key(&other.sort_values)
             .then_with(|| self.ordinal.cmp(&other.ordinal))
     }
 
     fn memory_bytes(&self) -> usize {
-        binding_memory_bytes(&self.binding)
-            .saturating_add(crate::binding::sort_values_memory_bytes(&self.sort_values))
+        binding_memory_bytes(&self.binding).saturating_add(self.sort_values.memory_bytes())
     }
 }
 

@@ -17,6 +17,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[path = "concurrent_writers/readers.rs"]
 mod readers;
 
+#[path = "concurrent_writers/sort_control.rs"]
+mod sort_control;
+
 const SMOKE: bool = cfg!(debug_assertions);
 const COMMITS: usize = if SMOKE { 16 } else { 256 };
 const ROUNDS: usize = if SMOKE { 1 } else { 5 };
@@ -296,6 +299,22 @@ fn measure(
 }
 
 fn main() {
+    if std::env::args().any(|argument| argument == "--sort-key-control") {
+        assert!(
+            std::env::args()
+                .skip(1)
+                .all(|argument| { argument == "--sort-key-control" || argument == "--bench" }),
+            "sort-key controls run separately from writer qualification"
+        );
+        assert_eq!(
+            std::env::args()
+                .filter(|argument| argument == "--sort-key-control")
+                .count(),
+            1
+        );
+        sort_control::run().expect("sort-key control failed");
+        return;
+    }
     let mut selected_round = None;
     let mut selected_writers = None;
     let mut selected_readers = None;
