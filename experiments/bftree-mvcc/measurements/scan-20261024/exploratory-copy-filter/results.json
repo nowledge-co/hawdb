@@ -1,0 +1,54 @@
+[
+  {
+    "layout": "versioned",
+    "revision": "baseline",
+    "load": [
+      70.0400390625,
+      71.79443359375,
+      42.5
+    ],
+    "returncode": 0,
+    "stdout": "{\"layout\":\"Versioned\",\"keys\":512,\"update_rounds\":24,\"value_bytes\":100,\"profile\":\"release\",\"working_index\":\"memory; journal on native filesystem\",\"durability\":\"sync_all per complete transaction batch\",\"commit_batches\":{\"operations\":192,\"p50_ns\":5418792,\"p95_ns\":5567833,\"p99_ns\":72011417,\"total_ns\":1192459335},\"prepare_and_sync\":{\"operations\":192,\"p50_ns\":5338792,\"p95_ns\":5509875,\"p99_ns\":71936458,\"total_ns\":1178167089},\"index_install\":{\"operations\":192,\"p50_ns\":37209,\"p95_ns\":119583,\"p99_ns\":132166,\"total_ns\":10837963},\"current_get\":{\"operations\":4096,\"p50_ns\":292,\"p95_ns\":1333,\"p99_ns\":3084,\"total_ns\":1949756},\"old_get\":{\"operations\":4096,\"p50_ns\":292,\"p95_ns\":542,\"p99_ns\":875,\"total_ns\":1377108},\"current_full_scan\":{\"operations\":32,\"p50_ns\":2017500,\"p95_ns\":2154167,\"p99_ns\":2295667,\"total_ns\":64586666},\"old_full_scan\":{\"operations\":32,\"p50_ns\":1966083,\"p95_ns\":2105041,\"p99_ns\":2105917,\"total_ns\":62807999},\"reopen_ns\":9869584,\"journal_bytes\":1466756,\"resident_bytes\":14860288,\"process_peak_bytes\":14860288}\n",
+    "stderr": "",
+    "note": "Exploratory run during compilation; not final qualification"
+  },
+  {
+    "layout": "versioned",
+    "revision": "candidate",
+    "load": [
+      70.0400390625,
+      71.79443359375,
+      42.5
+    ],
+    "returncode": 0,
+    "stdout": "{\"layout\":\"Versioned\",\"keys\":512,\"update_rounds\":24,\"value_bytes\":100,\"profile\":\"release\",\"working_index\":\"memory; journal on native filesystem\",\"durability\":\"sync_all per complete transaction batch\",\"commit_batches\":{\"operations\":192,\"p50_ns\":5438875,\"p95_ns\":9373041,\"p99_ns\":15439750,\"total_ns\":1109103249},\"prepare_and_sync\":{\"operations\":192,\"p50_ns\":5295333,\"p95_ns\":9104291,\"p99_ns\":15350542,\"total_ns\":1076588125},\"index_install\":{\"operations\":192,\"p50_ns\":77125,\"p95_ns\":212625,\"p99_ns\":279875,\"total_ns\":20067464},\"current_get\":{\"operations\":4096,\"p50_ns\":667,\"p95_ns\":2250,\"p99_ns\":9709,\"total_ns\":4016593},\"old_get\":{\"operations\":4096,\"p50_ns\":542,\"p95_ns\":958,\"p99_ns\":1459,\"total_ns\":2511432},\"current_full_scan\":{\"operations\":32,\"p50_ns\":1358959,\"p95_ns\":1402083,\"p99_ns\":1914875,\"total_ns\":43082127},\"old_full_scan\":{\"operations\":32,\"p50_ns\":1254791,\"p95_ns\":1287750,\"p99_ns\":1527250,\"total_ns\":40147000},\"reopen_ns\":10335292,\"journal_bytes\":1466756,\"resident_bytes\":14942208,\"process_peak_bytes\":14942208}\n",
+    "stderr": "",
+    "note": "Exploratory run during compilation; not final qualification"
+  },
+  {
+    "layout": "hybrid",
+    "revision": "baseline",
+    "load": [
+      70.0400390625,
+      71.79443359375,
+      42.5
+    ],
+    "returncode": 0,
+    "stdout": "{\"layout\":\"Hybrid\",\"keys\":512,\"update_rounds\":24,\"value_bytes\":100,\"profile\":\"release\",\"working_index\":\"memory; journal on native filesystem\",\"durability\":\"sync_all per complete transaction batch\",\"commit_batches\":{\"operations\":192,\"p50_ns\":5430084,\"p95_ns\":6447416,\"p99_ns\":6551416,\"total_ns\":1029973625},\"prepare_and_sync\":{\"operations\":192,\"p50_ns\":5262000,\"p95_ns\":6247792,\"p99_ns\":6344958,\"total_ns\":1000422714},\"index_install\":{\"operations\":192,\"p50_ns\":109709,\"p95_ns\":225584,\"p99_ns\":244583,\"total_ns\":23976377},\"current_get\":{\"operations\":4096,\"p50_ns\":334,\"p95_ns\":459,\"p99_ns\":625,\"total_ns\":1498534},\"old_get\":{\"operations\":4096,\"p50_ns\":875,\"p95_ns\":2709,\"p99_ns\":10084,\"total_ns\":4888522},\"current_full_scan\":{\"operations\":32,\"p50_ns\":102792,\"p95_ns\":153459,\"p99_ns\":223375,\"total_ns\":3534382},\"old_full_scan\":{\"operations\":32,\"p50_ns\":253417,\"p95_ns\":448583,\"p99_ns\":463333,\"total_ns\":8980585},\"reopen_ns\":13358458,\"journal_bytes\":1466756,\"resident_bytes\":15007744,\"process_peak_bytes\":15007744}\n",
+    "stderr": "",
+    "note": "Exploratory run during compilation; not final qualification"
+  },
+  {
+    "layout": "hybrid",
+    "revision": "candidate",
+    "load": [
+      70.0400390625,
+      71.79443359375,
+      42.5
+    ],
+    "returncode": 0,
+    "stdout": "{\"layout\":\"Hybrid\",\"keys\":512,\"update_rounds\":24,\"value_bytes\":100,\"profile\":\"release\",\"working_index\":\"memory; journal on native filesystem\",\"durability\":\"sync_all per complete transaction batch\",\"commit_batches\":{\"operations\":192,\"p50_ns\":5433875,\"p95_ns\":6426459,\"p99_ns\":6883458,\"total_ns\":1024814301},\"prepare_and_sync\":{\"operations\":192,\"p50_ns\":5291250,\"p95_ns\":6258084,\"p99_ns\":6803500,\"total_ns\":997350377},\"index_install\":{\"operations\":192,\"p50_ns\":99167,\"p95_ns\":225208,\"p99_ns\":247292,\"total_ns\":22397908},\"current_get\":{\"operations\":4096,\"p50_ns\":334,\"p95_ns\":459,\"p99_ns\":625,\"total_ns\":1469728},\"old_get\":{\"operations\":4096,\"p50_ns\":875,\"p95_ns\":2875,\"p99_ns\":10584,\"total_ns\":5045758},\"current_full_scan\":{\"operations\":32,\"p50_ns\":67875,\"p95_ns\":102250,\"p99_ns\":134250,\"total_ns\":2329167},\"old_full_scan\":{\"operations\":32,\"p50_ns\":199542,\"p95_ns\":369583,\"p99_ns\":396500,\"total_ns\":7183043},\"reopen_ns\":14217209,\"journal_bytes\":1466756,\"resident_bytes\":15007744,\"process_peak_bytes\":15007744}\n",
+    "stderr": "",
+    "note": "Exploratory run during compilation; not final qualification"
+  }
+]

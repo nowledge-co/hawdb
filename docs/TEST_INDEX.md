@@ -301,6 +301,18 @@ relationship to an out-of-scope label whose post-E mutation must invalidate
 publication. Storage units check immutable reservation predecessors, missing
 registration policy, and direct history pruning without staging compaction.
 
+## Bf-Tree MVCC adapter (manual experiment)
+
+| Family | Purpose and owner | Lane and known limits |
+| --- | --- | --- |
+| Adapter correctness and recovery | [`experiments/bftree-mvcc`](../experiments/bftree-mvcc/README.md); `cargo test --locked --manifest-path experiments/bftree-mvcc/Cargo.toml --all-targets --all-features` | Manual independent workspace, no CI. Snapshot/atomic-pair visibility, conflict/rollback, binary-key model, page splits/history/ranges, deep-version filtered chunks and tombstones, exact inclusive snapshot seeks, physical/row budgets, bounds/ownership, exact retry and recovered receipt-backed sparse updates/deletion/reinsertion, uncertain/unwind and subprocess crash replay. Two comparison-kernel differential tests cover binary ordering, 0–160-byte lengths, 16 pointer offsets, every mismatch position, prefixes and random pairs; the default dependency remains unpatched. The ignored child is exercised by the parent crash test. Process exit does not qualify power-loss safety. |
+| Layout comparison | Same workspace, `bench <new-directory> 16 2` and `bench <new-directory> 512 24` under the global release profile; [paired scan driver](../experiments/bftree-mvcc/measurements/scan-20261024/measure.py) also covers `2048 48` | Manual only. Rotated fresh-process versioned/hybrid/COW comparisons with identical synchronized journal; current/old read and write percentiles, prepare/sync versus index-installation phases, reopen, journal and RSS. Paired scan cohorts retain all controls, journal hashes and host/compiler observations. Memory working indexes; not a production engine or out-of-memory benchmark. |
+| Bf-Tree comparison probe | [Manual prepare/build/measure drivers](../experiments/bftree-mvcc/simd/README.md), `bench-shaped` and [results](../experiments/bftree-mvcc/measurements/simd-20261024/README.md) | Manual only, outside CI and the production dependency graph. Checksum-verified temporary upstream/word/NEON dependency copies, strict adapter Clippy and dev/release MVCC tests, shape/layout smoke cases, rotated three-way comparisons of short/common-prefix/spread keys with COW controls and journal-byte equality. NEON measurements require an eligible ARM64 host. Cross-target kernel metadata checks do not qualify native Windows/Linux behavior. |
+
+The experiment is binary-only, unpublished and excluded from library archives.
+See its README for independent formatting/Clippy and demo commands. Its journal
+and Bf-Tree dependency do not change canonical storage or production test scope.
+
 ## Windows native contract ownership
 
 The native workflow runs seven independent Bazel shards and a separate strict

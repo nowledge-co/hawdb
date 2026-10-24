@@ -1,0 +1,62 @@
+{
+  "aarch64-apple-darwin": {
+    "command": [
+      "clippy-driver",
+      "--edition=2024",
+      "--crate-type",
+      "lib",
+      "--emit",
+      "metadata",
+      "--target",
+      "aarch64-apple-darwin",
+      "-D",
+      "warnings",
+      "experiments/bftree-mvcc/simd/key_compare.rs",
+      "-o",
+      "/private/tmp/hawdb-bftree-simd-qualified-20261024/validation/kernel-aarch64-apple-darwin.rmeta"
+    ],
+    "returncode": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "aarch64-unknown-linux-gnu": {
+    "command": [
+      "clippy-driver",
+      "--edition=2024",
+      "--crate-type",
+      "lib",
+      "--emit",
+      "metadata",
+      "--target",
+      "aarch64-unknown-linux-gnu",
+      "-D",
+      "warnings",
+      "experiments/bftree-mvcc/simd/key_compare.rs",
+      "-o",
+      "/private/tmp/hawdb-bftree-simd-qualified-20261024/validation/kernel-aarch64-unknown-linux-gnu.rmeta"
+    ],
+    "returncode": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "x86_64-pc-windows-gnu": {
+    "command": [
+      "clippy-driver",
+      "--edition=2024",
+      "--crate-type",
+      "lib",
+      "--emit",
+      "metadata",
+      "--target",
+      "x86_64-pc-windows-gnu",
+      "-D",
+      "warnings",
+      "experiments/bftree-mvcc/simd/key_compare.rs",
+      "-o",
+      "/private/tmp/hawdb-bftree-simd-qualified-20261024/validation/kernel-x86_64-pc-windows-gnu.rmeta"
+    ],
+    "returncode": 0,
+    "stdout": "",
+    "stderr": ""
+  }
+}

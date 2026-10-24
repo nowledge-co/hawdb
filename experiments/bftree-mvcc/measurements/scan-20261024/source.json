@@ -1,0 +1,45 @@
+{
+  "baseline": {
+    "experiment_base": "d5bcca9e7dd64799ccee4a10a8874542473d1786",
+    "merged_main": "720d98f8640105add1007040ac608df1e643fc3e",
+    "overlay": "Canonical Nowledge license headers; no baseline runtime/benchmark changes",
+    "source_files": {
+      "src/index.rs": "ef0f4984e75d68cabcb7957fe81f7e0ded9c16a9e38338f60cdb1e95ffd8cb48",
+      "src/adapter.rs": "fdb0c734ea0978add5b5773aec5635d53815fd70647615a664b32907706dfb25",
+      "src/adapter/tests.rs": "7a7b2e2338d19e880430fd279a599a4590ff22455bfdfbfafedc74448994ef60",
+      "src/benchmark.rs": "d6fb8cbca0e9396281bdf38fa411735a172a973a3bfdff0f7a4d154e37513e43",
+      "src/main.rs": "25fe27793ea6c381fed246e848ada9152fef1d87e4a42c71717da92b06397578",
+      "Cargo.toml": "dcfd573e0331254b18373f3c84c855c945066f4f666a35d062ffd37dd53634f6",
+      "Cargo.lock": "c9ddf39a09374a4ffcb76f6ccd61026a6b69b32f57ba47c697c7935e5155c582"
+    },
+    "baseline_binary_sha256": "6f763046b842481a150b47ee704d95f765bcaab382e98b0086567f86b6ee22ca",
+    "profile_sha256": "06c7ca26d39223bd90a6412acd8609c380ce2d1650a72b70c90171656ca89819"
+  },
+  "candidate_source_files": {
+    "src/index.rs": "274f2a216b5d3bb1027706abbcb0210ff4f1987c42c3acc5c1083dd03d335550",
+    "src/adapter.rs": "fdb0c734ea0978add5b5773aec5635d53815fd70647615a664b32907706dfb25",
+    "src/adapter/tests.rs": "7a7b2e2338d19e880430fd279a599a4590ff22455bfdfbfafedc74448994ef60",
+    "src/benchmark.rs": "d6fb8cbca0e9396281bdf38fa411735a172a973a3bfdff0f7a4d154e37513e43",
+    "src/main.rs": "25fe27793ea6c381fed246e848ada9152fef1d87e4a42c71717da92b06397578",
+    "Cargo.toml": "dcfd573e0331254b18373f3c84c855c945066f4f666a35d062ffd37dd53634f6",
+    "Cargo.lock": "c9ddf39a09374a4ffcb76f6ccd61026a6b69b32f57ba47c697c7935e5155c582"
+  },
+  "candidate_patch_sha256": "9335c8787fdb5f3fbc4e1f17c5790a697ff6bd815c404f59f5a4429a18c1cf2b",
+  "candidate_binary_sha256": "3099eeb658bda486f0a13b2f88bef96adb58f5b4cd231cb62aa5893f7aad16ec",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "cpu": "Apple M3 Max",
+  "physical_cpus": 16,
+  "memory_bytes": 137438953472,
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "profile": "Repository release, opt-level=3, codegen-units=1, thin LTO; default dependency features",
+  "storage": "Local APFS /private/tmp; device model not collected",
+  "note": "Both binaries merge the same main and have identical license headers, benchmark and journal adapter sources",
+  "candidate_code_commit": "4c8e93e4c2934b6f545247a658f1ebd776fa9284",
+  "measurement_host_note": "Own compilation and tests completed before timing. Other host Rust builds were observed during the final cohort; the host was shared and not reserved. Preserve paired controls, load and all adverse observations; no stable tail or strict no-regression claim.",
+  "profile_environment_overrides": {},
+  "confirmation_driver_sha256": "363f2a88285a2a66806bd54d972dd1665aec8862a56a1ebc67247af952d1ee45",
+  "cohort_notes": {
+    "initial": "Shared host; other compilers observed. Native source unchanged in confirmation.",
+    "confirmation": "Started without observed Rust compilers; 43/90 process boundaries subsequently observed compilation; all runs retained."
+  }
+}

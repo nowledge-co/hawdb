@@ -1,0 +1,191 @@
+[
+  {
+    "variant": "upstream",
+    "stage": "test-dev",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "/private/tmp/hawdb-bftree-simd-comparison-20261024/upstream/harness/Cargo.toml",
+      "--all-targets",
+      "--all-features"
+    ],
+    "returncode": 0,
+    "seconds": 22.405710000079125
+  },
+  {
+    "variant": "upstream",
+    "stage": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--manifest-path",
+      "/private/tmp/hawdb-bftree-simd-comparison-20261024/upstream/harness/Cargo.toml",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "returncode": 0,
+    "seconds": 8.125324666965753
+  },
+  {
+    "variant": "upstream",
+    "stage": "test-release",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "/private/tmp/hawdb-bftree-simd-comparison-20261024/upstream/harness/Cargo.toml",
+      "--release",
+      "--all-targets",
+      "--all-features"
+    ],
+    "returncode": 0,
+    "seconds": 47.91039758408442
+  },
+  {
+    "variant": "upstream",
+    "stage": "build-release",
+    "command": [
+      "cargo",
+      "build",
+      "--locked",
+      "--manifest-path",
+      "/private/tmp/hawdb-bftree-simd-comparison-20261024/upstream/harness/Cargo.toml",
+      "--release"
+    ],
+    "returncode": 0,
+    "seconds": 41.11239149980247
+  },
+  {
+    "variant": "word",
+    "stage": "test-dev",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "/private/tmp/hawdb-bftree-simd-comparison-20261024/word/harness/Cargo.toml",
+      "--all-targets",
+      "--all-features"
+    ],
+    "returncode": 0,
+    "seconds": 61.83867145795375
+  },
+  {
+    "variant": "word",
+    "stage": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--manifest-path",
+      "/private/tmp/hawdb-bftree-simd-comparison-20261024/word/harness/Cargo.toml",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "returncode": 0,
+    "seconds": 13.552901500137523
+  },
+  {
+    "variant": "word",
+    "stage": "test-release",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "/private/tmp/hawdb-bftree-simd-comparison-20261024/word/harness/Cargo.toml",
+      "--release",
+      "--all-targets",
+      "--all-features"
+    ],
+    "returncode": 0,
+    "seconds": 68.89523758389987
+  },
+  {
+    "variant": "word",
+    "stage": "build-release",
+    "command": [
+      "cargo",
+      "build",
+      "--locked",
+      "--manifest-path",
+      "/private/tmp/hawdb-bftree-simd-comparison-20261024/word/harness/Cargo.toml",
+      "--release"
+    ],
+    "returncode": 0,
+    "seconds": 26.269147583981976
+  },
+  {
+    "variant": "neon",
+    "stage": "test-dev",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "/private/tmp/hawdb-bftree-simd-comparison-20261024/neon/harness/Cargo.toml",
+      "--all-targets",
+      "--all-features"
+    ],
+    "returncode": 0,
+    "seconds": 24.027149749919772
+  },
+  {
+    "variant": "neon",
+    "stage": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--manifest-path",
+      "/private/tmp/hawdb-bftree-simd-comparison-20261024/neon/harness/Cargo.toml",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "returncode": 0,
+    "seconds": 6.296920750057325
+  },
+  {
+    "variant": "neon",
+    "stage": "test-release",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "/private/tmp/hawdb-bftree-simd-comparison-20261024/neon/harness/Cargo.toml",
+      "--release",
+      "--all-targets",
+      "--all-features"
+    ],
+    "returncode": 0,
+    "seconds": 25.45937233301811
+  },
+  {
+    "variant": "neon",
+    "stage": "build-release",
+    "command": [
+      "cargo",
+      "build",
+      "--locked",
+      "--manifest-path",
+      "/private/tmp/hawdb-bftree-simd-comparison-20261024/neon/harness/Cargo.toml",
+      "--release"
+    ],
+    "returncode": 0,
+    "seconds": 7.242276916978881
+  }
+]

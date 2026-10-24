@@ -1,0 +1,11 @@
+{
+  "native_sources_match_final_checkout": true,
+  "fixed_source_and_binary_hashes_match": true,
+  "driver_hashes_match": true,
+  "cases": 15,
+  "repetitions_each": 5,
+  "build_stages_passed": 12,
+  "profile_sha256": "06c7ca26d39223bd90a6412acd8609c380ce2d1650a72b70c90171656ca89819",
+  "toolchain_sha256": "8e390d6a0838315f972690f46ef8bae8b7ecc9ee6c1ed70140ef852869c2482e",
+  "kernel_sha256": "f3ad563f9d4252af6ab39648343e66eba0e25951655ea40ba07b1c26e2ec5e33"
+}

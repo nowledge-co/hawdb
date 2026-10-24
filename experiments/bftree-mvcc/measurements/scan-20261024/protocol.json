@@ -1,0 +1,39 @@
+{
+  "pairs": 5,
+  "layouts": [
+    "versioned",
+    "hybrid",
+    "cow"
+  ],
+  "workloads": [
+    [
+      16,
+      2
+    ],
+    [
+      512,
+      24
+    ],
+    [
+      2048,
+      48
+    ]
+  ],
+  "order": "rotate layouts and reverse workload/executable order on odd pairs",
+  "processes": "new process and journal per executable/layout/workload/pair",
+  "profile": "repository release; Rust 1.97.1; no custom compiler flags",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "durability": "sync_all per complete batch; identical journal bytes required per pair",
+  "samples": "4096 point reads and 32 scans per retained/current snapshot; scan p99 is a maximum",
+  "binaries": {
+    "baseline": {
+      "path": "/private/tmp/hawdb-bftree-1213-baseline-20261024",
+      "sha256": "6f763046b842481a150b47ee704d95f765bcaab382e98b0086567f86b6ee22ca"
+    },
+    "candidate": {
+      "path": "/private/tmp/hawdb-bftree-1213-candidate-20261024",
+      "sha256": "3099eeb658bda486f0a13b2f88bef96adb58f5b4cd231cb62aa5893f7aad16ec"
+    }
+  },
+  "limits": "Shared host, five pairs, memory index; no production or power-loss qualification"
+}

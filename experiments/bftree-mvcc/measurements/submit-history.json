@@ -1,0 +1,1931 @@
+{
+  "baseline": "ea27cf35e plus identical phase instrumentation",
+  "repetitions": 5,
+  "order": "rotated layouts; reversed before/after order on odd repetitions; fresh process and journal per observation",
+  "binaries": {
+    "before": "201fe3a801286af26a06b8aac1f5f2fb6ac766eb435ec079133c845277ef1a2c",
+    "after": "14cb4e9ae072df0d3cf9ae84cf937ef7176d6ae0e6911caf560e8065bc269786"
+  },
+  "reports": [
+    {
+      "revision": "before",
+      "repetition": 0,
+      "layout": "Versioned",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3907500,
+        "p95_ns": 4315292,
+        "p99_ns": 4931167,
+        "total_ns": 761047460
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3793208,
+        "p95_ns": 4167458,
+        "p99_ns": 4637750,
+        "total_ns": 736712921
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 67916,
+        "p95_ns": 255833,
+        "p99_ns": 456375,
+        "total_ns": 18403293
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 584,
+        "p95_ns": 2375,
+        "p99_ns": 7125,
+        "total_ns": 3622264
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 417,
+        "p95_ns": 875,
+        "p99_ns": 2084,
+        "total_ns": 2153945
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 1326209,
+        "p95_ns": 2126209,
+        "p99_ns": 2861625,
+        "total_ns": 45393584
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 1232375,
+        "p95_ns": 2175458,
+        "p99_ns": 2188791,
+        "total_ns": 43357081
+      },
+      "reopen_ns": 5283583,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15007744,
+      "process_peak_bytes": 15007744
+    },
+    {
+      "revision": "after",
+      "repetition": 0,
+      "layout": "Versioned",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 4034250,
+        "p95_ns": 4315666,
+        "p99_ns": 5130375,
+        "total_ns": 774584625
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3833167,
+        "p95_ns": 4199792,
+        "p99_ns": 4715875,
+        "total_ns": 746389663
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 81459,
+        "p95_ns": 254792,
+        "p99_ns": 339500,
+        "total_ns": 20840298
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 500,
+        "p95_ns": 2166,
+        "p99_ns": 7792,
+        "total_ns": 3396503
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 417,
+        "p95_ns": 834,
+        "p99_ns": 2583,
+        "total_ns": 2491623
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 1270292,
+        "p95_ns": 2364541,
+        "p99_ns": 2969334,
+        "total_ns": 45770417
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 1223958,
+        "p95_ns": 1991125,
+        "p99_ns": 2436833,
+        "total_ns": 43400208
+      },
+      "reopen_ns": 5215709,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15040512,
+      "process_peak_bytes": 15040512
+    },
+    {
+      "revision": "before",
+      "repetition": 0,
+      "layout": "Hybrid",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 4003667,
+        "p95_ns": 4439833,
+        "p99_ns": 11849792,
+        "total_ns": 795975000
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3817583,
+        "p95_ns": 4203583,
+        "p99_ns": 11635875,
+        "total_ns": 763693622
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 119583,
+        "p95_ns": 299792,
+        "p99_ns": 571958,
+        "total_ns": 26800791
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 292,
+        "p95_ns": 417,
+        "p99_ns": 708,
+        "total_ns": 1254066
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 750,
+        "p95_ns": 2750,
+        "p99_ns": 9166,
+        "total_ns": 4550660
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 89292,
+        "p95_ns": 116250,
+        "p99_ns": 157209,
+        "total_ns": 2953958
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 262333,
+        "p95_ns": 364333,
+        "p99_ns": 366625,
+        "total_ns": 8639377
+      },
+      "reopen_ns": 13562875,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15122432,
+      "process_peak_bytes": 15122432
+    },
+    {
+      "revision": "after",
+      "repetition": 0,
+      "layout": "Hybrid",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3957625,
+        "p95_ns": 4291250,
+        "p99_ns": 4363042,
+        "total_ns": 765008034
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3780500,
+        "p95_ns": 4134625,
+        "p99_ns": 4203084,
+        "total_ns": 734578541
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 103917,
+        "p95_ns": 248750,
+        "p99_ns": 447542,
+        "total_ns": 24787464
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 250,
+        "p95_ns": 500,
+        "p99_ns": 791,
+        "total_ns": 1235185
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 791,
+        "p95_ns": 3250,
+        "p99_ns": 9791,
+        "total_ns": 5535272
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 81250,
+        "p95_ns": 104291,
+        "p99_ns": 201292,
+        "total_ns": 2842499
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 225000,
+        "p95_ns": 280917,
+        "p99_ns": 296084,
+        "total_ns": 7828417
+      },
+      "reopen_ns": 11253166,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15155200,
+      "process_peak_bytes": 15155200
+    },
+    {
+      "revision": "before",
+      "repetition": 0,
+      "layout": "Cow",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3983708,
+        "p95_ns": 4298916,
+        "p99_ns": 7949000,
+        "total_ns": 789910034
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3809083,
+        "p95_ns": 4142541,
+        "p99_ns": 7760000,
+        "total_ns": 760177745
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 102084,
+        "p95_ns": 165583,
+        "p99_ns": 389334,
+        "total_ns": 21615666
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 250,
+        "p95_ns": 375,
+        "p99_ns": 542,
+        "total_ns": 1037945
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 250,
+        "p95_ns": 500,
+        "p99_ns": 875,
+        "total_ns": 1090871
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 21542,
+        "p95_ns": 93583,
+        "p99_ns": 108292,
+        "total_ns": 836123
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 19125,
+        "p95_ns": 72916,
+        "p99_ns": 83250,
+        "total_ns": 810415
+      },
+      "reopen_ns": 16433208,
+      "journal_bytes": 1466756,
+      "resident_bytes": 9748480,
+      "process_peak_bytes": 9748480
+    },
+    {
+      "revision": "after",
+      "repetition": 0,
+      "layout": "Cow",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3999208,
+        "p95_ns": 4324500,
+        "p99_ns": 6158500,
+        "total_ns": 780055669
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3805333,
+        "p95_ns": 4148667,
+        "p99_ns": 6083208,
+        "total_ns": 749536091
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 105292,
+        "p95_ns": 177292,
+        "p99_ns": 302125,
+        "total_ns": 22195122
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 292,
+        "p95_ns": 500,
+        "p99_ns": 792,
+        "total_ns": 1258807
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 292,
+        "p95_ns": 666,
+        "p99_ns": 1083,
+        "total_ns": 1369562
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 19791,
+        "p95_ns": 30917,
+        "p99_ns": 53958,
+        "total_ns": 679955
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 18208,
+        "p95_ns": 35084,
+        "p99_ns": 37834,
+        "total_ns": 612420
+      },
+      "reopen_ns": 17244458,
+      "journal_bytes": 1466756,
+      "resident_bytes": 9879552,
+      "process_peak_bytes": 9879552
+    },
+    {
+      "revision": "after",
+      "repetition": 1,
+      "layout": "Hybrid",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 4069750,
+        "p95_ns": 4325667,
+        "p99_ns": 8010334,
+        "total_ns": 784196131
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3945833,
+        "p95_ns": 4207458,
+        "p99_ns": 7888042,
+        "total_ns": 762041962
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 80417,
+        "p95_ns": 207875,
+        "p99_ns": 321667,
+        "total_ns": 17967256
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 208,
+        "p95_ns": 250,
+        "p99_ns": 375,
+        "total_ns": 843968
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 459,
+        "p95_ns": 1541,
+        "p99_ns": 6291,
+        "total_ns": 2859640
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 59167,
+        "p95_ns": 80875,
+        "p99_ns": 118916,
+        "total_ns": 2086457
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 173791,
+        "p95_ns": 200000,
+        "p99_ns": 233958,
+        "total_ns": 5787459
+      },
+      "reopen_ns": 9289834,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15204352,
+      "process_peak_bytes": 15204352
+    },
+    {
+      "revision": "before",
+      "repetition": 1,
+      "layout": "Hybrid",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 4062666,
+        "p95_ns": 4440166,
+        "p99_ns": 6929125,
+        "total_ns": 780820373
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3865833,
+        "p95_ns": 4240833,
+        "p99_ns": 6811875,
+        "total_ns": 748437838
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 117666,
+        "p95_ns": 261416,
+        "p99_ns": 443667,
+        "total_ns": 26388006
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 292,
+        "p95_ns": 416,
+        "p99_ns": 584,
+        "total_ns": 1232523
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 708,
+        "p95_ns": 2500,
+        "p99_ns": 6917,
+        "total_ns": 4091723
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 80625,
+        "p95_ns": 118542,
+        "p99_ns": 161916,
+        "total_ns": 2934252
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 246292,
+        "p95_ns": 417750,
+        "p99_ns": 458750,
+        "total_ns": 8483794
+      },
+      "reopen_ns": 13343916,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15138816,
+      "process_peak_bytes": 15138816
+    },
+    {
+      "revision": "after",
+      "repetition": 1,
+      "layout": "Cow",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3974375,
+        "p95_ns": 4300666,
+        "p99_ns": 4953959,
+        "total_ns": 770944916
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3869083,
+        "p95_ns": 4142209,
+        "p99_ns": 4787208,
+        "total_ns": 742215590
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 103416,
+        "p95_ns": 176583,
+        "p99_ns": 377208,
+        "total_ns": 20925053
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 167,
+        "p95_ns": 209,
+        "p99_ns": 292,
+        "total_ns": 674684
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 125,
+        "p95_ns": 250,
+        "p99_ns": 416,
+        "total_ns": 636173
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 13459,
+        "p95_ns": 20625,
+        "p99_ns": 31250,
+        "total_ns": 467667
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 13334,
+        "p95_ns": 19458,
+        "p99_ns": 26916,
+        "total_ns": 452123
+      },
+      "reopen_ns": 14539875,
+      "journal_bytes": 1466756,
+      "resident_bytes": 9748480,
+      "process_peak_bytes": 9748480
+    },
+    {
+      "revision": "before",
+      "repetition": 1,
+      "layout": "Cow",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 4030875,
+        "p95_ns": 7038333,
+        "p99_ns": 11800583,
+        "total_ns": 816686999
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3841000,
+        "p95_ns": 6891292,
+        "p99_ns": 11661917,
+        "total_ns": 786089000
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 105125,
+        "p95_ns": 181833,
+        "p99_ns": 403875,
+        "total_ns": 22276540
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 167,
+        "p95_ns": 292,
+        "p99_ns": 500,
+        "total_ns": 791070
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 167,
+        "p95_ns": 500,
+        "p99_ns": 792,
+        "total_ns": 853442
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 16458,
+        "p95_ns": 31042,
+        "p99_ns": 39666,
+        "total_ns": 597125
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 15666,
+        "p95_ns": 30709,
+        "p99_ns": 39167,
+        "total_ns": 568749
+      },
+      "reopen_ns": 17461750,
+      "journal_bytes": 1466756,
+      "resident_bytes": 9732096,
+      "process_peak_bytes": 9732096
+    },
+    {
+      "revision": "after",
+      "repetition": 1,
+      "layout": "Versioned",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3926250,
+        "p95_ns": 4261625,
+        "p99_ns": 4651292,
+        "total_ns": 776916003
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3811708,
+        "p95_ns": 4148250,
+        "p99_ns": 4479333,
+        "total_ns": 752647616
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 73542,
+        "p95_ns": 214291,
+        "p99_ns": 291000,
+        "total_ns": 18485454
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 292,
+        "p95_ns": 1542,
+        "p99_ns": 5917,
+        "total_ns": 2154314
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 292,
+        "p95_ns": 584,
+        "p99_ns": 1375,
+        "total_ns": 1521496
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 1223750,
+        "p95_ns": 1796666,
+        "p99_ns": 2333125,
+        "total_ns": 43439169
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 1222250,
+        "p95_ns": 1834541,
+        "p99_ns": 1955792,
+        "total_ns": 42664123
+      },
+      "reopen_ns": 5287209,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15106048,
+      "process_peak_bytes": 15106048
+    },
+    {
+      "revision": "before",
+      "repetition": 1,
+      "layout": "Versioned",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3946709,
+        "p95_ns": 4359250,
+        "p99_ns": 7824709,
+        "total_ns": 768100675
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3823250,
+        "p95_ns": 4222833,
+        "p99_ns": 7543625,
+        "total_ns": 745985995
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 61584,
+        "p95_ns": 240708,
+        "p99_ns": 291834,
+        "total_ns": 16851950
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 583,
+        "p95_ns": 2875,
+        "p99_ns": 9500,
+        "total_ns": 4379836
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 458,
+        "p95_ns": 958,
+        "p99_ns": 2292,
+        "total_ns": 2292917
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 1226250,
+        "p95_ns": 2200000,
+        "p99_ns": 2919250,
+        "total_ns": 43650835
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 1217292,
+        "p95_ns": 1929042,
+        "p99_ns": 2389125,
+        "total_ns": 42277292
+      },
+      "reopen_ns": 5205750,
+      "journal_bytes": 1466756,
+      "resident_bytes": 14958592,
+      "process_peak_bytes": 14958592
+    },
+    {
+      "revision": "before",
+      "repetition": 2,
+      "layout": "Cow",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3987333,
+        "p95_ns": 4264042,
+        "p99_ns": 4797375,
+        "total_ns": 767818745
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3860500,
+        "p95_ns": 4147083,
+        "p99_ns": 4649667,
+        "total_ns": 743882460
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 86084,
+        "p95_ns": 156875,
+        "p99_ns": 196417,
+        "total_ns": 17081049
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 83,
+        "p95_ns": 125,
+        "p99_ns": 167,
+        "total_ns": 319248
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 83,
+        "p95_ns": 166,
+        "p99_ns": 250,
+        "total_ns": 327527
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 8500,
+        "p95_ns": 17333,
+        "p99_ns": 25125,
+        "total_ns": 310542
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 8417,
+        "p95_ns": 14375,
+        "p99_ns": 18041,
+        "total_ns": 286459
+      },
+      "reopen_ns": 11619500,
+      "journal_bytes": 1466756,
+      "resident_bytes": 9846784,
+      "process_peak_bytes": 9846784
+    },
+    {
+      "revision": "after",
+      "repetition": 2,
+      "layout": "Cow",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3892541,
+        "p95_ns": 6010500,
+        "p99_ns": 10107792,
+        "total_ns": 797032710
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3805500,
+        "p95_ns": 5931583,
+        "p99_ns": 9625208,
+        "total_ns": 776569291
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 64292,
+        "p95_ns": 157541,
+        "p99_ns": 188750,
+        "total_ns": 14996174
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 208,
+        "p95_ns": 458,
+        "p99_ns": 542,
+        "total_ns": 989840
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 208,
+        "p95_ns": 500,
+        "p99_ns": 916,
+        "total_ns": 1069326
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 16500,
+        "p95_ns": 51042,
+        "p99_ns": 146459,
+        "total_ns": 711460
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 16625,
+        "p95_ns": 22666,
+        "p99_ns": 38292,
+        "total_ns": 547751
+      },
+      "reopen_ns": 13500584,
+      "journal_bytes": 1466756,
+      "resident_bytes": 9764864,
+      "process_peak_bytes": 9764864
+    },
+    {
+      "revision": "before",
+      "repetition": 2,
+      "layout": "Versioned",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 4008500,
+        "p95_ns": 4342584,
+        "p99_ns": 6991584,
+        "total_ns": 777020120
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3891916,
+        "p95_ns": 4169167,
+        "p99_ns": 6896750,
+        "total_ns": 750903114
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 72958,
+        "p95_ns": 244958,
+        "p99_ns": 287459,
+        "total_ns": 19826126
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 625,
+        "p95_ns": 2084,
+        "p99_ns": 7958,
+        "total_ns": 3626209
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 459,
+        "p95_ns": 917,
+        "p99_ns": 2583,
+        "total_ns": 2382207
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 1214250,
+        "p95_ns": 2341625,
+        "p99_ns": 2958542,
+        "total_ns": 44276706
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 1183916,
+        "p95_ns": 1920000,
+        "p99_ns": 2327667,
+        "total_ns": 42170625
+      },
+      "reopen_ns": 5318291,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15007744,
+      "process_peak_bytes": 15007744
+    },
+    {
+      "revision": "after",
+      "repetition": 2,
+      "layout": "Versioned",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3882791,
+        "p95_ns": 4314708,
+        "p99_ns": 7130500,
+        "total_ns": 760867204
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3801666,
+        "p95_ns": 4184083,
+        "p99_ns": 7074083,
+        "total_ns": 738750743
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 63916,
+        "p95_ns": 235250,
+        "p99_ns": 360166,
+        "total_ns": 17328627
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 458,
+        "p95_ns": 2875,
+        "p99_ns": 7625,
+        "total_ns": 3512844
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 375,
+        "p95_ns": 917,
+        "p99_ns": 1792,
+        "total_ns": 2134148
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 1248333,
+        "p95_ns": 2259583,
+        "p99_ns": 3239333,
+        "total_ns": 44998624
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 1211625,
+        "p95_ns": 2072250,
+        "p99_ns": 2484417,
+        "total_ns": 42218164
+      },
+      "reopen_ns": 5167959,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15138816,
+      "process_peak_bytes": 15138816
+    },
+    {
+      "revision": "before",
+      "repetition": 2,
+      "layout": "Hybrid",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3938459,
+        "p95_ns": 4311375,
+        "p99_ns": 9989791,
+        "total_ns": 764946783
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3779042,
+        "p95_ns": 4182792,
+        "p99_ns": 9833208,
+        "total_ns": 734324081
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 109208,
+        "p95_ns": 291208,
+        "p99_ns": 528542,
+        "total_ns": 25629423
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 291,
+        "p95_ns": 375,
+        "p99_ns": 667,
+        "total_ns": 1212819
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 667,
+        "p95_ns": 2625,
+        "p99_ns": 9292,
+        "total_ns": 4472695
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 76916,
+        "p95_ns": 104875,
+        "p99_ns": 159042,
+        "total_ns": 2590543
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 226667,
+        "p95_ns": 292292,
+        "p99_ns": 311541,
+        "total_ns": 7428336
+      },
+      "reopen_ns": 12875000,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15122432,
+      "process_peak_bytes": 15122432
+    },
+    {
+      "revision": "after",
+      "repetition": 2,
+      "layout": "Hybrid",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3939334,
+        "p95_ns": 4342875,
+        "p99_ns": 5187584,
+        "total_ns": 744241008
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3778208,
+        "p95_ns": 4181750,
+        "p99_ns": 4983292,
+        "total_ns": 714629329
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 101666,
+        "p95_ns": 263792,
+        "p99_ns": 518000,
+        "total_ns": 24323746
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 250,
+        "p95_ns": 458,
+        "p99_ns": 916,
+        "total_ns": 1200735
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 709,
+        "p95_ns": 3334,
+        "p99_ns": 10375,
+        "total_ns": 4949986
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 77708,
+        "p95_ns": 104458,
+        "p99_ns": 149250,
+        "total_ns": 2765459
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 219458,
+        "p95_ns": 287458,
+        "p99_ns": 288542,
+        "total_ns": 7545119
+      },
+      "reopen_ns": 11007541,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15269888,
+      "process_peak_bytes": 15269888
+    },
+    {
+      "revision": "after",
+      "repetition": 3,
+      "layout": "Versioned",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3919209,
+        "p95_ns": 4203667,
+        "p99_ns": 4349542,
+        "total_ns": 731812173
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3822875,
+        "p95_ns": 4097958,
+        "p99_ns": 4274375,
+        "total_ns": 708865211
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 68042,
+        "p95_ns": 221458,
+        "p99_ns": 285667,
+        "total_ns": 17384253
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 500,
+        "p95_ns": 3166,
+        "p99_ns": 8250,
+        "total_ns": 3784143
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 458,
+        "p95_ns": 959,
+        "p99_ns": 1875,
+        "total_ns": 2226782
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 1202542,
+        "p95_ns": 2207375,
+        "p99_ns": 3130791,
+        "total_ns": 44088336
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 1194208,
+        "p95_ns": 1987625,
+        "p99_ns": 2438250,
+        "total_ns": 42281083
+      },
+      "reopen_ns": 5072666,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15106048,
+      "process_peak_bytes": 15106048
+    },
+    {
+      "revision": "before",
+      "repetition": 3,
+      "layout": "Versioned",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3933875,
+        "p95_ns": 4212000,
+        "p99_ns": 4792542,
+        "total_ns": 748951800
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3826083,
+        "p95_ns": 4111584,
+        "p99_ns": 4280750,
+        "total_ns": 724058913
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 72209,
+        "p95_ns": 248125,
+        "p99_ns": 624459,
+        "total_ns": 19352082
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 542,
+        "p95_ns": 3209,
+        "p99_ns": 8791,
+        "total_ns": 4241766
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 417,
+        "p95_ns": 1125,
+        "p99_ns": 3208,
+        "total_ns": 2460386
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 1217958,
+        "p95_ns": 2232542,
+        "p99_ns": 3335042,
+        "total_ns": 44306333
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 1178084,
+        "p95_ns": 1961916,
+        "p99_ns": 2354959,
+        "total_ns": 41703334
+      },
+      "reopen_ns": 5252875,
+      "journal_bytes": 1466756,
+      "resident_bytes": 14958592,
+      "process_peak_bytes": 14958592
+    },
+    {
+      "revision": "after",
+      "repetition": 3,
+      "layout": "Hybrid",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3939292,
+        "p95_ns": 4363666,
+        "p99_ns": 10145709,
+        "total_ns": 773621871
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3808625,
+        "p95_ns": 4301125,
+        "p99_ns": 9904125,
+        "total_ns": 748643539
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 80583,
+        "p95_ns": 252417,
+        "p99_ns": 375875,
+        "total_ns": 20412249
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 250,
+        "p95_ns": 458,
+        "p99_ns": 791,
+        "total_ns": 1189234
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 667,
+        "p95_ns": 3167,
+        "p99_ns": 11083,
+        "total_ns": 4587004
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 83416,
+        "p95_ns": 115375,
+        "p99_ns": 150125,
+        "total_ns": 2700876
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 220958,
+        "p95_ns": 288166,
+        "p99_ns": 318292,
+        "total_ns": 6962459
+      },
+      "reopen_ns": 10974792,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15171584,
+      "process_peak_bytes": 15171584
+    },
+    {
+      "revision": "before",
+      "repetition": 3,
+      "layout": "Hybrid",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3959375,
+        "p95_ns": 4251375,
+        "p99_ns": 5066875,
+        "total_ns": 757089214
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3826625,
+        "p95_ns": 4109084,
+        "p99_ns": 4178833,
+        "total_ns": 726993787
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 103042,
+        "p95_ns": 255083,
+        "p99_ns": 1127375,
+        "total_ns": 25019910
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 292,
+        "p95_ns": 458,
+        "p99_ns": 833,
+        "total_ns": 1275821
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 750,
+        "p95_ns": 3042,
+        "p99_ns": 10250,
+        "total_ns": 4730837
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 86500,
+        "p95_ns": 114958,
+        "p99_ns": 176666,
+        "total_ns": 2974916
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 246167,
+        "p95_ns": 299500,
+        "p99_ns": 313959,
+        "total_ns": 8262622
+      },
+      "reopen_ns": 12928250,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15122432,
+      "process_peak_bytes": 15122432
+    },
+    {
+      "revision": "after",
+      "repetition": 3,
+      "layout": "Cow",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3962834,
+        "p95_ns": 4287875,
+        "p99_ns": 5188375,
+        "total_ns": 749033710
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3819833,
+        "p95_ns": 4146917,
+        "p99_ns": 4865375,
+        "total_ns": 718308339
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 105375,
+        "p95_ns": 185834,
+        "p99_ns": 367625,
+        "total_ns": 21986636
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 208,
+        "p95_ns": 459,
+        "p99_ns": 583,
+        "total_ns": 911331
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 208,
+        "p95_ns": 542,
+        "p99_ns": 834,
+        "total_ns": 1053207
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 22417,
+        "p95_ns": 50417,
+        "p99_ns": 140541,
+        "total_ns": 759542
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 20042,
+        "p95_ns": 31250,
+        "p99_ns": 42042,
+        "total_ns": 618250
+      },
+      "reopen_ns": 17429250,
+      "journal_bytes": 1466756,
+      "resident_bytes": 9748480,
+      "process_peak_bytes": 9748480
+    },
+    {
+      "revision": "before",
+      "repetition": 3,
+      "layout": "Cow",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 4047667,
+        "p95_ns": 4622791,
+        "p99_ns": 8260417,
+        "total_ns": 787135659
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3862667,
+        "p95_ns": 4490583,
+        "p99_ns": 8110958,
+        "total_ns": 755876501
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 108917,
+        "p95_ns": 173083,
+        "p99_ns": 259209,
+        "total_ns": 22486460
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 250,
+        "p95_ns": 500,
+        "p99_ns": 666,
+        "total_ns": 1071086
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 250,
+        "p95_ns": 542,
+        "p99_ns": 1084,
+        "total_ns": 1162653
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 19292,
+        "p95_ns": 27041,
+        "p99_ns": 55291,
+        "total_ns": 685623
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 18625,
+        "p95_ns": 28291,
+        "p99_ns": 53625,
+        "total_ns": 660416
+      },
+      "reopen_ns": 17392334,
+      "journal_bytes": 1466756,
+      "resident_bytes": 9699328,
+      "process_peak_bytes": 9699328
+    },
+    {
+      "revision": "before",
+      "repetition": 4,
+      "layout": "Hybrid",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3965416,
+        "p95_ns": 4240709,
+        "p99_ns": 5991000,
+        "total_ns": 765409996
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3797834,
+        "p95_ns": 4082542,
+        "p99_ns": 4532833,
+        "total_ns": 730444414
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 115667,
+        "p95_ns": 269458,
+        "p99_ns": 492459,
+        "total_ns": 28921667
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 292,
+        "p95_ns": 584,
+        "p99_ns": 958,
+        "total_ns": 1431355
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 750,
+        "p95_ns": 3916,
+        "p99_ns": 12625,
+        "total_ns": 5440433
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 85959,
+        "p95_ns": 103833,
+        "p99_ns": 146417,
+        "total_ns": 2767879
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 258333,
+        "p95_ns": 289666,
+        "p99_ns": 345334,
+        "total_ns": 8133547
+      },
+      "reopen_ns": 12827041,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15155200,
+      "process_peak_bytes": 15155200
+    },
+    {
+      "revision": "after",
+      "repetition": 4,
+      "layout": "Hybrid",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3909833,
+        "p95_ns": 4271667,
+        "p99_ns": 4436875,
+        "total_ns": 736008425
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3776292,
+        "p95_ns": 4100791,
+        "p99_ns": 4233125,
+        "total_ns": 707294994
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 104083,
+        "p95_ns": 245000,
+        "p99_ns": 353000,
+        "total_ns": 23379662
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 250,
+        "p95_ns": 458,
+        "p99_ns": 583,
+        "total_ns": 1177114
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 708,
+        "p95_ns": 2375,
+        "p99_ns": 9084,
+        "total_ns": 4451388
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 85375,
+        "p95_ns": 120834,
+        "p99_ns": 150375,
+        "total_ns": 2778538
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 228167,
+        "p95_ns": 308708,
+        "p99_ns": 349041,
+        "total_ns": 7615252
+      },
+      "reopen_ns": 10962625,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15187968,
+      "process_peak_bytes": 15187968
+    },
+    {
+      "revision": "before",
+      "repetition": 4,
+      "layout": "Cow",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3928542,
+        "p95_ns": 4243917,
+        "p99_ns": 5128334,
+        "total_ns": 745856164
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3806500,
+        "p95_ns": 4118542,
+        "p99_ns": 5049167,
+        "total_ns": 721076291
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 85375,
+        "p95_ns": 163583,
+        "p99_ns": 187750,
+        "total_ns": 17621795
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 166,
+        "p95_ns": 292,
+        "p99_ns": 458,
+        "total_ns": 732062
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 166,
+        "p95_ns": 416,
+        "p99_ns": 667,
+        "total_ns": 800058
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 19084,
+        "p95_ns": 39541,
+        "p99_ns": 75083,
+        "total_ns": 692876
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 17625,
+        "p95_ns": 26625,
+        "p99_ns": 54167,
+        "total_ns": 623790
+      },
+      "reopen_ns": 18254291,
+      "journal_bytes": 1466756,
+      "resident_bytes": 9633792,
+      "process_peak_bytes": 9633792
+    },
+    {
+      "revision": "after",
+      "repetition": 4,
+      "layout": "Cow",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3924458,
+        "p95_ns": 4331334,
+        "p99_ns": 7893792,
+        "total_ns": 769825332
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3782000,
+        "p95_ns": 4153625,
+        "p99_ns": 7736125,
+        "total_ns": 740316455
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 105000,
+        "p95_ns": 177500,
+        "p99_ns": 534709,
+        "total_ns": 21524259
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 84,
+        "p95_ns": 167,
+        "p99_ns": 209,
+        "total_ns": 429367
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 83,
+        "p95_ns": 208,
+        "p99_ns": 250,
+        "total_ns": 407700
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 9292,
+        "p95_ns": 11958,
+        "p99_ns": 18708,
+        "total_ns": 315414
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 9250,
+        "p95_ns": 11042,
+        "p99_ns": 16208,
+        "total_ns": 306542
+      },
+      "reopen_ns": 10529833,
+      "journal_bytes": 1466756,
+      "resident_bytes": 9748480,
+      "process_peak_bytes": 9748480
+    },
+    {
+      "revision": "before",
+      "repetition": 4,
+      "layout": "Versioned",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3938708,
+        "p95_ns": 4242541,
+        "p99_ns": 4477709,
+        "total_ns": 744132631
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3845458,
+        "p95_ns": 4140792,
+        "p99_ns": 4349417,
+        "total_ns": 721569164
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 68958,
+        "p95_ns": 224250,
+        "p99_ns": 283041,
+        "total_ns": 17540291
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 500,
+        "p95_ns": 3083,
+        "p99_ns": 9375,
+        "total_ns": 4010662
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 416,
+        "p95_ns": 1125,
+        "p99_ns": 2375,
+        "total_ns": 2219253
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 1307459,
+        "p95_ns": 2275958,
+        "p99_ns": 3244833,
+        "total_ns": 46042456
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 1244709,
+        "p95_ns": 2128375,
+        "p99_ns": 2593250,
+        "total_ns": 44137836
+      },
+      "reopen_ns": 5445209,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15007744,
+      "process_peak_bytes": 15007744
+    },
+    {
+      "revision": "after",
+      "repetition": 4,
+      "layout": "Versioned",
+      "keys": 512,
+      "update_rounds": 24,
+      "value_bytes": 100,
+      "profile": "release",
+      "working_index": "memory; journal on native filesystem",
+      "durability": "sync_all per complete transaction batch",
+      "commit_batches": {
+        "operations": 192,
+        "p50_ns": 3966917,
+        "p95_ns": 4592083,
+        "p99_ns": 7940667,
+        "total_ns": 763641579
+      },
+      "prepare_and_sync": {
+        "operations": 192,
+        "p50_ns": 3878458,
+        "p95_ns": 4551042,
+        "p99_ns": 7867167,
+        "total_ns": 744673247
+      },
+      "index_install": {
+        "operations": 192,
+        "p50_ns": 61750,
+        "p95_ns": 193792,
+        "p99_ns": 268416,
+        "total_ns": 14278673
+      },
+      "current_get": {
+        "operations": 4096,
+        "p50_ns": 167,
+        "p95_ns": 792,
+        "p99_ns": 2542,
+        "total_ns": 1203197
+      },
+      "old_get": {
+        "operations": 4096,
+        "p50_ns": 167,
+        "p95_ns": 334,
+        "p99_ns": 625,
+        "total_ns": 861290
+      },
+      "current_full_scan": {
+        "operations": 32,
+        "p50_ns": 1073584,
+        "p95_ns": 1145167,
+        "p99_ns": 1306250,
+        "total_ns": 34632877
+      },
+      "old_full_scan": {
+        "operations": 32,
+        "p50_ns": 1049000,
+        "p95_ns": 1101333,
+        "p99_ns": 1125459,
+        "total_ns": 33637835
+      },
+      "reopen_ns": 5078666,
+      "journal_bytes": 1466756,
+      "resident_bytes": 15089664,
+      "process_peak_bytes": 15089664
+    }
+  ]
+}

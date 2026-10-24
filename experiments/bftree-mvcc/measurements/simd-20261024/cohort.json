@@ -1,0 +1,27 @@
+{
+  "processes": 225,
+  "journal_triplets": 75,
+  "timed_operations": {
+    "commit_batches": 95130,
+    "current_get": 921600,
+    "old_get": 921600,
+    "current_full_scan": 7200,
+    "old_full_scan": 7200
+  },
+  "compiler_observed_process_boundaries": 54,
+  "max_compilers_before": 4,
+  "max_compilers_after": 4,
+  "load_before_min": [
+    8.12548828125,
+    16.52099609375,
+    27.76611328125
+  ],
+  "load_before_max": [
+    52.7734375,
+    51.49267578125,
+    43.20947265625
+  ],
+  "logical_cpus": 16,
+  "journal_location": "/private/tmp/hawdb-bftree-simd-comparison-20261024/journals",
+  "notes": "Journal hash receipt independently rechecked after the completed cohort. Validation tools are separate from the adapter."
+}

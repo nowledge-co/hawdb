@@ -1,0 +1,81 @@
+{
+  "upstream": {
+    "__RNvMs1_NtNtCs2haWBQNG59p_7bf_tree5nodes9leaf_nodeNtB5_8LeafNode11lower_bound": {
+      "instructions": 96,
+      "cmeq": 0,
+      "memcmp_calls": 2,
+      "calls": [
+        "00000001000055e0\tbl\t0x100074de4 ; symbol stub for: _memcmp",
+        "0000000100005630\tbl\t0x100074de4 ; symbol stub for: _memcmp",
+        "00000001000056b0\tbl\t__RNvNtNtCsgtPOCBgevO_4core5slice5index16slice_index_fail"
+      ],
+      "file": "upstream-leaf_nodeNtB5_8LeafNode11lower_bound.s"
+    },
+    "__RNvMs2_NtNtCs2haWBQNG59p_7bf_tree5nodes10inner_nodeNtB5_9InnerNode11lower_bound": {
+      "instructions": 142,
+      "cmeq": 0,
+      "memcmp_calls": 4,
+      "calls": [
+        "000000010000c570\tbl\t0x100074de4 ; symbol stub for: _memcmp",
+        "000000010000c5c0\tbl\t0x100074de4 ; symbol stub for: _memcmp",
+        "000000010000c64c\tbl\t0x100074de4 ; symbol stub for: _memcmp",
+        "000000010000c69c\tbl\t0x100074de4 ; symbol stub for: _memcmp"
+      ],
+      "file": "upstream-ner_nodeNtB5_9InnerNode11lower_bound.s"
+    }
+  },
+  "word": {
+    "__RNvMs1_NtNtCs4KGZ7TXa8sM_7bf_tree5nodes9leaf_nodeNtB5_8LeafNode11lower_bound": {
+      "instructions": 122,
+      "cmeq": 0,
+      "memcmp_calls": 2,
+      "calls": [
+        "00000001000054d0\tbl\t0x100074ea8 ; symbol stub for: _memcmp",
+        "0000000100005590\tbl\t0x100074ea8 ; symbol stub for: _memcmp",
+        "00000001000055f4\tbl\t__RNvNtNtCsgtPOCBgevO_4core5slice5index16slice_index_fail",
+        "0000000100005608\tbl\t__RNvNtNtCsgtPOCBgevO_4core5slice5index16slice_index_fail"
+      ],
+      "file": "word-leaf_nodeNtB5_8LeafNode11lower_bound.s"
+    },
+    "__RNvMs2_NtNtCs4KGZ7TXa8sM_7bf_tree5nodes10inner_nodeNtB5_9InnerNode11lower_bound": {
+      "instructions": 119,
+      "cmeq": 0,
+      "memcmp_calls": 2,
+      "calls": [
+        "000000010000c4f0\tbl\t0x100074ea8 ; symbol stub for: _memcmp",
+        "000000010000c5c0\tbl\t0x100074ea8 ; symbol stub for: _memcmp",
+        "000000010000c630\tbl\t__RNvNtNtCsgtPOCBgevO_4core5slice5index16slice_index_fail"
+      ],
+      "file": "word-ner_nodeNtB5_9InnerNode11lower_bound.s"
+    }
+  },
+  "neon": {
+    "__RNvMs1_NtNtCs5qX9ksSdh4L_7bf_tree5nodes9leaf_nodeNtB5_8LeafNode11lower_bound": {
+      "instructions": 165,
+      "cmeq": 1,
+      "memcmp_calls": 2,
+      "calls": [
+        "00000001000055ec\tbl\t0x1000751ec ; symbol stub for: _memcmp",
+        "00000001000056ec\tbl\t0x1000751ec ; symbol stub for: _memcmp",
+        "0000000100005798\tbl\t__RNvNtNtCsgtPOCBgevO_4core5slice5index16slice_index_fail",
+        "00000001000057a8\tbl\t__RNvNtNtCsgtPOCBgevO_4core5slice5index16slice_index_fail",
+        "00000001000057bc\tbl\t__RNvNtNtCsgtPOCBgevO_4core5slice5index16slice_index_fail",
+        "00000001000057d0\tbl\t__RNvNtNtCsgtPOCBgevO_4core5slice5index16slice_index_fail"
+      ],
+      "file": "neon-leaf_nodeNtB5_8LeafNode11lower_bound.s"
+    },
+    "__RNvMs2_NtNtCs5qX9ksSdh4L_7bf_tree5nodes10inner_nodeNtB5_9InnerNode11lower_bound": {
+      "instructions": 180,
+      "cmeq": 1,
+      "memcmp_calls": 2,
+      "calls": [
+        "000000010000c7a0\tbl\t0x1000751ec ; symbol stub for: _memcmp",
+        "000000010000c8f4\tbl\t0x1000751ec ; symbol stub for: _memcmp",
+        "000000010000c9a8\tbl\t__RNvNtNtCsgtPOCBgevO_4core5slice5index16slice_index_fail",
+        "000000010000c9bc\tbl\t__RNvNtNtCsgtPOCBgevO_4core5slice5index16slice_index_fail",
+        "000000010000c9d0\tbl\t__RNvNtNtCsgtPOCBgevO_4core5slice5index16slice_index_fail"
+      ],
+      "file": "neon-ner_nodeNtB5_9InnerNode11lower_bound.s"
+    }
+  }
+}

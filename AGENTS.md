@@ -193,3 +193,17 @@
   --all-targets --all-features`. The additional manual Bazel target
   `//tests/pg-regress:hawdb_pg_regress_worker` is only an embedded API fixture;
   the complete native comparison CLI is built/run through Cargo and Make.
+
+## Bf-Tree MVCC experiment
+
+- Repository version bumps must also relock `experiments/bftree-mvcc/Cargo.lock`
+  so its local `hawdb-*` path package versions stay current.
+
+- `experiments/bftree-mvcc/` is an independent, binary-only, unpublished workspace.
+  Keep it and `bf-tree` out of production dependencies and library archives.
+- Run its focused tests and strict Clippy manually when changing it; do not add
+  this experiment to CI or scheduled jobs. Follow its README for exact commands.
+- Changes to MVCC layouts require release-profile comparisons of versioned,
+  hybrid and COW reference layouts under identical journal synchronization,
+  including current/old reads, scan and write tails, recovery and memory costs.
+  Keep component results distinct from end-to-end HawDB performance claims.

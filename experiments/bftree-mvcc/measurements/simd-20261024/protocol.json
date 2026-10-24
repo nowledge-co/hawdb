@@ -1,0 +1,71 @@
+{
+  "repetitions": 5,
+  "cases": [
+    [
+      16,
+      2,
+      "numeric8"
+    ],
+    [
+      512,
+      24,
+      "numeric8"
+    ],
+    [
+      2048,
+      48,
+      "numeric8"
+    ],
+    [
+      512,
+      24,
+      "prefix64"
+    ],
+    [
+      512,
+      24,
+      "spread64"
+    ]
+  ],
+  "layouts": [
+    "versioned",
+    "hybrid",
+    "cow"
+  ],
+  "binaries": {
+    "upstream": {
+      "path": "/private/tmp/hawdb-bftree-simd-comparison-20261024/bin/upstream",
+      "sha256": "c0a4843cfaad8567a4fea13aeadd89c2ffd5802c225587e195a6eeadc781bd8f"
+    },
+    "word": {
+      "path": "/private/tmp/hawdb-bftree-simd-comparison-20261024/bin/word",
+      "sha256": "931cb9f6658aba9e12d6ed4d533a5ff2c6b616c08a191c8f26c20e2e1649bd80"
+    },
+    "neon": {
+      "path": "/private/tmp/hawdb-bftree-simd-comparison-20261024/bin/neon",
+      "sha256": "b4694744392563c5174a3af9bd111380d91bd770819f7d62b652650346497b83"
+    }
+  },
+  "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "profile": "repository release, no overrides",
+  "order": "rotate variants/layouts; reverse variants and cases on odd repetitions",
+  "isolation": "fresh process and synced journal per variant/case/layout/repetition",
+  "durability": "unchanged sync_all before index installation and publication",
+  "samples_per_process": {
+    "current_get": 4096,
+    "old_get": 4096,
+    "current_full_scan": 32,
+    "old_full_scan": 32
+  },
+  "limits": "Shared host. Scan p99 is a maximum. No production or power-loss claim.",
+  "compiler_observation": "Counts at child boundaries only; no continuous quiescence claim",
+  "drivers": {
+    "build.py": "a67ea450b02ad2c1ee01bd12fe8b300edeb3cb4a4397d9fba3b0eb0752bed5fe",
+    "measure.py": "7a93643c23af2a7d1c6d87afbf14bfcc867bf080cac8bc18690288a61e3dfb31",
+    "prepare.py": "1307fe8810e4fbb88257960851a6bed0c739e36520b899612de8663688c307ea"
+  },
+  "cpu": "Apple M3 Max",
+  "memory_bytes": 137438953472,
+  "journal_filesystem": "Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on\n/dev/disk3s5   3.6Ti   1.6Ti   2.0Ti    45%     26M   22G    0%   /System/Volumes/Data\n"
+}
