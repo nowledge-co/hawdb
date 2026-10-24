@@ -656,7 +656,7 @@ impl GraphStore {
     pub fn visit_projected_nodes_by_access_owned(
         &self,
         label_id: LabelId,
-        access: &hawdb_plan_cypher::NodeProjectionAccess,
+        access: &hawdb_core::access::NodeProjectionAccess,
         required_properties: &BTreeSet<String>,
         mut consumer: impl FnMut(ProjectedNodeRecord) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
@@ -675,16 +675,16 @@ impl GraphStore {
     fn visit_projected_nodes_by_access_with_admission(
         &self,
         label_id: LabelId,
-        access: &hawdb_plan_cypher::NodeProjectionAccess,
+        access: &hawdb_core::access::NodeProjectionAccess,
         required_properties: Option<&BTreeSet<String>>,
         admission: &ProjectionAdmission<'_>,
         consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
         match access {
-            hawdb_plan_cypher::NodeProjectionAccess::LabelScan => {
+            hawdb_core::access::NodeProjectionAccess::LabelScan => {
                 self.visit_selected_nodes_with_admission(Some(label_id), required_properties, admission, consumer)
             }
-            hawdb_plan_cypher::NodeProjectionAccess::PropertyValues { property, values } => self
+            hawdb_core::access::NodeProjectionAccess::PropertyValues { property, values } => self
                 .visit_projected_nodes_by_property_with_admission(
                     label_id,
                     property,
@@ -693,11 +693,11 @@ impl GraphStore {
                     admission,
                     consumer,
                 ),
-            hawdb_plan_cypher::NodeProjectionAccess::PropertyUnion { .. } => Err(HawDBError::Execution(
+            hawdb_core::access::NodeProjectionAccess::PropertyUnion { .. } => Err(HawDBError::Execution(
                 "property-union projection access requires executor-owned deduplication admission"
                     .to_string(),
             )),
-            hawdb_plan_cypher::NodeProjectionAccess::CompositeEquality { predicates } => self
+            hawdb_core::access::NodeProjectionAccess::CompositeEquality { predicates } => self
                 .visit_projected_nodes_by_composite_property_with_admission(
                     label_id,
                     predicates,
@@ -705,7 +705,7 @@ impl GraphStore {
                     admission,
                     consumer,
                 ),
-            hawdb_plan_cypher::NodeProjectionAccess::CompositeRange { seek } => self
+            hawdb_core::access::NodeProjectionAccess::CompositeRange { seek } => self
                 .visit_projected_nodes_by_composite_range_with_admission(
                     label_id,
                     seek,
@@ -713,7 +713,7 @@ impl GraphStore {
                     admission,
                     consumer,
                 ),
-            hawdb_plan_cypher::NodeProjectionAccess::CompositeOrdered { seek } => self
+            hawdb_core::access::NodeProjectionAccess::CompositeOrdered { seek } => self
                 .visit_projected_nodes_by_composite_order_with_admission(
                     label_id,
                     seek,
@@ -721,7 +721,7 @@ impl GraphStore {
                     admission,
                     consumer,
                 ),
-            hawdb_plan_cypher::NodeProjectionAccess::PropertyRange {
+            hawdb_core::access::NodeProjectionAccess::PropertyRange {
                 property,
                 lower,
                 upper,
@@ -733,7 +733,7 @@ impl GraphStore {
                 admission,
                 consumer,
             ),
-            hawdb_plan_cypher::NodeProjectionAccess::FullText { property, query } => self
+            hawdb_core::access::NodeProjectionAccess::FullText { property, query } => self
                 .visit_projected_nodes_by_full_text_property_with_admission(
                     label_id,
                     property,
@@ -2151,7 +2151,7 @@ impl GraphStore {
     pub fn visit_nodes_by_composite_range_owned(
         &self,
         label_id: LabelId,
-        seek: &hawdb_plan_cypher::CompositeRangeSeek,
+        seek: &hawdb_core::access::CompositeRangeSeek,
         mut consumer: impl FnMut(NodeRecord) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
         validate_composite_range_seek(seek)?;
@@ -2241,7 +2241,7 @@ impl GraphStore {
     fn visit_projected_nodes_by_composite_range_with_admission(
         &self,
         label_id: LabelId,
-        seek: &hawdb_plan_cypher::CompositeRangeSeek,
+        seek: &hawdb_core::access::CompositeRangeSeek,
         required_properties: Option<&BTreeSet<String>>,
         admission: &ProjectionAdmission<'_>,
         mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
@@ -4682,13 +4682,13 @@ impl GraphStore {
     }
 }
 
-fn composite_range_requires_full_key(seek: &hawdb_plan_cypher::CompositeRangeSeek) -> bool {
+fn composite_range_requires_full_key(seek: &hawdb_core::access::CompositeRangeSeek) -> bool {
     // Missing suffix properties are absent from the projection, but may still
     // satisfy a prefix range. Keep those requests on a complete fallback.
     seek.equality_prefix.len().checked_add(1) == Some(seek.index_properties.len())
 }
 
-fn validate_composite_range_seek(seek: &hawdb_plan_cypher::CompositeRangeSeek) -> Result<()> {
+fn validate_composite_range_seek(seek: &hawdb_core::access::CompositeRangeSeek) -> Result<()> {
     let prefix_len = seek.equality_prefix.len();
     if prefix_len == 0
         || prefix_len >= seek.index_properties.len()
@@ -4709,21 +4709,21 @@ fn validate_composite_range_seek(seek: &hawdb_plan_cypher::CompositeRangeSeek) -
 
 fn node_matches_composite_range(
     node: &NodeRecord,
-    seek: &hawdb_plan_cypher::CompositeRangeSeek,
+    seek: &hawdb_core::access::CompositeRangeSeek,
 ) -> bool {
     properties_match_composite_range(&node.properties, seek)
 }
 
 fn projected_node_matches_composite_range(
     node: &ProjectedNodeRecord,
-    seek: &hawdb_plan_cypher::CompositeRangeSeek,
+    seek: &hawdb_core::access::CompositeRangeSeek,
 ) -> bool {
     properties_match_composite_range(&node.properties, seek)
 }
 
 fn properties_match_composite_range(
     properties: &BTreeMap<String, Value>,
-    seek: &hawdb_plan_cypher::CompositeRangeSeek,
+    seek: &hawdb_core::access::CompositeRangeSeek,
 ) -> bool {
     seek.equality_prefix
         .iter()

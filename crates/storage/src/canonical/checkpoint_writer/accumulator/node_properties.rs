@@ -28,6 +28,7 @@ pub(super) struct Progress {
     property: Option<CheckpointText>,
     key: Option<CheckpointVectorPush<u64>>,
     phase: usize,
+    label_recorded: bool,
 }
 
 pub(super) fn add(
@@ -65,7 +66,7 @@ fn resume(
             "retained property source identity changed".into(),
         ));
     }
-    if node.properties.is_empty() || node.labels.is_empty() {
+    if node.labels.is_empty() {
         context.checkpoint()?;
         return Ok(());
     }
@@ -79,6 +80,7 @@ fn resume(
         property: None,
         key: None,
         phase: 0,
+        label_recorded: false,
     });
     if state.id != node.id
         || state.labels != node.labels.len()
@@ -103,14 +105,28 @@ fn resume(
             }
             if state.label.is_none() {
                 state.phase = 5;
+            } else if !state.label_recorded {
+                state.key = Some(CheckpointVectorPush::new(u64::from(
+                    state.label.expect("selected label").0,
+                )));
+                state.phase = 6;
             } else if next_property(node, state.previous_property.as_deref()).is_some() {
                 state.property = Some(CheckpointText::new());
                 state.phase = 1;
             } else {
                 state.previous_label = state.label.take();
                 state.previous_property = None;
+                state.label_recorded = false;
             }
             unit.finish();
+        }
+        if state.phase == 6 {
+            context
+                .resume_push(&mut output.segment.node_label_keys, &mut state.key)
+                .map_err(source)?;
+            state.label_recorded = true;
+            state.phase = 0;
+            continue;
         }
         if state.phase == 1 {
             let unit = context.start_unit()?;

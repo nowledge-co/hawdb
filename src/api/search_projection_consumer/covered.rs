@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Complete-E coverage handed directly to the registered publication protocol.
 
@@ -169,6 +169,11 @@ pub struct ProjectionConsumerCoverageSession<'consumer> {
 impl ProjectionConsumerCoverageSession<'_> {
     pub fn source_epoch(&self) -> u64 {
         self.session.source_epoch()
+    }
+    /// Cumulative native source work, including filtered records and descriptor
+    /// decisions. This is independent of mapped output and publication counts.
+    pub fn feed_usage(&self) -> crate::ProjectionFeedUsage {
+        self.session.feed_usage()
     }
     pub fn advance(
         &mut self,

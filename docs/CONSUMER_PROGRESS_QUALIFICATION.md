@@ -132,11 +132,14 @@ hides pending intents. Consumer allocation ledgers now use V3 and birth markers
 V2; older development databases must be recreated, with no compatibility
 migration or automatic deletion. Existing files fail closed and remain intact.
 
-Narrow source scopes limit dependency conflicts and mapper input. The full-source
-cursor still visits the database-wide node-ID range, with bounded work per step;
-total scan cost remains proportional to that range, including holes. This PR
-does not claim scope-proportional full-source scan performance. An index-driven
-enumerator requires separate performance and coverage qualification.
+The historical receipt above predates label-domain enumeration. Current scoped
+coverage uses pinned actual resident/delta records and canonical label synopses;
+it skips allocated-ID holes and can prune unrelated cold segments. It still
+charges unrelated resident records and Bloom false positives. Whole-Database
+compatibility enumeration is unchanged. The [architecture controls](benchmarks/architecture_2026_10_24/README.md)
+record the same-harness small/bulk/sparse scan comparison and separate foreground
+latency/watermark measurements. These local controls do not replace the failed
+original-baseline gate, the final 54-case matrix or sustained/platform acceptance.
 
 The manual writer job accepts `writer_baseline_revision` for a separate paired
 comparison against a pinned current-main SHA. Its default remains the original

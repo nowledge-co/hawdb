@@ -1,0 +1,234 @@
+{
+  "scan": [
+    {
+      "case": "small",
+      "cold": false,
+      "baseline": {
+        "items": 35,
+        "work": 69,
+        "elapsed_ns_median": 8583,
+        "elapsed_ns_min": 8083,
+        "elapsed_ns_max": 32875,
+        "exact_matches": 3,
+        "repeats": 3
+      },
+      "candidate": {
+        "items": 35,
+        "work": 103,
+        "elapsed_ns_median": 9958,
+        "elapsed_ns_min": 9250,
+        "elapsed_ns_max": 30833,
+        "exact_matches": 3,
+        "repeats": 3
+      }
+    },
+    {
+      "case": "small",
+      "cold": true,
+      "baseline": {
+        "items": 35,
+        "work": 69,
+        "elapsed_ns_median": 56458,
+        "elapsed_ns_min": 54375,
+        "elapsed_ns_max": 56667,
+        "exact_matches": 3,
+        "repeats": 3
+      },
+      "candidate": {
+        "items": 35,
+        "work": 107,
+        "elapsed_ns_median": 39500,
+        "elapsed_ns_min": 39459,
+        "elapsed_ns_max": 50083,
+        "exact_matches": 3,
+        "repeats": 3
+      }
+    },
+    {
+      "case": "bulk",
+      "cold": false,
+      "baseline": {
+        "items": 4129,
+        "work": 8257,
+        "elapsed_ns_median": 188292,
+        "elapsed_ns_min": 185584,
+        "elapsed_ns_max": 200916,
+        "exact_matches": 3,
+        "repeats": 3
+      },
+      "candidate": {
+        "items": 4129,
+        "work": 12385,
+        "elapsed_ns_median": 536209,
+        "elapsed_ns_min": 535250,
+        "elapsed_ns_max": 545125,
+        "exact_matches": 3,
+        "repeats": 3
+      }
+    },
+    {
+      "case": "bulk",
+      "cold": true,
+      "baseline": {
+        "items": 4129,
+        "work": 8257,
+        "elapsed_ns_median": 83373500,
+        "elapsed_ns_min": 83165416,
+        "elapsed_ns_max": 84226708,
+        "exact_matches": 3,
+        "repeats": 3
+      },
+      "candidate": {
+        "items": 161,
+        "work": 487,
+        "elapsed_ns_median": 86542,
+        "elapsed_ns_min": 80209,
+        "elapsed_ns_max": 87375,
+        "exact_matches": 3,
+        "repeats": 3
+      }
+    },
+    {
+      "case": "sparse",
+      "cold": false,
+      "baseline": {
+        "items": 1060866,
+        "work": 2121731,
+        "elapsed_ns_median": 20403084,
+        "elapsed_ns_min": 20283166,
+        "elapsed_ns_max": 20659459,
+        "exact_matches": 3,
+        "repeats": 3
+      },
+      "candidate": {
+        "items": 261,
+        "work": 781,
+        "elapsed_ns_median": 28042,
+        "elapsed_ns_min": 24250,
+        "elapsed_ns_max": 28708,
+        "exact_matches": 3,
+        "repeats": 3
+      }
+    },
+    {
+      "case": "sparse",
+      "cold": true,
+      "baseline": {
+        "items": 1060866,
+        "work": 2121731,
+        "elapsed_ns_median": 948079333,
+        "elapsed_ns_min": 932880917,
+        "elapsed_ns_max": 949065208,
+        "exact_matches": 3,
+        "repeats": 3
+      },
+      "candidate": {
+        "items": 261,
+        "work": 785,
+        "elapsed_ns_median": 53625,
+        "elapsed_ns_min": 53083,
+        "elapsed_ns_max": 58125,
+        "exact_matches": 3,
+        "repeats": 3
+      }
+    }
+  ],
+  "uncontrolled_start": [
+    {
+      "shape": "small",
+      "mode": "disabled",
+      "baseline": {
+        "writes": 768,
+        "p50_ns": 4639166,
+        "p95_ns": 5526750,
+        "p99_ns": 9926459,
+        "published_watermark_advances": 0,
+        "advances_with_active_writers": 0,
+        "committed_post_e_advances": 0,
+        "all_overlapping_progress_qualified": false
+      },
+      "candidate": {
+        "writes": 768,
+        "p50_ns": 4626459,
+        "p95_ns": 5530500,
+        "p99_ns": 9961291,
+        "published_watermark_advances": 0,
+        "advances_with_active_writers": 0,
+        "committed_post_e_advances": 0,
+        "all_overlapping_progress_qualified": false
+      }
+    },
+    {
+      "shape": "small",
+      "mode": "detached",
+      "baseline": {
+        "writes": 768,
+        "p50_ns": 4566208,
+        "p95_ns": 5521958,
+        "p99_ns": 10055250,
+        "published_watermark_advances": 60,
+        "advances_with_active_writers": 0,
+        "committed_post_e_advances": 0,
+        "all_overlapping_progress_qualified": false
+      },
+      "candidate": {
+        "writes": 768,
+        "p50_ns": 4533459,
+        "p95_ns": 5522583,
+        "p99_ns": 9786875,
+        "published_watermark_advances": 60,
+        "advances_with_active_writers": 0,
+        "committed_post_e_advances": 0,
+        "all_overlapping_progress_qualified": false
+      }
+    },
+    {
+      "shape": "bulk",
+      "mode": "disabled",
+      "baseline": {
+        "writes": 768,
+        "p50_ns": 4807333,
+        "p95_ns": 5558708,
+        "p99_ns": 10050417,
+        "published_watermark_advances": 0,
+        "advances_with_active_writers": 0,
+        "committed_post_e_advances": 0,
+        "all_overlapping_progress_qualified": false
+      },
+      "candidate": {
+        "writes": 768,
+        "p50_ns": 4668625,
+        "p95_ns": 5521625,
+        "p99_ns": 10075875,
+        "published_watermark_advances": 0,
+        "advances_with_active_writers": 0,
+        "committed_post_e_advances": 0,
+        "all_overlapping_progress_qualified": false
+      }
+    },
+    {
+      "shape": "bulk",
+      "mode": "detached",
+      "baseline": {
+        "writes": 768,
+        "p50_ns": 4624959,
+        "p95_ns": 5530083,
+        "p99_ns": 127960334,
+        "published_watermark_advances": 60,
+        "advances_with_active_writers": 0,
+        "committed_post_e_advances": 0,
+        "all_overlapping_progress_qualified": false
+      },
+      "candidate": {
+        "writes": 768,
+        "p50_ns": 4572500,
+        "p95_ns": 5534209,
+        "p99_ns": 9915084,
+        "published_watermark_advances": 60,
+        "advances_with_active_writers": 0,
+        "committed_post_e_advances": 0,
+        "all_overlapping_progress_qualified": false
+      }
+    }
+  ]
+}

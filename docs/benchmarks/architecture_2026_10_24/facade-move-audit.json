@@ -1,0 +1,20 @@
+{
+  "base": "01793dc2923da88e8b8d053ffda8daf6d8b84f06",
+  "check": "Lexically extracted function bodies, ignoring whitespace, internal visibility and rustfmt trailing call commas; a move audit, not a semantic proof.",
+  "owners": [
+    {
+      "owner": "api",
+      "original_functions": 465,
+      "current_functions": 465,
+      "missing": [],
+      "extra": []
+    },
+    {
+      "owner": "nowledge_mem",
+      "original_functions": 495,
+      "current_functions": 495,
+      "missing": [],
+      "extra": []
+    }
+  ]
+}

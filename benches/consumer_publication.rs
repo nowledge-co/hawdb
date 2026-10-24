@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Same-binary controls for the outer embedded publication owner. Timing starts
 //! before with_write and again inside its callback. Callback time is a measured
@@ -15,8 +15,9 @@ use hawdb::*;
 use serde_json::{json, Value as Json};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Barrier, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn ns(start: Instant) -> u64 {
     start.elapsed().as_nanos().try_into().unwrap()
@@ -81,12 +82,29 @@ fn update(database: &mut Database, writer: usize, value: usize) {
         .unwrap();
 }
 
+struct WriterStart {
+    captured: Vec<SyncSender<()>>,
+    committed: Mutex<Receiver<()>>,
+}
+impl WriterStart {
+    fn release(&self) {
+        for start in &self.captured {
+            start.send(()).unwrap();
+        }
+        let committed = self.committed.lock().unwrap();
+        for _ in &self.captured {
+            committed.recv_timeout(Duration::from_secs(30)).unwrap();
+        }
+    }
+}
+
 fn attempt(
     owner: &DatabasePublicationOwner<Database>,
     consumer: &mut SearchProjectionConsumer,
     mode: Mode,
     committed: &AtomicUsize,
     probe: &probes::Probe,
+    writer_start: Option<&WriterStart>,
 ) -> Json {
     let whole_phase = probe.begin("attempt");
     let mut observations = Vec::new();
@@ -115,6 +133,9 @@ fn attempt(
         capture_wait = wait;
         capture_held = held;
         captured_epoch = Some(session.source_epoch());
+        if let Some(start) = writer_start {
+            start.release();
+        }
         let coverage_phase = probe.begin("coverage_preparation");
         let outside = Instant::now();
         let (covered, calls) = workload::prepare(session, mode != Mode::Covered);
@@ -202,6 +223,7 @@ struct Case {
     writes: usize,
     quiet: usize,
     sustained: bool,
+    capture_before_writers: bool,
     readers: usize,
     reads_per_reader: usize,
 }
@@ -216,6 +238,7 @@ fn run(case: Case) -> Json {
         writes,
         quiet,
         sustained,
+        capture_before_writers,
         readers,
         reads_per_reader,
     } = case;
@@ -234,23 +257,36 @@ fn run(case: Case) -> Json {
     };
     let concurrent_phase = probe.begin("concurrent_phase");
     let ready = Barrier::new(writers + readers + 2);
+    let (start_senders, start_receivers): (Vec<_>, Vec<_>) =
+        (0..writers).map(|_| sync_channel(1)).unzip();
+    let (first_commit, committed) = sync_channel(writers);
+    let writer_start = WriterStart {
+        captured: start_senders,
+        committed: Mutex::new(committed),
+    };
     let active = AtomicUsize::new(writers);
     let completed = AtomicUsize::new(0);
     let checkpoint_writes = AtomicUsize::new(0);
     let checkpoint_samples = Mutex::new(Vec::new());
     let (workers, read_workers, attempts, triggers, publisher_exit_active, elapsed, elapsed_all) =
         std::thread::scope(|scope| {
-            let handles = (0..writers)
-                .map(|writer| {
+            let handles = start_receivers
+                .into_iter()
+                .enumerate()
+                .map(|(writer, start)| {
                     let owner = &owner;
                     let ready = &ready;
                     let active = &active;
                     let completed = &completed;
                     let checkpoint_writes = &checkpoint_writes;
                     let checkpoint_samples = &checkpoint_samples;
+                    let first_commit = first_commit.clone();
                     scope.spawn(move || {
                         let mut samples = Vec::new();
                         ready.wait();
+                        if capture_before_writers {
+                            start.recv_timeout(Duration::from_secs(30)).unwrap();
+                        }
                         for sequence in (writer..writes).step_by(writers) {
                             let started = Instant::now();
                             let (_, wait, held) = exclusive(owner, |db| {
@@ -271,6 +307,10 @@ fn run(case: Case) -> Json {
                             });
                             samples.push((ns(started), wait, held));
                             completed.fetch_add(1, Ordering::Release);
+                            // Outside the measured write interval; writers continue immediately.
+                            if capture_before_writers && sequence == writer {
+                                first_commit.send(()).unwrap();
+                            }
                         }
                         active.fetch_sub(1, Ordering::Release);
                         samples
@@ -311,9 +351,19 @@ fn run(case: Case) -> Json {
                         .unwrap();
                     });
                     triggers.push((wait, held));
+                    if capture_before_writers && sequence == 1 && mode == Mode::Disabled {
+                        writer_start.release();
+                    }
                     if mode != Mode::Disabled {
                         let before = completed.load(Ordering::Acquire);
-                        let mut row = attempt(&owner, &mut consumer, mode, &completed, &probe);
+                        let mut row = attempt(
+                            &owner,
+                            &mut consumer,
+                            mode,
+                            &completed,
+                            &probe,
+                            (capture_before_writers && sequence == 1).then_some(&writer_start),
+                        );
                         row["writes_before"] = json!(before);
                         row["writes_after"] = json!(completed.load(Ordering::Acquire));
                         row["writers_active_after"] = json!(active.load(Ordering::Acquire));
@@ -378,6 +428,9 @@ fn run(case: Case) -> Json {
             Ok(())
         })
         .unwrap();
+    if capture_before_writers && mode == Mode::Detached {
+        assert_eq!(attempts[0]["committed_post_e_advance"], true);
+    }
     let watermark_after_writers = consumer.projection().receipt().source_epoch;
     let active_advances = attempts
         .iter()
@@ -394,7 +447,7 @@ fn run(case: Case) -> Json {
                     Ok(())
                 })
                 .unwrap();
-            let row = attempt(&owner, &mut consumer, mode, &completed, &probe);
+            let row = attempt(&owner, &mut consumer, mode, &completed, &probe, None);
             assert_eq!(row["outcome"], "published");
             assert_eq!(row["advanced"], true);
             quiet_samples.push(row);
@@ -434,6 +487,7 @@ fn run(case: Case) -> Json {
     let publisher_cap_reached = sustained && publisher_exit_active > 0;
     let mut result = json!({
         "schema": "consumer-publication-qualification-v2", "mode": mode.name(),
+        "capture_before_writers": capture_before_writers,
         "documents": documents, "payload_bytes_per_document": payload, "writers": writers, "writes": writes,
         "durability": "SyncOnEveryWrite", "automatic_checkpoint_max_age_seconds": 3600,
         "changefeed_retention_entries": retention_entries, "changefeed_retention_bytes": 64 << 20,
@@ -481,6 +535,7 @@ fn main() {
     let mut writes = 4096;
     let mut quiet = 32;
     let mut sustained = false;
+    let mut capture_before_writers = false;
     let mut readers = 0;
     let mut reads_per_reader = 512;
     let mut root = None;
@@ -509,6 +564,7 @@ fn main() {
             "--writes" => writes = value.parse().unwrap(),
             "--quiet-samples" => quiet = value.parse().unwrap(),
             "--sustained" => sustained = value.parse().unwrap(),
+            "--capture-before-writers" => capture_before_writers = value.parse().unwrap(),
             "--root" => root = Some(PathBuf::from(value)),
             _ => panic!("unknown argument: {arg}"),
         }
@@ -519,6 +575,10 @@ fn main() {
     assert!((1..=4096).contains(&documents) && (1..=2048).contains(&payload));
     assert!((writers..=100_000).contains(&writes) && (1..=1024).contains(&quiet));
     assert!(!sustained || mode == Mode::Detached);
+    assert!(
+        !capture_before_writers
+            || (!sustained && readers == 0 && matches!(mode, Mode::Disabled | Mode::Detached))
+    );
     let root = root.expect("--root must name a new fixture directory on the measured filesystem");
     println!(
         "{}",
@@ -531,6 +591,7 @@ fn main() {
             writes,
             quiet,
             sustained,
+            capture_before_writers,
             readers,
             reads_per_reader,
         })

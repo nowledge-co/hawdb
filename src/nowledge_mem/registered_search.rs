@@ -1,16 +1,17 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Registered Search lifecycle bound to the embedded source owner.
 
 use super::*;
 use crate::{
-    ProjectionConsumerCatchUpConfig, ProjectionConsumerCatchUpError,
-    ProjectionConsumerStagingSession, ProjectionCoveredConsumerUpdate, ProjectionMappingFunction,
-    ProjectionPreparedConsumerUpdate, ProjectionSourceDurability, ProjectionSourceScope,
-    SearchProjectionConsumer, SearchProjectionConsumerCatchUpReport, SearchProjectionConsumerId,
+    DefinedProjectionStagingSession, ProjectionConsumerCatchUpConfig,
+    ProjectionConsumerCatchUpError, ProjectionConsumerStagingSession,
+    ProjectionCoveredConsumerUpdate, ProjectionMappingFunction, ProjectionPreparedConsumerUpdate,
+    ProjectionSourceDurability, ProjectionSourceScope, SearchProjectionConsumer,
+    SearchProjectionConsumerCatchUpReport, SearchProjectionConsumerId,
     SearchProjectionConsumerOptions, SearchProjectionConsumerReadiness,
-    SearchProjectionConsumerResult, SearchProjectionConsumerStatus,
+    SearchProjectionConsumerResult, SearchProjectionConsumerStatus, SearchProjectionDefinition,
 };
 
 type CatchUpResult<T> = std::result::Result<T, ProjectionConsumerCatchUpError>;
@@ -25,6 +26,13 @@ pub struct NowledgeMemSearchProjectionConsumer {
     owner: NowledgeMemEmbeddedStoreHandle,
 }
 
+/// One versioned projection definition and the embedded owner that acquired it.
+/// Mapping callbacks and source domains are selected once at acquisition.
+pub struct NowledgeMemDefinedSearchProjectionConsumer {
+    consumer: NowledgeMemSearchProjectionConsumer,
+    definition: SearchProjectionDefinition,
+}
+
 /// Native construction is complete; only fenced publication remains. This value
 /// can publish through its original embedded owner, never a caller-selected one.
 #[must_use]
@@ -34,6 +42,26 @@ pub struct NowledgeMemPreparedConsumerUpdate<'consumer> {
 }
 
 impl NowledgeMemEmbeddedStoreHandle {
+    /// Acquire a version/scope-bound registration using its own initializer.
+    /// A changed definition requires a fresh target and explicit query cutover.
+    pub fn open_or_create_defined_search_projection_consumer(
+        &self,
+        definition: SearchProjectionDefinition,
+        projection_directory: impl AsRef<Path>,
+        options: SearchProjectionConsumerOptions,
+    ) -> SearchProjectionConsumerResult<NowledgeMemDefinedSearchProjectionConsumer> {
+        let consumer = self.open_or_create_search_projection_consumer(
+            definition.consumer_id().clone(),
+            projection_directory,
+            options,
+            |source, index| definition.initialize(source, index),
+        )?;
+        Ok(NowledgeMemDefinedSearchProjectionConsumer {
+            consumer,
+            definition,
+        })
+    }
+
     /// Explicitly remove a logical registration by ID, including idempotent
     /// retries. This is an operation on the source owner, not permission for an
     /// old Consumer handle to revoke a newer incarnation with the same ID.
@@ -79,6 +107,66 @@ impl NowledgeMemEmbeddedStoreHandle {
             consumer,
             owner: self.clone(),
         })
+    }
+}
+
+impl NowledgeMemDefinedSearchProjectionConsumer {
+    pub fn definition(&self) -> &SearchProjectionDefinition {
+        &self.definition
+    }
+
+    pub fn consumer(&self) -> &SearchProjectionConsumer {
+        self.consumer.consumer()
+    }
+
+    pub fn read_permit(&self, request: RuntimeWorkRequest) -> Result<RuntimePermit> {
+        self.consumer.read_permit(request)
+    }
+
+    pub fn readiness(
+        &self,
+        max_operations: Option<usize>,
+    ) -> SearchProjectionConsumerResult<SearchProjectionConsumerReadiness> {
+        self.consumer.readiness(max_operations)
+    }
+
+    pub fn begin_catch_up(
+        &self,
+        config: ProjectionConsumerCatchUpConfig,
+    ) -> CatchUpResult<DefinedProjectionStagingSession<'_>> {
+        self.consumer
+            .owner
+            .write_store()?
+            .graph_mut()
+            .database_mut()
+            .begin_defined_search_projection_consumer_catch_up(
+                &self.consumer.consumer,
+                &self.definition,
+                config,
+            )
+    }
+
+    pub fn prepare_covered_update(
+        &mut self,
+        covered: ProjectionCoveredConsumerUpdate,
+        durability: ProjectionSourceDurability,
+    ) -> CatchUpResult<NowledgeMemPreparedConsumerUpdate<'_>> {
+        self.consumer.prepare_covered_update(covered, durability)
+    }
+
+    pub fn resolve_publication(&mut self) -> SearchProjectionConsumerResult<()> {
+        self.consumer.resolve_publication()
+    }
+
+    pub fn renew(&mut self) -> SearchProjectionConsumerResult<SearchProjectionConsumerStatus> {
+        self.consumer.renew()
+    }
+
+    pub fn cleanup(
+        &mut self,
+        options: &crate::search::consumer::ConsumerCleanupOptions,
+    ) -> SearchProjectionConsumerResult<crate::search::consumer::ConsumerCleanupReport> {
+        self.consumer.cleanup(options)
     }
 }
 

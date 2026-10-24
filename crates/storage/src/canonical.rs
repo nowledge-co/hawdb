@@ -52,6 +52,8 @@ mod checkpoint_writer_memory_tests;
 pub(crate) use checkpoint_scan::{
     CheckpointCanonicalCursor, CheckpointCanonicalIterator, CheckpointCanonicalRecord,
 };
+mod node_label_cursor;
+pub(crate) use node_label_cursor::{CanonicalLabelAction, CanonicalNodeLabelCursor};
 
 use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_tree::demand::{
@@ -98,8 +100,8 @@ const BLOOM_MAX_WORDS: usize = 16 * 1024;
 const BLOOM_BITS_PER_ITEM: usize = 10;
 const BLOOM_HASHES: u8 = 7;
 const DESCRIPTOR_VALUE_MAGIC: &[u8; 8] = b"SKCNSDS1";
-const DESCRIPTOR_VALUE_VERSION: u16 = 1;
-const DESCRIPTOR_VALUE_FIXED_BYTES: usize = 80;
+const DESCRIPTOR_VALUE_VERSION: u16 = 2;
+const DESCRIPTOR_VALUE_FIXED_BYTES: usize = 84;
 const DESCRIPTOR_SCAN_BATCH: u64 = 256;
 pub const CANONICAL_SEGMENT_DESCRIPTOR_ARTIFACT_ID: u64 = 0x534b_4341_4e44_5331;
 
@@ -284,6 +286,8 @@ pub struct CanonicalSegmentDescriptor {
     pub source_endpoint_bloom: CanonicalEndpointBloom,
     pub target_endpoint_bloom: CanonicalEndpointBloom,
     pub node_property_bloom: CanonicalEndpointBloom,
+    /// Complete label membership synopsis for node segments.
+    pub node_label_bloom: CanonicalEndpointBloom,
 }
 
 impl CanonicalSegmentDescriptor {
@@ -300,13 +304,16 @@ impl CanonicalSegmentDescriptor {
         let source_bloom = self.source_endpoint_bloom.encode_descriptor_bytes()?;
         let target_bloom = self.target_endpoint_bloom.encode_descriptor_bytes()?;
         let property_bloom = self.node_property_bloom.encode_descriptor_bytes()?;
+        let label_bloom = self.node_label_bloom.encode_descriptor_bytes()?;
         let source_len = u32_len(source_bloom.len(), "canonical source bloom")?;
         let target_len = u32_len(target_bloom.len(), "canonical target bloom")?;
         let property_len = u32_len(property_bloom.len(), "canonical property bloom")?;
+        let label_len = u32_len(label_bloom.len(), "canonical label bloom")?;
         let capacity = DESCRIPTOR_VALUE_FIXED_BYTES
             .checked_add(source_bloom.len())
             .and_then(|value| value.checked_add(target_bloom.len()))
             .and_then(|value| value.checked_add(property_bloom.len()))
+            .and_then(|value| value.checked_add(label_bloom.len()))
             .ok_or_else(|| {
                 CanonicalSegmentError::Corrupt(
                     "canonical descriptor value length overflow".to_string(),
@@ -328,10 +335,12 @@ impl CanonicalSegmentDescriptor {
         encoded.extend_from_slice(&source_len.to_le_bytes());
         encoded.extend_from_slice(&target_len.to_le_bytes());
         encoded.extend_from_slice(&property_len.to_le_bytes());
+        encoded.extend_from_slice(&label_len.to_le_bytes());
         debug_assert_eq!(encoded.len(), DESCRIPTOR_VALUE_FIXED_BYTES);
         encoded.extend_from_slice(&source_bloom);
         encoded.extend_from_slice(&target_bloom);
         encoded.extend_from_slice(&property_bloom);
+        encoded.extend_from_slice(&label_bloom);
         Ok(encoded)
     }
 
@@ -357,6 +366,7 @@ impl CanonicalSegmentDescriptor {
         let source_len = read_u32_at(encoded, 68) as usize;
         let target_len = read_u32_at(encoded, 72) as usize;
         let property_len = read_u32_at(encoded, 76) as usize;
+        let label_len = read_u32_at(encoded, 80) as usize;
         let source_end = DESCRIPTOR_VALUE_FIXED_BYTES
             .checked_add(source_len)
             .ok_or_else(descriptor_length_overflow)?;
@@ -366,7 +376,10 @@ impl CanonicalSegmentDescriptor {
         let property_end = target_end
             .checked_add(property_len)
             .ok_or_else(descriptor_length_overflow)?;
-        if property_end != encoded.len() {
+        let label_end = property_end
+            .checked_add(label_len)
+            .ok_or_else(descriptor_length_overflow)?;
+        if label_end != encoded.len() {
             return Err(CanonicalSegmentError::Corrupt(
                 "canonical descriptor bloom lengths do not match its value".to_string(),
             ));
@@ -392,6 +405,9 @@ impl CanonicalSegmentDescriptor {
             )?,
             node_property_bloom: CanonicalEndpointBloom::decode_descriptor_bytes(
                 &encoded[target_end..property_end],
+            )?,
+            node_label_bloom: CanonicalEndpointBloom::decode_descriptor_bytes(
+                &encoded[property_end..label_end],
             )?,
         };
         descriptor.validate_identity()?;
@@ -1370,6 +1386,7 @@ struct SegmentAccumulator {
     source_endpoint_keys: Vec<u64>,
     target_endpoint_keys: Vec<u64>,
     node_property_keys: Vec<u64>,
+    node_label_keys: Vec<u64>,
 }
 
 impl SegmentAccumulator {
@@ -1391,6 +1408,7 @@ impl SegmentAccumulator {
             source_endpoint_keys: Vec::new(),
             target_endpoint_keys: Vec::new(),
             node_property_keys: Vec::new(),
+            node_label_keys: Vec::new(),
         }
     }
 
@@ -1446,6 +1464,7 @@ impl SegmentAccumulator {
         work: Option<&CheckpointWorkContext>,
     ) -> Result<(), CanonicalSegmentError> {
         for label in &node.labels {
+            self.node_label_keys.push(u64::from(label.0));
             for (property, value) in &node.properties {
                 let key = checkpoint_bloom::key(*label, property, value, work)?;
                 let unit = work.map(CheckpointWorkContext::start_unit).transpose()?;
@@ -2833,6 +2852,7 @@ impl Iterator for CanonicalRelationshipIterator {
     }
 }
 
+#[derive(Debug)]
 struct CanonicalDescriptorCursor {
     kind: CanonicalSegmentKind,
     next_lower_bound: Option<Vec<u8>>,
@@ -3299,6 +3319,7 @@ struct SegmentRecordFrame {
 }
 
 /// Shared framing for ordinary scans and retained checkpoint segment decoding.
+#[derive(Debug)]
 struct SegmentRecordCursor {
     offset: usize,
     index: u32,

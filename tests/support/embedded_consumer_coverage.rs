@@ -1,7 +1,284 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+
+fn definition(version: u64, scope: ProjectionSourceScope) -> SearchProjectionDefinition {
+    SearchProjectionDefinition::new(
+        SearchProjectionConsumerId::new("embedded-graph-sql").unwrap(),
+        NonZeroU64::new(version).unwrap(),
+        scope,
+        rebuild,
+        delta_e,
+        full_e,
+    )
+    .unwrap()
+}
+
+fn finish_defined(
+    consumer: &NowledgeMemDefinedSearchProjectionConsumer,
+) -> ProjectionCoveredConsumerUpdate {
+    let receipt = consumer.consumer().projection().receipt();
+    let mut session = consumer.begin_catch_up(consumer_config()).unwrap();
+    let mut complete = false;
+    for _ in 0..10000 {
+        assert_eq!(consumer.consumer().projection().receipt(), receipt);
+        if session.advance(one(), sort()).unwrap() == ProjectionStagingSessionStep::Complete {
+            complete = true;
+            break;
+        }
+    }
+    assert!(complete);
+    let mut coverage = session.verify_complete_source(caps()).unwrap();
+    for _ in 0..10000 {
+        assert_eq!(consumer.consumer().projection().receipt(), receipt);
+        if coverage.advance(one(), sort()).unwrap() == ProjectionCoverageStep::Complete {
+            return coverage.finish().unwrap();
+        }
+    }
+    panic!("defined projection verification did not complete");
+}
+
+#[test]
+fn registered_consumer_definition_canonicalizes_domains_and_binds_version_and_scope() {
+    let a = definition(1, scope());
+    let reordered = definition(
+        1,
+        ProjectionSourceScope::Domains {
+            node_labels: vec!["Memory".into(), "Memory".into()],
+            relational_tables: vec!["records".into(), "records".into()],
+        },
+    );
+    assert_eq!(a.consumer_id(), reordered.consumer_id());
+    assert_eq!(a.name().as_str(), "embedded-graph-sql");
+    assert_eq!(a.version().get(), 1);
+    assert_ne!(a.consumer_id(), definition(2, scope()).consumer_id());
+    assert_ne!(
+        a.consumer_id(),
+        definition(1, ProjectionSourceScope::Database).consumer_id()
+    );
+    assert_ne!(
+        definition(
+            1,
+            ProjectionSourceScope::Domains {
+                node_labels: vec!["records".into()],
+                relational_tables: vec!["Memory".into()],
+            },
+        )
+        .consumer_id(),
+        a.consumer_id(),
+    );
+    assert_ne!(
+        definition(1, ProjectionSourceScope::Database).consumer_id(),
+        definition(
+            1,
+            ProjectionSourceScope::Domains {
+                node_labels: vec![],
+                relational_tables: vec![],
+            },
+        )
+        .consumer_id(),
+    );
+    assert!(SearchProjectionDefinition::new(
+        a.name().clone(),
+        a.version(),
+        ProjectionSourceScope::Domains {
+            node_labels: vec![String::new()],
+            relational_tables: vec![],
+        },
+        rebuild,
+        delta_e,
+        full_e,
+    )
+    .is_err());
+}
+
+#[test]
+fn registered_consumer_defined_embedded_catch_up_keeps_one_contract_through_reopen() {
+    let (root, mut db, original) = setup_consumer(false);
+    drop(original);
+    db.checkpoint().unwrap();
+    drop(db);
+    let handle = open_embedded(&root);
+    let definition = definition(1, scope());
+    let path = root.0.join("defined-consumer");
+    let mut consumer = handle
+        .open_or_create_defined_search_projection_consumer(
+            definition.clone(),
+            &path,
+            SearchProjectionConsumerOptions::new(NonZeroU64::new(1000).unwrap()),
+        )
+        .unwrap();
+    let before = consumer.consumer().projection().receipt();
+    handle
+        .with_transaction(|tx| {
+            tx.query("MATCH (n:Memory) SET n.value=2")?;
+            Ok(())
+        })
+        .unwrap();
+    handle
+        .with_transaction(|tx| {
+            tx.query_sql("UPDATE records SET body='defined' WHERE id='a'")?;
+            Ok(())
+        })
+        .unwrap();
+    let mut partial = consumer.begin_catch_up(consumer_config()).unwrap();
+    let epoch = partial.source_epoch();
+    assert_eq!(epoch, before.source_epoch + 2);
+    assert_ne!(
+        partial.advance(one(), sort()).unwrap(),
+        ProjectionStagingSessionStep::Complete
+    );
+    assert_eq!(consumer.consumer().projection().receipt(), before);
+    drop(partial);
+    let covered = finish_defined(&consumer);
+    let prepared = consumer
+        .prepare_covered_update(covered, ProjectionSourceDurability::RequireKnownDurable)
+        .unwrap();
+    // Declared scope, retained automatically by both mapping phases, permits
+    // this real post-E write during detached construction/publication.
+    handle
+        .with_transaction(|tx| {
+            tx.query_sql("INSERT INTO unrelated (id) VALUES ('after-e')")?;
+            Ok(())
+        })
+        .unwrap();
+    let report = prepared.publish().unwrap();
+    assert_eq!(report.catch_up.end_durable_epoch, Some(epoch));
+    let selected = consumer.consumer().projection().receipt();
+    assert_eq!(
+        selected.binding.consumer_id,
+        definition.consumer_id().as_str()
+    );
+    drop(consumer);
+    drop(handle);
+    let handle = open_embedded(&root);
+    let consumer = handle
+        .open_or_create_defined_search_projection_consumer(
+            definition,
+            &path,
+            SearchProjectionConsumerOptions::new(NonZeroU64::new(1000).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(consumer.consumer().projection().receipt(), selected);
+    let expected = handle
+        .with_read_transaction(1 << 20, |snapshot| {
+            let mut reference = SearchIndex::in_memory();
+            rebuild(snapshot, &mut reference)?;
+            Ok(reference)
+        })
+        .unwrap();
+    let actual = consumer.consumer().search_index().unwrap();
+    assert_eq!(actual.document_count(), expected.document_count());
+    for id in ["memory:a", "record:a"] {
+        assert_eq!(actual.document(id), expected.document(id));
+    }
+}
+
+#[test]
+fn registered_consumer_defined_version_change_cannot_adopt_the_previous_target() {
+    let (root, db, original) = setup_consumer(false);
+    drop(original);
+    drop(db);
+    let handle = open_embedded(&root);
+    let path = root.0.join("defined-consumer");
+    let options = SearchProjectionConsumerOptions::new(NonZeroU64::new(1000).unwrap());
+    let consumer = handle
+        .open_or_create_defined_search_projection_consumer(definition(1, scope()), &path, options)
+        .unwrap();
+    let receipt = consumer.consumer().projection().receipt();
+    drop(consumer);
+    assert!(handle
+        .open_or_create_defined_search_projection_consumer(definition(2, scope()), &path, options)
+        .is_err());
+    let consumer = handle
+        .open_or_create_defined_search_projection_consumer(definition(1, scope()), &path, options)
+        .unwrap();
+    assert_eq!(consumer.consumer().projection().receipt(), receipt);
+    let rebuilt = handle
+        .open_or_create_defined_search_projection_consumer(
+            definition(2, scope()),
+            root.0.join("defined-consumer-v2"),
+            options,
+        )
+        .unwrap();
+    assert_ne!(consumer.consumer().id(), rebuilt.consumer().id());
+}
+
+#[test]
+fn registered_consumer_defined_cancel_drop_and_source_conflict_preserve_the_receipt() {
+    let (root, db, original) = setup_consumer(false);
+    drop(original);
+    drop(db);
+    let handle = open_embedded(&root);
+    let mut consumer = handle
+        .open_or_create_defined_search_projection_consumer(
+            definition(1, scope()),
+            root.0.join("defined-consumer"),
+            SearchProjectionConsumerOptions::new(NonZeroU64::new(1000).unwrap()),
+        )
+        .unwrap();
+    let before = consumer.consumer().projection().receipt();
+    handle
+        .with_transaction(|tx| {
+            tx.query("MATCH (n:Memory) SET n.value=2")?;
+            Ok(())
+        })
+        .unwrap();
+    let cancel = RuntimeCancellationToken::new();
+    let mut config = consumer_config();
+    config.task = RuntimeTaskContext::without_deadline(cancel.clone());
+    let mut session = consumer.begin_catch_up(config).unwrap();
+    session.advance(one(), sort()).unwrap();
+    cancel.cancel();
+    assert!(session.advance(one(), sort()).is_err());
+    drop(session);
+    assert_eq!(consumer.consumer().projection().receipt(), before);
+    let covered = finish_defined(&consumer);
+    let prepared = consumer
+        .prepare_covered_update(covered, ProjectionSourceDurability::RequireKnownDurable)
+        .unwrap();
+    drop(prepared);
+    consumer.resolve_publication().unwrap();
+    assert_eq!(consumer.consumer().projection().receipt(), before);
+    let covered = finish_defined(&consumer);
+    let prepared = consumer
+        .prepare_covered_update(covered, ProjectionSourceDurability::RequireKnownDurable)
+        .unwrap();
+    handle
+        .with_transaction(|tx| {
+            tx.query_sql("UPDATE records SET body='changed' WHERE id='a'")?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(
+        prepared.publish(),
+        Err(ProjectionConsumerCatchUpError::Publication(
+            ProjectionPublicationError::Dependency(_)
+        ))
+    ));
+    consumer.resolve_publication().unwrap();
+    assert_eq!(consumer.consumer().projection().receipt(), before);
+    let covered = finish_defined(&consumer);
+    // The owned contract retains the original source after other handles close.
+    drop(handle);
+    let report = consumer
+        .prepare_covered_update(covered, ProjectionSourceDurability::RequireKnownDurable)
+        .unwrap()
+        .publish()
+        .unwrap();
+    assert!(report.catch_up.complete);
+    assert_eq!(
+        consumer
+            .consumer()
+            .search_index()
+            .unwrap()
+            .document("record:a")
+            .unwrap()
+            .content,
+        "changed"
+    );
+}
 
 fn open_embedded(root: &Root) -> NowledgeMemEmbeddedStoreHandle {
     let mut config = DatabaseConfig {

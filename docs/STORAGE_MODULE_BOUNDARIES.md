@@ -69,3 +69,20 @@ positional I/O, standard-library file locks, development overflow checks and
 complete WAL value-field table. The final acceptance must include storage,
 embedded recovery and downstream builds plus required local Bazel/fuzz checks.
 A compile pass alone does not establish full issue completion.
+
+## Language-neutral access requests (#1222)
+
+`hawdb-core::access` owns the four graph access request types shared by storage
+and optimizers. `hawdb-plan-cypher::physical` re-exports the same types, preserving
+nominal identity for planner callers. Neither Cargo nor Bazel gives
+`hawdb-storage` a dependency on `hawdb-plan-cypher` or `hawdb-cypher`.
+`//:hawdb_storage_language_boundary_test` checks both dependency paths and is
+part of the ordinary root unit suite. This change adds no crate or integration
+surface; physical access reports retain their existing operator names.
+
+The canonical descriptor-tree value is version 2. It adds an independently
+framed node-label Bloom field to the existing endpoint/property summaries.
+Version-1 development files fail closed and remain intact; recreate development
+databases explicitly. No compatibility migration, automatic deletion or empty
+branch fallback is provided. Checkpoint writer admission retains resumable label
+key/vector state through work cuts, including nodes with no properties.

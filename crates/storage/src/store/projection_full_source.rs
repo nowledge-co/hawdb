@@ -1,8 +1,9 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Exhaustive pinned baseline input, separate from retained change history.
 use super::*;
+use crate::canonical::{CanonicalLabelAction, CanonicalNodeLabelCursor};
 use crate::relational::{
     RelationalHydrationBudget, RelationalKey, RelationalRowPageProjectedRange,
     RelationalRowPageProjectedRangeFields, RelationalRowPageSnapshotReadError,
@@ -10,6 +11,10 @@ use crate::relational::{
 };
 use std::num::NonZeroUsize;
 use std::ops::Bound;
+
+#[cfg(test)]
+#[path = "projection_full_source/tests.rs"]
+mod tests;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProjectionFullSourceLimits {
@@ -59,6 +64,9 @@ pub struct ProjectionFullSourceCursor {
     rows: Option<RelationalRowPageSnapshotReader>,
     tables: Vec<String>,
     labels: Option<Vec<LabelId>>,
+    label_base: Option<CanonicalNodeLabelCursor>,
+    label_delta_after: Option<NodeId>,
+    label_nodes_complete: bool,
     node: u64,
     table: usize,
     announced: bool,
@@ -92,7 +100,7 @@ impl GraphStore {
         total: ProjectionFeedLimits,
         limits: ProjectionFullSourceLimits,
         task: RuntimeTaskContext,
-        labels: Option<Vec<LabelId>>,
+        mut labels: Option<Vec<LabelId>>,
         mut tables: Option<Vec<String>>,
     ) -> std::result::Result<ProjectionFullSourceCursor, ProjectionFeedError> {
         self.ensure_usable().map_err(ProjectionFeedError::Source)?;
@@ -174,16 +182,34 @@ impl GraphStore {
                 })?;
             None
         };
-        let node = if labels.as_ref().is_some_and(Vec::is_empty) {
+        if let Some(labels) = &mut labels {
+            labels.sort_unstable();
+            labels.dedup();
+        }
+        let label_nodes_complete = labels.as_ref().is_some_and(Vec::is_empty);
+        let source = Box::new(self.snapshot_for_read());
+        let label_base =
+            if labels.is_some() && !label_nodes_complete && source.canonical_base_out_of_core {
+                source
+                    .canonical_base
+                    .clone()
+                    .map(CanonicalNodeLabelCursor::new)
+            } else {
+                None
+            };
+        let node = if labels.is_some() {
             self.next_node_id
         } else {
             0
         };
         Ok(ProjectionFullSourceCursor {
-            source: Box::new(self.snapshot_for_read()),
+            source,
             rows,
             tables: captured_tables,
             labels,
+            label_base,
+            label_delta_after: None,
+            label_nodes_complete,
             node,
             table: 0,
             announced: false,
@@ -407,7 +433,11 @@ impl ProjectionFullSourceCursor {
             self.task
                 .checkpoint()
                 .map_err(|e| ProjectionFeedError::Source(HawDBError::Execution(e.to_string())))?;
-            if self.node < self.source.next_node_id {
+            if self.labels.is_some() && !self.label_nodes_complete {
+                if !self.advance_labels(step, &mut used, visitor)? {
+                    break;
+                }
+            } else if self.node < self.source.next_node_id {
                 let work = self
                     .labels
                     .as_ref()
@@ -524,5 +554,111 @@ impl ProjectionFullSourceCursor {
             .map_err(canonical_segment_error);
         self.source.poison_on_storage_error(&result);
         result.map_err(ProjectionFeedError::Source)
+    }
+
+    /// Every descriptor, actual row and label comparison is charged before
+    /// processing. Only real snapshot records are visited; allocation holes do
+    /// not manufacture work. A base row replaced by the captured delta is
+    /// ignored even if its old label would otherwise match.
+    fn advance_labels(
+        &mut self,
+        step: ProjectionFeedLimits,
+        used: &mut ProjectionFeedUsage,
+        visitor: &mut impl FnMut(ProjectionFullSourceItem<'_>) -> Result<()>,
+    ) -> std::result::Result<bool, ProjectionFeedError> {
+        if let Some(base) = &mut self.label_base {
+            let action = base.action().map_err(canonical_segment_error);
+            self.source.poison_on_storage_error(&action);
+            match action.map_err(ProjectionFeedError::Source)? {
+                CanonicalLabelAction::Segment => {
+                    let work = 1 + self.labels.as_ref().expect("label scope").len();
+                    if !self.charge(step, used, work, 0, 0)? {
+                        return Ok(false);
+                    }
+                    let result = self
+                        .label_base
+                        .as_mut()
+                        .expect("base cursor")
+                        .load_segment(self.labels.as_ref().expect("label scope"), &self.task)
+                        .map_err(canonical_segment_error);
+                    self.source.poison_on_storage_error(&result);
+                    result.map_err(ProjectionFeedError::Source)?;
+                    return Ok(true);
+                }
+                CanonicalLabelAction::Record { id, labels } => {
+                    let work = self.label_membership_work(labels);
+                    if !self.charge(
+                        step,
+                        used,
+                        work,
+                        1,
+                        8usize.saturating_add(labels.saturating_mul(4)),
+                    )? {
+                        return Ok(false);
+                    }
+                    let selected = self
+                        .label_base
+                        .as_mut()
+                        .expect("base cursor")
+                        .accept_record(self.labels.as_ref().expect("label scope"))
+                        .map_err(canonical_segment_error);
+                    self.source.poison_on_storage_error(&selected);
+                    if selected.map_err(ProjectionFeedError::Source)?
+                        && !self.source.node_tombstones.contains(&id)
+                        && !self.source.nodes.contains_key(&id)
+                    {
+                        visitor(ProjectionFullSourceItem::GraphNodeCandidate { node_id: id.0 })
+                            .map_err(ProjectionFeedError::Callback)?;
+                    }
+                    return Ok(true);
+                }
+                CanonicalLabelAction::End => self.label_base = None,
+            }
+        }
+        let next = self
+            .source
+            .nodes
+            .first_after(self.label_delta_after.as_ref())
+            .map(|(id, node)| (*id, node.labels.len()));
+        let Some((id, labels)) = next else {
+            self.label_nodes_complete = true;
+            return Ok(true);
+        };
+        let work = self.label_membership_work(labels);
+        if !self.charge(
+            step,
+            used,
+            work,
+            1,
+            8usize.saturating_add(labels.saturating_mul(4)),
+        )? {
+            return Ok(false);
+        }
+        let selected = self
+            .source
+            .nodes
+            .get(&id)
+            .expect("captured node")
+            .labels
+            .iter()
+            .any(|label| {
+                self.labels
+                    .as_ref()
+                    .expect("label scope")
+                    .binary_search(label)
+                    .is_ok()
+            });
+        self.label_delta_after = Some(id);
+        if selected && !self.source.node_tombstones.contains(&id) {
+            visitor(ProjectionFullSourceItem::GraphNodeCandidate { node_id: id.0 })
+                .map_err(ProjectionFeedError::Callback)?;
+        }
+        Ok(true)
+    }
+
+    fn label_membership_work(&self, labels: usize) -> usize {
+        let selected = self.labels.as_ref().expect("label scope").len();
+        let comparisons = 1 + (usize::BITS - selected.leading_zeros()) as usize;
+        1usize.saturating_add(labels.saturating_mul(comparisons))
     }
 }

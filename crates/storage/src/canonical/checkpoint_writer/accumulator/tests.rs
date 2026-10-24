@@ -99,6 +99,7 @@ fn compare(actual: &SegmentAccumulator, expected: &SegmentAccumulator) {
     assert_eq!(actual.source_endpoint_keys, expected.source_endpoint_keys);
     assert_eq!(actual.target_endpoint_keys, expected.target_endpoint_keys);
     assert_eq!(actual.node_property_keys, expected.node_property_keys);
+    assert_eq!(actual.node_label_keys, expected.node_label_keys);
 }
 
 fn reference(payload: &[u8]) -> SegmentAccumulator {
@@ -137,7 +138,8 @@ fn checkpoint_units_canonical_accumulator_memory_related_wire_arrays_and_retaine
         let capacity_bytes = actual.records.capacity()
             + 8 * (actual.source_endpoint_keys.capacity()
                 + actual.target_endpoint_keys.capacity()
-                + actual.node_property_keys.capacity());
+                + actual.node_property_keys.capacity()
+                + actual.node_label_keys.capacity());
         assert!(used(&task, ceiling) >= capacity_bytes as u64);
         assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
         assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);

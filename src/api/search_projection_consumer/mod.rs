@@ -41,11 +41,15 @@ use SearchProjectionConsumerRebuildReason as Reason;
 use SearchProjectionConsumerState as State;
 
 mod covered;
+mod definition;
 pub use covered::{
     ProjectionConsumerCatchUpConfig, ProjectionConsumerCatchUpError,
     ProjectionConsumerCoverageSession, ProjectionConsumerPreparation,
     ProjectionConsumerPublication, ProjectionConsumerStagingSession,
     ProjectionCoveredConsumerUpdate, ProjectionPreparedConsumerUpdate,
+};
+pub use definition::{
+    DefinedProjectionStagingSession, SearchProjectionDefinition, SearchProjectionInitializer,
 };
 
 impl Database {

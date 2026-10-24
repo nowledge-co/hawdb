@@ -265,6 +265,22 @@
       "classification": "semantic",
       "stage": "search-page",
       "rationale": "Reports caller-selected limit/offset pagination over ranked Search matches."
+    },
+    {
+      "path": "src/api/retrieval.rs",
+      "name": "truncation_reasons",
+      "kind": "field",
+      "classification": "semantic",
+      "stage": "knowledge retrieval",
+      "rationale": "Sibling-module visibility after facade organization; retains explicit request seed/context limits and independent resource failures."
+    },
+    {
+      "path": "src/api/retrieval.rs",
+      "name": "graph_context_truncation_reasons",
+      "kind": "field",
+      "classification": "semantic",
+      "stage": "knowledge retrieval",
+      "rationale": "Sibling-module visibility after facade organization; retains explicit request seed/context limits and independent resource failures."
     }
   ]
 }

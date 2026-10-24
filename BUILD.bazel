@@ -296,6 +296,32 @@ sh_test(
     ],
 )
 
+[
+    genquery(
+        name = "hawdb_storage_%s_dependency_path" % name,
+        expression = "somepath(//crates/storage:hawdb_storage, %s)" % dependency,
+        scope = ["//crates/storage:hawdb_storage", dependency],
+    )
+    for name, dependency in [
+        ("cypher", "//crates/cypher:hawdb_cypher"),
+        ("cypher_plan", "//crates/plan-cypher:hawdb_plan_cypher"),
+    ]
+]
+
+sh_test(
+    name = "hawdb_storage_language_boundary_test",
+    size = "small",
+    srcs = ["scripts/check-empty-query-results.sh"],
+    args = [
+        "$(rootpath :hawdb_storage_cypher_dependency_path)",
+        "$(rootpath :hawdb_storage_cypher_plan_dependency_path)",
+    ],
+    data = [
+        ":hawdb_storage_cypher_dependency_path",
+        ":hawdb_storage_cypher_plan_dependency_path",
+    ],
+)
+
 _HAWDB_ROW_PAGE_COMPACTION_TEST_PREFIX = "store_facade_tests::row_page_compaction::row_page_compaction_converges_disk_bytes_and_preserves_pinned_readers"
 
 _HAWDB_STORAGE_CRASH_MATRIX_TEST = "api::tests::storage_recovery::subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations"
@@ -658,6 +684,7 @@ test_suite(
         ":hawdb_default_consumer_tests",
         ":hawdb_graph_text_consumer_tests",
         ":hawdb_graph_text_dependency_boundary_test",
+        ":hawdb_storage_language_boundary_test",
         ":hawdb_host_allocator_tests",
         ":hawdb_host_allocator_minimal_tests",
         ":hawdb_minimal_consumer_tests",

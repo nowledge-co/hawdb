@@ -553,6 +553,52 @@ crates/cypher/src/parser/*     parser helpers by statement/expression family
 crates/cypher/src/tests.rs     parser coverage for the supported subset
 ```
 
+## Embedded facade implementation ownership
+
+The `hawdb` crate remains the host integration boundary. Its `api` module keeps
+public types/configuration and delegates implementations within the same crate:
+`database_lifecycle`, `database_query`, `database_transactions`,
+`database_projection`, `database_maintenance`, `transactions`, `read`,
+`graph_adapter`, and `retrieval`. `nowledge_mem/handle.rs` owns the embedded
+publication handle and its pinned snapshots; `nowledge_mem/registered_search.rs`
+connects that same owner to registered Search consumers. These modules create no
+additional crate or host control plane.
+
+Storage access requests live in `hawdb_core::access` (`NodeProjectionAccess`,
+`CompositeRangeSeek`, `CompositeOrderedSeek`, `ExactPropertySeekBranch`). Cypher
+planning re-exports those exact nominal types and constructs requests from its
+AST/logical plans. Storage executes them without depending on Cypher parsing or
+planning. The Bazel storage-language boundary test prevents that dependency from
+returning; the reported physical access names remain observable.
+
+The former test-only business CRUD adapters and route DTO modules are removed.
+Their ordinary parameterized-query regression coverage was migrated on main in
+PR #1194 and is retained here, including explicit transactions, checkpoint/reopen
+and independent result assertions. This module reorganization does not replace
+those tests with recorded adapter responses. Host request validation and route
+response shaping do not become hidden database APIs. See [the query-first
+contract](specs/QUERY_FIRST_PUBLIC_API_SPEC.md).
+
+`SearchProjectionDefinition` binds one trusted host initializer, delta mapper,
+full mapper, canonical source scope, logical name and nonzero semantic version.
+Its derived native Consumer ID includes the name/version/scope, so changing
+version or scope cannot adopt a previously bound target. The defined embedded
+wrapper delegates preparation, publication and recovery to the existing owner;
+it does not replace its native operation or custody. The host must bump the
+version when mapping semantics change; a hash of configuration does not prove
+mapper correctness. Independent complete-source comparison still supplies the
+content check. See [registered catch-up](REGISTERED_CONSUMER_CATCH_UP.md).
+
+Scoped full-source verification enumerates actual pinned resident/delta rows and
+cold canonical record metadata. A per-segment label Bloom synopsis skips segments
+that cannot contain a selected label; it includes labels on propertyless nodes.
+Tombstones and resident replacements shadow the captured base, overlapping
+labels emit once, and later writes/checkpoints cannot retarget the snapshot.
+The cursor reads labels without decoding property payloads and charges descriptor
+and label-comparison work before advancing. Resident unrelated rows and Bloom
+false positives still cost work; this is not a universal O(selected-label-count)
+claim. Whole-Database compatibility enumeration retains its existing behavior.
+
 ## Data Model
 
 HawDB stores a property graph:

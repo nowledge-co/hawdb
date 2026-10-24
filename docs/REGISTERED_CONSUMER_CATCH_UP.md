@@ -7,6 +7,32 @@ coverage to stationary registered Consumer publication. It retains the same
 logical ID, registration UUID and target lease across catch-up and verified
 reopen. Use a versioned logical ID for the host's trusted projection definition.
 
+## Versioned projection definition
+
+Prefer `SearchProjectionDefinition::new(name, version, scope, initialize, delta,
+full)` for new hosts. The name uses `SearchProjectionConsumerId`, and version is
+`NonZeroU64`. Domain names must be nonempty; sorting and deduplication make order
+and duplicate names irrelevant. Database scope, an explicitly empty domain set,
+graph labels and relational table names remain distinct identities.
+
+`Database::open_or_create_defined_search_projection_consumer` uses that
+initializer. `begin_defined_search_projection_consumer_catch_up` accepts the
+same definition and refuses a consumer with another derived ID. Its staging
+session's `verify_complete_source(config)` fixes the complete mapper and scope;
+callers cannot independently substitute either. `NowledgeMemEmbeddedStoreHandle`
+exposes the corresponding defined acquisition and returns
+`NowledgeMemDefinedSearchProjectionConsumer`, which retains the definition and
+delegates catch-up, reservation, resolution, renewal and cleanup to the original
+embedded consumer/owner.
+
+A version/scope change needs a fresh target and full bootstrap. Reopening the
+old target using its old definition continues to work after a refused new
+binding. Mapper addresses are excluded from durable identity: hosts must bump
+the version whenever initializer/delta/full semantics change. The definition is
+host configuration, not a mapping certificate or a global process-memory bound.
+Execution admission, exact full comparison and native owner/recovery fences
+remain required. Raw APIs below remain available for explicitly managed hosts.
+
 ## Library flow
 
 1. Acquire the projection with `open_or_create_search_projection_consumer`.
@@ -109,18 +135,36 @@ registration.
 
 ## Costs and qualification boundary
 
-Independent verification is O(full source), records a conservative Database
-dependency and rejects **every** post-E source commit, including disjoint writes.
-Registered publication builds a complete physical generation and its resident
-compatibility index. These final phases remain blocking and subject to the
-existing registered generation/resident limits. Logical work and read/spill
-reservations are not RSS or elapsed-time guarantees.
+Independent verification still compares every mapped document with the exact
+selected base and complete E source. `ProjectionSourceScope::Database` retains
+its conservative Database dependency and rejects every post-E canonical commit.
+`Domains` records the declared label/table dependencies, including absence, and
+can publish E after unrelated writes when those dependencies remain valid.
+Mapping reads outside the declared domains are refused by the existing source
+scope checks. See [source-scoped publication](CONSUMER_PROGRESS_AND_RETENTION.md).
 
-This delivery adds no on-disk format or production control plane. It does not
-enable Mem Search ACK or stable Mem activation. Physical generation GC, finer
-dependency scopes, short publication, durable private-stage continuation,
-external vector authority, and real Windows power-loss qualification remain
-under their own contracts.
+Label-domain enumeration traverses actual pinned resident/delta records and
+canonical record metadata instead of the historical allocated-ID range.
+Canonical segments carry a label Bloom synopsis; unrelated segments can be
+pruned without decoding properties. Work includes false positives, unrelated
+resident rows, label checks and descriptor decisions. Each descriptor/segment load acquires a fresh I/O wave from the original
+task; retained segment bytes and metadata reserve working memory before the
+fetch. The underlying reader retains its own physical bounds. `feed_usage()` exposes
+cumulative logical enumeration work; it is not an RSS or elapsed-time bound.
+
+Registered publication continues to build a complete physical generation and
+resident compatibility index. The split `prepare_covered_update` flow performs
+that construction outside the original embedded write owner, then validates
+and publishes through that same owner. The blocking compatibility publication
+method retains its existing costs. Unchanged Search segment reuse was evaluated
+in [the architecture qualification](benchmarks/architecture_2026_10_24/README.md);
+no cross-generation sharing is enabled by this change.
+
+The graph canonical descriptor value changes to version 2 for label summaries;
+old development databases require explicit recreation and fail closed with their
+files retained. Search format and native Consumer binding formats are unchanged.
+This delivery does not authorize Mem Search ACK, stable artifacts, full Mem
+activation, or waive the outstanding performance/platform acceptance gates.
 
 Default/minimal `hawdb_mvcc_staging_session` tests own public graph/SQL, hot/cold,
 one-item, full-rebuild equality, cancellation, budget, competing-base and reopen

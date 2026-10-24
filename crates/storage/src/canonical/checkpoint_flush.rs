@@ -31,7 +31,7 @@ pub(in crate::canonical) struct FlushProgress {
     pub(in crate::canonical) written_blocks: usize,
     pub(in crate::canonical) written_bytes: u64,
     next_digest: Option<IntegrityHasher>,
-    blooms: [BloomProgress; 3],
+    blooms: [BloomProgress; 4],
     // Bloom buffers drop before the admission inventory on every path.
     admission: Option<CheckpointDecodeContext>,
     #[cfg(test)]
@@ -217,8 +217,9 @@ fn flush_inner(
         &source.source_endpoint_keys[..],
         &source.target_endpoint_keys[..],
         &source.node_property_keys[..],
+        &source.node_label_keys[..],
     ];
-    let (source_endpoint_bloom, target_endpoint_bloom, node_property_bloom) =
+    let (source_endpoint_bloom, target_endpoint_bloom, node_property_bloom, node_label_bloom) =
         if let Some(context) = checksum.admission.as_ref() {
             for (state, keys) in checksum.blooms.iter_mut().zip(keys) {
                 prepare_bloom_admitted(state, keys, context)?;
@@ -226,20 +227,22 @@ fn flush_inner(
             if let Some(work) = work {
                 work.checkpoint()?;
             }
-            let [source, target, properties] = &mut checksum.blooms;
+            let [source, target, properties, labels] = &mut checksum.blooms;
             (
                 source.bloom.take().expect("completed source Bloom"),
                 target.bloom.take().expect("completed target Bloom"),
                 properties.bloom.take().expect("completed property Bloom"),
+                labels.bloom.take().expect("completed label Bloom"),
             )
         } else {
             let source_bloom = bloom(keys[0], work)?;
             let target_bloom = bloom(keys[1], work)?;
             let property_bloom = bloom(keys[2], work)?;
+            let label_bloom = bloom(keys[3], work)?;
             if let Some(work) = work {
                 work.checkpoint()?;
             }
-            (source_bloom, target_bloom, property_bloom)
+            (source_bloom, target_bloom, property_bloom, label_bloom)
         };
     *artifact_digest = checksum
         .next_digest
@@ -257,6 +260,7 @@ fn flush_inner(
         source_endpoint_bloom,
         target_endpoint_bloom,
         node_property_bloom,
+        node_label_bloom,
     })
 }
 

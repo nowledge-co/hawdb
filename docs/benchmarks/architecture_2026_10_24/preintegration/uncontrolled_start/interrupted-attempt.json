@@ -1,0 +1,38 @@
+{
+  "status": "interrupted",
+  "exit_code": 130,
+  "reason": "Stopped the first measurement attempt together with contending parallel regressions. No scan or publication invocation completed and no valid timing sample was emitted.",
+  "started_utc": "2026-10-24T08:56:14.211133+00:00",
+  "sources": {
+    "baseline": "e7b77ceb11b4e69956ed62c8d95056903fcbde5055c686f9d37a6f98a4efa548",
+    "candidate": "73edca0e3bd8d65af6249bb25cbcddf479409d7b3831aeb2e125ac1fc22c486c"
+  },
+  "binaries": {
+    "baseline": {
+      "projection_label_source": {
+        "path": "/private/tmp/hawdb-1222-baseline/target/release/deps/projection_label_source-9a5307fd4c6e4cc0",
+        "sha256": "5eac61e5cecd11e5dcdea17d8f5d085b948bf649276e8687bdea1b74774d3421"
+      },
+      "consumer_publication": {
+        "path": "/private/tmp/hawdb-1222-baseline/target/release/deps/consumer_publication-bc6320bbec0228eb",
+        "sha256": "a3c7e0707fe6cec404ecbc14789d438c5517a1e969b52a96110b1026fc9b36d6"
+      }
+    },
+    "candidate": {
+      "projection_label_source": {
+        "path": "/private/tmp/hawdb-architecture-20261024/target/release/deps/projection_label_source-3421412a0e1a4a48",
+        "sha256": "a5cda92193612631e16d41913aab4d77d8c92fcab19687f91c6f720f9ccda347"
+      },
+      "consumer_publication": {
+        "path": "/private/tmp/hawdb-architecture-20261024/target/release/deps/consumer_publication-416dcad2b8869e4a",
+        "sha256": "d1e7fbc27b3446710c8b34cfd030f502edf9e65bef121f1e6078838f0fff70a3"
+      }
+    }
+  },
+  "harnesses": {
+    ".cargo/config.toml": "06c7ca26d39223bd90a6412acd8609c380ce2d1650a72b70c90171656ca89819",
+    "crates/storage/benches/projection_label_source.rs": "67691c71377d02450a0dc55c85c90137d4953cc3a1ea27ac4e1e9f3ba5cbdbf4",
+    "benches/consumer_publication.rs": "a54732e1877b65f0e6dfd334c907d622bc87ba7b4aef9b4466f5fe234bdbf255",
+    "benches/consumer_publication/workload.rs": "3db7e6c17fbe47654de82485cc24dcb53d7e8becc11456483830c049d30e4e2b"
+  }
+}

@@ -308,7 +308,7 @@ impl GraphStore {
     pub fn visit_nodes_by_access_with_allocation(
         &self,
         label_id: LabelId,
-        access: &hawdb_plan_cypher::NodeProjectionAccess,
+        access: &hawdb_core::access::NodeProjectionAccess,
         admit: &mut ControlledGraphReadAllocator<'_>,
         consumer: &mut dyn FnMut(AdmittedNodeRecord) -> Result<GraphScanControl>,
     ) -> Result<GraphScanControl> {
@@ -362,7 +362,7 @@ impl GraphStore {
     pub fn visit_projected_nodes_by_access_admitted(
         &self,
         label_id: LabelId,
-        access: &hawdb_plan_cypher::NodeProjectionAccess,
+        access: &hawdb_core::access::NodeProjectionAccess,
         properties: &BTreeSet<String>,
         admit: &mut GraphReadAllocator<'_>,
         consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<GraphScanControl>,

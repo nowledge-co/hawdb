@@ -126,29 +126,45 @@ buffers to reduce the number of runs. Exhaustion refuses the private stage.
 
 ## Costs and remaining gates
 
-This conservative implementation performs O(full source) extra verification and
-records a Database dependency. **Every post-E source commit refuses activation,
-including disjoint writes.** Fixed-E reads remain stable while writers continue,
-but this fallback does not deliver the design's disjoint-write progress goal.
-Do not remove that barrier without a complete source-enumeration/mapping proof.
+Independent verification MUST retain complete-source enumeration and exact
+comparison with the selected base. Database scope retains a conservative
+Database dependency and refuses every post-E canonical commit. Explicit Domains
+scope captures the declared label/table dependencies, including absence; a
+post-E write outside those dependencies MAY coexist with publication. Reads
+outside the declared scope MUST fail. The existing scoped validation and
+retained native source pin remain authoritative.
 
-Input, mapping, sorting and comparison have bounded logical work and resource
-admission. Final artifact construction and publication remain blocking; these
-limits are not physical I/O, RSS or elapsed-time guarantees. The full-source
-mapper currently supports zero or one document per native input, not arbitrary
-resumable fanout. Private work is discarded on cancellation/restart and rebuilt
-from the last selected base. A committed E head survives a lost caller response;
-this does not supply an idempotent registered-Consumer operation receipt.
+A `SearchProjectionDefinition` binds logical name, nonzero host semantic version,
+canonical scope, initializer, delta mapper and complete mapper. Its derived
+native Consumer ID MUST distinguish different versions/scopes and graph/table
+namespaces. Domain order and duplicates MUST NOT change identity. Hosts MUST bump
+the version after changing mapper/initializer semantics. Native target binding,
+exact content comparison, original-owner recovery and existing durability fences
+MUST NOT be weakened by this convenience contract. It introduces no new durable
+publication state transition; the existing model's Consumer identity is simply
+the derived ID.
 
-Hosts must hold their binding authority through activation. Versioned host
-binding/incarnation, durable coverage receipts, external vectors, optimized
-owner reduction, short activation and actual Mem integration remain open.
-The registered facade reuses its durable native binding/selection receipt and
-original-operation recovery; it does not persist resumable private coverage work
-or introduce an independently verifiable host mapping certificate.
-The legacy API's #1108 prefix refusal remains intact and is not routed through
-this new path automatically. Its earlier mixed-snapshot bug is historical;
-current main rejects the incoherent prefix.
+Scoped graph enumeration MUST use one pinned base/delta/tombstone view. It MUST
+not probe historical NodeId holes, duplicate overlapping labels, resurrect a
+captured deletion, or see later source writes/checkpoints. Cold segment pruning
+MUST use a complete label synopsis including propertyless nodes; Bloom false
+positives are permitted and false negatives are forbidden. Each descriptor,
+record and label-comparison decision consumes cumulative admission before cursor
+acceptance. Cancellation, corruption or exhausted limits cannot yield a
+complete-source token. Physical readers retain their independent resource
+admission. Canonical descriptor values use version 2; unsupported development
+formats fail closed without deleting or replacing their evidence.
+
+Final generation construction remains complete and bounded by its existing
+resident/generation limits. Split preparation runs outside the original write
+owner and returns to it for dependency/durability validation and selection.
+These bounds do not guarantee RSS, elapsed time or starvation freedom. No
+unchanged Search segment sharing or durable private-stage continuation is added.
+The full mapper supports zero or one document per native input, not arbitrary
+resumable fanout. A committed E survives a lost response through the original
+registered operation; it does not create an independent host mapping certificate.
+Actual Mem activation, external vectors and platform power-loss qualification
+retain their separate gates. The legacy #1108 prefix refusal remains intact.
 
 The [COW evolution design](MVCC_COW_EVOLUTION_SPEC.md) retains COW values,
 ordinary snapshot retirement and persistent Consumer registration as separate
@@ -157,6 +173,31 @@ informs complete dependency validation and safe reclamation. Its undo-based
 value representation and main-memory measurements do not mandate a HawDB layout
 change or establish WAL/power-loss safety. Optional serializability is not a
 prerequisite for this Search path.
+
+## Enumeration refinement argument (#1222)
+
+Let `B` be the captured canonical base, `D` the captured resident/delta map,
+`T` the captured node tombstones and `L` the selected label set. The emitted node
+IDs are precisely `matching(B, L) \ (keys(D) union T)` union
+`matching(D, L) \ T`. Base and delta domains in this expression are disjoint;
+overlapping labels are tested as membership and do not multiply IDs. The pinned
+read view fixes all four sets through later commits/checkpoints.
+
+For every node in a canonical segment, the writer inserts every label into that
+segment's synopsis, including nodes with no properties. Therefore membership in
+`L` implies at least one positive Bloom test; a negative segment decision cannot
+remove a matching node. Positive false matches add admitted work only. The
+resumable descriptor/record cursor accepts a position only after admission;
+refusal/cancellation invalidates completion rather than skipping the position.
+Version/digest/framing failures retain storage evidence and cannot mint coverage.
+
+This refines the existing complete-source abstraction; it adds no WAL,
+checkpoint/head, native selection or owner transition. The publication/custody
+models (`HawDBVersionedProjectionPublication`, `HawDBConsumerIncarnationCustody`)
+and source-segment publication model retain their state relations. Their
+publication/durability obligations remain required. The implementation evidence
+is the independent sparse/multilabel/base-delta reference and exact full-rebuild
+integration comparison, not an assertion that process reopen proves power loss.
 
 ## Verification ownership
 

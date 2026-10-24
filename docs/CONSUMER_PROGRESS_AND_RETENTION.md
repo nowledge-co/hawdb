@@ -224,3 +224,14 @@ single-stream gate, group-sync amortization, and sustained large/small admission
 fairness are separate acceptance rows. A favorable result for one cannot close
 the others. The qualification report records actual results and unresolved rows;
 this ledger does not automatically close any issue.
+
+## Architecture follow-through (#1222)
+
+The versioned `SearchProjectionDefinition` binds bootstrap and both mapper
+paths to one canonical scope/ID. The embedded defined wrapper keeps the original
+Consumer owner and uses the existing split preparation/publication handoff.
+Scoped complete-source enumeration now skips ID holes and prunes cold segments
+using label summaries; exact document-set/content comparison remains mandatory.
+See [the scan and publication controls](benchmarks/architecture_2026_10_24/README.md)
+for the measured source and the decision to retain complete Search generation
+construction. No performance gate or platform qualification is waived.

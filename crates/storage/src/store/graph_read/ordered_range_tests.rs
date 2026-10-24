@@ -66,7 +66,7 @@ fn assert_ordered(store: &GraphStore, catalog: &Catalog) {
         store
             .visit_projected_nodes_by_access_owned(
                 label,
-                &hawdb_plan_cypher::NodeProjectionAccess::PropertyRange {
+                &hawdb_core::access::NodeProjectionAccess::PropertyRange {
                     property: "rank".into(),
                     lower: lower.clone(),
                     upper: upper.clone(),
@@ -99,7 +99,7 @@ fn assert_ordered(store: &GraphStore, catalog: &Catalog) {
             let control = store
                 .visit_projected_nodes_by_access_owned(
                     label,
-                    &hawdb_plan_cypher::NodeProjectionAccess::PropertyRange {
+                    &hawdb_core::access::NodeProjectionAccess::PropertyRange {
                         property: "rank".into(),
                         lower: lower.clone(),
                         upper: upper.clone(),
@@ -301,7 +301,7 @@ fn assert_composite_coverage(store: &GraphStore, catalog: &Catalog) {
             if keys.contains(&"bucket") {
                 equality_prefix.push(("bucket".into(), Value::String("primary".into())));
             }
-            let seek = hawdb_plan_cypher::CompositeRangeSeek {
+            let seek = hawdb_core::access::CompositeRangeSeek {
                 index_properties: keys.iter().map(|key| (*key).into()).collect(),
                 equality_prefix,
                 range_property: "rank".into(),
@@ -341,7 +341,7 @@ fn assert_composite_coverage(store: &GraphStore, catalog: &Catalog) {
                 "index work {seek:?}"
             );
             let access =
-                hawdb_plan_cypher::NodeProjectionAccess::CompositeRange { seek: seek.clone() };
+                hawdb_core::access::NodeProjectionAccess::CompositeRange { seek: seek.clone() };
             let mut projected = BTreeSet::new();
             store
                 .visit_projected_nodes_by_access_owned(label, &access, &properties, |node| {

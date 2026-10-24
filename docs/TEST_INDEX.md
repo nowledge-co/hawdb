@@ -1270,3 +1270,29 @@ independence, snapshot-size monotonicity, selective covering-index selection,
 and unchanged point/default-context controls. These are checked-profile unit
 cases in the existing crate lane; no fixture, feature matrix, timeout or
 execution lane changes. See [the cost model](OPTIMIZER_COST_MODEL.md).
+
+
+## Embedded architecture ownership (#1222)
+
+- `//:hawdb_storage_language_boundary_test` checks both normal Bazel dependency
+  paths from storage to Cypher syntax and plans; Cargo metadata checks the same
+  normal closure. It belongs to the existing root unit suite.
+- Existing storage units own `canonical::node_label_cursor` and
+  `store::projection_full_source::tests`: complete label synopses, absent labels,
+  sparse IDs, overlapping labels, pinned checkpoint/delta/tombstone membership,
+  cancellation, corruption and sticky budget/IO/memory refusals. Existing
+  checkpoint accumulator cut/retry tests also cover resumable label inventory.
+- Existing default/minimal `hawdb_mvcc_staging_session` targets own the four
+  `registered_consumer_defin` cases: canonical version/scope identity, graph/SQL
+  catch-up and complete rebuild equality, target-version refusal/reopen, original
+  owner retention, cancellation and conflict. No fixture or deadline is reduced.
+- Ordinary query regression tests migrated on main in PR #1194 stay in their
+  existing root partitions. Splitting API/embedded-owner implementations into
+  private responsibility modules preserves their public facade identity and
+  ordinary query execution; no captured-response replacement corpus is added.
+- The manual storage `projection_label_source` and root `consumer_publication`
+  benches report scan work/time and foreground latency/successful watermarks.
+  The optional capture-before-writers schedule uses bounded setup handshakes
+  outside measured transaction/preparation/construction intervals; it adds no
+  rate limiter and changes no progress threshold. See the [source-bound
+  controls](benchmarks/architecture_2026_10_24/README.md). No fuzz lane is added.

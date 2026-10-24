@@ -44,7 +44,7 @@ fn assert_pages(store: &GraphStore, catalog: &Catalog) {
             let control = store
                 .visit_projected_nodes_by_access_owned(
                     label,
-                    &hawdb_plan_cypher::NodeProjectionAccess::CompositeOrdered { seek },
+                    &hawdb_core::access::NodeProjectionAccess::CompositeOrdered { seek },
                     &required,
                     |node| {
                         let key = properties

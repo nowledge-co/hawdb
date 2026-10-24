@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::property_projection::CompositeOrder;
+use hawdb_core::access::CompositeOrderedSeek;
 use hawdb_core::ids::projected_value_allocation_bytes;
-use hawdb_plan_cypher::CompositeOrderedSeek;
 use std::cmp::Ordering as KeyOrdering;
 
 #[cfg(test)]

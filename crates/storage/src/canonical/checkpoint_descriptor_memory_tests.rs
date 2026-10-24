@@ -233,7 +233,8 @@ fn checkpoint_units_canonical_descriptor_memory_returned_blooms_retain_admission
     let bloom_bytes = 8
         * (descriptor.source_endpoint_bloom.words.len()
             + descriptor.target_endpoint_bloom.words.len()
-            + descriptor.node_property_bloom.words.len());
+            + descriptor.node_property_bloom.words.len()
+            + descriptor.node_label_bloom.words.len());
     assert!(used(&task) >= bloom_bytes as u64, "returned Bloom bytes must retain their own admission after the consuming flush destroys segment input");
     assert_eq!(governor.snapshot().active_background_io_slots, 0);
     drop(work);
