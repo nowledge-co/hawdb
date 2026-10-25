@@ -948,7 +948,6 @@ impl FileOpenContext {
         &self.state.root
     }
 
-    #[cfg(unix)]
     pub(crate) fn metadata(&self, path: &Path) -> io::Result<std::fs::Metadata> {
         self.temporary(|| std::fs::metadata(path))
     }
