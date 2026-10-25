@@ -277,6 +277,13 @@ oracles of the default installation case. These cases add no CI job or profile;
 the native Windows storage descriptor lane discovers the restricted-token case.
 Local replay filters are `namespace_anchor` (storage) and
 `namespace_durability_anchor` (facade integration and power-loss owners).
+The recorder requires the root `test-support` feature; the ordinary default
+unit executable does not contain it. Replay it with
+`bazel test //:hawdb_unit_test_binary --//:windows_native_profile=facade_all --test_arg=namespace_durability_anchor`
+or `cargo test --locked -p hawdb --all-features --lib namespace_durability_anchor`.
+Its existing full-feature qualification owner is the branch power-loss
+workflow's `remaining` partition; the native Windows storage shard separately
+owns the restricted-token descriptor case.
 
 | Target / family | What it detects | Notes |
 | --- | --- | --- |
