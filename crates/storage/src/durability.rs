@@ -263,7 +263,8 @@ fn require_directory(file: &fs::File) -> io::Result<()> {
 /// Persists names from a publication directory through its project root.
 /// Existing directories can be leftovers of an interrupted attempt: existence
 /// alone never replaces these barriers. The project root's own ancestry is
-/// synchronized during writable project admission.
+/// synchronized during writable project admission. Detached component scratch
+/// can borrow project accounting; its namespace still needs a full mount walk.
 #[doc(hidden)]
 pub fn sync_directory_ancestors(directory: &Path) -> io::Result<()> {
     let context = crate::file_descriptors::context_for_path(directory)?;
@@ -274,21 +275,15 @@ pub fn sync_directory_ancestors(directory: &Path) -> io::Result<()> {
 
 /// Explicit context avoids reentering the project registry during bootstrap.
 /// Open one directory at a time, charging even ancestor IO to this project.
-/// With no project boundary, stop at the existing filesystem mount: persistence
-/// of the mount itself is an external platform assumption. Windows requests
-/// actual directory-handle flushes; their namespace semantics remain unqualified.
+/// With no enclosing project boundary, stop at the existing filesystem mount:
+/// persistence of the mount itself is an external platform assumption. Windows
+/// requests actual directory-handle flushes; their namespace semantics remain unqualified.
 pub(crate) fn sync_directory_tree_with_context(
     directory: &Path,
     context: &crate::file_descriptors::FileOpenContext,
     stop: Option<&Path>,
 ) -> io::Result<()> {
     let mut current = context.canonicalize(directory)?;
-    if stop.is_some_and(|stop| !current.starts_with(stop)) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "directory synchronization boundary must contain the directory",
-        ));
-    }
     loop {
         sync_directory_with_context(&current, context)?;
         if stop.is_some_and(|root| current == root) {

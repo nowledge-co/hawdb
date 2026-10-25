@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use crate::file_descriptors::FileOpenContext;
 use std::path::Path;
 
 struct Scratch(PathBuf);
@@ -49,6 +50,38 @@ fn namespace_anchor_bounds_ancestry_without_weakening_the_default() {
         .to_string()
         .contains("injected directory sync failure"));
     drop(failure);
+}
+
+#[test]
+fn namespace_anchor_keeps_detached_component_ancestry_and_accounting() {
+    let scratch = Scratch::new();
+    let anchor = scratch.0.join("durable");
+    std::fs::create_dir(&anchor).unwrap();
+    let project = open(&anchor.join("graph"), Some(&anchor), true).unwrap();
+    let detached = scratch.0.join("producer/stage");
+    std::fs::create_dir_all(&detached).unwrap();
+    project
+        .io_context()
+        .with_component_context(&detached, || {
+            let context = FileOpenContext::for_path(&detached).unwrap();
+            assert_eq!(context.project_root(), project.root());
+            // Borrowed descriptor ownership does not make detached scratch a
+            // descendant of the project or its host-guaranteed anchor.
+            let failure = crate::durability::fail_sync_directory_for(&scratch.0);
+            let error = crate::durability::sync_directory_ancestors(&detached).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("injected directory sync failure"),
+                "{error}"
+            );
+            assert_eq!(project.metrics().open, 0);
+            drop(failure);
+            crate::durability::sync_directory_ancestors(&detached).unwrap();
+            assert_eq!(project.metrics().open, 0);
+            assert_eq!(project.metrics().high_water, 1);
+        })
+        .unwrap();
 }
 
 #[test]

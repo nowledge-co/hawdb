@@ -267,7 +267,9 @@ Namespace durability anchors use the existing storage descriptor tests,
 `branch_project_open` integration target and root power-loss family. Storage
 cases cover bounded inclusive barriers, unchanged default ancestry, failed
 barrier retry/accounting, pre-effect validation, canonical aliases, symlink
-escape and live-owner configuration conflicts. The Windows descriptor case
+escape and live-owner configuration conflicts. Detached producer scratch keeps
+the initiating project's descriptor accounting while retaining its complete
+ancestor walk, including failed-barrier propagation. The Windows descriptor case
 uses a fresh thread with a restricted token, removing administrator-group
 authority and privileges without changing machine ACLs. It opens and reopens a
 private project beneath the OS-owned temp directory. The embedded facade case
