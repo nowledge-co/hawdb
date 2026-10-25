@@ -74,6 +74,56 @@ fn values(database: &mut Database) -> Vec<BTreeMap<String, Value>> {
         .into_rows()
 }
 
+#[test]
+fn namespace_durability_anchor_round_trips_the_embedded_graph_and_sql_store() {
+    let project = Project::new();
+    let anchor = std::env::temp_dir();
+    let path = project.0.join("new/graph");
+    let options = hawdb::NowledgeMemOpenOptions::graph_only(
+        &path,
+        hawdb::NowledgeMemGraphMode::WritableCutover,
+    )
+    .with_database_config(DatabaseConfig {
+        namespace_durability_anchor: Some(anchor),
+        ..Default::default()
+    });
+    let (handle, _) =
+        hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options(options.clone()).unwrap();
+    handle
+        .with_transaction(|transaction| {
+            transaction.query("CREATE (:Memory {id: 'anchored'})")?;
+            transaction
+                .query_sql("CREATE TABLE anchored_content (id BIGINT PRIMARY KEY, body TEXT)")?;
+            transaction
+                .query_sql("INSERT INTO anchored_content (id, body) VALUES (1, 'fixture')")?;
+            Ok(())
+        })
+        .unwrap();
+    let conflict = Database::open(&path).unwrap_err();
+    assert!(conflict
+        .to_string()
+        .contains("namespace durability anchor conflicts"));
+    drop(handle);
+    let (reopened, _) = hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+    reopened
+        .with_read_transaction(64 * 1024, |transaction| {
+            assert_eq!(
+                transaction
+                    .query("MATCH (m:Memory {id: 'anchored'}) RETURN m.id AS id")?
+                    .rows[0]["id"],
+                Value::String("anchored".into())
+            );
+            assert_eq!(
+                transaction
+                    .query_sql("SELECT body FROM anchored_content WHERE id = 1")?
+                    .rows[0]["body"],
+                Value::String("fixture".into())
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn default_project_remains_usable_under_a_host_owned_descriptor_limit() {

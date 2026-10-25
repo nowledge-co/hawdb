@@ -114,6 +114,7 @@ pub(crate) struct BudgetState {
     immutable_handles: Mutex<Weak<crate::immutable_files::ImmutableFileHandles>>,
     active_reservations: AtomicUsize,
     root_namespace_durable: AtomicBool,
+    namespace_anchor: Option<PathBuf>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) power_loss: Mutex<Weak<crate::power_loss::ModelCore>>,
 }
@@ -135,6 +136,7 @@ impl BudgetState {
             immutable_handles: Mutex::new(Weak::new()),
             active_reservations: AtomicUsize::new(0),
             root_namespace_durable: AtomicBool::new(false),
+            namespace_anchor: None,
             #[cfg(any(test, feature = "test-support"))]
             power_loss: Mutex::new(Weak::new()),
         }
@@ -308,11 +310,11 @@ pub struct ProjectFileDescriptors {
 
 impl ProjectFileDescriptors {
     pub fn acquire(root: &Path, limit: usize) -> Result<Self, HawDBError> {
-        Self::acquire_root(root, limit, true, None)
+        Self::acquire_root(root, limit, true, None, None)
     }
 
     pub fn acquire_existing(root: &Path, limit: usize) -> Result<Self, HawDBError> {
-        Self::acquire_root(root, limit, false, None)
+        Self::acquire_root(root, limit, false, None, None)
     }
 
     /// Configure foreground admission. Internal control I/O stays non-strict.
@@ -321,7 +323,7 @@ impl ProjectFileDescriptors {
         limit: usize,
         strict_capacity_limit: bool,
     ) -> Result<Self, HawDBError> {
-        Self::acquire_root(root, limit, true, Some(strict_capacity_limit))
+        Self::acquire_root(root, limit, true, Some(strict_capacity_limit), None)
     }
 
     pub fn acquire_existing_with_capacity_limit(
@@ -329,7 +331,29 @@ impl ProjectFileDescriptors {
         limit: usize,
         strict_capacity_limit: bool,
     ) -> Result<Self, HawDBError> {
-        Self::acquire_root(root, limit, false, Some(strict_capacity_limit))
+        Self::acquire_root(root, limit, false, Some(strict_capacity_limit), None)
+    }
+
+    /// Admit a facade-configured project beneath a host-guaranteed durable
+    /// ancestor. Internal component opens inherit that original decision.
+    #[doc(hidden)]
+    pub fn acquire_with_namespace_anchor(
+        root: &Path,
+        limit: usize,
+        strict_capacity_limit: bool,
+        create: bool,
+        anchor: Option<&Path>,
+    ) -> Result<Self, HawDBError> {
+        let anchor = anchor
+            .map(|anchor| validate_namespace_anchor(root, anchor))
+            .transpose()?;
+        Self::acquire_root(
+            root,
+            limit,
+            create,
+            Some(strict_capacity_limit),
+            Some(&anchor),
+        )
     }
 
     /// Persistent components borrow an existing project domain, including its
@@ -343,7 +367,7 @@ impl ProjectFileDescriptors {
                 }
                 Ok(project)
             }
-            None => Self::acquire_root(root, DEFAULT_MAX_OPEN_FILES, create, None),
+            None => Self::acquire_root(root, DEFAULT_MAX_OPEN_FILES, create, None, None),
         }
     }
 
@@ -392,6 +416,7 @@ impl ProjectFileDescriptors {
         limit: usize,
         create: bool,
         strict_capacity_limit: Option<bool>,
+        namespace_anchor: Option<&Option<PathBuf>>,
     ) -> Result<Self, HawDBError> {
         if limit == 0 {
             return Err(HawDBError::FileDescriptors(
@@ -402,6 +427,7 @@ impl ProjectFileDescriptors {
         let mut projects = PROJECTS.lock().unwrap_or_else(|error| error.into_inner());
         projects.retain(|_, state| state.strong_count() != 0);
         if let Some(state) = projects.get(&lexical).and_then(Weak::upgrade) {
+            require_namespace_anchor(&state, namespace_anchor)?;
             let project = configured_capacity_state(state, limit, strict_capacity_limit)?;
             if create {
                 ensure_project_namespace(&project.state, project.root())?;
@@ -409,12 +435,14 @@ impl ProjectFileDescriptors {
             return Ok(project);
         }
         let effective_limit = os_limit::effective_limit(limit)?;
-        let tentative = Arc::new(BudgetState::new(
+        let mut tentative = BudgetState::new(
             lexical.clone(),
             limit,
             effective_limit,
             strict_capacity_limit.unwrap_or(false),
-        ));
+        );
+        tentative.namespace_anchor = namespace_anchor.cloned().flatten();
+        let tentative = Arc::new(tentative);
         #[cfg(any(test, feature = "test-support"))]
         {
             // A recorder rooted at an existing durable ancestor also observes
@@ -457,7 +485,17 @@ impl ProjectFileDescriptors {
         // owned probe closes before the resolved project domain is selected.
         let canonical = std::fs::canonicalize(&lexical)?;
         drop(namespace_probe);
+        if let Some(anchor) = &tentative.namespace_anchor
+            && !canonical.starts_with(anchor)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "project moved outside its namespace durability anchor",
+            )
+            .into());
+        }
         if let Some(state) = projects.get(&canonical).and_then(Weak::upgrade) {
+            require_namespace_anchor(&state, namespace_anchor)?;
             let project = configured_capacity_state(state, limit, strict_capacity_limit)?;
             if create {
                 ensure_project_namespace(&project.state, project.root())?;
@@ -581,10 +619,66 @@ fn ensure_project_namespace(state: &Arc<BudgetState>, root: &Path) -> io::Result
     if !state.root_namespace_durable.load(Ordering::Acquire) {
         let context = FileOpenContext::from_state(state.clone());
         let _operation = context.internal_operation()?;
-        crate::durability::sync_directory_tree_with_context(root, &context, None)?;
+        crate::durability::sync_directory_tree_with_context(
+            root,
+            &context,
+            state.namespace_anchor.as_deref(),
+        )?;
         state.root_namespace_durable.store(true, Ordering::Release);
     }
     Ok(())
+}
+
+fn require_namespace_anchor(
+    state: &BudgetState,
+    requested: Option<&Option<PathBuf>>,
+) -> Result<(), HawDBError> {
+    // Internal acquisition inherits; facade acquisition explicitly requests
+    // either a canonical anchor or the unchanged full-ancestry default.
+    if requested.is_some_and(|requested| *requested != state.namespace_anchor) {
+        return Err(HawDBError::Storage(
+            "namespace durability anchor conflicts with the open project".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_namespace_anchor(root: &Path, anchor: &Path) -> io::Result<PathBuf> {
+    let context = FileOpenContext::from_state(NAMESPACE_PROBES.clone());
+    let anchor = context.canonicalize(anchor)?;
+    if !context.metadata(&anchor)?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "namespace durability anchor must be an existing directory",
+        ));
+    }
+    // Resolve existing symlinks before any mkdir. Missing suffixes must contain
+    // ordinary names; resolving a missing `..` component could escape the anchor.
+    let mut existing = absolute_path(root)?;
+    let mut suffix = Vec::new();
+    let resolved = loop {
+        match context.canonicalize(&existing) {
+            Ok(mut resolved) => {
+                for name in suffix.iter().rev() {
+                    resolved.push(name);
+                }
+                break resolved;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let name = existing.file_name().ok_or(error)?.to_os_string();
+                suffix.push(name);
+                existing.pop();
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    if !resolved.starts_with(&anchor) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "namespace durability anchor must contain the project",
+        ));
+    }
+    Ok(anchor)
 }
 
 fn create_project_directory(path: &Path) -> io::Result<bool> {

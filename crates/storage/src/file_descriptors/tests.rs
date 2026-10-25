@@ -63,6 +63,9 @@ impl Fixture {
 #[path = "capacity_policy.rs"]
 mod capacity_policy;
 
+#[path = "namespace_anchor.rs"]
+mod namespace_anchor;
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         std::fs::remove_dir_all(&self.root).unwrap();

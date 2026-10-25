@@ -409,6 +409,13 @@ impl<T> SharedState<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatabaseConfig {
     pub read_only: bool,
+    /// An existing, already durable ancestor whose own name and ancestry are
+    /// guaranteed by the host. Writable open synchronizes every directory from
+    /// the project through this anchor, inclusive. The host must keep that
+    /// namespace stable while the project is open; existence is not proof.
+    /// `None` retains the default walk through the existing filesystem mount.
+    /// Concurrent opens of one project must use the same canonical anchor.
+    pub namespace_durability_anchor: Option<PathBuf>,
     /// Maximum monotonic age of uncheckpointed data in an admitted persistent
     /// writer. The background-maintenance capability controls worker creation.
     pub automatic_checkpoint_max_age: std::time::Duration,
@@ -686,6 +693,7 @@ impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             read_only: false,
+            namespace_durability_anchor: None,
             automatic_checkpoint_max_age: std::time::Duration::from_secs(60),
             branch_create_recovery_limits: BranchCreateRecoveryLimits::default(),
             max_read_result_rows: DEFAULT_MAX_READ_RESULT_ROWS,

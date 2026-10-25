@@ -283,6 +283,12 @@ pub(crate) fn sync_directory_tree_with_context(
     stop: Option<&Path>,
 ) -> io::Result<()> {
     let mut current = context.canonicalize(directory)?;
+    if stop.is_some_and(|stop| !current.starts_with(stop)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory synchronization boundary must contain the directory",
+        ));
+    }
     loop {
         sync_directory_with_context(&current, context)?;
         if stop.is_some_and(|root| current == root) {

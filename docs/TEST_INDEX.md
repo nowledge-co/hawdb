@@ -263,6 +263,21 @@ the cumulative snapshot ledger; ordinary reads keep their 8 KiB snapshot cap.
 
 ## Root regression owners
 
+Namespace durability anchors use the existing storage descriptor tests,
+`branch_project_open` integration target and root power-loss family. Storage
+cases cover bounded inclusive barriers, unchanged default ancestry, failed
+barrier retry/accounting, pre-effect validation, canonical aliases, symlink
+escape and live-owner configuration conflicts. The Windows descriptor case
+uses a fresh thread with a restricted token, removing administrator-group
+authority and privileges without changing machine ACLs. It opens and reopens a
+private project beneath the OS-owned temp directory. The embedded facade case
+round-trips graph and SQL writes. The anchored initial-installation recorder
+reuses the complete before/after mkdir, lost-write and committed mixed-transaction
+oracles of the default installation case. These cases add no CI job or profile;
+the native Windows storage descriptor lane discovers the restricted-token case.
+Local replay filters are `namespace_anchor` (storage) and
+`namespace_durability_anchor` (facade integration and power-loss owners).
+
 | Target / family | What it detects | Notes |
 | --- | --- | --- |
 | `//:hawdb_manual_checkpoint_tests`, `//:hawdb_manual_checkpoint_minimal_tests` | Explicit ordinary/concurrent/embedded checkpoints preserve durable publication independently of background support/admission. Embedded controls retain one same-governor background or foreground I/O permit, distinguish allowed foreground work from legitimate refusal, and check reopen and refunds. | Existing default/minimal public-consumer carriers and profiles; replay `cargo test --locked --test manual_checkpoint`, adding `--no-default-features` for minimal. The existing root automatic-checkpoint `publication_io` family also pauses the actual owner with its acquired wave, observes manual suspension, and checks durable completion/refunds under [#1219](https://github.com/nowledge-co/hawdb/issues/1219). |

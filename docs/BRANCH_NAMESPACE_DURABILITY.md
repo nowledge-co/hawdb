@@ -12,6 +12,23 @@ Directory existence, including leftovers from an interrupted attempt, is not
 proof of a completed barrier. Ancestor traversal opens one directory at a time
 and charges that descriptor to the initiating project.
 
+Hosts may explicitly set `DatabaseConfig::namespace_durability_anchor` to an
+existing, already durable ancestor of the project. Its name and ancestry are a
+host guarantee, not inferred from existence or from a denied open. The host must
+keep that namespace stable while project handles are open. HawDB validates canonical ancestry
+before creating project directories, synchronizes all names through the anchor
+inclusive, and refuses a conflicting anchor while the project is open. Internal
+components inherit the admitted project's boundary. `None` preserves the mount
+walk; permissions and failed barriers still fail closed. This does not change
+the WAL policy or persistent format.
+
+For a Windows application storing private databases below the OS-provisioned
+LocalAppData folder, the host can guarantee that folder's existing namespace and
+use it as the anchor. It must not declare a freshly created application or
+self-test directory durable merely because mkdir succeeded. This avoids needing
+write access to unrelated ancestors such as `C:\Users` while retaining barriers
+for every newly required application and project directory.
+
 An immutable store establishes its ancestry on its first publication, rather
 than on read-only open. It remembers only successful object-kind name barriers
 (at most five kinds); each new object's contents and final name still require
@@ -81,7 +98,8 @@ requires `GENERIC_WRITE`. Its file/volume documentation does not establish a
 portable POSIX directory-fsync contract. A successful directory flush request or
 passing reopen test therefore does not qualify newly created ancestor names.
 The host may need write access to ancestor directories; failure must not silently
-relax the durable default. The Windows recorder now captures the native directory
+relax the durable default. An explicit host-guaranteed anchor bounds that ancestry
+without converting a failed barrier to success. The Windows recorder now captures the native directory
 opens and flushes, and audits hard-link identities with the full
 [volume serial and 128-bit file ID](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info).
 Its model remains conditional on the unverified direct-name persistence

@@ -104,12 +104,21 @@ impl Drop for Fixture {
 }
 
 fn open(root: &Path, durability: DurabilityPolicy) -> Database {
+    open_with_namespace_anchor(root, durability, None)
+}
+
+fn open_with_namespace_anchor(
+    root: &Path,
+    durability: DurabilityPolicy,
+    anchor: Option<&Path>,
+) -> Database {
     Database::open_with_durability_and_config(
         root,
         durability,
         DatabaseConfig {
             max_open_files: 32,
             strict_capacity_limit: true,
+            namespace_durability_anchor: anchor.map(Path::to_path_buf),
             ..Default::default()
         },
     )
@@ -1440,6 +1449,15 @@ fn logical_deletion_publication_cuts_are_atomic_and_retry_the_same_uuid() {
 
 #[test]
 fn initial_project_installation_preserves_ancestors_after_acknowledgement() {
+    qualify_initial_project_installation(false);
+}
+
+#[test]
+fn namespace_durability_anchor_preserves_ancestors_after_acknowledgement() {
+    qualify_initial_project_installation(true);
+}
+
+fn qualify_initial_project_installation(anchored: bool) {
     for boundary in [ObservationBoundary::Before, ObservationBoundary::After] {
         let mut fixture = Fixture::new();
         let relative = PathBuf::from("new-parent/project");
@@ -1454,9 +1472,10 @@ fn initial_project_installation_preserves_ancestors_after_acknowledgement() {
                 keep_last: false,
             })
             .unwrap();
-        let mut database = open(
+        let mut database = open_with_namespace_anchor(
             &fixture.root.join(&relative),
             DurabilityPolicy::SyncOnEveryWrite,
+            anchored.then_some(fixture.root.as_path()),
         );
         commit_mixed(&mut database);
         let main = database
@@ -1474,7 +1493,11 @@ fn initial_project_installation_preserves_ancestors_after_acknowledgement() {
         for plan in [CrashPlan::default(), cut.persist_all_plan()] {
             let anchor = fixture.image(&cut, &plan);
             let root = anchor.join(&relative);
-            let mut interrupted = open(&root, DurabilityPolicy::SyncOnEveryWrite);
+            let mut interrupted = open_with_namespace_anchor(
+                &root,
+                DurabilityPolicy::SyncOnEveryWrite,
+                anchored.then_some(anchor.as_ref()),
+            );
             // This cut precedes every schema/data transaction and identity
             // reservation. Reopening can initialize the uncommitted project.
             assert!(interrupted.query_sql("SELECT column_name FROM information_schema.columns WHERE table_name = 'atomic_tail'").unwrap().rows.is_empty());
@@ -1485,7 +1508,11 @@ fn initial_project_installation_preserves_ancestors_after_acknowledgement() {
                 .is_empty());
         }
         let anchor = fixture.image(&acknowledged, &CrashPlan::default());
-        let mut recovered = open(&anchor.join(&relative), DurabilityPolicy::SyncOnEveryWrite);
+        let mut recovered = open_with_namespace_anchor(
+            &anchor.join(&relative),
+            DurabilityPolicy::SyncOnEveryWrite,
+            anchored.then_some(anchor.as_ref()),
+        );
         assert_eq!(recovered.commit_epoch().unwrap(), epoch);
         assert!(assert_atomic(&mut recovered, main));
     }

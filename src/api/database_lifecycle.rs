@@ -136,19 +136,14 @@ impl Database {
         }
         let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
         let mut catalog = Catalog::default();
-        let files = if config.read_only {
-            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_existing_with_capacity_limit(
+        let files =
+            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_with_namespace_anchor(
                 path.as_ref(),
                 config.max_open_files,
                 config.strict_capacity_limit,
-            )?
-        } else {
-            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_with_capacity_limit(
-                path.as_ref(),
-                config.max_open_files,
-                config.strict_capacity_limit,
-            )?
-        };
+                !config.read_only,
+                config.namespace_durability_anchor.as_deref(),
+            )?;
         let project_root_path = files.root().to_path_buf();
         let _descriptor_operation = files.io_context().internal_operation()?;
         if matches!(
