@@ -215,7 +215,7 @@ jobs:
           if-no-files-found: error
       - name: Save updated disk actions for this source
         if: always() && steps.bazel.outputs.disk-cache-key != '' && steps.bazel.outputs.disk-cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: D:/hawdb-bazel-disk
           key: ${{ steps.bazel.outputs.disk-cache-key }}
@@ -240,7 +240,7 @@ jobs:
         with:
           components: clippy
       - name: Restore native Clippy dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -344,7 +344,7 @@ jobs:
 
       - name: Save updated abandonment disk actions
         if: always() && steps.bazel.outputs.disk-cache-key != '' && steps.bazel.outputs.disk-cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: D:/hawdb-bazel-disk
           key: ${{ steps.bazel.outputs.disk-cache-key }}
