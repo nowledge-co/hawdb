@@ -43,6 +43,14 @@ unsafe extern "system" {
         ea_buffer: *const c_void,
         ea_length: u32,
     ) -> i32;
+    #[link_name = "NtQueryInformationFile"]
+    fn nt_query_information_file(
+        file: *mut c_void,
+        io_status: *mut IoStatusBlock,
+        information: *mut c_void,
+        bytes: u32,
+        class: i32,
+    ) -> i32;
     #[link_name = "NtQueryDirectoryFile"]
     fn nt_query_directory(
         file: *mut c_void,
@@ -350,6 +358,17 @@ fn relative_open_encoded_raw(
     disposition: u32,
     kind: u32,
 ) -> io::Result<std::fs::File> {
+    relative_open_encoded_raw_attributes(root, encoded, access, disposition, kind, 0)
+}
+
+fn relative_open_encoded_raw_attributes(
+    root: &std::fs::File,
+    encoded: &mut [u16],
+    access: u32,
+    disposition: u32,
+    kind: u32,
+    object_attributes: u32,
+) -> io::Result<std::fs::File> {
     let length = u16::try_from(encoded.len() * 2).expect("bounded name fits native scratch");
     let mut unicode = UnicodeString {
         length,
@@ -361,8 +380,9 @@ fn relative_open_encoded_raw(
             .expect("native struct fits u32"),
         root_directory: root.as_raw_handle(),
         object_name: &mut unicode,
-        // Exact component lookup; no Win32 drive/stream/path normalization.
-        attributes: 0,
+        // Existing operations use exact lookup. Only the new exclusive
+        // relabel target probe requests native case-alias detection.
+        attributes: object_attributes,
         security_descriptor: std::ptr::null_mut(),
         security_quality_of_service: std::ptr::null_mut(),
     };
@@ -683,4 +703,177 @@ pub(super) fn matches_child_file(
         crate::native_file_identity::of_file(file)?
             == crate::native_file_identity::of_file(&named)?,
     )
+}
+
+#[repr(C)]
+struct CaseSensitiveInformation {
+    flags: u32,
+}
+const FILE_CASE_SENSITIVE_INFORMATION: i32 = 71;
+const FILE_CS_FLAG_CASE_SENSITIVE_DIR: u32 = 1;
+
+fn directory_case_sensitive(root: &std::fs::File) -> io::Result<bool> {
+    let mut information = CaseSensitiveInformation { flags: 0 };
+    let mut status = IoStatusBlock {
+        status_or_pointer: 0,
+        information: 0,
+    };
+    // SAFETY: FileCaseSensitiveInformation=71 requires FILE_READ_ATTRIBUTES,
+    // already held on this original parent. The exact repr(C) four-byte output
+    // and status remain writable through the synchronous query. No new handle
+    // or path lookup is involved (Windows10 1803+ / supporting filesystem).
+    let result = unsafe {
+        nt_query_information_file(
+            root.as_raw_handle(),
+            &mut status,
+            std::ptr::from_mut(&mut information).cast(),
+            4,
+            FILE_CASE_SENSITIVE_INFORMATION,
+        )
+    };
+    if result < 0 {
+        // SAFETY: convert this query's actual NTSTATUS, never infer a case
+        // policy from unsupported filesystem/version/access error prose.
+        return Err(io::Error::from_raw_os_error(
+            unsafe { status_to_error(result) } as i32,
+        ));
+    }
+    if status.information != std::mem::size_of::<CaseSensitiveInformation>()
+        || information.flags & !FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid native directory case-sensitivity information",
+        ));
+    }
+    Ok(information.flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0)
+}
+
+#[cfg(test)]
+pub(super) fn enable_case_sensitive_for_test(root: &std::fs::File) -> io::Result<()> {
+    // Caller admits this helper before open; only this isolated empty fixture
+    // directory is changed. No host/global configuration or shell-out occurs.
+    let writable = relative_open_kind(root, ChildName(""), 0x100, false, 1)?;
+    let information = CaseSensitiveInformation {
+        flags: FILE_CS_FLAG_CASE_SENSITIVE_DIR,
+    };
+    let mut status = IoStatusBlock {
+        status_or_pointer: 0,
+        information: 0,
+    };
+    // SAFETY: exact native four-byte input, live FILE_WRITE_ATTRIBUTES helper,
+    // isolated directory, and synchronous NtSetInformationFile class71.
+    let result = unsafe {
+        nt_set_information_file(
+            writable.as_raw_handle(),
+            &mut status,
+            std::ptr::from_ref(&information).cast(),
+            4,
+            FILE_CASE_SENSITIVE_INFORMATION,
+        )
+    };
+    if result < 0 {
+        // SAFETY: pure native status conversion, with no fallback policy.
+        return Err(io::Error::from_raw_os_error(
+            unsafe { status_to_error(result) } as i32,
+        ));
+    }
+    if !directory_case_sensitive(root)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "case-sensitive fixture flag was not enabled",
+        ));
+    }
+    Ok(())
+}
+
+/// Probe every target kind without following reparse points. The caller admits
+/// and releases this helper before opening the DELETE-capable source helper.
+pub(super) fn entry_exists(root: &std::fs::File, name: ChildName<'_>) -> io::Result<bool> {
+    let mut encoded = [0_u16; 256];
+    for (slot, byte) in encoded.iter_mut().zip(name.0.bytes()) {
+        *slot = u16::from(byte);
+    }
+    // Inspect this original parent's actual policy. Case-sensitive NTFS can
+    // contain distinct differently-cased entries. Unsupported/unavailable
+    // metadata queries refuse before native effects; no policy is guessed.
+    let attributes = if directory_case_sensitive(root)? {
+        0
+    } else {
+        0x40
+    };
+    match relative_open_encoded_raw_attributes(
+        root,
+        &mut encoded[..name.0.len()],
+        READ_ATTRIBUTES,
+        1,
+        0,
+        attributes,
+    ) {
+        Ok(file) => {
+            drop(file);
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+pub(super) fn open_directory_for_relabel(
+    root: &std::fs::File,
+    name: ChildName<'_>,
+) -> io::Result<std::fs::File> {
+    // The original child and caller anchor stay open, sharing DELETE. Only this
+    // admitted no-reparse helper receives the DELETE capability for the move.
+    relative_open_kind(root, name, READ_DATA | DELETE, false, 1)
+}
+
+pub(super) fn relabel_directory_new(
+    root: &std::fs::File,
+    child: &std::fs::File,
+    _source: ChildName<'_>,
+    target: ChildName<'_>,
+) -> io::Result<()> {
+    #[repr(C)]
+    struct RenameInfo {
+        flags: u32,
+        root: *mut c_void,
+        length: u32,
+        name: [u16; 256],
+    }
+    let mut info = RenameInfo {
+        // Request POSIX semantics without REPLACE_IF_EXISTS. Existing targets
+        // must still refuse; held-descendant availability needs native proof.
+        flags: 2,
+        root: root.as_raw_handle(),
+        length: u32::try_from(target.0.len() * 2).expect("bounded component"),
+        name: [0; 256],
+    };
+    for (slot, byte) in info.name.iter_mut().zip(target.0.bytes()) {
+        *slot = u16::from(byte);
+    }
+    let mut status = IoStatusBlock {
+        status_or_pointer: 0,
+        information: 0,
+    };
+    // SAFETY: NT FileRenameInformationEx class65 supports RootDirectory. The
+    // repr(C) aligned bounded buffer, DELETE-capable original source helper and
+    // captured parent outlive the synchronous call. No full pathname is used.
+    let result = unsafe {
+        nt_set_information_file(
+            child.as_raw_handle(),
+            &mut status,
+            std::ptr::from_ref(&info).cast(),
+            u32::try_from(std::mem::size_of::<RenameInfo>()).expect("bounded rename buffer"),
+            65,
+        )
+    };
+    if result < 0 {
+        // SAFETY: converts returned NTSTATUS without dereferencing pointers.
+        Err(io::Error::from_raw_os_error(
+            unsafe { status_to_error(result) } as i32,
+        ))
+    } else {
+        Ok(())
+    }
 }

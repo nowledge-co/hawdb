@@ -275,6 +275,19 @@ impl PowerLossSnapshot {
 }
 
 impl ModelCore {
+    #[cfg(test)]
+    pub(crate) fn poison_namespace_observer_for_test(&self) {
+        // Fault collaborator only: poison the actual observer mutex without
+        // changing the engine or manufacturing a successful native operation.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self
+                .observation
+                .lock()
+                .expect("unpoisoned fixture observer");
+            panic!("injected namespace observer panic");
+        }));
+    }
+
     pub(crate) fn lock(&self) -> io::Result<MutexGuard<'_, ImageEngine>> {
         self.engine.lock().map_err(|_| poisoned())
     }

@@ -62,6 +62,14 @@ expect_failure() {
 export TLA_JAVA="$fixture/java-must-not-run"
 export TLA2TOOLS_JAR="$fixture/jar-must-not-be-read"
 export TLA_WORK_ROOT="$fixture/work-must-not-exist"
+# Exercise the actual checked-in inventory and complete canonical pair set,
+# rather than only the synthetic two-model fixtures below. This mode must not
+# resolve Java/JARs or create work, including under Bazel runfiles isolation.
+bash "$source_root/scripts/check-storage-tla.sh" --manifest-json "$revision" \
+  > "$fixture/canonical-manifest.json"
+test -s "$fixture/canonical-manifest.json"
+test ! -e "$TLA_WORK_ROOT"
+
 bash "$checker" --collect-bazel-results "$fixture/valid" "$fixture/collected" "$revision"
 bash "$checker" --verify-results "$fixture/collected" "$revision"
 test ! -e "$TLA_WORK_ROOT"

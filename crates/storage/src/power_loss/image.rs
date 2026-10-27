@@ -360,6 +360,38 @@ impl ImageEngine {
         self.rename(source, destination)
     }
 
+    /// Exclusively move the original direct child inside one captured parent.
+    /// Both edge changes share one atomic namespace persistence operation.
+    pub fn rename_directory_new_at(
+        &mut self,
+        directory: InodeId,
+        expected_child: InodeId,
+        source: &Path,
+        target: &Path,
+    ) -> io::Result<()> {
+        let inode = self.child_inode(directory, source)?;
+        if inode != expected_child || !self.is_directory(inode) {
+            return Err(invalid("captured directory relabel source binding changed"));
+        }
+        let source_name = child_name(source)?.to_os_string();
+        let target_name = child_name(target)?.to_os_string();
+        self.require_absent(directory, &target_name)?;
+        self.admit_operation(0)?;
+        self.namespace(vec![
+            EntryChange {
+                directory,
+                name: source_name,
+                value: None,
+            },
+            EntryChange {
+                directory,
+                name: target_name,
+                value: Some(inode),
+            },
+        ])?;
+        Ok(())
+    }
+
     pub fn rename(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
         let inode = self.inode(source)?;
         let (source_parent, source_name) = self.parent(source)?;

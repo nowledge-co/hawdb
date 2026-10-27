@@ -92,7 +92,7 @@ case "$shard" in
     rust_case descriptor-capacity "$storage" storage_all positive 1 file_descriptors::tests::
     rust_case descriptor-facade "$root" facade_all positive 1 api::tests::descriptor_capacity::
     rust_case consumer-wal-admission "$storage" storage_all positive 1 captured_wal_append_prepays_post_write_descriptor_checks
-    rust_case consumer-failure-boundaries "$storage" storage_all positive 1 consumer_allocation::bootstrap_tests file_io::source_directory::control_candidate::tests held_wal_rollback captured_wal_first_rollback captured_link
+    rust_case consumer-failure-boundaries "$storage" storage_all positive 1 consumer_allocation::bootstrap_tests file_io::source_directory::control_candidate::tests file_io::source_directory::directory_relabel::tests held_wal_rollback captured_wal_first_rollback captured_link
     ;;
   search)
     rust_case resident-diskann-cache "$search" search_all positive 1 resident_diskann::tests::

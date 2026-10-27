@@ -34,6 +34,13 @@ tla_test_suite(
     tests = [":" + model + "_check" for model in STORAGE_MODELS],
 )
 
+# Canonical guard must also see undeclared top-level pairs, so its runfiles
+# include the package-local source glob, not only the declared inventory.
+filegroup(
+    name = "canonical_storage_model_sources",
+    srcs = ["storage_models.bzl"] + glob(["*.tla", "*.cfg"]),
+)
+
 # Materialize the same actions' evidence, including on remote-cache hits.
 alias(
     name = "storage_model_evidence",
@@ -354,3 +361,46 @@ tla_test_suite(
     )
     for control in ["TornPair", "UnchargedRead", "PinnedWait", "EarlyRefund"]
 ]
+
+# Thirteen producer controls (one has separate barrier/binding oracles) and
+# five positive reachability witnesses, all using the baseline's full domain.
+_CAPTURED_DIRECTORY_RELABEL_CONTROLS = [
+    "WrongParentFd",
+    "OmitChildIdentity",
+    "FollowSourceLink",
+    "ReplaceTarget",
+    "OmitAliasPrecheck",
+    "LateAttemptMarker",
+    "LateNativeCompletion",
+    "ResetUncertain",
+    "ReplayConsumed",
+    "RecorderPathReopen",
+    "EarlyDurability",
+    "WeakNativeOwners",
+    "ClearBindingFault",
+    "EarlyDurabilityFreshBinding",
+    "StableSuccess",
+    "FdRecover",
+    "SyncRecover",
+    "StickyRestoredRefusal",
+    "LostReplyRetained",
+]
+
+[
+    tla_check(
+        name = "HawDBCapturedDirectoryRelabel" + control + "_check",
+        module = "HawDBCapturedDirectoryRelabel.tla",
+        config = "mutants/HawDBCapturedDirectoryRelabel" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in _CAPTURED_DIRECTORY_RELABEL_CONTROLS
+]
+
+tla_test_suite(
+    name = "captured_directory_relabel_controls",
+    tests = [":HawDBCapturedDirectoryRelabel" + control + "_check" for control in _CAPTURED_DIRECTORY_RELABEL_CONTROLS],
+    tags = ["manual"],
+)

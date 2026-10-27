@@ -149,6 +149,7 @@ sh_test(
     srcs = ["scripts/check-storage-tla.test.sh"],
     data = [
         "scripts/check-storage-tla.sh",
+        "//docs/tla:canonical_storage_model_sources",
         "//docs/tla/tests:fake-java.sh",
     ],
 )

@@ -93,6 +93,30 @@ impl NativeDirectoryTrace {
             native,
         )
     }
+    pub(crate) fn relabel_directory_new(
+        &self,
+        original_child: &Self,
+        source: &Path,
+        target: &Path,
+        native: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
+        if !Arc::ptr_eq(&self.core, &original_child.core) {
+            return Err(invalid(
+                "captured directory relabel crosses recorder domains",
+            ));
+        }
+        // opened_path is a bounded observation label only. The transaction
+        // addresses the original parent and original child logical inodes.
+        let label = self.opened_path.join(source);
+        self.core.mutate_observed(
+            Some((IoEvent::Rename, &label)),
+            |engine| {
+                engine.rename_directory_new_at(self.inode, original_child.inode, source, target)
+            },
+            native,
+        )
+    }
+
     pub(crate) fn capture(
         core: Arc<ModelCore>,
         path: &Path,

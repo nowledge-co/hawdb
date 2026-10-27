@@ -31,8 +31,8 @@ mod source_directory;
 pub(crate) use source_directory::PowerLossRoot;
 #[doc(hidden)]
 pub use source_directory::{
-    CapturedControlCandidate, CapturedDirectoryCandidate, PendingControlPublication,
-    SourceDirectory, SourceDirectoryIdentity, SourceDirectoryLockMode,
+    CapturedControlCandidate, CapturedDirectoryCandidate, CapturedDirectoryRelabel,
+    PendingControlPublication, SourceDirectory, SourceDirectoryIdentity, SourceDirectoryLockMode,
 };
 
 pub(crate) mod captured_immutable;

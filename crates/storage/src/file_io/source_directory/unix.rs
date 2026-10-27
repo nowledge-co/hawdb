@@ -492,3 +492,87 @@ pub(super) fn matches_child_file(
     }
     Ok(held.is_file() && held.dev() == device_number(stat.st_dev) && held.ino() == stat.st_ino)
 }
+
+/// Any direct entry occupies the target, including a dangling symlink or a
+/// native case alias. fstatat does not follow that entry or open another FD.
+pub(super) fn entry_exists(root: &std::fs::File, name: ChildName<'_>) -> io::Result<bool> {
+    let name = name_bytes(name);
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: counted live root, fixed terminated component, writable stat;
+    // no symlink traversal. Metadata is not read on either return path.
+    if unsafe {
+        libc::fstatat(
+            root.as_raw_fd(),
+            name.as_ptr().cast(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == 0
+    {
+        Ok(true)
+    } else {
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::NotFound {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
+}
+
+pub(super) fn open_directory_for_relabel(
+    root: &std::fs::File,
+    name: ChildName<'_>,
+) -> io::Result<std::fs::File> {
+    open_directory(root, name)
+}
+
+pub(super) fn relabel_directory_new(
+    root: &std::fs::File,
+    _child: &std::fs::File,
+    source: ChildName<'_>,
+    target: ChildName<'_>,
+) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let source = name_bytes(source);
+        let target = name_bytes(target);
+        // SAFETY: the counted parent and terminated single components remain
+        // live; the caller excludes source substitution. Both native forms
+        // atomically reject target occupation, with no replacing fallback.
+        #[cfg(target_os = "linux")]
+        let result = unsafe {
+            libc::renameat2(
+                root.as_raw_fd(),
+                source.as_ptr().cast(),
+                root.as_raw_fd(),
+                target.as_ptr().cast(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        // SAFETY: same retained parent/name and exclusive-target contract.
+        #[cfg(target_os = "macos")]
+        let result = unsafe {
+            libc::renameatx_np(
+                root.as_raw_fd(),
+                source.as_ptr().cast(),
+                root.as_raw_fd(),
+                target.as_ptr().cast(),
+                libc::RENAME_EXCL,
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (root, source, target);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "exclusive captured directory relabel requires Linux, macOS or Windows",
+        ))
+    }
+}
