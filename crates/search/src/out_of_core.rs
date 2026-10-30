@@ -3131,15 +3131,19 @@ impl SearchOutOfCoreReader {
                 self.config.max_hydrated_documents
             )));
         }
-        let query_scorer = context
-            .query_embedding
-            .map(|query| {
-                CosineQuery::with_work(query, || {
-                    context.query.map_or(Ok(()), |context| context.checkpoint())
-                })
-            })
-            .transpose()?;
         let mut hydrated = hydration::query::Loaded::new(self, candidates, metrics, context.query)?;
+        let query_scorer = if context.mode != SearchMode::Text && !candidates.is_empty() {
+            context
+                .query_embedding
+                .map(|query| {
+                    CosineQuery::with_work(query, || {
+                        context.query.map_or(Ok(()), |query| query.checkpoint())
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let mut hits = context.output_memory.vec(candidates.len())?;
         let mut matched_span_count = 0usize;
         let mut matched_span_bytes = 0u64;

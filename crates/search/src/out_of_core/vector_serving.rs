@@ -541,8 +541,6 @@ impl SearchOutOfCoreReader {
         context: Option<QueryContext<'_>>,
     ) -> Result<VectorScoreScan> {
         let task_context = vector_execution_options.task_context;
-        let query_scorer =
-            CosineQuery::with_work(query_embedding, || checkpoint_vector_task(task_context))?;
         let max_scored_documents = admitted_score_entries(
             self.config.max_score_entries.get(),
             vector_execution_options.max_working_bytes,
@@ -560,6 +558,12 @@ impl SearchOutOfCoreReader {
             )?,
             None => BoundedScoreCollector::new(retained_limit, max_scored_documents)?,
         };
+        let query_scorer = CosineQuery::with_work(query_embedding, || {
+            context.map_or_else(
+                || checkpoint_vector_task(task_context),
+                |query| query.checkpoint(),
+            )
+        })?;
         let mut vector_document_count = 0usize;
         let mut segment_scan_count = 0usize;
         let mut id_memory = context
@@ -663,8 +667,6 @@ impl SearchOutOfCoreReader {
     ) -> RabitqResult<VectorScoreScan> {
         self.require_compatible_rabitq_projections()?;
         let task_context = vector_execution_options.task_context;
-        let query_scorer =
-            CosineQuery::with_work(query_embedding, || checkpoint_vector_task(task_context))?;
         checkpoint_vector_task(task_context)?;
         let minimum_candidates = retained_limit.unwrap_or(1).max(1);
         if minimum_candidates > self.config.max_vector_candidates.get() {
@@ -909,6 +911,19 @@ impl SearchOutOfCoreReader {
             admitted_score_entries(self.config.max_score_entries.get(), scan_working_bytes),
             policy.query,
         )?;
+        let query_scorer = if selected.is_empty() {
+            CosineQuery {
+                query: query_embedding,
+                prepared: None,
+            }
+        } else {
+            CosineQuery::with_work(query_embedding, || {
+                policy.query.map_or_else(
+                    || checkpoint_vector_task(task_context),
+                    |query| query.checkpoint(),
+                )
+            })?
+        };
         let mut raw_segment_scan_count = 0usize;
         let mut reranked_candidate_count = 0usize;
         let mut selected_start = 0usize;

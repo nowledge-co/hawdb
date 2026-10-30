@@ -312,6 +312,7 @@ impl VectorDistance {
 
 /// Selected exact-arithmetic implementation, independent of ANN backend selection.
 #[doc(hidden)]
+#[inline]
 pub fn distance_kernel_name(metric: VectorDistance, dimension: usize) -> &'static str {
     Kernel::for_mode(
         match metric {

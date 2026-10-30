@@ -116,15 +116,7 @@ pub(super) fn execute_search_vector_plan(
     };
 
     let mut source = SearchVectorSource {
-        query_scorer: CosineQuery::with_work(query_embedding, || {
-            vector_execution_options
-                .task_context
-                .map_or(Ok(()), |task| {
-                    task.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("vector search task {reason}"))
-                    })
-                })
-        })?,
+        query_scorer: None,
         query_embedding,
         documents,
         backend,
@@ -154,7 +146,7 @@ pub(super) fn execute_search_vector_plan(
 }
 
 struct SearchVectorSource<'a, 'b> {
-    query_scorer: CosineQuery<'a>,
+    query_scorer: Option<CosineQuery<'a>>,
     query_embedding: &'a [f32],
     documents: &'a [&'a SearchDocument],
     backend: VectorSearchBackend<'a>,
@@ -321,6 +313,7 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
             .iter()
             .map(|document| (document.id.as_str(), *document))
             .collect::<BTreeMap<_, _>>();
+        let mut query_scorer = self.query_scorer;
         let mut scores = Vec::with_capacity(request.candidates.len());
         for candidate in request.candidates {
             self.checkpoint()?;
@@ -336,7 +329,13 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
             self.raw_vector_bytes_read = self
                 .raw_vector_bytes_read
                 .saturating_add(vector_bytes(embedding.len()));
-            let Some(score) = self.query_scorer.score(embedding) else {
+            if query_scorer.is_none() {
+                query_scorer = Some(self.prepare_query()?);
+            }
+            let Some(score) = query_scorer
+                .as_ref()
+                .and_then(|scorer| scorer.score(embedding))
+            else {
                 continue;
             };
             scores.push(VectorRawScore {
@@ -372,7 +371,16 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
     }
 }
 
-impl SearchVectorSource<'_, '_> {
+impl<'a> SearchVectorSource<'a, '_> {
+    fn prepare_query(&mut self) -> Result<CosineQuery<'a>> {
+        if let Some(scorer) = self.query_scorer {
+            return Ok(scorer);
+        }
+        let scorer = CosineQuery::with_work(self.query_embedding, || self.checkpoint())?;
+        self.query_scorer = Some(scorer);
+        Ok(scorer)
+    }
+
     fn checkpoint(&self) -> Result<()> {
         match self.vector_execution_options.task_context {
             Some(task_context) => task_context
@@ -436,6 +444,7 @@ impl SearchVectorSource<'_, '_> {
     }
 
     fn raw_vector_candidates(&mut self) -> Result<VectorCandidateBatch> {
+        let mut query_scorer = self.query_scorer;
         let mut candidates = Vec::new();
         let mut id_bytes = 0usize;
         for document in self.documents {
@@ -449,7 +458,13 @@ impl SearchVectorSource<'_, '_> {
             self.raw_vector_bytes_read = self
                 .raw_vector_bytes_read
                 .saturating_add(vector_bytes(embedding.len()));
-            let Some(score) = self.query_scorer.score(embedding) else {
+            if query_scorer.is_none() {
+                query_scorer = Some(self.prepare_query()?);
+            }
+            let Some(score) = query_scorer
+                .as_ref()
+                .and_then(|scorer| scorer.score(embedding))
+            else {
                 continue;
             };
             let id = document.id.clone();

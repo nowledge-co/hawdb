@@ -41,6 +41,10 @@ impl Input<'_> {
         }
     }
 
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"),
+        target_endian = "little"
+    ))]
     fn get(self, index: usize) -> f32 {
         match self {
             Self::Slice(values) => values[index],
@@ -240,6 +244,10 @@ fn scalar_values(
     true
 }
 
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"),
+    target_endian = "little"
+))]
 fn scalar_coordinate(left: f32, right: f32, mode: Mode, sums: &mut Sums) -> bool {
     if !left.is_finite() || !right.is_finite() {
         return false;
