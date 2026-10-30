@@ -427,8 +427,8 @@ fn shortest_path_length_result_accounts_shared_binding_footprint() {
 fn shortest_path_length_result_refuses_before_retained_budget_overflow() {
     let expected = Binding {
         values: BTreeMap::from([("length".into(), Value::Int(1))]),
-        nodes: BTreeMap::new(),
-        relationships: BTreeMap::new(),
+        nodes: BTreeMap::new().into(),
+        relationships: BTreeMap::new().into(),
     };
     let budget = NonZeroUsize::new(binding_memory_bytes(&expected) - 1).unwrap();
     let ledger = QueryMemoryLedger::new(budget);

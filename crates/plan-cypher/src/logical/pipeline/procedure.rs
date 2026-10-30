@@ -492,6 +492,9 @@ fn collect_algorithm_return_columns(
             | AggregateExpression::AvgProperty { variable, .. } => {
                 names.insert(variable.clone());
             }
+            AggregateExpression::Expression { argument, .. } => {
+                collect_algorithm_return_columns(argument, names);
+            }
         },
         ReturnExpressionKind::Path(_) => {}
     }

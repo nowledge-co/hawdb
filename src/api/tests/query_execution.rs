@@ -499,6 +499,7 @@ fn read_transaction_inherits_database_result_row_cap() {
 fn read_only_database_rejects_cypher_mutations_before_writing() {
     let mut db = Database::new_with_config(DatabaseConfig {
         read_only: true,
+        recovery_mode: crate::RecoveryMode::Strict,
         ..DatabaseConfig::default()
     });
 
@@ -517,6 +518,7 @@ fn read_only_database_rejects_cypher_mutations_before_writing() {
 fn read_only_rejected_mutations_do_not_populate_plan_cache() {
     let mut db = Database::new_with_config(DatabaseConfig {
         read_only: true,
+        recovery_mode: crate::RecoveryMode::Strict,
         max_plan_cache_entries: Some(8),
         ..DatabaseConfig::default()
     });

@@ -399,13 +399,16 @@ E candidate bytes cannot authorize E data or require its lost transaction.
 Repeated recovery must retain the original selection receipt and immutable
 candidate bytes/inodes, and preserve source/index epoch matching or stale refusal.
 
-Native Windows verification partitions recovery into five exact Rust cases:
+Native Windows verification partitions recovery into seven exact Rust cases:
 births, unselected intents and selected intents retain 28 combinations each;
-lost relaxed SQL and node sources retain 14 each. The full 112-combination
-matrix, every physical fault plan and repeated native reopen remain intact.
-Weekly power-loss and required consumer jobs share this selection contract and
-validate emitted combination identities. Their remaining/ordinary selections
-exclude these cases because the five required shards own them. Linux/macOS
+lost relaxed SQL and node sources each split into Link and SelectorWrite origins,
+with seven combinations per case. The full 112-combination matrix, every physical
+fault plan and repeated native reopen remain intact. Three additional exact
+shards own first-crash artifact closure, torn selectors and selector/root barriers,
+retaining all 32 cut/source/durability combinations. Weekly power-loss and required
+consumer jobs share this selection contract and validate emitted recovery
+combination identities. Their remaining/ordinary selections exclude the vector
+fault module because these ten required shards own it. Linux/macOS
 still run the complete power-loss family together. Per-process concurrency,
 repository compiler profiles and 120-minute job ceilings remain unchanged.
 The weekly Windows matrix keeps all eight branch-abandonment cases together
@@ -416,7 +419,7 @@ single deletion/GC case in separate required shards. Automatic head, manifest,
 root and candidate-WAL-sync qualification each have one exact case per durability
 policy; both boundaries and three successive generations remain in each fixture.
 This retains all 48 automatic configurations across the four cuts, with eight
-Rust cases. Complete root discovery is 52 cases. Runtime coverage requires every
+Rust cases. Runtime coverage requires every
 configuration and positive completion summaries exactly once; compiled discovery
 must prove that no sibling selection overlaps or omits a case. Every physical fault plan and
 assertion is retained under the same profile, serial execution and job ceilings.

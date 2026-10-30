@@ -17,6 +17,7 @@ use crate::analyzer_memory::Memory;
 use crate::analyzer_stream::{visit_admitted_field_token_list, visit_admitted_token_list, Control};
 use crate::lexical_projection::{QueryContext, ScoreCollector, ScoringInputs};
 use hawdb_executor::{QueryMemoryAccount, QueryMemoryLease};
+use std::borrow::Borrow;
 use std::mem::size_of;
 
 /// Bounded raw BM25 scores retained by the caller's query working account.
@@ -307,10 +308,10 @@ pub(crate) fn complete_candidate_budget_error(limit: usize, requested: usize) ->
     .into()
 }
 
-fn count_document_tokens(
+pub(super) fn count_document_tokens<T: Borrow<str> + Ord>(
     document: &SearchDocument,
     analyzer: &SearchAnalyzerLexicon,
-    query_terms: &BTreeMap<String, usize>,
+    query_terms: &BTreeMap<T, usize>,
     frequencies: &mut [usize],
     control: Control<'_>,
 ) -> Result<usize> {

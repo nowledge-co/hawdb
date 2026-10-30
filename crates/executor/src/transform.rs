@@ -20,7 +20,7 @@
 
 use crate::binding::{binding_memory_bytes, binding_memory_bytes_with_values, Binding};
 use crate::expression::{
-    evaluate_projection_borrowed, prepare_borrowed_projection, ProjectedValue,
+    prepare_borrowed_projection, PreparedProjectionExpressions, ProjectedValue,
 };
 use crate::pipeline::{
     runtime_checkpoint, BatchControl, BatchExecutionContext, BindingBatch, BindingBatchSource,
@@ -123,6 +123,13 @@ pub fn stream_projection_batches(
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
     runtime_checkpoint(context.task_context)?;
+    let prepared_account = context.source_account("ProjectExec CASE dispatch");
+    let prepared = PreparedProjectionExpressions::new(
+        items,
+        &prepared_account,
+        context.task_context,
+        context.observer,
+    )?;
     let emitted = Cell::new(0usize);
     source.execute(input, execution_limit, &mut |batch| {
         let mut projected = TransformBatchBuilder::new(
@@ -143,7 +150,7 @@ pub fn stream_projection_batches(
         for binding in batch {
             runtime_checkpoint(context.task_context)?;
             let (mut values, mut layout) =
-                prepare_projection_values(items, &binding, context, &working)?;
+                prepare_projection_values(items, &binding, context, &working, &prepared)?;
             let mut bytes = binding_memory_bytes_with_values(
                 &binding,
                 values
@@ -162,7 +169,8 @@ pub fn stream_projection_batches(
                 if projected.emit(&mut emit_projected)? == BatchControl::Stop {
                     return Ok(BatchControl::Stop);
                 }
-                (values, layout) = prepare_projection_values(items, &binding, context, &working)?;
+                (values, layout) =
+                    prepare_projection_values(items, &binding, context, &working, &prepared)?;
                 bytes = binding_memory_bytes_with_values(
                     &binding,
                     values
@@ -206,13 +214,20 @@ fn prepare_projection_values<'a>(
     binding: &'a Binding,
     context: BatchExecutionContext<'a>,
     working: &QueryMemoryAccount,
+    prepared: &'a PreparedProjectionExpressions<'a>,
 ) -> Result<(BTreeMap<String, ProjectedValue<'a>>, QueryMemoryLease)> {
     prepare_borrowed_projection(
         items,
         working,
         context.observer.seed_graph_scoring_input().map(|_| binding),
         |expression| {
-            evaluate_projection_borrowed(expression, context.catalog, binding, Some(working))
+            prepared.evaluate(
+                expression,
+                context.catalog,
+                binding,
+                Some(working),
+                context.observer,
+            )
         },
     )
 }

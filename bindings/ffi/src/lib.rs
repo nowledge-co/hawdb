@@ -433,6 +433,9 @@ unsafe fn hawdb_open_inner(
                 .as_bool()
                 .ok_or_else(|| FfiError::invalid("hawdb: \"read_only\" must be a bool"))?;
             options.config.read_only = read_only;
+            if read_only {
+                options.config.recovery_mode = hawdb::RecoveryMode::Strict;
+            }
         }
     }
     let database =

@@ -21,7 +21,7 @@ HawDB is a Rust library. Published releases are on crates.io. The repository pin
 
 ```toml
 [dependencies]
-hawdb = "0.7"
+hawdb = "0.21"
 ```
 
 To follow the repository tip instead of a release:
@@ -38,7 +38,7 @@ cargo build --locked -p hawdb
 
 The default build includes full-text search, vector search, graph analytics, background maintenance, and the Tokio adapter. A capability left out of the build cannot be turned back on at runtime. See [Build](#build).
 
-Python bindings live in-tree and are not published to PyPI yet. See [Python](#python).
+Python bindings live in-tree and are distributed as `hawdb` on PyPI. See [Python](#python).
 
 ## Open a database
 
@@ -258,7 +258,10 @@ make fuzz-test
 
 ## Python
 
-The Python package is a thin binding over the same embedded engine. It is built from this repository and is not on PyPI yet.
+The Python package is a thin binding over the same embedded engine. Install a
+published release with `python -m pip install hawdb` (CPython 3.11+), then import
+`hawdb`. Native wheels and a source distribution are built from each published
+GitHub Release; see the [Python release workflow](bindings/python/README.md#publishing).
 
 ```python
 import hawdb

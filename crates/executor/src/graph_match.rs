@@ -9,7 +9,7 @@ use crate::pipeline::{
 use crate::predicate::{label_ids_for_pattern, node_matches_label_pattern};
 use crate::store::{admit_graph_read, AdjacencyReadMemory, GraphExecutionRead, ScanControl};
 use crate::traversal::{
-    visit_bounded_expand_targets, visit_one_hop_relationships_with_context,
+    visit_bounded_expand_trails, visit_one_hop_relationships_with_context,
     visit_zero_hop_expand_target, BoundedExpandSpec, OneHopRelationshipSpec,
 };
 use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryClass};
@@ -45,18 +45,17 @@ pub(crate) fn stream_graph_match(
             relationship,
             rel_type,
             properties,
-            direction,
             min_hops,
             max_hops,
             ..
         } = step
             && (*min_hops != 1 || *max_hops != 1)
-            && (relationship.is_some()
-                || !properties.is_empty()
-                || *direction != hawdb_core::RelationshipDirection::Outgoing
-                || rel_type.is_empty())
+            && (relationship.is_some() || !properties.is_empty() || rel_type.is_empty())
         {
-            return Err(HawDBError::Execution("bounded MATCH expansion requires an outgoing typed pattern without relationship bindings".to_string()));
+            return Err(HawDBError::Execution(
+                "bounded MATCH expansion requires a typed pattern without relationship bindings"
+                    .to_string(),
+            ));
         }
     }
     if limit.is_reached(0) {
@@ -395,19 +394,38 @@ impl MatchRuntime<'_> {
                 };
                 let labels = label_ids_for_pattern(self.context.catalog, &target.label);
                 if bounded {
-                    return visit_bounded_expand_targets(
+                    // Trails exclude relationships bound earlier in the
+                    // pattern, and later steps exclude the trail's own.
+                    return visit_bounded_expand_trails(
                         self.store,
                         BoundedExpandSpec {
                             source: source_node.id,
                             rel_type_id: rel_type_id.unwrap(),
+                            direction: *direction,
                             target_label_ids: labels.as_deref(),
                             min_hops: *min_hops,
                             max_hops: *max_hops,
                         },
+                        used,
                         self.adjacency_memory(),
                         self.context.task_context,
-                        &mut |node, hop| {
-                            self.visit_target(index, row, used, target, (node, hop), emit)
+                        &mut |node, hop, trail| {
+                            if trail.is_empty() {
+                                return self.visit_target(
+                                    index,
+                                    row,
+                                    used,
+                                    target,
+                                    (node, hop),
+                                    emit,
+                                );
+                            }
+                            let _used = self.account.reserve(
+                                used.len().saturating_add(trail.len()).saturating_mul(48),
+                            )?;
+                            let mut used = used.clone();
+                            used.extend(trail.iter().copied());
+                            self.visit_target(index, row, &used, target, (node, hop), emit)
                         },
                     );
                 }

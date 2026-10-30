@@ -29,11 +29,19 @@ macro_rules! take_native {
 impl Transformer<'_> {
     pub(super) fn output(&mut self, root: &str) -> Output {
         let mut node = self.tree.children(self.tree.root)[0];
-        if root == "SqlInput" {
+        if matches!(root, "SqlInput" | "RelationalStatementInput") {
             node = self.tree.children(node)[0];
         }
         match self.tree.nodes[node].name {
-            Some("Select") => Output::Select(Box::new(self.select(node))),
+            Some("RelationalExplain") => {
+                let analyze = self.tree.child(node, "Analyze").is_some();
+                let select = self.tree.required(node, "RelationalSelect");
+                Output::Explain {
+                    analyze,
+                    select: Box::new(self.select(select)),
+                }
+            }
+            Some("Select" | "RelationalSelect") => Output::Select(Box::new(self.select(node))),
             Some("CreatePropertyGraph") => Output::Create(Box::new(self.create(node))),
             Some("GraphTable") => Output::GraphTable(Box::new(self.graph_table(node))),
             _ => unreachable!("entry grammar has a typed statement transformer"),
@@ -45,16 +53,35 @@ impl Transformer<'_> {
             .tree
             .child(node, "Quantifier")
             .is_some_and(|quantifier| self.tree.child(quantifier, "Distinct").is_some());
-        let projection = take_native!(self, node, "Projection", Projection);
-        let from = self.tree.required(node, "From");
-        let from = (0..self.tree.children(from).len())
+        let projection_name = if self.tree.nodes[node].name == Some("RelationalSelect") {
+            "RelationalProjection"
+        } else {
+            "Projection"
+        };
+        let projection_node = self.tree.required(node, projection_name);
+        let Value::Projection(projection) = self.tree.take(projection_node) else {
+            unreachable!("projection terminal")
+        };
+        let from = self
+            .tree
+            .child(node, "From")
+            .or_else(|| self.tree.child(node, "RelationalFrom"));
+        let from = (0..from.map_or(0, |from| self.tree.children(from).len()))
             .map(|index| {
-                let source = self.tree.children(from)[index];
-                let relation = self.transform_from_item(self.tree.required(source, "FromItem"));
+                let source = self.tree.children(from.expect("nonempty FROM"))[index];
+                let relation = self.transform_from_item(
+                    self.tree
+                        .child(source, "FromItem")
+                        .or_else(|| self.tree.child(source, "RelationalFromItem"))
+                        .expect("FROM item"),
+                );
                 let mut joins = Vec::new();
                 for index in 0..self.tree.children(source).len() {
                     let child = self.tree.children(source)[index];
-                    if self.tree.nodes[child].name == Some("Join") {
+                    if self.tree.nodes[child]
+                        .name
+                        .is_some_and(|name| matches!(name, "Join" | "RelationalJoin"))
+                    {
                         joins.push(self.join(child));
                     }
                 }
@@ -79,12 +106,18 @@ impl Transformer<'_> {
             .map_or_else(Vec::new, |order| {
                 take_native!(self, order, "OrderItems", OrderItems)
             });
-        let limit = self.clause(node, "Limit");
-        let offset = self.clause(node, "Offset");
+        let limit = self
+            .clause(node, "Limit")
+            .or_else(|| self.clause(node, "RelationalLimit"));
+        let offset = self
+            .clause(node, "Offset")
+            .or_else(|| self.clause(node, "RelationalOffset"));
         let locking = self
             .tree
             .child(node, "Locking")
+            .or_else(|| self.tree.child(node, "RelationalLocking"))
             .map(|locking| LockingClauseSyntax {
+                nonblocking: self.tree.child(locking, "Nonblocking").is_some(),
                 strength: if self.tree.child(locking, "Share").is_some() {
                     LockStrengthSyntax::Share
                 } else {
@@ -110,7 +143,17 @@ impl Transformer<'_> {
     fn clause(&mut self, node: NodeId, name: &str) -> Option<ExpressionSyntax> {
         self.tree
             .child(node, name)
-            .map(|clause| *take_native!(self, clause, "ClauseExpression", Expression))
+            .and_then(|clause| {
+                self.tree
+                    .child(clause, "ClauseExpression")
+                    .or_else(|| self.tree.child(clause, "OffsetExpression"))
+            })
+            .map(|expression| {
+                let Value::Expression(value) = self.tree.take(expression) else {
+                    unreachable!("clause expression terminal")
+                };
+                *value
+            })
     }
 
     fn transform_from_item(&mut self, node: NodeId) -> PostgresFromItemSyntax {
@@ -128,12 +171,17 @@ impl Transformer<'_> {
     fn join(&mut self, node: NodeId) -> PostgresJoinSyntax {
         let node = self.tree.children(node)[0];
         let kind = match self.tree.nodes[node].name {
-            Some("InnerJoin") => PostgresJoinKind::Inner,
-            Some("LeftJoin") => PostgresJoinKind::Left,
-            Some("CrossJoin") => PostgresJoinKind::Cross,
+            Some("InnerJoin" | "RelationalInnerJoin") => PostgresJoinKind::Inner,
+            Some("LeftJoin" | "RelationalLeftJoin") => PostgresJoinKind::Left,
+            Some("CrossJoin" | "RelationalCrossJoin") => PostgresJoinKind::Cross,
             _ => unreachable!("Join has three qualified alternatives"),
         };
-        let relation = self.transform_from_item(self.tree.required(node, "FromItem"));
+        let relation = self.transform_from_item(
+            self.tree
+                .child(node, "FromItem")
+                .or_else(|| self.tree.child(node, "RelationalFromItem"))
+                .expect("JOIN item"),
+        );
         let condition = self.tree.child(node, "JoinExpression").map(|condition| {
             let Value::Expression(expression) = self.tree.take(condition) else {
                 unreachable!("JoinExpression produces an expression AST")

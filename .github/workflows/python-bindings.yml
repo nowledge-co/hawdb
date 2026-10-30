@@ -57,10 +57,19 @@ jobs:
         run: bazel test //bindings/python/...
 
   test:
-    name: Build and test
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: Build and test
+          - os: windows-2025
+            name: Windows Python wheel
     defaults:
       run:
+        shell: bash
         working-directory: bindings/python
     steps:
       - name: Checkout
@@ -77,10 +86,20 @@ jobs:
           python-version: "3.11"
 
       - name: Install maturin and pytest
-        run: pip install "maturin>=1.8,<2.0" "pytest>=8.0"
+        run: pip install "maturin==1.15.0" "pytest>=8.0"
+
+      - name: Validate the reviewed binding dependency lock
+        run: |
+          python -m unittest test_check_lock
+          python check_lock.py --root ../../Cargo.lock --binding Cargo.lock
+
+      - name: Check the independent binding workspace
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Build the extension wheel
-        run: maturin build --release --out dist
+        run: maturin build --release --locked --out dist
 
       - name: Test capsule unwind containment and error retry classification
         run: cargo test --release --locked --lib -- retained::arrow::destructor_tests errors::tests --test-threads=1
@@ -89,7 +108,7 @@ jobs:
         run: pip install dist/*.whl
 
       - name: Run tests
-        run: pytest
+        run: pytest tests
 
       - name: Install the pydantic extra
         run: pip install "$(echo dist/*.whl)[pydantic]"
@@ -98,17 +117,21 @@ jobs:
         run: pytest tests/test_pydantic*.py
 
       - name: Provision the optional public Arrow consumer
+        if: matrix.os == 'ubuntu-24.04'
         run: pip install "pyarrow==26.0.0"
 
       - name: Test public Arrow protocols against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           python -c 'import pyarrow; print(pyarrow.__version__)'
           pytest tests/test_arrow_consumer.py
 
       - name: Provision the optional pandas DB-API consumer
+        if: matrix.os == 'ubuntu-24.04'
         run: pip install "pandas==3.1.0"
 
       - name: Test pandas.read_sql over the DB-API against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           python -c 'import pandas; print(pandas.__version__)'
           pytest tests/test_dbapi.py -k pandas

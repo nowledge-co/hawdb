@@ -152,6 +152,17 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         input_bytes: usize,
     ) -> Result<RuntimePermit> {
+        self.admit_search_projection_maintenance_with_priority(
+            RuntimeWorkPriority::Background,
+            input_bytes,
+        )
+    }
+
+    pub(super) fn admit_search_projection_maintenance_with_priority(
+        &self,
+        priority: RuntimeWorkPriority,
+        input_bytes: usize,
+    ) -> Result<RuntimePermit> {
         let store = self.read_store()?;
         let configured = store.incremental_search_memory_bytes();
         let working = u64::try_from(
@@ -166,11 +177,13 @@ impl NowledgeMemEmbeddedStoreHandle {
         .unwrap_or(u64::MAX)
         .max(configured);
         store.graph.try_admit_runtime(
-            RuntimeWorkRequest::background_maintenance(
-                working.saturating_add(u64::try_from(input_bytes).unwrap_or(u64::MAX)),
-            )
-            .with_io_slots(1)
-            .with_blocking(true),
+            RuntimeWorkRequest::new(priority, RuntimeWorkKind::Maintenance)
+                .with_cpu_slots(1)
+                .with_memory_bytes(
+                    working.saturating_add(u64::try_from(input_bytes).unwrap_or(u64::MAX)),
+                )
+                .with_io_slots(1)
+                .with_blocking(true),
         )
     }
 }

@@ -1166,7 +1166,7 @@ fn graph_lock_derivation_rejects_a_changed_snapshot() {
         .unwrap_err();
     assert!(error
         .to_string()
-        .contains("cannot acquire a graph lock after its snapshot changed"));
+        .contains("cannot acquire a new lock after its snapshot changed"));
 }
 
 #[test]
@@ -2786,6 +2786,7 @@ fn point_lock_upgrade_cycle_selects_one_deadlock_victim() {
         .find_map(|result| result.as_ref().err())
         .expect("one lock upgrader must be selected as the deadlock victim");
     assert!(deadlock.to_string().contains("deadlock detected"));
+    assert!(deadlock.is_retryable_transaction_conflict());
 }
 
 #[test]
@@ -2829,6 +2830,17 @@ fn graph_deadlock_aborts_victim_and_releases_its_first_node_lock() {
         1
     );
     let (victim_query, victim_commit) = results.iter().find(|(query, _)| query.is_err()).unwrap();
+    let initial = retry_cause(victim_query.as_ref().unwrap_err());
+    let repeated = retry_cause(victim_commit.as_ref().unwrap_err());
+    assert!(matches!(
+        initial.reason,
+        hawdb_core::TransactionRetryReason::Deadlock { .. }
+    ));
+    assert_eq!(initial.transaction_id, repeated.transaction_id);
+    assert_eq!(initial.reason, repeated.reason);
+    assert!(!initial.already_aborted);
+    assert!(repeated.already_aborted);
+
     assert!(victim_query
         .as_ref()
         .unwrap_err()
@@ -2998,4 +3010,107 @@ fn concurrent_transaction_publishes_graph_relational_and_append_writes_in_one_wa
         );
     }
     std::fs::remove_dir_all(path).unwrap();
+}
+
+fn retry_cause(error: &HawDBError) -> &hawdb_core::TransactionRetryError {
+    assert!(error.is_retryable_transaction_conflict(), "{error}");
+    let HawDBError::TransactionRetryRequired(cause) = error else {
+        panic!("expected a typed pessimistic retry cause: {error:?}");
+    };
+    cause
+}
+
+#[test]
+fn pessimistic_snapshot_retry_cause_survives_subsequent_query_and_commit() {
+    for graph in [false, true] {
+        let db = Database::new().into_concurrent();
+        db.query_sql("CREATE TABLE retry_rows (id BIGINT PRIMARY KEY)")
+            .unwrap();
+        db.query_sql("INSERT INTO retry_rows (id) VALUES (1)")
+            .unwrap();
+        db.query("CREATE (:RetryNode {id: 1, value: 0})").unwrap();
+        let mut stale = db
+            .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+                Duration::from_secs(1),
+            ))
+            .unwrap();
+        let query = if graph {
+            db.query("CREATE (:Unrelated {id: 2})").unwrap();
+            "MATCH (n:RetryNode) WHERE n.id = 1 SET n.value = 1"
+        } else {
+            stale
+                .query_sql("SELECT id FROM retry_rows WHERE id = 1 FOR SHARE")
+                .unwrap();
+            // Autocommit takes a database-wide lock; this writer must stay
+            // disjoint from the reader's point lock while advancing the epoch.
+            let mut writer = db
+                .begin_transaction(ConcurrentTransactionOptions::pessimistic(Duration::ZERO))
+                .unwrap();
+            writer
+                .query_sql("INSERT INTO retry_rows (id) VALUES (2)")
+                .unwrap();
+            writer.commit().unwrap();
+            "SELECT id FROM retry_rows WHERE id = 2 FOR SHARE"
+        };
+        let first = if graph {
+            stale.query(query)
+        } else {
+            stale.query_sql(query)
+        }
+        .unwrap_err();
+        let repeated = if graph {
+            stale.query(query)
+        } else {
+            stale.query_sql(query)
+        }
+        .unwrap_err();
+        let commit = stale.commit().unwrap_err();
+        let initial = retry_cause(&first);
+        assert!(!initial.already_aborted);
+        assert!(matches!(
+            initial.reason,
+            hawdb_core::TransactionRetryReason::SnapshotChanged { read_epoch, committed_epoch }
+                if read_epoch < committed_epoch
+        ));
+        for error in [&repeated, &commit] {
+            let cause = retry_cause(error);
+            assert_eq!(cause.transaction_id, initial.transaction_id);
+            assert_eq!(cause.reason, initial.reason);
+            assert!(cause.already_aborted);
+        }
+        let output = db
+            .query("MATCH (n:RetryNode) RETURN n.value AS value")
+            .unwrap();
+        assert_eq!(output.rows[0]["value"], Value::Int(0));
+        // A fresh writer can reacquire resources released by the aborted owner.
+        let mut fresh = db
+            .begin_transaction(ConcurrentTransactionOptions::pessimistic(Duration::ZERO))
+            .unwrap();
+        fresh
+            .query_sql("SELECT id FROM retry_rows WHERE id = 1 FOR UPDATE")
+            .unwrap();
+        fresh
+            .query("MATCH (n:RetryNode) WHERE n.id = 1 SET n.value = 2")
+            .unwrap();
+        fresh.commit().unwrap();
+    }
+}
+
+#[test]
+fn pessimistic_statement_lock_timeout_is_not_a_transaction_retry_cause() {
+    let db = Database::new().into_concurrent();
+    db.query("CREATE (:RetryNode {id: 1, value: 0})").unwrap();
+    let mut owner = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(Duration::ZERO))
+        .unwrap();
+    let mut waiter = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(Duration::ZERO))
+        .unwrap();
+    let query = "MATCH (n:RetryNode) WHERE n.id = 1 SET n.value = 1";
+    owner.query(query).unwrap();
+    let timeout = waiter.query(query).unwrap_err();
+    assert!(!timeout.is_retryable_transaction_conflict());
+    owner.rollback();
+    waiter.query(query).unwrap();
+    waiter.commit().unwrap();
 }

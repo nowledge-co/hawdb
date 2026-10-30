@@ -574,6 +574,39 @@ pub enum AggregateExpression {
         variable: String,
         property: String,
     },
+    /// An aggregate over an arbitrary aggregate-free argument expression.
+    ///
+    /// The parser keeps the historical fixed shapes above for the forms they
+    /// cover, so this variant only carries arguments outside those shapes.
+    Expression {
+        function: AggregateFunctionName,
+        distinct: bool,
+        argument: Box<ReturnExpression>,
+    },
+}
+
+/// The general aggregate functions accepted with an expression argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateFunctionName {
+    Count,
+    Sum,
+    Min,
+    Max,
+    Avg,
+    Collect,
+}
+
+impl AggregateFunctionName {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Count => "count",
+            Self::Sum => "sum",
+            Self::Min => "min",
+            Self::Max => "max",
+            Self::Avg => "avg",
+            Self::Collect => "collect",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -161,6 +161,7 @@ fn complete_manual<T: ManualHost>(
         &copied.0,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )
@@ -176,6 +177,7 @@ fn complete_manual<T: ManualHost>(
         &fixture.0,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )
@@ -372,6 +374,7 @@ fn complete_while_pending<T: ManualHost>(
         &copied.0,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )
@@ -466,6 +469,7 @@ fn finish_manual_retirement<T: ManualHost>(
         &copied.0,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )

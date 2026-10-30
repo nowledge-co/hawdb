@@ -303,8 +303,8 @@ impl GraphAlgorithmSpec<'_> {
                             &mut bindings,
                             Binding {
                                 values,
-                                nodes: BTreeMap::new(),
-                                relationships: BTreeMap::new(),
+                                nodes: BTreeMap::new().into(),
+                                relationships: BTreeMap::new().into(),
                             },
                             &mut output_tracker,
                         );
@@ -360,8 +360,8 @@ impl GraphAlgorithmSpec<'_> {
                             &mut bindings,
                             Binding {
                                 values,
-                                nodes: BTreeMap::new(),
-                                relationships: BTreeMap::new(),
+                                nodes: BTreeMap::new().into(),
+                                relationships: BTreeMap::new().into(),
                             },
                             &mut output_tracker,
                         );

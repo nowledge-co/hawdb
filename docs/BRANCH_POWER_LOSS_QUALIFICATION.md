@@ -261,6 +261,49 @@ and cleanup retain their documented capacity exception; complete runtime closure
 must restore the original open/reserved counts. The global high-water metric is
 recorded rather than treated as a hard bound on those internal operations.
 
+## Default WAL recovery and synchronization fences (#995)
+
+The storage `store::doctor::recovery_tests::recovery_995_*` cases exercise the
+real IO recorder and reopen its materialized lost/torn/reordered relaxed WAL
+images. The matrix includes a middle hole with a later complete transaction,
+a full-length zero region, strict synchronous acknowledgement preservation,
+source synchronization, policy changes and grouped sync. Separate corruption
+injections verify protected-prefix and missing/invalid-fence refusal; these
+are not presented as loss of bytes covered by a model-completed barrier.
+Repair tests inject permission/sharing-like lost replies at each evidence,
+audit and truncate persistence step and verify unchanged WAL before truncation,
+identity-bound retry, and repeated reopen. Real recorder images cut before and
+after every native write, file/directory sync, rename, truncate and removal in
+repair, with both lost and fully surviving unsynchronized operations. Each
+image must reopen with its original complete prefix and validated suffix audit.
+The facade WAL-tail family covers
+subprocess append/repair interruptions, branch publication boundaries, complete
+schema/data transactions and typed open/readiness reporting.
+
+The Windows native storage shard explicitly selects the `recovery_995` storage
+family and the facade `storage_recovery::wal_tail` family. Its recorder now runs
+on Windows as well as Unix. Test registration is a required execution gate,
+not evidence of a successful Windows run; source-bound CI outcomes belong in
+the PR evidence. These tests require no mapped WAL: repair opens ordinary
+read/write file handles before any repaired generation is admitted.
+
+Required behavior is a complete prefix after unsynchronized damage, with no
+repair before either the durable synchronization fence or published branch
+prefix. The fence is durably advanced *before* WAL sync. An interrupted barrier
+may conservatively protect additional bytes and fail closed. Evidence-store
+failure must not authorize truncation. The writer does not preallocate; zero
+extension is still modeled because surviving file length need not imply that
+all newly extended bytes survived. Detailed classification and the v2 bounded
+suffix protocol are in [Storage](STORAGE.md#repair-evidence-and-retry).
+
+On Windows, both Rust `sync_data` and `sync_all` use `FlushFileBuffers`; no
+cheaper data-only primitive is assumed. Native rename alone has no namespace
+persistence guarantee. Evidence create/rename, fence selection, WAL truncation
+and audit retirement require their documented file/directory barriers. The
+recorder credits them only under the existing conditional Windows directory
+flush assumption. Passing native tests still does not qualify NTFS/device
+power-cycle persistence or close the broader #820 qualification work.
+
 ## Model mapping and limits
 
 The unchanged [lifecycle model](tla/BRANCH_LIFECYCLE_PROOF.md) represents complete

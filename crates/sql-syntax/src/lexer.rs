@@ -35,8 +35,25 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, SyntaxError> {
     tokenize_with_config(input, LexerConfig::default())
 }
 
+/// Reads only the first non-comment token for explicit statement-family dispatch.
+/// The rest of the input is validated by the selected parser. The full-input
+/// byte limit applies to complete tokenization, not to statement dispatch.
+pub fn first_token(input: &str) -> Result<Token, SyntaxError> {
+    Ok(tokenize_inner(input, LexerConfig::default(), true)?[0])
+}
+
 pub fn tokenize_with_config(input: &str, config: LexerConfig) -> Result<Vec<Token>, SyntaxError> {
-    if input.len() > config.max_input_bytes {
+    tokenize_inner(input, config, false)
+}
+
+fn tokenize_inner(
+    input: &str,
+    config: LexerConfig,
+    first_only: bool,
+) -> Result<Vec<Token>, SyntaxError> {
+    // Dispatch only reads a prefix. Applying full-input admission here would
+    // also restrict legacy-routed DDL/DML before their parser is selected.
+    if !first_only && input.len() > config.max_input_bytes {
         return Err(SyntaxError::new(
             SyntaxErrorCode::InputTooLarge,
             Span::new(0, input.len()),
@@ -69,6 +86,22 @@ pub fn tokenize_with_config(input: &str, config: LexerConfig) -> Result<Vec<Toke
 
         let start = position;
         let kind = match byte {
+            b'u' | b'U'
+                if bytes.get(position + 1) == Some(&b'&')
+                    && bytes.get(position + 2) == Some(&b'\'') =>
+            {
+                position = scan_quoted(
+                    input,
+                    position + 2,
+                    b'\'',
+                    SyntaxErrorCode::UnterminatedString,
+                )?;
+                TokenKind::String
+            }
+            b'e' | b'E' if bytes.get(position + 1) == Some(&b'\'') => {
+                position = scan_escaped_string(input, position)?;
+                TokenKind::String
+            }
             b'"' => {
                 position = scan_quoted(
                     input,
@@ -110,6 +143,10 @@ pub fn tokenize_with_config(input: &str, config: LexerConfig) -> Result<Vec<Toke
             b'{' => single(&mut position, TokenKind::LeftBrace),
             b'}' => single(&mut position, TokenKind::RightBrace),
             b',' => single(&mut position, TokenKind::Comma),
+            b'.' if bytes.get(position + 1).is_some_and(u8::is_ascii_digit) => {
+                position = scan_number(input, position);
+                TokenKind::Number
+            }
             b'.' => single(&mut position, TokenKind::Dot),
             b';' => single(&mut position, TokenKind::Semicolon),
             b'+' => single(&mut position, TokenKind::Plus),
@@ -178,11 +215,32 @@ pub fn tokenize_with_config(input: &str, config: LexerConfig) -> Result<Vec<Toke
             }
         };
 
+        if kind == TokenKind::Number {
+            for position in start..position {
+                if bytes[position] == b'_'
+                    && (!position
+                        .checked_sub(1)
+                        .is_some_and(|previous| bytes[previous].is_ascii_digit())
+                        || !bytes.get(position + 1).is_some_and(u8::is_ascii_digit))
+                {
+                    return Err(SyntaxError::new(
+                        SyntaxErrorCode::InvalidCharacter,
+                        Span::new(position, position + 1),
+                    )
+                    .expected("a digit on each side of a numeric separator")
+                    .found("_"));
+                }
+            }
+        }
+
         push_token(
             &mut tokens,
             Token::new(kind, Span::new(start, position)),
             config.max_tokens,
         )?;
+        if first_only {
+            return Ok(tokens);
+        }
     }
 
     tokens.push(Token::new(
@@ -273,6 +331,23 @@ fn scan_quoted(
     Err(SyntaxError::new(error_code, Span::new(start, input.len())))
 }
 
+fn scan_escaped_string(input: &str, start: usize) -> Result<usize, SyntaxError> {
+    let bytes = input.as_bytes();
+    let mut position = start + 2;
+    while position < bytes.len() {
+        match bytes[position] {
+            b'\\' => position += 2,
+            b'\'' if bytes.get(position + 1) == Some(&b'\'') => position += 2,
+            b'\'' => return Ok(position + 1),
+            _ => position += 1,
+        }
+    }
+    Err(SyntaxError::new(
+        SyntaxErrorCode::UnterminatedString,
+        Span::new(start, input.len()),
+    ))
+}
+
 fn scan_parameter(input: &str, start: usize) -> Result<(usize, u32), SyntaxError> {
     let bytes = input.as_bytes();
     let mut position = start + 1;
@@ -323,13 +398,18 @@ fn scan_dollar_quoted_string(input: &str, start: usize) -> Result<Option<usize>,
 fn scan_number(input: &str, start: usize) -> usize {
     let bytes = input.as_bytes();
     let mut position = start;
-    while bytes.get(position).is_some_and(u8::is_ascii_digit) {
-        position += 1;
-    }
-    if bytes.get(position) == Some(&b'.') && bytes.get(position + 1).is_some_and(u8::is_ascii_digit)
+    while bytes
+        .get(position)
+        .is_some_and(|byte| byte.is_ascii_digit() || *byte == b'_')
     {
         position += 1;
-        while bytes.get(position).is_some_and(u8::is_ascii_digit) {
+    }
+    if bytes.get(position) == Some(&b'.') && bytes.get(position + 1) != Some(&b'.') {
+        position += 1;
+        while bytes
+            .get(position)
+            .is_some_and(|byte| byte.is_ascii_digit() || *byte == b'_')
+        {
             position += 1;
         }
     }
@@ -340,7 +420,10 @@ fn scan_number(input: &str, start: usize) -> usize {
             position += 1;
         }
         let digit_start = position;
-        while bytes.get(position).is_some_and(u8::is_ascii_digit) {
+        while bytes
+            .get(position)
+            .is_some_and(|byte| byte.is_ascii_digit() || *byte == b'_')
+        {
             position += 1;
         }
         if digit_start == position {

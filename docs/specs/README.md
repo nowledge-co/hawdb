@@ -11,6 +11,7 @@ contracts must update the corresponding specification in the same change.
 
 | Area | Canonical contract | Supporting design and evidence documents |
 | --- | --- | --- |
+| Encoded spill merge, cooperative work-area targets and filtered traversal feedback | [`ADAPTIVE_EXECUTION_MEMORY_SPEC.md`](ADAPTIVE_EXECUTION_MEMORY_SPEC.md) | [`FILTERED_DISKANN_SPEC.md`](FILTERED_DISKANN_SPEC.md), [`../TEST_INDEX.md`](../TEST_INDEX.md) |
 | Qualified transaction read capture and opt-in serializable commit validation | [`TRANSACTION_READ_DEPENDENCIES.md`](TRANSACTION_READ_DEPENDENCIES.md) | [`MVCC_COW_EVOLUTION_SPEC.md`](MVCC_COW_EVOLUTION_SPEC.md), [`../MVCC_COMMIT_VALIDATION_PROTOCOL.md`](../MVCC_COMMIT_VALIDATION_PROTOCOL.md) |
 | Release-facing application API boundary | [`QUERY_FIRST_PUBLIC_API_SPEC.md`](QUERY_FIRST_PUBLIC_API_SPEC.md) | [`../ARCHITECTURE.md`](../ARCHITECTURE.md), [`../NOWLEDGE_REPLACEMENT_MATRIX.md`](../NOWLEDGE_REPLACEMENT_MATRIX.md) |
 | Embedded ownership, concurrency, durability, resources, capabilities, ACL, and telemetry | [`EMBEDDED_RUNTIME_SPEC.md`](EMBEDDED_RUNTIME_SPEC.md) | [`../STORAGE.md`](../STORAGE.md), [`../ARCHITECTURE.md`](../ARCHITECTURE.md), [`../DATABASE_INSTANCE_IDENTITY.md`](../DATABASE_INSTANCE_IDENTITY.md) |

@@ -1293,8 +1293,16 @@ impl SearchOutOfCoreGenerationWriter {
             .spool
             .as_mut()
             .ok_or_else(|| HawDBError::Storage("search generation spool is closed".into()))?;
-        output.write_all(&record_bytes.to_le_bytes())?;
-        output.write_all(&record.checksum().to_le_bytes())?;
+        {
+            let _wave = crate::out_of_core::scratch_directory::io_scope(
+                &self.task_context,
+                self.memory.host_admission.is_some(),
+            )?;
+            output.write_all(&record_bytes.to_le_bytes())?;
+            output.write_all(&record.checksum().to_le_bytes())?;
+        }
+        // Governed runs retain their original admission. The source wave also
+        // covers copying into this output; do not hold a second output wave.
         record.write_to(output, &self.memory, &self.task_context)?;
         record.add_digest(&mut self.documents_digest);
         self.needs_chinese_analyzer |= needs_chinese;

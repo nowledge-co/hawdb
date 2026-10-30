@@ -1136,6 +1136,7 @@ mod tests {
             &path,
             super::super::DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 ..Default::default()
             },
         )
@@ -2041,7 +2042,7 @@ mod tests {
                     .join(report.quarantine_file)
             )
             .unwrap(),
-            damaged
+            damaged[prefix.len()..]
         );
         for (before, file) in evidence {
             assert_eq!(std::fs::read(file).unwrap(), before);
@@ -2522,6 +2523,7 @@ mod tests {
             &path,
             super::super::DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 ..Default::default()
             },
         )

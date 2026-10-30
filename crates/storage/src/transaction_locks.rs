@@ -957,14 +957,13 @@ fn upper_is_before_lower(upper: &Bound<RelationalKey>, lower: &Bound<RelationalK
 }
 
 fn deadlock_error(victim: u64, cycle: &[u64]) -> HawDBError {
-    let cycle = cycle
-        .iter()
-        .map(u64::to_string)
-        .collect::<Vec<_>>()
-        .join(" -> ");
-    HawDBError::Execution(format!(
-        "deadlock detected; transaction {victim} selected as victim; wait cycle: {cycle}"
-    ))
+    HawDBError::TransactionRetryRequired(Box::new(hawdb_core::TransactionRetryError {
+        transaction_id: victim,
+        reason: hawdb_core::TransactionRetryReason::Deadlock {
+            wait_cycle: cycle.to_vec(),
+        },
+        already_aborted: false,
+    }))
 }
 
 #[cfg(test)]

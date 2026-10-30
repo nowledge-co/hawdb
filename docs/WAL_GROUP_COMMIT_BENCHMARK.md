@@ -35,7 +35,7 @@ local measurements cannot explain an intermittent remote Linux timeout.
 
 ## One recovery open, independent proofs
 
-After all writers join and the database closes, one default strict reopen now
+After all writers join and the database closes, one explicitly configured `Strict` reopen
 supplies both proofs. Before any query, its original recovery report must show
 LSN 1, the exact final next LSN, the exact replay count and no torn tail. The same
 handle then checks the final epoch and every ordered ID/body, including warmup

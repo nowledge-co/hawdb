@@ -1,0 +1,12 @@
+{
+  "protocol": "four interleaved fresh-process pairs per N/workload; alternate variant order",
+  "reference_manifest": "review-qualification-manifest.json",
+  "candidate_manifest": "case-owner-qualification-manifest.json",
+  "binaries": {
+    "review83": "526da50156ee2df8f80404762d3a14edf76a7548fc2385bd042210698a93b7ff",
+    "case_owner": "7d8285084a81d02d8b08a11c9d8a68eb552b0045f0131ab464594bfc8b08e035"
+  },
+  "shared_host": true,
+  "own_builds_during_timing": false,
+  "repeats_per_process": 20
+}

@@ -700,11 +700,13 @@ fn error_class(error: &crate::HawDBError) -> String {
         | crate::HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | crate::HawDBError::GraphExpansionPayloadLimitExceeded { .. }
         | crate::HawDBError::TransactionConflict { .. }
+        | crate::HawDBError::TransactionRetryRequired(_)
         | crate::HawDBError::TransactionReadDependencyRefused { .. }
         | crate::HawDBError::BranchCommandUnsupported { .. } => "execution",
         crate::HawDBError::Storage(_)
         | crate::HawDBError::FileDescriptors(_)
         | crate::HawDBError::StorageIntegrity(_)
+        | crate::HawDBError::WalRecoveryIo { .. }
         | crate::HawDBError::ProjectionBusy
         | crate::HawDBError::AppendSequenceExhausted { .. }
         | crate::HawDBError::BranchBusy { .. }

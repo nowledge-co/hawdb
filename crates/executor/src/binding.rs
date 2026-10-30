@@ -14,6 +14,9 @@
 
 //! Executor-owned row bindings and deterministic memory accounting.
 
+mod graph_slots;
+pub use graph_slots::GraphSlots;
+
 use hawdb_core::{LabelId, Value};
 use hawdb_plan_cypher::SortDirection;
 use hawdb_storage::{NodeRecord, RelRecord};
@@ -23,16 +26,16 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
     pub values: BTreeMap<String, Value>,
-    pub nodes: BTreeMap<String, NodeRecord>,
-    pub relationships: BTreeMap<String, RelRecord>,
+    pub nodes: GraphSlots<NodeRecord>,
+    pub relationships: GraphSlots<RelRecord>,
 }
 
 impl Binding {
     pub fn values(values: BTreeMap<String, Value>) -> Self {
         Self {
             values,
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: GraphSlots::new(),
+            relationships: GraphSlots::new(),
         }
     }
 
@@ -136,7 +139,7 @@ pub(crate) fn projected_node_binding_memory_bytes(
                     .map(|value| (property.as_str(), value))
             }),
         ))
-        .saturating_add(std::mem::size_of::<usize>() * 6)
+        .saturating_add(graph_slot_memory_bytes(1))
 }
 
 pub fn value_memory_bytes(value: &Value) -> usize {
@@ -278,19 +281,21 @@ pub(crate) fn binding_memory_bytes_with_parts<'a>(
     nodes: impl Iterator<Item = (&'a str, &'a NodeRecord)>,
     relationships: impl Iterator<Item = (&'a str, &'a RelRecord)>,
 ) -> usize {
-    let entries = std::cell::Cell::new(0usize);
+    let nodes_count = std::cell::Cell::new(0usize);
+    let relationships_count = std::cell::Cell::new(0usize);
     let graph_bytes = graph_binding_parts_bytes(
-        nodes.inspect(|_| entries.set(entries.get().saturating_add(1))),
-        relationships.inspect(|_| entries.set(entries.get().saturating_add(1))),
+        nodes.inspect(|_| nodes_count.set(nodes_count.get().saturating_add(1))),
+        relationships
+            .inspect(|_| relationships_count.set(relationships_count.get().saturating_add(1))),
         map_memory_bytes,
     );
     std::mem::size_of::<Binding>()
         .saturating_add(graph_bytes)
-        .saturating_add(
-            entries
-                .get()
-                .saturating_mul(std::mem::size_of::<usize>() * 6),
-        )
+        // Charge every row as if its graph records were uniquely retained.
+        // Sharing reduces allocator traffic but never weakens admission. Include
+        // slot vectors, Arc headers, String/label layouts and record headers.
+        .saturating_add(graph_slot_memory_bytes(nodes_count.get()))
+        .saturating_add(graph_slot_memory_bytes(relationships_count.get()))
         .saturating_add(values.fold(0usize, |total, (name, value)| {
             total
                 .saturating_add(name.len())
@@ -302,6 +307,22 @@ pub(crate) fn binding_memory_bytes_with_parts<'a>(
                 })
                 .saturating_add(std::mem::size_of::<usize>() * 6)
         }))
+}
+
+pub(crate) fn graph_slot_memory_bytes(entries: usize) -> usize {
+    if entries == 0 {
+        return 0;
+    }
+    // A Vec grown one slot at a time has capacity at most max(4, 2*len).
+    std::mem::size_of::<Vec<usize>>()
+        .saturating_add(2 * std::mem::size_of::<usize>())
+        .saturating_add(
+            entries
+                .saturating_mul(2)
+                .max(4)
+                .saturating_mul(2 * std::mem::size_of::<usize>()),
+        )
+        .saturating_add(entries.saturating_mul(10 * std::mem::size_of::<usize>()))
 }
 
 pub fn node_memory_bytes(node: &NodeRecord) -> usize {
@@ -374,7 +395,8 @@ mod tests {
                     labels: BTreeSet::from([LabelId(3)]),
                     properties: BTreeMap::new(),
                 },
-            )]),
+            )])
+            .into(),
             relationships: BTreeMap::from([(
                 "r".to_string(),
                 RelRecord {
@@ -384,11 +406,36 @@ mod tests {
                     rel_type: RelTypeId(4),
                     properties: BTreeMap::new(),
                 },
-            )]),
+            )])
+            .into(),
         };
 
         assert!(binding_payload_bytes(&binding) > "nested".len() + "two".len());
         assert!(binding_memory_bytes(&binding) > binding_payload_bytes(&binding));
+    }
+
+    #[test]
+    fn projected_node_admission_matches_graph_slot_ownership() {
+        let node = NodeRecord {
+            id: NodeId(3),
+            labels: BTreeSet::from([LabelId(1)]),
+            properties: BTreeMap::from([
+                ("id".into(), Value::String("chosen".into())),
+                ("body".into(), Value::String("x".repeat(65536))),
+            ]),
+        };
+        let required = BTreeSet::from(["id".to_string()]);
+        let bytes = projected_node_binding_memory_bytes("n", &node, &required);
+        let mut projected = node.clone();
+        projected
+            .properties
+            .retain(|name, _| required.contains(name));
+        let binding = Binding {
+            values: BTreeMap::new(),
+            nodes: BTreeMap::from([("n".into(), projected)]).into(),
+            relationships: GraphSlots::new(),
+        };
+        assert_eq!(bytes, binding_memory_bytes(&binding));
     }
 
     #[test]

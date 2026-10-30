@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Bounded evidence for every observed group, finalized after input exhaustion.
 
@@ -462,8 +462,8 @@ fn finish_groups(
         }
         rows.push(Binding {
             values,
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         });
         owners.push(retained);
         emitted = emitted.saturating_add(1);

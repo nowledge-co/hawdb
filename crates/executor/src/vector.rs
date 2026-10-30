@@ -186,6 +186,7 @@ pub struct VectorCandidateScanMetrics {
     pub filtered_document_count: usize,
     pub scanned_block_count: usize,
     pub skipped_block_count: usize,
+    pub adaptive_exact_scan_count: usize,
     pub payload_bytes_read: u64,
     pub admitted_working_bytes: usize,
 }

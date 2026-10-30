@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 use hawdb::{Database, DurabilityPolicy, ProjectionPublicationError, Value};
 use std::num::NonZeroUsize;
@@ -91,58 +91,94 @@ fn joined_reads_capture_parent_before_query_and_allow_disjoint_writes() {
         }
     }
 }
-#[test]
-fn joined_reads_cover_absent_filtered_deleted_parents_and_off_page_children() {
-    for cold in [false, true] {
-        for page in [false, true] {
-            for effect in [
-                "missing_parent",
-                "filtered_parent",
-                "delete_parent",
-                "off_page",
-            ] {
-                let (_root, mut db) = joined_fixture(cold);
-                if effect == "missing_parent" {
-                    db.query_sql("DELETE FROM docs WHERE doc_id = 'd1'")
-                        .unwrap();
-                }
-                if effect == "filtered_parent" {
-                    db.query_sql("UPDATE docs SET owner_kind = 'other' WHERE doc_id = 'd1'")
-                        .unwrap();
-                }
-                let mut read = db.begin_prepared_read(limits()).unwrap();
-                let output = joined_query(&mut read, page, if page { "d1" } else { "a" });
-                assert_eq!(
-                    output.rows.len(),
-                    usize::from(!matches!(effect, "missing_parent" | "filtered_parent"))
-                );
-                let deps = read.finish().unwrap();
-                assert!(!deps.requires_unchanged_database_epoch());
-                assert_eq!(deps.exact_relational_row_count(), if page { 1 } else { 2 });
-                db.query_sql(match effect {
-            "missing_parent"=>"INSERT INTO docs (doc_id,owner_id,owner_kind) VALUES ('d1','returned','source')",
-            "filtered_parent"=>"UPDATE docs SET owner_kind = 'source' WHERE doc_id = 'd1'",
-            "delete_parent"=>"DELETE FROM docs WHERE doc_id = 'd1'",
-            "off_page"=>"UPDATE chunks SET body = 'changed' WHERE chunk_id = 'b'",
-            _=>unreachable!(),
-        }).unwrap();
-                let candidate = seal(
-                    &db.projection_generation_store().unwrap(),
-                    "joined_effect",
-                    deps.source_epoch(),
-                    None,
-                );
-                let result = db.publish_prepared_projection(&deps, &candidate);
-                if effect == "off_page" && !page {
-                    result.unwrap();
-                } else {
-                    assert!(
-                        matches!(result, Err(ProjectionPublicationError::Dependency(_))),
-                        "{effect} page={page} cold={cold}"
-                    );
-                }
-            }
+mod joined_parent_effects {
+    use super::*;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Effect {
+        MissingParent,
+        FilteredParent,
+        DeleteParent,
+        OffPage,
+    }
+
+    fn run(cold: bool, page: bool, effect: Effect) {
+        let (_root, mut db) = joined_fixture(cold);
+        if effect == Effect::MissingParent {
+            db.query_sql("DELETE FROM docs WHERE doc_id = 'd1'")
+                .unwrap();
         }
+        if effect == Effect::FilteredParent {
+            db.query_sql("UPDATE docs SET owner_kind = 'other' WHERE doc_id = 'd1'")
+                .unwrap();
+        }
+        let mut read = db.begin_prepared_read(limits()).unwrap();
+        let output = joined_query(&mut read, page, if page { "d1" } else { "a" });
+        assert_eq!(
+            output.rows.len(),
+            usize::from(!matches!(
+                effect,
+                Effect::MissingParent | Effect::FilteredParent
+            ))
+        );
+        let deps = read.finish().unwrap();
+        assert!(!deps.requires_unchanged_database_epoch());
+        assert_eq!(deps.exact_relational_row_count(), if page { 1 } else { 2 });
+        db.query_sql(match effect {
+            Effect::MissingParent => {
+                "INSERT INTO docs (doc_id,owner_id,owner_kind) VALUES ('d1','returned','source')"
+            }
+            Effect::FilteredParent => "UPDATE docs SET owner_kind = 'source' WHERE doc_id = 'd1'",
+            Effect::DeleteParent => "DELETE FROM docs WHERE doc_id = 'd1'",
+            Effect::OffPage => "UPDATE chunks SET body = 'changed' WHERE chunk_id = 'b'",
+        })
+        .unwrap();
+        let candidate = seal(
+            &db.projection_generation_store().unwrap(),
+            "joined_effect",
+            deps.source_epoch(),
+            None,
+        );
+        let result = db.publish_prepared_projection(&deps, &candidate);
+        if effect == Effect::OffPage && !page {
+            result.unwrap();
+        } else {
+            assert!(
+                matches!(result, Err(ProjectionPublicationError::Dependency(_))),
+                "{effect:?} page={page} cold={cold}"
+            );
+        }
+    }
+
+    // Separate libtest cases let Bazel distribute persistent fixtures across shards.
+    macro_rules! scenarios {
+        ($($name:ident => ($cold:expr, $page:expr, $effect:ident)),+ $(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    run($cold, $page, Effect::$effect);
+                }
+            )+
+        };
+    }
+
+    scenarios! {
+        cold_page_missing_parent => (true, true, MissingParent),
+        cold_page_filtered_parent => (true, true, FilteredParent),
+        cold_page_delete_parent => (true, true, DeleteParent),
+        cold_page_off_page => (true, true, OffPage),
+        cold_point_missing_parent => (true, false, MissingParent),
+        cold_point_filtered_parent => (true, false, FilteredParent),
+        cold_point_delete_parent => (true, false, DeleteParent),
+        cold_point_off_page => (true, false, OffPage),
+        warm_page_missing_parent => (false, true, MissingParent),
+        warm_page_filtered_parent => (false, true, FilteredParent),
+        warm_page_delete_parent => (false, true, DeleteParent),
+        warm_page_off_page => (false, true, OffPage),
+        warm_point_missing_parent => (false, false, MissingParent),
+        warm_point_filtered_parent => (false, false, FilteredParent),
+        warm_point_delete_parent => (false, false, DeleteParent),
+        warm_point_off_page => (false, false, OffPage),
     }
 }
 #[test]

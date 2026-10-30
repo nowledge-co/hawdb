@@ -45,6 +45,7 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
         } else {
             StorageResidencyMode::OutOfCore
         },
+        recovery_mode: RecoveryMode::Strict,
         ..DatabaseConfig::default()
     };
     let mut db = Database::open_with_config(path, config.clone())?;
@@ -153,8 +154,10 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
     let quarantine = audit["quarantine_file"]
         .as_str()
         .ok_or("missing quarantine identity")?;
-    if fs::read(branch_directory.join("doctor/quarantine").join(quarantine))? != torn {
-        return Err("quarantine did not retain exact damaged WAL bytes".into());
+    if fs::read(branch_directory.join("doctor/quarantine").join(quarantine))?
+        != torn[prefix.len()..]
+    {
+        return Err("quarantine did not retain exact discarded suffix bytes".into());
     }
     repaired.query("CREATE (:Memory {id: 3, payload: 'after-repair'})")?;
     let after_repair = repaired.query(query)?.rows;

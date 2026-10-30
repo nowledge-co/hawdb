@@ -345,6 +345,7 @@ fn wal_record_byte_limit_rejects_mutation_before_append() {
 fn read_only_database_rejects_match_set_return() {
     let mut db = Database::new_with_config(DatabaseConfig {
         read_only: true,
+        recovery_mode: crate::RecoveryMode::Strict,
         ..DatabaseConfig::default()
     });
 
@@ -358,6 +359,7 @@ fn read_only_database_rejects_match_set_return() {
 fn read_only_database_rejects_transaction_mutations() {
     let mut db = Database::new_with_config(DatabaseConfig {
         read_only: true,
+        recovery_mode: crate::RecoveryMode::Strict,
         ..DatabaseConfig::default()
     });
 
@@ -373,6 +375,7 @@ fn read_only_database_rejects_transaction_mutations() {
 fn read_only_database_rejects_owned_maintenance_writes() {
     let mut db = Database::new_with_config(DatabaseConfig {
         read_only: true,
+        recovery_mode: crate::RecoveryMode::Strict,
         ..DatabaseConfig::default()
     });
 

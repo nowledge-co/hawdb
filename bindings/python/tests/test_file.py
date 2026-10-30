@@ -88,15 +88,19 @@ def test_open_rejects_read_only_without_existing_path(tmp_path, opener):
 @pytest.mark.parametrize("opener", OPENERS, ids=OPENER_IDS)
 @pytest.mark.parametrize("read_only", [False, True])
 @pytest.mark.parametrize("as_parent", [False, True])
+@pytest.mark.parametrize("relative", [False, True])
 def test_open_rejects_regular_files_without_changing_them(
-    tmp_path, opener, read_only, as_parent
+    tmp_path, monkeypatch, opener, read_only, as_parent, relative
 ):
     existing = tmp_path / "app.db"
     content = b"SQLite format 3\x00preserve this file"
     existing.write_bytes(content)
     path = existing / "child" if as_parent else existing
+    if relative:
+        monkeypatch.chdir(tmp_path)
+    requested = path.relative_to(tmp_path) if relative else path
     with pytest.raises(exceptions.StorageError) as caught:
-        with opener(path, read_only=read_only):
+        with opener(requested, read_only=read_only):
             pass
     assert str(path) in str(caught.value)
     if not as_parent:

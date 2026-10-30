@@ -39,6 +39,7 @@ type ValueRangeBounds = (Option<ValueRangeBound>, Option<ValueRangeBound>);
 mod key;
 mod predicate;
 mod projection;
+mod simple_case;
 mod value;
 
 pub(crate) use key::{KeyMemory, PreparedKey, SortKeyValues};
@@ -46,4 +47,5 @@ pub use predicate::*;
 pub(crate) use projection::{
     prepare_borrowed_projection, push_borrowed_projection, SmallBorrowedProjection,
 };
+pub(crate) use simple_case::PreparedProjectionExpressions;
 pub use value::*;

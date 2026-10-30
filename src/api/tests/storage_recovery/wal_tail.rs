@@ -76,12 +76,15 @@ fn assert_repair_evidence(path: &Path, original: &[u8]) {
             .ends_with(".repair.pending.json")
     }));
     let audit: serde_json::Value = serde_json::from_slice(&fs::read(&records[0]).unwrap()).unwrap();
-    assert_eq!(audit["protocol"], "hawdb-wal-doctor-repair-v1");
+    assert_eq!(audit["protocol"], "hawdb-wal-doctor-repair-v2");
     assert_eq!(audit["state"], "applied");
     let quarantine = doctor
         .join("quarantine")
         .join(audit["quarantine_file"].as_str().unwrap());
-    assert_eq!(fs::read(quarantine).unwrap(), original);
+    assert_eq!(
+        fs::read(quarantine).unwrap(),
+        original[audit["plan"]["retained_wal_len"].as_u64().unwrap() as usize..]
+    );
 }
 
 fn child_wal_fixture(
@@ -237,7 +240,7 @@ fn branch_wal_repair_preserves_published_prefix_and_complete_schema_data_transac
                     .join(record["quarantine_file"].as_str().unwrap())
             )
             .unwrap(),
-            damaged
+            damaged[plan.retained_wal_len as usize..]
         );
         let mut db = Database::open(&path).unwrap();
         assert_eq!(
@@ -484,13 +487,31 @@ fn automatic_repair_preserves_quarantine_and_acknowledged_commits() {
     let path = unique_test_dir("automatic_wal_tail");
     seed_database(&path);
     let original = append_torn_tail(&path);
-    assert!(admission_error(&path, storage_crash_test_config())
-        .to_string()
-        .contains("torn tail"));
+    assert!(admission_error(
+        &path,
+        DatabaseConfig {
+            recovery_mode: RecoveryMode::Strict,
+            ..storage_crash_test_config()
+        }
+    )
+    .to_string()
+    .contains("torn tail"));
     let mut db = Database::open_with_config(&path, automatic_config()).unwrap();
     let report = db.storage_recovery_report().unwrap();
     assert_eq!(report.recovery_mode, RecoveryMode::AutoRepairTornTail);
     assert!(report.torn_tail_repaired);
+    let repair = report.wal_repair.as_ref().unwrap();
+    assert_eq!(
+        repair.reason,
+        hawdb_storage::doctor::WalTailRepairReason::IncompleteFinalRecord
+    );
+    assert!(repair
+        .evidence_directory
+        .join(&repair.repair_record_file)
+        .exists());
+    let readiness = crate::NowledgeMemStorageRecoveryReport::from_storage_report(&report);
+    assert_eq!(readiness.wal_repair, report.wal_repair);
+    assert!(readiness.json()["wal_repair"]["evidence_directory"].is_string());
     assert!(!report.torn_tail_ignored);
     assert_eq!(report.discarded_wal_tail_bytes, 7);
     assert!(report.torn_tail_reason.is_some());
@@ -519,6 +540,7 @@ fn automatic_repair_rejects_read_only_and_insufficient_evidence_budget() {
     for config in [
         DatabaseConfig {
             read_only: true,
+            recovery_mode: RecoveryMode::AutoRepairTornTail,
             ..automatic_config()
         },
         DatabaseConfig {
@@ -548,12 +570,12 @@ fn automatic_repair_rejects_read_only_and_insufficient_evidence_budget() {
 
 #[test]
 fn automatic_repair_rejects_complete_corruption() {
-    for orphan in [false, true] {
+    for damage in 0..3 {
         let path = unique_test_dir("automatic_wal_corruption");
         seed_database(&path);
         let wal = active_wal_path(&path);
         let mut bytes = fs::read(&wal).unwrap();
-        if orphan {
+        if damage == 1 {
             let generation = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
             let mut hasher = hawdb_integrity::Crc32cHasher::new();
             hasher.update(&[3]);
@@ -566,6 +588,8 @@ fn automatic_repair_rejects_complete_corruption() {
             bytes.extend_from_slice(&0u16.to_le_bytes());
             bytes.push(3);
             bytes.extend_from_slice(&generation.to_le_bytes());
+        } else if damage == 2 {
+            bytes.extend_from_slice(&[0; 32]);
         } else {
             *bytes.last_mut().unwrap() ^= 0xff;
         }
@@ -590,7 +614,7 @@ fn automatic_repair_budget_preserves_prior_audit_evidence() {
     let error = admission_error(
         &path,
         DatabaseConfig {
-            max_wal_quarantine_bytes: (first.len() + second.len() - 1) as u64,
+            max_wal_quarantine_bytes: 13,
             ..automatic_config()
         },
     );
@@ -673,8 +697,12 @@ fn crash_child() {
 fn subprocess_partial_append_and_interrupted_automatic_repair_recover() {
     for repair_stage in [
         None,
+        Some("after_wal_repair_evidence_sync"),
+        Some("after_wal_repair_evidence_publish"),
         Some("after_wal_repair_prepare"),
+        Some("after_wal_repair_set_len"),
         Some("after_wal_repair_truncate"),
+        Some("after_wal_repair_applied"),
     ] {
         let path = unique_test_dir("automatic_wal_crash");
         seed_database(&path);
@@ -690,9 +718,19 @@ fn subprocess_partial_append_and_interrupted_automatic_repair_recover() {
         let original = fs::read(active_wal_path(&path)).unwrap();
         if let Some(stage) = repair_stage {
             assert_eq!(child(stage).code(), Some(86));
-            assert!(admission_error(&path, storage_crash_test_config())
-                .to_string()
-                .contains("interrupted WAL doctor"));
+            assert!(admission_error(
+                &path,
+                DatabaseConfig {
+                    recovery_mode: RecoveryMode::Strict,
+                    ..storage_crash_test_config()
+                }
+            )
+            .to_string()
+            .contains(if stage.starts_with("after_wal_repair_evidence") {
+                "strict WAL recovery"
+            } else {
+                "interrupted WAL doctor"
+            }));
         }
         let mut db = Database::open_with_config(&path, automatic_config()).unwrap();
         assert!(db.storage_recovery_report().unwrap().torn_tail_repaired);
@@ -713,4 +751,179 @@ fn subprocess_partial_append_and_interrupted_automatic_repair_recover() {
         drop(Database::open(&path).unwrap());
         fs::remove_dir_all(path).unwrap();
     }
+}
+
+const EVERY_CUT_CHILD: &str = "api::tests::storage_recovery::wal_tail::default_append_cut_child";
+
+#[test]
+fn default_append_cut_child() {
+    let Some(path) = std::env::var_os("HAWDB_TEST_EVERY_WAL_CUT_PATH") else {
+        return;
+    };
+    let mut db = Database::open(path).unwrap();
+    db.query("CREATE (:Memory {id: 'unacknowledged'})").unwrap();
+    panic!("append cut did not terminate the process");
+}
+
+#[test]
+fn default_recovery_retains_acknowledged_commits_at_every_append_byte_cut() {
+    let calibration = unique_test_dir("wal_cut_calibration");
+    seed_database(&calibration);
+    let before = fs::metadata(active_wal_path(&calibration)).unwrap().len();
+    let mut db = Database::open(&calibration).unwrap();
+    db.query("CREATE (:Memory {id: 'unacknowledged'})").unwrap();
+    let encoded = fs::metadata(active_wal_path(&calibration)).unwrap().len() - before;
+    drop(db);
+    fs::remove_dir_all(calibration).unwrap();
+    assert!(encoded > 15);
+    for cut in 0..encoded {
+        let path = unique_test_dir("wal_every_append_cut");
+        seed_database(&path);
+        let prefix = fs::read(active_wal_path(&path)).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", EVERY_CUT_CHILD, "--nocapture"])
+            .env("HAWDB_TEST_EVERY_WAL_CUT_PATH", &path)
+            .env("HAWDB_TEST_PROCESS_CRASH_POINT", "during_wal_append")
+            .env("HAWDB_TEST_WAL_APPEND_CUT", cut.to_string())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(86),
+            "cut {cut}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let original = fs::read(active_wal_path(&path)).unwrap();
+        assert_eq!(original.len(), prefix.len() + cut as usize);
+        if cut > 0 {
+            admission_error(
+                &path,
+                DatabaseConfig {
+                    recovery_mode: RecoveryMode::Strict,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(fs::read(active_wal_path(&path)).unwrap(), original);
+        }
+        let mut reopened = Database::open(&path).unwrap();
+        assert_eq!(
+            count_query(&mut reopened, "MATCH (m:Memory) RETURN count(m) AS count"),
+            2,
+            "cut {cut}"
+        );
+        assert_eq!(
+            reopened
+                .storage_recovery_report()
+                .unwrap()
+                .torn_tail_repaired,
+            cut > 0
+        );
+        if cut > 0 {
+            assert_repair_evidence(&path, &original);
+        }
+        assert_eq!(fs::read(active_wal_path(&path)).unwrap(), prefix);
+        drop(reopened);
+        fs::remove_dir_all(path).unwrap();
+    }
+    eprintln!("default WAL recovery verified every append byte cut: {encoded}");
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn recovery_995_branch_hole_preserves_complete_schema_sql_graph_transactions() {
+    use hawdb_storage::power_loss::{
+        image::{CrashPlan, ImageLimits, PersistOperation},
+        IoEvent, ObservationBoundary, ObservationPoint, PowerLossModel,
+    };
+    let path = unique_test_dir("wal_relaxed_mixed_image");
+    let project =
+        hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_with_capacity_limit(
+            &path,
+            hawdb_storage::file_descriptors::DEFAULT_MAX_OPEN_FILES,
+            false,
+        )
+        .unwrap();
+    let model = PowerLossModel::attach(&project, ImageLimits::default()).unwrap();
+    let mut seed = Database::open_with_config(&path, storage_crash_test_config()).unwrap();
+    seed.query_sql("CREATE TABLE kept (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    seed.query("CREATE (:Memory {id: 'baseline'})").unwrap();
+    seed.checkpoint().unwrap();
+    seed.query("CREATE (:Memory {id: 'acknowledged'})").unwrap();
+    drop(seed);
+    let mut db = Database::open_with_durability_and_config(
+        &path,
+        crate::DurabilityPolicy::SyncOnCheckpoint,
+        storage_crash_test_config(),
+    )
+    .unwrap();
+    let wal = active_wal_path(&path);
+    let relative = wal.strip_prefix(&path).unwrap();
+    model
+        .observe(ObservationPoint {
+            event: IoEvent::Write,
+            relative_path: relative.into(),
+            boundary: ObservationBoundary::After,
+            skip_matches: 2,
+            include_descendants: false,
+            keep_last: false,
+        })
+        .unwrap();
+    for (index, suffix) in ["kept", "lost", "later"].into_iter().enumerate() {
+        let mut tx = db.begin_transaction().unwrap();
+        tx.query_sql(&format!("INSERT INTO kept (id) VALUES ({index})"))
+            .unwrap();
+        if suffix == "later" {
+            tx.query_sql("CREATE TABLE later (id BIGINT PRIMARY KEY)")
+                .unwrap();
+            tx.query_sql("INSERT INTO later (id) VALUES (1)").unwrap();
+        }
+        tx.query(&format!("CREATE (:Memory {{id: '{suffix}'}})"))
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    // SQL schema publication checkpoints the live store; retain the physical
+    // image immediately after its WAL append, before that durability barrier.
+    model.capture().unwrap();
+    let snapshot = model
+        .take_observation()
+        .unwrap()
+        .expect("third WAL append reached");
+    drop(db);
+    let writes = snapshot.uncovered_writes(relative).unwrap();
+    assert_eq!(writes.len(), 3);
+    let image = snapshot
+        .crash(&CrashPlan {
+            persistence: vec![
+                PersistOperation::Whole(writes[2].operation),
+                PersistOperation::Whole(writes[0].operation),
+            ],
+        })
+        .unwrap();
+    let recovered = unique_test_dir("wal_relaxed_mixed_recovered");
+    image.materialize(&recovered).unwrap();
+    let mut db = Database::open(&recovered).unwrap();
+    assert_eq!(db.query_sql("SELECT id FROM kept").unwrap().rows.len(), 1);
+    assert_eq!(
+        db.query_sql("SELECT id FROM kept").unwrap().rows[0]["id"],
+        Value::Int(0)
+    );
+    assert!(db.query_sql("SELECT id FROM later").is_err());
+    assert_eq!(
+        count_query(&mut db, "MATCH (m:Memory) RETURN count(m) AS count"),
+        3
+    );
+    assert_eq!(
+        db.storage_recovery_report()
+            .unwrap()
+            .wal_repair
+            .unwrap()
+            .reason,
+        hawdb_storage::doctor::WalTailRepairReason::UnsynchronizedSuffix
+    );
+    drop(db);
+    fs::remove_dir_all(recovered).unwrap();
+    drop(model);
+    drop(project);
+    fs::remove_dir_all(path).unwrap();
 }

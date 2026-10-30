@@ -120,3 +120,19 @@ def test_owned_nested_result_survives_database_close(db):
     assert struct.pack("<d", output["items"][4]) == struct.pack("<d", nan)
     assert output["items"][5] == {"uuid": str(identity)}
     assert result.fetchone() is None
+
+
+@pytest.mark.parametrize("suffix", ["", " LIMIT 0"])
+def test_cypher_return_declaration_order_and_empty_schema(db, suffix):
+    db.execute("CREATE (:Stock {code: 'a', price: 1.5})")
+    for code in ["a", "missing", "a"]:
+        result = db.execute(
+            "MATCH (s:Stock) WHERE s.code = $code "
+            "RETURN s.price AS price, s.code AS code" + suffix,
+            {"code": code},
+        )
+        assert result.columns == ["price", "code"]
+        rows = result.fetchall()
+        assert rows == ([{"price": 1.5, "code": "a"}] if code == "a" and not suffix else [])
+        if rows:
+            assert list(rows[0].values()) == [1.5, "a"]

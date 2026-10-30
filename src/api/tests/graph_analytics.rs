@@ -591,6 +591,7 @@ fn rss_child() {
     let path = std::path::PathBuf::from(path);
     let mut config = DatabaseConfig {
         read_only: true,
+        recovery_mode: crate::RecoveryMode::Strict,
         storage_residency_mode: crate::StorageResidencyMode::OutOfCore,
         segment_cache_capacity_bytes: 2 * 1024 * 1024,
         ..DatabaseConfig::default()
@@ -913,6 +914,7 @@ fn runtime_admission_busy_publication_preserves_values_epochs_and_wal_in_both_re
             &path,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 storage_residency_mode: residency,
                 ..DatabaseConfig::default()
             },

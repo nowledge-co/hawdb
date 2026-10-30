@@ -114,7 +114,12 @@ impl<R> GraphProjection<R> {
         // Validate explicit ISA requests, but report the shared Float64 distance
         // kernel actually used by graph traversal rather than a RaBitQ scanner.
         hawdb_vector_projection::select_scan_kernel(options.kernel)?;
-        let kernel = hawdb_vector_projection::ScanKernel::Scalar;
+        let kernel =
+            match hawdb_core::vector::distance_kernel_name(self.graph.metric(), query.len()) {
+                "avx2" => hawdb_vector_projection::ScanKernel::Avx2,
+                "neon" => hawdb_vector_projection::ScanKernel::Neon,
+                _ => hawdb_vector_projection::ScanKernel::Scalar,
+            };
         let conversion_bytes = top_k
             .checked_mul(size_of::<ProjectionHit>())
             .ok_or_else(|| {
@@ -175,6 +180,7 @@ impl<R> GraphProjection<R> {
                 filtered_document_count: report.bridge_nodes,
                 scanned_block_count: report.expanded_nodes,
                 skipped_block_count: 0,
+                adaptive_exact_scan_count: usize::from(report.adaptive_exact_scan),
                 payload_bytes_read,
                 admitted_working_bytes: options.max_working_bytes,
                 candidate_count,

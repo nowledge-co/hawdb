@@ -262,8 +262,8 @@ pub fn project_staged_mutation_return_rows(
                 })?;
                 let binding = Binding {
                     values: BTreeMap::new(),
-                    nodes: BTreeMap::from([(variable.clone(), node)]),
-                    relationships: BTreeMap::new(),
+                    nodes: BTreeMap::from([(variable.clone(), node)]).into(),
+                    relationships: BTreeMap::new().into(),
                 };
                 let projected = returns
                     .iter()
@@ -433,8 +433,8 @@ fn node_mutation_targets(
         }
         let binding = Binding {
             values: BTreeMap::new(),
-            nodes: BTreeMap::from([(variable.to_string(), node)]),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::from([(variable.to_string(), node)]).into(),
+            relationships: BTreeMap::new().into(),
         };
         if let Some(predicate) = predicate
             && !evaluate_predicate(predicate, catalog, store, &binding, &NoopExecutionObserver)?
@@ -496,8 +496,8 @@ fn execute_set_node_properties_return_with_limits(
         }
         let original_binding = Binding {
             values: BTreeMap::new(),
-            nodes: BTreeMap::from([(variable.to_string(), node.clone())]),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::from([(variable.to_string(), node.clone())]).into(),
+            relationships: BTreeMap::new().into(),
         };
         if let Some(predicate) = predicate
             && !evaluate_predicate(
@@ -534,8 +534,8 @@ fn execute_set_node_properties_return_with_limits(
             }
             let binding = Binding {
                 values: BTreeMap::new(),
-                nodes: BTreeMap::from([(variable.to_string(), projected_node)]),
-                relationships: BTreeMap::new(),
+                nodes: BTreeMap::from([(variable.to_string(), projected_node)]).into(),
+                relationships: BTreeMap::new().into(),
             };
             let values = returns
                 .iter()

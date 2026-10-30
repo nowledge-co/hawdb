@@ -7,9 +7,74 @@ behavior stay in HawDB itself.
 
 ## Status
 
-Development phase. The API surface is intentionally small (`open`, `execute`,
-`execute_sql`, `QueryResult`) while it proves out against real host
-workloads. It is not yet published to PyPI.
+Development phase. The binding exposes the embedded engine directly while it
+proves out against real host workloads. The PyPI distribution and Python import
+are both named `hawdb`.
+
+## Install a published release
+
+```bash
+python -m pip install hawdb
+```
+
+Requires CPython 3.11 or newer. Native wheels cover Linux x86-64/AArch64
+(manylinux 2.28), macOS x86-64/AArch64, and Windows x86-64. Other environments
+can build the source distribution with the repository-pinned Rust toolchain.
+The default wheel includes the engine's default features; `lite` remains an
+explicit source build. Pydantic stays optional: `pip install 'hawdb[pydantic]'`.
+
+## Publishing
+
+[Publish Python to PyPI](../../.github/workflows/pypi.yaml) runs whenever a
+GitHub Release is published, including prereleases. Drafts do not publish.
+The release must use `v<Cargo version>` and point to a commit in `main` history;
+the facade and binding package versions must agree. Version changes still
+follow the ordinary issue, review, CI and merge workflow.
+
+The binding's `Cargo.lock` is committed and ordinary pip CI builds with
+`--locked`. `check_lock.py` rejects any shared dependency whose version, source
+or checksum differs from the root lock. When changing dependencies or bumping
+versions, refresh the binding lock from the reviewed root graph and review the
+additional Python-only dependency changes:
+
+```bash
+cp Cargo.lock bindings/python/Cargo.lock
+cargo metadata --manifest-path bindings/python/Cargo.toml --format-version 1 > /dev/null
+python bindings/python/check_lock.py
+```
+
+The workflow builds one sdist with that reviewed lock, then builds all
+five wheels from that same archive using the repository compilation profile.
+For historical tags without a binding lock, it seeds from that tag's root lock,
+resolves the binding additions, and applies the same shared-identity gate.
+The validated lock must survive sdist creation byte-for-byte, and its SHA-256
+is printed beside the distribution hashes.
+Each wheel is installed and tested before the complete artifact set is passed
+to the publisher. Only the publisher job receives `id-token: write` and uses
+the `pypi` environment. Configure PyPI's GitHub Trusted Publisher with owner
+`nowledge-co`, repository `hawdb`, workflow `pypi.yaml`, environment `pypi`.
+
+The GitHub `pypi` environment must allow only the `main` branch and `v*` tags.
+The active release-tag ruleset restricts `v*` creation, update and deletion to
+the release owner and organization administrators; the existing main/Tide
+ruleset remains in force. These are GitHub environment/ruleset settings, not
+checks that a branch can remove from its workflow. Publication stays automatic
+after the release builds and tests complete. Actions in the publisher job are
+pinned to commit SHAs.
+
+For an existing release, dispatch the workflow with its tag:
+
+```bash
+gh workflow run pypi.yaml --ref main -f tag=v0.19.0
+```
+
+If a publisher fails, retain the original workflow artifacts and rerun only
+the failed publisher job. Existing uploads are skipped only after their hashes
+match those original artifacts; rebuilding different bytes for a published
+filename is refused. The final job compares every uploaded file's SHA-256 with
+PyPI, then installs the public wheel and runs an embedded SQL query.
+That final public install runs on Linux x86-64 and retries transient index/CDN
+misses. All five wheels have their own native installation tests before upload.
 
 ## Read budgets and query plans
 
@@ -416,6 +481,12 @@ SQL `EXPLAIN` reports `id, estRows, task, access object, operator info`;
 operator info, memory, disk`. `pandas.read_sql` works, with a
 warning that pandas only tests SQLAlchemy and sqlite3 connections.
 `help(hawdb.dbapi)` gives the full contract.
+
+Cypher results from Python's database execution API retain RETURN-list order,
+including empty matches and LIMIT 0. Repeated names retain the existing
+collision suffixes (for example, coalesce, coalesce#2, coalesce#3).
+Cypher EXPLAIN keeps its structured diagnostic row, with mode, statement kind
+and plan first; EXPLAIN ANALYZE appends execution diagnostics.
 
 ## Pydantic rows (optional)
 

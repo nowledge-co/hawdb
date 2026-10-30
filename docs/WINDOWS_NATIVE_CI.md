@@ -1,6 +1,6 @@
 # Windows native CI
 
-The native binding workflow uses twelve independent Windows 2025 runners for
+The native binding workflow uses seventeen independent Windows 2025 runners for
 Bazel tests, plus an independent Cargo Clippy runner. There is no prerequisite
 compile job or shard concurrency limit. GitHub runner capacity still bounds
 actual parallelism. The existing `Windows native contracts` check aggregates
@@ -13,19 +13,30 @@ all shard results and Clippy, rejecting failure, cancellation and skipped work.
 | transactions | `::serializable::` | facade all; one test thread |
 | storage | storage and facade descriptor capacity; captured WAL admission; allocation/control-candidate/rollback union | storage all / facade all; one thread |
 | search | resident graph cache fallback/checkpoint; generation spool; captured lease; Windows publication refusal | search all; one thread; refusal exactly one case |
-| consumers | reclamation and sealed-producer link/barrier recovery; canonical vector incremental CRUD and acknowledged power-loss images; stationary creation; stationary recovery; registered Consumer integration | facade all; one thread; creation exactly one case |
+| consumers | reclamation; canonical vector incremental CRUD and acknowledged power-loss images; stationary creation; stationary recovery; registered Consumer integration; vector publication/recovery faults excluded for the exact shards below | facade all; one thread; creation exactly one case |
+| consumers-publication-artifacts | installed native links and candidate-directory barriers retain the artifact closure | facade all; one exact case; both source families and durability modes; one thread |
+| consumers-publication-selectors | torn private selectors preserve atomic source/index recovery | facade all; one exact case; both source families and durability modes; one thread |
+| consumers-publication-barriers | selector rename and project root barriers recover atomically | facade all; one exact case; both source families and durability modes; one thread |
 | consumers-recovery-births | retain unselected native births during canonical vector recovery publication | facade all; one exact case; one thread |
 | consumers-recovery-unselected | settle unselected canonical vector recovery intents | facade all; one exact case; one thread |
 | consumers-recovery-selected | complete selected canonical vector recovery intents | facade all; one exact case; one thread |
-| consumers-recovery-lost-sql | SQL vector recovery after a lost mutation response | facade all; one exact case; one thread |
-| consumers-recovery-lost-nodes | node vector recovery after a lost mutation response | facade all; one exact case; one thread |
+| consumers-recovery-lost-sql-link | SQL vector recovery after a lost mutation response at the native link | facade all; one exact case; seven recovery cuts; one thread |
+| consumers-recovery-lost-sql-selector | SQL vector recovery after a lost mutation response during selector preparation | facade all; one exact case; seven recovery cuts; one thread |
+| consumers-recovery-lost-nodes-link | node vector recovery after a lost mutation response at the native link | facade all; one exact case; seven recovery cuts; one thread |
+| consumers-recovery-lost-nodes-selector | node vector recovery after a lost mutation response during selector preparation | facade all; one exact case; seven recovery cuts; one thread |
 | identities | facade/executor/Cypher `identity_898_`; facade `_1043_` | facade default / component default; one thread |
 | snapshots | portable, branch-open and unit-view identity | both facade default and minimal; exactly 1/2/3 cases respectively; original default threads |
 | bindings | FFI retained; retained node; retained Arrow; complete Go tests | bindings / facade default / facade all; original default threads; Go cache disabled; runtime-only FFI runfile |
 | independent Clippy | workspace, all targets, all features | unchanged pinned native Cargo toolchain |
 | daily/manual abandonment | complete branch abandonment power-loss family | facade all; exactly eight cases; repository/default four or explicit 1/2/4/8 threads |
 
-`scripts/run-windows-native-bazel.sh` owns the exact filters. Every Rust
+`scripts/run-windows-native-bazel.sh` owns the exact filters. The shared
+`scripts/vector_recovery_cases.py` inventory assigns three first-crash publication
+cases and seven recovery cases to both required native and weekly Windows
+matrices. Discovery checks reject omitted, duplicated or unexpected cases.
+The 112 recovery combinations remain unchanged: three 28-combination cases and
+four seven-combination lost-source cases. Ordinary consumers skip the whole
+vector fault module because these required exact selections own it. Every Rust
 selection must pass a positive number of tests; existing exact counts remain
 mandatory. Filtered selections get separate stdout, commands, BEP and copied
 native test logs/XML before another invocation can overwrite them. Failed
@@ -76,6 +87,12 @@ POWER_LOSS_TEST_THREADS=4 bash scripts/run-windows-native-bazel.sh abandonment
 python scripts/check-windows-native-features.py
 bash scripts/run-windows-native-bazel.test.sh
 ```
+
+Issue [#1343](https://github.com/nowledge-co/hawdb/issues/1343) records the
+source-bound slow selections that motivated the publication/origin split:
+1684.2 seconds of vector-test execution, 1591.2 seconds for lost SQL source
+recovery, and 1076.5 seconds for lost node source recovery. These are measured
+pre-split durations, not estimates of the new shards' speedup.
 
 The helper regression uses a fake Bazel executable to verify native failure,
 zero tests, missing BEP, exact-count mismatch and invalid thread selection.

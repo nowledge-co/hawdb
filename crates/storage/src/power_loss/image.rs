@@ -261,6 +261,19 @@ impl ImageEngine {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "image child is absent"))
     }
 
+    /// Borrow bounded modeled direct entries; never enumerate a native path or
+    /// allocate a second namespace image merely to resolve a native spelling.
+    #[cfg(target_vendor = "apple")]
+    pub(super) fn directory_entries(
+        &self,
+        directory: InodeId,
+    ) -> io::Result<impl Iterator<Item = (&OsStr, InodeId)> + '_> {
+        Ok(self
+            .current_directory(directory)?
+            .iter()
+            .map(|(name, inode)| (name.as_os_str(), *inode)))
+    }
+
     pub fn create_file(&mut self, path: &Path) -> io::Result<InodeId> {
         let (parent, name) = self.parent(path)?;
         self.create_file_in_directory(parent, name)
@@ -821,7 +834,7 @@ fn child_name(path: &Path) -> io::Result<&OsStr> {
         Some(Component::Normal(name))
             if components.next().is_none()
                 && path.as_os_str() == name
-                && name.as_encoded_bytes().len() <= 255 =>
+                && crate::file_io::native_component_within_input_bound(name) =>
         {
             Ok(name)
         }
@@ -835,7 +848,9 @@ fn relative_components(path: &Path) -> io::Result<Vec<OsString>> {
     }
     path.components()
         .map(|component| match component {
-            Component::Normal(name) if name.as_encoded_bytes().len() <= 255 => {
+            Component::Normal(name)
+                if crate::file_io::native_component_within_input_bound(name) =>
+            {
                 Ok(name.to_os_string())
             }
             _ => Err(invalid("power-loss paths must be normalized and relative")),
@@ -1135,6 +1150,14 @@ mod tests {
         assert!(engine.pending_operations().is_empty());
     }
 
+    fn oversized_native_component() -> String {
+        #[cfg(target_vendor = "apple")]
+        let bytes = libc::PATH_MAX as usize;
+        #[cfg(not(target_vendor = "apple"))]
+        let bytes = 256;
+        "x".repeat(bytes)
+    }
+
     #[test]
     fn relative_children_reject_traversal_and_non_directory_or_directory_targets() {
         let mut fixture = ReplacedDirectory::new(true);
@@ -1169,7 +1192,7 @@ mod tests {
             );
         }
         assert!(engine
-            .create_file_at(fixture.captured, Path::new(&"x".repeat(256)))
+            .create_file_at(fixture.captured, Path::new(&oversized_native_component()))
             .is_err());
         assert!(engine
             .child_inode(fixture.original_file, Path::new("payload"))
@@ -1237,7 +1260,9 @@ mod tests {
         assert!(engine.write(inode, u64::MAX, &[]).is_err());
         assert_eq!(engine.current_bytes(inode).unwrap(), b"durable");
         assert_eq!(engine.persist_all_plan(), after_rename);
-        assert!(engine.create_file(Path::new(&"x".repeat(256))).is_err());
+        assert!(engine
+            .create_file(Path::new(&oversized_native_component()))
+            .is_err());
     }
 
     #[test]

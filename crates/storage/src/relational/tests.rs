@@ -2765,6 +2765,127 @@ fn wal_round_trip_replays_only_complete_epoch_sequence() {
 }
 
 #[test]
+fn wal_recovery_ignores_foreground_work_limits_and_preserves_view_maintenance() {
+    let source = RelationalStore::default();
+    source
+        .commit(create_content_tables(), |_, _| Ok(()))
+        .unwrap();
+    let checkpoint = source.encode_checkpoint().unwrap();
+    let insert = RelationalTransaction {
+        writes: vec![RelationalWrite::Insert {
+            table: "content_documents".into(),
+            rows: vec![document_row("doc-1"), document_row("doc-2")],
+            mode: RelationalInsertMode::Error,
+        }],
+    };
+    let mut insert_record = Vec::new();
+    source
+        .commit_with_wal(insert.clone(), |_, record| {
+            insert_record = record.to_vec();
+            Ok(())
+        })
+        .unwrap();
+    let view = MaterializedViewDefinition {
+        source: "content_documents".into(),
+        columns: vec![MaterializedViewColumn {
+            name: "n".into(),
+            expression: MaterializedViewExpression::Count(None),
+        }],
+        group_by: Vec::new(),
+        filter: None,
+    }
+    .table_schema(
+        "counts".into(),
+        source
+            .snapshot()
+            .unwrap()
+            .value()
+            .table_schema("content_documents")
+            .unwrap(),
+    )
+    .unwrap();
+    let mut view_record = Vec::new();
+    source
+        .commit_with_wal(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::CreateTable(view)],
+            },
+            |_, record| {
+                view_record = record.to_vec();
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    let replay = RelationalStore::from_checkpoint(
+        &checkpoint,
+        RelationalDecodeLimits::checkpoint(),
+        RelationalMutationLimits {
+            max_rows: NonZeroUsize::new(1).unwrap(),
+            max_payload_bytes: NonZeroUsize::new(1).unwrap(),
+        },
+        RelationalOverflowConfig::default(),
+    )
+    .unwrap();
+    replay
+        .replay_wal_record(&insert_record, RelationalDecodeLimits::wal())
+        .unwrap();
+    let snapshot = replay
+        .replay_wal_record(&view_record, RelationalDecodeLimits::wal())
+        .unwrap();
+    assert_eq!(snapshot.value().row_count("content_documents"), 2);
+    assert_eq!(
+        snapshot.value().rows("counts").next().unwrap().1.values()[0],
+        RelationalValue::BigInt(2)
+    );
+    assert_eq!(snapshot.epoch(), 3);
+    assert!(matches!(
+        replay.commit_with_wal(insert, |_, _| panic!(
+            "refused foreground work must not reach WAL"
+        )),
+        Err(SnapshotCommitError::Stage(RelationalError::Admission(_)))
+    ));
+    assert_eq!(replay.snapshot().unwrap().epoch(), 3);
+}
+
+#[test]
+fn default_decode_limits_cover_mutation_rows_and_recoverable_wal_shapes() {
+    let mutation = RelationalMutationLimits::default();
+    let wal = RelationalDecodeLimits::wal();
+    let checkpoint = RelationalDecodeLimits::checkpoint();
+    assert!(
+        wal.max_rows >= 1_000_000,
+        "foreground policy changes must not narrow the established WAL row allowance"
+    );
+    assert!(
+        wal.max_rows >= mutation.max_rows.get(),
+        "default row writes must be replayable"
+    );
+    assert!(
+        checkpoint.max_rows >= wal.max_rows,
+        "a WAL batch must fit checkpoint row decoding"
+    );
+    assert!(
+        checkpoint.max_values >= wal.max_values,
+        "WAL values must remain decodable after checkpoint"
+    );
+    assert!(
+        checkpoint.max_value_bytes >= wal.max_value_bytes,
+        "checkpoint must preserve WAL value sizes"
+    );
+    assert!(
+        checkpoint.max_tables >= wal.max_tables,
+        "checkpoint must preserve WAL schema shapes"
+    );
+    assert!(
+        checkpoint.max_record_bytes >= wal.max_record_bytes,
+        "checkpoint framing must accommodate a WAL batch"
+    );
+    // Logical cumulative payload, encoded record bytes and individual values
+    // are independent bounds; they intentionally have no equality assertion.
+}
+
+#[test]
 fn torn_or_modified_wal_record_is_rejected_before_replay() {
     let record = encode_relational_wal_batch(1, &create_content_tables()).expect("encoded WAL");
     let torn = &record[..record.len() - 1];
@@ -2783,8 +2904,42 @@ fn torn_or_modified_wal_record_is_rejected_before_replay() {
 }
 
 #[test]
+fn wal_row_admission_matches_decoder_bound_before_encoding() {
+    let transaction = RelationalTransaction {
+        writes: vec![RelationalWrite::Insert {
+            table: "content_documents".into(),
+            rows: vec![document_row("doc-1"), document_row("doc-2")],
+            mode: RelationalInsertMode::Error,
+        }],
+    };
+    let mut limits = RelationalDecodeLimits {
+        max_rows: 1,
+        ..RelationalDecodeLimits::wal()
+    };
+    let encode = |limits| {
+        super::codec::encode_relational_wal_batch_inner(1, &transaction, None, None, limits)
+    };
+    assert!(
+        matches!(encode(limits), Err(RelationalError::Admission(message)) if message.contains("rows"))
+    );
+    limits.max_rows = 2;
+    let record = encode(limits).unwrap();
+    assert_eq!(
+        decode_relational_wal_batch(&record, limits)
+            .unwrap()
+            .transaction,
+        transaction
+    );
+    limits.max_rows = 1;
+    assert!(decode_relational_wal_batch(&record, limits).is_err());
+}
+
+#[test]
 fn wal_encoder_rejects_replay_access_above_decoder_limit() {
-    let limits = RelationalDecodeLimits::wal();
+    let limits = RelationalDecodeLimits {
+        max_rows: 1,
+        ..RelationalDecodeLimits::wal()
+    };
     let entries = (0..=limits.max_rows)
         .map(|ordinal| RelationalReplayAccess {
             table: "documents".to_string(),
@@ -2797,10 +2952,12 @@ fn wal_encoder_rejects_replay_access_above_decoder_limit() {
         entries,
         _memory: Default::default(),
     };
-    let error = encode_relational_wal_batch_with_replay_access(
+    let error = super::codec::encode_relational_wal_batch_inner(
         1,
         &RelationalTransaction::default(),
         Some(&replay_access),
+        None,
+        limits,
     )
     .expect_err("encoder must not emit access sets rejected by its decoder");
     assert!(matches!(

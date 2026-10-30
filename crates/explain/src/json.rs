@@ -45,6 +45,50 @@ pub struct ExplainJsonInput<'a> {
     pub statement_kind: &'static str,
 }
 
+/// Declaration order for the existing structured Cypher diagnostic row.
+#[doc(hidden)]
+pub fn explain_output_columns(analyze: bool) -> impl Iterator<Item = &'static str> + Clone {
+    const BASE: &[&str] = &[
+        "mode",
+        "statement_kind",
+        "plan",
+        "selected_plan",
+        "selected_plan_fingerprint",
+        "query_digest",
+        "selected_plan_cost",
+        "selected_plan_cost_breakdown",
+        "selected_plan_properties",
+        "operator_cardinalities",
+        "optimizer_stages",
+        "semantic_checks",
+        "fast_path",
+        "optimizer_budget",
+        "chosen_indexes",
+        "plan_cache_lookup",
+        "plan_cache_bypass_reason",
+        "work_request",
+        "resource_class",
+    ];
+    const ANALYZE: &[&str] = &[
+        "row_count",
+        "scan_pruning_report_count",
+        "scan_pruning_reports",
+        "vector_execution_report_count",
+        "vector_execution_reports",
+        "graph_expansion_report_count",
+        "graph_expansion_reports",
+        "text_seed_execution_reports",
+        "grouped_evidence_reports",
+        "blocking_operator_memory_reports",
+        "pipeline_memory_report",
+        "row_limit_enforced_before_output",
+        "operator_row_cap_enabled",
+    ];
+    BASE.iter()
+        .chain(if analyze { ANALYZE } else { &[] })
+        .copied()
+}
+
 /// Builds the structured row returned for `EXPLAIN`.
 #[doc(hidden)]
 pub fn explain_output_row(input: &ExplainJsonInput<'_>) -> Row {

@@ -29,7 +29,7 @@ pub(super) fn for_returns(returns: &mut PlannedReturns, scope: &Scope) -> Result
         PlannedReturns::Projections(items) => projections(items, scope, &mut needed)?,
         PlannedReturns::Aggregations { group_keys, items } => {
             projections(group_keys, scope, &mut needed)?;
-            aggregations(items, scope, &mut needed);
+            aggregations(items, scope, &mut needed)?;
         }
         PlannedReturns::AggregateProjection {
             group_keys,
@@ -37,7 +37,7 @@ pub(super) fn for_returns(returns: &mut PlannedReturns, scope: &Scope) -> Result
             projections: output,
         } => {
             projections(group_keys, scope, &mut needed)?;
-            aggregations(items, scope, &mut needed);
+            aggregations(items, scope, &mut needed)?;
             projections(output, scope, &mut needed)?;
         }
     }
@@ -55,8 +55,15 @@ fn projections(
     Ok(())
 }
 
-fn aggregations(items: &mut [Aggregation], scope: &Scope, needed: &mut BTreeSet<String>) {
+fn aggregations(
+    items: &mut [Aggregation],
+    scope: &Scope,
+    needed: &mut BTreeSet<String>,
+) -> Result<()> {
     for item in items {
+        if let AggregateTarget::Expression(expression) = &mut item.target {
+            projection(expression, scope, needed)?;
+        }
         if let AggregateTarget::ColumnProperty { column, property } = &item.target
             && metadata_property(scope, column, property)
         {
@@ -71,6 +78,7 @@ fn aggregations(items: &mut [Aggregation], scope: &Scope, needed: &mut BTreeSet<
             needed.insert(variable.clone());
         }
     }
+    Ok(())
 }
 
 fn metadata_property(scope: &Scope, variable: &str, property: &str) -> bool {

@@ -1115,6 +1115,7 @@ mod tests {
         let mut database_config =
             super::super::fixture::database_config(&seed, RelationalIndexMode::Authoritative);
         database_config.read_only = true;
+        database_config.recovery_mode = hawdb::RecoveryMode::Strict;
         let corpus = nowledge_content_store_sql_corpus().unwrap();
         let mut database = Database::open_with_durability_and_config(
             &path,

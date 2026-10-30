@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Shared eligible-domain collection and canonical hydration for explicit
 //! vector modes. Upstream limits remain inside the eligible input boundary.
@@ -223,12 +223,12 @@ pub(super) fn stream(
         };
         let (node, allocation) = node.into_parts();
         let binding = Binding {
-            nodes: BTreeMap::from([(scan.variable.clone(), node)]),
+            nodes: BTreeMap::from([(scan.variable.clone(), node)]).into(),
             values: BTreeMap::from([(
                 scan.distance_column.clone(),
                 Value::Float(candidate.distance),
             )]),
-            relationships: BTreeMap::new(),
+            relationships: BTreeMap::new().into(),
         };
         if let Some(predicate) = &scan.node_visibility_predicate
             && !evaluate_predicate_observed(

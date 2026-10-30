@@ -296,6 +296,7 @@ fn embedded_checkpoint_admits_foreground_while_actual_owner_holds_io() {
         &copied.0,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )

@@ -124,7 +124,8 @@ fn rows(count: usize, seed: usize) -> Vec<Binding> {
                         labels: BTreeSet::from([LabelId(3)]),
                         properties: BTreeMap::new(),
                     },
-                )]),
+                )])
+                .into(),
                 relationships: BTreeMap::from([(
                     "r".into(),
                     RelRecord {
@@ -134,7 +135,8 @@ fn rows(count: usize, seed: usize) -> Vec<Binding> {
                         rel_type: RelTypeId(4),
                         properties: BTreeMap::new(),
                     },
-                )]),
+                )])
+                .into(),
             }
         })
         .collect()

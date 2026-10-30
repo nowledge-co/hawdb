@@ -1549,7 +1549,14 @@ fn legacy_text_wal_is_rejected_by_the_single_v1_reader() {
     )
     .unwrap();
 
-    let strict = Database::open(&path).unwrap();
+    let strict = Database::open_with_config(
+        &path,
+        DatabaseConfig {
+            recovery_mode: RecoveryMode::Strict,
+            ..DatabaseConfig::default()
+        },
+    )
+    .unwrap();
     let error = strict.commit_epoch().unwrap_err();
     assert!(
         error
@@ -1570,39 +1577,29 @@ fn legacy_text_wal_is_rejected_by_the_single_v1_reader() {
 }
 
 #[test]
-fn stale_generation_wal_fragment_reads_as_clean_end_of_log() {
+fn stale_generation_wal_fragment_requires_an_unsynchronized_fence() {
     let path = unique_test_dir("stale_generation_wal_tail");
     {
         let mut db = Database::open(&path).unwrap();
         db.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")
             .unwrap();
     }
-    // A well-formed fragment carrying a stale WAL generation past the
-    // logical tail must read as clean end of log (recyclable-log
-    // discipline), not as a torn tail and not as corruption.
-    crate::store::append_stale_generation_wal_fragment(&active_wal_path(&path)).unwrap();
-    {
-        let mut db = Database::open(&path).unwrap();
-        let output = db
-            .query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.title AS title")
-            .unwrap();
-        assert_eq!(
-            output.rows[0].get("title"),
-            Some(&Value::String("Graph foundations".to_string()))
-        );
-        let recovery = db.storage_recovery_report().unwrap();
-        assert!(recovery.replayed_wal_entries >= 1);
-        assert!(!recovery.torn_tail_ignored);
-        assert!(!recovery.torn_tail_repaired);
-        assert_eq!(recovery.discarded_wal_tail_bytes, 0);
-        assert!(recovery.torn_tail_reason.is_none());
-    }
-    // The stale fragment is not doctor-repairable damage either.
+    // No relaxed interval was admitted. A fully present stale fragment has
+    // no proof that its bytes lie beyond a durability barrier.
+    let wal = active_wal_path(&path);
+    crate::store::append_stale_generation_wal_fragment(&wal).unwrap();
+    let original = std::fs::read(&wal).unwrap();
+    let db = Database::open(&path).unwrap();
+    assert!(db
+        .commit_epoch()
+        .unwrap_err()
+        .to_string()
+        .contains("stale WAL"));
+    drop(db);
+    assert_eq!(std::fs::read(&wal).unwrap(), original);
     let error =
         DatabaseDoctor::plan_wal_tail_repair(&path, WalDoctorOptions::default()).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("no repairable incomplete final record"));
+    assert!(error.to_string().contains("rejected corruption"));
     std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -1628,7 +1625,7 @@ fn persists_nodes_across_reopen_with_wal_replay() {
 }
 
 #[test]
-fn default_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair() {
+fn strict_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair() {
     let path = unique_test_dir("strict_torn_wal");
     {
         let mut db = Database::open(&path).unwrap();
@@ -1642,7 +1639,14 @@ fn default_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair() {
         .write_all(b"torn-entry-without-checksum")
         .unwrap();
 
-    let strict = Database::open(&path).unwrap();
+    let strict = Database::open_with_config(
+        &path,
+        DatabaseConfig {
+            recovery_mode: RecoveryMode::Strict,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let error = strict.commit_epoch().unwrap_err();
     assert!(error
         .to_string()
@@ -1825,7 +1829,7 @@ fn storage_recovery_report_tracks_wal_replay_boundary() {
     .unwrap();
     let report = db.storage_recovery_report().unwrap();
     assert!(report.durable);
-    assert_eq!(report.recovery_mode, RecoveryMode::Strict);
+    assert_eq!(report.recovery_mode, RecoveryMode::AutoRepairTornTail);
     assert_eq!(report.max_wal_replay_entries, Some(8));
     assert_eq!(report.checkpoint_epoch, Some(checkpoint_generation));
     assert_eq!(report.checkpoint_commit_epoch, Some(2));
@@ -2276,6 +2280,7 @@ fn read_only_open_does_not_create_missing_database_path() {
         &path,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )
@@ -2298,6 +2303,7 @@ fn durable_database_data_admission_is_exclusive_until_owner_drops() {
         &path,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )
@@ -2349,6 +2355,7 @@ fn read_only_open_loads_existing_database_without_allowing_writes() {
             &path,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 ..DatabaseConfig::default()
             },
         )

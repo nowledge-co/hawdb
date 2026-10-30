@@ -17,11 +17,11 @@ use super::lexical_projection::{
     LexicalProjectionConfig, LexicalProjectionReader, DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE,
 };
 use super::{
-    checksum_bytes, cosine_similarity, decode_embedding, decode_metadata,
-    decode_search_snapshot_text_bounded, decode_string, encode_embedding, encode_metadata,
-    encode_search_snapshot_text, encode_string, lexical_analyzer_digest, lexical_documents_digest,
-    matched_query_spans_bounded, matched_query_terms, rrf_child_score, search_empty_reasons,
-    top_ranked_candidates, top_ranked_ids, weighted_rrf_score, CompressedVectorSearchMode,
+    checksum_bytes, decode_embedding, decode_metadata, decode_search_snapshot_text_bounded,
+    decode_string, encode_embedding, encode_metadata, encode_search_snapshot_text, encode_string,
+    lexical_analyzer_digest, lexical_documents_digest, matched_query_spans_bounded,
+    matched_query_terms, rrf_child_score, search_empty_reasons, top_ranked_candidates,
+    top_ranked_ids, weighted_rrf_score, CompressedVectorSearchMode, CosineQuery,
     SearchAccessControlContext, SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument,
     SearchEmbeddingManifest, SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit,
     SearchIndex, SearchMode, SearchPageWindow, SearchPredicatePushdownReport,
@@ -2916,6 +2916,8 @@ impl SearchOutOfCoreReader {
                 .candidate_scan_filtered_document_count,
             candidate_scan_scanned_block_count: vector_scan.candidate_scan_scanned_block_count,
             candidate_scan_skipped_block_count: vector_scan.candidate_scan_skipped_block_count,
+            candidate_scan_adaptive_exact_scan_count: vector_scan
+                .candidate_scan_adaptive_exact_scan_count,
             candidate_scan_payload_bytes_read: vector_scan.candidate_scan_payload_bytes_read,
             candidate_scan_admitted_working_bytes: vector_scan
                 .candidate_scan_admitted_working_bytes,
@@ -2985,6 +2987,7 @@ impl SearchOutOfCoreReader {
             candidate_scan_filtered_document_count: 0,
             candidate_scan_scanned_block_count: 0,
             candidate_scan_skipped_block_count: 0,
+            candidate_scan_adaptive_exact_scan_count: 0,
             candidate_scan_payload_bytes_read: 0,
             candidate_scan_admitted_working_bytes: 0,
             posting_bytes_read: lexical_bytes_read,
@@ -3129,6 +3132,18 @@ impl SearchOutOfCoreReader {
             )));
         }
         let mut hydrated = hydration::query::Loaded::new(self, candidates, metrics, context.query)?;
+        let query_scorer = if context.mode != SearchMode::Text && !candidates.is_empty() {
+            context
+                .query_embedding
+                .map(|query| {
+                    CosineQuery::with_work(query, || {
+                        context.query.map_or(Ok(()), |query| query.checkpoint())
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let mut hits = context.output_memory.vec(candidates.len())?;
         let mut matched_span_count = 0usize;
         let mut matched_span_bytes = 0u64;
@@ -3146,7 +3161,7 @@ impl SearchOutOfCoreReader {
                     .filter(|(query, embedding)| {
                         !embedding.is_empty() && query.len() == embedding.len()
                     })
-                    .and_then(|(query, embedding)| cosine_similarity(query, embedding))
+                    .and_then(|(_, embedding)| query_scorer.as_ref()?.score(embedding))
                     .filter(|score| *score > 0.0)
                     .unwrap_or(0.0)
             } else {
@@ -5093,8 +5108,22 @@ fn validate_unselected_embedding(input: &str) -> Result<(usize, bool)> {
     }
     let mut dimension = 0usize;
     let mut finite = true;
-    for raw in input.split(',') {
-        if !is_common_finite_decimal(raw) {
+    let mut remaining = input;
+    loop {
+        // Locate the delimiter while validating canonical finite decimals. Do
+        // not scan every common coordinate twice through split + digit checks.
+        let (raw, rest, common) = match common_finite_decimal_end(remaining.as_bytes()) {
+            Some(end) => (
+                &remaining[..end],
+                (end < remaining.len()).then(|| &remaining[end + 1..]),
+                true,
+            ),
+            None => match remaining.split_once(',') {
+                Some((raw, rest)) => (raw, Some(rest), false),
+                None => (remaining, None, false),
+            },
+        };
+        if !common {
             let value = raw
                 .parse::<f32>()
                 .map_err(|_| HawDBError::Storage(format!("invalid embedding value: {raw}")))?;
@@ -5102,10 +5131,40 @@ fn validate_unselected_embedding(input: &str) -> Result<(usize, bool)> {
             finite &= value.is_finite();
         }
         dimension += 1;
+        match rest {
+            Some(rest) => remaining = rest,
+            None => return Ok((dimension, finite)),
+        }
     }
-    Ok((dimension, finite))
 }
 
+/// Ends only at a comma or EOF after an ASCII decimal known to be finite.
+/// Other forms use the original f32 parser for just that coordinate.
+fn common_finite_decimal_end(value: &[u8]) -> Option<usize> {
+    let mut end = usize::from(value.first() == Some(&b'-'));
+    let integer = *value.get(end)?;
+    if integer != b'0' && integer != b'1' {
+        return None;
+    }
+    end += 1;
+    if integer == b'0' && value.get(end) == Some(&b'.') {
+        end += 1;
+        let fraction = end;
+        while value.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+        if end == fraction {
+            return None;
+        }
+    }
+    match value.get(end) {
+        None | Some(b',') => Some(end),
+        _ => None,
+    }
+}
+
+// The manual selected-materialization prototype retains its original guard.
+#[cfg(test)]
 fn is_common_finite_decimal(value: &str) -> bool {
     // These normalized decimal forms are finite without conversion. All other
     // representations retain the same parser, including exponent and overflow cases.

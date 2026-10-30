@@ -371,6 +371,28 @@ impl ProjectFileDescriptors {
         }
     }
 
+    /// Admit a related component under the host's explicit namespace boundary.
+    /// Existing containing domains retain their capacity and must agree on the
+    /// canonical anchor; standalone components retain the finite default limit.
+    #[doc(hidden)]
+    pub fn acquire_component_with_namespace_anchor(
+        root: &Path,
+        create: bool,
+        anchor: &Path,
+    ) -> Result<Self, HawDBError> {
+        let anchor = Some(validate_namespace_anchor(root, anchor)?);
+        match Self::containing(root)? {
+            Some(project) => {
+                require_namespace_anchor(&project.state, Some(&anchor))?;
+                if create {
+                    ensure_project_namespace(&project.state, project.root())?;
+                }
+                Ok(project)
+            }
+            None => Self::acquire_root(root, DEFAULT_MAX_OPEN_FILES, create, None, Some(&anchor)),
+        }
+    }
+
     /// Retain the descriptor domain of an already captured native directory.
     /// Registered readers must not resolve a saved path again after acquiring
     /// the original directory, since that label may now name another root.
@@ -946,6 +968,10 @@ impl FileOpenContext {
 
     pub(crate) fn project_root(&self) -> &Path {
         &self.state.root
+    }
+
+    pub(crate) fn namespace_anchor(&self) -> Option<&Path> {
+        self.state.namespace_anchor.as_deref()
     }
 
     pub(crate) fn metadata(&self, path: &Path) -> io::Result<std::fs::Metadata> {

@@ -326,16 +326,22 @@ fn check_recovery(
                 }
                 _ => return,
             };
-            recorder
-                .observe(ObservationPoint {
-                    event,
-                    relative_path,
-                    boundary,
-                    skip_matches: 0,
-                    include_descendants,
-                    keep_last: false,
-                })
-                .unwrap();
+            let point = ObservationPoint {
+                event,
+                relative_path,
+                boundary,
+                skip_matches: 0,
+                include_descendants,
+                keep_last: false,
+            };
+            if matches!(cut, Cut::SelectorWrite | Cut::SelectorRename(_)) {
+                // Source synchronization may publish a WAL fence first.
+                recorder
+                    .observe_file_name_prefix(point, "consumer-selector-")
+                    .unwrap();
+            } else {
+                recorder.observe(point).unwrap();
+            }
             observed.set(true);
         },
         || {

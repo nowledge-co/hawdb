@@ -12,13 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::ast::{CypherQuery, Explain, SetSystemVariable, Statement};
+#[cfg(test)]
+use super::ast::{CypherQuery, Explain};
+use super::ast::{SetSystemVariable, Statement};
 use hawdb_core::time::Instant;
-use hawdb_core::{HawDBError, Result};
+#[cfg(test)]
+use hawdb_core::HawDBError;
+use hawdb_core::Result;
 
 mod case;
 mod cursor;
 mod ddl;
+mod frontend;
 mod mutation;
 mod pipeline;
 pub use pipeline::parse_pipeline;
@@ -38,7 +43,7 @@ pub(crate) const MAX_CYPHER_PARSER_DEPTH: usize = 32;
 /// Input is limited to 16 MiB and recursive parser nesting is limited to 32
 /// entries. Inputs exceeding either limit return a parse error.
 pub fn parse(input: &str) -> Result<Statement> {
-    parse_inner(input)
+    frontend::parse(input)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +60,7 @@ pub struct ParseMeasurement {
 
 pub fn parse_profiled(input: &str) -> ParseMeasurement {
     let started = Instant::now();
-    let result = parse_inner(input);
+    let result = frontend::parse(input);
     ParseMeasurement {
         result,
         metrics: ParseMetrics {
@@ -65,6 +70,7 @@ pub fn parse_profiled(input: &str) -> ParseMeasurement {
     }
 }
 
+#[cfg(test)]
 fn parse_inner(input: &str) -> Result<Statement> {
     if input.len() > MAX_CYPHER_INPUT_BYTES {
         return Err(HawDBError::Parse(format!(
@@ -92,6 +98,7 @@ fn keyword_matches(input: &str, keyword: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 enum StatementDispatch {
     Begin,
     Create,
@@ -108,6 +115,7 @@ enum StatementDispatch {
     Rollback,
 }
 
+#[cfg(test)]
 const TOP_LEVEL_STATEMENTS: &[(&str, StatementDispatch)] = &[
     ("BEGIN", StatementDispatch::Begin),
     ("CREATE", StatementDispatch::Create),
@@ -129,12 +137,17 @@ pub(super) struct Parser<'a> {
     pos: usize,
     anonymous_variable_id: usize,
     recursion_depth: usize,
+    peak_depth: usize,
+    #[cfg(test)]
+    peg: bool,
+    deferred_anonymous: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ParserCheckpoint {
     pos: usize,
     anonymous_variable_id: usize,
+    peak_depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -144,9 +157,14 @@ impl<'a> Parser<'a> {
             pos: 0,
             anonymous_variable_id: 0,
             recursion_depth: 0,
+            peak_depth: 0,
+            #[cfg(test)]
+            peg: false,
+            deferred_anonymous: false,
         }
     }
 
+    #[cfg(test)]
     pub(super) fn parse_statement(&mut self) -> Result<Statement> {
         self.with_recursion(|parser| parser.parse_statement_inner())
     }
@@ -155,6 +173,7 @@ impl<'a> Parser<'a> {
         ParserCheckpoint {
             pos: self.pos,
             anonymous_variable_id: self.anonymous_variable_id,
+            peak_depth: self.peak_depth,
         }
     }
 
@@ -163,8 +182,10 @@ impl<'a> Parser<'a> {
         // Recursion depth is scoped by with_recursion, not parser backtracking.
         self.pos = checkpoint.pos;
         self.anonymous_variable_id = checkpoint.anonymous_variable_id;
+        self.peak_depth = checkpoint.peak_depth.max(self.recursion_depth);
     }
 
+    #[cfg(test)]
     fn parse_statement_inner(&mut self) -> Result<Statement> {
         self.skip_ws();
         let statement_start = self.checkpoint();
@@ -222,6 +243,7 @@ impl<'a> Parser<'a> {
         Ok(query)
     }
 
+    #[cfg(test)]
     fn parse_multi_stage_pipeline_statement(&mut self) -> Option<Statement> {
         let checkpoint = self.checkpoint();
         let pipeline = self.parse_query_pipeline();
@@ -254,11 +276,13 @@ impl<'a> Parser<'a> {
             )));
         }
         self.recursion_depth += 1;
+        self.peak_depth = self.peak_depth.max(self.recursion_depth);
         let result = parse(self);
         self.recursion_depth -= 1;
         result
     }
 
+    #[cfg(test)]
     fn parse_statement_dispatch(&mut self) -> Result<StatementDispatch> {
         self.parse_keyword_choice(
             TOP_LEVEL_STATEMENTS,
@@ -267,7 +291,12 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn next_anonymous_variable(&mut self) -> String {
-        let variable = format!("__anon{}", self.anonymous_variable_id);
+        let prefix = if self.deferred_anonymous {
+            "\0anon"
+        } else {
+            "__anon"
+        };
+        let variable = format!("{prefix}{}", self.anonymous_variable_id);
         self.anonymous_variable_id += 1;
         variable
     }
@@ -279,6 +308,7 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    #[cfg(test)]
     fn parse_cypher_query_statement(&mut self) -> Result<Statement> {
         let mut system_variables = Vec::new();
         while self.consume_keyword("SYSTEM") {
@@ -306,6 +336,7 @@ impl<'a> Parser<'a> {
         })))
     }
 
+    #[cfg(test)]
     fn parse_explain_statement(&mut self) -> Result<Statement> {
         let analyze = self.consume_keyword("ANALYZE");
         let statement = self.parse_statement()?;

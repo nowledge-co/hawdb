@@ -161,6 +161,21 @@ impl PowerLossModel {
         })
     }
 
+    // Local fault collaborator for the real post-native observer error path.
+    // No global registration, I/O callback or production API is introduced.
+    #[cfg(test)]
+    pub(crate) fn poison_observation_for_test(&self) {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _observation = self
+                .core
+                .observation
+                .lock()
+                .expect("unpoisoned test observer");
+            panic!("injected post-native observer poison");
+        }));
+        assert!(result.is_err());
+    }
+
     pub fn capture(&self) -> io::Result<PowerLossSnapshot> {
         let engine = self.core.lock()?;
         self.core.root_anchor.require_path(&self.core.root)?;

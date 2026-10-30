@@ -149,6 +149,7 @@ sh_test(
     srcs = ["scripts/check-storage-tla.test.sh"],
     data = [
         "scripts/check-storage-tla.sh",
+        "//docs/tla:storage_model_inventory",
         "//docs/tla/tests:fake-java.sh",
     ],
 )
@@ -485,6 +486,7 @@ sh_test(
         ".github/workflows/ci.yml",
         ".github/workflows/native-bindings.yml",
         "src/api/tests/power_loss/consumer_vector_incremental/faults/recovery.rs",
+        "src/api/tests/power_loss/consumer_vector_incremental/faults.rs",
         "src/api/tests/power_loss/automatic_checkpoint.rs",
     ],
 )
@@ -712,6 +714,7 @@ test_suite(
         ":hawdb_wasm_playground_bridge_tests",
         ":hawdb_unit_fast_tests",
         ":root_unit_partition_script_test",
+        ":storage_tla_evidence_script_test",
         ":power_loss_partition_script_test",
         ":mvcc_joined_read_shard_script_test",
         ":hawdb_unit_row_page_compaction_tests",

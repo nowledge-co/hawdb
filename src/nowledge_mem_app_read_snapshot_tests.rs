@@ -1402,6 +1402,7 @@ fn assert_read_only_snapshot_context(case: SnapshotContextCase) {
         let wal = std::fs::read(&wal_path).unwrap();
         let read_only_config = DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..config
         };
         let database = Database::open_with_config(&root.0, read_only_config.clone()).unwrap();

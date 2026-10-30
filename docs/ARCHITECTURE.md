@@ -106,6 +106,22 @@ and `search_candidate_shadow_evidence` preserve their existing public paths;
 query execution, CLI file reads, and overall activation/readiness assembly
 remain in the root. Private model methods are not promoted to new host APIs.
 
+Library/operations readiness report models, reduction and JSON serialization
+belong to `hawdb-readiness::nowledge_mem_reports`. The `hawdb::nowledge_mem`
+and crate-root paths re-export the owner types without conversion. The facade
+retains live database/search sampling, runtime admission and activation control.
+Internal snapshot constructors are hidden from the public API documentation.
+
+`hawdb-plan-cache` owns parameter-template retention and its typed entry/byte
+budget configuration, conservative admission preparation, and schema identity.
+The facade owns locking, database configuration adaptation, storage-dependent
+capability proofs and statistics sampling. Lookup returns a shared template;
+validation and admission preparation run outside the host lock. A fingerprint
+only selects a candidate: full shape and exact guards still decide reuse.
+`api/config.rs` owns database/session defaults and configuration conversions;
+`api/mod.rs` preserves their existing public re-exports and runtime composition.
+No additional crate or dependency edge is introduced by these boundaries.
+
 Overall replacement-evidence reduction belongs to
 `hawdb-readiness::replacement_summary`. It recomputes readiness from supplied
 evidence without a database or search-engine dependency; the facade retains

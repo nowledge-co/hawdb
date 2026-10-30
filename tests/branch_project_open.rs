@@ -78,20 +78,35 @@ fn values(database: &mut Database) -> Vec<BTreeMap<String, Value>> {
 }
 
 #[test]
-fn namespace_durability_anchor_round_trips_the_embedded_graph_and_sql_store() {
+fn namespace_durability_anchor_round_trips_the_embedded_graph_sql_and_search_stores() {
     let project = Project::new();
     let anchor = std::env::temp_dir();
     let path = project.0.join("new/graph");
-    let options = hawdb::NowledgeMemOpenOptions::graph_only(
+    let search = project.0.join("new/search");
+    let options = hawdb::NowledgeMemOpenOptions::with_search_projection(
         &path,
+        &search,
         hawdb::NowledgeMemGraphMode::WritableCutover,
     )
     .with_database_config(DatabaseConfig {
         namespace_durability_anchor: Some(anchor),
         ..Default::default()
     });
-    let (handle, _) =
+    let (handle, report) =
         hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options(options.clone()).unwrap();
+    assert!(report.graph_opened && report.search_projection_opened);
+    let search_conflict =
+        hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_with_namespace_anchor(
+            &search,
+            hawdb_storage::file_descriptors::DEFAULT_MAX_OPEN_FILES,
+            false,
+            false,
+            None,
+        )
+        .unwrap_err();
+    assert!(search_conflict
+        .to_string()
+        .contains("namespace durability anchor conflicts"));
     handle
         .with_transaction(|transaction| {
             transaction.query("CREATE (:Memory {id: 'anchored'})")?;
@@ -107,7 +122,9 @@ fn namespace_durability_anchor_round_trips_the_embedded_graph_and_sql_store() {
         .to_string()
         .contains("namespace durability anchor conflicts"));
     drop(handle);
-    let (reopened, _) = hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+    let (reopened, report) =
+        hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+    assert!(report.graph_opened && report.search_projection_opened);
     reopened
         .with_read_transaction(64 * 1024, |transaction| {
             assert_eq!(
@@ -125,6 +142,24 @@ fn namespace_durability_anchor_round_trips_the_embedded_graph_and_sql_store() {
             Ok(())
         })
         .unwrap();
+}
+
+#[test]
+fn namespace_durability_anchor_does_not_create_an_absent_incremental_projection() {
+    let project = Project::new();
+    let search = project.0.join("missing-search");
+    let options = hawdb::NowledgeMemOpenOptions::with_search_projection(
+        project.0.join("graph"),
+        &search,
+        hawdb::NowledgeMemGraphMode::WritableCutover,
+    )
+    .with_database_config(DatabaseConfig {
+        namespace_durability_anchor: Some(std::env::temp_dir()),
+        ..Default::default()
+    })
+    .with_incremental_search_maintenance(Default::default());
+    assert!(hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options(options).is_err());
+    assert!(!search.exists());
 }
 
 #[cfg(unix)]
@@ -719,6 +754,7 @@ fn read_only_admission_and_use_preserve_unpublished_checkpoint_evidence() {
         &project.0,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: hawdb::RecoveryMode::Strict,
             ..Default::default()
         },
     )
@@ -1898,6 +1934,7 @@ fn readonly_pending_open_does_not_recreate_missing_directories_or_repair_receipt
         &project.0,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: hawdb::RecoveryMode::Strict,
             ..Default::default()
         },
     )

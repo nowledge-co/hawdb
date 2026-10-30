@@ -156,6 +156,7 @@ fn manual(config: DatabaseConfig, concurrent: bool) {
         &copied.0,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: hawdb::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )
@@ -252,6 +253,7 @@ fn embedded_state_after_reopen(root: &Fixture) -> (u64, Option<u64>, usize) {
         &root.0,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: hawdb::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )

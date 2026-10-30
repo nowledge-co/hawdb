@@ -189,27 +189,12 @@ fn unsupported_bounded_match_is_independent_of_input_and_relationship_type(
                     );
                     assert!(
                         matches!(result, Err(HawDBError::Execution(ref message))
-                            if message.contains("bounded MATCH expansion requires an outgoing typed pattern without relationship bindings")),
+                            if message.contains("bounded MATCH expansion requires a typed pattern without relationship bindings")),
                         "graph={graph}, query={query}: {result:?}"
                     );
                 }
             });
         }
-    }
-}
-
-#[test]
-fn bounded_match_direction_rejection_is_independent_of_relationship_type() {
-    for unsupported in [
-        RelationshipDirection::Incoming,
-        RelationshipDirection::Undirected,
-    ] {
-        unsupported_bounded_match_is_independent_of_input_and_relationship_type(|step| {
-            let GraphMatchStep::Expand { direction, .. } = step else {
-                panic!("expected expansion");
-            };
-            *direction = unsupported;
-        });
     }
 }
 

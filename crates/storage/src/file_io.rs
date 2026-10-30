@@ -28,11 +28,13 @@ pub use std::fs::{FileType, Metadata, Permissions, TryLockError};
 
 mod source_directory;
 #[cfg(any(test, feature = "test-support"))]
+pub(crate) use source_directory::native_component_within_input_bound;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use source_directory::PowerLossRoot;
 #[doc(hidden)]
 pub use source_directory::{
-    CapturedControlCandidate, CapturedDirectoryCandidate, PendingControlPublication,
-    SourceDirectory, SourceDirectoryIdentity, SourceDirectoryLockMode,
+    CapturedControlCandidate, CapturedDirectoryCandidate, CapturedDirectoryComponentCandidate,
+    PendingControlPublication, SourceDirectory, SourceDirectoryIdentity, SourceDirectoryLockMode,
 };
 
 pub(crate) mod captured_immutable;

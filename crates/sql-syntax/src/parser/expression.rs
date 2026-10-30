@@ -70,6 +70,63 @@ impl<'a> ExpressionParser<'a> {
     ) -> Result<ExpressionSyntax, SyntaxError> {
         let mut left = self.parse_prefix()?;
         loop {
+            if self.at_keyword("FILTER")
+                && matches!(left.kind, ExpressionKindSyntax::Function { .. })
+            {
+                self.advance();
+                let open = self.expect_kind(TokenKind::LeftParen, "(")?;
+                self.enter_nesting(open.span)?;
+                let result = (|| {
+                    self.expect_keyword("WHERE")?;
+                    let predicate = self.parse_expression(0)?;
+                    let end = self.expect_kind(TokenKind::RightParen, ")")?.span.end;
+                    Ok((predicate, end))
+                })();
+                self.nesting -= 1;
+                let (predicate, end) = result?;
+                left = ExpressionSyntax {
+                    span: Span::new(left.span.start, end),
+                    kind: ExpressionKindSyntax::Filtered {
+                        function: Box::new(left),
+                        predicate: Box::new(predicate),
+                    },
+                };
+                continue;
+            }
+            if self.at_keyword("LIKE")
+                || self.at_keyword("ILIKE")
+                || (self.at_keyword("NOT")
+                    && (self.peek_keyword(1, "LIKE") || self.peek_keyword(1, "ILIKE")))
+            {
+                if 30 < minimum_binding_power {
+                    break;
+                }
+                let negated = self.consume_keyword("NOT");
+                let case_insensitive = self.consume_keyword("ILIKE");
+                if !case_insensitive {
+                    self.expect_keyword("LIKE")?;
+                }
+                let pattern = self.parse_expression(31)?;
+                let escape = if self.consume_keyword("ESCAPE") {
+                    Some(Box::new(self.parse_expression(31)?))
+                } else {
+                    None
+                };
+                let end = escape
+                    .as_ref()
+                    .map_or(pattern.span.end, |escape| escape.span.end);
+                left = ExpressionSyntax {
+                    span: Span::new(left.span.start, end),
+                    kind: ExpressionKindSyntax::Like {
+                        expression: Box::new(left),
+                        pattern: Box::new(pattern),
+                        escape,
+                        negated,
+                        case_insensitive,
+                    },
+                };
+                continue;
+            }
             if self.at_keyword("COLLATE") {
                 const POSTFIX_BINDING_POWER: u8 = 70;
                 if POSTFIX_BINDING_POWER < minimum_binding_power {
@@ -337,6 +394,9 @@ impl<'a> ExpressionParser<'a> {
         self.enter_nesting(Span::new(start, self.previous_end()))?;
         let result = (|| {
             let distinct = self.consume_keyword("DISTINCT");
+            if !distinct {
+                self.consume_keyword("ALL");
+            }
             let mut arguments = Vec::new();
             if self.current().kind != TokenKind::RightParen {
                 loop {

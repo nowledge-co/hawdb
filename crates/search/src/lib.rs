@@ -100,6 +100,7 @@ pub mod projection_evidence;
 #[doc(hidden)]
 pub mod projection_evidence_cli;
 mod query_control;
+mod resident_bm25;
 #[cfg(feature = "vector-search")]
 mod resident_diskann;
 mod resident_text_seed;
@@ -697,6 +698,7 @@ pub struct SearchRetrieverReport {
     pub candidate_scan_filtered_document_count: usize,
     pub candidate_scan_scanned_block_count: usize,
     pub candidate_scan_skipped_block_count: usize,
+    pub candidate_scan_adaptive_exact_scan_count: usize,
     pub candidate_scan_payload_bytes_read: u64,
     pub candidate_scan_admitted_working_bytes: usize,
     pub posting_bytes_read: u64,
@@ -3854,12 +3856,13 @@ impl SearchIndex {
         if lexical_snapshot.is_some() {
             lexical_snapshot_test_gate::pause_after_capture();
         }
-        let text_corpus =
+        let mut text_corpus =
             if text_available && mode != SearchMode::Vector && lexical_snapshot.is_none() {
-                Some(TextCorpusStats::from_documents(
+                Some(resident_bm25::Scorer::from_documents(
+                    &query_terms,
                     filtered_documents.iter().copied(),
                     &self.analyzer_lexicon,
-                ))
+                )?)
             } else {
                 None
             };
@@ -3925,18 +3928,9 @@ impl SearchIndex {
         } else {
             (BTreeMap::new(), 0, 0, 0, 0)
         };
-        if lexical_snapshot.is_none() {
+        if let Some(corpus) = &mut text_corpus {
             for document in &filtered_documents {
-                let text_score = if text_available && mode != SearchMode::Vector {
-                    text_corpus
-                        .as_ref()
-                        .map(|corpus| {
-                            bm25_score(&query_terms, document, corpus, &self.analyzer_lexicon)
-                        })
-                        .unwrap_or(0.0)
-                } else {
-                    0.0
-                };
+                let text_score = corpus.score(document, &self.analyzer_lexicon)?;
                 if text_score > 0.0 {
                     text_scores.insert(document.id.clone(), text_score);
                 }
@@ -4053,6 +4047,11 @@ impl SearchIndex {
                     .and_then(|execution| execution.report.candidate_scan_metrics.as_ref())
                     .map(|metrics| metrics.skipped_block_count)
                     .unwrap_or(0),
+                candidate_scan_adaptive_exact_scan_count: vector_execution
+                    .as_ref()
+                    .and_then(|execution| execution.report.candidate_scan_metrics.as_ref())
+                    .map(|metrics| metrics.adaptive_exact_scan_count)
+                    .unwrap_or(0),
                 candidate_scan_payload_bytes_read: vector_execution
                     .as_ref()
                     .and_then(|execution| execution.report.candidate_scan_metrics.as_ref())
@@ -4144,6 +4143,7 @@ impl SearchIndex {
                 candidate_scan_filtered_document_count: 0,
                 candidate_scan_scanned_block_count: 0,
                 candidate_scan_skipped_block_count: 0,
+                candidate_scan_adaptive_exact_scan_count: 0,
                 candidate_scan_payload_bytes_read: 0,
                 candidate_scan_admitted_working_bytes: 0,
                 posting_bytes_read: lexical_bytes_read,
@@ -7160,6 +7160,7 @@ fn normalized_projection_kind(value: &str) -> Option<&'static str> {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 struct TextCorpusStats {
     document_count: usize,
@@ -7167,6 +7168,7 @@ struct TextCorpusStats {
     document_frequency: BTreeMap<String, usize>,
 }
 
+#[cfg(test)]
 impl TextCorpusStats {
     fn from_documents<'a>(
         documents: impl Iterator<Item = &'a SearchDocument>,
@@ -7195,6 +7197,7 @@ impl TextCorpusStats {
     }
 }
 
+#[cfg(test)]
 fn bm25_score(
     query_terms: &BTreeSet<String>,
     document: &SearchDocument,
@@ -7385,6 +7388,7 @@ fn document_tokens(
     tokens
 }
 
+#[cfg(test)]
 fn token_frequencies(tokens: impl Iterator<Item = String>) -> BTreeMap<String, usize> {
     let mut frequencies = BTreeMap::new();
     for token in tokens {
@@ -7646,10 +7650,70 @@ fn is_ascii_consonant(ch: char) -> bool {
     ch.is_ascii_alphabetic() && !matches!(ch, 'a' | 'e' | 'i' | 'o' | 'u')
 }
 
+#[cfg(test)]
+mod raw_vector_math_tests;
+
 // Final facade vector relevance is positive-only in [0, 1]. Signed RaBitQ
 // estimates are candidate-ranking hints, not final scores; nonpositive exact
 // similarities cannot contribute a vector hit (text may still match).
+/// One prepared query shared by a scoring phase. Keep legacy nonfinite behavior
+/// at this private boundary; public projection distances validate finite inputs.
+#[derive(Clone, Copy)]
+struct CosineQuery<'a> {
+    query: &'a [f32],
+    prepared: Option<hawdb_core::vector::PreparedVectorQuery<'a>>,
+}
+
+impl<'a> CosineQuery<'a> {
+    #[cfg(test)]
+    fn new(query: &'a [f32]) -> Self {
+        Self {
+            query,
+            prepared: (query.len() >= 16)
+                .then(|| hawdb_core::vector::PreparedVectorQuery::new(query).ok())
+                .flatten(),
+        }
+    }
+
+    fn with_work(query: &'a [f32], mut checkpoint: impl FnMut() -> Result<()>) -> Result<Self> {
+        if query.len() < 16 {
+            return Ok(Self {
+                query,
+                prepared: None,
+            });
+        }
+        let mut failure = None;
+        let prepared = hawdb_core::vector::PreparedVectorQuery::with_work(query, || {
+            checkpoint().map_err(|error| {
+                failure = Some(error);
+                hawdb_core::HawDBError::ProjectionBusy
+            })
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        Ok(Self {
+            query,
+            prepared: prepared.ok(),
+        })
+    }
+
+    fn score(&self, embedding: &[f32]) -> Option<f64> {
+        if let Some(prepared) = &self.prepared
+            && let Ok(score) = prepared.positive_cosine_similarity(embedding)
+        {
+            return score;
+        }
+        scalar_cosine_similarity(self.query, embedding)
+    }
+}
+
+#[cfg(test)]
 fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
+    CosineQuery::new(left).score(right)
+}
+
+fn scalar_cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
     if left.len() != right.len() || left.is_empty() {
         return None;
     }

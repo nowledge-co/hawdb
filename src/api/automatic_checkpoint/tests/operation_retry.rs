@@ -134,6 +134,7 @@ fn persistent_preparation_io_failure_stops_and_manual_checkpoint_rearms_the_owne
         &fixture.0,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )

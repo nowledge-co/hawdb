@@ -45,6 +45,7 @@ pub struct NowledgeMemStorageRecoveryReport {
     pub torn_tail_repaired: bool,
     pub discarded_wal_tail_bytes: u64,
     pub torn_tail_reason: Option<String>,
+    pub wal_repair: Option<hawdb_storage::doctor::WalTailRepairReport>,
     pub recovered_commit_epoch: u64,
     pub durable_recovery_observed: bool,
     pub checkpoint_boundary_present: bool,
@@ -113,6 +114,7 @@ impl NowledgeMemStorageRecoveryReport {
             torn_tail_repaired: report.torn_tail_repaired,
             discarded_wal_tail_bytes: report.discarded_wal_tail_bytes,
             torn_tail_reason: report.torn_tail_reason.clone(),
+            wal_repair: report.wal_repair.clone(),
             recovered_commit_epoch: report.recovered_commit_epoch,
             durable_recovery_observed,
             checkpoint_boundary_present,
@@ -155,6 +157,7 @@ impl NowledgeMemStorageRecoveryReport {
             "torn_tail_repaired": self.torn_tail_repaired,
             "discarded_wal_tail_bytes": self.discarded_wal_tail_bytes,
             "torn_tail_reason": self.torn_tail_reason,
+            "wal_repair": self.wal_repair,
             "recovered_commit_epoch": self.recovered_commit_epoch,
             "readiness": {
                 "durable_recovery_observed": self.durable_recovery_observed,

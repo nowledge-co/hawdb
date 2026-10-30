@@ -386,7 +386,26 @@ struct MaintenanceBudget<'a> {
     hydration: RelationalHydrationBudget,
 }
 
-impl MaintenanceBudget<'_> {
+impl<'a> MaintenanceBudget<'a> {
+    fn new(
+        limits: RelationalMutationLimits,
+        allocations: Option<&'a crate::background::CheckpointDecodeContext>,
+    ) -> Self {
+        Self {
+            allocations,
+            limits,
+            rows: 0,
+            bytes: 0,
+            hydration: RelationalHydrationBudget {
+                max_rows: limits.max_rows.get(),
+                max_compressed_bytes: limits.max_payload_bytes.get(),
+                max_decompressed_bytes: limits.max_payload_bytes.get(),
+                max_memory_bytes: limits.max_payload_bytes.get(),
+                ..RelationalHydrationBudget::default()
+            },
+        }
+    }
+
     fn ensure_rows(&self, additional: usize) -> Result<(), RelationalError> {
         if additional > self.limits.max_rows.get().saturating_sub(self.rows) {
             return Err(RelationalError::Admission(
@@ -474,19 +493,7 @@ pub(super) fn maintain(
             .count(),
         allocations,
     )?;
-    let mut budget = MaintenanceBudget {
-        allocations,
-        limits,
-        rows: 0,
-        bytes: 0,
-        hydration: RelationalHydrationBudget {
-            max_rows: limits.max_rows.get(),
-            max_compressed_bytes: limits.max_payload_bytes.get(),
-            max_decompressed_bytes: limits.max_payload_bytes.get(),
-            max_memory_bytes: limits.max_payload_bytes.get(),
-            ..RelationalHydrationBudget::default()
-        },
-    };
+    let mut budget = MaintenanceBudget::new(limits, allocations);
     for schema in schemas {
         let definition = schema.materialized_view.as_ref().expect("view schema");
         validate_definition(next, &schema)?;
@@ -926,4 +933,67 @@ fn apply_group_delta(
     values.push(bigint(rows)?);
     values.extend(counts);
     Ok(Some(RelationalRow::new(values)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn budget() -> MaintenanceBudget<'static> {
+        MaintenanceBudget::new(RelationalMutationLimits::default(), None)
+    }
+
+    #[test]
+    fn hydration_limits_follow_explicit_maintenance_work_limits() {
+        let limits = RelationalMutationLimits {
+            max_rows: std::num::NonZeroUsize::new(3).unwrap(),
+            max_payload_bytes: std::num::NonZeroUsize::new(4096).unwrap(),
+        };
+        let budget = MaintenanceBudget::new(limits, None);
+        assert_eq!(budget.hydration.max_rows, limits.max_rows.get());
+        assert_eq!(
+            budget.hydration.max_compressed_bytes,
+            limits.max_payload_bytes.get()
+        );
+        assert_eq!(
+            budget.hydration.max_decompressed_bytes,
+            limits.max_payload_bytes.get()
+        );
+        assert_eq!(
+            budget.hydration.max_memory_bytes,
+            limits.max_payload_bytes.get()
+        );
+    }
+
+    #[test]
+    fn default_row_budget_admits_projection_backfill_and_still_bounds_total_work() {
+        let mut budget = budget();
+        // Model source reads and projection outputs without allocating a large
+        // table merely to cross the former 100,000-unit admission threshold.
+        budget.ensure_rows(120_000).unwrap();
+        budget.charge(60_000, 0).unwrap();
+        budget.charge(60_000, 0).unwrap();
+        budget.ensure_rows(130_000).unwrap();
+        budget.charge(130_000, 0).unwrap();
+        assert!(matches!(
+            budget.ensure_rows(1),
+            Err(RelationalError::Admission(_))
+        ));
+        assert!(matches!(
+            budget.charge(1, 0),
+            Err(RelationalError::Admission(_))
+        ));
+    }
+
+    #[test]
+    fn default_payload_budget_admits_cumulative_copies_and_still_bounds_total_work() {
+        let mut budget = budget();
+        budget.charge(0, 24 * 1024 * 1024).unwrap();
+        budget.charge(0, 24 * 1024 * 1024).unwrap();
+        budget.charge(0, 16 * 1024 * 1024).unwrap();
+        assert!(matches!(
+            budget.charge(0, 1),
+            Err(RelationalError::Admission(_))
+        ));
+    }
 }

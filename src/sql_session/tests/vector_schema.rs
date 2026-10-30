@@ -103,6 +103,7 @@ fn nullable_vectors_survive_wal_and_checkpoint_reopen() {
                 &root,
                 crate::DatabaseConfig {
                     read_only: true,
+                    recovery_mode: crate::RecoveryMode::Strict,
                     ..Default::default()
                 },
             )
@@ -295,6 +296,7 @@ fn shared_vector_values_distances_and_traversal_survive_reopen() {
                 &root,
                 crate::DatabaseConfig {
                     read_only: true,
+                    recovery_mode: crate::RecoveryMode::Strict,
                     ..Default::default()
                 },
             )

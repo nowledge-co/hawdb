@@ -2993,6 +2993,167 @@ fn parses_count_return_items() {
     );
 }
 
+fn aggregate_argument(
+    function: crate::AggregateFunctionName,
+    distinct: bool,
+    argument: ReturnExpressionKind,
+) -> AstNode<ReturnExpressionKind> {
+    AstNode::synthetic(ReturnExpressionKind::Aggregate(
+        AggregateExpression::Expression {
+            function,
+            distinct,
+            argument: Box::new(AstNode::synthetic(argument)),
+        },
+    ))
+}
+
+fn scalar_property(variable: &str, property: &str) -> ReturnExpressionKind {
+    ReturnExpressionKind::Value(AstNode::synthetic(ScalarExpressionKind::Property {
+        variable: variable.to_string(),
+        property: property.to_string(),
+    }))
+}
+
+fn scalar_int(value: i64) -> AstNode<ReturnExpressionKind> {
+    AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+        ScalarExpressionKind::Value(AstNode::synthetic(ValueExpressionKind::Literal(
+            Value::Int(value),
+        ))),
+    )))
+}
+
+#[test]
+fn parses_sum_and_expression_aggregate_arguments() {
+    use crate::{AggregateFunctionName as F, ArithmeticOp};
+    let statement = parse(
+        "MATCH (n:Item) RETURN sum(n.x) AS s, sum(CASE WHEN n.x > 1 THEN 1 ELSE 0 END) AS c, count(DISTINCT n.x % 2) AS parity, avg(n.x * 2), min(n.x + 1), max(-n.x), collect(DISTINCT n.x % 3), SUM(DISTINCT n.x), count(1), min(DISTINCT n.x)",
+    )
+    .unwrap();
+    let Statement::Pipeline(query) = statement else {
+        panic!("expected match return");
+    };
+    let items = &pipeline_return(&query).items;
+    let arithmetic = |op, right| ReturnExpressionKind::Arithmetic {
+        first: Box::new(AstNode::synthetic(scalar_property("n", "x"))),
+        rest: vec![(op, scalar_int(right))],
+    };
+    assert_eq!(
+        items[0].expression,
+        aggregate_argument(F::Sum, false, scalar_property("n", "x"))
+    );
+    let ReturnExpressionKind::Aggregate(AggregateExpression::Expression {
+        function: F::Sum,
+        distinct: false,
+        argument,
+    }) = &items[1].expression.kind
+    else {
+        panic!("expected sum over CASE");
+    };
+    assert!(matches!(
+        &argument.kind,
+        ReturnExpressionKind::Value(AstNode {
+            kind: ScalarExpressionKind::Case { .. },
+            ..
+        })
+    ));
+    assert_eq!(
+        items[2].expression,
+        aggregate_argument(F::Count, true, arithmetic(ArithmeticOp::Remainder, 2))
+    );
+    assert_eq!(
+        items[3].expression,
+        aggregate_argument(F::Avg, false, arithmetic(ArithmeticOp::Multiply, 2))
+    );
+    assert_eq!(
+        items[4].expression,
+        aggregate_argument(F::Min, false, arithmetic(ArithmeticOp::Add, 1))
+    );
+    assert_eq!(
+        items[5].expression,
+        aggregate_argument(
+            F::Max,
+            false,
+            ReturnExpressionKind::Arithmetic {
+                first: Box::new(scalar_int(-1)),
+                rest: vec![(
+                    ArithmeticOp::Multiply,
+                    AstNode::synthetic(scalar_property("n", "x"))
+                )],
+            }
+        )
+    );
+    assert_eq!(
+        items[6].expression,
+        aggregate_argument(F::Collect, true, arithmetic(ArithmeticOp::Remainder, 3))
+    );
+    assert_eq!(
+        items[7].expression,
+        aggregate_argument(F::Sum, true, scalar_property("n", "x"))
+    );
+    assert_eq!(
+        items[8].expression,
+        aggregate_argument(F::Count, false, scalar_int(1).kind)
+    );
+    assert_eq!(
+        items[9].expression,
+        aggregate_argument(F::Min, true, scalar_property("n", "x"))
+    );
+    assert_eq!(items[3].alias, None);
+}
+
+#[test]
+fn fixed_aggregate_shapes_keep_their_dedicated_ast() {
+    let statement = parse(
+        "MATCH (n:Item) RETURN count(n.x), count(DISTINCT n), collect(DISTINCT n.x), min(n.x), max(n), avg(n.x), count(*)",
+    )
+    .unwrap();
+    let Statement::Pipeline(query) = statement else {
+        panic!("expected match return");
+    };
+    let kinds = pipeline_return(&query)
+        .items
+        .iter()
+        .map(|item| match &item.expression.kind {
+            ReturnExpressionKind::Aggregate(aggregate) => aggregate.clone(),
+            other => panic!("expected aggregate, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            AggregateExpression::CountProperty {
+                variable: "n".into(),
+                property: "x".into(),
+                distinct: false,
+            },
+            AggregateExpression::CountVariable {
+                variable: "n".into(),
+                distinct: true,
+            },
+            AggregateExpression::CollectProperty {
+                variable: "n".into(),
+                property: "x".into(),
+                distinct: true,
+            },
+            AggregateExpression::MinProperty {
+                variable: "n".into(),
+                property: "x".into(),
+            },
+            AggregateExpression::MaxVariable {
+                variable: "n".into(),
+            },
+            AggregateExpression::AvgProperty {
+                variable: "n".into(),
+                property: "x".into(),
+            },
+            AggregateExpression::CountAll,
+        ]
+    );
+    let error = parse("MATCH (n:Item) RETURN count(DISTINCT *)").unwrap_err();
+    assert!(error.to_string().contains("COUNT(DISTINCT *)"), "{error}");
+    assert!(parse("MATCH (n:Item) RETURN sum()").is_err());
+}
+
 #[test]
 fn parses_order_by_count_return_item() {
     let statement = parse(

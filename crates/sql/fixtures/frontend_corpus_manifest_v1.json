@@ -1111,24 +1111,6 @@
       "reason": "Owned EXPLAIN routing is not implemented; production EXPLAIN retains its existing read-only contract."
     },
     {
-      "id": "owned-aggregate-filter",
-      "families": [
-        "select"
-      ],
-      "direction": "upstream_accepts",
-      "issue": "https://github.com/nowledge-co/hawdb/issues/159",
-      "reason": "The owned SELECT expression grammar does not yet accept aggregate FILTER in the qualified production shape."
-    },
-    {
-      "id": "owned-like",
-      "families": [
-        "select"
-      ],
-      "direction": "upstream_accepts",
-      "issue": "https://github.com/nowledge-co/hawdb/issues/159",
-      "reason": "The owned SELECT expression grammar does not yet accept the production LIKE/ILIKE/ESCAPE shape."
-    },
-    {
       "id": "owned-empty-projection",
       "families": [
         "select"
@@ -1163,7 +1145,7 @@
       ],
       "direction": "owned_accepts",
       "issue": "https://github.com/nowledge-co/hawdb/issues/156",
-      "reason": "The production column-anchored predicate/projection AST cannot represent these expressions or scalar predicates. Preserve the expression-refactor gate."
+      "reason": "The syntax AST admits broader expressions than executable relational SQL, including FILTER on unsupported functions and LIKE ANY; relational semantic lowering remains authoritative after PEG promotion (#1328)."
     },
     {
       "id": "production-column-alias-list",

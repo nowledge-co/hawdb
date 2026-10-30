@@ -103,6 +103,7 @@ fn application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_sc
                 &path,
                 DatabaseConfig {
                     read_only: true,
+                    recovery_mode: crate::RecoveryMode::Strict,
                     ..DatabaseConfig::default()
                 },
             )
@@ -245,6 +246,7 @@ fn read_only_out_of_core_open_validates_system_schema_through_canonical_rows() {
         &path,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             storage_residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
             relational_index_mode: hawdb_storage::config::RelationalIndexMode::Authoritative,
             ..DatabaseConfig::default()
@@ -559,6 +561,7 @@ fn read_only_database_rejects_pending_application_system_schema_upgrade() {
         &path,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )

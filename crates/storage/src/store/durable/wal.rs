@@ -104,6 +104,83 @@ fn wal_admission_refusal(
 }
 
 impl DurableStore {
+    /// The cache is scoped to the exact generation path, including rotations
+    /// and replay of another branch's private WAL.
+    fn load_wal_recovery_fence(
+        &mut self,
+    ) -> Result<Option<super::super::wal_fence::WalRecoveryFence>> {
+        if let Some((path, fence)) = &self.wal_recovery_fence
+            && path == &self.wal_path
+        {
+            return Ok(*fence);
+        }
+        // Fence discovery belongs to the same internal WAL admission scope.
+        // A cold lookup must not borrow an exhausted foreground FD budget.
+        let _operation = self.file_descriptor_context().internal_operation()?;
+        let fence = super::super::wal_fence::WalRecoveryFence::load(
+            &self.wal_path,
+            self.wal_generation,
+            self.wal_replay_start_lsn,
+        )?;
+        self.wal_recovery_fence = Some((self.wal_path.clone(), fence));
+        Ok(fence)
+    }
+
+    fn publish_wal_recovery_fence(&mut self, bytes: u64, next_lsn: u64) -> Result<()> {
+        let fence = super::super::wal_fence::WalRecoveryFence {
+            generation: self.wal_generation,
+            start_lsn: self.wal_replay_start_lsn,
+            protected_bytes: bytes.max(WAL_BINARY_FILE_HEADER_BYTES as u64),
+            next_lsn,
+        };
+        if let Some(previous) = super::super::wal_fence::WalRecoveryFence::load(
+            &self.wal_path,
+            self.wal_generation,
+            self.wal_replay_start_lsn,
+        )? {
+            previous.validate_retained(fence.protected_bytes, fence.next_lsn)?;
+        }
+        let captured;
+        let directory = match &self.wal_append_owner {
+            Some(owner) => owner.captured_directory(),
+            None => {
+                captured = crate::file_io::SourceDirectory::capture_for_path(
+                    self.wal_path
+                        .parent()
+                        .ok_or_else(|| HawDBError::StorageIntegrity("WAL has no parent".into()))?,
+                )?;
+                &captured
+            }
+        };
+        fence.publish(&self.wal_path, directory)?;
+        self.wal_recovery_fence = Some((self.wal_path.clone(), Some(fence)));
+        Ok(())
+    }
+
+    fn begin_relaxed_wal_interval(&mut self) -> Result<()> {
+        if self.durability == DurabilityPolicy::SyncOnCheckpoint
+            && self.load_wal_recovery_fence()?.is_none()
+        {
+            // Never retroactively classify an existing prefix as disposable.
+            self.publish_wal_recovery_fence(self.wal_bytes, self.next_lsn)?;
+        }
+        Ok(())
+    }
+
+    fn protect_wal_sync(&mut self, bytes: u64, next_lsn: u64) -> Result<()> {
+        if let Some(fence) = self.load_wal_recovery_fence()? {
+            if bytes < fence.protected_bytes || next_lsn < fence.next_lsn {
+                return Err(HawDBError::StorageIntegrity(
+                    "WAL synchronization fence moved backwards".into(),
+                ));
+            }
+            // A visible fence can be an interrupted rename whose directory
+            // barrier was never acknowledged. Re-publish even equal bounds.
+            self.publish_wal_recovery_fence(bytes, next_lsn)?;
+        }
+        Ok(())
+    }
+
     pub(in crate::store) fn begin_wal_sync_group(&mut self) -> Result<bool> {
         if self.durability != DurabilityPolicy::SyncOnEveryWrite {
             return Ok(false);
@@ -135,6 +212,7 @@ impl DurableStore {
         }
         wal_group_sync_failpoint()?;
         let started = std::time::Instant::now();
+        self.protect_wal_sync(self.wal_bytes, self.next_lsn)?;
         let file = self.wal_append_file.as_ref().ok_or_else(|| {
             HawDBError::Storage(
                 "WAL sync group has entries without an open append handle".to_string(),
@@ -253,6 +331,7 @@ impl DurableStore {
         // Native ownership checks and namespace barriers may open temporary
         // handles. Fund those before any record bytes can reach the WAL.
         let _descriptors = self.reserve_wal_operation_resources()?;
+        self.begin_relaxed_wal_interval()?;
         process_crash_failpoint("before_wal_append");
         let sync_deferred = self.wal_sync_group.is_some();
         let result = match self.take_wal_append() {
@@ -275,7 +354,12 @@ impl DurableStore {
                         if std::env::var(crate::store::PROCESS_CRASH_POINT_ENV).as_deref()
                             == Ok("during_wal_append")
                         {
-                            writer.write_all(&record_bytes[..record_bytes.len() / 2])?;
+                            let cut = std::env::var("HAWDB_TEST_WAL_APPEND_CUT")
+                                .ok()
+                                .and_then(|value| value.parse::<usize>().ok())
+                                .unwrap_or(record_bytes.len() / 2)
+                                .min(record_bytes.len());
+                            writer.write_all(&record_bytes[..cut])?;
                             process_crash_failpoint("during_wal_append");
                         }
                         #[cfg(any(test, feature = "test-support"))]
@@ -420,6 +504,7 @@ impl DurableStore {
                 "projection source WAL length changed outside the committed boundary".into(),
             ));
         }
+        self.protect_wal_sync(self.wal_bytes, self.next_lsn)?;
         let synchronization: Result<()> = (|| {
             #[cfg(test)]
             crate::store::read_dependencies::source_sync_failpoint(
@@ -463,6 +548,10 @@ impl DurableStore {
         {
             return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
         }
+        self.protect_wal_sync(
+            self.wal_bytes.max(WAL_BINARY_FILE_HEADER_BYTES as u64),
+            self.next_lsn,
+        )?;
         let empty_header = encode_binary_wal_header(self.wal_generation, self.wal_replay_start_lsn);
         self.wal_bytes = file.rollback_wal_append(self.wal_bytes, &empty_header)?;
         // Keep even a newly created WAL's valid empty header. Removing its saved pathname
@@ -579,14 +668,20 @@ impl DurableStore {
     }
 
     fn reserve_wal_operation_resources(
-        &self,
+        &mut self,
     ) -> Result<Option<crate::file_descriptors::DescriptorReservation>> {
+        let has_fence = self.load_wal_recovery_fence()?.is_some();
         let needed = if self.wal_append_owner.is_some() {
             // Includes Windows directory/identity reopen and rollback checks.
             4
         } else {
             usize::from(self.wal_append_file.is_none())
                 + usize::from(!self.wal_namespace_known_durable)
+                + if self.durability == DurabilityPolicy::SyncOnCheckpoint || has_fence {
+                    3
+                } else {
+                    0
+                }
         };
         (needed != 0)
             .then(|| self.project_files.reserve_admission(needed))
@@ -687,6 +782,7 @@ impl DurableStore {
         let mut fsync_micros = 0;
         if self.durability == DurabilityPolicy::SyncOnEveryWrite {
             let started = std::time::Instant::now();
+            self.protect_wal_sync(file.file().metadata()?.len(), self.next_lsn + 1)?;
             file.file().sync_data()?;
             if created || !self.wal_namespace_known_durable {
                 #[cfg(test)]

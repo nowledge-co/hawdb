@@ -14,7 +14,7 @@
 
 [build-system]
 build-backend = "maturin"
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.15,<2.0"]
 
 [project]
 classifiers = [
@@ -36,7 +36,7 @@ pydantic = ["pydantic>=2,<3"]
 Repository = "https://github.com/nowledge-co/hawdb"
 
 [dependency-groups]
-dev = ["maturin>=1.8"]
+dev = ["maturin>=1.15,<2.0"]
 test = ["pytest>=8.0"]
 
 [tool.maturin]

@@ -937,7 +937,7 @@ impl Database {
                     mutation_limits.max_result_rows = mutation_limits.max_result_rows.min(limit);
                 }
                 (
-                    {
+                    optimized.collect_named_rows({
                         let mut branch_runtime_access = self.runtime.get_mut()?;
                         let branch_runtime = &mut *branch_runtime_access;
                         executor::execute_mutation_with_store_output_limits(
@@ -957,8 +957,7 @@ impl Database {
                             },
                             task_context,
                         )
-                    }?
-                    .into(),
+                    }?)?,
                     None,
                 )
             } else {
@@ -967,6 +966,7 @@ impl Database {
                     parameters,
                     &self.config.execution_memory,
                 )
+                .with_output_columns(optimized.output_columns.as_deref())
                 .with_output_limits(
                     restrictive_query_limit(
                         self.config.read_result_row_limit(),
@@ -1072,6 +1072,7 @@ impl Database {
                     parameters,
                     &self.config.execution_memory,
                 )
+                .with_output_columns(optimized.output_columns.as_deref())
                 .with_output_limits(
                     restrictive_query_limit(
                         self.config.read_result_row_limit(),
@@ -1096,10 +1097,11 @@ impl Database {
                 &profiled.profile,
             );
             drop(profiled.rows);
-            return super::explain::admit_explain_output(row, &self.config, options);
+            return super::explain::admit_explain_output(row, true, &self.config, options);
         }
         super::explain::admit_explain_output(
             explain_output_row(&optimized, work_request, inner_statement_kind),
+            false,
             &self.config,
             options,
         )

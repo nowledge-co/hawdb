@@ -3,7 +3,7 @@
 
 //! Immutable resident graph candidates with an exact changed-record overlay.
 
-use crate::{cosine_similarity, DocumentView, HawDBError, Result, SearchDocument, SearchIndex};
+use crate::{CosineQuery, DocumentView, HawDBError, Result, SearchDocument, SearchIndex};
 use hawdb_core::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, VectorDistance};
 use hawdb_executor::{
     VectorCandidate, VectorCandidateBatch, VectorCandidateScanMetrics, VectorScoreSource,
@@ -419,6 +419,7 @@ impl ResidentDiskAnn {
                 graph_options,
             )
             .map_err(projection_error)?;
+        let query_scorer = CosineQuery::with_work(query, checkpoint)?;
         let mut candidates = Vec::with_capacity(limit);
         let mut candidate_vector_bytes = 0u64;
         for hit in &output.hits {
@@ -435,7 +436,7 @@ impl ResidentDiskAnn {
                 })?;
             candidate_vector_bytes =
                 candidate_vector_bytes.saturating_add((embedding.len() as u64).saturating_mul(4));
-            if let Some(score) = cosine_similarity(query, embedding) {
+            if let Some(score) = query_scorer.score(embedding) {
                 retain_candidate(&mut candidates, limit, id, score);
             }
         }
@@ -476,7 +477,7 @@ impl ResidentDiskAnn {
             overlay_count += 1;
             overlay_vector_bytes =
                 overlay_vector_bytes.saturating_add((embedding.len() as u64).saturating_mul(4));
-            if let Some(score) = cosine_similarity(query, embedding) {
+            if let Some(score) = query_scorer.score(embedding) {
                 if !score.is_finite() {
                     return Err(non_finite_source());
                 }
@@ -490,7 +491,11 @@ impl ResidentDiskAnn {
                 candidates,
             },
             metrics: VectorCandidateScanMetrics {
-                kernel: "scalar".into(),
+                kernel: hawdb_core::vector::distance_kernel_name(
+                    hawdb_core::VectorDistance::Cosine,
+                    query.len(),
+                )
+                .into(),
                 worker_count: 1,
                 segment_count: 1 + usize::from(overlay_count != 0),
                 scanned_segment_count: usize::from(report.visited_nodes != 0)
@@ -499,6 +504,7 @@ impl ResidentDiskAnn {
                 filtered_document_count: report.bridge_nodes,
                 scanned_block_count: report.expanded_nodes,
                 skipped_block_count: 0,
+                adaptive_exact_scan_count: usize::from(report.adaptive_exact_scan),
                 payload_bytes_read: (report.distance_comparisons as u64)
                     .saturating_mul((projection.graph.dimension() as u64).saturating_mul(4))
                     .saturating_add((report.neighbor_reads as u64).saturating_mul(4))

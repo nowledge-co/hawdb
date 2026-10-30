@@ -1,0 +1,138 @@
+{
+  "scope": "provisional synthetic embedded HawDB query qualification; not Mem endpoint proof",
+  "baseline_revision": "b6de4430e935c540ec3644ede593e4c72da27872",
+  "candidate": "uncommitted perf/mem-query-execution; final-head rerun remains required",
+  "repeats_per_cell": 20,
+  "release_rows": 96,
+  "qualification_rows": 96,
+  "instrumented_timings_used_for_speed_claims": false,
+  "host_conditions": "shared development workstation; some cells overlapped compilation, so latency conclusions remain exploratory",
+  "summary_reference_cell": {
+    "space_rows": 8192,
+    "body_bytes": 16384,
+    "background": false
+  },
+  "summary": [
+    {
+      "workload": "ranking",
+      "candidates": 20,
+      "p95_ms": [
+        3.4287,
+        0.4989
+      ],
+      "cpu_us_per_read": [
+        3285.15,
+        479.95
+      ],
+      "allocated_bytes_per_read": [
+        16845445.6,
+        2441776.6
+      ],
+      "allocation_calls_per_read": [
+        74145.3,
+        12225.3
+      ]
+    },
+    {
+      "workload": "ranking",
+      "candidates": 100,
+      "p95_ms": [
+        72.9925,
+        2.5135
+      ],
+      "cpu_us_per_read": [
+        71024.05,
+        2382.3
+      ],
+      "allocated_bytes_per_read": [
+        291593406.6,
+        12005033.6
+      ],
+      "allocation_calls_per_read": [
+        1227987.3,
+        55935.3
+      ]
+    },
+    {
+      "workload": "ranking",
+      "candidates": 512,
+      "p95_ms": [
+        2110.107,
+        15.6471
+      ],
+      "cpu_us_per_read": [
+        2055464.9,
+        15511.9
+      ],
+      "allocated_bytes_per_read": [
+        6043998753.6,
+        63006944.6
+      ],
+      "allocation_calls_per_read": [
+        29006191.3,
+        280929.3
+      ]
+    },
+    {
+      "workload": "expand",
+      "candidates": 20,
+      "p95_ms": [
+        0.8554,
+        1.0858
+      ],
+      "cpu_us_per_read": [
+        583.55,
+        534.7
+      ],
+      "allocated_bytes_per_read": [
+        952767.6,
+        540369.6
+      ],
+      "allocation_calls_per_read": [
+        1715.3,
+        1359.3
+      ]
+    },
+    {
+      "workload": "expand",
+      "candidates": 100,
+      "p95_ms": [
+        0.7796,
+        0.7408
+      ],
+      "cpu_us_per_read": [
+        692.35,
+        638.05
+      ],
+      "allocated_bytes_per_read": [
+        4695650.6,
+        2525012.6
+      ],
+      "allocation_calls_per_read": [
+        4517.3,
+        3601.3
+      ]
+    },
+    {
+      "workload": "expand",
+      "candidates": 512,
+      "p95_ms": [
+        2.1656,
+        1.9038
+      ],
+      "cpu_us_per_read": [
+        1906.95,
+        1678.2
+      ],
+      "allocated_bytes_per_read": [
+        29138457.6,
+        15621467.6
+      ],
+      "allocation_calls_per_read": [
+        18955.3,
+        15156.3
+      ]
+    }
+  ],
+  "harness_sha256": "bdf20c1f1b56dacdbfc6550fc87418bbaff6b58306a8f15739fd40f15c562950"
+}

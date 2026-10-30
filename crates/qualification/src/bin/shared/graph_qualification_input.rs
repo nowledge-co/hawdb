@@ -89,6 +89,7 @@ impl GraphDatabaseInput {
         }
         let mut config = DatabaseConfig {
             read_only: true,
+            recovery_mode: hawdb::RecoveryMode::Strict,
             max_read_result_rows: Some(require_nonzero_usize(
                 "max_read_result_rows",
                 self.max_read_result_rows,

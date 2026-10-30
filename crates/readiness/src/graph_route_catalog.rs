@@ -647,6 +647,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         HawDBError::Storage(_)
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
+        | HawDBError::WalRecoveryIo { .. }
         | HawDBError::ProjectionBusy
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }
@@ -658,6 +659,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
         | HawDBError::TransactionConflict { .. }
+        | HawDBError::TransactionRetryRequired(_)
         | HawDBError::TransactionReadDependencyRefused { .. }
         | HawDBError::BranchCommandUnsupported { .. } => "execution",
         HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",

@@ -193,6 +193,7 @@ fn assert_read_only_refusal(query: &str) {
             &path,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 ..DatabaseConfig::default()
             },
         )

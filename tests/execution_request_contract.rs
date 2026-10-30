@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use hawdb::executor::{
     execute_with_request, execute_with_request_consumer, ExecutionMemoryConfig, ExecutionRequest,
     ExecutionResources, NoExternalReadOperator,
@@ -472,6 +475,7 @@ fn public_analytics_identity_output_uses_query_budget_above_retained_state_cap()
             &path,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: hawdb::RecoveryMode::Strict,
                 storage_residency_mode: residency,
                 execution_memory: ExecutionMemoryConfig {
                     query_memory_bytes: NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
@@ -1384,6 +1388,7 @@ fn read_only_sql_sessions_inherit_limits_without_altering_database_configuration
         &path,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: hawdb::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )

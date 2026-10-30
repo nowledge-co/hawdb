@@ -37,11 +37,11 @@ use hawdb_core::{
 };
 use hawdb_plan_cypher::{
     RelationshipCountFilter, RelationshipCountLeg, ShortestPathProjection,
-    ShortestPathProjectionExpression,
+    ShortestPathProjectionExpression, THREAD_REPAIR_STATS_COLUMNS,
 };
 use hawdb_storage::read_view::{AdmittedNodeRead, AdmittedNodeRecord};
 use hawdb_storage::{
-    adjacency::AdjacencyDirection, mutation::PropertyFilter, NodeId, NodeRecord, RelRecord,
+    adjacency::AdjacencyDirection, mutation::PropertyFilter, NodeId, NodeRecord, RelId, RelRecord,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
@@ -360,8 +360,8 @@ fn shortest_path_binding(
     }
     Ok(Binding {
         values,
-        nodes: BTreeMap::new(),
-        relationships: BTreeMap::new(),
+        nodes: BTreeMap::new().into(),
+        relationships: BTreeMap::new().into(),
     })
 }
 
@@ -540,15 +540,24 @@ fn visit_one_hop_relationships_selected(
 
 const MAX_STREAMING_EXPAND_RECURSION_DEPTH: usize = 256;
 
+/// Receives a trail endpoint, its hop count and the trail's relationships.
+pub(crate) type TrailConsumer<'a> =
+    dyn FnMut(NodeRecord, usize, &[RelId]) -> Result<ScanControl> + 'a;
+
 #[derive(Clone, Copy)]
 pub struct BoundedExpandSpec<'a> {
     pub source: NodeId,
     pub rel_type_id: RelTypeId,
+    pub direction: RelationshipDirection,
     pub target_label_ids: Option<&'a [LabelId]>,
     pub min_hops: usize,
     pub max_hops: usize,
 }
 
+/// Visits the endpoints of every relationship trail of `min_hops..=max_hops`
+/// hops from `spec.source`. A trail never repeats a relationship
+/// (openCypher relationship isomorphism), so cycles and self-loops yield each
+/// distinct trail once.
 pub fn visit_bounded_expand_targets(
     store: &dyn GraphExecutionRead,
     spec: BoundedExpandSpec<'_>,
@@ -556,15 +565,29 @@ pub fn visit_bounded_expand_targets(
     task_context: Option<&RuntimeTaskContext>,
     consumer: &mut dyn FnMut(NodeRecord, usize) -> Result<ScanControl>,
 ) -> Result<ScanControl> {
-    visit_bounded_expand_targets_inner(
+    visit_bounded_expand_inner(
         store,
-        ResolvedBoundedExpandSpec {
-            source: spec.source,
-            rel_type_id: Some(spec.rel_type_id),
-            target_label_ids: spec.target_label_ids,
-            min_hops: spec.min_hops,
-            max_hops: spec.max_hops,
-        },
+        ResolvedBoundedExpandSpec::typed(spec, None),
+        memory,
+        task_context,
+        &mut |node, hop, _| consumer(node, hop),
+    )
+}
+
+/// Like [`visit_bounded_expand_targets`], but also excludes relationships
+/// already bound by the enclosing pattern and reports each trail's
+/// relationships so the caller can keep the whole match isomorphic.
+pub(crate) fn visit_bounded_expand_trails(
+    store: &dyn GraphExecutionRead,
+    spec: BoundedExpandSpec<'_>,
+    excluded: &BTreeSet<RelId>,
+    memory: AdjacencyReadMemory<'_>,
+    task_context: Option<&RuntimeTaskContext>,
+    consumer: &mut TrailConsumer<'_>,
+) -> Result<ScanControl> {
+    visit_bounded_expand_inner(
+        store,
+        ResolvedBoundedExpandSpec::typed(spec, Some(excluded)),
         memory,
         task_context,
         consumer,
@@ -576,9 +599,25 @@ struct ResolvedBoundedExpandSpec<'a> {
     source: NodeId,
     // None means this typed relationship does not exist, never a wildcard.
     rel_type_id: Option<RelTypeId>,
+    direction: RelationshipDirection,
     target_label_ids: Option<&'a [LabelId]>,
     min_hops: usize,
     max_hops: usize,
+    excluded: Option<&'a BTreeSet<RelId>>,
+}
+
+impl<'a> ResolvedBoundedExpandSpec<'a> {
+    fn typed(spec: BoundedExpandSpec<'a>, excluded: Option<&'a BTreeSet<RelId>>) -> Self {
+        Self {
+            source: spec.source,
+            rel_type_id: Some(spec.rel_type_id),
+            direction: spec.direction,
+            target_label_ids: spec.target_label_ids,
+            min_hops: spec.min_hops,
+            max_hops: spec.max_hops,
+            excluded,
+        }
+    }
 }
 
 pub(crate) fn visit_zero_hop_expand_target(
@@ -590,27 +629,29 @@ pub(crate) fn visit_zero_hop_expand_target(
     task_context: Option<&RuntimeTaskContext>,
     consumer: &mut dyn FnMut(NodeRecord, usize) -> Result<ScanControl>,
 ) -> Result<ScanControl> {
-    visit_bounded_expand_targets_inner(
+    visit_bounded_expand_inner(
         store,
         ResolvedBoundedExpandSpec {
             source,
             rel_type_id: None,
+            direction: RelationshipDirection::Outgoing,
             target_label_ids,
             min_hops: 0,
             max_hops,
+            excluded: None,
         },
         memory,
         task_context,
-        consumer,
+        &mut |node, hop, _| consumer(node, hop),
     )
 }
 
-fn visit_bounded_expand_targets_inner(
+fn visit_bounded_expand_inner(
     store: &dyn GraphExecutionRead,
     spec: ResolvedBoundedExpandSpec<'_>,
     memory: AdjacencyReadMemory<'_>,
     task_context: Option<&RuntimeTaskContext>,
-    consumer: &mut dyn FnMut(NodeRecord, usize) -> Result<ScanControl>,
+    consumer: &mut TrailConsumer<'_>,
 ) -> Result<ScanControl> {
     if spec.max_hops > MAX_STREAMING_EXPAND_RECURSION_DEPTH {
         return Err(HawDBError::Execution(format!(
@@ -618,7 +659,8 @@ fn visit_bounded_expand_targets_inner(
             spec.max_hops
         )));
     }
-    let traversal_frame_bytes = std::mem::size_of::<(NodeId, usize)>();
+    // Each depth holds a recursion frame plus one trail relationship id.
+    let traversal_frame_bytes = std::mem::size_of::<(NodeId, usize, RelId)>();
     let traversal_state_bytes = spec
         .max_hops
         .saturating_add(1)
@@ -630,72 +672,128 @@ fn visit_bounded_expand_targets_inner(
         )));
     }
 
-    fn visit_depth(
-        store: &dyn GraphExecutionRead,
-        spec: ResolvedBoundedExpandSpec<'_>,
-        current: NodeId,
-        depth: usize,
-        memory: AdjacencyReadMemory<'_>,
-        task_context: Option<&RuntimeTaskContext>,
-        consumer: &mut dyn FnMut(NodeRecord, usize) -> Result<ScanControl>,
-    ) -> Result<ScanControl> {
-        runtime_checkpoint(task_context)?;
-        if depth >= spec.min_hops {
-            let mut admit_node = |bytes| {
-                memory
-                    .admit_node(bytes, std::mem::size_of::<usize>(), task_context)
-                    .map(Some)
-            };
-            match store.node_with_allocation(
-                current,
-                spec.target_label_ids,
-                &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
-                    &mut admit_node,
-                    task_context,
-                ),
-            )? {
-                AdmittedNodeRead::Node(node) => {
-                    let (node, _allocation) = node.into_parts();
-                    if consumer(node, depth)? == ScanControl::Stop {
-                        return Ok(ScanControl::Stop);
-                    }
-                }
-                AdmittedNodeRead::Missing => {}
-                AdmittedNodeRead::Stopped => return Ok(ScanControl::Stop),
-            }
-        }
-        if depth == spec.max_hops {
-            return Ok(ScanControl::Continue);
-        }
-        let Some(rel_type_id) = spec.rel_type_id else {
-            return Ok(ScanControl::Continue);
-        };
-        let mut visit = |input: hawdb_storage::read_view::AdmittedRelationshipRecord| {
-            let (relationship, _allocation) = input.into_parts();
-            visit_depth(
-                store,
-                spec,
-                relationship.target,
-                depth + 1,
-                memory,
-                task_context,
-                consumer,
-            )
-        };
-        store.visit_ordered_adjacent_relationships_with_allocation(
-            current,
-            Some(rel_type_id),
-            AdjacencyDirection::Outgoing,
-            memory,
-            &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
-                &mut |bytes| memory.admit_node(bytes, 0, task_context).map(Some),
-                task_context,
-            ),
-            &mut visit,
-        )
+    struct Trail<'a, 'b> {
+        store: &'a dyn GraphExecutionRead,
+        spec: ResolvedBoundedExpandSpec<'a>,
+        memory: AdjacencyReadMemory<'a>,
+        task_context: Option<&'a RuntimeTaskContext>,
+        consumer: &'b mut TrailConsumer<'b>,
+        relationships: Vec<RelId>,
     }
 
-    visit_depth(store, spec, spec.source, 0, memory, task_context, consumer)
+    impl Trail<'_, '_> {
+        fn visit_depth(&mut self, current: NodeId) -> Result<ScanControl> {
+            runtime_checkpoint(self.task_context)?;
+            let depth = self.relationships.len();
+            if depth >= self.spec.min_hops {
+                let memory = self.memory;
+                let task_context = self.task_context;
+                let mut admit_node = |bytes| {
+                    memory
+                        .admit_node(bytes, std::mem::size_of::<usize>(), task_context)
+                        .map(Some)
+                };
+                match self.store.node_with_allocation(
+                    current,
+                    self.spec.target_label_ids,
+                    &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                        &mut admit_node,
+                        task_context,
+                    ),
+                )? {
+                    AdmittedNodeRead::Node(node) => {
+                        let (node, _allocation) = node.into_parts();
+                        if (self.consumer)(node, depth, &self.relationships)? == ScanControl::Stop {
+                            return Ok(ScanControl::Stop);
+                        }
+                    }
+                    AdmittedNodeRead::Missing => {}
+                    AdmittedNodeRead::Stopped => return Ok(ScanControl::Stop),
+                }
+            }
+            if depth == self.spec.max_hops {
+                return Ok(ScanControl::Continue);
+            }
+            let Some(rel_type_id) = self.spec.rel_type_id else {
+                return Ok(ScanControl::Continue);
+            };
+            match self.spec.direction {
+                RelationshipDirection::Outgoing => {
+                    self.visit_direction(current, rel_type_id, AdjacencyDirection::Outgoing, false)
+                }
+                RelationshipDirection::Incoming => {
+                    self.visit_direction(current, rel_type_id, AdjacencyDirection::Incoming, false)
+                }
+                RelationshipDirection::Undirected => {
+                    // A self-loop appears in both adjacency directions; like
+                    // one-hop undirected matching, traverse it only once.
+                    if self.visit_direction(
+                        current,
+                        rel_type_id,
+                        AdjacencyDirection::Outgoing,
+                        false,
+                    )? == ScanControl::Stop
+                    {
+                        return Ok(ScanControl::Stop);
+                    }
+                    self.visit_direction(current, rel_type_id, AdjacencyDirection::Incoming, true)
+                }
+            }
+        }
+
+        fn visit_direction(
+            &mut self,
+            current: NodeId,
+            rel_type_id: RelTypeId,
+            direction: AdjacencyDirection,
+            skip_self_loops: bool,
+        ) -> Result<ScanControl> {
+            let store = self.store;
+            let memory = self.memory;
+            let task_context = self.task_context;
+            let mut visit = |input: hawdb_storage::read_view::AdmittedRelationshipRecord| {
+                let (relationship, _allocation) = input.into_parts();
+                if (skip_self_loops && relationship.source == relationship.target)
+                    || self.relationships.contains(&relationship.id)
+                    || self
+                        .spec
+                        .excluded
+                        .is_some_and(|excluded| excluded.contains(&relationship.id))
+                {
+                    return Ok(ScanControl::Continue);
+                }
+                let next = match direction {
+                    AdjacencyDirection::Outgoing => relationship.target,
+                    AdjacencyDirection::Incoming => relationship.source,
+                };
+                self.relationships.push(relationship.id);
+                let control = self.visit_depth(next);
+                self.relationships.pop();
+                control
+            };
+            store.visit_ordered_adjacent_relationships_with_allocation(
+                current,
+                Some(rel_type_id),
+                direction,
+                memory,
+                &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                    &mut |bytes| memory.admit_node(bytes, 0, task_context).map(Some),
+                    task_context,
+                ),
+                &mut visit,
+            )
+        }
+    }
+
+    Trail {
+        store,
+        spec,
+        memory,
+        task_context,
+        consumer,
+        relationships: Vec::with_capacity(spec.max_hops),
+    }
+    .visit_depth(spec.source)
 }
 
 fn relationship_target_for_source_direction(
@@ -1110,24 +1208,21 @@ pub fn thread_repair_stats_rows(
             None => 0,
         };
         let binding = Binding {
-            values: BTreeMap::from([
-                    ("t.id".to_string(), thread.id),
-                    ("t.thread_id".to_string(), thread.thread_id),
-                    (
-                        "CASE WHEN t.space_id IS NULL OR t.space_id = '' THEN 'default' ELSE t.space_id END"
-                            .to_string(),
-                        thread.space_id,
-                    ),
-                    ("COALESCE(t.message_count, 0)".to_string(), thread.message_count),
-                    ("identity_refs".to_string(), Value::Int(identity_refs as i64)),
-                    (
-                        "legacy_messages".to_string(),
-                        Value::Int(legacy_messages as i64),
-                    ),
-                    ("COUNT(m)".to_string(), Value::Int(compacted_memories as i64)),
-                ]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            values: THREAD_REPAIR_STATS_COLUMNS
+                .into_iter()
+                .map(str::to_owned)
+                .zip([
+                    thread.id,
+                    thread.thread_id,
+                    thread.space_id,
+                    thread.message_count,
+                    Value::Int(identity_refs as i64),
+                    Value::Int(legacy_messages as i64),
+                    Value::Int(compacted_memories as i64),
+                ])
+                .collect(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         };
         push_bounded_operator_binding("ThreadRepairStatsExec", &mut rows, binding, &mut tracker)?;
         tracker.release(thread_bytes);

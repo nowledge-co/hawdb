@@ -1208,7 +1208,8 @@ fn select_node_count_fast_path(
             AggregateTarget::Property { .. }
             | AggregateTarget::Ranked { .. }
             | AggregateTarget::Column(_)
-            | AggregateTarget::ColumnProperty { .. } => false,
+            | AggregateTarget::ColumnProperty { .. }
+            | AggregateTarget::Expression(_) => false,
         };
     if !exact_node_count {
         return None;
@@ -1282,7 +1283,8 @@ fn select_relationship_count_fast_path(
             AggregateTarget::Property { .. }
             | AggregateTarget::Ranked { .. }
             | AggregateTarget::Column(_)
-            | AggregateTarget::ColumnProperty { .. } => false,
+            | AggregateTarget::ColumnProperty { .. }
+            | AggregateTarget::Expression(_) => false,
         };
     if !exact_relationship_count {
         return None;
@@ -1493,6 +1495,7 @@ fn collect_aggregate_properties(
         (AggregateFunction::Count, AggregateTarget::Variable(current)) => current == variable,
         (
             AggregateFunction::Count
+            | AggregateFunction::Sum
             | AggregateFunction::Min
             | AggregateFunction::Max
             | AggregateFunction::Avg
@@ -1504,6 +1507,9 @@ fn collect_aggregate_properties(
         ) if current == variable => {
             required.insert(property.clone());
             true
+        }
+        (_, AggregateTarget::Expression(expression)) => {
+            collect_projection_properties(expression, variable, required)
         }
         _ => false,
     }

@@ -215,6 +215,7 @@ fn unsupported_active_wal_preserves_open_readiness_and_doctor_evidence() {
                 &project.0,
                 DatabaseConfig {
                     read_only,
+                    recovery_mode: hawdb_storage::config::RecoveryMode::Strict,
                     ..Default::default()
                 },
             )
@@ -316,6 +317,7 @@ fn unknown_checkpoint_expression_refuses_without_cleanup_or_repair() {
                 &project.0,
                 DatabaseConfig {
                     read_only,
+                    recovery_mode: hawdb_storage::config::RecoveryMode::Strict,
                     ..Default::default()
                 },
             )

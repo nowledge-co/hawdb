@@ -311,8 +311,8 @@ impl VectorSeedScanSpec<'_> {
                 }
                 Binding {
                     values,
-                    nodes: BTreeMap::new(),
-                    relationships: BTreeMap::new(),
+                    nodes: BTreeMap::new().into(),
+                    relationships: BTreeMap::new().into(),
                 }
             }),
             context.memory.blocking_operator_bytes,

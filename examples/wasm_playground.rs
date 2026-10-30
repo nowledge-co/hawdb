@@ -85,6 +85,7 @@ impl QueryBridge {
                     HawDBError::Storage(_) => "storage",
                     HawDBError::ProjectionBusy => "projection_busy",
                     HawDBError::StorageIntegrity(_) => "storage_integrity",
+                    HawDBError::WalRecoveryIo { .. } => "wal_recovery_io",
                     HawDBError::FileDescriptors(_) => "file_descriptors",
                     HawDBError::Execution(_)
                     | HawDBError::TransactionReadDependencyRefused { .. }
@@ -98,7 +99,8 @@ impl QueryBridge {
                     HawDBError::BranchEvidenceBudgetExceeded { .. } => {
                         "branch_evidence_budget_exceeded"
                     }
-                    HawDBError::TransactionConflict { .. } => "transaction_conflict",
+                    HawDBError::TransactionConflict { .. }
+                    | HawDBError::TransactionRetryRequired(_) => "transaction_conflict",
                     HawDBError::AppendSequenceExhausted { .. } => "append_sequence_exhausted",
                     HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
                 };

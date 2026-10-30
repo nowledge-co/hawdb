@@ -539,9 +539,9 @@ fn mutation_scan_predicate_errors_do_not_commit_partial_writes() {
             .set_len(0)
             .unwrap();
         let binding = |node| Binding {
-            nodes: BTreeMap::from([("n".to_string(), node)]),
+            nodes: BTreeMap::from([("n".to_string(), node)]).into(),
             values: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            relationships: BTreeMap::new().into(),
         };
         let records = fixture.records();
         assert!(evaluate_predicate(

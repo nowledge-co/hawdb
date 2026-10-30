@@ -166,6 +166,42 @@ pub(super) fn create_directory(root: &std::fs::File, name: ChildName<'_>) -> io:
     Ok(())
 }
 
+fn component_units(name: DirectoryComponent<'_>) -> ([u16; 255], usize) {
+    use std::os::windows::ffi::OsStrExt;
+    let mut units = [0; 255];
+    let mut length = 0;
+    for unit in name.0.encode_wide() {
+        units[length] = unit;
+        length += 1;
+    }
+    (units, length)
+}
+
+pub(super) fn create_directory_component(
+    root: &std::fs::File,
+    name: DirectoryComponent<'_>,
+) -> io::Result<()> {
+    let (mut units, length) = component_units(name);
+    // Exact native component, held RootDirectory, exclusive FILE_CREATE.
+    // Keep successful creation observable before any fallible metadata query.
+    drop(relative_open_encoded_raw(
+        root,
+        &mut units[..length],
+        1,
+        2,
+        1,
+    )?);
+    Ok(())
+}
+
+pub(super) fn open_directory_component(
+    root: &std::fs::File,
+    name: DirectoryComponent<'_>,
+) -> io::Result<std::fs::File> {
+    let (mut units, length) = component_units(name);
+    relative_open_encoded(root, &mut units[..length], READ_DATA, 1, 1)
+}
+
 pub(super) fn create_control_candidate(
     root: &std::fs::File,
     name: ChildName<'_>,

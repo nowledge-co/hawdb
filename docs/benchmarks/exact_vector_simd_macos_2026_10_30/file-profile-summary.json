@@ -1,0 +1,165 @@
+{
+  "scope": "diagnostic one-second stack samples; not an accepted elapsed-time cohort",
+  "conditions": "Both binaries ran concurrently with the required Bazel compilation. Triggered at the first file/1024-row/1536-dimension/default result. The baseline clip remained in default search; the candidate clip crossed into exact search. Frame frequencies are not a paired CPU-cost comparison and do not establish the regression cause.",
+  "observations": [
+    {
+      "source": "baseline",
+      "main_thread_samples": 773,
+      "collapsed_top_frames_minimum_count": 5,
+      "frames": [
+        {
+          "symbol": "ZSTD_decompressSequences",
+          "image": "hawdb-distance-baseline-query",
+          "samples": 234
+        },
+        {
+          "symbol": "_RNvXs_NtNtCsgtPOCBgevO_4core3str7patternNtB4_12CharSearcherNtB4_8Searcher10next_match",
+          "image": "hawdb-distance-baseline-query",
+          "samples": 175
+        },
+        {
+          "symbol": "_platform_memcmp",
+          "image": "libsystem_platform.dylib",
+          "samples": 106
+        },
+        {
+          "symbol": "_RNvNtCsjSsZ9Xe7QdP_12hawdb_search11out_of_core29validate_unselected_embedding",
+          "image": "hawdb-distance-baseline-query",
+          "samples": 46
+        },
+        {
+          "symbol": "_RNvNtNtNtNtCsgtPOCBgevO_4core3num3imp7dec2flt5parse12parse_number",
+          "image": "hawdb-distance-baseline-query",
+          "samples": 36
+        },
+        {
+          "symbol": "HUF_decompress4X2_usingDTable_internal",
+          "image": "hawdb-distance-baseline-query",
+          "samples": 26
+        },
+        {
+          "symbol": "_RINvYINtNtNtCsgtPOCBgevO_4core5slice4iter6ChunksNtNtCs6cq2hl5WiWN_6crc32c4util5U64LeENtNtNtNtBa_4iter6traits8iterator8Iterator4foldmNCNvNtBO_10hw_aarch6417crc_u64_parallel30EBO_",
+          "image": "hawdb-distance-baseline-query",
+          "samples": 24
+        },
+        {
+          "symbol": "_RNvXs1_NtNtCsgtPOCBgevO_4core3num11float_parsefNtNtNtB9_3str6traits7FromStr8from_str",
+          "image": "hawdb-distance-baseline-query",
+          "samples": 17
+        },
+        {
+          "symbol": "_xzm_free_tc",
+          "image": "libsystem_malloc.dylib",
+          "samples": 15
+        },
+        {
+          "symbol": "_RINvNtNtNtNtCsgtPOCBgevO_4core3num3imp7dec2flt6lemire13compute_floatfEBa_",
+          "image": "hawdb-distance-baseline-query",
+          "samples": 13
+        },
+        {
+          "symbol": "_malloc_zone_realloc",
+          "image": "libsystem_malloc.dylib",
+          "samples": 13
+        },
+        {
+          "symbol": "xzm_malloc_zone_malloc_type_realloc",
+          "image": "libsystem_malloc.dylib",
+          "samples": 11
+        },
+        {
+          "symbol": "DYLD-STUB$$memcmp",
+          "image": "hawdb-distance-baseline-query",
+          "samples": 9
+        },
+        {
+          "symbol": "_RNvXNtNtCsgtPOCBgevO_4core4iter8adaptersINtB2_12GenericShuntINtNtB2_3map3MapINtNtNtB6_3str4iter5SplitcENCNvCsjSsZ9Xe7QdP_12hawdb_search16decode_embedding0EINtNtB6_6result6ResultNtNtB6_7convert10InfallibleNtNtCsePiFB8fLR76_10hawdb_core5error10HawDBErrorEENtNtNtB4_6traits8iterator8Iterator4nextB1H_",
+          "image": "hawdb-distance-baseline-query",
+          "samples": 9
+        },
+        {
+          "symbol": "_platform_memmove",
+          "image": "libsystem_platform.dylib",
+          "samples": 8
+        },
+        {
+          "symbol": "pread",
+          "image": "libsystem_kernel.dylib",
+          "samples": 5
+        }
+      ]
+    },
+    {
+      "source": "candidate",
+      "main_thread_samples": 752,
+      "collapsed_top_frames_minimum_count": 5,
+      "frames": [
+        {
+          "symbol": "ZSTD_decompressSequences",
+          "image": "hawdb-distance-candidate-query",
+          "samples": 195
+        },
+        {
+          "symbol": "_RNvXs_NtNtCsgtPOCBgevO_4core3str7patternNtB4_12CharSearcherNtB4_8Searcher10next_match",
+          "image": "hawdb-distance-candidate-query",
+          "samples": 160
+        },
+        {
+          "symbol": "_RNvNtNtNtNtCsgtPOCBgevO_4core3num3imp7dec2flt5parse12parse_number",
+          "image": "hawdb-distance-candidate-query",
+          "samples": 99
+        },
+        {
+          "symbol": "_RNvXs1_NtNtCsgtPOCBgevO_4core3num11float_parsefNtNtNtB9_3str6traits7FromStr8from_str",
+          "image": "hawdb-distance-candidate-query",
+          "samples": 99
+        },
+        {
+          "symbol": "_platform_memcmp",
+          "image": "libsystem_platform.dylib",
+          "samples": 31
+        },
+        {
+          "symbol": "_RINvNtNtNtNtCsgtPOCBgevO_4core3num3imp7dec2flt6lemire13compute_floatfEBa_",
+          "image": "hawdb-distance-candidate-query",
+          "samples": 25
+        },
+        {
+          "symbol": "_platform_memmove",
+          "image": "libsystem_platform.dylib",
+          "samples": 22
+        },
+        {
+          "symbol": "_RNvMsb_NtCsjSsZ9Xe7QdP_12hawdb_search11out_of_coreNtB5_21SearchOutOfCoreReader19read_vector_segment",
+          "image": "hawdb-distance-candidate-query",
+          "samples": 21
+        },
+        {
+          "symbol": "_RNvXNtNtCsgtPOCBgevO_4core4iter8adaptersINtB2_12GenericShuntINtNtB2_3map3MapINtNtNtB6_3str4iter5SplitcENCNvCsjSsZ9Xe7QdP_12hawdb_search16decode_embedding0EINtNtB6_6result6ResultNtNtB6_7convert10InfallibleNtNtCsePiFB8fLR76_10hawdb_core5error10HawDBErrorEENtNtNtB4_6traits8iterator8Iterator4nextB1H_",
+          "image": "hawdb-distance-candidate-query",
+          "samples": 20
+        },
+        {
+          "symbol": "_RNvNtCsjSsZ9Xe7QdP_12hawdb_search11out_of_core29validate_unselected_embedding",
+          "image": "hawdb-distance-candidate-query",
+          "samples": 15
+        },
+        {
+          "symbol": "HUF_decompress4X2_usingDTable_internal",
+          "image": "hawdb-distance-candidate-query",
+          "samples": 11
+        },
+        {
+          "symbol": "_RINvYINtNtNtCsgtPOCBgevO_4core5slice4iter6ChunksNtNtCs6cq2hl5WiWN_6crc32c4util5U64LeENtNtNtNtBa_4iter6traits8iterator8Iterator4foldmNCNvNtBO_10hw_aarch6417crc_u64_parallel30EBO_",
+          "image": "hawdb-distance-candidate-query",
+          "samples": 9
+        },
+        {
+          "symbol": "_RNvNtNtNtCsePiFB8fLR76_10hawdb_core6vector6kernel4neon3run",
+          "image": "hawdb-distance-candidate-query",
+          "samples": 7
+        }
+      ]
+    }
+  ]
+}

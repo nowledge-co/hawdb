@@ -467,8 +467,6 @@ fn bounded_match_rejects_unrepresentable_relationship_shapes_before_normalizatio
             format!("(a:Node)-[r:LINK*{range}]->(b:Node)"),
             format!("(a:Node)-[:LINK*{range} {{weight: 1}}]->(b:Node)"),
             format!("(a:Node)-[*{range}]->(b:Node)"),
-            format!("(a:Node)<-[:LINK*{range}]-(b:Node)"),
-            format!("(a:Node)-[:LINK*{range}]-(b:Node)"),
         ] {
             for prefix in ["MATCH", "OPTIONAL MATCH"] {
                 let query = format!("{prefix} {pattern} RETURN b.id");
@@ -494,6 +492,9 @@ fn bounded_match_rejects_unrepresentable_relationship_shapes_before_normalizatio
         "(a:Node)-[:LINK]-(b:Node)",
         "(a:Node)-[:LINK*0..1]->(b:Node)",
         "(a:Node)-[:LINK*1..2]->(b:Node {id: 2})",
+        "(a:Node)<-[:LINK*1..2]-(b:Node)",
+        "(a:Node)-[:LINK*2..2]-(b:Node)",
+        "(a:Node)<-[:LINK*0..1]-(b:Node)",
     ] {
         let query = format!("MATCH {pattern} RETURN b.id");
         plan_pipeline_query(&query, &BTreeMap::new()).unwrap();
@@ -513,4 +514,108 @@ fn ranked_evidence_normalizes_its_input_without_changing_legacy_multi_with_plans
     let parsed = hawdb_cypher::parse_pipeline(&legacy).unwrap();
     let plan = plan_parsed_pipeline_query(&parsed, &BTreeMap::new()).unwrap();
     assert!(format!("{plan:?}").contains("GraphMatch {"));
+}
+
+fn planned_aggregations(plan: &LogicalPlan) -> &[Aggregation] {
+    match plan {
+        LogicalPlan::Aggregate { items, .. } => items,
+        LogicalPlan::Project { input, .. }
+        | LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Distinct { input } => planned_aggregations(input),
+        other => panic!("expected an aggregate plan, got {other:?}"),
+    }
+}
+
+#[test]
+fn simple_aggregate_arguments_keep_direct_targets() {
+    let plan = plan_pipeline_query(
+        "MATCH (n:Item) RETURN count(n.x) AS c, min(n.x) AS lo, avg(n.x) AS mean, sum(n.x) AS total, count(DISTINCT n.x) AS d",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let property = || AggregateTarget::Property {
+        variable: "n".into(),
+        property: "x".into(),
+    };
+    let planned = planned_aggregations(&plan)
+        .iter()
+        .map(|item| (item.function, item.target.clone(), item.distinct))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        planned,
+        [
+            (AggregateFunction::Count, property(), false),
+            (AggregateFunction::Min, property(), false),
+            (AggregateFunction::Avg, property(), false),
+            (AggregateFunction::Sum, property(), false),
+            (AggregateFunction::Count, property(), true),
+        ]
+    );
+}
+
+#[test]
+fn expression_aggregate_arguments_evaluate_per_row() {
+    let plan = plan_pipeline_query(
+        "MATCH (n:Item) RETURN n.g AS g, sum(n.x * 2) AS doubled, count(DISTINCT n.x % 2), max(-n.x) AS neg",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let items = planned_aggregations(&plan);
+    let property = || {
+        Box::new(ProjectionExpression::Property {
+            variable: "n".into(),
+            property: "x".into(),
+        })
+    };
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0].function, AggregateFunction::Sum);
+    assert_eq!(
+        items[0].target,
+        AggregateTarget::Expression(ProjectionExpression::Binary {
+            left: property(),
+            op: ScalarBinaryOp::Multiply,
+            right: Box::new(ProjectionExpression::Literal(Value::Int(2))),
+        })
+    );
+    assert_eq!(items[1].function, AggregateFunction::Count);
+    assert!(items[1].distinct);
+    assert_eq!(
+        items[2].target,
+        AggregateTarget::Expression(ProjectionExpression::Binary {
+            left: Box::new(ProjectionExpression::Literal(Value::Int(-1))),
+            op: ScalarBinaryOp::Multiply,
+            right: property(),
+        })
+    );
+
+    let plan = plan_pipeline_query(
+        "MATCH (n:Item) WITH n.g AS g, n.x AS x RETURN g, sum(x * 2) AS s, min(x) AS lo",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let items = planned_aggregations(&plan);
+    assert_eq!(
+        items[0].target,
+        AggregateTarget::Expression(ProjectionExpression::Binary {
+            left: Box::new(ProjectionExpression::Column("x".into())),
+            op: ScalarBinaryOp::Multiply,
+            right: Box::new(ProjectionExpression::Literal(Value::Int(2))),
+        })
+    );
+    assert_eq!(items[1].target, AggregateTarget::Column("x".into()));
+}
+
+#[test]
+fn nested_aggregate_arguments_are_rejected() {
+    let error = plan_pipeline_query(
+        "MATCH (n:Item) RETURN sum(count(n) + 1) AS s",
+        &BTreeMap::new(),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("cannot contain aggregate"),
+        "{error}"
+    );
 }

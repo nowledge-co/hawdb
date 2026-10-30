@@ -20,14 +20,18 @@ pub(crate) mod owned;
 #[path = "scan/indexed_tests.rs"]
 mod indexed_tests;
 
+#[cfg(test)]
+#[path = "scan/binding_tests.rs"]
+mod binding_tests;
+
 use crate::binding::{
     binding_memory_bytes, binding_memory_bytes_with_parts, binding_payload_bytes_with_parts,
     projected_node_binding_memory_bytes, Binding,
 };
 use crate::expression::{
     evaluate_predicate_with_context, evaluate_projection_borrowed, prepare_borrowed_projection,
-    property_filter_from_predicate, push_borrowed_projection, ProjectedValue,
-    SmallBorrowedProjection,
+    property_filter_from_predicate, push_borrowed_projection, PreparedProjectionExpressions,
+    ProjectedValue, SmallBorrowedProjection,
 };
 use crate::kernel::{push_bounded_operator_binding, OperatorMemoryTracker};
 use crate::observer::ExecutionObserver;
@@ -301,7 +305,9 @@ pub(crate) fn stream_expand_binding_admitted(
         || spec.rel_variable.is_some()
         || !spec.rel_properties.is_empty()
         || filters.relationship_scan_filter.is_some()
-        || spec.direction != RelationshipDirection::Outgoing
+        || (spec.direction != RelationshipDirection::Outgoing
+            && spec.min_hops == 1
+            && spec.max_hops == 1)
     {
         visit_one_hop_relationships_with_context(
             store,
@@ -359,6 +365,7 @@ pub(crate) fn stream_expand_binding_admitted(
             BoundedExpandSpec {
                 source: source.id,
                 rel_type_id,
+                direction: spec.direction,
                 target_label_ids,
                 min_hops: spec.min_hops,
                 max_hops: spec.max_hops,
@@ -447,24 +454,10 @@ fn owned_expanded_binding(
 ) -> Binding {
     let mut nodes = binding
         .nodes
-        .iter()
-        .filter(|(name, _)| {
-            target
-                .as_ref()
-                .is_none_or(|(replacement, _)| name.as_str() != *replacement)
-        })
-        .map(|(name, node)| (name.clone(), node.clone()))
-        .collect::<BTreeMap<_, _>>();
+        .without(target.as_ref().map(|(name, _)| *name));
     let mut relationships = binding
         .relationships
-        .iter()
-        .filter(|(name, _)| {
-            relationship
-                .as_ref()
-                .is_none_or(|(replacement, _)| name.as_str() != *replacement)
-        })
-        .map(|(name, row)| (name.clone(), row.clone()))
-        .collect::<BTreeMap<_, _>>();
+        .without(relationship.as_ref().map(|(name, _)| *name));
     if let Some((name, node)) = target {
         nodes.insert(name.to_string(), node);
     }
@@ -768,6 +761,12 @@ pub fn stream_node_projection_scan_batches(
     let mut emitted = 0usize;
     let mut visited = 0usize;
     let small_projection = SmallBorrowedProjection::new(spec.items);
+    let prepared = PreparedProjectionExpressions::new(
+        spec.items,
+        context.memory_account,
+        context.task_context,
+        observer,
+    )?;
     let mut visit = |node: ProjectedNodeRecord| {
         runtime_checkpoint(context.task_context)?;
         visited = visited.saturating_add(1);
@@ -822,11 +821,12 @@ pub fn stream_node_projection_scan_batches(
                         context.memory_account,
                         None,
                         |expression| {
-                            evaluate_projection_borrowed(
+                            prepared.evaluate(
                                 expression,
                                 context.catalog,
                                 &binding,
                                 Some(context.memory_account),
+                                observer,
                             )
                         },
                     )
@@ -896,7 +896,7 @@ pub fn stream_node_projection_scan_batches(
             let owned_bytes = bytes
                 .saturating_add(std::mem::size_of::<crate::binding::Binding>())
                 .saturating_add(spec.variable.len())
-                .saturating_add(std::mem::size_of::<usize>() * 6);
+                .saturating_add(crate::binding::graph_slot_memory_bytes(1));
             crate::store::admit_graph_read(
                 context.memory_account,
                 context.task_context,
@@ -1535,8 +1535,8 @@ pub fn null_lookup_node() -> NodeRecord {
 fn node_binding(variable: &str, node: NodeRecord) -> Binding {
     Binding {
         values: BTreeMap::new(),
-        nodes: BTreeMap::from([(variable.to_string(), node)]),
-        relationships: BTreeMap::new(),
+        nodes: BTreeMap::from([(variable.to_string(), node)]).into(),
+        relationships: BTreeMap::new().into(),
     }
 }
 
@@ -1919,8 +1919,9 @@ mod tests {
                     labels: BTreeSet::new(),
                     properties: BTreeMap::new(),
                 },
-            )]),
-            relationships: BTreeMap::new(),
+            )])
+            .into(),
+            relationships: BTreeMap::new().into(),
         };
         let mut emitted = 0usize;
         let control = stream_expand_binding(

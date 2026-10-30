@@ -27,7 +27,7 @@ An independent native host can make the same choice in its own manifest:
 
 ```toml
 [dependencies]
-hawdb = { version = "0.4", default-features = false }
+hawdb = { version = "0.21", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 mimalloc = { version = "0.1", default-features = false }

@@ -163,10 +163,12 @@ pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
         | HawDBError::TransactionConflict { .. }
+        | HawDBError::TransactionRetryRequired(_)
         | HawDBError::BranchCommandUnsupported { .. } => "execution",
         HawDBError::Storage(_)
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
+        | HawDBError::WalRecoveryIo { .. }
         | HawDBError::ProjectionBusy
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }

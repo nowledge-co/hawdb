@@ -248,8 +248,8 @@ mod tests {
                 "value".to_string(),
                 hawdb_core::Value::String("payload".to_string()),
             )]),
-            nodes: std::collections::BTreeMap::new(),
-            relationships: std::collections::BTreeMap::new(),
+            nodes: std::collections::BTreeMap::new().into(),
+            relationships: std::collections::BTreeMap::new().into(),
         };
         let mut state = GraphExpansionExecutionState::new(
             Some(GraphExpansionBudget {
@@ -287,8 +287,8 @@ mod tests {
                 "value".to_string(),
                 hawdb_core::Value::String("payload".to_string()),
             )]),
-            nodes: std::collections::BTreeMap::new(),
-            relationships: std::collections::BTreeMap::new(),
+            nodes: std::collections::BTreeMap::new().into(),
+            relationships: std::collections::BTreeMap::new().into(),
         };
         let mut state = GraphExpansionExecutionState::new(
             Some(GraphExpansionBudget {

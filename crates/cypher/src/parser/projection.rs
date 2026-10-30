@@ -19,52 +19,7 @@ use super::Parser;
 
 impl Parser<'_> {
     pub(super) fn parse_return_atom(&mut self) -> Result<ReturnExpressionKind> {
-        Ok(if self.consume_aggregate_function_name("COUNT") {
-            self.expect_char('(')?;
-            let distinct = self.consume_keyword("DISTINCT");
-            let expression = if self.consume_char('*') {
-                if distinct {
-                    return Err(self.error("COUNT(DISTINCT *) is not supported"));
-                }
-                ReturnExpressionKind::Aggregate(AggregateExpression::CountAll)
-            } else {
-                let variable = self.parse_ident()?;
-                if self.consume_char('.') {
-                    ReturnExpressionKind::Aggregate(AggregateExpression::CountProperty {
-                        variable,
-                        property: self.parse_ident()?,
-                        distinct,
-                    })
-                } else {
-                    ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable {
-                        variable,
-                        distinct,
-                    })
-                }
-            };
-            self.expect_char(')')?;
-            expression
-        } else if self.consume_aggregate_function_name("MIN") {
-            self.expect_char('(')?;
-            let variable = self.parse_ident()?;
-            self.expect_char('.')?;
-            let property = self.parse_ident()?;
-            self.expect_char(')')?;
-            ReturnExpressionKind::Aggregate(AggregateExpression::MinProperty { variable, property })
-        } else if self.consume_aggregate_function_name("MAX") {
-            self.expect_char('(')?;
-            let variable = self.parse_ident()?;
-            let aggregate = if self.consume_char('.') {
-                AggregateExpression::MaxProperty {
-                    variable,
-                    property: self.parse_ident()?,
-                }
-            } else {
-                AggregateExpression::MaxVariable { variable }
-            };
-            self.expect_char(')')?;
-            ReturnExpressionKind::Aggregate(aggregate)
-        } else if self.consume_aggregate_function_name("COLLECT_TOP") {
+        if self.consume_aggregate_function_name("COLLECT_TOP") {
             self.expect_char('(')?;
             let document_id = self.parse_ident()?;
             self.expect_char(',')?;
@@ -72,39 +27,123 @@ impl Parser<'_> {
             self.expect_char(',')?;
             let limit = self.parse_value()?;
             self.expect_char(')')?;
-            ReturnExpressionKind::Aggregate(AggregateExpression::CollectTop {
-                document_id,
-                score,
-                limit,
-            })
-        } else if self.consume_aggregate_function_name("AVG") {
-            self.expect_char('(')?;
-            let variable = self.parse_ident()?;
-            self.expect_char('.')?;
-            let property = self.parse_ident()?;
+            return Ok(ReturnExpressionKind::Aggregate(
+                AggregateExpression::CollectTop {
+                    document_id,
+                    score,
+                    limit,
+                },
+            ));
+        }
+        const FUNCTIONS: [(&str, AggregateFunctionName); 6] = [
+            ("COUNT", AggregateFunctionName::Count),
+            ("SUM", AggregateFunctionName::Sum),
+            ("MIN", AggregateFunctionName::Min),
+            ("MAX", AggregateFunctionName::Max),
+            ("AVG", AggregateFunctionName::Avg),
+            ("COLLECT", AggregateFunctionName::Collect),
+        ];
+        let Some(function) = FUNCTIONS.into_iter().find_map(|(name, function)| {
+            self.consume_aggregate_function_name(name)
+                .then_some(function)
+        }) else {
+            return Ok(ReturnExpressionKind::Value(self.parse_scalar_expression()?));
+        };
+        // Historical fixed shapes keep their dedicated AST variants (and thus
+        // their logical plans); any other argument uses the general form.
+        let checkpoint = self.checkpoint();
+        match self.parse_fixed_aggregate(function) {
+            Ok(Some(aggregate)) => return Ok(ReturnExpressionKind::Aggregate(aggregate)),
+            Ok(None) | Err(_) => self.restore(checkpoint),
+        }
+        self.expect_char('(')?;
+        let distinct = self.consume_keyword("DISTINCT");
+        if function == AggregateFunctionName::Count && self.consume_char('*') {
+            if distinct {
+                return Err(self.error("COUNT(DISTINCT *) is not supported"));
+            }
             self.expect_char(')')?;
-            ReturnExpressionKind::Aggregate(AggregateExpression::AvgProperty { variable, property })
-        } else if self.consume_aggregate_function_name("COLLECT") {
-            self.expect_char('(')?;
-            let distinct = self.consume_keyword("DISTINCT");
-            let variable = self.parse_ident()?;
-            if self.consume_char('.') {
-                let property = self.parse_ident()?;
-                self.expect_char(')')?;
-                ReturnExpressionKind::Aggregate(AggregateExpression::CollectProperty {
+            return Ok(ReturnExpressionKind::Aggregate(
+                AggregateExpression::CountAll,
+            ));
+        }
+        let argument = self.parse_pipeline_arithmetic(false)?;
+        self.expect_char(')')?;
+        Ok(ReturnExpressionKind::Aggregate(
+            AggregateExpression::Expression {
+                function,
+                distinct,
+                argument: Box::new(argument),
+            },
+        ))
+    }
+
+    /// Parses the historical `variable[.property]` aggregate shapes, returning
+    /// `None` (or an error) when the argument needs the general form.
+    fn parse_fixed_aggregate(
+        &mut self,
+        function: AggregateFunctionName,
+    ) -> Result<Option<AggregateExpression>> {
+        self.expect_char('(')?;
+        let distinct = matches!(
+            function,
+            AggregateFunctionName::Count | AggregateFunctionName::Collect
+        ) && self.consume_keyword("DISTINCT");
+        self.skip_ws();
+        if ["true", "false", "null"]
+            .into_iter()
+            .any(|keyword| self.next_keyword_is(keyword))
+        {
+            return Ok(None);
+        }
+        let variable = self.parse_ident()?;
+        let property = if self.consume_char('.') {
+            Some(self.parse_ident()?)
+        } else {
+            None
+        };
+        if !self.consume_char(')') {
+            return Ok(None);
+        }
+        Ok(match (function, property) {
+            (AggregateFunctionName::Count, Some(property)) => {
+                Some(AggregateExpression::CountProperty {
                     variable,
                     property,
                     distinct,
                 })
-            } else {
-                self.expect_char(')')?;
-                ReturnExpressionKind::Aggregate(AggregateExpression::CollectVariable {
+            }
+            (AggregateFunctionName::Count, None) => {
+                Some(AggregateExpression::CountVariable { variable, distinct })
+            }
+            (AggregateFunctionName::Collect, Some(property)) => {
+                Some(AggregateExpression::CollectProperty {
                     variable,
+                    property,
                     distinct,
                 })
             }
-        } else {
-            ReturnExpressionKind::Value(self.parse_scalar_expression()?)
+            (AggregateFunctionName::Collect, None) => {
+                Some(AggregateExpression::CollectVariable { variable, distinct })
+            }
+            (AggregateFunctionName::Min, Some(property)) => {
+                Some(AggregateExpression::MinProperty { variable, property })
+            }
+            (AggregateFunctionName::Max, Some(property)) => {
+                Some(AggregateExpression::MaxProperty { variable, property })
+            }
+            (AggregateFunctionName::Max, None) => {
+                Some(AggregateExpression::MaxVariable { variable })
+            }
+            (AggregateFunctionName::Avg, Some(property)) => {
+                Some(AggregateExpression::AvgProperty { variable, property })
+            }
+            (
+                AggregateFunctionName::Sum
+                | AggregateFunctionName::Min
+                | AggregateFunctionName::Avg,
+                _,
+            ) => None,
         })
     }
 

@@ -111,11 +111,11 @@ Recovery:
 5. Reject unsupported checkpoint storage versions before importing records.
 6. Replay valid WAL entries in order. When configured, the WAL replay entry
    limit is checked after a record is decoded and before applying it.
-7. Reject every database open on a torn WAL tail or checksum mismatch without
-   modifying the WAL. `DatabaseDoctor::plan_wal_tail_repair` is a read-only
-   dry run for an incomplete final frame. The exact generation-bound plan must
-   be acknowledged and passed to `DatabaseDoctor::apply_wal_tail_repair`
-   before any bytes are discarded.
+7. Writable opens default to audited `AutoRepairTornTail` recovery. Repair
+   physically incomplete EOF records and, with a valid synchronization fence,
+   damaged unsynchronized suffixes. Preserve the discarded bytes and audit
+   before truncation. `Strict` rejects damage without modifying the WAL;
+   read-only opens require `Strict`. Protected-prefix damage fails closed.
 8. In materialized mode, rebuild in-memory adjacency and property indexes. In
    out-of-core mode, retain immutable canonical and adjacency demand readers
    and keep only the bounded mutation delta resident.
@@ -199,48 +199,103 @@ evidence. [`SEARCH_GENERATION_BENCHMARK.md`](SEARCH_GENERATION_BENCHMARK.md)
 records the reproducible resident-versus-streaming kernel comparison and keeps
 it explicitly separate from representative Mem qualification.
 
+### WAL recovery
+
 WAL entries can represent either a single mutation or a batch commit record.
 The relationship pattern create path uses a single batch record for source node,
 target node, and relationship creation. Recovery only applies a batch after its
 whole record passes checksum validation, so a torn tail cannot leave behind a
 half-created path.
-Doctor torn-tail repair applies only to physically missing data at end of file:
-in the binary framing, a truncated fragment header, a payload cut short by EOF,
-or a fragment chain still awaiting its MIDDLE/LAST fragments (for V1 text
-generations, a final record that is not newline-terminated). The repair
-truncates back to the first byte of the incomplete chain. A structurally
-complete fragment chain that fails its checksum, a sequence-invalid fragment,
-or a non-zero block trailer is corruption even at the end of the WAL, so
-recovery fails closed instead of truncating a potentially acknowledged commit.
-Block-aligned resynchronization locates damage but never skips it: valid
-current-generation fragments found past an end-of-log marker fail closed.
-Writable strict opens retain automatic corrupt-WAL evidence by content identity,
-so repeated opens of the same bytes reuse one quarantine copy.
-`DatabaseConfig::max_wal_quarantine_bytes` bounds the aggregate automatic
-quarantine footprint and removes the oldest prior copies before admitting a
-different corrupt WAL. A WAL larger than that bound remains untouched in its
-authoritative location and is not copied. Explicit doctor planning holds the exclusive database lease, validates
-the manifest identity, WAL generation, framing, checksums, LSN continuity, and
-configured scan bounds, and reports the exact retained LSN plus discarded byte
-range without modifying files. Applying requires an acknowledgement bound to
-that plan, revalidates the manifest and WAL CRC32C/SHA-256 identities, persists
-an original-WAL quarantine copy and a prepared audit record, truncates and
-syncs the WAL, then publishes an applied audit record. A pending audit record
-blocks strict open. An interrupted apply can be finalized idempotently only
-when the manifest, retained WAL, and quarantine identities still match.
+Writable opens default to `RecoveryMode::AutoRepairTornTail`; durability still
+defaults to `SyncOnEveryWrite`. Recovery never skips over damage to replay
+later transactions. It retains the complete transaction prefix before damage:
 
-Writable hosts may opt into `DatabaseConfig::recovery_mode =
-RecoveryMode::AutoRepairTornTail`. This uses the same doctor protocol under the
-database lease, preserving the complete original WAL and audit before truncation.
-It also resumes an interrupted repair after validating the same identities.
-Read-only opens reject this option; strict recovery remains the default, and
-the legacy `DoctorRepairTornTail` report value remains invalid for open.
-Automatic repair bounds the aggregate `doctor/quarantine` bytes by
-`max_wal_quarantine_bytes` independently of the corrupt-WAL quarantine; it fails
-without discarding prior evidence when the next copy would exceed the budget.
-The recovery report records repaired bytes and the tail reason. This policy
-accepts removal of physically missing EOF data, not a claim that arbitrary
-storage damage can never truncate previously acknowledged bytes.
+| Observed bytes | No relaxed synchronization fence | Valid fence, damage outside protected prefix |
+| --- | --- | --- |
+| Physically truncated fragment header/payload, or a chain awaiting MIDDLE/LAST at EOF | Audited tail repair | Audited tail repair |
+| Complete invalid checksum/chain, sequence-invalid fragment, nonzero block trailer | Fail closed | Audited prefix recovery |
+| Zero-filled/stale final region or valid fragments after an end-of-log marker | Fail closed | Audited prefix recovery |
+| Invalid/missing WAL header, unsupported format, IO error, invalid fence | Fail closed | Fail closed |
+| Damage before the fence or published branch prefix | Fail closed | Fail closed |
+
+`Strict` rejects every damaged suffix in this table. A read-only open must
+explicitly select `Strict`; requesting automatic repair remains an error.
+Read-only CLI, binding and Mem mode convenience paths select `Strict` themselves. The
+legacy `DoctorRepairTornTail` enum value remains invalid for open.
+
+The WAL writer appends bytes; it does not preallocate or extend the file ahead
+of a write. Nevertheless a filesystem may preserve length or later writes
+while losing earlier unsynchronized bytes. An all-zero region, including an
+extended zero tail, is therefore not proof of an incomplete EOF record. It
+requires a valid relaxed fence before it can be discarded.
+
+### Repair evidence and retry
+
+Explicit doctor planning holds the exclusive database lease and validates the
+authoritative selector, checkpoint closure, WAL generation, framing, checksums,
+LSN continuity and configured scan bounds. Its plan identifies the retained
+length/next LSN and CRC32C/SHA-256 identities of both the retained prefix and
+original WAL. Explicit application requires acknowledgement of that exact plan.
+Automatic open uses the same protocol under the directory lease.
+
+Protocol `hawdb-wal-doctor-repair-v2` stores only the discarded bytes in
+`doctor/quarantine/*.discarded-tail.hawdb`, plus an identity-bound audit. It
+streams the retained prefix together with that suffix to verify the original
+WAL digest. Evidence and a prepared audit must be durable before truncation;
+truncation is synchronized before an applied audit is published. Pending audits
+block `Strict`, and automatic open resumes only when all identities still match.
+Retry also re-establishes the suffix file/directory and prepared-audit barriers;
+a visible rename alone never proves durability. Resuming after truncation
+repeats its durability barrier before retiring the pending audit. Old development-only v1 pending records are rejected, not
+silently reinterpreted as suffix evidence.
+
+`max_wal_quarantine_bytes` bounds aggregate retained repair suffix bytes,
+independently of corrupt-WAL quarantine. Exhaustion preserves prior evidence
+and leaves the authoritative WAL unchanged. A same-plan temporary suffix is
+resumable without counting it twice. Audit metadata is separately bounded by
+its 1 MiB decode limit. No repair may discard bytes before durable evidence.
+`HawDBError::WalRecoveryIo` retains the failing operation, IO kind and OS error
+code, including Windows sharing/permission failures. A failed operation may
+have completed an effect: retry open to resume the audit; do not assume rollback.
+
+`StorageRecoveryReport::wal_repair` exposes `WalTailRepairReport`, including the
+typed reason, discarded bytes, retained length/next LSN, evidence directory and
+audit/suffix names. `Database::storage_recovery_report` and the typed Nowledge
+storage readiness report carry that same value; JSON is derived from it.
+
+### Protected synchronization prefix
+
+A generation admitting `SyncOnCheckpoint` writes creates
+`wal.<generation>.hawdb.sync` before its first relaxed append. The fixed 72-byte
+SHA-256-protected record binds generation, replay-start LSN, protected byte
+length and next LSN. It initially protects every pre-existing byte; it never
+retroactively treats earlier synchronous writes as disposable. A missing fence
+never grants middle-hole repair, even if the new handle requests relaxed mode.
+
+Before any WAL synchronization in that generation, publish an advanced fence
+through a synchronized captured-directory control candidate and directory
+barrier. Only then synchronize the WAL and acknowledge the barrier. This order
+also covers group flush, explicit source synchronization, failed-append rollback
+and repair's own truncate/sync. A completed barrier cannot leave an older fence
+that permits deleting its data. An interruption between fence publication and
+WAL sync can conservatively protect extra bytes and fail closed. A watermark
+written after WAL fsync without its own durable acknowledgement would be unsafe.
+
+Generations that never admitted relaxed writes retain the existing WAL-sync
+commit path. Fence publication adds no per-transaction fsync to a continuing
+relaxed interval. A transition to synchronous commits on a fenced generation
+adds durable fence publication before each sync/group; checkpoint/rotation
+starts a new generation. Checkpoint/seal still publish complete durable
+checkpoint/immutable WAL closures before advancing their authoritative selector.
+Published branch prefixes remain an independent minimum retention boundary.
+Generation reclamation retains fence metadata with its WAL generation.
+
+Writable corruption refusals retain the original WAL and existing bounded
+content-identified corrupt-WAL quarantine behavior. No valid fragments after
+damage authorize skipping an acknowledged transaction. These rules assume
+trustworthy completed synchronization and atomic same-directory replacement;
+see [power-loss qualification](BRANCH_POWER_LOSS_QUALIFICATION.md) for conditional
+Windows namespace semantics and the distinction between model and device proof.
 
 If a WAL write fails partway through an append, the writer truncates and syncs
 back to the preceding valid boundary before permitting a retry. No LSN, commit
@@ -353,6 +408,16 @@ dependencies that close a cycle aborts the current waiter as the deterministic
 deadlock victim and releases all of its locks. Wakeup, timeout, commit,
 rollback, and drop remove both held locks and wait dependencies.
 
+Hosts can use `HawDBError::is_retryable_transaction_conflict()` for both
+optimistic conflicts and pessimistic snapshot/deadlock failures. The latter
+carry `TransactionRetryRequired(TransactionRetryError)` with a typed reason
+and transaction identity. Calls made after that abort retain the original
+reason and set `already_aborted`; retry the complete transaction with a fresh
+snapshot. Lock timeouts keep their existing statement/transaction rollback
+policy and are not included in this transaction-retry classification. Generic
+execution, cancellation, poisoned-manager and storage errors are not promoted
+to retryable errors by their message text.
+
 Every durable open acquires an exclusive process-lifetime lease on the database
 directory. The host opens one root `Database` handle and derives sessions,
 transactions, and snapshot readers from that handle. A process-local canonical
@@ -381,15 +446,13 @@ immediately previous generations and reclaims older files.
 structured form: current commit epoch, optional checkpoint epoch and checkpoint commit epoch, active
 oldest reader epoch, computed safe reclaim commit epoch, and whether the store
 is durable.
-`Database::storage_recovery_report` exposes the strict open-time recovery
-boundary in structured form: recovery mode, checkpoint epoch,
-checkpoint-covered commit epoch, WAL presence, replay start LSN, next LSN after
-replay, replayed WAL record count, configured WAL replay entry bound when
-present, recovered commit epoch, and whether the store is durable. Ordinary
-open is strict: a torn tail or checksum mismatch fails startup without changing
-the WAL. `WalTailRepairPlan` and `WalTailRepairReport` are the separate typed
-doctor evidence. The historical `DoctorRepairTornTail` recovery enum value is
-retained for report compatibility but database open rejects it.
+`Database::storage_recovery_report` exposes the open-time recovery boundary:
+recovery mode, checkpoint and commit epochs, WAL presence, replay-start/next LSN,
+replay counts and bounds, and an optional typed `wal_repair` with evidence paths.
+Default writable open repairs only the authorized suffixes described above;
+`Strict` rejects them. `WalTailRepairPlan` remains the explicit doctor planning
+contract. The historical `DoctorRepairTornTail` enum value is retained for report
+compatibility but database open rejects it.
 
 Embedding applications can explicitly call `Database::checkpoint(&mut self)`
 or `ConcurrentDatabase::checkpoint(&self)`. These synchronous Rust APIs work

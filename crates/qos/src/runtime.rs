@@ -45,6 +45,7 @@ const IO_WAVE_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const BACKGROUND_ADMISSION_AGING: Duration = Duration::from_millis(100);
 
 mod maintenance;
+mod memory_target;
 mod retained_memory;
 mod working_memory;
 pub use maintenance::{RuntimeMaintenanceMemoryReport, RuntimeMaintenanceWork};
@@ -601,6 +602,7 @@ pub struct RuntimePermit {
     io_wave_controller: Arc<GovernorIoWaveController>,
     process_memory_reservation: Option<ProcessMemoryReservation>,
     memory_controller: Option<Arc<working_memory::GovernorMemoryController>>,
+    memory_target: Arc<memory_target::GovernorMemoryTarget>,
     released: bool,
 }
 
@@ -881,6 +883,9 @@ impl RuntimeGovernor {
                             governor: Arc::clone(&governor),
                             request,
                             executor_thread_limit,
+                            memory_target: Arc::new(memory_target::GovernorMemoryTarget::new(
+                                &governor,
+                            )),
                             io_wave_controller: Arc::new(GovernorIoWaveController {
                                 governor,
                                 priority: request.priority,
@@ -1094,6 +1099,7 @@ impl RuntimePermit {
             )
             .with_executor_thread_limit(self.executor_thread_limit)
             .with_memory_reservation(execution_reservation)
+            .with_memory_target(self.memory_target.clone())
             .with_io_wave_controller(self.io_wave_controller.clone());
         match &self.memory_controller {
             Some(controller) => context.with_memory_controller(Arc::new(

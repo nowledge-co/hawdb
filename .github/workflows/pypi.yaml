@@ -1,0 +1,332 @@
+name: Publish Python to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish or retry
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  sdist:
+    name: Prepare released source
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+      lock_hash: ${{ steps.archive.outputs.lock_hash }}
+    defaults:
+      run:
+        working-directory: release-source
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name || inputs.tag }}
+          path: release-source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.11"
+      - name: Validate the release tag and source
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE_TAG" --json isDraft --jq 'if .isDraft then error("draft release") else . end'
+          git merge-base --is-ancestor HEAD origin/main
+          python - <<'PY'
+          import os
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          manifest = tomllib.loads(Path("bindings/python/Cargo.toml").read_text())
+          root = tomllib.loads(Path("Cargo.toml").read_text())
+          version = manifest["package"]["version"]
+          if tag != f"v{version}" or root["package"]["version"] != version:
+              raise SystemExit("Release tag and both Cargo package versions must agree")
+          sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\nsha={sha}\n")
+          print(f"Preparing hawdb {version} from {sha}")
+          PY
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - name: Install packaging tools
+        run: python -m pip install "maturin==1.15.0" "twine==6.2.0"
+      - name: Validate the reviewed dependency graph and build the source distribution
+        id: archive
+        run: |
+          if [[ ! -f bindings/python/Cargo.lock ]]; then
+            cp Cargo.lock bindings/python/Cargo.lock
+            cargo metadata --manifest-path bindings/python/Cargo.toml --format-version 1 > /dev/null
+          fi
+          cargo metadata --locked --manifest-path bindings/python/Cargo.toml --format-version 1 > /dev/null
+          python ../bindings/python/check_lock.py
+          cp bindings/python/Cargo.lock "$RUNNER_TEMP/python-reviewed.lock"
+          maturin sdist --manifest-path bindings/python/Cargo.toml --out dist
+          python -m twine check --strict dist/*
+          python - <<'PY'
+          import hashlib
+          import os
+          import tarfile
+          from pathlib import Path
+
+          archives = list(Path("dist").glob("*.tar.gz"))
+          assert len(archives) == 1, archives
+          with tarfile.open(archives[0]) as archive:
+              names = [name.partition("/")[2] for name in archive.getnames()]
+              lock_path = f"{archive.getnames()[0].split('/')[0]}/bindings/python/Cargo.lock"
+              assert lock_path in archive.getnames(), lock_path
+              archived_lock = archive.extractfile(lock_path).read()
+          lock_hash = hashlib.sha256(Path("bindings/python/Cargo.lock").read_bytes()).hexdigest()
+          reviewed_lock = Path(os.environ["RUNNER_TEMP"]) / "python-reviewed.lock"
+          assert hashlib.sha256(reviewed_lock.read_bytes()).hexdigest() == lock_hash
+          assert hashlib.sha256(archived_lock).hexdigest() == lock_hash
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"lock_hash={lock_hash}\n")
+          for required in [".cargo/config.toml", "bindings/python/Cargo.lock", "LICENSE"]:
+              assert required in names, required
+          excluded = ["tools/shiro/", "tools/mvcc-fuzz/", "tests/pg-regress/", "experiments/bftree-mvcc/"]
+          assert not any(name.startswith(prefix) for name in names for prefix in excluded)
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: python-sdist
+          path: release-source/dist/*.tar.gz
+          if-no-files-found: error
+
+  wheels:
+    name: Wheel (${{ matrix.target }})
+    needs: sdist
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2_28"
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            manylinux: "2_28"
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            manylinux: auto
+          - os: macos-15
+            target: aarch64-apple-darwin
+            manylinux: auto
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            manylinux: auto
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.sdist.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: python-sdist
+          path: artifacts
+      - name: Extract the shared source distribution
+        id: source
+        run: |
+          python - <<'PY'
+          import os
+          import tarfile
+          from pathlib import Path
+
+          archives = list(Path("artifacts").glob("*.tar.gz"))
+          assert len(archives) == 1, archives
+          with tarfile.open(archives[0]) as archive:
+              archive.extractall("source", filter="data")
+          roots = list(Path("source").glob("*/pyproject.toml"))
+          assert len(roots) == 1, roots
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"directory={roots[0].parent.as_posix()}\n")
+          PY
+      - name: Build an audited wheel from the sdist
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          maturin-version: "1.15.0"
+          rust-toolchain: "1.97.1"
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          working-directory: ${{ steps.source.outputs.directory }}
+          args: --release --locked --compatibility pypi --out dist
+      - name: Check and install the built wheel
+        env:
+          RELEASE_VERSION: ${{ needs.sdist.outputs.version }}
+        run: |
+          python -m pip install "twine==6.2.0" "pytest>=8.0"
+          python - <<'PY'
+          import os
+          import subprocess
+          import zipfile
+          from email.parser import BytesParser
+          from pathlib import Path
+
+          wheels = list(Path("source").glob("*/dist/*.whl"))
+          assert len(wheels) == 1, wheels
+          wheel = wheels[0]
+          subprocess.run(["python", "-m", "twine", "check", "--strict", str(wheel)], check=True)
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              for required in ["__init__.py", "dbapi.py", "_hawdb.pyi", "exceptions.pyi", "py.typed"]:
+                  assert f"hawdb/{required}" in names, required
+              assert any(Path(name).name.upper().startswith("LICENSE") for name in names)
+              metadata_path = next(name for name in names if name.endswith(".dist-info/METADATA"))
+              metadata = BytesParser().parsebytes(archive.read(metadata_path))
+              assert metadata["Name"] == "hawdb"
+              assert metadata["Requires-Python"] == ">=3.11"
+              assert "pydantic" in metadata.get_all("Provides-Extra", [])
+          subprocess.run(["python", "-m", "pip", "install", "--no-deps", str(wheel)], check=True)
+          import hawdb
+          from importlib.metadata import version
+          from packaging.version import Version
+          assert Version(version("hawdb")) == Version(os.environ["RELEASE_VERSION"]) == Version(hawdb.__version__)
+          print(f"Installed {wheel.name}: {hawdb.__file__}")
+          PY
+      - name: Test the installed default wheel
+        run: python -m pytest bindings/python/tests
+      - name: Test the optional Pydantic integration
+        run: |
+          python -m pip install "pydantic>=2,<3"
+          python -m pytest bindings/python/tests/test_pydantic*.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: python-wheel-${{ matrix.target }}
+          path: ${{ steps.source.outputs.directory }}/dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    name: Upload the verified distributions
+    needs: [sdist, wheels]
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi
+      url: https://pypi.org/project/hawdb/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: python-*
+          merge-multiple: true
+          path: dist
+      - name: Verify the complete artifact set and any earlier uploads
+        env:
+          RELEASE_VERSION: ${{ needs.sdist.outputs.version }}
+          RELEASE_LOCK_HASH: ${{ needs.sdist.outputs.lock_hash }}
+        run: |
+          python -m pip install "twine==6.2.0"
+          python -m twine check --strict dist/*
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+          from packaging.version import Version
+
+          files = list(Path("dist").iterdir())
+          assert len(files) == 6, files
+          assert sum(path.suffix == ".whl" for path in files) == 5
+          assert sum(path.name.endswith(".tar.gz") for path in files) == 1
+          expected = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
+          print(f"Binding lock SHA-256: {os.environ['RELEASE_LOCK_HASH']}")
+          for name, digest in sorted(expected.items()):
+              print(f"{digest}  {name}")
+          version = str(Version(os.environ["RELEASE_VERSION"]))
+          try:
+              with urllib.request.urlopen(f"https://pypi.org/pypi/hawdb/{version}/json", timeout=30) as response:
+                  existing = json.load(response)
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+          else:
+              for item in existing["urls"]:
+                  if expected.get(item["filename"]) != item["digests"]["sha256"]:
+                      raise SystemExit("Existing PyPI files differ; retry the original publisher without rebuilding")
+          PY
+      - name: Publish with the configured Trusted Publisher
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          skip-existing: true
+      - name: Verify registry file hashes
+        env:
+          RELEASE_VERSION: ${{ needs.sdist.outputs.version }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+          from packaging.version import Version
+
+          expected = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in Path("dist").iterdir()}
+          version = str(Version(os.environ["RELEASE_VERSION"]))
+          url = f"https://pypi.org/pypi/hawdb/{version}/json"
+          for attempt in range(12):
+              try:
+                  with urllib.request.urlopen(url, timeout=30) as response:
+                      published = json.load(response)
+                  actual = {item["filename"]: item["digests"]["sha256"] for item in published["urls"]}
+                  if all(actual.get(name) == digest for name, digest in expected.items()):
+                      print(f"Verified {len(expected)} PyPI file hashes")
+                      break
+              except (urllib.error.URLError, TimeoutError):
+                  pass
+              time.sleep(10)
+          else:
+              raise SystemExit("PyPI did not expose every expected file with its verified hash")
+          PY
+      - name: Install the public release and query the embedded engine
+        env:
+          RELEASE_VERSION: ${{ needs.sdist.outputs.version }}
+        run: |
+          for attempt in {1..6}; do
+            if python -m pip install --only-binary=:all: --no-deps "hawdb==$RELEASE_VERSION"; then
+              break
+            fi
+            if [[ "$attempt" == 6 ]]; then
+              exit 1
+            fi
+            sleep 10
+          done
+          python - <<'PY'
+          import hawdb
+
+          with hawdb.open() as database:
+              assert database.execute_sql("SELECT 1 AS value").fetchall() == [{"value": 1}]
+          print(f"Verified public hawdb {hawdb.__version__}")
+          PY

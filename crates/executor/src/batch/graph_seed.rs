@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Canonical graph relevance producer. No projection or host-supplied score
 //! participates in identity, relevance, or the private scoring annotations.
@@ -91,8 +91,8 @@ impl GraphSeedScanSpec<'_> {
                 let (node, allocation) = input.into_parts();
                 let mut binding = Binding {
                     values: BTreeMap::new(),
-                    nodes: BTreeMap::from([(self.variable.to_string(), node)]),
-                    relationships: BTreeMap::new(),
+                    nodes: BTreeMap::from([(self.variable.to_string(), node)]).into(),
+                    relationships: BTreeMap::new().into(),
                 };
                 if let Some(predicate) = self.node_visibility_predicate
                     && !evaluate_predicate_observed(
@@ -185,8 +185,8 @@ impl GraphSeedScanSpec<'_> {
             }
             let binding = Binding {
                 values,
-                nodes: BTreeMap::from([(self.variable.to_string(), candidate.node)]),
-                relationships: BTreeMap::new(),
+                nodes: BTreeMap::from([(self.variable.to_string(), candidate.node)]).into(),
+                relationships: BTreeMap::new().into(),
             };
             let bytes = binding_memory_bytes(&binding);
             output.check_row_size(bytes)?;

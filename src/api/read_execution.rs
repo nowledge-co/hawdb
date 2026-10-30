@@ -31,6 +31,7 @@ impl PreparedReadExecution {
                 parameters,
                 &config.execution_memory,
             )
+            .with_output_columns(optimized.output_columns.as_deref())
             .with_output_limits(
                 restrictive_query_limit(row_limit, options.output_limits.max_rows),
                 restrictive_query_limit(

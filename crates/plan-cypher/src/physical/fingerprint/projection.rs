@@ -395,6 +395,7 @@ fn write_aggregation(output: &mut String, item: &Aggregation) {
     output.push_str("Aggregation(");
     match item.function {
         AggregateFunction::Count => output.push_str("count"),
+        AggregateFunction::Sum => output.push_str("sum"),
         AggregateFunction::Min => output.push_str("min"),
         AggregateFunction::Max => output.push_str("max"),
         AggregateFunction::Avg => output.push_str("avg"),
@@ -430,6 +431,10 @@ fn write_aggregation(output: &mut String, item: &Aggregation) {
             write_identifier(output, variable);
             output.push('.');
             write_identifier(output, property);
+        }
+        AggregateTarget::Expression(expression) => {
+            output.push_str("expression:");
+            write_projection_expression(output, expression);
         }
     }
     output.push_str(") as ");

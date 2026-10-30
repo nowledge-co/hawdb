@@ -17,7 +17,7 @@
 use crate::binding::{binding_memory_bytes, value_memory_bytes, Binding, TopNBinding};
 use crate::expression::{
     binding_has_variable, binding_identity_key, binding_property, binding_value,
-    insert_projected_value, KeyMemory, PreparedKey, SortKeyValues,
+    evaluate_projection_expression, insert_projected_value, KeyMemory, PreparedKey, SortKeyValues,
 };
 use crate::kernel::{ensure_operator_item_fits, OperatorMemoryTracker, SpillBudgetTracker};
 use crate::observer::ExecutionObserver;
@@ -317,9 +317,9 @@ fn merge_cartesian_bindings(left: &Binding, right: &Binding) -> Binding {
     let mut values = left.values.clone();
     values.extend(right.values.clone());
     let mut nodes = left.nodes.clone();
-    nodes.extend(right.nodes.clone());
+    nodes.extend_shared(&right.nodes);
     let mut relationships = left.relationships.clone();
-    relationships.extend(right.relationships.clone());
+    relationships.extend_shared(&right.relationships);
     Binding {
         values,
         nodes,
@@ -387,8 +387,8 @@ mod tests {
     fn value_binding(value: i64) -> Binding {
         Binding {
             values: BTreeMap::from([("value".to_string(), Value::Int(value))]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         }
     }
 

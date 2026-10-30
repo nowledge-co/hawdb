@@ -860,6 +860,16 @@ pub(super) fn plan_aggregation_with_columns(
         ReturnExpressionKind::Aggregate(aggregate) => aggregate,
         _ => return plan_aggregation(scope, item),
     };
+    if let AggregateExpression::Expression {
+        function,
+        distinct,
+        argument,
+    } = aggregate
+    {
+        return plan_expression_aggregation(
+            scope, columns, item, *function, *distinct, argument, parameters,
+        );
+    }
     let direct = match aggregate {
         AggregateExpression::MaxVariable { variable } => {
             if !columns.contains(variable) {
@@ -912,8 +922,10 @@ pub(super) fn plan_aggregation_with_columns(
         });
     }
     let variable = match aggregate {
-        AggregateExpression::MaxVariable { .. } | AggregateExpression::CollectTop { .. } => {
-            unreachable!("scalar aggregates bound above")
+        AggregateExpression::MaxVariable { .. }
+        | AggregateExpression::CollectTop { .. }
+        | AggregateExpression::Expression { .. } => {
+            unreachable!("scalar and expression aggregates bound above")
         }
         AggregateExpression::CountAll => return plan_aggregation(scope, item),
         AggregateExpression::CountVariable { variable, .. }
@@ -941,6 +953,61 @@ pub(super) fn plan_aggregation_with_columns(
     Ok(result)
 }
 
+/// Plans an aggregate over a general argument expression. Plain variable and
+/// property arguments reuse the direct targets; any other aggregate-free
+/// argument is evaluated per input row by the aggregate operator itself.
+fn plan_expression_aggregation(
+    scope: &BTreeSet<String>,
+    columns: &BTreeSet<String>,
+    item: &ReturnItem,
+    function: AggregateFunctionName,
+    distinct: bool,
+    argument: &ReturnExpression,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Aggregation> {
+    let function = match function {
+        AggregateFunctionName::Count => AggregateFunction::Count,
+        AggregateFunctionName::Sum => AggregateFunction::Sum,
+        AggregateFunctionName::Min => AggregateFunction::Min,
+        AggregateFunctionName::Max => AggregateFunction::Max,
+        AggregateFunctionName::Avg => AggregateFunction::Avg,
+        AggregateFunctionName::Collect => AggregateFunction::Collect,
+    };
+    let (expression, argument_name) =
+        super::arithmetic::bind_aggregate_argument(scope, columns, argument, parameters)?;
+    let argument_name = match &argument.kind {
+        ReturnExpressionKind::Arithmetic { .. } => argument_name
+            .strip_prefix('(')
+            .and_then(|name| name.strip_suffix(')'))
+            .map(str::to_string)
+            .unwrap_or(argument_name),
+        _ => argument_name,
+    };
+    let target = match expression {
+        ProjectionExpression::Column(column) => AggregateTarget::Column(column),
+        ProjectionExpression::ColumnProperty { column, property } => {
+            AggregateTarget::ColumnProperty { column, property }
+        }
+        ProjectionExpression::Property { variable, property } => {
+            AggregateTarget::Property { variable, property }
+        }
+        expression => AggregateTarget::Expression(expression),
+    };
+    let name = item.alias.clone().unwrap_or_else(|| {
+        format!(
+            "{}({}{argument_name})",
+            function.as_str(),
+            if distinct { "DISTINCT " } else { "" }
+        )
+    });
+    Ok(Aggregation {
+        function,
+        target,
+        distinct,
+        name,
+    })
+}
+
 pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> Result<Aggregation> {
     let AstNode {
         kind: ReturnExpressionKind::Aggregate(value),
@@ -952,7 +1019,9 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
         ));
     };
     let (function, target, distinct) = match value {
-        AggregateExpression::MaxVariable { .. } | AggregateExpression::CollectTop { .. } => {
+        AggregateExpression::MaxVariable { .. }
+        | AggregateExpression::CollectTop { .. }
+        | AggregateExpression::Expression { .. } => {
             return Err(HawDBError::Semantic(
                 "scalar aggregate requires column-aware binding".into(),
             ));
@@ -1398,6 +1467,7 @@ pub(super) fn default_aggregation_name(
                 distinct,
             )
         }
+        AggregateTarget::Expression(_) => return format!("{}(?)", function.as_str()),
         _ => {}
     }
     match (function, target) {
@@ -1415,6 +1485,12 @@ pub(super) fn default_aggregation_name(
         }
         (AggregateFunction::Count, AggregateTarget::Property { variable, property }) => {
             format!("count({variable}.{property})")
+        }
+        (AggregateFunction::Sum, AggregateTarget::Property { variable, property }) => {
+            format!("sum({variable}.{property})")
+        }
+        (AggregateFunction::Sum, AggregateTarget::All | AggregateTarget::Variable(_)) => {
+            "sum(?)".to_string()
         }
         (AggregateFunction::Min, AggregateTarget::Property { variable, property }) => {
             format!("min({variable}.{property})")
@@ -1452,7 +1528,8 @@ pub(super) fn default_aggregation_name(
             _,
             AggregateTarget::Ranked { .. }
             | AggregateTarget::Column(_)
-            | AggregateTarget::ColumnProperty { .. },
+            | AggregateTarget::ColumnProperty { .. }
+            | AggregateTarget::Expression(_),
         ) => {
             unreachable!("columns normalized before naming")
         }

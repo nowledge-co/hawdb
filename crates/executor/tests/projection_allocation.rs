@@ -2475,6 +2475,7 @@ fn run_point_read_admission(persisted: bool, case: PointReadCase) {
             hawdb_executor::traversal::BoundedExpandSpec {
                 source,
                 rel_type_id,
+                direction: hawdb_core::RelationshipDirection::Outgoing,
                 target_label_ids: Some(&label_ids),
                 min_hops: 1,
                 max_hops: 1,
@@ -3761,7 +3762,8 @@ fn run_expand_output_admission(persisted: bool, owner: ExpandOutputOwner) {
     assert_eq!(store.node_owned(source).unwrap().unwrap().id, source);
 
     // Recover through the same actual query owner with sufficient budgets.
-    // The lawful point record is moved; only retained input aliases are cloned.
+    // The lawful point record is moved. Retained input aliases share their
+    // immutable graph-slot records, so they add no record copy.
     memory.query_memory_bytes = nz(32 * 1024 * 1024);
     memory.batch_payload_bytes = nz(8 * 1024 * 1024);
     let admitted_ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
@@ -3811,8 +3813,8 @@ fn run_expand_output_admission(persisted: bool, owner: ExpandOutputOwner) {
         copies,
         match owner {
             ExpandOutputOwner::OneHop => 1,
-            ExpandOutputOwner::ZeroHop => 3,
-            ExpandOutputOwner::Typed | ExpandOutputOwner::Optional => 2,
+            ExpandOutputOwner::ZeroHop => 2,
+            ExpandOutputOwner::Typed | ExpandOutputOwner::Optional => 1,
         },
         "{owner:?}, cold={persisted}: recovery copied an overwritten or moved record"
     );

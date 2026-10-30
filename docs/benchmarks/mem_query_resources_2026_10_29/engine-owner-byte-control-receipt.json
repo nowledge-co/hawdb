@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "hawdb-plan-cache",
+    "--lib",
+    "byte_limited_lfu_bounds_a_burst_and_its_table_capacity"
+  ],
+  "control": "Disable byte-pressure eviction while retaining128entry bound, weighted charges and admission; same burst budget assertion must fail",
+  "original_sha256": "ff5260b0feddc5192cc4e58bbda2c9b639187bcc25056de8f73516ed4718e435",
+  "mutation_sha256": "b4cecd360df26cd6b7eb5cc7db4c6c51212089eda42b176ba8be231fc48ffb7c",
+  "red_exit": 101,
+  "restored_sha256": "ff5260b0feddc5192cc4e58bbda2c9b639187bcc25056de8f73516ed4718e435",
+  "green_exit": 0,
+  "same_oracle_red": true
+}

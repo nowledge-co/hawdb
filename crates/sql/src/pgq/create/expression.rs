@@ -338,7 +338,11 @@ impl Binder<'_> {
                 }
                 (Kind::Cast(Box::new(inner)), target)
             }
-            Syntax::Wildcard(_) | Syntax::Parameter(_) | Syntax::Collate { .. } => {
+            Syntax::Like { .. }
+            | Syntax::Filtered { .. }
+            | Syntax::Wildcard(_)
+            | Syntax::Parameter(_)
+            | Syntax::Collate { .. } => {
                 return Err(self.error(
                     Code::UnsupportedExpression,
                     span,

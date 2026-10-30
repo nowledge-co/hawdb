@@ -25,6 +25,7 @@ pub struct ExecutionRequest<'a> {
     plan: &'a PhysicalPlan,
     parameters: &'a BTreeMap<String, Value>,
     output_limits: OutputLimits,
+    output_columns: Option<&'a [String]>,
     memory: &'a ExecutionMemoryConfig,
     task_context: Option<&'a RuntimeTaskContext>,
     host_scorer: Option<&'a dyn crate::scoring::HostScorerProvider>,
@@ -40,10 +41,21 @@ impl<'a> ExecutionRequest<'a> {
             plan,
             parameters,
             output_limits: OutputLimits::default(),
+            output_columns: None,
             memory,
             task_context: None,
             host_scorer: None,
         }
+    }
+
+    /// Preserve the logical projection independently of physical rewrites.
+    pub fn with_output_columns(mut self, columns: Option<&'a [String]>) -> Self {
+        self.output_columns = columns;
+        self
+    }
+
+    pub fn output_columns(self) -> Option<&'a [String]> {
+        self.output_columns
     }
 
     pub fn with_output_limits(

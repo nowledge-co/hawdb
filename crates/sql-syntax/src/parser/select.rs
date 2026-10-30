@@ -143,7 +143,7 @@ impl Parser<'_> {
         self.parse_expression_range(start_position, end_position)
     }
 
-    fn scan_select_expression_end(
+    pub(super) fn scan_select_expression_end(
         &mut self,
         stop_keywords: &[&str],
         stop_at_comma: bool,

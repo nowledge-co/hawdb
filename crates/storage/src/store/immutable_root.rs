@@ -877,10 +877,7 @@ impl GraphStore {
             .map_err(|error| {
                 BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
             })?;
-        if matches!(
-            request.replay_config.recovery_mode,
-            RecoveryMode::AutoRepairTornTail | RecoveryMode::DoctorRepairTornTail
-        ) {
+        if request.replay_config.recovery_mode == RecoveryMode::DoctorRepairTornTail {
             return Err(BranchAdmissionError::Recovery(HawDBError::Storage(
                 "automatic repair of a branch private WAL requires branch-aware repair publication"
                     .into(),
@@ -2922,6 +2919,7 @@ fn combine_recovery_reports(
         .saturating_add(private_wal.replayed_wal_bytes);
     sealed_root.torn_tail_ignored |= private_wal.torn_tail_ignored;
     sealed_root.torn_tail_repaired |= private_wal.torn_tail_repaired;
+    sealed_root.wal_repair = private_wal.wal_repair.or(sealed_root.wal_repair);
     sealed_root.discarded_wal_tail_bytes = sealed_root
         .discarded_wal_tail_bytes
         .saturating_add(private_wal.discarded_wal_tail_bytes);
@@ -3681,6 +3679,7 @@ mod tests {
         for read_only in [false, true] {
             let mut request = request();
             request.read_only = read_only;
+            request.replay_config.recovery_mode = RecoveryMode::Strict;
             let admitted = GraphStore::admit_captured_branch(request).unwrap();
             assert_eq!(admitted.store().node_count_for_label(None), 2);
             assert_eq!(

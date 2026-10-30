@@ -584,20 +584,26 @@ in-process failpoints. The crash matrix MUST cover at least:
 Each crash point MUST reopen the database in a fresh process and verify that a
 mutation batch is either entirely absent or entirely recovered. The harness
 MUST verify commit epoch, replay LSN, endpoint integrity, projection watermark,
-and the absence of partially published artifacts. Default strict startup MUST reject
-a torn WAL tail without changing it. Writable startup MAY explicitly opt into
-`RecoveryMode::AutoRepairTornTail`, which MUST apply only to physically incomplete
-final records through the same audited doctor protocol. Read-only startup MUST
-reject that option. Complete-record corruption MUST remain fatal in every mode.
-Automatic repair MUST retain prior doctor evidence within the configured
-quarantine byte limit, and MUST fail without truncation when it cannot do so.
-Both automatic and explicit doctor repair MUST preserve
-structured prepared and applied repair records, retain a verified copy of the
-original WAL, and report discarded bytes before normal serving can resume. The
-explicit repair MUST use a separate typed API: a read-only generation-bound dry run,
-followed by explicit acknowledgement and state revalidation. A pending repair
-record MUST block strict open; opt-in automatic repair MAY resume it. An interrupted repair may be finalized
-only when the manifest, retained WAL, and quarantine identities still match.
+and the absence of partially published artifacts. Writable startup defaults to
+`RecoveryMode::AutoRepairTornTail`. Explicit `Strict` startup MUST reject damage
+without changing the WAL, and read-only startup MUST reject automatic repair.
+Automatic repair MUST stop at a complete transaction prefix and preserve a
+durable discarded suffix plus retained/original identities and prepared/applied
+audits before truncation. Physical EOF truncation is repairable; complete-record
+corruption, zero/stale regions and sequence errors are repairable only when a
+valid durable synchronization fence proves the retained prefix covers every
+protected byte/LSN. Published branch prefixes and synchronized data MUST NOT be
+discarded. The fence MUST become durable before a WAL synchronization can be
+acknowledged; interrupted barriers may conservatively fail closed.
+Automatic repair MUST retain prior evidence within its configured aggregate
+suffix-byte limit and fail without truncation when evidence cannot be stored.
+The typed recovery report MUST identify discarded bytes, retained LSN, reason
+and evidence location before serving resumes. Explicit repair uses a separate
+typed generation-bound dry run, exact acknowledgement and state revalidation.
+Pending repair records MUST block strict open; automatic retry may resume only
+when selector, retained WAL and suffix identities still match. Retry MUST
+re-establish file and directory durability, including visible but previously
+unacknowledged evidence/audit renames. See [Storage](../STORAGE.md#wal-recovery).
 An append write failure MUST truncate and sync back to the preceding valid WAL
 boundary before allowing another mutation. If rollback fails, or a complete
 record's synchronization fails, the handle MUST be poisoned because the durable

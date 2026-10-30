@@ -44,14 +44,14 @@ impl PartialRunRow {
 }
 
 pub(super) fn partial_aggregation_is_mergeable(item: &Aggregation) -> bool {
-    !item.distinct
-        && matches!(
-            item.function,
-            AggregateFunction::Count
-                | AggregateFunction::Min
-                | AggregateFunction::Max
-                | AggregateFunction::Avg
-        )
+    match item.function {
+        // DISTINCT cannot change an extreme value, so it keeps the same state.
+        AggregateFunction::Min | AggregateFunction::Max => true,
+        AggregateFunction::Count | AggregateFunction::Sum | AggregateFunction::Avg => {
+            !item.distinct
+        }
+        AggregateFunction::Collect => false,
+    }
 }
 
 fn partial_group_memory_bytes(key: &[Value], states: &[AggregateState]) -> usize {
@@ -108,13 +108,13 @@ fn partial_states_for_binding(
     items: &[Aggregation],
     catalog: &Catalog,
     binding: &Binding,
-) -> Vec<AggregateState> {
+) -> Result<Vec<AggregateState>> {
     items
         .iter()
         .map(|item| {
             let mut state = AggregateState::new(item);
-            state.update(item, catalog, binding);
-            state
+            state.update(item, catalog, binding)?;
+            Ok(state)
         })
         .collect()
 }
@@ -179,7 +179,7 @@ pub(super) fn stream_partial_aggregate_batches(
                 values,
             } = key_memory.group(group_keys, context.catalog, &binding, context.task_context)?;
             let key = HashedKey::new(values, &key_hasher);
-            let incoming = partial_states_for_binding(items, context.catalog, &binding);
+            let incoming = partial_states_for_binding(items, context.catalog, &binding)?;
 
             if let Some(group) = groups.get(&key) {
                 let previous_bytes = group.memory_bytes(&key.key);
@@ -401,6 +401,7 @@ fn encode_partial_binding(key: Vec<Value>, states: Vec<AggregateState>) -> Resul
                 distinct: None,
             } => Value::Int(count as i64),
             AggregateState::Min(value) | AggregateState::Max(value) => value.unwrap_or(Value::Null),
+            AggregateState::Sum(total) => total.value(),
             AggregateState::Avg { sum, count } => {
                 Value::List(vec![Value::Float(sum), Value::Int(count as i64)])
             }
@@ -461,6 +462,12 @@ fn decode_partial_binding(
             (AggregateFunction::Min, value) => AggregateState::Min(Some(value)),
             (AggregateFunction::Max, Value::Null) => AggregateState::Max(None),
             (AggregateFunction::Max, value) => AggregateState::Max(Some(value)),
+            (AggregateFunction::Sum, Value::Int(total)) if !item.distinct => {
+                AggregateState::Sum(SumTotal::Int(total))
+            }
+            (AggregateFunction::Sum, Value::Float(total)) if !item.distinct => {
+                AggregateState::Sum(SumTotal::Float(total))
+            }
             (AggregateFunction::Avg, Value::List(values)) if values.len() == 2 => {
                 let mut values = values.into_iter();
                 let (Some(Value::Float(sum)), Some(Value::Int(count))) =

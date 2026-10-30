@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 use super::*;
 
@@ -12,7 +12,13 @@ pub(super) fn lower_source(table: &TableFactor) -> Result<Option<SqlVectorIndexS
     else {
         return Ok(None);
     };
-    let name = lower_table_name(name)?;
+    lower_call(lower_table_name(name)?, args).map(Some)
+}
+
+pub(super) fn lower_call(
+    name: SqlTableName,
+    args: &sqlparser::ast::TableFunctionArgs,
+) -> Result<SqlVectorIndexSearch> {
     if name.schema.is_some() || name.name != "vector_index_search" {
         return Err(HawDBError::Semantic(
             "unsupported SQL table function".into(),
@@ -107,14 +113,14 @@ pub(super) fn lower_source(table: &TableFactor) -> Result<Option<SqlVectorIndexS
             "max_work is required for exact and filtered_ann vector search only".into(),
         ));
     }
-    Ok(Some(SqlVectorIndexSearch {
+    Ok(SqlVectorIndexSearch {
         index: lower_literal_expr(index)?,
         embedding: lower_literal_expr(embedding)?,
         mode,
         max_work,
         candidates,
         top_k: top_k.ok_or_else(required)?,
-    }))
+    })
 }
 
 #[cfg(test)]

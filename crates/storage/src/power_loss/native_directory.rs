@@ -167,6 +167,72 @@ impl NativeDirectoryTrace {
         ))
     }
 
+    /// Resolve native equivalence using simultaneous held physical objects,
+    /// retaining the existing logical inode and registered spelling. This is
+    /// deliberately separate from the artifact/literal-name recorder route.
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn open_directory_component(
+        &self,
+        name: &Path,
+        context: &FileOpenContext,
+        file: &std::fs::File,
+        mut open_native: impl FnMut(&std::ffi::OsStr) -> io::Result<std::fs::File>,
+    ) -> io::Result<Self> {
+        let engine = self.core.lock()?;
+        match engine.child_inode(self.inode, name) {
+            Ok(inode) => {
+                if !engine.is_directory(inode) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotADirectory,
+                        "captured child is not a directory",
+                    ));
+                }
+                return Ok(Self {
+                    core: self.core.clone(),
+                    inode,
+                    opened_path: self.opened_path.join(name),
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        drop(engine);
+        // Descriptor admission may evict recorder-backed cached files. Never
+        // hold its engine mutex while reserving this lazily needed extra FD.
+        let _probe = context.acquire(crate::file_descriptors::DescriptorKind::Transient)?;
+        let engine = self.core.lock()?;
+        let requested = crate::native_file_identity::of_file(file)?;
+        let mut matched = None;
+        // Relock/revalidate the parent and all current entries after admission.
+        // Each callback opens directly from the same held native parent, never
+        // through SourceDirectory capture/registration or this engine again.
+        for (registered, inode) in engine.directory_entries(self.inode)? {
+            if !engine.is_directory(inode) {
+                continue;
+            }
+            let probe = open_native(registered)?;
+            if crate::native_file_identity::of_file(&probe)? == requested {
+                if matched.is_some_and(|(_, previous)| previous != inode) {
+                    return Err(invalid(
+                        "native directory matches ambiguous recorded inodes",
+                    ));
+                }
+                matched = Some((registered, inode));
+            }
+        }
+        let (registered, inode) = matched.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "native directory has no matching recorded inode",
+            )
+        })?;
+        Ok(Self {
+            core: self.core.clone(),
+            inode,
+            opened_path: self.opened_path.join(registered),
+        })
+    }
+
     pub(crate) fn open_lock(
         &self,
         name: &Path,

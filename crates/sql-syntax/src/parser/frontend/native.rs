@@ -47,6 +47,55 @@ fn run(
     }
 }
 
+pub(super) fn relational_projection(
+    input: &str,
+    tokens: &[Token],
+    start: usize,
+) -> NativeMatch<Value> {
+    run(input, tokens, start, |parser| {
+        let mut items = Vec::new();
+        if parser.at_keyword("FROM") {
+            return Ok(Value::Projection(items));
+        }
+        loop {
+            let begin = parser.position;
+            if parser.at_select_clause_boundary() && parser.current().kind == TokenKind::Word {
+                parser.advance();
+            }
+            let end = parser.scan_select_expression_end(
+                &[
+                    "FROM", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "FOR", "FETCH",
+                ],
+                true,
+            )?;
+            let item = match parser.labeled_expression_from_range(begin, end) {
+                Ok(item) => item,
+                Err(error)
+                    if matches!(
+                        error.code,
+                        SyntaxErrorCode::UnexpectedToken | SyntaxErrorCode::UnexpectedEnd
+                    ) && end > begin + 1
+                        && super::super::is_identifier_kind(tokens[end - 1].kind) =>
+                {
+                    let mut item = parser.labeled_expression_from_range(begin, end - 1)?;
+                    if item.alias.is_some() {
+                        return Err(error);
+                    }
+                    item.alias = Some(super::super::identifier_from_token(tokens[end - 1]));
+                    item.span.end = tokens[end - 1].span.end;
+                    item
+                }
+                Err(error) => return Err(error),
+            };
+            items.push(item);
+            if !parser.consume_kind(TokenKind::Comma) {
+                break;
+            }
+        }
+        Ok(Value::Projection(items))
+    })
+}
+
 pub(super) fn projection(input: &str, tokens: &[Token], start: usize) -> NativeMatch<Value> {
     run(input, tokens, start, |parser| {
         parser.parse_select_projection().map(Value::Projection)
@@ -64,6 +113,96 @@ pub(super) fn relation(input: &str, tokens: &[Token], start: usize) -> NativeMat
         let alias = parser.parse_optional_table_alias()?;
         Ok(Value::Relation(RelationTableSyntax {
             name,
+            arguments: None,
+            alias,
+            span: Span::new(begin, parser.previous_end()),
+        }))
+    })
+}
+
+pub(super) fn relational_relation(
+    input: &str,
+    tokens: &[Token],
+    start: usize,
+) -> NativeMatch<Value> {
+    run(input, tokens, start, |parser| {
+        if parser.at_select_clause_boundary() {
+            return Err(parser.unexpected("at least one FROM item"));
+        }
+        let begin = parser.current().span.start;
+        let name = parser.parse_qualified_name()?;
+        let arguments = if parser.consume_kind(TokenKind::LeftParen) {
+            let mut arguments = Vec::new();
+            if parser.current().kind != TokenKind::RightParen {
+                loop {
+                    let name = if matches!(
+                        (
+                            parser
+                                .tokens
+                                .get(parser.position + 1)
+                                .map(|token| token.kind),
+                            parser
+                                .tokens
+                                .get(parser.position + 2)
+                                .map(|token| token.kind)
+                        ),
+                        (Some(TokenKind::Equal), Some(TokenKind::Greater))
+                    ) {
+                        let name = parser.parse_identifier()?;
+                        parser.advance();
+                        parser.advance();
+                        Some(name)
+                    } else {
+                        None
+                    };
+                    let begin = parser.position;
+                    let mut depths = super::super::Depths::default();
+                    while parser.current().kind != TokenKind::End {
+                        if depths.is_zero()
+                            && matches!(
+                                parser.current().kind,
+                                TokenKind::Comma | TokenKind::RightParen
+                            )
+                        {
+                            break;
+                        }
+                        parser.update_expression_depths(&mut depths, parser.current())?;
+                        parser.advance();
+                    }
+                    if !depths.is_zero() {
+                        return Err(parser.unclosed_expression_error(&depths));
+                    }
+                    let expression = parser.parse_expression_range(begin, parser.position)?;
+                    arguments.push(TableFunctionArgumentSyntax { name, expression });
+                    if !parser.consume_kind(TokenKind::Comma) {
+                        break;
+                    }
+                }
+            }
+            parser.expect_kind(TokenKind::RightParen, ")")?;
+            Some(arguments)
+        } else {
+            None
+        };
+        let alias = if parser.consume_keyword("AS") {
+            let begin = parser.current().span.start;
+            let name = parser.parse_identifier()?;
+            let columns = if parser.current().kind == TokenKind::LeftParen {
+                parser.parse_identifier_list()?
+            } else {
+                Vec::new()
+            };
+            Some(TableAlias {
+                name,
+                columns,
+                span: Span::new(begin, parser.previous_end()),
+            })
+        } else {
+            parser.parse_optional_table_alias()?
+        };
+        Ok(Value::Relation(RelationTableSyntax {
+            name,
+            arguments,
             alias,
             span: Span::new(begin, parser.previous_end()),
         }))
@@ -100,6 +239,20 @@ pub(super) fn clause_expression(input: &str, tokens: &[Token], start: usize) -> 
             .map(|value| Value::Expression(Box::new(value)))
     })
 }
+pub(super) fn offset_expression(input: &str, tokens: &[Token], start: usize) -> NativeMatch<Value> {
+    run(input, tokens, start, |parser| {
+        parser
+            .parse_select_clause_expression(
+                &[
+                    "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "FOR", "FETCH", "ROW",
+                    "ROWS",
+                ],
+                "an OFFSET expression",
+            )
+            .map(|value| Value::Expression(Box::new(value)))
+    })
+}
+
 pub(super) fn join_expression(input: &str, tokens: &[Token], start: usize) -> NativeMatch<Value> {
     run(input, tokens, start, |parser| {
         parser

@@ -234,6 +234,22 @@ impl<'a> QueryOutputAccumulator<'a> {
         })
     }
 
+    /// Bind declared output columns before execution, including empty results.
+    /// Retained schema storage is admitted under the result-memory budget.
+    pub fn bind_output_schema<'name>(
+        &mut self,
+        names: impl Iterator<Item = &'name str> + Clone,
+    ) -> Result<()> {
+        if let Some(rows) = &mut self.owned_rows {
+            rows.bind_budgeted_schema(
+                names,
+                &self.result_account,
+                &mut self.retained_result_lease,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Finalize only after execution, output validation, and profile capture.
     /// The accumulator keeps its retained charge until the execution call ends.
     pub fn take_owned_rows(&mut self) -> Option<QueryRows> {

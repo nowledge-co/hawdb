@@ -33,6 +33,11 @@ impl DatabaseInput {
     pub(crate) fn resolve(self, read_only: bool) -> Result<DatabaseConfig, String> {
         let mut config = DatabaseConfig {
             read_only,
+            recovery_mode: if read_only {
+                hawdb::RecoveryMode::Strict
+            } else {
+                hawdb::RecoveryMode::default()
+            },
             max_read_result_rows: Some(require_nonzero_usize(
                 "max_read_result_rows",
                 self.max_read_result_rows,

@@ -692,6 +692,7 @@ impl GraphStore {
                 torn_tail_repaired: false,
                 discarded_wal_tail_bytes: 0,
                 torn_tail_reason: None,
+                wal_repair: None,
                 recovered_commit_epoch: self.commit_epoch,
             });
         }
@@ -738,85 +739,103 @@ impl GraphStore {
                 cursor.start_lsn()
             )));
         }
+        let fence = super::wal_fence::WalRecoveryFence::load(
+            &wal_path,
+            wal_generation,
+            wal_replay_start_lsn,
+        )?;
+        let mut valid_end = super::WAL_BINARY_FILE_HEADER_BYTES as u64;
         let mut cursor = Some(cursor);
         let mut expected_lsn = wal_replay_start_lsn;
         loop {
-            let (entry, record_start, record_encoded_len, payload_len, payload_sha256) =
-                match cursor.as_mut().expect("active WAL cursor").next()? {
-                    WalCursorEvent::Eof => break,
-                    WalCursorEvent::TornTail { reason, .. }
-                        if config.recovery_mode == RecoveryMode::AutoRepairTornTail
-                            && !read_only =>
-                    {
-                        let owned = cursor.take().expect("active WAL cursor");
-                        if captured {
-                            owned.require_native_path(&wal_path)?;
-                            // Native captured child opens share reads/writes/delete;
-                            // retain custody through the guarded legacy repair.
-                            *captured_file = Some(owned.into_file());
-                        } else {
-                            drop(owned);
-                        }
-                        let durable = self.durable.as_mut().expect("durable WAL replay");
-                        let repair_directory = durable.wal_path.parent().ok_or_else(|| {
-                            HawDBError::StorageIntegrity(
-                                "WAL repair has no parent directory".into(),
-                            )
-                        })?;
-                        let repair = super::doctor::automatic_wal_tail_repair_locked(
-                            repair_directory,
-                            config,
-                        )?;
-                        durable.wal_bytes = repair.retained_wal_len;
-                        durable.wal_tail_repair = Some(repair.clone());
-                        tail_repair = Some(repair);
-                        torn_tail_reason = Some(reason);
-                        break;
+            let event = cursor.as_mut().expect("active WAL cursor").next()?;
+            let event = match event {
+                WalCursorEvent::Entry {
+                    ref entry,
+                    start_offset,
+                    ..
+                } if entry.lsn != expected_lsn => WalCursorEvent::Corrupt {
+                    offset: start_offset,
+                    reason: format!(
+                        "WAL LSN sequence mismatch: expected {expected_lsn}, got {}",
+                        entry.lsn
+                    ),
+                },
+                event => event,
+            };
+            let event = match event {
+                WalCursorEvent::Corrupt { reason, .. }
+                    if config.recovery_mode == RecoveryMode::AutoRepairTornTail
+                        && !read_only
+                        && fence.is_some_and(|fence| {
+                            fence.validate_retained(valid_end, expected_lsn).is_ok()
+                        }) =>
+                {
+                    WalCursorEvent::TornTail {
+                        valid_prefix_len: valid_end,
+                        reason,
                     }
-                    WalCursorEvent::TornTail { reason, .. } => {
-                        return Err(HawDBError::Storage(format!(
+                }
+                event => event,
+            };
+            let (entry, record_start, record_encoded_len, payload_len, payload_sha256) = match event
+            {
+                WalCursorEvent::Eof => break,
+                WalCursorEvent::TornTail { reason, .. }
+                    if config.recovery_mode == RecoveryMode::AutoRepairTornTail && !read_only =>
+                {
+                    let owned = cursor.take().expect("active WAL cursor");
+                    if captured {
+                        owned.require_native_path(&wal_path)?;
+                        // Native captured child opens share reads/writes/delete;
+                        // retain custody through the guarded legacy repair.
+                        *captured_file = Some(owned.into_file());
+                    } else {
+                        drop(owned);
+                    }
+                    let durable = self.durable.as_mut().expect("durable WAL replay");
+                    let repair_directory = durable.wal_path.parent().ok_or_else(|| {
+                        HawDBError::StorageIntegrity("WAL repair has no parent directory".into())
+                    })?;
+                    let repair =
+                        super::doctor::automatic_wal_tail_repair_locked(repair_directory, config)?;
+                    durable.wal_bytes = repair.retained_wal_len;
+                    durable.wal_tail_repair = Some(repair.clone());
+                    tail_repair = Some(repair);
+                    torn_tail_reason = Some(reason);
+                    break;
+                }
+                WalCursorEvent::TornTail { reason, .. } => {
+                    return Err(HawDBError::Storage(format!(
                         "strict WAL recovery rejected torn tail: {reason}; use DatabaseDoctor to inspect and explicitly repair the incomplete final record"
                     )));
-                    }
-                    WalCursorEvent::Corrupt { offset, reason } => {
-                        return reject_wal_source_corruption(
-                            captured,
-                            &wal_path,
-                            wal_generation,
-                            read_only,
-                            config.max_quarantine_bytes,
-                            offset,
-                            reason,
-                        );
-                    }
-                    WalCursorEvent::Entry {
-                        entry,
-                        start_offset,
-                        encoded_len,
-                        payload_len,
-                        payload_sha256,
-                    } => (
-                        entry,
-                        start_offset,
-                        encoded_len,
-                        payload_len,
-                        payload_sha256,
-                    ),
-                };
-            if entry.lsn != expected_lsn {
-                if !captured {
-                    quarantine_corrupt_wal(
+                }
+                WalCursorEvent::Corrupt { offset, reason } => {
+                    return reject_wal_source_corruption(
+                        captured,
                         &wal_path,
                         wal_generation,
                         read_only,
                         config.max_quarantine_bytes,
-                    )?;
+                        offset,
+                        reason,
+                    );
                 }
-                return Err(HawDBError::Storage(format!(
-                    "WAL LSN sequence mismatch at byte offset {record_start}: expected {expected_lsn}, got {}",
-                    entry.lsn
-                )));
-            }
+                WalCursorEvent::Entry {
+                    entry,
+                    start_offset,
+                    encoded_len,
+                    payload_len,
+                    payload_sha256,
+                } => (
+                    entry,
+                    start_offset,
+                    encoded_len,
+                    payload_len,
+                    payload_sha256,
+                ),
+            };
+            valid_end = record_start + record_encoded_len;
             if let Some(max_entries) = config.max_entries
                 && replayed_entries >= max_entries
             {
@@ -847,6 +866,14 @@ impl GraphStore {
         if captured && captured_file.is_none() {
             *captured_file = cursor.map(WalRecordCursor::into_file);
         }
+        if let Some(fence) = fence {
+            fence.validate_retained(
+                tail_repair
+                    .as_ref()
+                    .map_or(wal_len, |repair| repair.retained_wal_len),
+                expected_lsn,
+            )?;
+        }
         if let Some(durable) = &mut self.durable {
             durable.next_lsn = expected_lsn;
             durable.wal_commit_epoch = self.commit_epoch;
@@ -872,6 +899,7 @@ impl GraphStore {
                 .as_ref()
                 .map_or(0, |repair| repair.discarded_wal_tail_bytes),
             torn_tail_reason,
+            wal_repair: tail_repair,
             recovered_commit_epoch: self.commit_epoch,
         })
     }

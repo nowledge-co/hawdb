@@ -71,7 +71,13 @@ path. This output limit is independent of optimizer-statistics refresh policy.
 capacity/schema constructors retain their existing flat-storage path. The
 result-owner allowance includes two reference-count words for its storage Arc
 and two for the schema-column Arc. Column slots and string payloads are admitted
-separately.
+separately. Declared schemas are admitted before execution, so empty results
+retain their column names. A differently ordered producer uses one cached
+source-to-result ordinal permutation. Its Vec capacity has a separate transient
+result-account lease, released when the builder finishes or is dropped; it is
+not retained by QueryRows. Repeated source orders take linear name validation
+and direct slot assignment. A changed order is revalidated before replacing the
+mapping, and schema drift cannot publish a partial row.
 
 The lazily initialized `indexed_rows` compatibility cache allocates a row handle
 per row when callers index `QueryRows`. These post-delivery handle allocations

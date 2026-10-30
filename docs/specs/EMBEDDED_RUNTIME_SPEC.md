@@ -434,6 +434,14 @@ requests MAY use the effective CPU budget. Internal background tasks MUST use a
 separate conservative budget and pass QoS admission. Background saturation MUST
 NOT reject an explicit foreground request.
 
+The embedded Search catch-up facade MUST allow an explicit host operation to
+select its runtime priority through a typed library entrypoint. Selection MUST
+preserve the same bounded catch-up, projection publication and task-bound I/O
+context; it MUST NOT bypass the chosen lane's task, CPU, memory or I/O limits.
+Compatibility catch-up methods and scheduled maintenance retain Background
+priority. Holding an automatic checkpoint's Background physical wave is not
+itself a reason to reject caller-selected Foreground catch-up.
+
 `SharedHost` defaults reserve most process memory for the host application.
 Its stable HawDB capacity is one quarter of the effective host or cgroup policy
 ceiling, and its dynamic budget is further bounded by one quarter of sensed
@@ -474,6 +482,15 @@ reservations and live wave-scoped reads independently for each priority class.
   bounded upper limit. `MobileEmbedded` defaults MUST use a lower depth.
 - The host MAY override I/O depth using device-specific knowledge. The library
   MUST NOT infer a precise hardware queue count from CPU count alone.
+
+For known SSD/non-rotational media without a queue-depth hint, `SharedHost`
+defaults to 12 foreground and 3 background slots. This is a bounded concurrency
+policy, not a throughput guarantee. Supplied hints retain the foreground clamp
+of 4..32 and background depth of one quarter, clamped to 1..4. Explicit budgets,
+other media defaults and `MobileEmbedded` are unchanged. An unknown device does
+not receive the SSD default merely because its filesystem commonly runs on SSDs.
+This capacity adjustment does not resolve incorrect priority, permit retention
+or resource-wait behavior.
 
 Device discovery is path-specific and evidence preserving:
 

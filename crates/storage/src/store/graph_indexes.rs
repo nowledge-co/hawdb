@@ -16,6 +16,10 @@
 
 use super::*;
 
+#[cfg(test)]
+#[path = "graph_indexes/endpoint_validation_tests.rs"]
+mod endpoint_validation_tests;
+
 impl GraphStore {
     pub(super) fn remove_stored_node_from_derived_property_indexes(
         &mut self,
@@ -1280,25 +1284,27 @@ impl GraphStore {
 
     pub(super) fn validate_relationship_endpoints(&self) -> Result<()> {
         if self.canonical_base_out_of_core {
+            // Existence only: collect visible node ids once with an
+            // IDs-only scan instead of decoding a full node per endpoint.
+            // Ids come from the monotonic allocator, so the compressed
+            // bitmap stays a few bits per node rather than 8 bytes.
+            let mut node_ids = roaring::RoaringTreemap::new();
+            self.visit_projected_nodes_owned(None, &BTreeSet::new(), |node| {
+                node_ids.insert(node.id.0);
+                GraphScanControl::Continue
+            })?;
             let mut validation_error = None;
             self.visit_relationships_owned(None, |relationship| {
                 for (kind, node_id) in [
                     ("source", relationship.source),
                     ("target", relationship.target),
                 ] {
-                    match self.node_owned(node_id) {
-                        Ok(Some(_)) => {}
-                        Ok(None) => {
-                            validation_error = Some(HawDBError::Storage(format!(
-                                "relationship {} references missing {kind} node {}",
-                                relationship.id.0, node_id.0
-                            )));
-                            return GraphScanControl::Stop;
-                        }
-                        Err(error) => {
-                            validation_error = Some(error);
-                            return GraphScanControl::Stop;
-                        }
+                    if !node_ids.contains(node_id.0) {
+                        validation_error = Some(HawDBError::Storage(format!(
+                            "relationship {} references missing {kind} node {}",
+                            relationship.id.0, node_id.0
+                        )));
+                        return GraphScanControl::Stop;
                     }
                 }
                 GraphScanControl::Continue

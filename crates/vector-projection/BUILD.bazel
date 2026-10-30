@@ -34,3 +34,20 @@ rust_test(
     deps = all_crate_deps(normal_dev = True) + ["//crates/integrity:hawdb_integrity"],
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
+
+rust_test(
+    name = "hawdb_diskann_feedback_fuzz_tests",
+    crate = ":hawdb_vector_projection",
+    crate_features = ["storage-io"],
+    args = [
+        "diskann::tests::diskann_feedback_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    tags = ["manual"],
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True) + ["//crates/integrity:hawdb_integrity"],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)

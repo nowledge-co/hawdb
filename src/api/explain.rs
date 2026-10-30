@@ -20,7 +20,7 @@ use crate::qos::WorkRequest;
 use hawdb_core::Result;
 use hawdb_executor::binding::Binding;
 use hawdb_executor::memory::enforced_result_memory_budget_with_option;
-use hawdb_executor::result_delivery::{ConsumerMemoryMode, OutputLimits, QueryOutputAccumulator};
+use hawdb_executor::result_delivery::{OutputLimits, QueryOutputAccumulator};
 use hawdb_executor::QueryMemoryLedger;
 use hawdb_explain::json::{
     empty_read_execution_profile as owner_empty_read_execution_profile,
@@ -77,19 +77,15 @@ pub(super) fn empty_read_execution_profile() -> executor::ReadExecutionProfile {
 /// The diagnostic row is read output too, independently of ANALYZE's data rows.
 pub(super) fn admit_explain_output(
     row: Row,
+    analyze: bool,
     config: &DatabaseConfig,
     options: QueryExecutionOptions<'_>,
 ) -> Result<QueryOutput> {
     query_runtime_checkpoint(options.task_context)?;
     let ledger = QueryMemoryLedger::for_query(&config.execution_memory, options.task_context)?;
-    let mut rows = Vec::new();
-    let mut consumer = |row| {
-        rows.push(row);
-        Ok(())
-    };
     let (result_budget, budget_option) =
         enforced_result_memory_budget_with_option(&config.execution_memory, options.task_context)?;
-    let mut accumulator = QueryOutputAccumulator::new_with_budget_option(
+    let mut accumulator = QueryOutputAccumulator::new_owned_with_budget_option(
         OutputLimits {
             max_rows: restrictive_query_limit(
                 config.read_result_row_limit(),
@@ -103,11 +99,13 @@ pub(super) fn admit_explain_output(
         result_budget,
         &ledger,
         budget_option,
-        ConsumerMemoryMode::Retained,
-        &mut consumer,
     )?;
+    accumulator.bind_output_schema(hawdb_explain::json::explain_output_columns(analyze))?;
     accumulator.emit(Binding::values(row))?;
     query_runtime_checkpoint(options.task_context)?;
-    drop(accumulator);
-    Ok(QueryOutput { rows: rows.into() })
+    Ok(QueryOutput {
+        rows: accumulator
+            .take_owned_rows()
+            .expect("owned diagnostic rows"),
+    })
 }

@@ -1,0 +1,25 @@
+{
+  "base_head": "51f78587e921d17671904f39620acc5da74b6a40",
+  "binaries": {
+    "qualification": {
+      "path": "/private/tmp/hawdb-mem-performance/case-owner-engine-qualification",
+      "sha256": "91b3411923b01ecc377c26b5f13751ae99c0bebcf9be2974d6f0a4cd5ad809cf"
+    },
+    "release": {
+      "path": "/private/tmp/hawdb-mem-performance/case-owner-engine-release",
+      "sha256": "7d8285084a81d02d8b08a11c9d8a68eb552b0045f0131ab464594bfc8b08e035"
+    }
+  },
+  "sources": {
+    "benches/mem_query_resources.rs": "f5fd5758b8781320c9569b3bf5aa89792d6f77d3700b402cd28189020fa0530f",
+    "benches/mem_query_alloc.rs": "7a0db0b6ed03ef900fb28b2d6c9844cf1b758693edff9d48c98fb1abe08ce174",
+    "src/api/mod.rs": "a56221dad03a44cd5902b4a63b4b43e27f4b213c5c00b2026e659f6ef9fbbe4e",
+    "src/api/plan_cache.rs": "1ce0eecbb320ac44d4ca0746e2a8c475b9b9859b0c469d4b19e4c1f3a4c6d117",
+    "crates/plan-cache/src/lib.rs": "ff5260b0feddc5192cc4e58bbda2c9b639187bcc25056de8f73516ed4718e435",
+    "crates/plan-cache/src/template.rs": "8e0371747ff430f0fd39e44fee695077f9498cf16688738750db0c2f515523fb",
+    "crates/plan-cache/src/template/retained.rs": "e52f9cf1c339a27551c362dc32218c999c9ac96d7dd03d727614118bcad7f5bf",
+    "src/api/tests/simple_case_dispatch.rs": "c2d07f269f9a7feb07dbdd85796a9330d5a1523012778f16c51c8ca717de6dd7",
+    "crates/plan-cache/tests/template_retention.rs": "b5a7e4fb17c9e860d728af6243a05b322a9920e67e3303186c0e6141bb499677",
+    "crates/plan-cache/BUILD.bazel": "845cd18bf6c5600aa69e99375de8f82155bcfef193277db756b601747739bb47"
+  }
+}

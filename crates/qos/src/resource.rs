@@ -264,7 +264,7 @@ impl IoConcurrencyBudget {
             StorageMediaKind::NonRotational => device
                 .queue_depth_hint
                 .map(NonZeroUsize::get)
-                .unwrap_or(8)
+                .unwrap_or(12)
                 .clamp(4, 32),
             StorageMediaKind::Memory => 8,
             StorageMediaKind::Network | StorageMediaKind::Virtual | StorageMediaKind::Unknown => 4,
@@ -417,8 +417,8 @@ fn memory_pressure(
 mod tests {
     use super::*;
     use crate::{
-        RuntimeAdmissionCode, RuntimeGovernor, RuntimeGovernorConfig, RuntimeWorkPriority,
-        RuntimeWorkRequest,
+        RuntimeAdmissionCode, RuntimeGovernor, RuntimeGovernorConfig, RuntimeWorkKind,
+        RuntimeWorkPriority, RuntimeWorkRequest,
     };
 
     #[test]
@@ -763,8 +763,76 @@ mod tests {
         let default_ssd =
             StorageDeviceProfile::host_provided(StorageMediaKind::NonRotational, None);
         let io = IoConcurrencyBudget::shared_host_for_device(default_ssd);
-        assert_eq!(io.foreground_depth.get(), 8);
-        assert_eq!(io.background_depth.get(), 2);
+        assert_eq!(io.foreground_depth.get(), 12);
+        assert_eq!(io.background_depth.get(), 3);
+    }
+
+    #[test]
+    fn shared_host_ssd_io_budget_preserves_explicit_hint_bounds() {
+        for (hint, foreground, background) in [(1, 4, 1), (8, 8, 2), (16, 16, 4), (64, 32, 4)] {
+            let device = StorageDeviceProfile::host_provided(
+                StorageMediaKind::NonRotational,
+                NonZeroUsize::new(hint),
+            );
+            let io = IoConcurrencyBudget::shared_host_for_device(device);
+            assert_eq!(io, IoConcurrencyBudget::new(foreground, background));
+        }
+    }
+
+    #[test]
+    fn shared_host_ssd_io_admission_enforces_and_refunds_each_priority_budget() {
+        let device = StorageDeviceProfile::host_provided(StorageMediaKind::NonRotational, None);
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::shared_host(),
+            sampled_host_resources(8 << 30, 8 << 30),
+            IoConcurrencyBudget::shared_host_for_device(device),
+        );
+        let mut foreground =
+            RuntimeWorkRequest::new(RuntimeWorkPriority::Foreground, RuntimeWorkKind::Io);
+        foreground.io_slots = 12;
+        let mut background =
+            RuntimeWorkRequest::new(RuntimeWorkPriority::Background, RuntimeWorkKind::Io);
+        background.io_slots = 3;
+        let foreground_permit = governor.try_admit(foreground).unwrap();
+        let background_permit = governor.try_admit(background).unwrap();
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.active_foreground_io_slots, 12);
+        assert_eq!(snapshot.active_background_io_slots, 3);
+
+        for mut request in [foreground, background] {
+            request.io_slots = 1;
+            let error = governor.try_admit(request).unwrap_err();
+            assert_eq!(error.code, RuntimeAdmissionCode::IoSaturated);
+            assert_eq!(error.requested, 1);
+            assert_eq!(error.available, 0);
+            assert!(error.is_retryable());
+        }
+
+        drop(background_permit);
+        assert_eq!(governor.snapshot().active_background_io_slots, 0);
+        assert_eq!(governor.snapshot().active_foreground_io_slots, 12);
+        drop(governor.try_admit(background).unwrap());
+        drop(foreground_permit);
+        drop(governor.try_admit(foreground).unwrap());
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.active_foreground_io_slots, 0);
+        assert_eq!(snapshot.active_background_io_slots, 0);
+    }
+
+    #[test]
+    fn shared_host_non_ssd_io_defaults_stay_conservative() {
+        for (kind, foreground, background) in [
+            (StorageMediaKind::Rotational, 2, 1),
+            (StorageMediaKind::Memory, 8, 2),
+            (StorageMediaKind::Network, 4, 1),
+            (StorageMediaKind::Virtual, 4, 1),
+            (StorageMediaKind::Unknown, 4, 1),
+        ] {
+            let io = IoConcurrencyBudget::shared_host_for_device(
+                StorageDeviceProfile::host_provided(kind, None),
+            );
+            assert_eq!(io, IoConcurrencyBudget::new(foreground, background));
+        }
     }
 
     #[test]

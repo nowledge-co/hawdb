@@ -79,9 +79,11 @@ The first owned `SELECT` slice recognizes `GRAPH_TABLE` and qualified relations
 as `FROM` items, bounded scalar expressions, `INNER`, `LEFT`, and `CROSS` joins,
 projection, filtering, grouping, ordering, limits, offsets, and locking clauses.
 It deliberately rejects subqueries, right/full/natural joins, join `USING`,
-`DISTINCT ON`, and other unqualified shapes. These syntax nodes are not a
-production execution contract: existing relational SQL continues through the
-upstream parser until logical-plan lowering has equivalent corpus coverage. An
+`DISTINCT ON`, and other unqualified shapes. The default relational SELECT and EXPLAIN SELECT paths now use the PEG
+relational entry and lower into the existing relational IR, including constants,
+vector search, aggregate FILTER and LIKE/ILIKE. DDL/DML and materialized-view
+statements retain explicit upstream routing pending their own qualification.
+PGQ syntax nodes alone do not establish a production execution contract. An
 owned-parser failure MUST be returned directly and MUST NOT trigger a retry
 through the upstream parser.
 

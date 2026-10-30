@@ -4,10 +4,11 @@
 mod case;
 mod engine;
 mod oracle;
+mod pessimistic;
 mod shrink;
 mod text;
 
-use case::{generate, Case, FORMAT_VERSION};
+use case::{generate, Case, Mode, FORMAT_VERSION};
 use engine::{observe, Observation};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -17,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
-const HELP: &str = "hawdb-mvcc-fuzz: standalone local MVCC campaign\n\nCommands:\n  run [--seed N] [--cases N] [--seconds N] [--explain | --print-report]\n  generate [--seed N] [--index N]\n  replay FILE [--explain | --print-report]\n  shrink FILE [--attempts N] [--explain | --print-report]\n\nrun/replay/shrink accept --log-directory DIR (default target/mvcc-fuzz).\ngenerate prints an editable text case to stdout. FILE accepts .mvcc text,\nversioned JSON cases and saved JSON artifacts. --explain shows human-readable\nsteps and expected/actual results; --print-report prints a JSON summary.\nDefaults: seed=1, index=0, cases=1000, attempts=256. With --seconds alone,\nrun until the time budget or 1000000 cases; stop between complete cases.\nSuccess is otherwise quiet. Mismatch: exit 1; invalid input or I/O: exit 2.\nThis tool controls statement order, not internal thread scheduling.\n";
+const HELP: &str = "hawdb-mvcc-fuzz: standalone local MVCC campaign\n\nCommands:\n  run [--mode optimistic|pessimistic] [--seed N] [--cases N] [--seconds N] [--explain | --print-report]\n  generate [--mode optimistic|pessimistic] [--seed N] [--index N]\n  replay FILE [--explain | --print-report]\n  shrink FILE [--attempts N] [--explain | --print-report]\n\nrun/replay/shrink accept --log-directory DIR (default target/mvcc-fuzz) and\n--wait-probe-ms N (pessimistic wait probe, default 200).\ngenerate prints an editable text case to stdout. FILE accepts .mvcc text,\nversioned JSON cases and saved JSON artifacts. --explain shows human-readable\nsteps and expected/actual results; --print-report prints a JSON summary.\nDefaults: seed=1, index=0, cases=1000, attempts=256. With --seconds alone,\nrun until the time budget or 1000000 cases; stop between complete cases.\nSuccess is otherwise quiet. Mismatch: exit 1; invalid input or I/O: exit 2.\nThis tool controls statement order, not internal thread scheduling.\nPessimistic mode runs each transaction on its own thread and also checks\nwhich statements wait for a lock, deadlock victims and serialization aborts.\n";
 
 type ToolResult<T> = Result<T, Box<dyn Error>>;
 
@@ -32,6 +33,8 @@ struct Artifact {
 
 struct Options {
     command: String,
+    mode: Mode,
+    wait_probe_ms: u64,
     input: Option<PathBuf>,
     seed: u64,
     index: u64,
@@ -52,6 +55,8 @@ fn options(args: &[String]) -> Result<Options, String> {
     }
     let mut result = Options {
         command: command.clone(),
+        mode: Mode::Optimistic,
+        wait_probe_ms: 200,
         input: None,
         seed: 1,
         index: 0,
@@ -92,6 +97,13 @@ fn options(args: &[String]) -> Result<Options, String> {
             "--seed" if matches!(command.as_str(), "run" | "generate") => {
                 result.seed = value.parse().map_err(|_| "invalid seed")?
             }
+            "--mode" if matches!(command.as_str(), "run" | "generate") => {
+                result.mode = match value.as_str() {
+                    "optimistic" => Mode::Optimistic,
+                    "pessimistic" => Mode::Pessimistic,
+                    _ => return Err("mode must be optimistic or pessimistic".into()),
+                }
+            }
             "--index" if command == "generate" => {
                 result.index = value.parse().map_err(|_| "invalid index")?
             }
@@ -100,6 +112,9 @@ fn options(args: &[String]) -> Result<Options, String> {
             }
             "--seconds" if command == "run" => {
                 result.seconds = Some(value.parse().map_err(|_| "invalid seconds")?)
+            }
+            "--wait-probe-ms" if command != "generate" => {
+                result.wait_probe_ms = value.parse().map_err(|_| "invalid wait probe")?
             }
             "--attempts" if command == "shrink" => {
                 result.attempts = value.parse().map_err(|_| "invalid attempts")?
@@ -113,11 +128,15 @@ fn options(args: &[String]) -> Result<Options, String> {
     }
     if !(1..=1_000_000).contains(&result.cases)
         || !(1..=10_000).contains(&result.attempts)
+        || !(10..=5_000).contains(&result.wait_probe_ms)
         || result
             .seconds
             .is_some_and(|seconds| !(1..=3600).contains(&seconds))
     {
-        return Err("cases must be 1..1000000, attempts 1..10000, seconds 1..3600".into());
+        return Err(
+            "cases must be 1..1000000, attempts 1..10000, seconds 1..3600, wait probe 10..5000 ms"
+                .into(),
+        );
     }
     if result.print && result.explain {
         return Err("choose --explain or --print-report".into());
@@ -184,11 +203,22 @@ fn save_case(directory: &Path, name: &str, artifact: Artifact, explain: bool) ->
     Ok(())
 }
 
+fn generate_case(mode: Mode, seed: u64, index: u64) -> Case {
+    match mode {
+        Mode::Optimistic => generate(seed, index),
+        Mode::Pessimistic => pessimistic::generate(seed, index),
+    }
+}
+
 fn execute(options: Options) -> ToolResult<bool> {
     if options.command == "generate" {
-        print!("{}", text::format(&generate(options.seed, options.index)));
+        print!(
+            "{}",
+            text::format(&generate_case(options.mode, options.seed, options.index))
+        );
         return Ok(false);
     }
+    pessimistic::set_wait_probe(options.wait_probe_ms);
     fs::create_dir_all(&options.directory)?;
     let invocation = options.directory.join(format!(
         "{}-{}",
@@ -202,7 +232,12 @@ fn execute(options: Options) -> ToolResult<bool> {
     let mut completed = 0;
     let mut failed = false;
     let mut attempts = None;
-    let mut families = [[0_u64; 2]; 8];
+    let mut outcomes = std::collections::BTreeMap::new();
+    let family_count = match options.mode {
+        Mode::Optimistic => 8,
+        Mode::Pessimistic => pessimistic::FAMILIES.len(),
+    };
+    let mut families = vec![[0_u64; 2]; family_count];
     let started = Instant::now();
     if options.command == "run" {
         for index in 0..options.cases {
@@ -213,12 +248,13 @@ fn execute(options: Options) -> ToolResult<bool> {
             {
                 break;
             }
-            let case = generate(options.seed, index);
+            let case = generate_case(options.mode, options.seed, index);
             let left_terminal = case.schedule.iter().rposition(|tx| *tx == 0);
             let right_terminal = case.schedule.iter().rposition(|tx| *tx == 1);
             let first = usize::from(right_terminal < left_terminal);
-            families[(index % 8) as usize][first] += 1;
+            families[(index % family_count as u64) as usize][first] += 1;
             let observation = observe(&case)?;
+            pessimistic::tally(&observation, &mut outcomes);
             completed += 1;
             if observation.failure.is_some() {
                 save_case(
@@ -284,10 +320,16 @@ fn execute(options: Options) -> ToolResult<bool> {
         "requested_cases": (options.command == "run").then_some(options.cases),
         "time_budget_seconds": options.seconds, "elapsed_ms": elapsed_ms,
         "completed_cases": completed,
-        "families_by_first_terminal": (options.command == "run").then_some(families),
+        "families_by_first_terminal": (options.command == "run").then_some(&families),
         "reduction_attempts": attempts, "status": if failed { "mismatch" } else { "passed" },
         "directory": invocation,
-        "scope": "two optimistic snapshots; deterministic statement order; in-memory relational primary keys and broad predicates"
+        "mode": (options.command == "run").then_some(options.mode),
+        "pessimistic_outcomes": (options.mode == Mode::Pessimistic).then_some(&outcomes),
+        "wait_probe_ms": (options.mode == Mode::Pessimistic).then_some(options.wait_probe_ms),
+        "scope": match options.mode {
+            Mode::Optimistic => "two optimistic snapshots; deterministic statement order; in-memory relational primary keys and broad predicates",
+            Mode::Pessimistic => "two pessimistic transactions on worker threads; deterministic statement order; lock waits, deadlock victims, snapshot refresh and serialization aborts; in-memory relational primary keys and broad predicates",
+        }
     });
     write_json(&invocation.join("report.json"), &report)?;
     if options.print {
@@ -300,19 +342,20 @@ fn execute(options: Options) -> ToolResult<bool> {
             invocation.display()
         );
         if options.command == "run" {
-            for (name, counts) in [
-                "same_key",
-                "disjoint",
-                "net_zero",
-                "absent_delete",
-                "delete_insert",
-                "broad_narrow",
-                "duplicate_insert",
-                "rollback",
-            ]
-            .iter()
-            .zip(families)
-            {
+            let names = match options.mode {
+                Mode::Optimistic => &[
+                    "same_key",
+                    "disjoint",
+                    "net_zero",
+                    "absent_delete",
+                    "delete_insert",
+                    "broad_narrow",
+                    "duplicate_insert",
+                    "rollback",
+                ],
+                Mode::Pessimistic => &pessimistic::FAMILIES[..],
+            };
+            for (name, counts) in names.iter().zip(&families) {
                 println!(
                     "  {name:<18} T1 first: {:>6}  T2 first: {:>6}",
                     counts[0], counts[1]

@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 use super::*;
 use crate::build_control::CheckedWriter;
@@ -170,28 +170,28 @@ impl Control {
         let path = io.path(&writer.stage.path, Path::new(&name))?;
         let buffer = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
         let scratch = writer.stage.scratch_directory();
+        let wave = crate::out_of_core::scratch_directory::io_scope(
+            &self.task,
+            self.memory.host_admission.is_some()
+                || scratch.as_ref().is_some_and(|scratch| scratch.governed()),
+        )?;
         let file = match &scratch {
-            Some(scratch) => {
-                let _io = crate::out_of_core::scratch_directory::io_scope(
-                    &self.task,
-                    scratch.governed(),
-                )?;
-                scratch.create(&path)?
-            }
+            Some(scratch) => scratch.create(&path)?,
             None => io.native(&[&path], || {
                 OpenOptions::new().create_new(true).write(true).open(&*path)
             })??,
         };
-        let mut file = BufWriter::with_capacity(SPOOL_BUFFER_BYTES, file);
+        let file = BufWriter::with_capacity(SPOOL_BUFFER_BYTES, file);
         if file.capacity() != SPOOL_BUFFER_BYTES {
             return Err(invalid("run buffer exceeds admission"));
         }
+        let mut file = io_phase::Spool::new(file);
         self.write(writer, spool::SPOOL_HEADER.len() as u64)?;
         file.write_all(spool::SPOOL_HEADER)?;
         Ok(Output {
             file,
             path,
-            io_task: scratch.as_ref().map(|_| self.task.clone()),
+            io_task: wave.is_some().then(|| self.task.clone()),
             scratch,
             memory: self.memory.clone(),
             records: 0,
@@ -234,7 +234,7 @@ impl Run {
     }
 }
 pub(super) struct Output {
-    file: BufWriter<File>,
+    file: io_phase::Spool,
     path: OwnedPath,
     io_task: Option<RuntimeTaskContext>,
     scratch: Option<std::sync::Arc<crate::out_of_core::ScratchDirectory>>,
@@ -381,19 +381,16 @@ impl Output {
                 .transpose()?;
             self.file.flush()?;
         }
-        let held = if let Some(task) = self.io_task {
-            let file = self
-                .file
-                .into_inner()
-                .map_err(|e| HawDBError::from(e.into_error()))?;
-            Some(spool::HeldSpool::capture_governed(
-                file,
+        // Captured runs retain native custody. Ordinary runs retain only
+        // paths while idle, preserving their existing descriptor bound.
+        let held = match (self.scratch.is_some(), self.io_task) {
+            (true, Some(task)) => Some(spool::HeldSpool::capture_governed(
+                self.file.into_file(),
                 self.bytes,
                 &self.memory,
                 task,
-            )?)
-        } else {
-            None
+            )?),
+            _ => None,
         };
         Ok(Run {
             path: self.path,
@@ -444,8 +441,24 @@ impl Reader {
     ) -> Result<Self> {
         control.read(spool::SPOOL_HEADER.len() as u64)?;
         let memory = control.memory.spool.reserve(std::mem::size_of::<Self>())?;
+        let held = match &run.held {
+            Some(held) => held.clone(),
+            None => {
+                let wave = crate::out_of_core::scratch_directory::io_scope(
+                    &control.task,
+                    control.memory.host_admission.is_some(),
+                )?;
+                let file = io::GenerationIo::new(&control.memory, &control.task)
+                    .native(&[&run.path], || File::open(&*run.path))??;
+                let held = spool::HeldSpool::capture(file, run.bytes, &control.memory)?;
+                if wave.is_some() {
+                    held.rebind_task(&control.task);
+                }
+                held
+            }
+        };
         let cursor = spool::SpoolSource {
-            held: run.held.clone(),
+            held: Some(held),
             path: &run.path,
             document_count: 0,
             max_record_bytes: writer.options.max_record_bytes.get(),
@@ -648,12 +661,17 @@ impl Reader {
         let path = self.run.path;
         drop(self.cursor);
         drop(self.run.held);
+        let _wave = crate::out_of_core::scratch_directory::io_scope(
+            &self.task,
+            control.memory.host_admission.is_some()
+                || self
+                    .run
+                    .scratch
+                    .as_ref()
+                    .is_some_and(|scratch| scratch.governed()),
+        )?;
         match self.run.scratch {
             Some(scratch) => {
-                let _io = crate::out_of_core::scratch_directory::io_scope(
-                    &self.task,
-                    scratch.governed(),
-                )?;
                 scratch.remove(&path)?;
             }
             None => io::GenerationIo::new(&control.memory, &self.task)

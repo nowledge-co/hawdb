@@ -99,6 +99,7 @@ fn mem_algorithm_iteration_and_final_phase_contracts_survive_both_residencies() 
         ] {
             let mut config = DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 storage_residency_mode: residency,
                 ..DatabaseConfig::default()
             };
@@ -237,6 +238,7 @@ pub(in crate::api::tests) fn assert_projected_identity_admission(path: &std::pat
         ] {
             let mut config = DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 storage_residency_mode: residency,
                 ..DatabaseConfig::default()
             };

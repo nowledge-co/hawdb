@@ -11,6 +11,7 @@ use hawdb_core::{RuntimeTaskContext, VectorDistance};
 
 mod artifact;
 mod build;
+mod feedback;
 #[cfg(test)]
 mod tests;
 
@@ -42,6 +43,16 @@ pub trait DiskAnnRead {
         ordinal: u32,
         task: Option<&RuntimeTaskContext>,
     ) -> Result<f64>;
+    /// Reuses validated query state. Providers with native raw vectors can avoid
+    /// recomputing its norm; existing providers retain their distance contract.
+    fn distance_prepared(
+        &self,
+        query: &hawdb_core::vector::PreparedVectorQuery<'_>,
+        ordinal: u32,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<f64> {
+        self.distance(query.coordinates(), ordinal, task)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -111,6 +122,8 @@ pub struct DiskAnnSearchReport {
     pub bridge_nodes: usize,
     pub id_lookup_steps: usize,
     pub seed_steps: usize,
+    /// Traversal switched once to complete evaluation of the pinned allowlist.
+    pub adaptive_exact_scan: bool,
 }
 
 #[derive(Debug)]
@@ -133,7 +146,7 @@ pub fn search_diskann(
     if graph.len() > u32::MAX as usize {
         return Err(corrupt("DiskANN provider count exceeds ordinal space"));
     }
-    validate_query(graph.dimension(), graph.metric(), query, options.task)?;
+    let query = validate_query(graph.dimension(), graph.metric(), query, options.task)?;
     if options.beam_width == 0 || top_k > options.beam_width || options.max_visited == 0 {
         return Err(configuration(
             "DiskANN requires a positive beam/work bound and top-k <= beam width",
@@ -165,14 +178,14 @@ pub fn search_diskann(
     require_memory(required, options.max_working_bytes)?;
     let mut scratch = Scratch::new(graph.len(), beam_width, options.max_visited)?;
     let report = if let Some(candidates) = candidates.filter(|_| graph.ids_are_sorted()) {
-        traverse_filtered(graph, query, candidates, &mut scratch, options)?
+        traverse_filtered(graph, &query, candidates, &mut scratch, options)?
     } else {
         traverse(
             graph,
             &mut scratch,
             options,
             |id| Ok(candidates.is_none_or(|set| set.ids.binary_search(&id).is_ok())),
-            |ordinal| graph.distance(query, ordinal, options.task),
+            |ordinal| graph.distance_prepared(&query, ordinal, options.task),
         )?
     };
     let mut hits = Vec::with_capacity(top_k.min(scratch.beam.len()));
@@ -314,12 +327,12 @@ fn traverse(
         expand_rejected: true,
     };
     discover(graph, entry, scratch, options, &mut report, &mut policy)?;
-    walk(graph, scratch, options, report, policy, false)
+    walk(graph, scratch, options, report, policy, None)
 }
 
 fn traverse_filtered(
     graph: &impl DiskAnnRead,
-    query: &[f32],
+    query: &hawdb_core::vector::PreparedVectorQuery<'_>,
     candidates: CandidateSet<'_>,
     scratch: &mut Scratch,
     options: DiskAnnSearchOptions<'_>,
@@ -331,7 +344,7 @@ fn traverse_filtered(
             == (graph.len() - 1) as u64;
     let mut policy = VisitPolicy {
         allowed: |id| Ok(candidates.ids.binary_search(&id).is_ok()),
-        score: |ordinal| graph.distance(query, ordinal, options.task),
+        score: |ordinal| graph.distance_prepared(query, ordinal, options.task),
         expand_rejected: true,
     };
     let complete_domain = ordinal_ids
@@ -362,7 +375,33 @@ fn traverse_filtered(
         .entry_point()
         .ok_or_else(|| corrupt("nonempty DiskANN graph has no entry point"))?;
     discover(graph, entry, scratch, options, &mut report, &mut policy)?;
-    walk(graph, scratch, options, report, policy, !complete_domain)
+    let feedback = (!complete_domain).then(|| {
+        feedback::FilteredFeedback::new(graph.len(), candidates.ids.len(), ordinal_ids, &report)
+    });
+    let mut report = walk(graph, scratch, options, report, policy, feedback)?;
+    if report.adaptive_exact_scan {
+        // No results have escaped. Reuse the admitted workspace and cumulative
+        // work counters; already scored eligible nodes need no second distance.
+        scratch.bridges.clear();
+        let mut exact = VisitPolicy {
+            allowed: |id| Ok(candidates.ids.binary_search(&id).is_ok()),
+            score: |ordinal| graph.distance_prepared(query, ordinal, options.task),
+            expand_rejected: false,
+        };
+        for &id in candidates.ids {
+            charge_query_work(options, &report)?;
+            report.seed_steps += 1;
+            let ordinal = if ordinal_ids {
+                (id < graph.len() as u64).then_some(id as u32)
+            } else {
+                find_id(graph, id, options, &mut report)?
+            };
+            if let Some(ordinal) = ordinal {
+                discover(graph, ordinal, scratch, options, &mut report, &mut exact)?;
+            }
+        }
+    }
+    Ok(report)
 }
 
 // One independently mixed entry from each disjoint ID-list bucket. Stratifying
@@ -411,7 +450,7 @@ fn walk(
     options: DiskAnnSearchOptions<'_>,
     mut report: DiskAnnSearchReport,
     mut policy: VisitPolicy<impl FnMut(u64) -> Result<bool>, impl FnMut(u32) -> Result<f64>>,
-    bounded_bridges: bool,
+    feedback: Option<feedback::FilteredFeedback>,
 ) -> Result<DiskAnnSearchReport> {
     loop {
         checkpoint(options.task)?;
@@ -423,7 +462,7 @@ fn walk(
         } else {
             break;
         };
-        policy.expand_rejected = !bounded_bridges || !bridge;
+        policy.expand_rejected = feedback.is_none() || !bridge;
         report.expanded_nodes += 1;
         for (index, neighbor) in graph.neighbors(ordinal)?.enumerate() {
             report.neighbor_reads += 1;
@@ -431,6 +470,13 @@ fn walk(
                 return Err(corrupt("DiskANN degree exceeds the provider bound"));
             }
             discover(graph, neighbor, scratch, options, &mut report, &mut policy)?;
+            if feedback
+                .as_ref()
+                .is_some_and(|feedback| feedback.should_scan(&report, options.max_visited))
+            {
+                report.adaptive_exact_scan = true;
+                return Ok(report);
+            }
         }
     }
     Ok(report)
@@ -535,19 +581,20 @@ fn charge_query_work(
     Ok(())
 }
 
-fn validate_query(
+fn validate_query<'a>(
     dimension: usize,
     metric: VectorDistance,
-    vector: &[f32],
+    vector: &'a [f32],
     task: Option<&RuntimeTaskContext>,
-) -> Result<()> {
+) -> Result<hawdb_core::vector::PreparedVectorQuery<'a>> {
     if vector.len() != dimension {
         return Err(ProjectionError::InvalidVector(
             "DiskANN vector dimension differs from its graph".into(),
         ));
     }
-    distance(metric, vector, vector, task)?;
-    Ok(())
+    with_distance_work(task, |checkpoint| {
+        hawdb_core::vector::PreparedVectorQuery::for_distance(metric, vector, checkpoint)
+    })
 }
 
 fn distance(
@@ -561,10 +608,10 @@ fn distance(
     })
 }
 
-fn with_distance_work(
+fn with_distance_work<T>(
     task: Option<&RuntimeTaskContext>,
-    operation: impl FnOnce(&mut dyn FnMut() -> hawdb_core::Result<()>) -> hawdb_core::Result<f64>,
-) -> Result<f64> {
+    operation: impl FnOnce(&mut dyn FnMut() -> hawdb_core::Result<()>) -> hawdb_core::Result<T>,
+) -> Result<T> {
     let mut cancellation = None;
     let result = operation(&mut || {
         if let Some(task) = task

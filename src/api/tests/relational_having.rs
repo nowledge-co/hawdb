@@ -351,6 +351,7 @@ fn relational_having_reads_hidden_overflow_metadata_and_hydrates_value_compariso
     }
     let config = DatabaseConfig {
         read_only: true,
+        recovery_mode: crate::RecoveryMode::Strict,
         storage_residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
         relational_index_mode: hawdb_storage::config::RelationalIndexMode::Authoritative,
         max_relational_hydration_bytes: std::num::NonZeroUsize::new(32 * 1024).unwrap(),

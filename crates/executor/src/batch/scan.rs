@@ -368,8 +368,8 @@ pub(super) fn stream_source_segment_scan_batches(
             }
             let binding = Binding {
                 values: BTreeMap::new(),
-                nodes: BTreeMap::from([(variable.to_string(), node)]),
-                relationships: BTreeMap::new(),
+                nodes: BTreeMap::from([(variable.to_string(), node)]).into(),
+                relationships: BTreeMap::new().into(),
             };
             allocations.try_push(allocation)?;
             if output.push(binding, &mut emit_output)? == BatchControl::Stop {

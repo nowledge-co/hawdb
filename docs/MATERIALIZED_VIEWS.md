@@ -91,8 +91,28 @@ large or skewed groups can exhaust admission even for a one-row source update.
 
 Maintenance shares one row/payload work budget across all affected views,
 derived from `RelationalMutationLimits` (the SQL facade uses the default
-100,000 rows and 64 MiB payload limit). Reads, output changes, hydration, and
-aggregate working state are bounded. Exceeding admission or aggregate limits
+250,000 row work units and the unchanged 64 MiB estimated payload limit).
+This admits the motivating 60,000-row projection backfill's 120,000 work units
+without widening every embedded host's foreground payload allowance. These defaults
+also govern ordinary relational mutations and schema rewrites using the same
+type. The SQL facade and embedded profiles currently use these defaults;
+`DatabaseConfig` has no relational-work override. Explicit storage-kernel and
+staging limits remain effective for their callers, but do not provide a
+host-facing SQL option. The foreground maintenance path does not reserve this
+logical payload against the process memory governor. The payload
+counter is cumulative logical work, not live allocation or process RSS; larger
+defaults admit more synchronous CPU/memory work and can increase commit latency.
+Independent WAL record/value bounds, capture limits and read-result limits
+remain effective and can refuse work below these ceilings.
+The WAL decoder retains a separate 1,000,000-row allowance, and compatibility
+tests require it to cover foreground defaults without shrinking when foreground
+policy is tightened. Older binaries with the former 100,000-row ceiling may
+refuse newly admitted larger row batches. A downgrade can also refuse replay of a small view-DDL WAL
+record whose backfill exceeds the older maintenance-work allowance. The byte
+encoding and codec version are unchanged; successful writing here does not
+guarantee that an older binary can reopen the database.
+Reads, output changes, hydration, and aggregate working state are bounded.
+Exceeding admission or aggregate limits
 rejects the whole transaction before WAL append; results are never truncated.
 More views increase write latency and can cause a previously admitted base
 batch to exceed maintenance limits. Large initial backfills must fit admission;
@@ -109,6 +129,22 @@ key copies, hydrated rows, aggregate state, and output copies. Incremental
 MIN/MAX additionally charges every visited prefix entry, including changed
 identities skipped during recomputation. Budget exhaustion never publishes a
 partial backfill or source mutation.
+
+WAL recovery does not reapply the current foreground row/payload work policy
+to already committed transactions, including their synchronous view maintenance.
+Decode/integrity bounds and recovery allocation reservations still apply; a
+recovery failure retains durable evidence rather than publishing partial state.
+Physical compaction and reclamation use their own background resource controls,
+not `RelationalMutationLimits`. This separation does not exempt view creation
+or maintenance performed as part of a new foreground write.
+
+TiDB similarly separates cleanup work from a user's SQL session: its
+[GC worker](https://github.com/pingcap/tidb/blob/e0cfb27df3212f1112bddba141aee3d6f743b3fb/pkg/store/gcworker/gc_worker.go#L251-L264)
+uses an internal session allowed to write when disk space is almost full.
+TiKV retains independent [GC batch and I/O controls](https://docs.pingcap.com/tidb/stable/tikv-configuration-file/#gc)
+and [reserved recovery disk space](https://docs.pingcap.com/tidb/stable/tikv-configuration-file/#reserve-space).
+These are design references, not equivalent HawDB memory or disk-reservation
+guarantees; HawDB's cumulative payload is not TiDB's live session memory quota.
 
 The current implementation requires materialized relational constraints and
 resident source rows. `RelationalIndexMode::Authoritative` is rejected for

@@ -1,0 +1,18 @@
+{
+  "binaries": {
+    "qualification": {
+      "path": "/private/tmp/hawdb-mem-performance/review-engine-qualification",
+      "sha256": "87368daf2d831c08206d577c27ca6e183f0447e00772e879537a806c4b336f86"
+    },
+    "release": {
+      "path": "/private/tmp/hawdb-mem-performance/review-engine-release",
+      "sha256": "8dca6b704e4b9e21e4b3cec70867bb50b7c0c707c327a9414def79fdc2a12afc"
+    }
+  },
+  "sources": {
+    "benches/mem_query_resources.rs": "4d20ad2653b72b027c09b64869afd33f20b5b3fa602f9ce7fc5a7081b23d7e77",
+    "benches/mem_query_alloc.rs": "7a0db0b6ed03ef900fb28b2d6c9844cf1b758693edff9d48c98fb1abe08ce174",
+    "src/api/plan_cache.rs": "65733acbdfdb80a2c41431e75fa3b441b3bf6ab4e15a44b6d61a289188e48cd9",
+    "crates/plan-cache/src/template.rs": "4bcca2b5e731e6a5e8d25d99b5899697597261e4d3827d4cc4dcfa2fe4b878bd"
+  }
+}

@@ -7868,3 +7868,5 @@ fn grouped_evidence_complete_text_preserves_graph_eligibility_and_retained_reads
         }
     }
 }
+
+mod catch_up_admission_tests;

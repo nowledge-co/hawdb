@@ -148,6 +148,7 @@ fn read_only_database_rejects_knowledge_property_batch_query_update() {
             &path,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 ..DatabaseConfig::default()
             },
         )

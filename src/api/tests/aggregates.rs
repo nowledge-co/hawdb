@@ -924,3 +924,178 @@ fn grouped_evidence_matches_full_id_reference_for_mixed_keys_and_permutations() 
         }
     }
 }
+
+fn sum_expression_fixture() -> Database {
+    let mut db = Database::new();
+    for (g, x) in [
+        ("a", "1"),
+        ("a", "2"),
+        ("a", "3"),
+        ("b", "4"),
+        ("b", "null"),
+    ] {
+        db.query(&format!("CREATE (:Num {{g: '{g}', x: {x}}})"))
+            .unwrap();
+    }
+    db
+}
+
+#[test]
+fn sum_and_expression_aggregates_follow_opencypher_semantics() {
+    let mut db = sum_expression_fixture();
+    let output = db
+        .query(
+            "MATCH (n:Num) RETURN sum(n.x) AS s, sum(CASE WHEN n.x > 1 THEN 1 ELSE 0 END) AS big, count(DISTINCT n.x % 2) AS parities, avg(n.x * 2) AS avg2, min(n.x + 1) AS lo, max(-n.x) AS neg, collect(DISTINCT n.x % 3) AS residues, count(n.x * 1) AS counted, sum(DISTINCT n.x % 2) AS odd",
+        )
+        .unwrap();
+    assert_eq!(
+        output.schema().columns(),
+        ["s", "big", "parities", "avg2", "lo", "neg", "residues", "counted", "odd"]
+    );
+    assert_eq!(output.rows.len(), 1);
+    let row = &output.rows[0];
+    assert_eq!(row.get("s"), Some(&Value::Int(10)));
+    // A NULL x makes the CASE condition unknown, so its ELSE branch counts 0.
+    assert_eq!(row.get("big"), Some(&Value::Int(3)));
+    assert_eq!(row.get("parities"), Some(&Value::Int(2)));
+    assert_eq!(row.get("avg2"), Some(&Value::Float(5.0)));
+    assert_eq!(row.get("lo"), Some(&Value::Int(2)));
+    assert_eq!(row.get("neg"), Some(&Value::Int(-1)));
+    assert_eq!(
+        row.get("residues"),
+        Some(&Value::List(vec![
+            Value::Int(0),
+            Value::Int(1),
+            Value::Int(2)
+        ]))
+    );
+    assert_eq!(row.get("counted"), Some(&Value::Int(4)));
+    assert_eq!(row.get("odd"), Some(&Value::Int(1)));
+
+    let output = db
+        .query("MATCH (n:Num) RETURN sum(n.x * 0.5) AS half, sum(n.missing) AS none")
+        .unwrap();
+    assert_eq!(output.rows[0].get("half"), Some(&Value::Float(5.0)));
+    assert_eq!(output.rows[0].get("none"), Some(&Value::Int(0)));
+}
+
+#[test]
+fn grouped_sum_and_unaliased_expression_aggregates() {
+    let mut db = sum_expression_fixture();
+    let output = db
+        .query("MATCH (n:Num) RETURN n.g AS g, sum(n.x) AS s ORDER BY g")
+        .unwrap();
+    assert_eq!(output.schema().columns(), ["g", "s"]);
+    let rows = output
+        .rows
+        .iter()
+        .map(|row| (row.get("g").cloned(), row.get("s").cloned()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        [
+            (Some(Value::String("a".into())), Some(Value::Int(6))),
+            (Some(Value::String("b".into())), Some(Value::Int(4))),
+        ]
+    );
+
+    let output = db
+        .query("MATCH (n:Num) RETURN sum(n.x * 2), count(DISTINCT n.x % 2)")
+        .unwrap();
+    assert_eq!(
+        output.schema().columns(),
+        ["sum(n.x * 2)", "count(DISTINCT n.x % 2)"]
+    );
+    assert_eq!(output.rows[0].get("sum(n.x * 2)"), Some(&Value::Int(20)));
+}
+
+#[test]
+fn sum_and_avg_over_empty_input() {
+    let mut db = sum_expression_fixture();
+    let output = db
+        .query(
+            "MATCH (n:Missing) RETURN sum(n.x) AS s, sum(n.x * 2) AS s2, avg(n.x * 2) AS a, count(n.x + 1) AS c, collect(n.x + 1) AS xs",
+        )
+        .unwrap();
+    assert_eq!(output.rows.len(), 1);
+    let row = &output.rows[0];
+    assert_eq!(row.get("s"), Some(&Value::Int(0)));
+    assert_eq!(row.get("s2"), Some(&Value::Int(0)));
+    assert_eq!(row.get("a"), Some(&Value::Null));
+    assert_eq!(row.get("c"), Some(&Value::Int(0)));
+    assert_eq!(row.get("xs"), Some(&Value::List(Vec::new())));
+}
+
+#[test]
+fn expression_aggregates_read_with_pipeline_columns() {
+    let mut db = sum_expression_fixture();
+    let output = db
+        .query("MATCH (n:Num) WITH n.g AS g, n.x AS x RETURN g, sum(x * 2) AS s ORDER BY g")
+        .unwrap();
+    assert_eq!(output.schema().columns(), ["g", "s"]);
+    let sums = output
+        .rows
+        .iter()
+        .map(|row| row.get("s").cloned())
+        .collect::<Vec<_>>();
+    assert_eq!(sums, [Some(Value::Int(12)), Some(Value::Int(8))]);
+
+    // Re-running with a new parameter value must rebind the cached plan.
+    for min in [2, 4, 2] {
+        let parameters = BTreeMap::from([("min".to_string(), Value::Int(min))]);
+        let output = db
+            .query_with_params(
+                "MATCH (n:Num) WITH n.g AS g, sum(CASE WHEN n.x >= $min THEN 1 ELSE 0 END) AS hits RETURN g, hits ORDER BY g",
+                &parameters,
+            )
+            .unwrap();
+        let hits = output
+            .rows
+            .iter()
+            .map(|row| row.get("hits").cloned())
+            .collect::<Vec<_>>();
+        let expected = if min == 2 { [2, 1] } else { [0, 1] };
+        assert_eq!(
+            hits,
+            expected.map(|value| Some(Value::Int(value))),
+            "min={min}"
+        );
+    }
+}
+
+#[test]
+fn sum_rejects_overflow_non_numeric_and_nested_aggregates() {
+    let mut db = Database::new();
+    db.query(&format!("CREATE (:Big {{x: {}}})", i64::MAX))
+        .unwrap();
+    db.query("CREATE (:Big {x: 1})").unwrap();
+    db.query("CREATE (:Text {x: 'a'})").unwrap();
+    let error = db.query("MATCH (n:Big) RETURN sum(n.x) AS s").unwrap_err();
+    assert!(error.to_string().contains("overflow"), "{error}");
+    let error = db.query("MATCH (n:Text) RETURN sum(n.x) AS s").unwrap_err();
+    assert!(error.to_string().contains("numeric"), "{error}");
+    let error = db
+        .query("MATCH (n:Big) RETURN sum(count(n)) AS s")
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("cannot contain aggregate"),
+        "{error}"
+    );
+}
+
+#[test]
+fn unary_minus_binds_tighter_than_arithmetic_in_projections() {
+    let mut db = sum_expression_fixture();
+    let output = db
+        .query(
+            "MATCH (n:Num {x: 2}) RETURN -n.x * 2 AS a, n.x - -1 AS b, - 1 AS c, -(n.x) AS d, -n.x + 3 AS e",
+        )
+        .unwrap();
+    let row = &output.rows[0];
+    assert_eq!(row.get("a"), Some(&Value::Int(-4)));
+    assert_eq!(row.get("b"), Some(&Value::Int(3)));
+    assert_eq!(row.get("c"), Some(&Value::Int(-1)));
+    assert_eq!(row.get("d"), Some(&Value::Int(-2)));
+    assert_eq!(row.get("e"), Some(&Value::Int(1)));
+    assert!(db.query("MATCH (n:Num {x: 2}) RETURN -'a' AS f").is_err());
+}

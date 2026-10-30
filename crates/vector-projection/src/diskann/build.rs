@@ -422,6 +422,20 @@ impl DiskAnnRead for DiskAnnIndex {
             .ok_or_else(|| corrupt("DiskANN ordinal is outside its pinned graph"))?;
         distance(self.metric, query, &node.vector, task)
     }
+    fn distance_prepared(
+        &self,
+        query: &hawdb_core::vector::PreparedVectorQuery<'_>,
+        ordinal: u32,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<f64> {
+        let node = self
+            .nodes
+            .get(ordinal as usize)
+            .ok_or_else(|| corrupt("DiskANN ordinal is outside its pinned graph"))?;
+        with_distance_work(task, |checkpoint| {
+            query.distance_slices_with_work(self.metric, &node.vector, checkpoint)
+        })
+    }
 }
 
 pub(super) fn validate_config(dimension: usize, config: DiskAnnBuildConfig) -> Result<()> {

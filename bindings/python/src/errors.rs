@@ -115,6 +115,23 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
         HawDBError::Parse(_) => ParseError::new_err(message),
         HawDBError::Semantic(_) => SemanticError::new_err(message),
         HawDBError::Storage(_) => StorageError::new_err(message),
+        HawDBError::WalRecoveryIo {
+            operation,
+            kind,
+            os_code,
+            ..
+        } => Python::attach(|py| {
+            let exception = StorageError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "wal_recovery_io")?;
+                value.setattr("operation", *operation)?;
+                value.setattr("io_kind", format!("{kind:?}"))?;
+                value.setattr("os_code", *os_code)?;
+                value.setattr("retryable", true)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::UnsupportedStorageFormat(_) => Python::attach(|py| {
             let exception = StorageError::new_err(message);
             let attributes = exception
@@ -161,9 +178,9 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. } => ExecutionError::new_err(message),
-        HawDBError::TransactionConflict { .. } | HawDBError::AppendSequenceExhausted { .. } => {
-            ConflictError::new_err(message)
-        }
+        HawDBError::TransactionConflict { .. }
+        | HawDBError::TransactionRetryRequired(_)
+        | HawDBError::AppendSequenceExhausted { .. } => ConflictError::new_err(message),
         HawDBError::CapabilityUnavailable { .. } => CapabilityError::new_err(message),
         HawDBError::BranchCommandUnsupported { .. }
         | HawDBError::BranchBusy { .. }

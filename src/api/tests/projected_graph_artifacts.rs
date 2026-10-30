@@ -113,6 +113,7 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
                 &path,
                 DatabaseConfig {
                     read_only: true,
+                    recovery_mode: crate::RecoveryMode::Strict,
                     ..DatabaseConfig::default()
                 },
             )
@@ -744,6 +745,7 @@ fn scheduled_background_derived_artifact_job_defers_when_scheduler_is_full() {
 fn scheduled_background_derived_artifact_job_releases_budget_on_execution_error() {
     let mut db = Database::new_with_config(DatabaseConfig {
         read_only: true,
+        recovery_mode: crate::RecoveryMode::Strict,
         ..DatabaseConfig::default()
     });
     db.schedule_derived_artifact_rebuild();
@@ -845,6 +847,7 @@ fn read_only_open_ignores_corrupt_projected_graph_artifact_without_cleanup() {
             &path,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 ..DatabaseConfig::default()
             },
         )

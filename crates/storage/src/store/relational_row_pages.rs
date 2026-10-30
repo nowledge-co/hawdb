@@ -2693,6 +2693,7 @@ mod tests {
             &mut read_only_catalog,
             DurabilityPolicy::default(),
             WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
                 residency_mode: StorageResidencyMode::OutOfCore,
                 relational_index_mode: RelationalIndexMode::Shadow,
                 ..WalReplayConfig::default()
@@ -2762,6 +2763,7 @@ mod tests {
             &mut read_only_catalog,
             DurabilityPolicy::default(),
             WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
                 residency_mode: StorageResidencyMode::OutOfCore,
                 relational_index_mode: RelationalIndexMode::Authoritative,
                 ..WalReplayConfig::default()
@@ -2828,6 +2830,7 @@ mod tests {
             &mut missing_index_catalog,
             DurabilityPolicy::default(),
             WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
                 residency_mode: StorageResidencyMode::OutOfCore,
                 relational_index_mode: RelationalIndexMode::Authoritative,
                 ..WalReplayConfig::default()
@@ -2881,6 +2884,7 @@ mod tests {
             &mut catalog,
             DurabilityPolicy::default(),
             WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
                 residency_mode: StorageResidencyMode::OutOfCore,
                 relational_index_mode: RelationalIndexMode::Authoritative,
                 ..WalReplayConfig::default()

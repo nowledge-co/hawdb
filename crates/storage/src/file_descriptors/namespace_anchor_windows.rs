@@ -125,6 +125,18 @@ fn namespace_anchor_opens_with_standard_user_permissions() {
         let root = scratch.0.join("new/graph");
         let project = open(&root, Some(&anchor), true).unwrap();
         assert_eq!(project.metrics().open, 0);
+        let search = scratch.0.join("new/search");
+        let component =
+            ProjectFileDescriptors::acquire_component_with_namespace_anchor(&search, true, &anchor)
+                .unwrap();
+        assert_eq!(component.metrics().open, 0);
+        drop(component);
+        assert!(
+            ProjectFileDescriptors::acquire_component_with_namespace_anchor(
+                &search, false, &anchor,
+            )
+            .is_ok()
+        );
         drop(project);
         assert!(open(&root, Some(&anchor), true).is_ok());
     })

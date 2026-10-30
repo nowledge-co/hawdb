@@ -174,7 +174,7 @@ pub use row_page::{
     RELATIONAL_ROW_DELTA_MANIFEST_FILE, RELATIONAL_ROW_PAGE_MANIFEST_FILE,
 };
 
-pub const DEFAULT_MAX_RELATIONAL_MUTATION_ROWS: usize = 100_000;
+pub const DEFAULT_MAX_RELATIONAL_MUTATION_ROWS: usize = 250_000;
 pub const DEFAULT_MAX_RELATIONAL_MUTATION_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_MAX_RELATIONAL_INDEX_CHANGES: usize = 100_000;
 pub const DEFAULT_MAX_RELATIONAL_INDEX_CHANGE_BYTES: usize = 8 * 1024 * 1024;
@@ -190,6 +190,18 @@ const RELATIONAL_FOREIGN_KEY_INDEX_PREFIX: &str = "__foreign_key_";
 pub struct RelationalMutationLimits {
     pub max_rows: NonZeroUsize,
     pub max_payload_bytes: NonZeroUsize,
+}
+
+impl RelationalMutationLimits {
+    pub(crate) fn for_recovery() -> Self {
+        // Durable transactions were already admitted. Replaying them must not
+        // depend on the host's current foreground work policy. Decode bounds,
+        // allocation reservations and integrity checks still apply.
+        Self {
+            max_rows: NonZeroUsize::MAX,
+            max_payload_bytes: NonZeroUsize::MAX,
+        }
+    }
 }
 
 impl Default for RelationalMutationLimits {
@@ -6464,12 +6476,10 @@ impl RelationalStore {
     ) -> Result<SnapshotReadGuard<RelationalState>, SnapshotCommitError<RelationalError>> {
         let batch = decode_relational_wal_batch(record, decode_limits)
             .map_err(SnapshotCommitError::Stage)?;
-        self.admit(&batch.transaction)
-            .map_err(SnapshotCommitError::Stage)?;
         let expected_epoch = batch.epoch;
         let transaction = batch.transaction;
         let overflow_config = self.overflow_config;
-        let limits = self.limits;
+        let limits = RelationalMutationLimits::for_recovery();
         self.snapshots.commit(
             move |state, next_epoch| {
                 if next_epoch != expected_epoch {

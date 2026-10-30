@@ -1,0 +1,47 @@
+{
+  "engine_revision": "83d43b0f8e1373a5626b9ae30d6f720a05cc79d7",
+  "engine_sources": {
+    "benches/mem_query_resources.rs": "8fba2d993e82ca3f6dcd2449716569087ad048acdece418e6bb6e582c433520f",
+    "benches/mem_query_alloc.rs": "7a0db0b6ed03ef900fb28b2d6c9844cf1b758693edff9d48c98fb1abe08ce174",
+    "src/api/plan_cache.rs": "65733acbdfdb80a2c41431e75fa3b441b3bf6ab4e15a44b6d61a289188e48cd9",
+    "crates/plan-cache/src/template.rs": "ad37ad7549358936a2d30eb07e0716aa8471776d149dc943209bcde9be8bea65"
+  },
+  "app_revision": "7e3f5ba8d44c648cd9ecac26b978f9f96bb38781",
+  "app_sources": {
+    "nmem-rs/crates/nmem-graph/src/repo.rs": "bd4745a4746b052d39b569f0299705394b2f81431b930ac644db882239bb7e6f",
+    "nmem-rs/crates/nmem-server/src/rest_search.rs": "cb53804cb263c55ec0ca9f42642caa534e324e48922bee122572c5852f63c633"
+  },
+  "target": "//:hawdb_reference_host_tests",
+  "passed": 20,
+  "failed": 0,
+  "ignored": 0,
+  "filtered_out": 60,
+  "tests": [
+    "hawdb_reference_reader::dispatch_cause_contract_tests::native_registered_query_causes_survive_reference_normalization",
+    "hawdb_reference_reader::dispatch_cause_contract_tests::native_snapshot_entry_causes_preserve_registered_response_and_priority",
+    "hawdb_reference_reader::dispatch_cause_contract_tests::registered_reference_storage_causes_survive_shadow_and_authority_dispatch",
+    "hawdb_reference_reader::dispatch_cause_contract_tests::unregistered_reference_code_is_not_inferred_from_private_prose",
+    "hawdb_reference_reader::tests::hawdb_reference_classifies_structured_budget_without_parsing_engine_messages",
+    "hawdb_reference_reader::tests::hawdb_reference_closed_dual_read_retains_known_cause_without_fallback",
+    "hawdb_reference_reader::tests::hawdb_reference_closed_shadow_and_legacy_read_retain_legacy_authority",
+    "hawdb_reference_reader::tests::hawdb_reference_dispatch_only_reads_candidate_and_never_falls_back",
+    "hawdb_reference_reader::tests::hawdb_reference_dispatch_shadow_preserves_legacy_and_dual_read_refuses_mismatch",
+    "hawdb_reference_reader::tests::hawdb_reference_exact_ids_raw_space_and_temporal_properties",
+    "hawdb_reference_reader::tests::hawdb_reference_json_expansion_refuses_oversized_complete_output",
+    "hawdb_reference_reader::tests::hawdb_reference_labels_are_sorted_complete_and_bounded",
+    "hawdb_reference_reader::tests::hawdb_reference_measured_deadline_survives_non_integrity_engine_failure",
+    "hawdb_reference_reader::tests::hawdb_reference_native_payload_refusal_reaches_http_and_mcp_for_both_objects",
+    "hawdb_reference_reader::tests::hawdb_reference_pins_source_metadata_and_memory_labels_through_capture",
+    "hawdb_reference_reader::tests::hawdb_reference_preserves_typed_resolver_failure_and_measured_deadline",
+    "hawdb_reference_reader::tests::review_closed_memory_http",
+    "hawdb_reference_reader::tests::review_closed_memory_mcp",
+    "hawdb_reference_reader::tests::review_closed_source_http",
+    "hawdb_reference_reader::tests::review_closed_source_mcp"
+  ],
+  "binary_sha256": "392981f2d4865f812280c192249a18babf204c6b7cfbd961815a84d5eec9d01c",
+  "qualification_override": "--override_repository=hawdb_src=/private/tmp/hawdb-mem-performance/engine",
+  "repository_resolution_verified": true,
+  "dependency_fetch": "Initial isolated cargo-bazel fetch timed out at600s before compilation. Successful retry used existing host Cargo cache with CARGO_BAZEL_ISOLATED=false and CARGO_NET_OFFLINE=true, both exported and passed via --repo_env. No dependency pins or production configuration changed.",
+  "command": "CARGO_BAZEL_ISOLATED=false CARGO_NET_OFFLINE=true bazel --output_base=/private/tmp/hawdb-mem-performance/app-reference-bazel test --repo_env=CARGO_BAZEL_ISOLATED=false --repo_env=CARGO_NET_OFFLINE=true --override_repository=hawdb_src=/private/tmp/hawdb-mem-performance/engine --action_env=CMAKE_PREFIX_PATH=/opt/homebrew/opt/openssl@3.5 --build_event_json_file=/private/tmp/hawdb-mem-performance/app-review-host-current-engine-offline.bep.json //:hawdb_reference_host_tests",
+  "scope": "Private Rust reference-reader qualification against this engine source; not all80integrationtests, production containing-artifact acceptance, public release dependency update, activation or cutover."
+}

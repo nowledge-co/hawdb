@@ -480,8 +480,8 @@ mod tests {
     fn binding(value: i64) -> Binding {
         Binding {
             values: BTreeMap::from([("value".to_string(), hawdb_core::Value::Int(value))]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         }
     }
 

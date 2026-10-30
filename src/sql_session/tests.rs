@@ -410,6 +410,7 @@ fn sql_session_read_only_queries_preserve_epoch_and_reject_writes() {
         &root,
         crate::DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..Default::default()
         },
     )

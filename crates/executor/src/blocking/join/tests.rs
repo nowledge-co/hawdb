@@ -91,8 +91,9 @@ fn row(variable: &str, id: usize, key: Option<Value>, padding: usize) -> Binding
                 labels: BTreeSet::new(),
                 properties,
             },
-        )]),
-        relationships: BTreeMap::new(),
+        )])
+        .into(),
+        relationships: BTreeMap::new().into(),
     }
 }
 

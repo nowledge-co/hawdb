@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! One vector record is decoded under the original query account and I/O.
 
@@ -8,6 +8,8 @@ use crate::build_memory::{checked_add as add, checked_mul as mul, reserve_capaci
 use crate::lexical_projection::QueryContext;
 use std::io::BufRead;
 
+#[cfg(test)]
+mod layout_probe;
 #[cfg(test)]
 mod tests;
 

@@ -51,6 +51,45 @@ pub(super) fn build() -> Result<Grammar<Value>, String> {
     let mut rules = vec![
         ("SqlInput", complete("Statement", "end of statement")),
         ("SelectInput", complete("Select", "end of SELECT")),
+        (
+            "RelationalSelect",
+            S(vec![
+                K("SELECT"),
+                optional(R("Quantifier")),
+                R("RelationalProjection"),
+                optional(S(vec![K("FROM"), R("RelationalFrom")])),
+                optional(R("Where")),
+                optional(R("Group")),
+                optional(R("Having")),
+                optional(R("Order")),
+                optional(Choice(vec![
+                    S(vec![R("RelationalLimit"), optional(R("RelationalOffset"))]),
+                    S(vec![R("RelationalOffset"), optional(R("RelationalLimit"))]),
+                ])),
+                optional(R("RelationalLocking")),
+            ]),
+        ),
+        (
+            "RelationalProjection",
+            native(native::relational_projection, true),
+        ),
+        (
+            "RelationalStatementInput",
+            complete("RelationalStatement", "end of statement"),
+        ),
+        (
+            "RelationalStatement",
+            Choice(vec![R("RelationalSelect"), R("RelationalExplain")]),
+        ),
+        (
+            "RelationalExplain",
+            S(vec![
+                K("EXPLAIN"),
+                optional(R("Analyze")),
+                R("RelationalSelect"),
+            ]),
+        ),
+        ("Analyze", K("ANALYZE")),
         ("Statement", Choice(vec![R("Select")])),
         (
             "Select",
@@ -139,11 +178,40 @@ pub(super) fn build() -> Result<Grammar<Value>, String> {
         ("Group", S(vec![K("GROUP"), K("BY"), R("GroupExpressions")])),
         ("Having", S(vec![K("HAVING"), R("ClauseExpression")])),
         ("Order", S(vec![K("ORDER"), K("BY"), R("OrderItems")])),
+        (
+            "RelationalLimit",
+            S(vec![
+                K("LIMIT"),
+                Choice(vec![R("LimitAll"), R("ClauseExpression")]),
+            ]),
+        ),
+        ("LimitAll", K("ALL")),
+        (
+            "RelationalOffset",
+            S(vec![
+                K("OFFSET"),
+                R("OffsetExpression"),
+                optional(Choice(vec![K("ROW"), K("ROWS")])),
+            ]),
+        ),
+        ("OffsetExpression", native(native::offset_expression, false)),
         ("Limit", S(vec![K("LIMIT"), R("ClauseExpression")])),
         ("Offset", S(vec![K("OFFSET"), R("ClauseExpression")])),
         (
             "Locking",
             S(vec![K("FOR"), Choice(vec![R("Share"), R("Update")])]),
+        ),
+        (
+            "RelationalLocking",
+            S(vec![
+                K("FOR"),
+                Choice(vec![R("Share"), R("Update")]),
+                optional(R("Nonblocking")),
+            ]),
+        ),
+        (
+            "Nonblocking",
+            Choice(vec![K("NOWAIT"), S(vec![K("SKIP"), K("LOCKED")])]),
         ),
         ("Share", K("SHARE")),
         ("Update", K("UPDATE")),
@@ -153,6 +221,54 @@ pub(super) fn build() -> Result<Grammar<Value>, String> {
         ("Name", native(native::name, false)),
         ("Alias", native(native::alias, true)),
     ];
+    rules.extend([
+        ("RelationalFrom", list("RelationalFromSource")),
+        (
+            "RelationalFromSource",
+            S(vec![R("RelationalFromItem"), repeat(R("RelationalJoin"))]),
+        ),
+        ("RelationalFromItem", R("RelationalRelation")),
+        (
+            "RelationalRelation",
+            S(vec![
+                Not(Box::new(K("GRAPH_TABLE")), "a relation name"),
+                native(native::relational_relation, false),
+            ]),
+        ),
+        (
+            "RelationalJoin",
+            Choice(vec![
+                R("RelationalInnerJoin"),
+                R("RelationalLeftJoin"),
+                R("RelationalCrossJoin"),
+            ]),
+        ),
+        (
+            "RelationalInnerJoin",
+            S(vec![
+                optional(K("INNER")),
+                K("JOIN"),
+                R("RelationalFromItem"),
+                K("ON"),
+                R("JoinExpression"),
+            ]),
+        ),
+        (
+            "RelationalLeftJoin",
+            S(vec![
+                K("LEFT"),
+                optional(K("OUTER")),
+                K("JOIN"),
+                R("RelationalFromItem"),
+                K("ON"),
+                R("JoinExpression"),
+            ]),
+        ),
+        (
+            "RelationalCrossJoin",
+            S(vec![K("CROSS"), K("JOIN"), R("RelationalFromItem")]),
+        ),
+    ]);
     add_pgq(&mut rules)?;
     Grammar::compile(rules)
 }

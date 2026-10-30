@@ -258,12 +258,14 @@ streaming, EXPLAIN ANALYZE, and system SQL results; callers may further tighten
 the limits, while unbounded results require explicitly setting both fields to
 `None`. `max_optimizer_groups` caps cascades memo search groups with
 the existing deterministic direct physical fallback warning. `recovery_mode`
-defaults to strict WAL replay. A torn tail or checksum mismatch rejects every
-database open. Torn-tail repair is a separate typed `DatabaseDoctor` operation:
-first produce a generation-bound dry-run plan, then explicitly acknowledge that
-exact plan before an original-WAL quarantine copy, repair audit, and truncation
-can be published. `DoctorRepairTornTail` remains a report-compatibility value
-and is rejected by the database-open path.
+defaults to `AutoRepairTornTail` for writable opens. Read-only opens explicitly
+select `Strict`. Automatic recovery preserves a bounded discarded suffix and
+identity-bound audit before truncating a physical torn tail or an unsynchronized
+suffix authorized by its durable fence. Protected-prefix corruption fails
+closed. Explicit repair uses the separate typed `DatabaseDoctor` dry-run plan
+and exact acknowledgement. `DoctorRepairTornTail` remains a report-compatibility
+value rejected by database open. See [the recovery protocol](STORAGE.md#wal-recovery)
+for classification, typed reports and retry barriers.
 `max_wal_replay_entries` caps startup WAL replay after valid record decode and
 before applying the next record; it counts top-level WAL records rather than
 child operations inside a batch, preserving batch replay atomicity. Mutation
@@ -803,7 +805,20 @@ alias-based ordering, `ORDER BY COUNT(variable)` over the projected aggregate
 column, and pagination. Nowledge-used `MIN(variable.property)` is
 implemented for schema verification reads such as `min(r.weight)`, and
 Nowledge-used `AVG(variable.property)` is implemented for health aggregate reads
-such as `avg(m.decay_score_cached)`. One-hop
+such as `avg(m.decay_score_cached)`. openCypher `SUM` is implemented: it ignores
+NULL, returns an integer for all-integer input (failing on `i64` overflow), a
+float once any float is summed, `0` for empty or all-NULL input, and fails on
+non-numeric input. `AVG` keeps its earlier lenient behavior, which Nowledge
+health reads rely on: it skips non-numeric values and does not reject a
+non-finite running total, so over the same rows `avg(x)` can return a value
+(or infinity) where `sum(x)` fails. `COUNT`, `SUM`, `MIN`, `MAX`, `AVG`, and `COLLECT` accept
+any aggregate-free projection expression as their argument, each with optional
+`DISTINCT` over the argument value, for example
+`sum(CASE WHEN n.x > 1 THEN 1 ELSE 0 END)`, `count(DISTINCT n.x % 2)`,
+`avg(n.x * 2)`, `max(-n.x)`, or `sum(x * 2)` over a `WITH` column. The fixed
+`variable[.property]` shapes keep their previous logical plans; other arguments
+are evaluated per input row by the aggregate operator. Aggregates nested inside
+an aggregate argument are rejected. One-hop
 relationship variables can be returned, filtered, sorted, and counted through relationship properties, for example
 `RETURN r.weight`, `WHERE r.weight > 1`, `ORDER BY r.weight`, `COUNT(r)`, and
 `COUNT(r.weight)`. Stable logical identities can be projected, filtered, and

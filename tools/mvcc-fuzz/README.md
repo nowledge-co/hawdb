@@ -125,11 +125,63 @@ errors and panics are retained as failures but are not automatically reduced.
 The reduced result is locally minimal only under the attempted transformations;
 the tool does not promise a globally minimal reproducer.
 
-Not yet covered: pessimistic locks/deadlocks, three or more transactions,
-graph/append writes, constraints beyond the primary key, publication dependency
-tokens, persistent reopen, crash/power-loss recovery, checkpoint/pruning races,
-or resource rejection classification. Keep those separate from the first
-campaign's acceptance claims.
+Not yet covered in optimistic mode: pessimistic locks/deadlocks (see
+pessimistic mode below), three or more transactions, graph/append writes,
+constraints beyond the primary key, publication dependency tokens, persistent
+reopen, crash/power-loss recovery, checkpoint/pruning races, or resource
+rejection classification. Keep those separate from the first campaign's
+acceptance claims.
+
+## Pessimistic mode
+
+`--mode pessimistic` (for `run` and `generate`; saved cases carry
+`MODE PESSIMISTIC`) runs the same one-table schema plus one `Record` graph node
+per fixture row under two pessimistic `ConcurrentDatabase` transactions. Each
+transaction runs on its own worker thread, so a statement that waits for a
+lock is observable. The scheduler sends each step and either requires an answer
+within 10 seconds or, when the model predicts a wait, requires no answer within
+200 ms. A schedule entry for a waiting transaction is deferred until the wait
+ends, preserving each transaction's program order. The lock timeout is 30
+seconds, so a timeout is a harness error rather than an expected outcome.
+
+```sh
+cargo run --locked --manifest-path tools/mvcc-fuzz/Cargo.toml -- \
+  run --mode pessimistic --seconds 30 --explain
+cargo run --quiet --locked --manifest-path tools/mvcc-fuzz/Cargo.toml -- \
+  replay tools/mvcc-fuzz/cases/pessimistic-upgrade-deadlock.mvcc --explain
+make mvcc-fuzz MVCC_FUZZ_ARGS="--mode pessimistic"
+```
+
+Additional commands: `T1 READ_FOR_SHARE`, `T1 READ_FOR_UPDATE` (whole-table
+`SELECT ... FOR SHARE|UPDATE`), `T1 GRAPH_READ` and `T1 GRAPH_UPDATE <id>
+<value>` (Cypher `SET` of one `Record` node), with the same forms for `T2`.
+
+The independent model encodes the documented pessimistic contract with the
+lock spans of the SQL lock derivation for this schema: plain reads take no
+lock; locking reads take a shared or exclusive full primary-key range;
+primary-key `UPDATE`, `DELETE` and `INSERT` take an exclusive point; a non-key
+predicate write takes an exclusive table lock; a Cypher property write of an
+existing node takes an exclusive node lock. A request waits for a conflicting
+lock held by, or a conflicting request queued by, the other transaction. The
+waiter whose new wait closes a cycle is the deadlock victim and is aborted. A
+newly granted, previously uncovered SQL lock refreshes a stale snapshot when
+the transaction has no successful statement yet and otherwise aborts with the
+retryable serialization error; a graph statement aborts on any stale new lock.
+Commit rebases the successful writes onto current visible state.
+
+Every step checks the statement or terminal outcome class (rows, success,
+duplicate primary key, serialization abort, deadlock victim, call on an
+aborted transaction), visible table rows and graph nodes through autocommit
+reads, and the pinned initial snapshot. Eleven families cycle through same-key
+waits, disjoint keys, duplicate inserts, table versus point writers, a shared
+upgrade deadlock, a locking range versus insert, delete versus delete/insert,
+rollback release, same and disjoint graph nodes, and a graph/SQL deadlock. An
+optional leading plain read decides whether a later wait refreshes or aborts.
+
+Pessimistic mode does not cover lock timeouts, three or more transactions,
+relationship or label locks, uniqueness constraints on graph labels, Strict
+Append, persistent reopen or crash recovery, and it does not claim
+Serializable isolation.
 
 ## Development
 

@@ -2853,6 +2853,7 @@ mod tests {
             &fixture.0,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 automatic_checkpoint_max_age: Duration::ZERO,
                 ..DatabaseConfig::default()
             },

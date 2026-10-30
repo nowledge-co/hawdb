@@ -1,18 +1,51 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_cypher as cypher;
 use hawdb_plan_cypher::{
-    self as planner, GraphMatchStep, LogicalPlan, PhysicalPlan, Predicate, Projection,
-    ProjectionExpression, RelationshipCountFilter, SortItem, SortKey,
+    self as planner, AggregateTarget, Aggregation, GraphMatchStep, LogicalPlan, PhysicalPlan,
+    Predicate, Projection, ProjectionExpression, RelationshipCountFilter, SortItem, SortKey,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 const PARAMETER_SLOT_NAME_KEY: &str = "\0skein_parameter_slot";
 const PARAMETER_SLOT_PATH_KEY: &str = "\0skein_parameter_path";
 
+mod retained;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum ParameterCacheValue {
     Slot(ParameterValueShape),
+    CaseSlot(ParameterValueShape),
     Exact(Value),
+}
+
+impl ParameterCacheValue {
+    fn validate_slot_use(&mut self, marker_use: MarkerUse) -> bool {
+        if matches!(self, Self::Exact(_)) {
+            return true;
+        }
+        if !marker_use.is_safe() {
+            return false;
+        }
+        // Reclassify after all exact guards have been restored. A planner
+        // rewrite may move a slot into or out of CASE without changing its
+        // validity domain; its physical retention policy must follow that move.
+        *self = match std::mem::replace(self, Self::Exact(Value::Null)) {
+            Self::Slot(shape) | Self::CaseSlot(shape) => {
+                if marker_use == MarkerUse::SafeCase {
+                    Self::CaseSlot(shape)
+                } else {
+                    Self::Slot(shape)
+                }
+            }
+            exact @ Self::Exact(_) => exact,
+        };
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -31,8 +64,10 @@ enum ParameterValueShape {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParameterizedLogicalPlan {
-    logical: LogicalPlan,
-    cache_key: PlanParameterCacheKey,
+    // Immutable proven state is shared by cache admission and readers.
+    // Cloning a handle must not deep-copy the marker tree or exact guards.
+    logical: Arc<LogicalPlan>,
+    cache_key: Arc<PlanParameterCacheKey>,
     slot_count: usize,
 }
 
@@ -41,7 +76,122 @@ pub struct PlanParameterCacheKey {
     values: BTreeMap<String, ParameterCacheValue>,
 }
 
+/// A proven logical template and its complete parameter validity boundary.
+/// Schema, statistics, access control and scoring remain physical-cache keys.
+#[derive(Debug, Clone, PartialEq)]
+#[doc(hidden)]
+pub struct ParameterBindingTemplate {
+    plan: ParameterizedLogicalPlan,
+}
+
+impl ParameterBindingTemplate {
+    /// Conservative requested heap retained by this template, including Arc
+    /// allocations even when shared with another owner. Unknown plan shapes or
+    /// arithmetic overflow decline admission instead of undercharging.
+    pub fn retained_heap_bytes(&self) -> Option<usize> {
+        retained::template_bytes(self)
+    }
+
+    pub fn new(
+        plan: &ParameterizedLogicalPlan,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Option<Self> {
+        // An omitted binding may influence planning without leaving a marker.
+        // Do not infer its validity domain or retain unused request payloads.
+        (plan.cache_key.values.len() == parameters.len()).then(|| Self { plan: plan.clone() })
+    }
+
+    pub fn reuse(&self, parameters: &BTreeMap<String, Value>) -> Option<ParameterizedLogicalPlan> {
+        if self.plan.cache_key.values.len() != parameters.len()
+            || parameters.values().any(value_contains_any_marker)
+            || self.plan.cache_key.values.iter().any(|(name, cached)| {
+                parameters.get(name).is_none_or(|value| match cached {
+                    ParameterCacheValue::Slot(shape) | ParameterCacheValue::CaseSlot(shape) => {
+                        !shape.matches(value)
+                    }
+                    ParameterCacheValue::Exact(expected) => value != expected,
+                })
+            })
+        {
+            return None;
+        }
+        Some(self.plan.clone())
+    }
+}
+
+impl ParameterValueShape {
+    fn matches(&self, value: &Value) -> bool {
+        match (self, value) {
+            (Self::Null, Value::Null)
+            | (Self::Bool, Value::Bool(_))
+            | (Self::Int, Value::Int(_))
+            | (Self::Float, Value::Float(_))
+            | (Self::String, Value::String(_))
+            | (Self::Binary, Value::Binary(_))
+            | (Self::Uuid, Value::Uuid(_)) => true,
+            (Self::Vector(dimension), Value::Vector(value)) => *dimension == value.dimension(),
+            (Self::List(shapes), Value::List(values)) => {
+                shapes.len() == values.len()
+                    && shapes
+                        .iter()
+                        .zip(values)
+                        .all(|(shape, value)| shape.matches(value))
+            }
+            (Self::Map(shapes), Value::Map(values)) => {
+                shapes.len() == values.len()
+                    && shapes
+                        .iter()
+                        .zip(values)
+                        .all(|((key, shape), (name, value))| key == name && shape.matches(value))
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Allocation-free cache bucket selector. A collision can only cause a miss:
+/// the template must still validate every shape and exact folded dependency.
+#[doc(hidden)]
+pub fn parameter_binding_shape_fingerprint(parameters: &BTreeMap<String, Value>) -> u64 {
+    fn visit(value: &Value, state: &mut impl Hasher) {
+        std::mem::discriminant(value).hash(state);
+        match value {
+            Value::List(values) => {
+                values.len().hash(state);
+                for value in values {
+                    visit(value, state);
+                }
+            }
+            Value::Map(values) => {
+                values.len().hash(state);
+                for (key, value) in values {
+                    key.hash(state);
+                    visit(value, state);
+                }
+            }
+            Value::Vector(value) => value.dimension().hash(state),
+            _ => {}
+        }
+    }
+    let mut state = std::collections::hash_map::DefaultHasher::new();
+    parameters.len().hash(&mut state);
+    for (name, value) in parameters {
+        name.hash(&mut state);
+        visit(value, &mut state);
+    }
+    state.finish()
+}
+
 impl ParameterizedLogicalPlan {
+    /// CASE marker trees stay in the byte-budgeted logical cache. Physical
+    /// copies remain request-owned until the physical cache has a byte budget.
+    pub fn has_case_parameter_slots(&self) -> bool {
+        self.cache_key
+            .values
+            .values()
+            .any(|value| matches!(value, ParameterCacheValue::CaseSlot(_)))
+    }
+
     pub fn logical(&self) -> &LogicalPlan {
         &self.logical
     }
@@ -63,13 +213,41 @@ impl ParameterizedLogicalPlan {
 enum MarkerUse {
     None,
     Safe,
+    SafeCase,
     Unsafe,
 }
 
+#[cfg(test)]
+thread_local! {
+    static PARAMETER_PLANNING_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn plan_parameter_bindings(
+    statement: &cypher::Statement,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    #[cfg(test)]
+    PARAMETER_PLANNING_CALLS.with(|calls| calls.set(calls.get() + 1));
+    planner::plan_with_params(statement, parameters)
+}
+
 impl MarkerUse {
+    fn is_safe(self) -> bool {
+        matches!(self, Self::Safe | Self::SafeCase)
+    }
+
+    fn cache_value(self, value: &Value) -> ParameterCacheValue {
+        match self {
+            Self::SafeCase => ParameterCacheValue::CaseSlot(parameter_value_shape(value)),
+            Self::Safe => ParameterCacheValue::Slot(parameter_value_shape(value)),
+            Self::None | Self::Unsafe => ParameterCacheValue::Exact(value.clone()),
+        }
+    }
+
     fn combine(self, other: Self) -> Self {
         match (self, other) {
             (Self::Unsafe, _) | (_, Self::Unsafe) => Self::Unsafe,
+            (Self::SafeCase, _) | (_, Self::SafeCase) => Self::SafeCase,
             (Self::Safe, _) | (_, Self::Safe) => Self::Safe,
             (Self::None, Self::None) => Self::None,
         }
@@ -80,28 +258,47 @@ pub fn parameterize_logical_plan(
     statement: &cypher::Statement,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<ParameterizedLogicalPlan> {
-    let actual = planner::plan_with_params(statement, parameters)?;
+    let actual = plan_parameter_bindings(statement, parameters)?;
     if parameters.values().any(value_contains_any_marker) {
         return Ok(ParameterizedLogicalPlan {
-            logical: actual,
-            cache_key: PlanParameterCacheKey {
+            logical: Arc::new(actual),
+            cache_key: Arc::new(PlanParameterCacheKey {
                 values: parameters
                     .iter()
                     .map(|(name, value)| (name.clone(), ParameterCacheValue::Exact(value.clone())))
                     .collect(),
-            },
+            }),
             slot_count: 0,
         });
+    }
+    if parameters.is_empty() {
+        return Ok(ParameterizedLogicalPlan {
+            logical: Arc::new(actual),
+            cache_key: Arc::new(PlanParameterCacheKey {
+                values: BTreeMap::new(),
+            }),
+            slot_count: 0,
+        });
+    }
+    let folded_parameters = folded_predicate_parameters(statement);
+    if let Some(parameterized) =
+        parameterize_together(statement, parameters, &actual, &folded_parameters)
+    {
+        return Ok(parameterized);
     }
     let mut template_parameters = parameters.clone();
     let mut cache_values = BTreeMap::new();
     let mut slot_count = 0;
 
     for (name, value) in parameters {
+        if folded_parameters.contains(name) {
+            cache_values.insert(name.clone(), ParameterCacheValue::Exact(value.clone()));
+            continue;
+        }
         let marker = parameter_marker(name, value, &[]);
         let mut candidate_parameters = parameters.clone();
         candidate_parameters.insert(name.clone(), marker.clone());
-        let candidate = planner::plan_with_params(statement, &candidate_parameters).ok();
+        let candidate = plan_parameter_bindings(statement, &candidate_parameters).ok();
         if candidate.as_ref().is_some_and(|candidate| {
             marker_use_in_logical_plan(candidate, name) == MarkerUse::None && candidate == &actual
         }) {
@@ -110,17 +307,20 @@ pub fn parameterize_logical_plan(
             template_parameters.remove(name);
             continue;
         }
-        let is_safe = candidate.is_some_and(|mut candidate| {
-            marker_use_in_logical_plan(&candidate, name) == MarkerUse::Safe
+        let marker_use = candidate.map_or(MarkerUse::Unsafe, |mut candidate| {
+            let marker_use = marker_use_in_logical_plan(&candidate, name);
+            if marker_use.is_safe()
                 && bind_logical_plan(&mut candidate, parameters).is_ok()
                 && candidate == actual
+            {
+                marker_use
+            } else {
+                MarkerUse::Unsafe
+            }
         });
-        if is_safe {
+        if marker_use.is_safe() {
             template_parameters.insert(name.clone(), marker);
-            cache_values.insert(
-                name.clone(),
-                ParameterCacheValue::Slot(parameter_value_shape(value)),
-            );
+            cache_values.insert(name.clone(), marker_use.cache_value(value));
             slot_count += 1;
         } else {
             cache_values.insert(name.clone(), ParameterCacheValue::Exact(value.clone()));
@@ -130,12 +330,12 @@ pub fn parameterize_logical_plan(
     let logical = if slot_count == 0 && template_parameters.len() == parameters.len() {
         actual.clone()
     } else {
-        let candidate = planner::plan_with_params(statement, &template_parameters)
+        let candidate = plan_parameter_bindings(statement, &template_parameters)
             .ok()
             .filter(|candidate| {
-                let all_slots_are_safe = cache_values.iter().all(|(name, cached)| {
-                    !matches!(cached, ParameterCacheValue::Slot(_))
-                        || marker_use_in_logical_plan(candidate, name) == MarkerUse::Safe
+                let all_slots_are_safe = cache_values.iter_mut().all(|(name, cached)| {
+                    matches!(cached, ParameterCacheValue::Exact(_))
+                        || cached.validate_slot_use(marker_use_in_logical_plan(candidate, name))
                 });
                 let mut rebound = candidate.clone();
                 all_slots_are_safe
@@ -154,12 +354,184 @@ pub fn parameterize_logical_plan(
         }
     };
     Ok(ParameterizedLogicalPlan {
-        logical,
-        cache_key: PlanParameterCacheKey {
+        logical: Arc::new(logical),
+        cache_key: Arc::new(PlanParameterCacheKey {
             values: cache_values,
-        },
+        }),
         slot_count,
     })
+}
+
+/// Prove a complete binding wave before trying individual parameters. Some
+/// syntactic positions (for example LIMIT) cannot accept markers; those retain
+/// the conservative per-parameter path below. Exact values and omissions are
+/// checked together by rebinding the completed template to the actual plan.
+fn parameterize_together(
+    statement: &cypher::Statement,
+    parameters: &BTreeMap<String, Value>,
+    actual: &LogicalPlan,
+    folded_parameters: &BTreeSet<String>,
+) -> Option<ParameterizedLogicalPlan> {
+    let mut template_parameters = parameters
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.clone(),
+                if folded_parameters.contains(name) {
+                    value.clone()
+                } else {
+                    parameter_marker(name, value, &[])
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let marked = plan_parameter_bindings(statement, &template_parameters).ok()?;
+    let mut values = BTreeMap::new();
+    let mut slot_count = 0;
+    let mut changed = false;
+    for (name, value) in parameters {
+        match marker_use_in_logical_plan(&marked, name) {
+            marker_use @ (MarkerUse::Safe | MarkerUse::SafeCase) => {
+                values.insert(name.clone(), marker_use.cache_value(value));
+                slot_count += 1;
+            }
+            MarkerUse::None if folded_parameters.contains(name) => {
+                // Predicate binding erased these markers. Preserve the exact
+                // inputs even when other occurrences could remain slots.
+                template_parameters.insert(name.clone(), value.clone());
+                values.insert(name.clone(), ParameterCacheValue::Exact(value.clone()));
+                changed = true;
+            }
+            MarkerUse::None => {
+                template_parameters.remove(name);
+                changed = true;
+            }
+            MarkerUse::Unsafe => {
+                template_parameters.insert(name.clone(), value.clone());
+                values.insert(name.clone(), ParameterCacheValue::Exact(value.clone()));
+                changed = true;
+            }
+        }
+    }
+    let logical = if changed {
+        plan_parameter_bindings(statement, &template_parameters).ok()?
+    } else {
+        marked
+    };
+    // Restoring exact inputs must not turn a previously safe marker into a
+    // value-dependent specialized expression.
+    if !values.iter_mut().all(|(name, value)| {
+        matches!(value, ParameterCacheValue::Exact(_))
+            || value.validate_slot_use(marker_use_in_logical_plan(&logical, name))
+    }) {
+        return None;
+    }
+    let mut rebound = logical.clone();
+    bind_logical_plan(&mut rebound, parameters).ok()?;
+    if &rebound != actual {
+        return None;
+    }
+    Some(ParameterizedLogicalPlan {
+        logical: Arc::new(logical),
+        cache_key: Arc::new(PlanParameterCacheKey { values }),
+        slot_count,
+    })
+}
+
+/// Binding folds these predicate inputs before their markers can reach the
+/// logical plan. Another use (notably simple CASE) may still retain a marker;
+/// logical marker presence therefore cannot prove the input's whole domain.
+fn folded_predicate_parameters(statement: &cypher::Statement) -> BTreeSet<String> {
+    fn collect_value(value: &cypher::ValueExpression, exact: &mut BTreeSet<String>) {
+        match &value.kind {
+            cypher::ValueExpressionKind::Parameter(name) => {
+                exact.insert(name.clone());
+            }
+            cypher::ValueExpressionKind::List(values) => {
+                for item in values {
+                    collect_value(item, exact);
+                }
+            }
+            cypher::ValueExpressionKind::Timestamp(inner) => collect_value(inner, exact),
+            cypher::ValueExpressionKind::Literal(_)
+            | cypher::ValueExpressionKind::BindingProperty { .. }
+            | cypher::ValueExpressionKind::CurrentTimestamp => {}
+        }
+    }
+    fn collect_predicate(predicate: &cypher::PropertyPredicate, exact: &mut BTreeSet<String>) {
+        use cypher::PropertyPredicate as P;
+        match predicate {
+            P::And(items) | P::Or(items) => {
+                for item in items {
+                    collect_predicate(item, exact);
+                }
+            }
+            P::Not(inner) => collect_predicate(inner, exact),
+            P::ParameterEq { left, right } | P::ParameterNotEq { left, right } => {
+                exact.insert(left.clone());
+                collect_value(right, exact);
+            }
+            P::RelationshipExists { .. }
+            | P::BoundRelationshipExists { .. }
+            | P::IdEq { .. }
+            | P::IdNotEq { .. }
+            | P::IdCompare { .. }
+            | P::IdIn { .. }
+            | P::Eq { .. }
+            | P::NotEq { .. }
+            | P::Compare { .. }
+            | P::ExpressionEq { .. }
+            | P::ExpressionNotEq { .. }
+            | P::ExpressionCompare { .. }
+            | P::ExpressionContains { .. }
+            | P::ExpressionIn { .. }
+            | P::ListContains { .. }
+            | P::ListContainsLower { .. }
+            | P::Contains { .. }
+            | P::StartsWith { .. }
+            | P::EndsWith { .. }
+            | P::RegexMatch { .. }
+            // Nullness is already fixed by the complete parameter shape.
+            | P::ParameterIsNull { .. }
+            | P::ParameterIsNotNull { .. }
+            | P::IsNull { .. }
+            | P::IsNotNull { .. }
+            | P::In { .. } => {}
+        }
+    }
+    fn pipeline(query: &cypher::QueryPipeline, exact: &mut BTreeSet<String>) {
+        for clause in &query.clauses {
+            let condition = match &clause.kind {
+                cypher::ClauseKind::Match { predicate, .. } => predicate.as_ref(),
+                cypher::ClauseKind::With(projection) | cypher::ClauseKind::Return(projection) => {
+                    projection.predicate.as_ref()
+                }
+                _ => None,
+            };
+            if let Some(condition) = condition {
+                collect_predicate(&condition.kind, exact);
+            }
+        }
+    }
+    let mut exact = BTreeSet::new();
+    match statement {
+        cypher::Statement::Pipeline(query) | cypher::Statement::UnwindMutation(query) => {
+            pipeline(query, &mut exact)
+        }
+        cypher::Statement::CypherQuery(query) => {
+            return folded_predicate_parameters(&query.statement)
+        }
+        cypher::Statement::Explain(explain) => {
+            return folded_predicate_parameters(&explain.statement)
+        }
+        cypher::Statement::ProjectGraph(query) => {
+            for condition in query.relationship_predicates.values() {
+                collect_predicate(condition, &mut exact);
+            }
+        }
+        _ => {}
+    }
+    exact
 }
 
 /// Creates internal parameter markers for a list whose shape is part of a
@@ -426,8 +798,11 @@ fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
         LogicalPlan::Project { items, input } => marker_use_in_projections(items, name, false)
             .combine(marker_use_in_logical_plan(input, name)),
         LogicalPlan::Aggregate {
-            group_keys, input, ..
+            group_keys,
+            items,
+            input,
         } => marker_use_in_projections(group_keys, name, false)
+            .combine(marker_use_in_aggregations(items, name))
             .combine(marker_use_in_logical_plan(input, name)),
         LogicalPlan::Sort { items, input } => {
             let marker_use = items.iter().fold(MarkerUse::None, |marker_use, item| {
@@ -443,7 +818,7 @@ fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
             ..
         } => {
             let mut marker_use = values_marker_use([source_id, target_id], name);
-            if marker_use == MarkerUse::Safe {
+            if marker_use.is_safe() {
                 marker_use = MarkerUse::Unsafe;
             }
             for predicate in [source_visibility_predicate, target_visibility_predicate]
@@ -548,6 +923,17 @@ fn marker_use_in_projections(projections: &[Projection], name: &str, safe: bool)
         })
 }
 
+fn marker_use_in_aggregations(items: &[Aggregation], name: &str) -> MarkerUse {
+    items.iter().fold(MarkerUse::None, |marker_use, item| {
+        marker_use.combine(match &item.target {
+            AggregateTarget::Expression(expression) => {
+                marker_use_in_projection_expression(expression, name, false)
+            }
+            _ => MarkerUse::None,
+        })
+    })
+}
+
 fn marker_use_in_sort_item(item: &SortItem, name: &str) -> MarkerUse {
     match &item.key {
         SortKey::Expression(expression) => {
@@ -562,6 +948,42 @@ fn marker_use_in_projection_expression(
     name: &str,
     safe: bool,
 ) -> MarkerUse {
+    if let ProjectionExpression::Case {
+        operand: Some(operand),
+        branches,
+        otherwise,
+    } = expression
+        && matches!(
+            operand.as_ref(),
+            ProjectionExpression::Property { .. } | ProjectionExpression::Column(_)
+        )
+        && branches.iter().all(|(condition, result)| {
+            matches!(condition, ProjectionExpression::Literal(_))
+                && matches!(result, ProjectionExpression::Literal(_))
+        })
+        && otherwise
+            .as_deref()
+            .is_none_or(|value| matches!(value, ProjectionExpression::Literal(_)))
+    {
+        // Simple CASE with literal branches has no value-driven planner
+        // specialization. Binding changes values, never its branch structure.
+        let marker_use = values_marker_use(
+            branches
+                .iter()
+                .flat_map(|(condition, result)| [condition, result])
+                .chain(otherwise.iter().map(Box::as_ref))
+                .filter_map(|value| match value {
+                    ProjectionExpression::Literal(value) => Some(value),
+                    _ => None,
+                }),
+            name,
+        );
+        return if marker_use == MarkerUse::Safe {
+            MarkerUse::SafeCase
+        } else {
+            marker_use
+        };
+    }
     let marker_use = match expression {
         ProjectionExpression::Case { .. }
         | ProjectionExpression::VectorDistance { .. }
@@ -645,7 +1067,7 @@ fn marker_use_in_projection_expression(
         ),
         _ => MarkerUse::None,
     };
-    if !safe && marker_use == MarkerUse::Safe {
+    if !safe && marker_use.is_safe() {
         MarkerUse::Unsafe
     } else {
         marker_use
@@ -794,9 +1216,12 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
             bind_physical_plan(input, parameters)?;
         }
         PhysicalPlan::AggregateExec {
-            group_keys, input, ..
+            group_keys,
+            items,
+            input,
         } => {
             bind_projections(group_keys, parameters)?;
+            bind_aggregations(items, parameters)?;
             bind_physical_plan(input, parameters)?;
         }
         PhysicalPlan::SortExec { items, input } | PhysicalPlan::TopNExec { items, input, .. } => {
@@ -992,9 +1417,12 @@ fn bind_logical_plan(plan: &mut LogicalPlan, parameters: &BTreeMap<String, Value
             bind_logical_plan(input, parameters)?;
         }
         LogicalPlan::Aggregate {
-            group_keys, input, ..
+            group_keys,
+            items,
+            input,
         } => {
             bind_projections(group_keys, parameters)?;
+            bind_aggregations(items, parameters)?;
             bind_logical_plan(input, parameters)?;
         }
         LogicalPlan::Sort { items, input } => {
@@ -1061,6 +1489,18 @@ fn bind_projections(
 ) -> Result<()> {
     for projection in projections {
         bind_projection_expression(&mut projection.expression, parameters)?;
+    }
+    Ok(())
+}
+
+fn bind_aggregations(
+    items: &mut [Aggregation],
+    parameters: &BTreeMap<String, Value>,
+) -> Result<()> {
+    for item in items {
+        if let AggregateTarget::Expression(expression) = &mut item.target {
+            bind_projection_expression(expression, parameters)?;
+        }
     }
     Ok(())
 }
@@ -1233,6 +1673,245 @@ mod tests {
         PhysicalPlan,
     };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn proven_binding_template_skips_planning_and_validates_complete_signature() {
+        let statement =
+            cypher::parse("MATCH (n:Item) WHERE n.id = $id RETURN n.id AS id LIMIT $limit")
+                .unwrap();
+        let parameters = BTreeMap::from([
+            ("id".into(), Value::String("a".into())),
+            ("limit".into(), Value::Int(3)),
+        ]);
+        let first = parameterize_logical_plan(&statement, &parameters).unwrap();
+        let template = super::ParameterBindingTemplate::new(&first, &parameters).unwrap();
+        let mut changed = parameters.clone();
+        changed.insert("id".into(), Value::String("b".into()));
+        super::PARAMETER_PLANNING_CALLS.with(|calls| calls.set(0));
+        let reused = template.reuse(&changed).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first.logical, &reused.logical));
+        assert!(std::sync::Arc::ptr_eq(&first.cache_key, &reused.cache_key));
+        assert_eq!(
+            super::PARAMETER_PLANNING_CALLS.with(std::cell::Cell::get),
+            0
+        );
+        let mut rebound = reused.logical().clone();
+        super::bind_logical_plan(&mut rebound, &changed).unwrap();
+        assert_eq!(
+            rebound,
+            hawdb_plan_cypher::plan_with_params(&statement, &changed).unwrap()
+        );
+        changed.insert("limit".into(), Value::Int(4));
+        assert!(template.reuse(&changed).is_none());
+        changed = parameters.clone();
+        changed.insert("id".into(), Value::Int(1));
+        assert!(template.reuse(&changed).is_none());
+        changed = parameters.clone();
+        changed.remove("id");
+        assert!(template.reuse(&changed).is_none());
+        changed = parameters.clone();
+        changed.insert("extra".into(), Value::Int(1));
+        assert!(template.reuse(&changed).is_none());
+        let unused = parameterize_logical_plan(&statement, &changed).unwrap();
+        assert!(super::ParameterBindingTemplate::new(&unused, &changed).is_none());
+    }
+
+    #[test]
+    fn folded_null_guards_keep_shape_valid_rebinding() {
+        for predicate in ["$gate IS NULL", "$gate IS NOT NULL"] {
+            let statement = cypher::parse(&format!(
+                "MATCH (n:Item) WHERE ({predicate} OR n.id = $gate) \
+                 RETURN CASE n.id WHEN 'a' THEN $gate ELSE $gate END AS gate"
+            ))
+            .unwrap();
+            let parameters = BTreeMap::from([("gate".into(), Value::Int(1))]);
+            let plan = parameterize_logical_plan(&statement, &parameters).unwrap();
+            let template = super::ParameterBindingTemplate::new(&plan, &parameters).unwrap();
+            let changed = BTreeMap::from([("gate".into(), Value::Int(2))]);
+            super::PARAMETER_PLANNING_CALLS.with(|calls| calls.set(0));
+            let reused = template.reuse(&changed).unwrap();
+            assert_eq!(
+                super::PARAMETER_PLANNING_CALLS.with(std::cell::Cell::get),
+                0
+            );
+            let mut rebound = reused.logical().clone();
+            super::bind_logical_plan(&mut rebound, &changed).unwrap();
+            assert_eq!(
+                rebound,
+                hawdb_plan_cypher::plan_with_params(&statement, &changed).unwrap()
+            );
+            assert!(template
+                .reuse(&BTreeMap::from([("gate".into(), Value::Null)]))
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn folded_predicate_parameters_are_exact_even_when_also_projected() {
+        for (predicate, initial, changed) in [
+            ("$gate = 0", Value::Int(1), Value::Int(0)),
+            ("$gate <> 1", Value::Int(2), Value::Int(1)),
+            ("$gate = true", Value::Bool(false), Value::Bool(true)),
+            ("$gate <> false", Value::Bool(true), Value::Bool(false)),
+            ("$other = $gate", Value::Int(1), Value::Int(0)),
+            ("$other <> $gate", Value::Int(1), Value::Int(0)),
+        ] {
+            let statement = cypher::parse(&format!(
+                "MATCH (n:Item) WHERE ({predicate} OR n.id = $gate) \
+                 RETURN n.id AS id, CASE n.id WHEN 'a' THEN $gate ELSE $gate END AS gate, \
+                 CASE n.id WHEN 'a' THEN $other ELSE $other END AS other, \
+                 CASE n.id WHEN 'a' THEN $score ELSE $score END AS score"
+            ))
+            .unwrap();
+            let parameters = BTreeMap::from([
+                ("gate".into(), initial),
+                ("other".into(), Value::Int(0)),
+                ("score".into(), Value::Float(0.5)),
+            ]);
+            let plan = parameterize_logical_plan(&statement, &parameters).unwrap();
+            let template = super::ParameterBindingTemplate::new(&plan, &parameters).unwrap();
+            let mut altered = parameters.clone();
+            altered.insert("gate".into(), changed);
+            assert!(
+                template.reuse(&altered).is_none(),
+                "folded guard {predicate}"
+            );
+            altered = parameters.clone();
+            altered.insert("score".into(), Value::Float(0.75));
+            let reused = template.reuse(&altered).unwrap();
+            let mut rebound = reused.logical().clone();
+            super::bind_logical_plan(&mut rebound, &altered).unwrap();
+            assert_eq!(
+                rebound,
+                hawdb_plan_cypher::plan_with_params(&statement, &altered).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn scoped_case_template_retains_folded_booleans_as_exact_guards() {
+        let mut query = "MATCH (n:Item) WHERE n.id IN $ids AND ($cross_space = true OR \
+            n.space_id IN $spaces OR ($default_requested = true AND \
+            (n.space_id IS NULL OR n.space_id = ''))) RETURN CASE n.id"
+            .to_owned();
+        let mut parameters = BTreeMap::from([
+            ("cross_space".into(), Value::Bool(false)),
+            (
+                "spaces".into(),
+                Value::List(vec![Value::String("default".into())]),
+            ),
+            ("default_requested".into(), Value::Bool(true)),
+        ]);
+        let mut ids = Vec::new();
+        for index in 0..20 {
+            query.push_str(&format!(" WHEN $id_{index} THEN $score_{index}"));
+            let id = Value::String(format!("a{index}"));
+            ids.push(id.clone());
+            parameters.insert(format!("id_{index}"), id);
+            parameters.insert(format!("score_{index}"), Value::Float(0.5));
+        }
+        query.push_str(" ELSE null END AS score");
+        parameters.insert("ids".into(), Value::List(ids));
+        let statement = cypher::parse(&query).unwrap();
+        let plan = parameterize_logical_plan(&statement, &parameters).unwrap();
+        let template = super::ParameterBindingTemplate::new(&plan, &parameters)
+            .expect("folded boolean scope guards must permit safe template reuse");
+        let mut changed = parameters.clone();
+        changed.insert("score_0".into(), Value::Float(0.75));
+        super::PARAMETER_PLANNING_CALLS.with(|calls| calls.set(0));
+        let reused = template.reuse(&changed).unwrap();
+        assert_eq!(
+            super::PARAMETER_PLANNING_CALLS.with(std::cell::Cell::get),
+            0
+        );
+        let mut rebound = reused.logical().clone();
+        super::bind_logical_plan(&mut rebound, &changed).unwrap();
+        assert_eq!(
+            rebound,
+            hawdb_plan_cypher::plan_with_params(&statement, &changed).unwrap()
+        );
+        for name in ["cross_space", "default_requested"] {
+            let mut altered = changed.clone();
+            let Value::Bool(value) = altered[name] else {
+                panic!("boolean fixture")
+            };
+            altered.insert(name.into(), Value::Bool(!value));
+            assert!(template.reuse(&altered).is_none(), "changed scope {name}");
+            altered.remove(name);
+            assert!(template.reuse(&altered).is_none(), "missing scope {name}");
+            altered.insert(name.into(), Value::Int(i64::from(value)));
+            assert!(
+                template.reuse(&altered).is_none(),
+                "changed scope type {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn simple_case_cohorts_parameterize_without_per_value_replanning() {
+        for count in [20, 100, 512] {
+            let mut query = "MATCH (n:Item) WHERE n.id IN $ids RETURN CASE n.id".to_owned();
+            let mut parameters = BTreeMap::new();
+            let mut ids = Vec::new();
+            for index in 0..count {
+                query.push_str(&format!(" WHEN $id_{index} THEN $score_{index}"));
+                let id = Value::String(format!("item-{index}"));
+                ids.push(id.clone());
+                parameters.insert(format!("id_{index}"), id);
+                parameters.insert(format!("score_{index}"), Value::Float(index as f64));
+            }
+            query.push_str(" ELSE null END AS score");
+            parameters.insert("ids".into(), Value::List(ids));
+            let statement = cypher::parse(&query).unwrap();
+            super::PARAMETER_PLANNING_CALLS.with(|calls| calls.set(0));
+            let plan = parameterize_logical_plan(&statement, &parameters).unwrap();
+            let calls = super::PARAMETER_PLANNING_CALLS.with(std::cell::Cell::get);
+            assert!(
+                calls <= 3,
+                "{count} candidates required {calls} logical plans"
+            );
+            assert_eq!(plan.slot_count(), parameters.len());
+            assert!(plan.has_case_parameter_slots());
+            let mut changed = parameters.clone();
+            changed.insert("score_0".into(), Value::Float(-3.0));
+            assert_eq!(
+                plan.cache_key(),
+                parameterize_logical_plan(&statement, &changed)
+                    .unwrap()
+                    .cache_key()
+            );
+            let mut rebound = plan.logical().clone();
+            super::bind_logical_plan(&mut rebound, &changed).unwrap();
+            assert_eq!(
+                rebound,
+                hawdb_plan_cypher::plan_with_params(&statement, &changed).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn case_retention_classification_preserves_non_case_slots_and_fallback() {
+        for (query, parameters, case_slots) in [
+            (
+                "MATCH (n:Item) WHERE n.id = $id RETURN CASE n.id WHEN 'a' THEN 1 ELSE 0 END AS rank",
+                BTreeMap::from([("id".into(), Value::String("a".into()))]),
+                false,
+            ),
+            (
+                "MATCH (n:Item) RETURN CASE n.id WHEN 'a' THEN $score ELSE 0 END AS rank LIMIT $take",
+                BTreeMap::from([("score".into(), Value::Int(1)), ("take".into(), Value::Int(2))]),
+                true,
+            ),
+        ] {
+            let statement = cypher::parse(query).unwrap();
+            let plan = parameterize_logical_plan(&statement, &parameters).unwrap();
+            assert!(plan.slot_count() > 0);
+            assert_eq!(plan.has_case_parameter_slots(), case_slots, "{query}");
+            let mut rebound = plan.logical().clone();
+            super::bind_logical_plan(&mut rebound, &parameters).unwrap();
+            assert_eq!(rebound, hawdb_plan_cypher::plan_with_params(&statement, &parameters).unwrap());
+        }
+    }
 
     #[test]
     fn parameter_type_proofs_share_binding_markers_and_distinguish_numeric_shapes() {
@@ -1461,7 +2140,7 @@ mod tests {
         ));
 
         let root = CascadesOptimizer::default().optimize_root_with_catalog(
-            &LogicalPlanRoot::new(parameterized.logical),
+            &LogicalPlanRoot::new(parameterized.logical().clone()),
             &OptimizerCatalog::default(),
         );
         let (template, _) = root.into_parts();

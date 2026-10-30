@@ -32,6 +32,19 @@ rust_test(
 )
 
 rust_test(
+    name = "hawdb_template_retention_tests",
+    size = "small",
+    crate_root = "tests/template_retention.rs",
+    srcs = ["tests/template_retention.rs"],
+    edition = "2024",
+    deps = [
+        ":hawdb_plan_cache",
+        "//crates/core:hawdb_core",
+        "//crates/cypher:hawdb_cypher",
+    ],
+)
+
+rust_test(
     name = "hawdb_plan_cache_loom_tests",
     args = ["loom_tests"],
     crate_features = ["loom-tests"],

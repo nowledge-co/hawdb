@@ -375,6 +375,7 @@ fn main() -> Result<()> {
                 path,
                 DatabaseConfig {
                     read_only: true,
+                    recovery_mode: RecoveryMode::Strict,
                     ..DatabaseConfig::default()
                 },
             )?;
@@ -415,6 +416,7 @@ fn main() -> Result<()> {
                 path,
                 DatabaseConfig {
                     read_only: true,
+                    recovery_mode: RecoveryMode::Strict,
                     ..DatabaseConfig::default()
                 },
             )?;
@@ -451,6 +453,7 @@ fn main() -> Result<()> {
                 path,
                 DatabaseConfig {
                     read_only: true,
+                    recovery_mode: RecoveryMode::Strict,
                     ..DatabaseConfig::default()
                 },
             )?;
@@ -901,6 +904,7 @@ fn main() -> Result<()> {
                 path,
                 DatabaseConfig {
                     read_only: true,
+                    recovery_mode: RecoveryMode::Strict,
                     ..DatabaseConfig::default()
                 },
             )?;
@@ -1055,6 +1059,7 @@ fn main() -> Result<()> {
                 path,
                 DatabaseConfig {
                     read_only: true,
+                    recovery_mode: RecoveryMode::Strict,
                     segment_cache_capacity_bytes,
                     storage_residency_mode: StorageResidencyMode::OutOfCore,
                     max_read_result_rows: Some(limits.max_output_rows),
@@ -1073,7 +1078,7 @@ fn main() -> Result<()> {
             return Ok(());
         }
         if command == "storage-recovery-report" {
-            let mut recovery_mode = RecoveryMode::default();
+            let mut recovery_mode = RecoveryMode::Strict;
             let mut max_wal_replay_entries = None;
             let mut require_durable = false;
             let mut require_checkpoint_boundary = false;
@@ -1166,6 +1171,7 @@ fn main() -> Result<()> {
                 path,
                 DatabaseConfig {
                     read_only: true,
+                    recovery_mode: RecoveryMode::Strict,
                     ..DatabaseConfig::default()
                 },
             )?;

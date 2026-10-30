@@ -449,6 +449,7 @@ pub struct StorageRecoveryReport {
     pub torn_tail_repaired: bool,
     pub discarded_wal_tail_bytes: u64,
     pub torn_tail_reason: Option<String>,
+    pub wal_repair: Option<crate::doctor::WalTailRepairReport>,
     pub recovered_commit_epoch: u64,
 }
 

@@ -16,7 +16,7 @@
 
 use super::*;
 use hawdb_core::RuntimeCancellationToken;
-use hawdb_plan_cypher::ProjectionExpression;
+use hawdb_plan_cypher::{ProjectionExpression, ScalarBinaryOp};
 use hawdb_storage::{NodeId, NodeRecord};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -186,8 +186,9 @@ fn rows(seed: u64) -> Vec<Binding> {
                         labels: BTreeSet::new(),
                         properties,
                     },
-                )]),
-                relationships: BTreeMap::new(),
+                )])
+                .into(),
+                relationships: BTreeMap::new().into(),
             }
         })
         .collect()
@@ -319,9 +320,10 @@ fn partial_spill_workload_keeps_the_existing_run_budget() {
                                 ("value".into(), Value::Int(index as i64)),
                             ]),
                         },
-                    )]),
+                    )])
+                    .into(),
                     values: BTreeMap::new(),
-                    relationships: BTreeMap::new(),
+                    relationships: BTreeMap::new().into(),
                 })
                 .collect(),
             batch_rows: 1024,
@@ -667,5 +669,197 @@ fn hash_operators_fail_closed_on_oversized_state_and_release_admission() {
         );
         assert!(!emitted);
         fixture.assert_released();
+    }
+}
+
+#[test]
+fn sum_and_expression_aggregates_match_oracle_with_and_without_spill() {
+    // Few rows per group keep one group's DISTINCT state within the small
+    // budget, while the whole input still has to spill.
+    const ROWS: usize = 1024;
+    const GROUPS: usize = 128;
+    // Halves and small integers keep every float sum exact in any order.
+    let value = |index: usize| {
+        if index.is_multiple_of(7) {
+            Value::Null
+        } else if index.is_multiple_of(5) {
+            Value::Float((index / 2) as f64 + 0.5)
+        } else {
+            Value::Int((index / 2) as i64)
+        }
+    };
+    let rows = (0..ROWS)
+        .map(|index| Binding {
+            nodes: BTreeMap::from([(
+                "n".into(),
+                NodeRecord {
+                    id: NodeId(index as u64),
+                    labels: BTreeSet::new(),
+                    properties: BTreeMap::from([
+                        ("group".into(), Value::Int(((index / 2) % GROUPS) as i64)),
+                        ("value".into(), value(index)),
+                    ]),
+                },
+            )])
+            .into(),
+            values: BTreeMap::new(),
+            relationships: BTreeMap::new().into(),
+        })
+        .collect::<Vec<_>>();
+    let property = || ProjectionExpression::Property {
+        variable: "n".into(),
+        property: "value".into(),
+    };
+    let times_two = || {
+        AggregateTarget::Expression(ProjectionExpression::Binary {
+            left: Box::new(property()),
+            op: ScalarBinaryOp::Multiply,
+            right: Box::new(ProjectionExpression::Literal(Value::Int(2))),
+        })
+    };
+    let aggregation = |function, target, distinct, name: &str| Aggregation {
+        function,
+        target,
+        distinct,
+        name: name.into(),
+    };
+    let direct = || AggregateTarget::Property {
+        variable: "n".into(),
+        property: "value".into(),
+    };
+    // Mergeable items use partial aggregation; DISTINCT items use buffering.
+    let mergeable = vec![
+        aggregation(AggregateFunction::Sum, direct(), false, "sum"),
+        aggregation(AggregateFunction::Sum, times_two(), false, "sum2"),
+        aggregation(AggregateFunction::Avg, times_two(), false, "avg2"),
+        aggregation(AggregateFunction::Count, times_two(), false, "count2"),
+    ];
+    let buffered = vec![
+        aggregation(AggregateFunction::Sum, direct(), true, "sum"),
+        aggregation(AggregateFunction::Sum, times_two(), true, "sum2"),
+        aggregation(AggregateFunction::Avg, times_two(), true, "avg2"),
+        aggregation(AggregateFunction::Count, times_two(), true, "count2"),
+    ];
+    let numeric_sum = |values: &[Value]| {
+        if values.iter().any(|value| matches!(value, Value::Float(_))) {
+            Value::Float(values.iter().fold(0.0, |sum, value| match value {
+                Value::Int(value) => sum + *value as f64,
+                Value::Float(value) => sum + value,
+                _ => unreachable!(),
+            }))
+        } else {
+            Value::Int(values.iter().fold(0, |sum, value| match value {
+                Value::Int(value) => sum + value,
+                _ => unreachable!(),
+            }))
+        }
+    };
+    let doubled = |value: &Value| match value {
+        Value::Int(value) => Value::Int(value * 2),
+        Value::Float(value) => Value::Float(value * 2.0),
+        _ => unreachable!(),
+    };
+    for distinct in [false, true] {
+        let mut groups = BTreeMap::<i64, Vec<Value>>::new();
+        for index in 0..ROWS {
+            let values = groups.entry(((index / 2) % GROUPS) as i64).or_default();
+            let value = value(index);
+            if value != Value::Null && !(distinct && values.contains(&value)) {
+                values.push(value);
+            }
+        }
+        let expected = groups
+            .into_iter()
+            .map(|(group, values)| {
+                let twice = values.iter().map(doubled).collect::<Vec<_>>();
+                let avg = match numeric_sum(&twice) {
+                    _ if twice.is_empty() => Value::Null,
+                    Value::Int(sum) => Value::Float(sum as f64 / twice.len() as f64),
+                    Value::Float(sum) => Value::Float(sum / twice.len() as f64),
+                    _ => unreachable!(),
+                };
+                Binding::values(BTreeMap::from([
+                    ("group".into(), Value::Int(group)),
+                    ("sum".into(), numeric_sum(&values)),
+                    ("sum2".into(), numeric_sum(&twice)),
+                    ("avg2".into(), avg),
+                    ("count2".into(), Value::Int(twice.len() as i64)),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        for budget in [8 * 1024, 1024 * 1024] {
+            let fixture = Fixture::new(budget);
+            let mut source = Source {
+                rows: rows.clone(),
+                batch_rows: 97,
+                cancel_after_input: None,
+            };
+            let mut output = Vec::new();
+            stream_aggregate_batches(
+                &input(),
+                &group_keys()[..1],
+                if distinct { &buffered } else { &mergeable },
+                &mut source,
+                fixture.context(),
+                ExecutionLimit::unlimited(),
+                &mut |batch| {
+                    output.extend(batch);
+                    Ok(BatchControl::Continue)
+                },
+            )
+            .unwrap_or_else(|error| panic!("distinct={distinct}, budget={budget}: {error}"));
+            assert_eq!(output, expected, "distinct={distinct}, budget={budget}");
+            fixture.assert_report(budget == 8 * 1024);
+        }
+    }
+}
+
+#[test]
+fn sum_overflow_fails_through_partial_and_buffered_paths() {
+    for distinct in [false, true] {
+        let fixture = Fixture::new(1024 * 1024);
+        let mut source = Source {
+            rows: [i64::MAX, 1]
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| Binding {
+                    nodes: BTreeMap::from([(
+                        "n".into(),
+                        NodeRecord {
+                            id: NodeId(index as u64),
+                            labels: BTreeSet::new(),
+                            properties: BTreeMap::from([
+                                ("group".into(), Value::Int(0)),
+                                ("value".into(), Value::Int(value)),
+                            ]),
+                        },
+                    )])
+                    .into(),
+                    values: BTreeMap::new(),
+                    relationships: BTreeMap::new().into(),
+                })
+                .collect(),
+            batch_rows: 1,
+            cancel_after_input: None,
+        };
+        let error = stream_aggregate_batches(
+            &input(),
+            &group_keys()[..1],
+            &[Aggregation {
+                function: AggregateFunction::Sum,
+                target: AggregateTarget::Property {
+                    variable: "n".into(),
+                    property: "value".into(),
+                },
+                distinct,
+                name: "sum".into(),
+            }],
+            &mut source,
+            fixture.context(),
+            ExecutionLimit::unlimited(),
+            &mut |_| Ok(BatchControl::Continue),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("overflow"), "{error}");
     }
 }

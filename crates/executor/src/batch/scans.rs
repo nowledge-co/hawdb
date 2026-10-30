@@ -210,8 +210,8 @@ pub(super) fn stream_optional_relationship_count_sum_batches(
     )?;
     emit(vec![Binding {
         values: BTreeMap::from([(output.to_owned(), Value::Int(total as i64))]),
-        nodes: BTreeMap::new(),
-        relationships: BTreeMap::new(),
+        nodes: BTreeMap::new().into(),
+        relationships: BTreeMap::new().into(),
     }])
 }
 
@@ -254,8 +254,8 @@ pub(super) fn stream_node_count_batches(
     })?;
     emit(vec![Binding {
         values: BTreeMap::from([(output.to_owned(), Value::Int(count))]),
-        nodes: BTreeMap::new(),
-        relationships: BTreeMap::new(),
+        nodes: BTreeMap::new().into(),
+        relationships: BTreeMap::new().into(),
     }])
 }
 
@@ -298,8 +298,8 @@ pub(super) fn stream_relationship_count_batches(
     })?;
     emit(vec![Binding {
         values: BTreeMap::from([(output.to_owned(), Value::Int(count))]),
-        nodes: BTreeMap::new(),
-        relationships: BTreeMap::new(),
+        nodes: BTreeMap::new().into(),
+        relationships: BTreeMap::new().into(),
     }])
 }
 

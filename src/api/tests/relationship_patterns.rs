@@ -31,12 +31,21 @@ fn undirected_one_hop_relationship_patterns_match_both_directions() {
     assert_eq!(output.rows[0].get("id"), Some(&Value::Int(2)));
     assert_eq!(output.rows[1].get("id"), Some(&Value::Int(3)));
 
-    let error = db
-        .query("MATCH (m:Memory)-[:EVOLVES*1..2]-(other:Memory) RETURN other.id AS id")
-        .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("non-outgoing relationship patterns are supported only for one-hop patterns"));
+    // 1 -> 2 and 3 -> 1: undirected trails from 1 reach 2 and 3 in one hop
+    // and nothing new in two hops, because no relationship is reused.
+    let output = db
+        .query(
+            "MATCH (m:Memory {id: 1})-[:EVOLVES*1..2]-(other:Memory) RETURN other.id AS id ORDER BY id ASC",
+        )
+        .unwrap();
+    assert_eq!(
+        output
+            .rows
+            .iter()
+            .map(|row| row.get("id").cloned().unwrap())
+            .collect::<Vec<_>>(),
+        vec![Value::Int(2), Value::Int(3)]
+    );
 }
 
 #[test]
@@ -107,12 +116,11 @@ fn incoming_one_hop_relationship_patterns_match_nowledge_reads() {
         .unwrap();
     assert_eq!(output.rows[0].get("total"), Some(&Value::Int(1)));
 
-    let error = db
-        .query("MATCH (e:Entity)<-[:MENTIONS*1..2]-(m:Memory) RETURN m.id AS id")
-        .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("non-outgoing relationship patterns are supported only for one-hop patterns"));
+    let output = db
+        .query("MATCH (e:Entity {id: 10})<-[:MENTIONS*1..2]-(m:Memory) RETURN m.id AS id")
+        .unwrap();
+    assert_eq!(output.rows.len(), 1);
+    assert_eq!(output.rows[0].get("id"), Some(&Value::Int(1)));
 }
 
 #[test]
@@ -340,13 +348,9 @@ fn pipeline_bounded_match_validation_is_independent_of_graph_contents() {
             "(a:Node)-[r:LINK*1..2]->(b:Node)",
             "(a:Node)-[:LINK*1..2 {weight: 10}]->(b:Node)",
             "(a:Node)-[*1..2]->(b:Node)",
-            "(a:Node)<-[:LINK*1..2]-(b:Node)",
-            "(a:Node)-[:LINK*1..2]-(b:Node)",
             "(a:Node)-[r:ABSENT*0..1]->(b:Node)",
             "(a:Node)-[:ABSENT*0..1 {weight: 10}]->(b:Node)",
             "(a:Node)-[*0..1]->(b:Node)",
-            "(a:Node)<-[:ABSENT*0..1]-(b:Node)",
-            "(a:Node)-[:ABSENT*0..1]-(b:Node)",
         ] {
             let query = format!("MATCH {pattern} WITH a, b WITH a, b RETURN b.id AS id");
             let error = db.query(&query).unwrap_err();
@@ -376,5 +380,60 @@ fn pipeline_bounded_match_validation_is_independent_of_graph_contents() {
             assert_eq!(output.rows[0].get("id"), Some(&Value::Int(2)));
             assert_eq!(output.rows[0].get("weight"), Some(&Value::Int(10)));
         }
+    }
+}
+
+fn trail_fixture() -> Database {
+    // r1: 1 -> 2, r2: 2 -> 1, r3: 1 -> 1 (self-loop).
+    let mut db = Database::new();
+    db.query("CREATE (:N {id: 1})-[:R]->(:N {id: 2})").unwrap();
+    db.query("MATCH (a:N {id: 2}), (b:N {id: 1}) CREATE (a)-[:R]->(b)")
+        .unwrap();
+    db.query("MATCH (a:N {id: 1}), (b:N {id: 1}) CREATE (a)-[:R]->(b)")
+        .unwrap();
+    db
+}
+
+fn count(db: &mut Database, query: &str) -> Value {
+    db.query(query).unwrap().rows[0].get("n").cloned().unwrap()
+}
+
+#[test]
+fn variable_length_patterns_match_trails_without_repeating_relationships() {
+    let mut db = trail_fixture();
+    for (pattern, expected) in [
+        // Length 1: r1, r3. Length 2: r1 r2, r3 r1. Length 3: r1 r2 r3, r3 r1 r2.
+        ("(a:N {id: 1})-[:R*1..3]->(x:N)", 6),
+        ("(a:N {id: 1})-[:R*3..3]->(x:N)", 2),
+        ("(a:N {id: 1})-[:R*4..4]->(x:N)", 0),
+        ("(a:N {id: 1})-[:R*0..1]->(x:N)", 3),
+        // The reversed graph has the same shape.
+        ("(a:N {id: 1})<-[:R*1..3]-(x:N)", 6),
+        ("(a:N {id: 1})<-[:R*3..3]-(x:N)", 2),
+        // Undirected: r1, r2 and the self-loop once; then r1 r2, r2 r1,
+        // r3 r1 and r3 r2.
+        ("(a:N {id: 1})-[:R*1..1]-(x:N)", 3),
+        ("(a:N {id: 1})-[:R*1..2]-(x:N)", 7),
+        ("(a:N {id: 1})-[:R*2..2]-(x:N)", 4),
+    ] {
+        for query in [
+            format!("MATCH {pattern} RETURN count(*) AS n"),
+            format!("MATCH {pattern} WITH x WITH x RETURN count(*) AS n"),
+        ] {
+            assert_eq!(count(&mut db, &query), Value::Int(expected), "{query}");
+        }
+    }
+}
+
+#[test]
+fn variable_length_trails_exclude_relationships_bound_earlier_in_the_pattern() {
+    let mut db = trail_fixture();
+    // r1 is bound by the fixed step, so the trail from 2 may use r2 and then
+    // only r3; r1 cannot be reused.
+    for query in [
+        "MATCH (a:N {id: 1})-[:R]->(b:N {id: 2})-[:R*1..3]->(c:N) RETURN count(*) AS n",
+        "MATCH (a:N {id: 1})-[:R]->(b:N {id: 2})-[:R*1..3]->(c:N) WITH c WITH c RETURN count(*) AS n",
+    ] {
+        assert_eq!(count(&mut db, query), Value::Int(2), "{query}");
     }
 }

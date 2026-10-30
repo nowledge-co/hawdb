@@ -126,6 +126,10 @@ fn return_is_deterministic(expression: &cypher::ReturnExpression) -> bool {
             return_is_deterministic(first)
                 && rest.iter().all(|(_, value)| return_is_deterministic(value))
         }
+        cypher::ReturnExpressionKind::Aggregate(cypher::AggregateExpression::Expression {
+            argument,
+            ..
+        }) => return_is_deterministic(argument),
         cypher::ReturnExpressionKind::Aggregate(_) | cypher::ReturnExpressionKind::Path(_) => true,
     }
 }

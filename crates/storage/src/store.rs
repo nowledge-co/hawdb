@@ -98,6 +98,7 @@ mod durable;
 mod graph_apply;
 #[path = "store/graph_checkpoint.rs"]
 mod graph_checkpoint;
+mod wal_fence;
 #[doc(hidden)]
 pub use graph_checkpoint::CheckpointPreparation;
 #[path = "store/graph_checkpoint_candidate.rs"]
@@ -404,8 +405,7 @@ use wal_codec::frame::{
     encode_binary_wal_header, frame_binary_wal_record, WAL_BINARY_FILE_HEADER_BYTES,
 };
 use wal_codec::{
-    quarantine_corrupt_wal, reject_corrupt_wal_record, WalCursorEvent, WalEntry, WalOp,
-    WalOpenOutcome, WalRecordCursor,
+    reject_corrupt_wal_record, WalCursorEvent, WalEntry, WalOp, WalOpenOutcome, WalRecordCursor,
 };
 
 use hawdb_storage::durable_manifest::{safe_reclaim_commit_epoch, STORAGE_VERSION};
@@ -3619,8 +3619,14 @@ mod tests {
         let domain =
             crate::file_descriptors::ProjectFileDescriptors::acquire_existing(&path, 64).unwrap();
         drop(store);
-        let (repaired, _) =
-            GraphStore::open_for_derived_repair(&path, WalReplayConfig::default()).unwrap();
+        let (repaired, _) = GraphStore::open_for_derived_repair(
+            &path,
+            WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
+                ..WalReplayConfig::default()
+            },
+        )
+        .unwrap();
         assert_eq!(repaired.file_descriptor_metrics().unwrap().limit, 64);
         assert!(matches!(
             crate::file_descriptors::ProjectFileDescriptors::acquire_existing(&path, 256),
@@ -9152,7 +9158,10 @@ mod tests {
             &path,
             &mut catalog,
             DurabilityPolicy::default(),
-            replay,
+            WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
+                ..replay
+            },
         )
         .unwrap();
         assert_eq!(
@@ -9313,7 +9322,10 @@ mod tests {
             &path,
             &mut catalog,
             durability,
-            replay,
+            WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
+                ..replay
+            },
         )
         .unwrap();
         assert_private_checkpoint_recovery_rows(&read_only, epoch, &row);
@@ -9586,7 +9598,10 @@ mod tests {
                     &path,
                     &mut catalog,
                     durability,
-                    replay,
+                    WalReplayConfig {
+                        recovery_mode: crate::config::RecoveryMode::Strict,
+                        ..replay
+                    },
                 )
                 .unwrap();
                 check(&read_only, 4);
@@ -13296,7 +13311,13 @@ mod tests {
             .unwrap();
 
         let mut catalog = Catalog::default();
-        let error = GraphStore::open(&path, &mut catalog).unwrap_err();
+        let error = GraphStore::open_with_durability_and_recovery(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::SyncOnEveryWrite,
+            crate::config::RecoveryMode::Strict,
+        )
+        .unwrap_err();
         assert!(error
             .to_string()
             .contains("strict WAL recovery rejected torn tail"));

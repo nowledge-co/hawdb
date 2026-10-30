@@ -1,0 +1,34 @@
+{
+  "status": "source-qualified local measurement complete; final PR CI pending",
+  "measured_engine_revision": "22cee11bcb2423311b3a7df2f7e785d8f3c11a2c",
+  "baseline_revision": "0a214f761f5a1bcf52c874e04f49b7aa2aa5505a",
+  "release_cells": 48,
+  "instrumented_count_cells": 6,
+  "repeats_release": 20,
+  "repeats_counts": 3,
+  "host": "shared development workstation; own compilers and tests completed before measured windows",
+  "workload": "actual scoped Mem ranking query, fixed default scope; host scorer callback excluded",
+  "cache": "shared logical binding/catalog state warmed; physical cache private to each fresh read transaction",
+  "cache_entry_limit": 16,
+  "background_completed_writes_range": [
+    14,
+    63294
+  ],
+  "source_sha256": {
+    "benches/mem_query_resources.rs": "e560d14c9b7b1d33482846b2927cc21de76c6a8e085e4957ddbdc4a715fa4e67",
+    "crates/plan-cache/src/template.rs": "5784ae2598b39878ea7bb420d5acac41ea4dfaa322dde772fd5e472f7094c860",
+    "src/api/plan_cache.rs": "7d7ecb80d178b49ed89b667e7809efcc975134574635aa4d6e9bbce6d1c950ae",
+    "crates/executor/src/expression/simple_case.rs": "d609e564eee78fbf9b706a9e96668f99cec651727c3597b4e78ea64d48a36be9",
+    "crates/executor/src/binding/graph_slots.rs": "4c69f30bba544282f13ca20f173667b80c590ecc360eb336fc07edea7b96173f"
+  },
+  "validation": "31plan-cache tests,515executor tests(16ignored),2facade tests; all100 focused/local fuzz targets passed on measuredsource; strict native/WASM lint passed",
+  "limits": [
+    "p95 is descriptive shared-host data;20-row baseline has an unexplained slow tail relative to CPU",
+    "RSS includes fixture creation; Rust peak requested bytes include cold admission/setup",
+    "instrumented allocation traffic includes harness/profile bookkeeping, excludes foreign heaps and allocator rounding",
+    "cypher_plan_calls counts outer phases; internal zero-planning claim belongs to unit proof",
+    "table lookups are not total expression evaluations or binary-search comparison counts",
+    "only one query shape per process; cache saturation/churn not qualified"
+  ],
+  "retained_exploratory_matrix": "original96release+96allocation data remain separately labeled exploratory and predate this matched-main qualification"
+}

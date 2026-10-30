@@ -171,6 +171,7 @@ fn read_only_database_rejects_knowledge_entity_batch_delete_query() {
             &path,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 ..DatabaseConfig::default()
             },
         )

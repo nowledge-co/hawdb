@@ -504,6 +504,13 @@ impl<'a> GraphTableBinder<'a> {
         expression: &ExpressionSyntax,
     ) -> Result<BoundPgqExpression, PgqBindError> {
         let (kind, data_type) = match &expression.kind {
+            ExpressionKindSyntax::Like { .. } | ExpressionKindSyntax::Filtered { .. } => {
+                return Err(PgqBindError::new(
+                    PgqBindErrorCode::UnsupportedExpression,
+                    expression.span,
+                    "relational LIKE and FILTER are not qualified GRAPH_TABLE expressions",
+                ));
+            }
             ExpressionKindSyntax::Column(name) => self.bind_column_reference(name)?,
             ExpressionKindSyntax::Wildcard(_) => {
                 return Err(PgqBindError::new(

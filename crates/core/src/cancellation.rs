@@ -287,7 +287,9 @@ impl Error for RuntimeIoWaveError {
 
 mod memory;
 mod work;
-pub use memory::{RuntimeMemoryController, RuntimeMemoryError, RuntimeMemoryPermit};
+pub use memory::{
+    RuntimeMemoryController, RuntimeMemoryError, RuntimeMemoryPermit, RuntimeMemoryTarget,
+};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeTaskContext {
@@ -297,6 +299,7 @@ pub struct RuntimeTaskContext {
     executor_thread_limit: Option<NonZeroUsize>,
     memory_reservation: Option<RuntimeMemoryReservation>,
     memory_controller: Option<Arc<dyn RuntimeMemoryController>>,
+    memory_target: Option<Arc<dyn RuntimeMemoryTarget>>,
     io_wave_controller: Option<Arc<dyn RuntimeIoWaveController>>,
     work_budget: Option<Arc<work::RuntimeWorkBudget>>,
 }
@@ -349,6 +352,7 @@ impl RuntimeTaskContext {
             executor_thread_limit: None,
             memory_reservation: None,
             memory_controller: None,
+            memory_target: None,
             io_wave_controller: None,
             work_budget: None,
         }
@@ -377,6 +381,7 @@ impl RuntimeTaskContext {
             executor_thread_limit: self.executor_thread_limit,
             memory_reservation: self.memory_reservation,
             memory_controller: self.memory_controller.clone(),
+            memory_target: self.memory_target.clone(),
             io_wave_controller: self.io_wave_controller.clone(),
             work_budget: self.work_budget.clone(),
         }
@@ -424,6 +429,11 @@ impl RuntimeTaskContext {
                 &self.memory_controller,
                 &request.memory_controller,
                 "memory",
+            )?,
+            memory_target: controller(
+                &self.memory_target,
+                &request.memory_target,
+                "memory target",
             )?,
             io_wave_controller: controller(
                 &self.io_wave_controller,
@@ -484,7 +494,23 @@ impl RuntimeTaskContext {
     /// a static ceiling. Synchronous adapters must preserve these controllers
     /// and must not replace an originating governor admission with a local cap.
     pub fn has_resource_controllers(&self) -> bool {
-        self.memory_controller.is_some() || self.io_wave_controller.is_some()
+        self.memory_controller.is_some()
+            || self.memory_target.is_some()
+            || self.io_wave_controller.is_some()
+    }
+
+    /// Carries host-driven pressure feedback to revocable operator work areas.
+    pub fn with_memory_target(mut self, target: Arc<dyn RuntimeMemoryTarget>) -> Self {
+        self.memory_target = Some(target);
+        self
+    }
+
+    /// The target can only tighten the caller's ceiling. Operators retain a
+    /// bounded progress floor and continue to enforce all hard allocation limits.
+    pub fn working_memory_target(&self, hard_limit: u64) -> u64 {
+        self.memory_target.as_ref().map_or(hard_limit, |target| {
+            target.target_bytes(hard_limit).min(hard_limit)
+        })
     }
 
     /// Binds actual allocation ownership to an already admitted task.

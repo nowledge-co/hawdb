@@ -13,7 +13,10 @@ pub struct Footprint {
 impl Footprint {
     pub fn record(&mut self, op: &Operation) {
         match *op {
-            Operation::Read => {}
+            Operation::Read
+            | Operation::LockingRead { .. }
+            | Operation::GraphRead
+            | Operation::GraphUpdate { .. } => {}
             Operation::Update { id, .. }
             | Operation::Delete { id }
             | Operation::Insert { id, .. } => {

@@ -3162,6 +3162,7 @@ mod tests {
                 DurabilityPolicy::default(),
                 DatabaseConfig {
                     read_only: true,
+                    recovery_mode: crate::RecoveryMode::Strict,
                     relational_index_mode: hawdb_storage::config::RelationalIndexMode::DemandPaged,
                     ..DatabaseConfig::default()
                 },

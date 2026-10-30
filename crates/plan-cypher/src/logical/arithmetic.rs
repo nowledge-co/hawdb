@@ -15,6 +15,7 @@ pub(super) fn plan_composed_returns(
         columns,
         parameters,
         aggregate,
+        literal_names: false,
         group_keys: Vec::new(),
         aggregations: Vec::new(),
     };
@@ -39,6 +40,44 @@ pub(super) fn plan_composed_returns(
     }
 }
 
+/// Binds an aggregate argument as a per-row expression and its display name.
+pub(super) fn bind_aggregate_argument(
+    scope: &BTreeSet<String>,
+    columns: &BTreeSet<String>,
+    argument: &ReturnExpression,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<(ProjectionExpression, String)> {
+    if contains_aggregate(argument) {
+        return Err(HawDBError::Semantic(
+            "aggregate function arguments cannot contain aggregate functions".to_string(),
+        ));
+    }
+    ComposedReturnBinder {
+        scope,
+        columns,
+        parameters,
+        aggregate: false,
+        literal_names: true,
+        group_keys: Vec::new(),
+        aggregations: Vec::new(),
+    }
+    .bind(argument)
+}
+
+fn literal_name(value: &ValueExpression) -> Option<String> {
+    Some(match &value.kind {
+        ValueExpressionKind::Parameter(name) => format!("${name}"),
+        ValueExpressionKind::Literal(Value::Null) => "null".to_string(),
+        ValueExpressionKind::Literal(Value::Bool(value)) => value.to_string(),
+        ValueExpressionKind::Literal(Value::Int(value)) => value.to_string(),
+        ValueExpressionKind::Literal(Value::Float(value)) => format!("{value:?}"),
+        ValueExpressionKind::Literal(Value::String(value)) => {
+            format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+        }
+        _ => return None,
+    })
+}
+
 pub(super) fn contains_aggregate(expression: &ReturnExpression) -> bool {
     match &expression.kind {
         ReturnExpressionKind::Aggregate(_) => true,
@@ -54,6 +93,9 @@ struct ComposedReturnBinder<'a> {
     columns: &'a BTreeSet<String>,
     parameters: &'a BTreeMap<String, Value>,
     aggregate: bool,
+    /// Render literal operands in default names (aggregate arguments only;
+    /// composed RETURN names keep their historical `literal` placeholder).
+    literal_names: bool,
     group_keys: Vec<Projection>,
     aggregations: Vec<Aggregation>,
 }
@@ -106,7 +148,12 @@ impl ComposedReturnBinder<'_> {
                 });
                 let mut projection =
                     plan_projection_with_columns(self.scope, self.columns, &item, self.parameters)?;
-                let name = projection.name.clone();
+                let name = match &value.kind {
+                    ScalarExpressionKind::Value(literal) if self.literal_names => {
+                        literal_name(literal).unwrap_or_else(|| projection.name.clone())
+                    }
+                    _ => projection.name.clone(),
+                };
                 if self.aggregate
                     && !scalar_expression_is_scoped(value, &BTreeSet::new(), &BTreeSet::new())
                 {

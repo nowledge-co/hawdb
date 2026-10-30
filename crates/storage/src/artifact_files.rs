@@ -180,6 +180,10 @@ pub fn parse_append_manifest_generation_file(name: &str) -> Option<u64> {
 pub fn storage_generation_for_file(name: &str) -> Option<u64> {
     parse_generation_file(name, "checkpoint.")
         .or_else(|| parse_generation_file(name, "wal."))
+        .or_else(|| {
+            name.strip_suffix(".sync")
+                .and_then(|name| parse_generation_file(name, "wal."))
+        })
         .or_else(|| parse_generation_file(name, "relational."))
         .or_else(|| parse_generation_file(name, "canonical."))
         .or_else(|| parse_canonical_manifest_generation_file(name))

@@ -38,7 +38,13 @@ fn prepared_repair_blocks_open_and_can_continue() {
     }
 
     let mut catalog = Catalog::default();
-    let error = GraphStore::open(&path, &mut catalog).unwrap_err();
+    let error = GraphStore::open_with_durability_and_recovery(
+        &path,
+        &mut catalog,
+        Default::default(),
+        hawdb_storage::config::RecoveryMode::Strict,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("interrupted WAL doctor repair"));
 
     let report = DatabaseDoctor::apply_wal_tail_repair(
@@ -72,7 +78,13 @@ fn truncated_pending_repair_is_resumable_and_blocks_open_until_finalized() {
     }
 
     let mut catalog = Catalog::default();
-    let error = GraphStore::open(&path, &mut catalog).unwrap_err();
+    let error = GraphStore::open_with_durability_and_recovery(
+        &path,
+        &mut catalog,
+        Default::default(),
+        hawdb_storage::config::RecoveryMode::Strict,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("interrupted WAL doctor repair"));
     let resumed_plan =
         DatabaseDoctor::plan_wal_tail_repair(&path, WalDoctorOptions::default()).unwrap();

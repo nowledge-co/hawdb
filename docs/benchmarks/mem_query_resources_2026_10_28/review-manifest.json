@@ -1,0 +1,28 @@
+{
+  "base": "7aadb36f32456bde6c71cc04cd8217ab86d256bb",
+  "protocol": "review-v3",
+  "cache_max_entries": 16,
+  "cells": {
+    "each_variant_release": 30,
+    "each_variant_instrumented": 6
+  },
+  "timing_scope": "separate ordinary release; shared host; this task compilers/tests finished before its release window; variants ran in different windows, not randomized paired trials",
+  "memory_scope": "Rust allocator requested bytes; window reset while quiescent; cold/warm/isolated logical-template probe separate; excludes foreign heaps and allocator rounding",
+  "deepclone_source": "reconstructed byte-for-byte and checked against source hashes recorded before measurement",
+  "replay": "decompress engine-review-{variant}-v3.patch.gz and apply at base; copy harness-review-{variant}-v3.rs to benches/mem_query_resources.rs and allocator-review-{variant}-v3.rs to benches/mem_query_alloc.rs; cargo bench --locked --no-default-features [--features qualification] --bench mem_query_resources --no-run; executable candidates space_rows body_bytes repeats background mem-ranking|mixed-ranking",
+  "files": {
+    "review-deepclone-qualification.jsonl.gz": "497aef0452626e4685fbc91f1e51f6b47c004767afe1a1a73f54a7762090e0cd",
+    "allocator-review-deepclone-v3.rs": "7a0db0b6ed03ef900fb28b2d6c9844cf1b758693edff9d48c98fb1abe08ce174",
+    "review-shared-release.jsonl.gz": "4eb1698884de6d102186f9391e165c9020cfca19cdf33baf384f0322e0fbeb7e",
+    "engine-review-deepclone-v3.patch.gz": "0fc0e4dc8739e62bf0774b3d97f007d0b33c2f954f57f225d80f146c65cb0bbe",
+    "review-shared-qualification.jsonl.gz": "0cc058e544f72aaec0a8cef819cf2e258ec18c3c505e4fd5a8abb6a9ed325f0c",
+    "harness-review-shared-v3.rs": "8fba2d993e82ca3f6dcd2449716569087ad048acdece418e6bb6e582c433520f",
+    "review-shared-manifest.json": "304b5dd10ee994523e0ab2094c1e3a514b98c4dbaa09d046dccd24cc5b0255f7",
+    "review-deepclone-release.jsonl.gz": "10520d7f22799a26a551414f5f107b5060c472293969bccd1f858c58ea39c17e",
+    "review-matrix.csv": "f85f3d41249b2cbad7ced1f5a5eec1fcf7a77dba5a77b3f709dadfab7b7fb33c",
+    "review-deepclone-manifest.json": "bcf31c6228516c714b5490f3a5161e4a03cdcc46d3363f62e0862c95ae4804fd",
+    "harness-review-deepclone-v3.rs": "4d20ad2653b72b027c09b64869afd33f20b5b3fa602f9ce7fc5a7081b23d7e77",
+    "allocator-review-shared-v3.rs": "7a0db0b6ed03ef900fb28b2d6c9844cf1b758693edff9d48c98fb1abe08ce174",
+    "engine-review-shared-v3.patch.gz": "f2347c38cad75559892c318c5c76327db73f6b5d7a274096315eef3dde95bc2c"
+  }
+}

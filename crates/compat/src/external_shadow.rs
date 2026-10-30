@@ -478,6 +478,7 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         HawDBError::Storage(message) => json_error("storage", message),
         HawDBError::ProjectionBusy => json_error("storage", "search projection operation is busy"),
         HawDBError::StorageIntegrity(message) => json_error("storage", message),
+        error @ HawDBError::WalRecoveryIo { .. } => json_error("storage", error),
         HawDBError::Execution(message) => json_error("execution", message),
         error @ HawDBError::BranchEvidenceBudgetExceeded {
             resource,
@@ -519,7 +520,8 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         }
         error @ (HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }) => json_error("execution", error),
-        error @ HawDBError::TransactionConflict { .. } => json_error("execution", error),
+        error @ (HawDBError::TransactionConflict { .. }
+        | HawDBError::TransactionRetryRequired(_)) => json_error("execution", error),
         error @ HawDBError::TransactionReadDependencyRefused { .. } => {
             json_error("execution", error)
         }

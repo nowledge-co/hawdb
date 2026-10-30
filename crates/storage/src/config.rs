@@ -21,10 +21,11 @@ pub enum DurabilityPolicy {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RecoveryMode {
-    #[default]
     Strict,
-    /// Repair only a physically incomplete final WAL record on writable open.
-    /// The original WAL and doctor audit must be durable before truncation.
+    /// Repair physically incomplete tails and fenced unsynchronized suffixes.
+    /// Discarded bytes and an identity-bound audit are durable before truncation.
+    /// Read-only opens must explicitly select Strict.
+    #[default]
     AutoRepairTornTail,
     /// Legacy report value; database open rejects this mode.
     DoctorRepairTornTail,
@@ -168,7 +169,7 @@ mod tests {
             DurabilityPolicy::default(),
             DurabilityPolicy::SyncOnEveryWrite
         );
-        assert_eq!(RecoveryMode::default(), RecoveryMode::Strict);
+        assert_eq!(RecoveryMode::default(), RecoveryMode::AutoRepairTornTail);
         assert_eq!(DurableCompression::default(), DurableCompression::Zstd);
         assert_eq!(
             RelationalIndexMode::default(),

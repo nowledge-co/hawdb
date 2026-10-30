@@ -452,6 +452,7 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                 parameters,
                 &self.config.execution_memory,
             )
+            .with_output_columns(optimized.output_columns.as_deref())
             .with_output_limits(max_rows, max_payload_bytes)
             .with_optional_task_context(context.task_context)
             .with_optional_host_scorer(context.scoring.and_then(BoundScoringRequest::host_scorer)),
@@ -645,6 +646,7 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                     parameters,
                     &self.config.execution_memory,
                 )
+                .with_output_columns(optimized.output_columns.as_deref())
                 .with_output_limits(
                     restrictive_query_limit(
                         self.read_result_row_limit(),
@@ -674,13 +676,14 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
             );
             drop(profiled.rows);
             return Ok(BoundedReadQueryOutput {
-                output: explain::admit_explain_output(row, &self.config, options)?,
+                output: explain::admit_explain_output(row, true, &self.config, options)?,
                 execution_profile: profiled.profile,
             });
         }
         Ok(BoundedReadQueryOutput {
             output: explain::admit_explain_output(
                 explain_output_row(&optimized, work_request, inner_statement_kind),
+                false,
                 &self.config,
                 options,
             )?,

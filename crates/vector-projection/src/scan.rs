@@ -129,6 +129,7 @@ pub struct ProjectionSearchReport {
     pub filtered_document_count: usize,
     pub scanned_block_count: usize,
     pub skipped_block_count: usize,
+    pub adaptive_exact_scan_count: usize,
     pub payload_bytes_read: u64,
     pub admitted_working_bytes: usize,
     pub candidate_count: usize,
@@ -333,6 +334,7 @@ fn search_projection<R: SegmentReader>(
                 filtered_document_count: manifest.document_count,
                 scanned_block_count: 0,
                 skipped_block_count: manifest.document_count.div_ceil(SCAN_BLOCK_ROWS),
+                adaptive_exact_scan_count: 0,
                 payload_bytes_read: 0,
                 admitted_working_bytes: transformed_query
                     .len()
@@ -494,6 +496,7 @@ fn search_projection<R: SegmentReader>(
             filtered_document_count: accumulated.filtered_document_count,
             scanned_block_count: accumulated.scanned_block_count,
             skipped_block_count: accumulated.skipped_block_count,
+            adaptive_exact_scan_count: 0,
             payload_bytes_read: accumulated.payload_bytes_read,
             admitted_working_bytes,
             candidate_count: hits.len(),

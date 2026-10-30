@@ -318,9 +318,19 @@ jobs:
           - os: windows-latest
             shard: recovery-selected
           - os: windows-latest
-            shard: recovery-lost-sql
+            shard: recovery-lost-sql-link
           - os: windows-latest
-            shard: recovery-lost-nodes
+            shard: recovery-lost-sql-selector
+          - os: windows-latest
+            shard: recovery-lost-nodes-link
+          - os: windows-latest
+            shard: recovery-lost-nodes-selector
+          - os: windows-latest
+            shard: publication-artifacts
+          - os: windows-latest
+            shard: publication-selectors
+          - os: windows-latest
+            shard: publication-barriers
     steps:
       - name: Checkout
         uses: actions/checkout@v7

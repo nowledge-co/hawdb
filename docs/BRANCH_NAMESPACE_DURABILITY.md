@@ -18,11 +18,15 @@ host guarantee, not inferred from existence or from a denied open. The host must
 keep that namespace stable while project handles are open. HawDB validates canonical ancestry
 before creating project directories, synchronizes all names through the anchor
 inclusive, and refuses a conflicting anchor while the project is open. Internal
-project opens inherit the admitted project's boundary. Detached producer scratch
-may borrow its descriptor budget without inheriting an unrelated namespace
-boundary; that scratch still synchronizes its complete ancestry. `None` preserves
-the mount walk; permissions and failed barriers still fail closed. This does not change
-the WAL policy or persistent format.
+project opens inherit the admitted project's boundary. The embedded Mem facade
+also admits a sibling search projection under that explicit boundary, which
+must contain both graph and search paths. Each standalone component retains its
+finite descriptor domain; nested components keep the containing domain's budget.
+Detached producer scratch may borrow that budget. Scratch within the explicit
+anchor uses its inclusive boundary; scratch outside still synchronizes its
+complete ancestry. `None` preserves the mount walk; permissions and failed
+barriers still fail closed. This does not change the WAL policy or persistent
+format.
 
 For a Windows application storing private databases below the OS-provisioned
 LocalAppData folder, the host can guarantee that folder's existing namespace and
@@ -30,6 +34,16 @@ use it as the anchor. It must not declare a freshly created application or
 self-test directory durable merely because mkdir succeeded. This avoids needing
 write access to unrelated ancestors such as `C:\Users` while retaining barriers
 for every newly required application and project directory.
+
+On Windows, `None` walks through the volume root. Every covered directory must
+permit a write-capable open and a successful flush; ordinary-user write access
+to the project does not imply write access to its ancestors. An access refusal
+never chooses an implicit boundary or weakens the barrier. Hosts using private
+profile storage must explicitly provide their guaranteed durable anchor.
+Directory-synchronization failures identify the operation (`resolve`, `open`,
+`inspect` or `flush`) and exact directory, retain the IO error kind and native
+source, and remain failures. Typed descriptor refusals remain discoverable
+through `hawdb_core::error::file_descriptor_error`.
 
 An immutable store establishes its ancestry on its first publication, rather
 than on read-only open. It remembers only successful object-kind name barriers

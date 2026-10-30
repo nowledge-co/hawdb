@@ -61,6 +61,7 @@ fn assert_corrupt_checkpoint_rejected(fixture: &Fixture, from: &str, to: &str, e
                 &fixture.0,
                 DatabaseConfig {
                     read_only,
+                    recovery_mode: hawdb_storage::config::RecoveryMode::Strict,
                     ..Default::default()
                 },
             )
@@ -90,6 +91,7 @@ fn assert_valid_checkpoint(fixture: &Fixture, read_only: bool) {
         &fixture.0,
         DatabaseConfig {
             read_only,
+            recovery_mode: hawdb_storage::config::RecoveryMode::Strict,
             ..Default::default()
         },
     )

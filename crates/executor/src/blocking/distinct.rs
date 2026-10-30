@@ -125,7 +125,9 @@ impl<'a> DistinctOperator<'a> {
         let admitted_bytes = schema_bytes.saturating_add(entry_bytes);
         ensure_operator_item_fits("DistinctExec", admitted_bytes, &self.tracker)?;
         if !self.distinct.contains_key(&key) {
-            if self.tracker.would_exceed(admitted_bytes) && !self.distinct.is_empty() {
+            if self.tracker.should_spill(admitted_bytes, self.task_context)
+                && !self.distinct.is_empty()
+            {
                 self.spill_current_run()?;
             }
             if existing_schema_id.is_none() {

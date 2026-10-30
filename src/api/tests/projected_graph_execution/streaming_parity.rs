@@ -96,6 +96,7 @@ fn projected_graph_streaming_predicate_options_identity_parity_survives_both_res
         ] {
             let mut config = DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 storage_residency_mode: residency,
                 ..DatabaseConfig::default()
             };

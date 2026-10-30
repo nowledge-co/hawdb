@@ -55,6 +55,9 @@ pub mod nowledge_mem_serving_path;
 pub mod nowledge_mem_runtime_status;
 
 #[doc(hidden)]
+pub mod nowledge_mem_reports;
+
+#[doc(hidden)]
 pub mod nowledge_mem_cutover;
 
 #[doc(hidden)]

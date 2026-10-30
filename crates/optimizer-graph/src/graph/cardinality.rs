@@ -117,7 +117,8 @@ pub(super) fn estimate_aggregate_work_rows(
                 AggregateTarget::All
                 | AggregateTarget::Ranked { .. }
                 | AggregateTarget::Column(_)
-                | AggregateTarget::ColumnProperty { .. } => None,
+                | AggregateTarget::ColumnProperty { .. }
+                | AggregateTarget::Expression(_) => None,
             }
         })
         .fold(0_u64, |sum, distinct_count| {

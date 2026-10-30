@@ -21,6 +21,12 @@ use crate::{QueryMemoryAccount, QueryMemoryLease};
 use hawdb_core::{HawDBError, Result, Value, ValueRef};
 use std::sync::Arc;
 
+/// Source ordinals mapped to the bound schema, charged only during collection.
+pub(super) struct InputOrder {
+    ordinals: Vec<usize>,
+    _memory: QueryMemoryLease,
+}
+
 impl QueryRowsBuilder {
     pub(crate) fn owner_memory_bytes() -> usize {
         // Two Arc reference-count pairs cover the result storage and schema columns.
@@ -49,14 +55,14 @@ impl QueryRowsBuilder {
             )?,
             checked_result_add(heap_bytes, key_bytes)?,
         )?)?;
-        let next_count = self.prepare_budgeted_row(
+        let (next_count, reorder) = self.prepare_budgeted_row(
             row.keys().map(String::as_str),
             row.len(),
             heap_bytes,
             account,
             retained,
         )?;
-        self.values.extend(row.into_values());
+        self.append_budgeted_values(row.into_values(), reorder);
         self.row_count = next_count;
         drop(transient);
         Ok(())
@@ -71,7 +77,7 @@ impl QueryRowsBuilder {
         let heap_bytes = row.iter().try_fold(0usize, |total, (_, value)| {
             checked_result_add(total, cloned_value_heap_bytes(value)?)
         })?;
-        let next_count = self.prepare_budgeted_row(
+        let (next_count, reorder) = self.prepare_budgeted_row(
             row.iter().map(|(name, _)| name),
             row.len(),
             heap_bytes,
@@ -80,10 +86,111 @@ impl QueryRowsBuilder {
         )?;
         // Source buffers stay producer-owned. Only values that outlive this
         // call are copied, after their complete retained footprint is admitted.
-        self.values
-            .extend(row.iter().map(|(_, value)| value.to_owned_value()));
+        self.append_budgeted_values(row.iter().map(|(_, value)| value.to_owned_value()), reorder);
         self.row_count = next_count;
         Ok(())
+    }
+
+    pub(crate) fn bind_budgeted_schema<'name>(
+        &mut self,
+        names: impl Iterator<Item = &'name str> + Clone,
+        account: &QueryMemoryAccount,
+        retained: &mut QueryMemoryLease,
+    ) -> Result<()> {
+        if self.schema.is_some() {
+            return Ok(());
+        }
+        // Validate before allocating, including when execution produces no rows.
+        for (index, name) in names.clone().enumerate() {
+            if names.clone().take(index).any(|previous| previous == name) {
+                return Err(HawDBError::Semantic(format!(
+                    "query result schema contains duplicate column {name}"
+                )));
+            }
+        }
+        let slots = checked_result_mul(names.clone().count(), std::mem::size_of::<String>())?;
+        let name_bytes = names
+            .clone()
+            .try_fold(0usize, |total, name| checked_result_add(total, name.len()))?;
+        // Admit both the retained Arc and the overlapping conversion buffer.
+        let staging = account.reserve(slots)?;
+        retained.grow(checked_result_add(slots, name_bytes)?)?;
+        self.schema = Some(QuerySchema {
+            columns: Arc::from(names.map(str::to_owned).collect::<Vec<_>>()),
+        });
+        drop(staging);
+        Ok(())
+    }
+
+    fn prepare_input_order<'row>(
+        &mut self,
+        names: impl Iterator<Item = &'row str> + Clone,
+        width: usize,
+        account: &QueryMemoryAccount,
+    ) -> Result<bool> {
+        let schema = self.schema.as_ref().expect("result schema is bound");
+        let mismatch =
+            || HawDBError::Execution("query result row does not match its bound schema".into());
+        if width != schema.len() {
+            return Err(mismatch());
+        }
+        if names
+            .clone()
+            .eq(schema.columns().iter().map(String::as_str))
+        {
+            return Ok(false);
+        }
+        if self.input_order.as_ref().is_some_and(|order| {
+            names.clone().eq(order
+                .ordinals
+                .iter()
+                .map(|&ordinal| schema.columns()[ordinal].as_str()))
+        }) {
+            return Ok(true);
+        }
+        // Only a new input order needs a full permutation check. Do not mutate
+        // the cache until validation succeeds, including duplicate-name checks.
+        if schema
+            .columns()
+            .iter()
+            .any(|name| names.clone().filter(|candidate| *candidate == name).count() != 1)
+        {
+            return Err(mismatch());
+        }
+        if self.input_order.is_none() {
+            let mut memory = account.reserve(0)?;
+            let mut ordinals = Vec::new();
+            reserve_result_capacity(&mut ordinals, width, &mut memory)?;
+            self.input_order = Some(InputOrder {
+                ordinals,
+                _memory: memory,
+            });
+        }
+        let order = self.input_order.as_mut().expect("input order is admitted");
+        order.ordinals.clear();
+        order.ordinals.extend(names.map(|name| {
+            schema
+                .columns()
+                .iter()
+                .position(|column| column == name)
+                .expect("input columns were validated")
+        }));
+        Ok(true)
+    }
+
+    fn append_budgeted_values(&mut self, values: impl Iterator<Item = Value>, reorder: bool) {
+        if !reorder {
+            self.values.extend(values);
+            return;
+        }
+        let order = self.input_order.as_ref().expect("input order is admitted");
+        let start = self.values.len();
+        // prepare_budgeted_row has already admitted and reserved every slot.
+        self.values
+            .resize(start + order.ordinals.len(), Value::Null);
+        for (&ordinal, value) in order.ordinals.iter().zip(values) {
+            self.values[start + ordinal] = value;
+        }
     }
 
     fn prepare_budgeted_row<'row>(
@@ -93,46 +200,13 @@ impl QueryRowsBuilder {
         heap_bytes: usize,
         account: &QueryMemoryAccount,
         retained: &mut QueryMemoryLease,
-    ) -> Result<usize> {
-        if let Some(schema) = &self.schema {
-            if width != schema.len()
-                || !names
-                    .clone()
-                    .eq(schema.columns().iter().map(String::as_str))
-            {
-                return Err(HawDBError::Execution(
-                    "query result row does not match its bound schema".into(),
-                ));
-            }
-        } else {
-            // Columnar slot schemas need not have unique names. Reject aliases
-            // that cannot be represented by a result schema without allocating
-            // an unaccounted temporary set.
-            for (index, name) in names.clone().enumerate() {
-                if names.clone().take(index).any(|previous| previous == name) {
-                    return Err(HawDBError::Execution(format!(
-                        "query result schema contains duplicate column {name}"
-                    )));
-                }
-            }
-        }
+    ) -> Result<(usize, bool)> {
+        self.bind_budgeted_schema(names.clone(), account, retained)?;
+        let reorder = self.prepare_input_order(names, width, account)?;
         let next_count = self
             .row_count
             .checked_add(1)
             .ok_or_else(result_capacity_overflow)?;
-        if self.schema.is_none() {
-            let slots = checked_result_mul(width, std::mem::size_of::<String>())?;
-            let name_bytes = names
-                .clone()
-                .try_fold(0usize, |total, name| checked_result_add(total, name.len()))?;
-            // The schema Arc header is pre-admitted with the result owner.
-            let staging = account.reserve(slots)?;
-            retained.grow(checked_result_add(slots, name_bytes)?)?;
-            self.schema = Some(QuerySchema {
-                columns: Arc::from(names.map(str::to_owned).collect::<Vec<_>>()),
-            });
-            drop(staging);
-        }
         let rows_in_segment = self.row_count % OWNED_RESULT_SEGMENT_ROWS;
         let starts_segment = width != 0 && rows_in_segment == 0 && self.row_count != 0;
         let mut next_segment = Vec::new();
@@ -173,7 +247,7 @@ impl QueryRowsBuilder {
                 .expect("budgeted results use segmented storage")
                 .push(std::mem::replace(&mut self.values, next_segment));
         }
-        Ok(next_count)
+        Ok((next_count, reorder))
     }
 }
 
@@ -297,4 +371,75 @@ fn reserve_result_capacity<T>(
     values.extend(old);
     retained.shrink(old_bytes);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{QueryMemoryClass, QueryMemoryLedger};
+    use std::cell::Cell;
+    use std::num::NonZeroUsize;
+
+    #[test]
+    fn repeated_input_order_is_linear_and_its_cache_is_transient() {
+        let budget = NonZeroUsize::new(1024 * 1024).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let account = ledger.account(QueryMemoryClass::ResultMaterialization, "result", budget);
+        let columns: Vec<_> = (0..64).map(|index| format!("column{index:02}")).collect();
+        let mut builder = QueryRowsBuilder::new();
+        let mut retained = account.reserve(0).unwrap();
+        builder
+            .bind_budgeted_schema(columns.iter().map(String::as_str), &account, &mut retained)
+            .unwrap();
+        let before = ledger.snapshot().used_bytes;
+        let names = || columns.iter().rev().map(String::as_str);
+        assert!(builder
+            .prepare_input_order(names(), columns.len(), &account)
+            .unwrap());
+        let cache_bytes = builder.input_order.as_ref().unwrap().ordinals.capacity()
+            * std::mem::size_of::<usize>();
+        assert_eq!(ledger.snapshot().used_bytes, before + cache_bytes);
+        let visits = Cell::new(0);
+        for _ in 0..4 {
+            visits.set(0);
+            let names = names().inspect(|_| visits.set(visits.get() + 1));
+            assert!(builder
+                .prepare_input_order(names, columns.len(), &account)
+                .unwrap());
+            assert!(
+                visits.get() <= 2 * columns.len(),
+                "visited {} names",
+                visits.get()
+            );
+        }
+        let wrong = std::iter::repeat_n(columns[0].as_str(), columns.len());
+        assert!(builder
+            .prepare_input_order(wrong, columns.len(), &account)
+            .is_err());
+        assert!(builder
+            .prepare_input_order(names(), columns.len(), &account)
+            .unwrap());
+        let rows = builder.finish();
+        assert_eq!(ledger.snapshot().used_bytes, before);
+        assert_eq!(rows.schema().columns(), columns);
+        drop(retained);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn input_order_cache_is_admitted_before_allocation() {
+        let budget = NonZeroUsize::new(1).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let account = ledger.account(QueryMemoryClass::ResultMaterialization, "result", budget);
+        let mut builder = QueryRowsBuilder::with_schema(
+            QuerySchema::try_new(["z".into(), "a".into()]).unwrap(),
+            0,
+        );
+        assert!(matches!(
+            builder.prepare_input_order(["a", "z"].into_iter(), 2, &account),
+            Err(HawDBError::ResourceBudgetExceeded(_)),
+        ));
+        assert!(builder.input_order.is_none());
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
 }

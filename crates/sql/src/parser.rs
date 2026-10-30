@@ -28,6 +28,7 @@ use sqlparser::parser::Parser;
 mod branch;
 mod materialized_view;
 mod mutation;
+mod owned;
 mod schema;
 
 #[cfg(test)]
@@ -56,6 +57,11 @@ use schema::{
 pub fn parse_postgres_sql(input: &str) -> Result<SqlStatement> {
     if let Some(statement) = branch::parse_branch_statement(input)? {
         return Ok(statement);
+    }
+    let token = hawdb_sql_syntax::first_token(input)
+        .map_err(|error| HawDBError::Parse(error.to_string()))?;
+    if token.is_keyword(input, "SELECT") || token.is_keyword(input, "EXPLAIN") {
+        return owned::parse(input);
     }
     let dialect = PostgreSqlDialect {};
     let statements = Parser::parse_sql(&dialect, input)

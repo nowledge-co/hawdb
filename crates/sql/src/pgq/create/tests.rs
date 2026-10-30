@@ -17,7 +17,9 @@
 //! These tests exercise the explicitly supported six-scalar profile.
 
 use super::*;
-use hawdb_sql_syntax::{parse_postgres_statement, ExpressionKindSyntax, PostgresStatementSyntax};
+use hawdb_sql_syntax::{
+    parse_postgres_statement, ExpressionKindSyntax, PostgresStatementSyntax, SyntaxErrorCode,
+};
 
 #[derive(Default, Clone)]
 struct Snapshot(BTreeMap<Vec<String>, PgqSourceTableSchema>);
@@ -522,6 +524,17 @@ fn expression_profile_resolves_constants_and_preserves_types() {
             graph.vertex_labels["vertices"].properties["p"], expected,
             "{expression}"
         );
+    }
+}
+
+#[test]
+fn malformed_numeric_separators_are_rejected_before_creation_binding() {
+    for number in ["1_", "1__0", "1._5"] {
+        let sql =
+            format!("CREATE PROPERTY GRAPH g VERTEX TABLES (vertices PROPERTIES ({number} AS p))");
+        let error = parse_postgres_statement(&sql).unwrap_err();
+        assert_eq!(error.code, SyntaxErrorCode::InvalidCharacter, "{sql}");
+        assert_eq!(&sql[error.span.start..error.span.end], "_");
     }
 }
 

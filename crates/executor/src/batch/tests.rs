@@ -225,8 +225,8 @@ mod byte_bounded_batch_tests {
     fn within_budget_batch_keeps_its_allocation() {
         let batch = vec![Binding {
             values: BTreeMap::from([("value".to_string(), Value::Int(1))]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         }];
         let allocation = batch.as_ptr();
         let observer = QueryExecutionObserver::default();

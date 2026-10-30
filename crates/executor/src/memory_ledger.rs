@@ -559,6 +559,14 @@ impl QueryMemoryAccount {
         lock_recover(&self.ledger.inner.state).accounts[&self.account_id].peak_bytes
     }
 
+    pub(crate) fn query_available_bytes(&self) -> usize {
+        let state = lock_recover(&self.ledger.inner.state);
+        self.ledger
+            .inner
+            .budget_bytes
+            .saturating_sub(state.used_bytes)
+    }
+
     pub(crate) fn sibling(
         &self,
         class: QueryMemoryClass,

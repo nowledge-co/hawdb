@@ -112,6 +112,13 @@ impl SearchOutOfCoreGenerationUpdate {
         writer.embedding_dimension = reader.manifest.embedding_dimension;
         writer.expected_active_generation = Some(reader.generation());
 
+        // Creation releases its wave. Admit target probes and owned input as a
+        // separate phase, lending its single slot to nested mutation work.
+        let phase = super::io_phase::Scope::acquire(&task, &memory)?;
+        let original_task = task;
+        let task = phase.task();
+        phase.install(&mut writer);
+
         // Only globally ordered new IDs use the append fast path. An arbitrary
         // new ID (including a UUID between existing IDs) publishes independent
         // content through the same target-bound mutation boundary as an edit.
@@ -153,6 +160,7 @@ impl SearchOutOfCoreGenerationUpdate {
             writer.active_manifest_update = Some(ActiveManifestUpdate::Mutate {
                 expected_generation: reader.generation(),
             });
+            writer.set_io_task(original_task);
             return Ok(Self {
                 delta_report: SearchProjectionDeltaReport {
                     artifact_type: "search_projection".into(),
@@ -184,6 +192,7 @@ impl SearchOutOfCoreGenerationUpdate {
         writer.active_manifest_update = Some(ActiveManifestUpdate::Append {
             expected_generation: reader.generation(),
         });
+        writer.set_io_task(original_task);
         Ok(Self {
             delta_report: SearchProjectionDeltaReport {
                 artifact_type: "search_projection".to_string(),

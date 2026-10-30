@@ -34,6 +34,16 @@ fn assert_cypher_contract(
         });
     let output = execute(request).unwrap();
     assert_eq!(output.rows.len(), 1);
+    assert_eq!(
+        output.schema().columns(),
+        [
+            "id",
+            "score",
+            "importance",
+            "created",
+            "scoring_rerank_score"
+        ],
+    );
     assert_eq!(output.rows[0]["id"], Value::String("late".into()));
     for (limits, resource, limit) in [
         (
@@ -594,5 +604,33 @@ fn request_context_cannot_replace_snapshot_or_transaction_cancellation() {
             );
         }
         transaction.rollback();
+    }
+}
+
+#[test]
+fn empty_scored_results_declare_projection_and_appended_score_columns() {
+    let mut database = tests::fixture();
+    let parameters = tests::parameters("missing");
+    let scoring = tests::scoring(ScoringCombination::WeightedSum, 1.0, 0.0);
+    let request = QueryRequest::new(tests::QUERY)
+        .with_params(&parameters)
+        .with_scoring(&scoring)
+        .with_output_limits(QueryStreamOptions {
+            max_rows: Some(0),
+            max_payload_bytes: Some(0),
+        });
+    for _ in 0..2 {
+        let output = database.query_request(request).unwrap();
+        assert!(output.rows.is_empty());
+        assert_eq!(
+            output.schema().columns(),
+            [
+                "id",
+                "score",
+                "importance",
+                "created",
+                "scoring_rerank_score"
+            ]
+        );
     }
 }

@@ -194,6 +194,9 @@ fn execute_profiled_output<S: ExecutionStore>(
             budget_option,
         )?,
     };
+    if let Some(columns) = request.output_columns() {
+        output.bind_output_schema(columns.iter().map(String::as_str))?;
+    }
     let process_memory_start = hawdb_qos::ProcessMemorySnapshot::capture().ok();
     let execution_limit = ExecutionLimit::from_user_max_rows(output_limits.max_rows)?;
     let profile = ExecutionProfileBuilder::start(plan, output_limits.max_rows)?;

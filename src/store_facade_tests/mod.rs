@@ -55,6 +55,7 @@ impl CheckpointCodecFixture {
                 &fixture.0,
                 crate::DatabaseConfig {
                     read_only: true,
+                    recovery_mode: crate::RecoveryMode::Strict,
                     ..Default::default()
                 },
             )

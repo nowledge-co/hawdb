@@ -1259,6 +1259,7 @@ impl GraphStore {
         work: Option<&crate::background::CheckpointWorkContext>,
     ) -> Result<PreparedRelationalRecoveryTransaction, hawdb_storage::relational::RelationalError>
     {
+        let mutation_limits = crate::relational::RelationalMutationLimits::for_recovery();
         let allocations = work.map(|work| crate::background::CheckpointDecodeContext {
             work: work.clone(),
             memory: Default::default(),
@@ -1287,7 +1288,7 @@ impl GraphStore {
                     .stage_materialized_recovery_with_allocations(
                         crate::relational::RelationalMaterializedRecoveryStage {
                             transaction,
-                            mutation_limits: self.relational_mutation_limits,
+                            mutation_limits,
                             overflow_config: self.relational_overflow_config,
                             index_capture_limits: index_limits,
                             row_capture_limits: row_limits,
@@ -1320,7 +1321,7 @@ impl GraphStore {
                             RelationalSparseRecoveryStage {
                                 transaction,
                                 hydrated_access,
-                                mutation_limits: self.relational_mutation_limits,
+                                mutation_limits,
                                 overflow_config: self.relational_overflow_config,
                                 index_capture_limits: index_limits,
                                 row_capture_limits: row_limits,
@@ -1333,7 +1334,7 @@ impl GraphStore {
                         .stage_resident_transaction_for_authoritative_recovery_with_allocations(
                             crate::relational::RelationalResidentRecoveryStage {
                                 transaction,
-                                mutation_limits: self.relational_mutation_limits,
+                                mutation_limits,
                                 overflow_config: self.relational_overflow_config,
                                 index_capture_limits: index_limits,
                                 row_capture_limits: row_limits,
@@ -1349,7 +1350,7 @@ impl GraphStore {
                             .relational_state
                             .stage_transaction_with_index_and_row_changes(
                                 transaction,
-                                self.relational_mutation_limits,
+                                mutation_limits,
                                 self.relational_overflow_config,
                                 index_limits,
                                 row_limits,
@@ -1361,7 +1362,7 @@ impl GraphStore {
                             .relational_state
                             .stage_legacy_transaction_for_authoritative_recovery_with_allocations(
                                 transaction,
-                                self.relational_mutation_limits,
+                                mutation_limits,
                                 self.relational_overflow_config,
                                 index_limits,
                                 allocations.as_ref(),
@@ -1372,7 +1373,7 @@ impl GraphStore {
                         let (next, capture) =
                             self.relational_state.stage_transaction_with_index_changes(
                                 transaction,
-                                self.relational_mutation_limits,
+                                mutation_limits,
                                 self.relational_overflow_config,
                                 index_limits,
                             )?;
@@ -1382,7 +1383,7 @@ impl GraphStore {
                         let (next, capture) =
                             self.relational_state.stage_transaction_with_row_changes(
                                 transaction,
-                                self.relational_mutation_limits,
+                                mutation_limits,
                                 self.relational_overflow_config,
                                 row_limits,
                             )?;
@@ -1391,7 +1392,7 @@ impl GraphStore {
                     (None, None) => (
                         self.relational_state.stage_transaction(
                             transaction,
-                            self.relational_mutation_limits,
+                            mutation_limits,
                             self.relational_overflow_config,
                         )?,
                         None,
@@ -3820,6 +3821,8 @@ mod tests {
             WalReplayConfig::default(),
         )
         .expect("open recovery store");
+        store.relational_mutation_limits.max_payload_bytes =
+            std::num::NonZeroUsize::new(1).unwrap();
         let epoch = store.commit_epoch;
         let prepared = store
             .prepare_recovered_relational_transaction(

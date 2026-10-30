@@ -62,6 +62,7 @@ fn qualification_requires_a_writable_disposable_replica() {
     };
     let database_config = DatabaseConfig {
         read_only: true,
+        recovery_mode: hawdb::RecoveryMode::Strict,
         storage_residency_mode: StorageResidencyMode::OutOfCore,
         relational_index_mode: RelationalIndexMode::Authoritative,
         segment_cache_capacity_bytes: 1,

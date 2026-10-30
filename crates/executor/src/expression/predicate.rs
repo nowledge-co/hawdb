@@ -807,8 +807,8 @@ mod tests {
         ]);
         let binding = Binding {
             values: BTreeMap::new(),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         };
 
         let value = evaluate_projection_expression(&expression, &Catalog::default(), &binding)

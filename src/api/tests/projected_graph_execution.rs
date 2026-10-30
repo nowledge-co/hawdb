@@ -83,6 +83,7 @@ fn projected_graph_admission_rejections_preserve_definition_epoch_and_wal() {
             DatabaseConfig {
                 storage_residency_mode: mode,
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 ..DatabaseConfig::default()
             },
         )
@@ -121,6 +122,7 @@ fn projected_graph_queries_preserve_residency_reopen_and_read_only_wal_boundarie
         let config = DatabaseConfig {
             storage_residency_mode: mode,
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         };
         for _ in 0..2 {
@@ -201,6 +203,7 @@ fn mem_projection_predicates_survive_checkpoint_and_filter_analytics_inputs() {
         &path,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )

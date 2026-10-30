@@ -1,7 +1,7 @@
 {
   "protocol": "hawdb-pgq-create-corpus-v1",
   "postgres_revision": "3d00537feb565c410baf41bb301eee338e4b2317",
-  "source_corpus_sha256": "e700554d3501429dc35b29fa6ec62c8d92a41d35c5c9e14f2e17a829c713e5c9",
+  "source_corpus_sha256": "d3946a7de1fd700b08d8e606b2a65d4ec5eb87b9feb916c24095a4f5fb7677b1",
   "bindings": [
     {
       "id": "case-0001",

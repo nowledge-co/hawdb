@@ -1,11 +1,24 @@
 # Owned SQL/PGQ token PEG
 
-`hawdb-sql-syntax` uses a token PEG for its existing SELECT, CREATE PROPERTY
-GRAPH and standalone GRAPH_TABLE entry points. It retains the lexer, byte
-spans, syntax AST and `hawdb-sql` binder/lowering contracts. Production
-relational SQL still uses `sqlparser`; production Cypher is unchanged. Parser
-failures never trigger another frontend. This delivery does not qualify new
-SQL syntax or activate SQL/PGQ execution.
+`hawdb-sql-syntax` owns the bounded token PEG used by the default relational
+SELECT and EXPLAIN SELECT execution paths, including prepared statements and
+plan-template cache misses. No feature, environment variable or host opt-in is
+required. The syntax-only CREATE PROPERTY GRAPH and GRAPH_TABLE entry points
+also use PEG. Cypher retains its existing parser.
+
+Parser routing is explicit by statement family:
+
+| Family | Default path |
+| --- | --- |
+| SELECT, EXPLAIN [ANALYZE] SELECT | Owned token PEG, then relational IR lowering |
+| CREATE PROPERTY GRAPH, GRAPH_TABLE syntax APIs | Owned token PEG; existing catalog/binder/execution admission still applies |
+| Relational DDL/DML and materialized-view statements | Upstream `sqlparser` and existing lowering |
+| Branch commands | Existing branch token parser |
+
+This is a SELECT-family promotion under [#1328](https://github.com/nowledge-co/hawdb/issues/1328),
+not completion of every SQL statement family's migration. A PEG syntax,
+semantic or resource error is returned directly; it never retries the upstream
+parser. Accepting PGQ syntax does not activate unqualified PGQ execution.
 
 ## Design reference
 
@@ -42,6 +55,22 @@ the existing syntax AST. Native terminals in `frontend/native.rs` retain
 bounded Pratt expressions, graph paths, property-graph element definitions,
 and lexical alias rules. They do not mutate catalog or execution state.
 There is no whole-statement handwritten parser behind a PEG acceptance check.
+
+The relational entry adds constant SELECT, implicit projection aliases, the
+upstream-compatible explicit table-alias policy, empty projections, read-only
+EXPLAIN, vector table-function arguments and nonblocking-lock syntax (rejected
+by semantic admission). It shares clause, scalar and join grammar with PGQ.
+LIKE/ILIKE/ESCAPE, function ALL and aggregate FILTER are syntax nodes; their
+existing relational semantic restrictions remain authoritative. PGQ binders
+reject the newly represented relational-only expressions until qualified.
+
+`hawdb-sql/src/parser/owned.rs` converts selected expressions into the existing
+semantic lowerer's AST types in memory; it never serializes or reparses SQL.
+This preserves position-sensitive semantic restrictions and the shared
+relational expression IR. Byte locations become character-based line/column
+locations using line starts and sparse UTF-8 checkpoints, avoiding repeated
+whole-line scans for wide statements. SQL statement, expression and table
+function parsing is bounded by the existing lexer/native/PEG limits.
 
 Grammar compilation rejects duplicate or unresolved names, direct/indirect
 left recursion (including through nullable prefixes/lookahead), and nullable
@@ -80,8 +109,13 @@ native consumed/scanned token ranges. Native terminals are atomic bounded
 operations: their token-range charge is checked after they return; the lexer
 input/token caps and their own nesting checks also apply. These are logical
 bounds, not a byte-precise allocator admission guarantee or a wall-clock limit.
-The existing lexer limits remain 16 MiB input, 1,000,000 tokens and 64 nested
-block comments; native expression and graph nesting limits remain 128.
+The existing full lexer limits remain 16 MiB input, 1,000,000 tokens and 64 nested
+block comments; native expression and graph nesting limits remain 128. The
+first-token dispatch helper reads only the prefix and does not enforce the
+whole-input byte cap. Complete owned SELECT/EXPLAIN and SQL/PGQ syntax parsing
+still enforce that cap; legacy-routed DML/DDL bodies retain their existing
+admission behavior. Numeric underscores must be surrounded by digits; malformed
+separators fail lexically in both the relational and PGQ syntax entries.
 
 `ParserLimitExceeded` identifies PEG work/storage/depth refusal. Native resource
 errors retain their existing error codes. Resource failures are fatal across
@@ -113,7 +147,7 @@ a separate instrumented probe; timings from that probe include its overhead.
 Results and tested revisions belong in the PR, not a checked-in run log.
 
 PEG still adds matching/capture overhead relative to handwritten parsing.
-Full production SQL activation still requires statement-family positive/negative
-parity, executable lowering,
-query-result/plan coverage and resource measurements, as required by the
+Further statement-family promotion still requires positive/negative parity,
+executable lowering, query-result/plan coverage and resource measurements, as
+required by the
 [SQL/PGQ specification](specs/POSTGRES_SQL_PGQ_SPEC.md).

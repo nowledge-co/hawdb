@@ -37,7 +37,7 @@
 //! whose type or generation byte flips fails its checksum. Binding the WAL
 //! generation into every fragment header realizes the recyclable-log
 //! discipline required by spec §3.4.1: a well-formed fragment carrying a
-//! stale generation reads as end of log. The spec sketches a 7-byte header
+//! stale generation marks an unwritten/recycled region. The spec sketches a 7-byte header
 //! with the generation mixed into the mask; this implementation chooses the
 //! explicit-generation-header variant (15 bytes, CRC-covered) so a stale
 //! generation is distinguishable from corruption.
@@ -51,19 +51,18 @@
 //! Block-aligned resynchronization locates damage but never skips it:
 //!
 //! - A structurally complete fragment (its declared payload fits in the
-//!   file) whose checksum fails, a sequence-invalid fragment outside a
-//!   pending chain, or a non-zero block trailer is corruption and fails
+//!   file) whose checksum fails, a sequence-invalid fragment, or a non-zero
+//!   block trailer is corruption and fails
 //!   closed.
 //! - Physically missing data at end of file — a truncated fragment header,
 //!   a payload cut short by EOF, or a chain still awaiting MIDDLE/LAST —
 //!   is a torn tail, repairable through the audited doctor protocol (explicitly
 //!   or on a writable open with automatic tail repair enabled).
 //!   The torn tail begins at the first byte of the incomplete chain.
-//! - A well-formed fragment carrying a stale generation, or an all-zero
-//!   (unwritten) fragment header, marks end of log. If any block boundary
-//!   after such a marker (or after a sequence violation inside a pending
-//!   chain) still holds a valid current-generation fragment, the log was
-//!   damaged in place and the reader fails closed instead.
+//! - A stale-generation or all-zero fragment header inside the physical file
+//!   is corruption, including an extended final record. The writer does not
+//!   preallocate WAL space. Only the store's durable synchronization fence
+//!   may authorize discarding such damage in an unsynchronized suffix.
 
 use hawdb_core::{HawDBError, Result};
 use std::io::Read;
@@ -472,29 +471,16 @@ impl<R: Read> BinaryWalReader<R> {
                 reason: format!("valid fragments follow an end-of-log marker ({marker_reason})"),
             });
         }
-        match self.chain.take() {
-            Some(chain) => Ok(BinaryWalReadEvent::TornTail {
-                valid_prefix_len: chain.start_offset,
-                reason: format!("fragment chain is incomplete at end of log ({marker_reason})"),
-            }),
-            None => Ok(BinaryWalReadEvent::Eof),
-        }
+        Ok(BinaryWalReadEvent::Corrupt {
+            offset: self.chain.take().map_or(offset, |chain| chain.start_offset),
+            reason: format!("unwritten or stale WAL suffix ({marker_reason})"),
+        })
     }
 
     fn chain_violation(&mut self, offset: u64, reason: String) -> Result<BinaryWalReadEvent> {
+        // A complete but sequence-invalid fragment is not physically missing
+        // EOF data, even when it interrupts the last pending chain.
         self.finished = true;
-        if self.chain.is_some() {
-            // Skip past the violating fragment, then resynchronize on block
-            // boundaries: live data after it means mid-log damage.
-            if self.live_fragment_after()? {
-                return Ok(BinaryWalReadEvent::Corrupt { offset, reason });
-            }
-            let chain = self.chain.take().expect("pending chain");
-            return Ok(BinaryWalReadEvent::TornTail {
-                valid_prefix_len: chain.start_offset,
-                reason: format!("fragment chain is incomplete at end of file ({reason})"),
-            });
-        }
         Ok(BinaryWalReadEvent::Corrupt { offset, reason })
     }
 
@@ -847,14 +833,17 @@ mod tests {
     }
 
     #[test]
-    fn stale_generation_fragment_reads_as_clean_end_of_log() {
+    fn stale_generation_fragment_requires_a_recovery_fence() {
         let mut file = framed_file(9, 1, &[b"current".to_vec()]);
         let position = file.len() as u64 - WAL_BINARY_FILE_HEADER_BYTES as u64;
         let stale = frame_binary_wal_record(8, b"recycled", position);
         file.extend_from_slice(&stale);
         let events = read_all(&file, 9);
         assert_eq!(record_payloads(&events), vec![b"current".as_slice()]);
-        assert!(matches!(events.last(), Some(BinaryWalReadEvent::Eof)));
+        assert!(matches!(
+            events.last(),
+            Some(BinaryWalReadEvent::Corrupt { .. })
+        ));
     }
 
     #[test]
@@ -959,12 +948,9 @@ mod tests {
     }
 
     #[test]
-    fn chain_interrupted_by_full_fragment_at_eof_is_a_torn_tail() {
-        // FIRST (of an unfinished chain) followed by a FULL fragment at end
-        // of file: the chain is incomplete, so the tail is torn from the
-        // chain start; nothing after it may be silently replayed.
+    fn complete_chain_violation_at_eof_remains_corruption() {
+        // A complete FULL after FIRST is invalid ordering, not missing EOF data.
         let mut file = encode_binary_wal_header(1, 1);
-        let chain_start = file.len() as u64;
         let chunk = b"unfinished";
         let crc = masked_fragment_crc(FRAGMENT_FIRST, 1, chunk);
         file.extend_from_slice(&crc.to_le_bytes());
@@ -977,8 +963,8 @@ mod tests {
         let events = read_all(&file, 1);
         assert!(matches!(
             events.last(),
-            Some(BinaryWalReadEvent::TornTail { valid_prefix_len, .. })
-                if *valid_prefix_len == chain_start
+            Some(BinaryWalReadEvent::Corrupt { reason, .. })
+                if reason.contains("FULL fragment interrupts")
         ));
     }
 

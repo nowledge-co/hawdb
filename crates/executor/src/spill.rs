@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 mod compaction;
 mod pool;
+mod sort_keys;
 
 pub(crate) use compaction::{
     compact_runs_serial, compact_runs_with_memory, default_compaction_worker_limit,
@@ -58,6 +59,7 @@ pub struct SpillRun {
 struct RunMemory {
     record: AtomicUsize,
     staging: AtomicUsize,
+    sort_key: AtomicUsize,
 }
 
 impl SpillRun {
@@ -67,6 +69,10 @@ impl SpillRun {
 
     pub(crate) fn staging_bytes(&self) -> usize {
         self.memory.staging.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn sort_key_bytes(&self) -> usize {
+        self.memory.sort_key.load(Ordering::Relaxed)
     }
 
     pub(crate) fn create_with_buffer_bytes(
@@ -133,9 +139,15 @@ impl SpillRun {
         &self,
         buffer_bytes: NonZeroUsize,
     ) -> Result<SpillReader> {
-        let file = self
-            .lease
-            .file_descriptors()
+        self.reader_with_context(buffer_bytes, self.lease.file_descriptors())
+    }
+
+    pub(crate) fn reader_with_context(
+        &self,
+        buffer_bytes: NonZeroUsize,
+        context: &hawdb_storage::file_descriptors::FileOpenContext,
+    ) -> Result<SpillReader> {
+        let file = context
             .open(OpenOptions::new().read(true), self.lease.path())
             .map_err(|error| spill_io_error("open spill run", self.lease.path(), error))?;
         Ok(SpillReader {
@@ -152,6 +164,10 @@ pub struct SpillWriter {
 }
 
 impl SpillWriter {
+    pub(crate) fn note_sort_key_bytes(&self, bytes: usize) {
+        self.memory.sort_key.fetch_max(bytes, Ordering::Relaxed);
+    }
+
     pub(crate) fn note_merge_record_bytes(&self, bytes: usize) {
         self.memory.record.fetch_max(bytes, Ordering::Relaxed);
     }
@@ -514,16 +530,14 @@ fn estimate_binding_memory_bytes(input: &mut Cursor<&[u8]>) -> Result<usize> {
         let (properties, _) = estimate_value_map_memory(input, 0, true)?;
         payload_bytes = encoded_len_add(payload_bytes, properties)?;
     }
-    let entry_count = values
-        .checked_add(nodes)
-        .and_then(|count| count.checked_add(relationships))
-        .ok_or_else(|| HawDBError::Execution("spill binding entry count overflow".to_string()))?;
+    let values_layout = encoded_len_mul(values, std::mem::size_of::<usize>() * 6)?;
+    let graph_layout = encoded_len_add(
+        crate::binding::graph_slot_memory_bytes(nodes),
+        crate::binding::graph_slot_memory_bytes(relationships),
+    )?;
     encoded_len_add(
         std::mem::size_of::<Binding>(),
-        encoded_len_add(
-            payload_bytes,
-            encoded_len_mul(entry_count, std::mem::size_of::<usize>() * 6)?,
-        )?,
+        encoded_len_add(payload_bytes, encoded_len_add(values_layout, graph_layout)?)?,
     )
 }
 
@@ -789,8 +803,8 @@ fn read_binding(input: &mut Cursor<&[u8]>) -> Result<Binding> {
     }
     Ok(Binding {
         values,
-        nodes,
-        relationships,
+        nodes: nodes.into(),
+        relationships: relationships.into(),
     })
 }
 
@@ -1050,8 +1064,8 @@ mod tests {
                 "payload".to_string(),
                 Value::String("x".repeat(256 * 1024)),
             )]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         };
         let binding_bytes = binding_memory_bytes(&binding);
         memory.query_memory_bytes = NonZeroUsize::new(binding_bytes).unwrap();
@@ -1100,8 +1114,8 @@ mod tests {
         let (run, mut writer) = spill_budget.create_run("read-query-ledger").unwrap();
         let binding = Binding {
             values: BTreeMap::from([("payload".to_string(), Value::String("x".repeat(64)))]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         };
 
         writer.write(0, &binding, &spill_budget).unwrap();
@@ -1142,8 +1156,8 @@ mod tests {
         let spill_budget = SpillBudgetTracker::with_ledger("Test", &memory, &ledger);
         let binding = Binding {
             values: BTreeMap::from([("payload".to_string(), Value::String("x".repeat(64)))]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         };
         let (run, mut writer) = spill_budget.create_run("decode-query-ledger").unwrap();
         writer.write(0, &binding, &spill_budget).unwrap();
@@ -1265,8 +1279,8 @@ mod tests {
     fn empty_binding() -> Binding {
         Binding {
             values: BTreeMap::new(),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         }
     }
 
@@ -1423,7 +1437,8 @@ mod tests {
                         ("vector".to_string(), vector.clone()),
                     ]),
                 },
-            )]),
+            )])
+            .into(),
             relationships: BTreeMap::from([(
                 "r".to_string(),
                 RelRecord {
@@ -1437,7 +1452,8 @@ mod tests {
                         ("vector".to_string(), vector),
                     ]),
                 },
-            )]),
+            )])
+            .into(),
         };
         let memory = test_memory("codec");
         let spill_budget = SpillBudgetTracker::new("CodecTest", &memory);

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::sql::{Expr, ExprKind};
+use hawdb_core::{TransactionRetryError, TransactionRetryReason};
 mod autocommit;
 #[cfg(test)]
 pub(crate) use autocommit::AutocommitMutationPhase;
@@ -176,7 +177,7 @@ pub struct ConcurrentDatabaseTransaction {
     runtime: DatabaseTransactionRuntime,
     state: DatabaseTransactionState,
     successful_statements: usize,
-    abort_reason: Option<String>,
+    abort_reason: Option<TransactionAbortReason>,
     finished: bool,
     task_context: Option<hawdb_core::RuntimeTaskContext>,
     // Dropped after workspace fields; queued requests retain another owner.
@@ -714,6 +715,12 @@ impl ConcurrentDatabase {
     }
 }
 
+#[derive(Debug)]
+enum TransactionAbortReason {
+    Retryable(Box<TransactionRetryError>),
+    Other(String),
+}
+
 impl ConcurrentDatabaseTransaction {
     pub fn read_dependency_usage(&self) -> Option<super::TransactionReadDependencyUsage> {
         self.state.read_dependency_usage()
@@ -1054,14 +1061,14 @@ impl ConcurrentDatabaseTransaction {
             self.options.lock_timeout,
         ) {
             let error: HawDBError = error.into();
-            self.abort_after_lock_failure(error.to_string());
+            self.abort_after_lock_failure(&error);
             return Err(error);
         }
 
         let database = match inner.commits.lock() {
             Ok(database) => database,
             Err(error) => {
-                self.abort_after_lock_failure(error.to_string());
+                self.abort_after_lock_failure(&error);
                 return Err(error);
             }
         };
@@ -1075,14 +1082,16 @@ impl ConcurrentDatabaseTransaction {
                 self.runtime = DatabaseTransactionRuntime::from_database(&database)?;
                 self.state = DatabaseTransactionState::from_database(&database)?;
             } else {
-                let error = HawDBError::Execution(format!(
-                    "pessimistic transaction {} cannot acquire a new lock after its snapshot changed from commit epoch {} to {}; retry the transaction",
-                    self.transaction_id, self.base_commit_epoch, current_epoch
-                ));
+                let error = HawDBError::TransactionRetryRequired(Box::new(TransactionRetryError {
+                    transaction_id: self.transaction_id,
+                    reason: TransactionRetryReason::SnapshotChanged {
+                        read_epoch: self.base_commit_epoch,
+                        committed_epoch: current_epoch,
+                    },
+                    already_aborted: false,
+                }));
                 drop(database);
-                self.inner.locks.release(self.transaction_id);
-                self.state.rollback();
-                self.abort_reason = Some(error.to_string());
+                self.abort_after_lock_failure(&error);
                 return Err(error);
             }
         }
@@ -1109,7 +1118,7 @@ impl ConcurrentDatabaseTransaction {
                 inner.locks.restore(self.transaction_id, lock_savepoint);
             }
             if abort_transaction {
-                self.abort_after_lock_failure(error.to_string());
+                self.abort_after_lock_failure(&error);
             }
             return Err(error);
         }
@@ -1117,7 +1126,7 @@ impl ConcurrentDatabaseTransaction {
         let database = match inner.commits.lock() {
             Ok(database) => database,
             Err(error) => {
-                self.abort_after_lock_failure(error.to_string());
+                self.abort_after_lock_failure(&error);
                 return Err(error);
             }
         };
@@ -1127,22 +1136,29 @@ impl ConcurrentDatabaseTransaction {
             // pinned snapshot. Refreshing here could change the matched graph
             // entities and make that access set incomplete. Fail closed and let
             // the caller retry from a new transaction instead.
-            let error = HawDBError::Execution(format!(
-                "pessimistic transaction {} cannot acquire a graph lock after its snapshot changed from commit epoch {} to {}; retry the transaction",
-                self.transaction_id, self.base_commit_epoch, current_epoch
-            ));
+            let error = HawDBError::TransactionRetryRequired(Box::new(TransactionRetryError {
+                transaction_id: self.transaction_id,
+                reason: TransactionRetryReason::SnapshotChanged {
+                    read_epoch: self.base_commit_epoch,
+                    committed_epoch: current_epoch,
+                },
+                already_aborted: false,
+            }));
             drop(database);
-            self.inner.locks.release(self.transaction_id);
-            self.state.rollback();
-            self.abort_reason = Some(error.to_string());
+            self.abort_after_lock_failure(&error);
             return Err(error);
         }
         Ok(())
     }
 
-    fn abort_after_lock_failure(&mut self, reason: String) {
+    fn abort_after_lock_failure(&mut self, error: &HawDBError) {
         self.state.rollback();
-        self.abort_reason = Some(reason);
+        self.abort_reason = Some(match error {
+            HawDBError::TransactionRetryRequired(error) => {
+                TransactionAbortReason::Retryable(error.clone())
+            }
+            _ => TransactionAbortReason::Other(error.to_string()),
+        });
         self.inner.locks.release(self.transaction_id);
     }
 
@@ -1154,10 +1170,17 @@ impl ConcurrentDatabaseTransaction {
             )));
         }
         if let Some(reason) = &self.abort_reason {
-            return Err(HawDBError::Execution(format!(
-                "concurrent transaction {} is aborted: {reason}",
-                self.transaction_id
-            )));
+            return Err(match reason {
+                TransactionAbortReason::Retryable(error) => {
+                    let mut error = error.clone();
+                    error.already_aborted = true;
+                    HawDBError::TransactionRetryRequired(error)
+                }
+                TransactionAbortReason::Other(reason) => HawDBError::Execution(format!(
+                    "concurrent transaction {} is aborted: {reason}",
+                    self.transaction_id
+                )),
+            });
         }
         super::query_runtime::query_runtime_checkpoint(self.task_context.as_ref())
     }

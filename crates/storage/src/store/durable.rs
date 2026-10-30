@@ -133,6 +133,7 @@ pub(super) struct DurableStore {
     // never move its beginning forward.
     pub(super) wal_uncheckpointed_since: Option<std::time::Instant>,
     pub(super) wal_tail_repair: Option<hawdb_storage::doctor::WalTailRepairReport>,
+    wal_recovery_fence: Option<(PathBuf, Option<super::wal_fence::WalRecoveryFence>)>,
     /// Commit epoch recorded in binary WAL records (spec §3.4.3). Advisory:
     /// replay derives commit epochs from LSN order, exactly as before.
     pub(super) wal_commit_epoch: u64,
@@ -615,6 +616,7 @@ impl DurableStore {
             wal_uncheckpointed_since: (wal_bytes > WAL_BINARY_FILE_HEADER_BYTES as u64)
                 .then(std::time::Instant::now),
             wal_tail_repair,
+            wal_recovery_fence: None,
             wal_commit_epoch: manifest.checkpoint_commit_epoch,
             max_wal_bytes,
             source_scan_commit_epoch: manifest.source_scan_commit_epoch,

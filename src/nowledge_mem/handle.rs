@@ -1253,6 +1253,37 @@ impl NowledgeMemEmbeddedStoreHandle {
         ) -> Result<SearchProjectionRelationalDelta>,
     {
         self.catch_up_search_projection_with_batch_hydrator_inner(
+            RuntimeWorkPriority::Background,
+            max_change_operations_per_batch,
+            max_projection_operations_per_batch,
+            max_batches,
+            None::<fn(&mut DatabaseReadTransaction) -> Result<()>>,
+            batch_hydrator,
+        )
+    }
+
+    /// Runs bounded Search catch-up in the caller-selected runtime lane.
+    ///
+    /// Explicit host work may select `Foreground` without competing for the
+    /// background maintenance lane. Admission still enforces the selected
+    /// lane's task, memory and I/O limits. Existing catch-up methods retain
+    /// their background priority; this does not change scheduled maintenance.
+    pub fn catch_up_search_projection_with_priority_and_batch_hydrator<F>(
+        &self,
+        priority: RuntimeWorkPriority,
+        max_change_operations_per_batch: usize,
+        max_projection_operations_per_batch: usize,
+        max_batches: usize,
+        batch_hydrator: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        F: FnMut(
+            &mut DatabaseReadTransaction,
+            &SearchProjectionChangeBatch,
+        ) -> Result<SearchProjectionRelationalDelta>,
+    {
+        self.catch_up_search_projection_with_batch_hydrator_inner(
+            priority,
             max_change_operations_per_batch,
             max_projection_operations_per_batch,
             max_batches,
@@ -1283,6 +1314,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         ) -> Result<SearchProjectionRelationalDelta>,
     {
         self.catch_up_search_projection_with_batch_hydrator_inner(
+            RuntimeWorkPriority::Background,
             max_change_operations_per_batch,
             max_projection_operations_per_batch,
             max_batches,
@@ -1293,6 +1325,7 @@ impl NowledgeMemEmbeddedStoreHandle {
 
     pub(super) fn catch_up_search_projection_with_batch_hydrator_inner<G, F>(
         &self,
+        priority: RuntimeWorkPriority,
         max_change_operations_per_batch: usize,
         max_projection_operations_per_batch: usize,
         max_batches: usize,
@@ -1311,7 +1344,8 @@ impl NowledgeMemEmbeddedStoreHandle {
             .saturating_mul(max_batches);
         let estimated_input_bytes =
             estimated_operations.saturating_mul(SEARCH_PROJECTION_CHANGEFEED_OPERATION_BYTES);
-        let permit = self.admit_search_projection_maintenance(estimated_input_bytes)?;
+        let permit = self
+            .admit_search_projection_maintenance_with_priority(priority, estimated_input_bytes)?;
         let mut store = self.write_store()?;
         if let Some(guard) = guard {
             store.store.validate(guard)?;

@@ -35,6 +35,7 @@ enum AggregateState {
     },
     Min(Option<Value>),
     Max(Option<Value>),
+    Sum(SumTotal),
     Avg {
         sum: f64,
         count: usize,
@@ -43,13 +44,72 @@ enum AggregateState {
         values: Vec<Value>,
         distinct: Option<HashSet<Value>>,
     },
+    /// Feeds only the first occurrence of each non-null value to `inner`.
+    Distinct {
+        seen: HashSet<Value>,
+        inner: Box<AggregateState>,
+    },
+}
+
+/// openCypher `sum()` state: exact integers until a float is observed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SumTotal {
+    Int(i64),
+    Float(f64),
+}
+
+impl SumTotal {
+    fn add(&mut self, value: &Value) -> Result<()> {
+        *self = match (*self, value) {
+            (Self::Int(total), Value::Int(value)) => {
+                Self::Int(total.checked_add(*value).ok_or_else(|| {
+                    HawDBError::Execution("integer overflow in sum()".to_string())
+                })?)
+            }
+            (Self::Int(total), Value::Float(value)) => Self::Float(total as f64 + value),
+            (Self::Float(total), Value::Int(value)) => Self::Float(total + *value as f64),
+            (Self::Float(total), Value::Float(value)) => Self::Float(total + value),
+            (_, value) => {
+                return Err(HawDBError::Execution(format!(
+                    "sum() requires numeric values, got {}",
+                    value_type_name(value)
+                )));
+            }
+        };
+        if let Self::Float(total) = self
+            && !total.is_finite()
+        {
+            return Err(HawDBError::Execution("non-finite sum() result".to_string()));
+        }
+        Ok(())
+    }
+
+    fn value(self) -> Value {
+        match self {
+            Self::Int(value) => Value::Int(value),
+            Self::Float(value) => Value::Float(value),
+        }
+    }
+}
+
+fn value_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "NULL",
+        Value::Bool(_) => "BOOLEAN",
+        Value::Int(_) => "INTEGER",
+        Value::Float(_) => "FLOAT",
+        Value::String(_) => "STRING",
+        Value::List(_) => "LIST",
+        Value::Map(_) => "MAP",
+        _ => "non-numeric value",
+    }
 }
 
 fn incompatible_partial_states_error() -> HawDBError {
     HawDBError::Execution("AggregateExec encountered incompatible partial states".to_string())
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct MemoryDelta {
     added_bytes: usize,
     released_bytes: usize,
@@ -78,14 +138,26 @@ impl MemoryDelta {
 
 impl AggregateState {
     fn new(item: &Aggregation) -> Self {
+        let distinct = |inner| {
+            if item.distinct {
+                Self::Distinct {
+                    seen: HashSet::new(),
+                    inner: Box::new(inner),
+                }
+            } else {
+                inner
+            }
+        };
         match item.function {
             AggregateFunction::Count => Self::Count {
                 count: 0,
                 distinct: item.distinct.then(HashSet::new),
             },
+            AggregateFunction::Sum => distinct(Self::Sum(SumTotal::Int(0))),
+            // DISTINCT cannot change an extreme value.
             AggregateFunction::Min => Self::Min(None),
             AggregateFunction::Max => Self::Max(None),
-            AggregateFunction::Avg => Self::Avg { sum: 0.0, count: 0 },
+            AggregateFunction::Avg => distinct(Self::Avg { sum: 0.0, count: 0 }),
             AggregateFunction::Collect => Self::Collect {
                 values: Vec::new(),
                 distinct: item.distinct.then(HashSet::new),
@@ -93,23 +165,28 @@ impl AggregateState {
         }
     }
 
-    fn update(&mut self, item: &Aggregation, catalog: &Catalog, binding: &Binding) -> MemoryDelta {
-        self.update_input(aggregate_input(item, catalog, binding))
+    fn update(
+        &mut self,
+        item: &Aggregation,
+        catalog: &Catalog,
+        binding: &Binding,
+    ) -> Result<MemoryDelta> {
+        self.update_input(aggregate_input(item, catalog, binding)?)
     }
 
-    fn update_input(&mut self, input: AggregateInput) -> MemoryDelta {
-        match self {
+    fn update_input(&mut self, input: AggregateInput) -> Result<MemoryDelta> {
+        Ok(match self {
             Self::Count { count, distinct } => {
                 if distinct.is_none() {
                     if !matches!(input, AggregateInput::Missing) {
                         *count = count.saturating_add(1);
                     }
-                    return MemoryDelta::default();
+                    return Ok(MemoryDelta::default());
                 }
                 let value = match input {
                     AggregateInput::Present => {
                         *count = count.saturating_add(1);
-                        return MemoryDelta::default();
+                        return Ok(MemoryDelta::default());
                     }
                     AggregateInput::Identity(kind, id) => {
                         Some(AggregateDistinctValue::Identity(kind, id))
@@ -118,7 +195,7 @@ impl AggregateState {
                     AggregateInput::Missing => None,
                 };
                 let Some(value) = value else {
-                    return MemoryDelta::default();
+                    return Ok(MemoryDelta::default());
                 };
                 let value_bytes = aggregate_distinct_value_memory_bytes(&value)
                     .saturating_sub(std::mem::size_of::<AggregateDistinctValue>());
@@ -127,7 +204,7 @@ impl AggregateState {
                         hash_set_capacity_bytes::<AggregateDistinctValue>(distinct.capacity());
                     if distinct.insert(value) {
                         *count = count.saturating_add(1);
-                        return MemoryDelta {
+                        return Ok(MemoryDelta {
                             added_bytes: value_bytes.saturating_add(
                                 hash_set_capacity_bytes::<AggregateDistinctValue>(
                                     distinct.capacity(),
@@ -135,7 +212,7 @@ impl AggregateState {
                                 .saturating_sub(previous),
                             ),
                             released_bytes: 0,
-                        };
+                        });
                     }
                 } else {
                     *count = count.saturating_add(1);
@@ -149,7 +226,7 @@ impl AggregateState {
                     let previous = current.as_ref().map_or(0, value_memory_bytes);
                     let next = value_memory_bytes(&value);
                     *current = Some(value);
-                    return MemoryDelta::between(previous, next);
+                    return Ok(MemoryDelta::between(previous, next));
                 }
                 MemoryDelta::default()
             }
@@ -160,7 +237,13 @@ impl AggregateState {
                     let previous = current.as_ref().map_or(0, value_memory_bytes);
                     let next = value_memory_bytes(&value);
                     *current = Some(value);
-                    return MemoryDelta::between(previous, next);
+                    return Ok(MemoryDelta::between(previous, next));
+                }
+                MemoryDelta::default()
+            }
+            Self::Sum(total) => {
+                if let AggregateInput::Value(value) = input {
+                    total.add(&value)?;
                 }
                 MemoryDelta::default()
             }
@@ -182,13 +265,13 @@ impl AggregateState {
             }
             Self::Collect { values, distinct } => {
                 let AggregateInput::Value(value) = input else {
-                    return MemoryDelta::default();
+                    return Ok(MemoryDelta::default());
                 };
                 let value_bytes = value_memory_bytes(&value);
                 if let Some(distinct) = distinct {
                     let previous = hash_set_capacity_bytes::<Value>(distinct.capacity());
                     if distinct.insert(value) {
-                        return MemoryDelta {
+                        return Ok(MemoryDelta {
                             // The inline value charge also reserves the sorted
                             // COLLECT(DISTINCT) output vector before finish.
                             added_bytes: value_bytes.saturating_add(
@@ -196,24 +279,43 @@ impl AggregateState {
                                     .saturating_sub(previous),
                             ),
                             released_bytes: 0,
-                        };
+                        });
                     }
                 } else {
                     values.push(value);
-                    return MemoryDelta {
+                    return Ok(MemoryDelta {
                         added_bytes: value_bytes.saturating_add(std::mem::size_of::<usize>() * 4),
                         released_bytes: 0,
-                    };
+                    });
                 }
                 MemoryDelta::default()
             }
-        }
+            Self::Distinct { seen, inner } => {
+                let AggregateInput::Value(value) = input else {
+                    return Ok(MemoryDelta::default());
+                };
+                if seen.contains(&value) {
+                    return Ok(MemoryDelta::default());
+                }
+                let value_bytes = value_memory_bytes(&value);
+                let previous = hash_set_capacity_bytes::<Value>(seen.capacity());
+                inner.update_input(AggregateInput::Value(value.clone()))?;
+                seen.insert(value);
+                MemoryDelta {
+                    added_bytes: value_bytes.saturating_add(
+                        hash_set_capacity_bytes::<Value>(seen.capacity()).saturating_sub(previous),
+                    ),
+                    released_bytes: 0,
+                }
+            }
+        })
     }
 
     fn finish(self) -> Value {
         match self {
             Self::Count { count, .. } => Value::Int(count as i64),
             Self::Min(value) | Self::Max(value) => value.unwrap_or(Value::Null),
+            Self::Sum(total) => total.value(),
             Self::Avg { sum, count } if count > 0 => Value::Float(sum / count as f64),
             Self::Avg { .. } => Value::Null,
             Self::Collect {
@@ -228,6 +330,7 @@ impl AggregateState {
                 values.sort_unstable();
                 Value::List(values)
             }
+            Self::Distinct { inner, .. } => inner.finish(),
         }
     }
 
@@ -266,6 +369,10 @@ impl AggregateState {
                 let next = current.as_ref().map_or(0, value_memory_bytes);
                 Ok(MemoryDelta::between(previous, next))
             }
+            (Self::Sum(total), Self::Sum(other)) => {
+                total.add(&other.value())?;
+                Ok(MemoryDelta::default())
+            }
             (
                 Self::Avg { sum, count },
                 Self::Avg {
@@ -287,14 +394,17 @@ impl AggregateState {
             Self::Count { .. }
             | Self::Min(None)
             | Self::Max(None)
+            | Self::Sum(_)
             | Self::Avg { .. }
-            | Self::Collect { .. } => 0,
+            | Self::Collect { .. }
+            | Self::Distinct { .. } => 0,
         })
     }
 
     fn partial_memory_bytes_after_merge(&self, other: &Self) -> Result<usize> {
         let retained_value = match (self, other) {
             (Self::Count { distinct: None, .. }, Self::Count { distinct: None, .. })
+            | (Self::Sum(_), Self::Sum(_))
             | (Self::Avg { .. }, Self::Avg { .. }) => return Ok(self.partial_memory_bytes()),
             (Self::Min(current), Self::Min(incoming)) => match (current, incoming) {
                 (Some(current), Some(incoming)) if incoming < current => Some(incoming),
@@ -331,8 +441,12 @@ fn aggregate_property_value(target: &AggregateTarget, binding: &Binding) -> Opti
         .cloned()
 }
 
-fn aggregate_input(item: &Aggregation, catalog: &Catalog, binding: &Binding) -> AggregateInput {
-    match &item.target {
+fn aggregate_input(
+    item: &Aggregation,
+    catalog: &Catalog,
+    binding: &Binding,
+) -> Result<AggregateInput> {
+    Ok(match &item.target {
         AggregateTarget::Ranked { .. } => {
             unreachable!("ranked aggregation has its own admitted execution path")
         }
@@ -368,13 +482,26 @@ fn aggregate_input(item: &Aggregation, catalog: &Catalog, binding: &Binding) -> 
             AggregateFunction::Collect => binding_value(binding, catalog, variable)
                 .filter(|value| value != &Value::Null)
                 .map_or(AggregateInput::Missing, AggregateInput::Value),
-            AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg => {
-                AggregateInput::Missing
+            // The binder only produces variable targets for COUNT and COLLECT;
+            // refuse other functions instead of silently aggregating nothing.
+            function @ (AggregateFunction::Sum
+            | AggregateFunction::Min
+            | AggregateFunction::Max
+            | AggregateFunction::Avg) => {
+                return Err(HawDBError::Execution(format!(
+                    "{function:?} aggregation requires a scalar argument, not variable '{variable}'"
+                )));
             }
         },
         AggregateTarget::Property { .. } => aggregate_property_value(&item.target, binding)
             .map_or(AggregateInput::Missing, AggregateInput::Value),
-    }
+        AggregateTarget::Expression(expression) => {
+            match evaluate_projection_expression(expression, catalog, binding)? {
+                Value::Null => AggregateInput::Missing,
+                value => AggregateInput::Value(value),
+            }
+        }
+    })
 }
 
 fn aggregate_input_memory_bytes(input: &AggregateInput) -> usize {
@@ -415,12 +542,12 @@ impl<'a> GroupAccumulator<'a> {
             )
     }
 
-    fn update(&mut self, catalog: &Catalog, binding: &Binding) -> MemoryDelta {
+    fn update(&mut self, catalog: &Catalog, binding: &Binding) -> Result<MemoryDelta> {
         let mut delta = MemoryDelta::default();
         for (state, item) in self.states.iter_mut().zip(self.items) {
-            delta.combine(state.update(item, catalog, binding));
+            delta.combine(state.update(item, catalog, binding)?);
         }
-        delta
+        Ok(delta)
     }
 
     fn update_inputs(&mut self, inputs: Vec<AggregateInput>) -> Result<MemoryDelta> {
@@ -431,7 +558,7 @@ impl<'a> GroupAccumulator<'a> {
         }
         let mut delta = MemoryDelta::default();
         for (state, input) in self.states.iter_mut().zip(inputs) {
-            delta.combine(state.update_input(input));
+            delta.combine(state.update_input(input)?);
         }
         Ok(delta)
     }
@@ -446,8 +573,8 @@ impl<'a> GroupAccumulator<'a> {
         }
         Binding {
             values,
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         }
     }
 }
@@ -701,7 +828,7 @@ pub fn stream_aggregate_batches(
             let inputs = items
                 .iter()
                 .map(|item| aggregate_input(item, catalog, &binding))
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
             let row = BufferedGroupRow { ordinal, inputs };
             let key_bytes = buffered_key_bytes(&key);
             let bytes = std::mem::size_of::<GroupRunRow>()
@@ -717,7 +844,7 @@ pub fn stream_aggregate_batches(
             } else {
                 groups.insertion_bytes(new_group_payload)
             };
-            if tracker.would_exceed(insertion_bytes) && !groups.is_empty() {
+            if tracker.should_spill(insertion_bytes, task_context) && !groups.is_empty() {
                 runs.push(spill_group_run(
                     &mut groups,
                     &mut spill_budget,
@@ -1154,7 +1281,7 @@ fn update_group_accumulator(
     binding: &Binding,
     tracker: &mut OperatorMemoryTracker,
 ) -> Result<()> {
-    let delta = accumulator.update(catalog, binding);
+    let delta = accumulator.update(catalog, binding)?;
     tracker.release(delta.released_bytes);
     if tracker.would_exceed(delta.added_bytes) {
         return Err(tracker.state_error(
@@ -1201,4 +1328,160 @@ fn flush_aggregate_batch(
         return Ok(BatchControl::Stop);
     }
     Ok(BatchControl::Continue)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hawdb_plan_cypher::{ProjectionExpression, ScalarBinaryOp};
+
+    fn aggregation(function: AggregateFunction, distinct: bool) -> Aggregation {
+        Aggregation {
+            function,
+            target: AggregateTarget::Column("x".into()),
+            distinct,
+            name: "out".into(),
+        }
+    }
+
+    fn run(function: AggregateFunction, distinct: bool, inputs: &[Value]) -> Result<Value> {
+        let mut state = AggregateState::new(&aggregation(function, distinct));
+        for value in inputs {
+            let input = match value {
+                Value::Null => AggregateInput::Missing,
+                value => AggregateInput::Value(value.clone()),
+            };
+            state.update_input(input)?;
+        }
+        Ok(state.finish())
+    }
+
+    fn sum(inputs: &[Value]) -> Result<Value> {
+        run(AggregateFunction::Sum, false, inputs)
+    }
+
+    #[test]
+    fn sum_follows_opencypher_numeric_semantics() {
+        assert_eq!(
+            sum(&[Value::Int(1), Value::Int(2), Value::Int(3)]).unwrap(),
+            Value::Int(6)
+        );
+        assert_eq!(
+            sum(&[Value::Float(1.5), Value::Float(2.25)]).unwrap(),
+            Value::Float(3.75)
+        );
+        assert_eq!(
+            sum(&[Value::Int(1), Value::Float(2.5), Value::Int(3)]).unwrap(),
+            Value::Float(6.5)
+        );
+        assert_eq!(
+            sum(&[Value::Null, Value::Int(4), Value::Null]).unwrap(),
+            Value::Int(4)
+        );
+        assert_eq!(sum(&[]).unwrap(), Value::Int(0));
+        assert_eq!(sum(&[Value::Null, Value::Null]).unwrap(), Value::Int(0));
+        assert_eq!(
+            run(
+                AggregateFunction::Sum,
+                true,
+                &[Value::Int(1), Value::Int(1), Value::Null, Value::Int(2)]
+            )
+            .unwrap(),
+            Value::Int(3)
+        );
+        assert_eq!(
+            run(AggregateFunction::Sum, true, &[]).unwrap(),
+            Value::Int(0)
+        );
+    }
+
+    #[test]
+    fn sum_reports_overflow_and_non_numeric_input() {
+        let error = sum(&[Value::Int(i64::MAX), Value::Int(1)]).unwrap_err();
+        assert!(error.to_string().contains("overflow"), "{error}");
+        let error = sum(&[Value::Int(i64::MIN), Value::Int(-1)]).unwrap_err();
+        assert!(error.to_string().contains("overflow"), "{error}");
+        let error = sum(&[Value::Int(1), Value::String("2".into())]).unwrap_err();
+        assert!(error.to_string().contains("numeric"), "{error}");
+        let error = run(AggregateFunction::Sum, true, &[Value::Bool(true)]).unwrap_err();
+        assert!(error.to_string().contains("numeric"), "{error}");
+    }
+
+    #[test]
+    fn sum_partial_states_merge_with_the_same_rules() {
+        let mut left = AggregateState::Sum(SumTotal::Int(2));
+        left.merge_partial(AggregateState::Sum(SumTotal::Int(3)))
+            .unwrap();
+        assert_eq!(left.clone().finish(), Value::Int(5));
+        left.merge_partial(AggregateState::Sum(SumTotal::Float(0.5)))
+            .unwrap();
+        assert_eq!(left.finish(), Value::Float(5.5));
+        let mut overflow = AggregateState::Sum(SumTotal::Int(i64::MAX));
+        let error = overflow
+            .merge_partial(AggregateState::Sum(SumTotal::Int(1)))
+            .unwrap_err();
+        assert!(error.to_string().contains("overflow"), "{error}");
+        assert!(AggregateState::Sum(SumTotal::Int(0))
+            .merge_partial(AggregateState::Avg { sum: 0.0, count: 0 })
+            .is_err());
+    }
+
+    #[test]
+    fn distinct_applies_to_every_expression_aggregate() {
+        let inputs = [Value::Int(2), Value::Int(2), Value::Null, Value::Int(4)];
+        assert_eq!(
+            run(AggregateFunction::Avg, true, &inputs).unwrap(),
+            Value::Float(3.0)
+        );
+        assert_eq!(
+            run(AggregateFunction::Avg, false, &inputs).unwrap(),
+            Value::Float(8.0 / 3.0)
+        );
+        assert_eq!(
+            run(AggregateFunction::Min, true, &inputs).unwrap(),
+            Value::Int(2)
+        );
+        assert_eq!(
+            run(AggregateFunction::Max, true, &inputs).unwrap(),
+            Value::Int(4)
+        );
+        assert_eq!(run(AggregateFunction::Avg, true, &[]).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn expression_targets_evaluate_per_row_and_skip_nulls() {
+        let item = Aggregation {
+            function: AggregateFunction::Count,
+            target: AggregateTarget::Expression(ProjectionExpression::Binary {
+                left: Box::new(ProjectionExpression::Column("x".into())),
+                op: ScalarBinaryOp::Remainder,
+                right: Box::new(ProjectionExpression::Literal(Value::Int(2))),
+            }),
+            distinct: true,
+            name: "parity".into(),
+        };
+        let catalog = Catalog::default();
+        let mut state = AggregateState::new(&item);
+        for value in [
+            Value::Int(1),
+            Value::Int(3),
+            Value::Null,
+            Value::Int(4),
+            Value::Int(5),
+        ] {
+            state
+                .update(&item, &catalog, &Binding::scalar("x", value))
+                .unwrap();
+        }
+        assert_eq!(state.finish(), Value::Int(2));
+
+        let error = AggregateState::new(&item)
+            .update(
+                &item,
+                &catalog,
+                &Binding::scalar("x", Value::String("a".into())),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("numeric"), "{error}");
+    }
 }
