@@ -42,6 +42,13 @@ and minimal-feature capability refusal before any cache lookup or bypass.
 Run those filters with default and `--no-default-features` configurations.
 Existing target profiles and execution lanes are unchanged.
 
+`cargo build --locked --release --bench physical_plan_cache` builds the manual
+embedded CASE cache benchmark. It covers cold/reused/fresh-handle reads at
+20/100/512 candidates, scope and body scaling, complete result parity and a
+separate qualification-feature allocation/preparation observer. It adds no
+benchmark CI lane. Procedure, source-bound measurements and the per-read-handle
+reuse limitation are in the [physical cache report](benchmarks/physical_plan_cache_macos_2026_10_31/README.md).
+
 `//:storage_tla_evidence_script_test` belongs to the required root
 `//:hawdb_unit_tests` aggregate. It validates the actual checked-in TLA model
 inventory through `scripts/check-storage-tla.sh --manifest-json` before running
