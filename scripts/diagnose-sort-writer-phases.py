@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import statistics
@@ -20,6 +21,14 @@ from concurrent_writer_topology import detect
 PAIRS = 5
 CASES = {(readers, serial) for readers in [0, 2] for serial in [False, True]}
 PHASES = ["host_gate", "begin", "query", "commit"]
+
+
+def topology():
+    if hasattr(os, "sched_getaffinity"):
+        return detect()
+    return {"platform": platform.platform(), "logical_cpus": os.cpu_count(),
+            "affinity": None, "cgroup_constraints": None,
+            "constraint_detection": "Linux gate topology unavailable on this diagnostic host"}
 
 
 def git(source, *args):
@@ -112,7 +121,7 @@ def prepare(source, work, output, baseline_revision):
         "cargo_lock_sha256": {label: digest(root / "Cargo.lock")
                               for label, root in [("baseline", baseline), ("candidate", source)]},
         "rustc": subprocess.check_output(["rustc", "-Vv"], cwd=source, text=True),
-        "cpu": detect(), "pairs": PAIRS, "warmup_pairs": 1,
+        "cpu": topology(), "pairs": PAIRS, "warmup_pairs": 1,
         "cases": sorted(CASES), "phases": PHASES,
         "scope": "in-memory, ungrouped, optimistic 2W with 0/2 readers; host-serialized controls",
         "order": "finish both builds, then alternate process order; retain every result",
