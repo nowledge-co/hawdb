@@ -103,12 +103,17 @@ case "$shard" in
     rust_case consumer-publication-refusal "$search" search_all 1 1 consumer::tests::windows_publication_refusal_preserves_receipt_and_native_lease --exact
     ;;
   consumers)
-    recovery_prefix="$(python3 "$recovery_selector" --prefix)"
+    publication_prefix="$(python3 "$recovery_selector" --publication-prefix)"
     rust_case consumer-reclamation "$root" facade_all positive 1 consumer_reclamation
-    rust_case consumer-vector-incremental "$root" facade_all positive 1 vector_index_incremental vector_index_canonical_completion --skip "$recovery_prefix"
+    rust_case consumer-vector-incremental "$root" facade_all positive 1 vector_index_incremental vector_index_canonical_completion --skip "$publication_prefix"
     rust_case consumer-stationary-create "$root" facade_all 1 1 api::search_projection_consumer::tests::windows_registered_stationary_creation_catch_up_and_reopen --exact
     rust_case consumer-stationary-recovery "$root" facade_all positive 1 registered_stationary
     rust_case consumer-covered-catch-up //:hawdb_mvcc_staging_session_tests facade_all positive 1 registered_consumer
+    ;;
+  consumers-publication-*)
+    publication_shard="${shard#consumers-}"
+    publication_filter="$(python3 "$recovery_selector" "$publication_shard")"
+    rust_case "$publication_shard" "$root" facade_all 1 1 "$publication_filter" --exact
     ;;
   consumers-recovery-*)
     recovery_shard="${shard#consumers-}"

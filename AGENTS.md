@@ -114,7 +114,7 @@
   inventory over one executable per mode; retain every scenario and refuse empty
   shards. See `docs/TEST_INDEX.md` for scheduling evidence and replay.
 
-- Windows native contracts run as twelve independent Bazel shards plus independent Cargo Clippy; the original required check aggregates their results. See [Windows native CI](docs/WINDOWS_NATIVE_CI.md) for feature ownership, cache layout and evidence. Keep disk/repository/external cache roots disjoint and preserve default/minimal/all-feature and daily qualification selections.
+- Windows native contracts run as seventeen independent Bazel shards plus independent Cargo Clippy; the original required check aggregates their results. See [Windows native CI](docs/WINDOWS_NATIVE_CI.md) for feature ownership, cache layout and evidence. Keep disk/repository/external cache roots disjoint and preserve default/minimal/all-feature and daily qualification selections.
 
 ## Consumer Failure Recovery
 

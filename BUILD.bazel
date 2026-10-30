@@ -485,6 +485,7 @@ sh_test(
         ".github/workflows/ci.yml",
         ".github/workflows/native-bindings.yml",
         "src/api/tests/power_loss/consumer_vector_incremental/faults/recovery.rs",
+        "src/api/tests/power_loss/consumer_vector_incremental/faults.rs",
         "src/api/tests/power_loss/automatic_checkpoint.rs",
     ],
 )

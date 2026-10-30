@@ -843,13 +843,17 @@ inode aliases. Stale C still refuses a current-E canonical binding. Native
 Windows artifact assertions check exact lengths and read only the expected
 bytes, including empty locked lease files, without an EOF probe.
 Windows weekly power-loss and required native-consumer matrices isolate these
-recovery cases in five required shards: births, unselected intents, selected
-intents, lost relaxed SQL sources and lost relaxed node sources. The first
-three retain 28 combinations each; the final pair retain 14 each, for the same
-112 combinations. Linux/macOS retain the complete family in one process.
-The Windows `remaining` and ordinary consumer selections exclude this module
-because the five exact selections own it. A shared selector validates actual
-Rust discovery and both workflow matrices; a runtime coverage check requires
+recovery cases in seven required shards: births, unselected intents, selected
+intents, and lost relaxed SQL/node sources split by Link versus SelectorWrite
+origin. The first three retain 28 combinations each; the final four retain seven
+each, for the same 112 combinations. Linux/macOS retain the complete family in
+one process. Three additional Windows shards own the existing first-crash
+artifact-closure, torn-selector and selector/root-barrier tests, preserving all
+32 cut/source/durability combinations. The weekly consumer-publication and
+ordinary native consumer selections exclude the complete vector fault module
+because these ten exact selections own it. The Windows `remaining` partition
+also excludes these cases through the same discovery inventory. A shared selector
+validates actual Rust discovery and both workflow matrices; a runtime coverage check requires
 every `(origin, cut, durability, source family, source-updated)` combination
 exactly once. All fault plans, physical-image deduplication, two repeated reopens,
 single-process test concurrency, compiler profiles and 120-minute job ceilings
@@ -858,7 +862,12 @@ when the Rust test itself reports success. The former combined Windows lane
 reached its 120-minute ceiling after only 34 recovery combinations; isolated
 first-build and execution costs require final-head CI evidence. Replay the
 selector through `bazel test //:power_loss_partition_script_test` and the runner
-controls with `bash scripts/run-windows-native-bazel.test.sh`.
+controls with `bash scripts/run-windows-native-bazel.test.sh`. Issue #1343 tracks
+the remaining runtime headroom: pre-split BEP recorded 1684.2 seconds of native
+vector selection execution, 1591.2 seconds for lost SQL source recovery and
+1076.5 seconds for lost node source recovery. New shard concurrency can repeat
+cold compilation; final-head Actions evidence must separate that cost from test
+execution before claiming a speedup.
 The weekly Windows matrix also retains all eight branch-abandonment cases in
 their own serial shard; they consumed about 41 minutes before recovery began
 in the former combined lane. This preserves their assertions and the existing

@@ -196,8 +196,10 @@ jobs:
       matrix:
         shard: [transactions, storage, search, consumers, identities, snapshots, bindings,
                 consumers-recovery-births, consumers-recovery-unselected,
-                consumers-recovery-selected, consumers-recovery-lost-sql,
-                consumers-recovery-lost-nodes]
+                consumers-recovery-selected, consumers-recovery-lost-sql-link,
+                consumers-recovery-lost-sql-selector, consumers-recovery-lost-nodes-link,
+                consumers-recovery-lost-nodes-selector, consumers-publication-artifacts,
+                consumers-publication-selectors, consumers-publication-barriers]
     steps:
       - name: Checkout
         uses: actions/checkout@v7

@@ -79,22 +79,25 @@ MOCK
 chmod +x "$BAZEL"
 for shard in transactions storage search consumers identities snapshots bindings abandonment \
   consumers-recovery-births consumers-recovery-unselected consumers-recovery-selected \
-  consumers-recovery-lost-sql consumers-recovery-lost-nodes; do
+  consumers-recovery-lost-sql-link consumers-recovery-lost-sql-selector \
+  consumers-recovery-lost-nodes-link consumers-recovery-lost-nodes-selector \
+  consumers-publication-artifacts consumers-publication-selectors consumers-publication-barriers; do
   export WINDOWS_NATIVE_RESULTS="$fixture/$shard"
   bash "$root/scripts/run-windows-native-bazel.sh" "$shard" >"$fixture/$shard.log" 2>&1
 done
 # Repeated filtered invocations must retain their own XML before overwrite.
 grep -qx instance-identity-default-views "$fixture/snapshots/testlogs/instance-identity-default-views/test.xml"
 grep -qx instance-identity-minimal-views "$fixture/snapshots/testlogs/instance-identity-minimal-views/test.xml"
-# Preserve every original selection, five isolated vector recovery selections,
-# and both default WAL recovery families.
-[[ "$(wc -l <"$fixture/commands.txt" | tr -d ' ')" == 36 ]]
+# Preserve every original selection, seven isolated vector recovery selections,
+# three first-crash vector publication cases, and both default WAL recovery families.
+[[ "$(wc -l <"$fixture/commands.txt" | tr -d ' ')" == 41 ]]
 grep -q -- '--test_arg=recovery_995' "$fixture/commands.txt"
 grep -q -- '--test_arg=api::tests::storage_recovery::wal_tail::' "$fixture/commands.txt"
 grep -q -- '--test_arg=resident_diskann::tests::' "$fixture/commands.txt"
 grep -q -- '--test_arg=vector_index_incremental --test_arg=vector_index_canonical_completion' "$fixture/commands.txt"
-grep -q -- '--test_arg=--skip --test_arg=api::tests::power_loss::consumer_vector_incremental::faults::recovery::' "$fixture/commands.txt"
-[[ "$(grep -c -- '--test_arg=api::tests::power_loss::consumer_vector_incremental::faults::recovery::vector_index_' "$fixture/commands.txt")" == 5 ]]
+grep -q -- '--test_arg=--skip --test_arg=api::tests::power_loss::consumer_vector_incremental::faults:: --test_arg=--nocapture' "$fixture/commands.txt"
+[[ "$(grep -c -- '--test_arg=api::tests::power_loss::consumer_vector_incremental::faults::recovery::vector_index_' "$fixture/commands.txt")" == 7 ]]
+[[ "$(grep -c -- '--test_arg=api::tests::power_loss::consumer_vector_incremental::faults::vector_index_' "$fixture/commands.txt")" == 3 ]]
 grep -q -- '--//:windows_native_profile=facade_all' "$fixture/commands.txt"
 grep -q -- '--test_arg=--test-threads=4' "$fixture/commands.txt"
 grep -q -- '--test_arg=-test.count=1' "$fixture/commands.txt"
@@ -107,6 +110,10 @@ done
 export WINDOWS_NATIVE_RESULTS="$fixture/refuse-count"
 if FAKE_NATIVE_MODE=wrong-count bash "$root/scripts/run-windows-native-bazel.sh" snapshots >"$fixture/refuse-count.log" 2>&1; then
   echo 'native runner accepted wrong exact count' >&2; exit 1
+fi
+export WINDOWS_NATIVE_RESULTS="$fixture/refuse-publication-count"
+if FAKE_NATIVE_MODE=wrong-count bash "$root/scripts/run-windows-native-bazel.sh" consumers-publication-artifacts >"$fixture/refuse-publication-count.log" 2>&1; then
+  echo 'native runner accepted wrong publication count' >&2; exit 1
 fi
 export WINDOWS_NATIVE_RESULTS="$fixture/refuse-recovery"
 if FAKE_NATIVE_MODE=missing-recovery bash "$root/scripts/run-windows-native-bazel.sh" consumers-recovery-selected >"$fixture/refuse-recovery.log" 2>&1; then
