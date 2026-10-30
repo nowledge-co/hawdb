@@ -7,6 +7,9 @@
 
 use crate::{HawDBError, Result, ValueRef, VectorDimension};
 
+mod kernel;
+use kernel::{Input, Kernel, Mode, Sums};
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Vector {
     encoded: Vec<u8>,
@@ -181,7 +184,11 @@ impl VectorDistance {
         if left.dimension != right.dimension {
             return Err(invalid("distance dimensions must match"));
         }
-        self.distance_coordinates(left.coordinates(), right.coordinates(), checkpoint)
+        self.distance_inputs(
+            Input::Encoded(&left.encoded[4..]),
+            Input::Encoded(&right.encoded[4..]),
+            checkpoint,
+        )
     }
 
     /// Scores admitted raw projection vectors with the same mathematical
@@ -198,7 +205,7 @@ impl VectorDistance {
         if left.is_empty() || u32::try_from(left.len()).is_err() {
             return Err(invalid("dimension must be a positive u32"));
         }
-        self.distance_coordinates(left.iter().copied(), right.iter().copied(), checkpoint)
+        self.distance_inputs(Input::Slice(left), Input::Slice(right), checkpoint)
     }
 
     /// Scores a raw query against a validated, byte-backed immutable vector
@@ -212,45 +219,25 @@ impl VectorDistance {
         if left.len() != right.dimension.get() as usize {
             return Err(invalid("distance dimensions must match"));
         }
-        self.distance_coordinates(left.iter().copied(), right.coordinates(), checkpoint)
+        self.distance_inputs(
+            Input::Slice(left),
+            Input::Encoded(&right.encoded[4..]),
+            checkpoint,
+        )
     }
 
-    fn distance_coordinates(
+    fn distance_inputs(
         self,
-        left: impl Iterator<Item = f32>,
-        right: impl Iterator<Item = f32>,
-        mut checkpoint: impl FnMut() -> Result<()>,
+        left: Input<'_>,
+        right: Input<'_>,
+        checkpoint: impl FnMut() -> Result<()>,
     ) -> Result<f64> {
-        let (mut dot, mut left_norm, mut right_norm, mut squared) =
-            (0.0f64, 0.0f64, 0.0f64, 0.0f64);
-        for (index, (left, right)) in left.zip(right).enumerate() {
-            // Read at most 64 KiB across both operands between checkpoints.
-            if index % (64 * 1024 / (2 * std::mem::size_of::<f32>())) == 0 {
-                checkpoint()?;
-            }
-            if !left.is_finite() || !right.is_finite() {
-                return Err(invalid("coordinates must be finite"));
-            }
-            let (left, right) = (f64::from(left), f64::from(right));
-            match self {
-                Self::Euclidean => squared += (left - right).powi(2),
-                Self::Cosine => {
-                    dot += left * right;
-                    left_norm += left * left;
-                    right_norm += right * right;
-                }
-            }
-        }
-        checkpoint()?;
-        match self {
-            Self::Euclidean => Ok(squared.sqrt()),
-            Self::Cosine if left_norm == 0.0 || right_norm == 0.0 => {
-                Err(invalid("cosine distance requires nonzero vectors"))
-            }
-            Self::Cosine => {
-                Ok(1.0 - (dot / (left_norm.sqrt() * right_norm.sqrt())).clamp(-1.0, 1.0))
-            }
-        }
+        let mode = match self {
+            Self::Cosine => Mode::Cosine,
+            Self::Euclidean => Mode::Euclidean,
+        };
+        let sums = Kernel::for_mode(mode, left.len()).calculate(left, right, mode, checkpoint)?;
+        finish_distance(self, &sums, sums.left.sqrt())
     }
 
     pub fn evaluate(self, left: ValueRef<'_>, right: ValueRef<'_>) -> Result<Option<f64>> {
@@ -260,6 +247,150 @@ impl VectorDistance {
                 self.distance(left, right).map(Some)
             }
             _ => Err(invalid("distance arguments must be vectors")),
+        }
+    }
+}
+
+/// Selected exact-arithmetic implementation, independent of ANN backend selection.
+#[doc(hidden)]
+pub fn distance_kernel_name(metric: VectorDistance, dimension: usize) -> &'static str {
+    Kernel::for_mode(
+        match metric {
+            VectorDistance::Cosine => Mode::Cosine,
+            VectorDistance::Euclidean => Mode::Euclidean,
+        },
+        dimension,
+    )
+    .1
+}
+
+/// Borrowed, validated query state shared by exact projection scoring and reranking.
+/// Preparation retains no coordinate copies. Each distance keeps f64 arithmetic,
+/// coordinate-order sums and the same bounded work callbacks as `VectorDistance`.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct PreparedVectorQuery<'a> {
+    coordinates: &'a [f32],
+    norm: f64,
+    kernel: Kernel,
+}
+
+impl<'a> PreparedVectorQuery<'a> {
+    pub fn new(coordinates: &'a [f32]) -> Result<Self> {
+        Self::with_work(coordinates, || Ok(()))
+    }
+
+    pub fn with_work(
+        coordinates: &'a [f32],
+        checkpoint: impl FnMut() -> Result<()>,
+    ) -> Result<Self> {
+        if coordinates.is_empty() || u32::try_from(coordinates.len()).is_err() {
+            return Err(invalid("dimension must be a positive u32"));
+        }
+        let kernel = Kernel::for_mode(Mode::PreparedCosine, coordinates.len());
+        let norm = Kernel::for_mode(Mode::Norm, coordinates.len())
+            .calculate(
+                Input::Slice(coordinates),
+                Input::Slice(coordinates),
+                Mode::Norm,
+                checkpoint,
+            )?
+            .left
+            .sqrt();
+        Ok(Self {
+            coordinates,
+            norm,
+            kernel,
+        })
+    }
+
+    pub fn for_distance(
+        metric: VectorDistance,
+        coordinates: &'a [f32],
+        checkpoint: impl FnMut() -> Result<()>,
+    ) -> Result<Self> {
+        let query = Self::with_work(coordinates, checkpoint)?;
+        if metric == VectorDistance::Cosine && query.norm == 0.0 {
+            return Err(invalid("cosine distance requires nonzero vectors"));
+        }
+        Ok(query)
+    }
+
+    pub fn coordinates(&self) -> &'a [f32] {
+        self.coordinates
+    }
+
+    pub fn distance_slices_with_work(
+        &self,
+        metric: VectorDistance,
+        right: &[f32],
+        checkpoint: impl FnMut() -> Result<()>,
+    ) -> Result<f64> {
+        if self.coordinates.len() != right.len() {
+            return Err(invalid("distance dimensions must match"));
+        }
+        self.distance_input(metric, Input::Slice(right), checkpoint)
+    }
+
+    pub fn distance_to_vector_with_work(
+        &self,
+        metric: VectorDistance,
+        right: VectorRef<'_>,
+        checkpoint: impl FnMut() -> Result<()>,
+    ) -> Result<f64> {
+        if self.coordinates.len() != right.dimension.get() as usize {
+            return Err(invalid("distance dimensions must match"));
+        }
+        self.distance_input(metric, Input::Encoded(&right.encoded[4..]), checkpoint)
+    }
+
+    fn distance_input(
+        &self,
+        metric: VectorDistance,
+        right: Input<'_>,
+        checkpoint: impl FnMut() -> Result<()>,
+    ) -> Result<f64> {
+        let mode = match metric {
+            VectorDistance::Cosine => Mode::PreparedCosine,
+            VectorDistance::Euclidean => Mode::Euclidean,
+        };
+        let kernel = match metric {
+            VectorDistance::Cosine => self.kernel,
+            VectorDistance::Euclidean => Kernel::for_mode(mode, self.coordinates.len()),
+        };
+        let sums = kernel.calculate(Input::Slice(self.coordinates), right, mode, checkpoint)?;
+        finish_distance(metric, &sums, self.norm)
+    }
+
+    /// Search's positive-only relevance, computed directly rather than as 1-distance
+    /// so subtraction cannot change final score bits. Zero vectors have no score.
+    pub fn positive_cosine_similarity(&self, right: &[f32]) -> Result<Option<f64>> {
+        if self.coordinates.len() != right.len() {
+            return Ok(None);
+        }
+        let sums = self.kernel.calculate(
+            Input::Slice(self.coordinates),
+            Input::Slice(right),
+            Mode::PreparedCosine,
+            || Ok(()),
+        )?;
+        if self.norm == 0.0 || sums.right == 0.0 {
+            return Ok(None);
+        }
+        Ok(Some(
+            (sums.dot / (self.norm * sums.right.sqrt())).clamp(0.0, 1.0),
+        ))
+    }
+}
+
+fn finish_distance(metric: VectorDistance, sums: &Sums, left_norm: f64) -> Result<f64> {
+    match metric {
+        VectorDistance::Euclidean => Ok(sums.squared.sqrt()),
+        VectorDistance::Cosine if left_norm == 0.0 || sums.right == 0.0 => {
+            Err(invalid("cosine distance requires nonzero vectors"))
+        }
+        VectorDistance::Cosine => {
+            Ok(1.0 - (sums.dot / (left_norm * sums.right.sqrt())).clamp(-1.0, 1.0))
         }
     }
 }

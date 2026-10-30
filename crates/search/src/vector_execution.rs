@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::{
-    cosine_similarity, SearchDocument, SearchFallbackReasonCode, VectorSearchBackend,
+    CosineQuery, SearchDocument, SearchFallbackReasonCode, VectorSearchBackend,
     VectorSearchExecutionOptions,
 };
 use crate::error::{HawDBError, Result};
@@ -116,6 +116,15 @@ pub(super) fn execute_search_vector_plan(
     };
 
     let mut source = SearchVectorSource {
+        query_scorer: CosineQuery::with_work(query_embedding, || {
+            vector_execution_options
+                .task_context
+                .map_or(Ok(()), |task| {
+                    task.checkpoint().map_err(|reason| {
+                        HawDBError::Execution(format!("vector search task {reason}"))
+                    })
+                })
+        })?,
         query_embedding,
         documents,
         backend,
@@ -145,6 +154,7 @@ pub(super) fn execute_search_vector_plan(
 }
 
 struct SearchVectorSource<'a, 'b> {
+    query_scorer: CosineQuery<'a>,
     query_embedding: &'a [f32],
     documents: &'a [&'a SearchDocument],
     backend: VectorSearchBackend<'a>,
@@ -326,7 +336,7 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
             self.raw_vector_bytes_read = self
                 .raw_vector_bytes_read
                 .saturating_add(vector_bytes(embedding.len()));
-            let Some(score) = cosine_similarity(self.query_embedding, embedding) else {
+            let Some(score) = self.query_scorer.score(embedding) else {
                 continue;
             };
             scores.push(VectorRawScore {
@@ -439,7 +449,7 @@ impl SearchVectorSource<'_, '_> {
             self.raw_vector_bytes_read = self
                 .raw_vector_bytes_read
                 .saturating_add(vector_bytes(embedding.len()));
-            let Some(score) = cosine_similarity(self.query_embedding, embedding) else {
+            let Some(score) = self.query_scorer.score(embedding) else {
                 continue;
             };
             let id = document.id.clone();

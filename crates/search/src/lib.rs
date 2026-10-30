@@ -7650,10 +7650,62 @@ fn is_ascii_consonant(ch: char) -> bool {
     ch.is_ascii_alphabetic() && !matches!(ch, 'a' | 'e' | 'i' | 'o' | 'u')
 }
 
+#[cfg(test)]
+mod raw_vector_math_tests;
+
 // Final facade vector relevance is positive-only in [0, 1]. Signed RaBitQ
 // estimates are candidate-ranking hints, not final scores; nonpositive exact
 // similarities cannot contribute a vector hit (text may still match).
+/// One prepared query shared by a scoring phase. Keep legacy nonfinite behavior
+/// at this private boundary; public projection distances validate finite inputs.
+#[derive(Clone, Copy)]
+struct CosineQuery<'a> {
+    query: &'a [f32],
+    prepared: Option<hawdb_core::vector::PreparedVectorQuery<'a>>,
+}
+
+impl<'a> CosineQuery<'a> {
+    #[cfg(test)]
+    fn new(query: &'a [f32]) -> Self {
+        Self {
+            query,
+            prepared: hawdb_core::vector::PreparedVectorQuery::new(query).ok(),
+        }
+    }
+
+    fn with_work(query: &'a [f32], mut checkpoint: impl FnMut() -> Result<()>) -> Result<Self> {
+        let mut failure = None;
+        let prepared = hawdb_core::vector::PreparedVectorQuery::with_work(query, || {
+            checkpoint().map_err(|error| {
+                failure = Some(error);
+                hawdb_core::HawDBError::ProjectionBusy
+            })
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        Ok(Self {
+            query,
+            prepared: prepared.ok(),
+        })
+    }
+
+    fn score(&self, embedding: &[f32]) -> Option<f64> {
+        if let Some(prepared) = &self.prepared
+            && let Ok(score) = prepared.positive_cosine_similarity(embedding)
+        {
+            return score;
+        }
+        scalar_cosine_similarity(self.query, embedding)
+    }
+}
+
+#[cfg(test)]
 fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
+    CosineQuery::new(left).score(right)
+}
+
+fn scalar_cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
     if left.len() != right.len() || left.is_empty() {
         return None;
     }

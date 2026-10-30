@@ -203,7 +203,13 @@ fn assert_default(index: &SearchIndex) {
     assert_eq!(report.backend, "hawdb_diskann_candidate_projection");
     assert_eq!(report.candidate_score_source, "ann_approximate");
     assert_eq!(report.final_score_source, "raw_vector");
-    assert_eq!(report.candidate_scan_kernel.as_deref(), Some("scalar"));
+    assert_eq!(
+        report.candidate_scan_kernel.as_deref(),
+        Some(hawdb_core::vector::distance_kernel_name(
+            hawdb_core::VectorDistance::Cosine,
+            2
+        ))
+    );
     assert_eq!(exact.retrievers[0].backend, "scalar_vector_scan");
 }
 
@@ -945,7 +951,10 @@ fn default_checkpoint_persists_a_native_graph_and_retains_old_disk_readers() {
     );
     assert_eq!(
         old.result.retrievers[0].candidate_scan_kernel.as_deref(),
-        Some("scalar")
+        Some(hawdb_core::vector::distance_kernel_name(
+            hawdb_core::VectorDistance::Cosine,
+            2
+        ))
     );
     index.upsert(document(0, None)).unwrap();
     index.delete("0002");

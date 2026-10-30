@@ -381,6 +381,18 @@ impl<R> DiskAnnRead for FileDiskAnn<R> {
                 .distance_slice_to_vector_with_work(query, vector, checkpoint)
         })
     }
+    fn distance_prepared(
+        &self,
+        query: &hawdb_core::vector::PreparedVectorQuery<'_>,
+        ordinal: u32,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<f64> {
+        checkpoint(task)?;
+        let vector = self.vector(ordinal, task)?;
+        with_distance_work(task, |checkpoint| {
+            query.distance_to_vector_with_work(self.metric(), vector, checkpoint)
+        })
+    }
 }
 
 impl DiskAnnArtifactMetadata {

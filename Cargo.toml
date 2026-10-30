@@ -159,6 +159,10 @@ required-features = ["vector-search"]
 name = "filtered_diskann_qualification"
 required-features = ["vector-search"]
 
+[[example]]
+name = "exact_vector_profile"
+required-features = ["vector-search"]
+
 [[bench]]
 name = "relational_join_planning"
 harness = false

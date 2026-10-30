@@ -17,11 +17,11 @@ use super::lexical_projection::{
     LexicalProjectionConfig, LexicalProjectionReader, DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE,
 };
 use super::{
-    checksum_bytes, cosine_similarity, decode_embedding, decode_metadata,
-    decode_search_snapshot_text_bounded, decode_string, encode_embedding, encode_metadata,
-    encode_search_snapshot_text, encode_string, lexical_analyzer_digest, lexical_documents_digest,
-    matched_query_spans_bounded, matched_query_terms, rrf_child_score, search_empty_reasons,
-    top_ranked_candidates, top_ranked_ids, weighted_rrf_score, CompressedVectorSearchMode,
+    checksum_bytes, decode_embedding, decode_metadata, decode_search_snapshot_text_bounded,
+    decode_string, encode_embedding, encode_metadata, encode_search_snapshot_text, encode_string,
+    lexical_analyzer_digest, lexical_documents_digest, matched_query_spans_bounded,
+    matched_query_terms, rrf_child_score, search_empty_reasons, top_ranked_candidates,
+    top_ranked_ids, weighted_rrf_score, CompressedVectorSearchMode, CosineQuery,
     SearchAccessControlContext, SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument,
     SearchEmbeddingManifest, SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit,
     SearchIndex, SearchMode, SearchPageWindow, SearchPredicatePushdownReport,
@@ -3131,6 +3131,14 @@ impl SearchOutOfCoreReader {
                 self.config.max_hydrated_documents
             )));
         }
+        let query_scorer = context
+            .query_embedding
+            .map(|query| {
+                CosineQuery::with_work(query, || {
+                    context.query.map_or(Ok(()), |context| context.checkpoint())
+                })
+            })
+            .transpose()?;
         let mut hydrated = hydration::query::Loaded::new(self, candidates, metrics, context.query)?;
         let mut hits = context.output_memory.vec(candidates.len())?;
         let mut matched_span_count = 0usize;
@@ -3149,7 +3157,7 @@ impl SearchOutOfCoreReader {
                     .filter(|(query, embedding)| {
                         !embedding.is_empty() && query.len() == embedding.len()
                     })
-                    .and_then(|(query, embedding)| cosine_similarity(query, embedding))
+                    .and_then(|(_, embedding)| query_scorer.as_ref()?.score(embedding))
                     .filter(|score| *score > 0.0)
                     .unwrap_or(0.0)
             } else {
