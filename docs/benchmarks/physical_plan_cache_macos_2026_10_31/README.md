@@ -184,3 +184,27 @@ do not share physical hits and show no stable speedup. Mem benefits therefore
 depend on its read-handle lifetime; this report makes no endpoint-wide claim.
 The byte cap provides a separate retention contract, including safe oversized
 refusal and explicit rejection of opaque compiled-regex ownership.
+
+## Current-main IR coverage follow-up
+
+Runtime `84a373641cdadac74c1e4ac08ac1b2721d603c1b` integrates main
+`37bfb4bca8c1296f41eb0d521f2602bd7853459e` (0.22.0 / shortest-path expressions).
+It adds exhaustive requested-heap accounting for path functions, path columns
+and boxed shortest-path descriptors, including their spare string capacities.
+The existing independent facade allocation oracle now retains every path-function
+form and both Any/All selections in the actual cache owner and verifies that
+tracked allocations are released after drop. The existing shortest-path query
+regressions remain intact.
+
+This follow-up passed pinned fmt, workspace/all-target/all-feature strict Clippy,
+staged hooks and minimal browser WASM strict Clippy. Cargo default selection
+passed 158 tests, supported minimal selection passed 111, the allocation/path
+selection passed 17, and the Bazel general selection passed 156. The required
+local Bazel closure passed 101 tests (94 executed, seven cached); MVCC passed
+3,368 cases in 30,081 ms. Full-tree HawkEye currently reports 616 historical
+header failures; changed-file hooks pass. Test profiles, assertions and deadlines
+remain unchanged.
+
+The timing/heap traffic comparison above remains bound to its original baseline,
+runtime and binaries. This compatibility follow-up does not report a new CASE
+latency measurement or a shortest-path speedup.
