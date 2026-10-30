@@ -2088,8 +2088,8 @@ linear malformed recursion,
 fatal work/storage/depth budgets, independent language-depth admission through
 memo reuse, capture rollback, and exact entry/edge accounting across direct and sparse memo storage. The existing
 `postgres_pgq_tests` and `postgres_select_pgq_tests` targets own syntax ASTs,
-pure PEG expression/graph rules, independent exact 128-level expression and
-graph nesting (including their combination on the ordinary test thread), aliases,
+pure PEG expression/graph rules, separate aggregate/SELECT DISTINCT admission,
+independent exact 128-level expression and graph nesting (including their combination on the ordinary test thread), aliases,
 joins, byte spans and composed GRAPH_TABLE rejection. All use the ordinary
 checked profile and existing SQL syntax CI lanes.
 

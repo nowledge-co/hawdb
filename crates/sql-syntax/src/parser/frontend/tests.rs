@@ -95,3 +95,23 @@ fn graph_and_expression_nesting_have_independent_exact_limits() {
         }
     }
 }
+
+#[test]
+fn aggregate_distinct_does_not_inherit_select_distinct_on_guard() {
+    let sql = "SELECT count(DISTINCT on) FROM items";
+    let select = parse_postgres_select(sql).unwrap();
+    let crate::ExpressionKindSyntax::Function {
+        arguments,
+        distinct,
+        ..
+    } = &select.projection[0].expression.kind
+    else {
+        panic!("function expression");
+    };
+    assert!(*distinct);
+    let crate::ExpressionKindSyntax::Column(name) = &arguments[0].kind else {
+        panic!("column argument");
+    };
+    assert_eq!(&sql[name.span.start..name.span.end], "on");
+    assert!(parse_postgres_select("SELECT DISTINCT ON (id) id FROM items").is_err());
+}

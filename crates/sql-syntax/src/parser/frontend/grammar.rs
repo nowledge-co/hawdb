@@ -565,7 +565,7 @@ pub(super) fn build() -> Result<Grammar<()>, String> {
     rules.extend(
         expression::rules()
             .into_iter()
-            .filter(|(name, _)| !matches!(*name, "Input" | "Distinct")),
+            .filter(|(name, _)| *name != "Input"),
     );
     Grammar::compile_with_nesting(
         rules,

@@ -199,11 +199,11 @@ pub(super) fn rules() -> Vec<Rule> {
         (
             "ArgumentContents",
             seq(vec![
-                opt(choice(vec![r("Distinct"), k("ALL")])),
+                opt(choice(vec![r("FunctionDistinct"), k("ALL")])),
                 opt(list("Or")),
             ]),
         ),
-        ("Distinct", k("DISTINCT")),
+        ("FunctionDistinct", k("DISTINCT")),
         (
             "Filter",
             seq(vec![
@@ -353,7 +353,7 @@ impl Fold<'_> {
                 let function = Kind::Function {
                     name: self.name(children[0]),
                     arguments,
-                    distinct: self.tree.child(contents, "Distinct").is_some(),
+                    distinct: self.tree.child(contents, "FunctionDistinct").is_some(),
                 };
                 if let Some(filter) = self.tree.child(node, "Filter") {
                     Kind::Filtered {
