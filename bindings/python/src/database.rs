@@ -149,16 +149,31 @@ fn prepare_database_path(path: &Path, read_only: bool) -> PyResult<PathBuf> {
             )));
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            // Refuse known missing parents before the engine can create them.
-            // Other lookup failures retain their cause in engine admission.
-            if !read_only
-                && let Some(parent) = path.parent()
-                && matches!(parent.try_exists(), Ok(false))
-            {
-                return Err(StorageError::new_err(format!(
-                    "parent directory does not exist: {}",
-                    parent.display()
-                )));
+            // Windows can report NotFound when an ancestor is a regular file.
+            // Existence alone does not establish that the parent is a directory.
+            if let Some(parent) = path.parent() {
+                match parent.metadata() {
+                    Ok(metadata) if !metadata.is_dir() => {
+                        return Err(StorageError::new_err(format!(
+                            "parent of database path {} is not a directory: {}",
+                            path.display(),
+                            parent.display()
+                        )));
+                    }
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(StorageError::new_err(format!(
+                            "cannot inspect parent of database path {}: {error}",
+                            path.display()
+                        )));
+                    }
+                    Err(_) if !read_only => {
+                        return Err(StorageError::new_err(format!(
+                            "parent directory does not exist: {}",
+                            parent.display()
+                        )));
+                    }
+                    _ => {}
+                }
             }
         }
         Err(error) => {

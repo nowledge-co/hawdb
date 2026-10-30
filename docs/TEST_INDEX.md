@@ -1192,14 +1192,20 @@ Python exceptions restored.
 
 Python `open` / `Database` / DB-API `connect` path checks (`bindings/python/tests/test_file.py` and
 `test_memory.py`) run in `//bindings/python:hawdb_python_tests` and the Python
-Bindings `pytest` step. They cover missing parents, read-only refusal, regular
-files and non-directory ancestors, `":memory:"` and empty paths (including an
+Bindings `pytest` step on Linux and Windows. The Windows wheel lane runs the
+installed default/Pydantic suites and strict Clippy for the independent binding
+workspace before release; optional Arrow/pandas consumer lanes remain on Linux.
+Path cases cover missing parents, read-only refusal, regular files and
+non-directory parents through absolute and relative paths, `":memory:"` and empty paths (including an
 existing project as the current directory), with rejected opens leaving files
 and directories intact. POSIX permission cases preserve the underlying error
 and skip only when the user can bypass directory permissions. Native handles
 retain absolute paths across `chdir`, preserve symlink spelling on POSIX, and
 reopen persisted data. The parent check remains non-atomic with engine open.
-No lane, feature or profile change.
+Windows parent validation checks metadata because a regular-file ancestor can
+surface as NotFound for the child. Preserve the requested absolute path in that
+refusal and leave the existing file untouched. The release profile and feature
+set match the existing Linux wheel lane.
 
 The `registered_consumer_embedded` cases in
 `tests/support/embedded_consumer_coverage.rs` belong to `mvcc_staging_session`

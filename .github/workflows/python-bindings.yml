@@ -57,10 +57,19 @@ jobs:
         run: bazel test //bindings/python/...
 
   test:
-    name: Build and test
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: Build and test
+          - os: windows-2025
+            name: Windows Python wheel
     defaults:
       run:
+        shell: bash
         working-directory: bindings/python
     steps:
       - name: Checkout
@@ -84,6 +93,11 @@ jobs:
           python -m unittest test_check_lock
           python check_lock.py --root ../../Cargo.lock --binding Cargo.lock
 
+      - name: Check the independent binding workspace
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+
       - name: Build the extension wheel
         run: maturin build --release --locked --out dist
 
@@ -103,17 +117,21 @@ jobs:
         run: pytest tests/test_pydantic*.py
 
       - name: Provision the optional public Arrow consumer
+        if: matrix.os == 'ubuntu-24.04'
         run: pip install "pyarrow==26.0.0"
 
       - name: Test public Arrow protocols against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           python -c 'import pyarrow; print(pyarrow.__version__)'
           pytest tests/test_arrow_consumer.py
 
       - name: Provision the optional pandas DB-API consumer
+        if: matrix.os == 'ubuntu-24.04'
         run: pip install "pandas==3.1.0"
 
       - name: Test pandas.read_sql over the DB-API against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           python -c 'import pandas; print(pandas.__version__)'
           pytest tests/test_dbapi.py -k pandas
