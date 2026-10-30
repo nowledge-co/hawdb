@@ -359,6 +359,7 @@ version = "0.20.0"
 dependencies = [
  "hawdb-core",
  "hawdb-ddl",
+ "hawdb-sql-syntax",
 ]
 
 [[package]]

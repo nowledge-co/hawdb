@@ -1,24 +1,27 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::super::ast::*;
-use super::{Parser, MAX_CYPHER_INPUT_BYTES, MAX_CYPHER_PARSER_DEPTH};
-use hawdb_core::{HawDBError, Result};
+use super::{Parser, MAX_CYPHER_PARSER_DEPTH};
+use hawdb_core::Result;
 
 /// Parses ordered query clauses independently of statement-template lowering.
 #[doc(hidden)]
 pub fn parse_pipeline(input: &str) -> Result<QueryPipeline> {
-    if input.len() > MAX_CYPHER_INPUT_BYTES {
-        return Err(HawDBError::Parse(format!(
-            "Cypher input exceeds maximum length of {MAX_CYPHER_INPUT_BYTES} bytes"
-        )));
-    }
-    let mut parser = Parser::new(input);
-    let pipeline = parser.parse_query_pipeline()?;
-    parser.consume_char(';');
-    parser.expect_eof()?;
-    Ok(pipeline)
+    super::frontend::parse_pipeline(input)
 }
 
 impl Parser<'_> {
     pub(super) fn parse_query_pipeline(&mut self) -> Result<QueryPipeline> {
+        #[cfg(test)]
+        if !self.peg {
+            return self.parse_legacy_query_pipeline();
+        }
+        super::frontend::pipeline_at(self)
+    }
+
+    #[cfg(test)]
+    fn parse_legacy_query_pipeline(&mut self) -> Result<QueryPipeline> {
         self.skip_ws();
         let start = self.pos;
         let mut clauses = Vec::new();
@@ -26,59 +29,11 @@ impl Parser<'_> {
         while !terminal {
             self.skip_ws();
             let clause_start = self.pos;
-            let kind = if self.consume_keyword("UNWIND") {
-                self.parse_pipeline_unwind()?
-            } else if self.consume_keyword("MATCH") {
-                self.parse_pipeline_match(false)?
-            } else if self.consume_keyword("OPTIONAL") {
-                self.expect_keyword("MATCH")?;
-                self.parse_pipeline_match(true)?
-            } else if self.consume_keyword("WITH") {
-                ClauseKind::With(self.parse_pipeline_projection(true)?)
-            } else if self.consume_keyword("RETURN") {
-                terminal = true;
-                ClauseKind::Return(self.parse_pipeline_projection(false)?)
-            } else if self.consume_keyword("CALL") {
-                self.parse_pipeline_call()?
-            } else if self.consume_keyword("CREATE") {
-                ClauseKind::Create(self.parse_pipeline_patterns()?)
-            } else if self.consume_keyword("MERGE") {
-                let pattern = self.parse_pipeline_pattern()?;
-                let mut on_create = Vec::new();
-                let mut on_match = Vec::new();
-                while self.consume_keyword("ON") {
-                    let sets = if self.consume_keyword("CREATE") {
-                        &mut on_create
-                    } else {
-                        self.expect_keyword("MATCH")?;
-                        &mut on_match
-                    };
-                    if !sets.is_empty() {
-                        return Err(self.error("duplicate MERGE action"));
-                    }
-                    self.expect_keyword("SET")?;
-                    *sets = self.parse_set_properties()?;
-                }
-                ClauseKind::Merge {
-                    pattern,
-                    on_create,
-                    on_match,
-                }
-            } else if self.consume_keyword("SET") {
-                ClauseKind::Set(self.parse_set_properties()?)
-            } else if self.next_keyword_is("DETACH") || self.next_keyword_is("DELETE") {
-                let detach = self.consume_keyword("DETACH");
-                self.expect_keyword("DELETE")?;
-                let mut variables = vec![self.parse_ident()?];
-                while self.consume_char(',') {
-                    variables.push(self.parse_ident()?);
-                }
-                ClauseKind::Delete { detach, variables }
-            } else if !clauses.is_empty() && matches!(self.peek_char(), None | Some(';')) {
+            if !clauses.is_empty() && matches!(self.peek_char(), None | Some(';')) {
                 break;
-            } else {
-                return Err(self.error("expected a query clause"));
-            };
+            }
+            let kind = self.parse_pipeline_clause()?;
+            terminal = matches!(kind, ClauseKind::Return(_));
             clauses.push(self.source_node(kind, clause_start));
         }
         if !matches!(
@@ -95,6 +50,59 @@ impl Parser<'_> {
             return Err(self.error("query requires RETURN or a concluding mutation"));
         }
         Ok(self.source_node(QueryPipelineKind { clauses }, start))
+    }
+
+    pub(super) fn parse_pipeline_clause(&mut self) -> Result<ClauseKind> {
+        Ok(if self.consume_keyword("UNWIND") {
+            self.parse_pipeline_unwind()?
+        } else if self.consume_keyword("MATCH") {
+            self.parse_pipeline_match(false)?
+        } else if self.consume_keyword("OPTIONAL") {
+            self.expect_keyword("MATCH")?;
+            self.parse_pipeline_match(true)?
+        } else if self.consume_keyword("WITH") {
+            ClauseKind::With(self.parse_pipeline_projection(true)?)
+        } else if self.consume_keyword("RETURN") {
+            ClauseKind::Return(self.parse_pipeline_projection(false)?)
+        } else if self.consume_keyword("CALL") {
+            self.parse_pipeline_call()?
+        } else if self.consume_keyword("CREATE") {
+            ClauseKind::Create(self.parse_pipeline_patterns()?)
+        } else if self.consume_keyword("MERGE") {
+            let pattern = self.parse_pipeline_pattern()?;
+            let mut on_create = Vec::new();
+            let mut on_match = Vec::new();
+            while self.consume_keyword("ON") {
+                let sets = if self.consume_keyword("CREATE") {
+                    &mut on_create
+                } else {
+                    self.expect_keyword("MATCH")?;
+                    &mut on_match
+                };
+                if !sets.is_empty() {
+                    return Err(self.error("duplicate MERGE action"));
+                }
+                self.expect_keyword("SET")?;
+                *sets = self.parse_set_properties()?;
+            }
+            ClauseKind::Merge {
+                pattern,
+                on_create,
+                on_match,
+            }
+        } else if self.consume_keyword("SET") {
+            ClauseKind::Set(self.parse_set_properties()?)
+        } else if self.next_keyword_is("DETACH") || self.next_keyword_is("DELETE") {
+            let detach = self.consume_keyword("DETACH");
+            self.expect_keyword("DELETE")?;
+            let mut variables = vec![self.parse_ident()?];
+            while self.consume_char(',') {
+                variables.push(self.parse_ident()?);
+            }
+            ClauseKind::Delete { detach, variables }
+        } else {
+            return Err(self.error("expected a query clause"));
+        })
     }
 
     fn parse_pipeline_unwind(&mut self) -> Result<ClauseKind> {

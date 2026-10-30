@@ -22,15 +22,15 @@ use crate::{Span, SyntaxError, SyntaxErrorCode, Token, TokenKind};
 
 use memo::MemoTable;
 
-pub(crate) type NodeId = usize;
-pub(crate) type NativeMatcher<T> = fn(&str, &[Token], usize) -> NativeMatch<T>;
+pub type NodeId = usize;
+pub type NativeMatcher<T> = fn(&str, &[Token], usize) -> NativeMatch<T>;
 
-pub(crate) struct NativeMatch<T> {
+pub struct NativeMatch<T> {
     pub end: usize,
     pub value: Result<T, SyntaxError>,
 }
 
-pub(crate) enum Expression<T, R = &'static str> {
+pub enum Expression<T, R = &'static str> {
     Keyword(&'static str),
     Token(TokenKind, &'static str),
     Rule(R),
@@ -46,7 +46,7 @@ pub(crate) enum Expression<T, R = &'static str> {
     },
 }
 
-pub(crate) struct Grammar<T> {
+pub struct Grammar<T> {
     rules: Vec<(&'static str, Expression<T, usize>)>,
     names: HashMap<&'static str, usize>,
 }
@@ -119,7 +119,7 @@ impl<T> Grammar<T> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct Limits {
+pub struct Limits {
     pub steps: usize,
     pub nodes: usize,
     pub memo_entries: usize,
@@ -137,7 +137,7 @@ impl Default for Limits {
     }
 }
 
-pub(crate) struct Node {
+pub struct Node {
     pub name: Option<&'static str>,
     pub start: usize,
     pub end: usize,
@@ -145,7 +145,7 @@ pub(crate) struct Node {
     value: Option<usize>,
 }
 
-pub(crate) struct ParseTree<T> {
+pub struct ParseTree<T> {
     pub nodes: Vec<Node>,
     edges: Vec<NodeId>,
     values: Vec<Option<T>>,

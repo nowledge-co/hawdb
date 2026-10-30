@@ -19,6 +19,8 @@
 //! SQL/PGQ rules, and transformation into the existing syntax AST. Native terminals
 //! retain the bounded Pratt expression and graph-pattern parsers.
 //! Semantic binding and logical-plan lowering belong to `hawdb-sql`.
+//! The internal PEG machinery is also reused by `hawdb-cypher`, with its own
+//! lexer and native terminals; SQL tokenization rules do not apply to Cypher.
 //!
 //! `Database::query_sql*` selects the relational PEG entry for SELECT and EXPLAIN
 //! SELECT. Relational DDL/DML still use upstream `sqlparser`. PGQ syntax acceptance
@@ -37,7 +39,10 @@ mod ast;
 mod error;
 mod lexer;
 mod parser;
-mod peg;
+/// Shared bounded token PEG machinery for HawDB syntax frontends.
+/// This implementation module is not a host-facing query API.
+#[doc(hidden)]
+pub mod peg;
 mod span;
 mod token;
 

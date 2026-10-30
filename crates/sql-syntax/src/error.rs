@@ -32,6 +32,8 @@ pub enum SyntaxErrorCode {
     InvalidCharacter,
     UnexpectedToken,
     UnexpectedEnd,
+    /// A native syntax terminal preserved a caller semantic diagnostic.
+    NativeSemanticError,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
