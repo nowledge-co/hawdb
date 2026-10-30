@@ -1,5 +1,8 @@
 # Exact vector arithmetic on native ARM64
 
+
+The [shared-file follow-up and native x86 review](followup/README.md) retain a stricter same-file control, current-head decimal/tiny fixes, and the earlier adverse observations. The initial tables below remain source-bound to their original implementation.
+
 ## Experiment
 
 Issue: [#1339](https://github.com/nowledge-co/hawdb/issues/1339); implementation: [#1346](https://github.com/nowledge-co/hawdb/pull/1346). Baseline production source is `65a0011c20e0225fbe84f791996ea9f4add8b5a0`; candidate production source is `be74735402536ba5e248160f300e6b755d0a58d8`. Subsequent documentation changes do not change the measured implementation.
