@@ -190,17 +190,19 @@ fn physical_case_hits_keep_lazy_errors_and_recover_after_failed_reads() {
     }
     assert_eq!(read.plan_cache_stats().hits, 1);
     parameters.insert("id".into(), Value::Int(1));
-    assert!(read
-        .query_with_params_streaming(
-            query,
-            &parameters,
-            QueryStreamOptions {
-                max_rows: Some(1),
-                max_payload_bytes: Some(1024),
-            },
-            |_| Ok(())
-        )
-        .is_err());
+    for _ in 0..2 {
+        assert!(read
+            .query_with_params_streaming(
+                query,
+                &parameters,
+                QueryStreamOptions {
+                    max_rows: Some(1),
+                    max_payload_bytes: Some(1024),
+                },
+                |_| Ok(())
+            )
+            .is_err());
+    }
     parameters.insert("id".into(), Value::Int(0));
     let mut rows = Vec::new();
     read.query_with_params_streaming(
@@ -217,5 +219,59 @@ fn physical_case_hits_keep_lazy_errors_and_recover_after_failed_reads() {
     )
     .unwrap();
     assert_eq!(rows[0]["score"], Value::Int(77));
-    assert_eq!(read.plan_cache_stats().hits, 2);
+    assert_eq!(read.plan_cache_stats().hits, 3);
+}
+
+#[test]
+fn physical_case_cache_hits_preserve_request_budgets_and_cancellation() {
+    let mut db = Database::new();
+    db.query("CREATE (:Item {id: 0})").unwrap();
+    let mut read = db.begin_read_transaction().unwrap();
+    let query = "MATCH (n:Item) RETURN CASE n.id WHEN $id THEN $score ELSE null END AS score";
+    let parameters = BTreeMap::from([
+        ("id".into(), Value::Int(0)),
+        ("score".into(), Value::Int(77)),
+    ]);
+    read.query_with_params(query, &parameters).unwrap();
+    assert_eq!(
+        read.explain_query_with_params(query, &parameters)
+            .unwrap()
+            .plan_cache_lookup,
+        PlanCacheLookup::Hit
+    );
+    for options in [
+        QueryStreamOptions {
+            max_rows: Some(0),
+            max_payload_bytes: Some(1024),
+        },
+        QueryStreamOptions {
+            max_rows: Some(1),
+            max_payload_bytes: Some(1),
+        },
+    ] {
+        let error = read
+            .query_with_params_streaming(query, &parameters, options, |_| Ok(()))
+            .unwrap_err();
+        assert!(matches!(error, HawDBError::ReadBudgetExceeded(_)));
+    }
+    let context = hawdb_core::RuntimeTaskContext::default();
+    context.cancellation().cancel();
+    let error = read
+        .query_with_params_streaming_context(
+            query,
+            &parameters,
+            QueryStreamOptions {
+                max_rows: Some(1),
+                max_payload_bytes: Some(1024),
+            },
+            &context,
+            |_| panic!("cancelled requests must deliver no rows"),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("cancelled"), "{error}");
+    assert_eq!(read.plan_cache_stats().entries, 1);
+    assert_eq!(
+        read.query_with_params(query, &parameters).unwrap().rows[0]["score"],
+        Value::Int(77)
+    );
 }

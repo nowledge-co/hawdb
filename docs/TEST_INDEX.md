@@ -34,7 +34,8 @@ at 20/100/512 candidates, owned list expressions and byte-driven eviction. Its t
 observer is enabled only in that one unit test. Replay with `cargo test --locked
 -p hawdb --lib retention_allocation -- --test-threads=1 --nocapture`.
 The same existing root owner covers `simple_case_dispatch` physical cache hits,
-changed parameters, folded guards, lazy errors and zero/tiny budget refusals;
+changed parameters, folded guards, lazy/cached errors, result budgets,
+cancellation and zero/tiny cache-budget refusals;
 `query_observability` checks opaque regex refusal without evicting a hot plan.
 Its vector-procedure pipeline check preserves default-feature cache bypass
 and minimal-feature capability refusal before any cache lookup or bypass.

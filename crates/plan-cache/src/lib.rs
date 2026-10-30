@@ -212,9 +212,14 @@ where
                 .max_entry_bytes
                 .is_some_and(|limit| limit == 0 || entry_bytes.is_none_or(|bytes| bytes > limit))
             || self.max_entries == Some(0)
-            || self
-                .max_bytes
-                .is_some_and(|limit| limit == 0 || heap_charge > limit)
+            || self.max_bytes.is_some_and(|limit| {
+                // Pinned std's smallest nonempty table advertises three
+                // entries. Refuse an entry that cannot fit even that table
+                // before removing an existing key or evicting other plans.
+                Self::table_heap_charge(3)
+                    .and_then(|table| heap_charge.checked_add(table))
+                    .is_none_or(|minimum| minimum > limit)
+            })
         {
             self.rejected_admissions = self.rejected_admissions.saturating_add(1);
             return;
@@ -284,17 +289,20 @@ where
     /// allocation. This excludes allocator rounding,
     /// the fixed cache object and heap owned by callers after cloning a value.
     pub fn charged_bytes(&self) -> Option<usize> {
-        let capacity = self.table_capacity_high_water;
+        self.entry_heap_charge
+            .checked_add(Self::table_heap_charge(self.table_capacity_high_water)?)
+    }
+
+    fn table_heap_charge(capacity: usize) -> Option<usize> {
         if capacity == 0 {
-            return Some(self.entry_heap_charge);
+            return Some(0);
         }
         let buckets = capacity.checked_mul(2)?;
         let bucket = std::mem::size_of::<(K, LfuCacheEntry<V>)>().checked_add(1)?;
-        let table = buckets
+        buckets
             .checked_mul(bucket)?
             .checked_add(32)?
-            .checked_add(std::mem::align_of::<(K, LfuCacheEntry<V>)>())?;
-        self.entry_heap_charge.checked_add(table)
+            .checked_add(std::mem::align_of::<(K, LfuCacheEntry<V>)>())
     }
 
     fn over_entry_limit(&self) -> bool {
@@ -346,6 +354,22 @@ mod tests {
     use super::{LfuCache, PlanCacheBypassReason, PlanCacheLookup};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
+
+    #[test]
+    fn total_limit_refuses_a_replacement_that_cannot_fit_its_table() {
+        let mut cache = LfuCache::with_byte_limits(Some(8), Some(512), Some(512));
+        cache.insert_weighted(1u8, vec![1u8; 64], 64);
+        assert_eq!(cache.stats().entries, 1);
+        let before = cache.charged_bytes();
+        // The payload and inline entry each fit their limits, but the payload
+        // plus even a one-entry table cannot fit the total retention budget.
+        cache.insert_weighted(1u8, vec![2u8; 400], 400);
+        assert_eq!(cache.get(&1), Some(vec![1u8; 64]));
+        assert_eq!(cache.charged_bytes(), before);
+        assert_eq!(cache.stats().admissions, 1);
+        assert_eq!(cache.stats().evictions, 0);
+        assert_eq!(cache.stats().rejected_admissions, 1);
+    }
 
     #[test]
     fn per_entry_limit_refuses_oversize_replacement_without_evicting_hot_entries() {

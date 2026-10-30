@@ -15,6 +15,17 @@ use std::time::Instant;
 
 type Parameters = BTreeMap<String, Value>;
 
+#[cfg(feature = "qualification")]
+fn preparation_delta(before: hawdb::QueryPreparationMetricsSnapshot) -> serde_json::Value {
+    let after = hawdb::query_preparation_metrics();
+    json!({
+        "parse_calls": after.cypher_parse_calls - before.cypher_parse_calls,
+        "parse_nanos": after.cypher_parse_nanos - before.cypher_parse_nanos,
+        "plan_calls": after.cypher_plan_calls - before.cypher_plan_calls,
+        "plan_nanos": after.cypher_plan_nanos - before.cypher_plan_nanos,
+    })
+}
+
 fn fixture(
     candidates: usize,
     space_rows: usize,
@@ -159,15 +170,19 @@ fn main() {
     #[cfg(feature = "qualification")]
     let before_cold = native_profile::snapshot();
     #[cfg(feature = "qualification")]
+    let preparation_before_cold = hawdb::query_preparation_metrics();
+    #[cfg(feature = "qualification")]
     native_profile::reset_window_peak();
     let cold_ns = run(&mut read, &query, &parameters, candidates, body_bytes, 0.0);
     #[cfg(feature = "qualification")]
     let cold_memory = {
         let after = native_profile::snapshot();
+        let peak = native_profile::window_peak();
         json!({"allocated_bytes": after.allocated_bytes - before_cold.allocated_bytes,
             "allocation_calls": after.allocation_calls - before_cold.allocation_calls,
             "live_delta": after.live_requested_bytes as i128 - before_cold.live_requested_bytes as i128,
-            "peak_above_start": native_profile::window_peak().saturating_sub(before_cold.live_requested_bytes)})
+            "peak_above_start": peak.saturating_sub(before_cold.live_requested_bytes),
+            "preparation": preparation_delta(preparation_before_cold)})
     };
     #[cfg(not(feature = "qualification"))]
     let cold_memory = serde_json::Value::Null;
@@ -184,8 +199,15 @@ fn main() {
         );
     }
     let before_cache = read.plan_cache_stats();
+    // Fresh-handle control retains only the shared logical/catalog state.
+    // Drop the warmup handle so its private physical cache is not measured as
+    // persistent memory of otherwise short-lived forks.
+    let mut read = (!fork).then_some(read);
+    let mut fork_stats = (0u64, 0u64, 0u64, 0usize);
     #[cfg(feature = "qualification")]
     let before = native_profile::snapshot();
+    #[cfg(feature = "qualification")]
+    let preparation_before = hawdb::query_preparation_metrics();
     #[cfg(feature = "qualification")]
     native_profile::reset_window_peak();
     let mut samples_ns = Vec::with_capacity(repeats);
@@ -193,17 +215,24 @@ fn main() {
         let changed = -(iteration as f64) / 16.0;
         parameters.insert("score_0_0".into(), Value::Float(changed));
         let elapsed = if fork {
-            run(
-                &mut db.begin_read_transaction().unwrap(),
+            let mut fork_read = db.begin_read_transaction().unwrap();
+            let elapsed = run(
+                &mut fork_read,
                 &query,
                 &parameters,
                 candidates,
                 body_bytes,
                 changed,
-            )
+            );
+            let stats = fork_read.plan_cache_stats();
+            fork_stats.0 += stats.hits;
+            fork_stats.1 += stats.misses;
+            fork_stats.2 += stats.bypasses;
+            fork_stats.3 = fork_stats.3.max(stats.entries);
+            elapsed
         } else {
             run(
-                &mut read,
+                read.as_mut().unwrap(),
                 &query,
                 &parameters,
                 candidates,
@@ -216,14 +245,26 @@ fn main() {
     #[cfg(feature = "qualification")]
     let allocations = {
         let after = native_profile::snapshot();
+        let peak = native_profile::window_peak();
         json!({"allocated_bytes": after.allocated_bytes - before.allocated_bytes,
             "allocation_calls": after.allocation_calls - before.allocation_calls,
             "live_delta": after.live_requested_bytes as i128 - before.live_requested_bytes as i128,
-            "peak_above_start": native_profile::window_peak().saturating_sub(before.live_requested_bytes)})
+            "peak_above_start": peak.saturating_sub(before.live_requested_bytes),
+            "preparation": preparation_delta(preparation_before)})
     };
     #[cfg(not(feature = "qualification"))]
     let allocations = serde_json::Value::Null;
-    let after_cache = read.plan_cache_stats();
+    let (hits, misses, bypasses, entries) = if let Some(read) = &read {
+        let after_cache = read.plan_cache_stats();
+        (
+            after_cache.hits - before_cache.hits,
+            after_cache.misses - before_cache.misses,
+            after_cache.bypasses - before_cache.bypasses,
+            after_cache.entries,
+        )
+    } else {
+        fork_stats
+    };
     let mut sorted = samples_ns.clone();
     sorted.sort_unstable();
     println!(
@@ -234,9 +275,9 @@ fn main() {
         "instrumented": cfg!(feature = "qualification"), "cold_ns": cold_ns,
         "samples_ns": samples_ns, "median_ns": sorted[sorted.len()/2],
         "p95_ns": sorted[(sorted.len()*95).div_ceil(100)-1],
-        "cache_hits": after_cache.hits-before_cache.hits, "cache_misses": after_cache.misses-before_cache.misses,
-        "cache_bypasses": after_cache.bypasses-before_cache.bypasses,
-        "cache_entries": after_cache.entries, "cold_memory": cold_memory, "warm_memory": allocations,
+        "cache_hits": hits, "cache_misses": misses, "cache_bypasses": bypasses,
+        "cache_entries": entries, "cache_scope": if fork { "sum of fresh-handle lookups; maximum per-handle entries before drop" } else { "reused handle; final entries" },
+        "cold_memory": cold_memory, "warm_memory": allocations,
         "parity": "every id, body and all five f64 score bits asserted for every request"})
     );
 }
