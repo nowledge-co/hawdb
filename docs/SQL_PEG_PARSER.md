@@ -4,7 +4,9 @@
 SELECT and EXPLAIN SELECT execution paths, including prepared statements and
 plan-template cache misses. No feature, environment variable or host opt-in is
 required. The syntax-only CREATE PROPERTY GRAPH and GRAPH_TABLE entry points
-also use PEG. Cypher retains its existing parser.
+also use PEG. Branch lifecycle and paged SHOW commands use PEG as well.
+Cypher uses the same engine with its own token grammar and
+currently retains native clause terminals.
 
 Parser routing is explicit by statement family:
 
@@ -13,7 +15,7 @@ Parser routing is explicit by statement family:
 | SELECT, EXPLAIN [ANALYZE] SELECT | Owned token PEG, then relational IR lowering |
 | CREATE PROPERTY GRAPH, GRAPH_TABLE syntax APIs | Owned token PEG; existing catalog/binder/execution admission still applies |
 | Relational DDL/DML and materialized-view statements | Upstream `sqlparser` and existing lowering |
-| Branch commands | Existing branch token parser |
+| Branch commands | Bounded SQL token PEG and branch AST transformation |
 
 This is a SELECT-family promotion under [#1328](https://github.com/nowledge-co/hawdb/issues/1328),
 not completion of every SQL statement family's migration. A PEG syntax,
@@ -49,12 +51,14 @@ SQL parse error.
 A negative keyword guard prevents a broken GRAPH_TABLE prefix from becoming
 an ordinary relation.
 
-`src/peg.rs` builds a compact tree of named captures and native terminal values.
-`src/parser/frontend/transform.rs` consumes only the selected tree to produce
-the existing syntax AST. Native terminals in `frontend/native.rs` retain
-bounded Pratt expressions, graph paths, property-graph element definitions,
-and lexical alias rules. They do not mutate catalog or execution state.
-There is no whole-statement handwritten parser behind a PEG acceptance check.
+`src/peg.rs` builds a compact tree of named captures. SQL/PGQ matching has no
+native callbacks: precedence levels, function arguments, graph paths,
+property-graph definitions, aliases and clauses are PEG rules.
+`src/parser/expression.rs` folds matched expression captures;
+`src/parser/frontend/transform.rs` transforms only the selected tree into the
+existing syntax AST. The former recursive expression and graph parsers have
+been removed. Transformation does not select grammar alternatives or mutate
+catalog/execution state.
 
 The relational entry adds constant SELECT, implicit projection aliases, the
 upstream-compatible explicit table-alias policy, empty projections, read-only
@@ -70,7 +74,7 @@ This preserves position-sensitive semantic restrictions and the shared
 relational expression IR. Byte locations become character-based line/column
 locations using line starts and sparse UTF-8 checkpoints, avoiding repeated
 whole-line scans for wide statements. SQL statement, expression and table
-function parsing is bounded by the existing lexer/native/PEG limits.
+function parsing is bounded by the lexer and PEG limits.
 
 Grammar compilation rejects duplicate or unresolved names, direct/indirect
 left recursion (including through nullable prefixes/lookahead), and nullable
@@ -80,6 +84,16 @@ wins. A later sequence failure does not revisit an earlier successful choice.
 The AST transformer and grammar form one internal contract and change together.
 
 ## Resources and diagnostics
+
+The matcher runs continuations on an explicit work stack rather than the host
+thread stack. This permits a graph pattern at its 128-level limit to contain an
+expression at its independent 128-level limit without overflowing a Rust thread.
+Admission still bounds internal expression frames, work, captures and memo
+entries. Two language-depth domains carry subtree heights in memoized captures;
+reusing a capture in a deeper context cannot bypass either limit. Depth refusal
+retains its expression or graph error code. Grammar prefixes must match before
+entering guarded content, so a rejected alternative does not consume language
+nesting admission.
 
 A parser invocation owns its memo table and capture arena. Successful and
 failed named rules are cached by rule ID and token position; successful hits
@@ -151,3 +165,15 @@ Further statement-family promotion still requires positive/negative parity,
 executable lowering, query-result/plan coverage and resource measurements, as
 required by the
 [SQL/PGQ specification](specs/POSTGRES_SQL_PGQ_SPEC.md).
+
+## Frozen migration baseline
+
+The `frontend_peg_baseline_v1.jsonl` SQL fixture records 1,009 public parser
+outcomes from main `0f611b6dec`. The Cypher
+`migration_peg_baseline_v1.jsonl` fixture records statement and pipeline results
+for all 1,427 inventory queries (2,854 records). Each accepted result has the
+SHA-256 of its complete UTF-8 Rust Debug AST, including source spans. Rejections
+record Parse or Semantic. These fixtures supplement semantic equality checks:
+Cypher `AstNode` equality deliberately ignores spans. They must not be refreshed
+from the candidate parser to hide migration differences. The original query
+inventories remain the source of query text and provenance.

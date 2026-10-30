@@ -12,339 +12,574 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Declarative token rules. Ordered alternatives are part of the dialect.
+//! SQL and PGQ token grammars. All syntax decisions precede AST construction.
+use super::super::expression;
+use crate::peg::{Expression as E, Grammar};
+use crate::TokenKind as T;
 
-use super::native::{self, Value};
-use crate::peg::{Expression, Grammar, NativeMatcher};
-use crate::TokenKind;
-
-use Expression::{
-    Ahead, Choice, Keyword as K, Not, Optional, Repeat, Rule as R, Sequence as S, Token,
-};
-
-type Rule = (&'static str, Expression<Value>);
-
-fn optional(expression: Expression<Value>) -> Expression<Value> {
-    Optional(Box::new(expression))
+type Rule = (&'static str, E<()>);
+fn s(items: Vec<E<()>>) -> E<()> {
+    E::Sequence(items)
 }
-fn repeat(expression: Expression<Value>) -> Expression<Value> {
-    Repeat(Box::new(expression))
+fn c(items: Vec<E<()>>) -> E<()> {
+    E::Choice(items)
 }
-fn native(matcher: NativeMatcher<Value>, nullable: bool) -> Expression<Value> {
-    Expression::Native { matcher, nullable }
+fn o(item: E<()>) -> E<()> {
+    E::Optional(Box::new(item))
 }
-fn list(name: &'static str) -> Expression<Value> {
-    S(vec![
-        R(name),
-        repeat(S(vec![Token(TokenKind::Comma, ","), R(name)])),
+fn many(item: E<()>) -> E<()> {
+    E::Repeat(Box::new(item))
+}
+fn r(name: &'static str) -> E<()> {
+    E::Rule(name)
+}
+fn k(name: &'static str) -> E<()> {
+    E::Keyword(name)
+}
+fn t(kind: T) -> E<()> {
+    E::Token(kind, "a SQL/PGQ token")
+}
+fn not(item: E<()>, expected: &'static str) -> E<()> {
+    E::Not(Box::new(item), expected)
+}
+fn list(name: &'static str) -> E<()> {
+    s(vec![r(name), many(s(vec![t(T::Comma), r(name)]))])
+}
+fn complete(name: &'static str) -> E<()> {
+    s(vec![
+        r(name),
+        o(t(T::Semicolon)),
+        E::Token(
+            T::End,
+            if name == "GraphTable" {
+                "end of GRAPH_TABLE clause"
+            } else {
+                "end of statement"
+            },
+        ),
     ])
 }
-fn complete(name: &'static str, expected: &'static str) -> Expression<Value> {
-    S(vec![
-        R(name),
-        optional(Token(TokenKind::Semicolon, ";")),
-        Token(TokenKind::End, expected),
-    ])
+fn keywords(names: &[&'static str]) -> E<()> {
+    c(names.iter().copied().map(k).collect())
 }
 
-pub(super) fn build() -> Result<Grammar<Value>, String> {
-    let mut rules = vec![
-        ("SqlInput", complete("Statement", "end of statement")),
-        ("SelectInput", complete("Select", "end of SELECT")),
-        (
-            "RelationalSelect",
-            S(vec![
-                K("SELECT"),
-                optional(R("Quantifier")),
-                R("RelationalProjection"),
-                optional(S(vec![K("FROM"), R("RelationalFrom")])),
-                optional(R("Where")),
-                optional(R("Group")),
-                optional(R("Having")),
-                optional(R("Order")),
-                optional(Choice(vec![
-                    S(vec![R("RelationalLimit"), optional(R("RelationalOffset"))]),
-                    S(vec![R("RelationalOffset"), optional(R("RelationalLimit"))]),
-                ])),
-                optional(R("RelationalLocking")),
-            ]),
-        ),
-        (
-            "RelationalProjection",
-            native(native::relational_projection, true),
-        ),
-        (
-            "RelationalStatementInput",
-            complete("RelationalStatement", "end of statement"),
-        ),
+pub(super) fn build() -> Result<Grammar<()>, String> {
+    let mut rules: Vec<Rule> = vec![
+        ("SqlInput", complete("Statement")),
+        ("SelectInput", complete("Select")),
+        ("RelationalStatementInput", complete("RelationalStatement")),
+        ("PgqInput", complete("CreatePropertyGraph")),
+        ("GraphTableInput", complete("GraphTable")),
+        ("Statement", c(vec![r("CreatePropertyGraph"), r("Select")])),
         (
             "RelationalStatement",
-            Choice(vec![R("RelationalSelect"), R("RelationalExplain")]),
+            c(vec![r("RelationalSelect"), r("RelationalExplain")]),
         ),
         (
             "RelationalExplain",
-            S(vec![
-                K("EXPLAIN"),
-                optional(R("Analyze")),
-                R("RelationalSelect"),
-            ]),
+            s(vec![k("EXPLAIN"), o(r("Analyze")), r("RelationalSelect")]),
         ),
-        ("Analyze", K("ANALYZE")),
-        ("Statement", Choice(vec![R("Select")])),
+        ("Analyze", k("ANALYZE")),
         (
             "Select",
-            S(vec![
-                K("SELECT"),
-                optional(R("Quantifier")),
-                R("Projection"),
-                K("FROM"),
-                R("From"),
-                optional(R("Where")),
-                optional(R("Group")),
-                optional(R("Having")),
-                optional(R("Order")),
-                optional(R("Limit")),
-                optional(R("Offset")),
-                optional(R("Locking")),
+            s(vec![
+                k("SELECT"),
+                o(r("Quantifier")),
+                r("Projection"),
+                k("FROM"),
+                r("From"),
+                o(r("Where")),
+                o(r("Group")),
+                o(r("Having")),
+                o(r("Order")),
+                o(r("Limit")),
+                o(r("Offset")),
+                o(r("Locking")),
             ]),
         ),
-        ("Quantifier", Choice(vec![R("Distinct"), K("ALL")])),
+        (
+            "RelationalSelect",
+            s(vec![
+                k("SELECT"),
+                o(r("Quantifier")),
+                r("RelationalProjection"),
+                o(s(vec![k("FROM"), r("RelationalFrom")])),
+                o(r("Where")),
+                o(r("Group")),
+                o(r("Having")),
+                o(r("Order")),
+                o(c(vec![
+                    s(vec![r("RelationalLimit"), o(r("RelationalOffset"))]),
+                    s(vec![r("RelationalOffset"), o(r("RelationalLimit"))]),
+                ])),
+                o(r("RelationalLocking")),
+            ]),
+        ),
+        ("Quantifier", c(vec![r("Distinct"), k("ALL")])),
         (
             "Distinct",
-            S(vec![
-                K("DISTINCT"),
-                Not(Box::new(K("ON")), "a projection after DISTINCT"),
+            s(vec![
+                k("DISTINCT"),
+                not(k("ON"), "a projection after DISTINCT"),
             ]),
         ),
-        ("Projection", native(native::projection, false)),
+        ("Projection", list("Labeled")),
+        ("RelationalProjection", o(list("RelationalLabeled"))),
+        ("Labeled", s(vec![r("Or"), o(r("AsAlias"))])),
+        (
+            "RelationalLabeled",
+            s(vec![
+                not(k("FROM"), "a projection"),
+                r("Or"),
+                o(c(vec![r("AsAlias"), r("ProjectionAlias")])),
+            ]),
+        ),
+        ("AsAlias", s(vec![k("AS"), r("Identifier")])),
+        (
+            "ProjectionAlias",
+            s(vec![
+                not(r("ProjectionBoundary"), "a projection alias"),
+                r("Identifier"),
+            ]),
+        ),
+        (
+            "ProjectionBoundary",
+            keywords(&[
+                "FROM", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "FOR", "FETCH",
+            ]),
+        ),
         (
             "From",
-            S(vec![
+            s(vec![
                 list("FromSource"),
-                Ahead(
-                    Box::new(Choice(vec![
-                        K("WHERE"),
-                        K("GROUP"),
-                        K("HAVING"),
-                        K("ORDER"),
-                        K("LIMIT"),
-                        K("OFFSET"),
-                        K("FOR"),
-                        K("FETCH"),
-                        Token(TokenKind::Semicolon, ";"),
-                        Token(TokenKind::End, "end"),
-                    ])),
+                E::Ahead(
+                    Box::new(c(vec![r("ProjectionBoundary"), t(T::Semicolon), t(T::End)])),
                     "a join, comma, or supported SELECT clause after FROM item",
                 ),
             ]),
         ),
-        ("FromSource", S(vec![R("FromItem"), repeat(R("Join"))])),
-        ("FromItem", Choice(vec![R("Relation")])),
+        ("RelationalFrom", list("RelationalFromSource")),
+        ("FromSource", s(vec![r("FromItem"), many(r("Join"))])),
+        (
+            "RelationalFromSource",
+            s(vec![r("RelationalFromItem"), many(r("RelationalJoin"))]),
+        ),
+        ("FromItem", c(vec![r("GraphTable"), r("Relation")])),
+        ("RelationalFromItem", r("RelationalRelation")),
         (
             "Relation",
-            S(vec![
-                Not(Box::new(K("GRAPH_TABLE")), "a relation name"),
-                native(native::relation, false),
+            s(vec![
+                not(
+                    c(vec![k("GRAPH_TABLE"), r("ProjectionBoundary")]),
+                    "a relation name",
+                ),
+                r("Name"),
+                o(r("Alias")),
+            ]),
+        ),
+        (
+            "RelationalRelation",
+            s(vec![
+                not(
+                    c(vec![k("GRAPH_TABLE"), r("ProjectionBoundary")]),
+                    "a relation name",
+                ),
+                r("Name"),
+                o(r("TableArguments")),
+                o(c(vec![r("RelationalAsAlias"), r("Alias")])),
+            ]),
+        ),
+        (
+            "TableArguments",
+            s(vec![
+                t(T::LeftParen),
+                o(list("TableArgument")),
+                t(T::RightParen),
+            ]),
+        ),
+        ("TableArgument", s(vec![o(r("ArgumentName")), r("Or")])),
+        (
+            "ArgumentName",
+            s(vec![r("Identifier"), t(T::Equal), t(T::Greater)]),
+        ),
+        (
+            "Alias",
+            s(vec![
+                o(k("AS")),
+                not(r("AliasBoundary"), "a table alias"),
+                r("Identifier"),
+                o(r("Identifiers")),
+            ]),
+        ),
+        // Relational AS aliases historically admit keywords; bare aliases do not.
+        (
+            "RelationalAsAlias",
+            s(vec![k("AS"), r("Identifier"), o(r("Identifiers"))]),
+        ),
+        (
+            "AliasBoundary",
+            keywords(&[
+                "WHERE",
+                "GROUP",
+                "HAVING",
+                "ORDER",
+                "LIMIT",
+                "OFFSET",
+                "FETCH",
+                "FOR",
+                "JOIN",
+                "INNER",
+                "LEFT",
+                "RIGHT",
+                "FULL",
+                "CROSS",
+                "ON",
+                "USING",
+                "NATURAL",
+                "UNION",
+                "EXCEPT",
+                "INTERSECT",
+                "LATERAL",
+                "TABLESAMPLE",
+                "WINDOW",
             ]),
         ),
         (
             "Join",
-            Choice(vec![R("InnerJoin"), R("LeftJoin"), R("CrossJoin")]),
+            c(vec![r("InnerJoin"), r("LeftJoin"), r("CrossJoin")]),
+        ),
+        (
+            "RelationalJoin",
+            c(vec![
+                r("RelationalInnerJoin"),
+                r("RelationalLeftJoin"),
+                r("RelationalCrossJoin"),
+            ]),
         ),
         (
             "InnerJoin",
-            S(vec![
-                optional(K("INNER")),
-                K("JOIN"),
-                R("FromItem"),
-                K("ON"),
-                R("JoinExpression"),
+            s(vec![
+                o(k("INNER")),
+                k("JOIN"),
+                r("FromItem"),
+                k("ON"),
+                r("Or"),
             ]),
         ),
         (
             "LeftJoin",
-            S(vec![
-                K("LEFT"),
-                optional(K("OUTER")),
-                K("JOIN"),
-                R("FromItem"),
-                K("ON"),
-                R("JoinExpression"),
+            s(vec![
+                k("LEFT"),
+                o(k("OUTER")),
+                k("JOIN"),
+                r("FromItem"),
+                k("ON"),
+                r("Or"),
             ]),
         ),
-        ("CrossJoin", S(vec![K("CROSS"), K("JOIN"), R("FromItem")])),
-        ("JoinExpression", native(native::join_expression, false)),
-        ("Where", S(vec![K("WHERE"), R("ClauseExpression")])),
-        ("Group", S(vec![K("GROUP"), K("BY"), R("GroupExpressions")])),
-        ("Having", S(vec![K("HAVING"), R("ClauseExpression")])),
-        ("Order", S(vec![K("ORDER"), K("BY"), R("OrderItems")])),
-        (
-            "RelationalLimit",
-            S(vec![
-                K("LIMIT"),
-                Choice(vec![R("LimitAll"), R("ClauseExpression")]),
-            ]),
-        ),
-        ("LimitAll", K("ALL")),
-        (
-            "RelationalOffset",
-            S(vec![
-                K("OFFSET"),
-                R("OffsetExpression"),
-                optional(Choice(vec![K("ROW"), K("ROWS")])),
-            ]),
-        ),
-        ("OffsetExpression", native(native::offset_expression, false)),
-        ("Limit", S(vec![K("LIMIT"), R("ClauseExpression")])),
-        ("Offset", S(vec![K("OFFSET"), R("ClauseExpression")])),
-        (
-            "Locking",
-            S(vec![K("FOR"), Choice(vec![R("Share"), R("Update")])]),
-        ),
-        (
-            "RelationalLocking",
-            S(vec![
-                K("FOR"),
-                Choice(vec![R("Share"), R("Update")]),
-                optional(R("Nonblocking")),
-            ]),
-        ),
-        (
-            "Nonblocking",
-            Choice(vec![K("NOWAIT"), S(vec![K("SKIP"), K("LOCKED")])]),
-        ),
-        ("Share", K("SHARE")),
-        ("Update", K("UPDATE")),
-        ("ClauseExpression", native(native::clause_expression, false)),
-        ("GroupExpressions", native(native::group_expressions, false)),
-        ("OrderItems", native(native::order_items, false)),
-        ("Name", native(native::name, false)),
-        ("Alias", native(native::alias, true)),
-    ];
-    rules.extend([
-        ("RelationalFrom", list("RelationalFromSource")),
-        (
-            "RelationalFromSource",
-            S(vec![R("RelationalFromItem"), repeat(R("RelationalJoin"))]),
-        ),
-        ("RelationalFromItem", R("RelationalRelation")),
-        (
-            "RelationalRelation",
-            S(vec![
-                Not(Box::new(K("GRAPH_TABLE")), "a relation name"),
-                native(native::relational_relation, false),
-            ]),
-        ),
-        (
-            "RelationalJoin",
-            Choice(vec![
-                R("RelationalInnerJoin"),
-                R("RelationalLeftJoin"),
-                R("RelationalCrossJoin"),
-            ]),
-        ),
+        ("CrossJoin", s(vec![k("CROSS"), k("JOIN"), r("FromItem")])),
         (
             "RelationalInnerJoin",
-            S(vec![
-                optional(K("INNER")),
-                K("JOIN"),
-                R("RelationalFromItem"),
-                K("ON"),
-                R("JoinExpression"),
+            s(vec![
+                o(k("INNER")),
+                k("JOIN"),
+                r("RelationalFromItem"),
+                k("ON"),
+                r("Or"),
             ]),
         ),
         (
             "RelationalLeftJoin",
-            S(vec![
-                K("LEFT"),
-                optional(K("OUTER")),
-                K("JOIN"),
-                R("RelationalFromItem"),
-                K("ON"),
-                R("JoinExpression"),
+            s(vec![
+                k("LEFT"),
+                o(k("OUTER")),
+                k("JOIN"),
+                r("RelationalFromItem"),
+                k("ON"),
+                r("Or"),
             ]),
         ),
         (
             "RelationalCrossJoin",
-            S(vec![K("CROSS"), K("JOIN"), R("RelationalFromItem")]),
+            s(vec![k("CROSS"), k("JOIN"), r("RelationalFromItem")]),
         ),
-    ]);
-    add_pgq(&mut rules)?;
-    Grammar::compile(rules)
-}
-
-fn prepend_choice(rules: &mut [Rule], rule: &str, alternative: &'static str) -> Result<(), String> {
-    let Some((_, Choice(choices))) = rules.iter_mut().find(|(name, _)| *name == rule) else {
-        return Err(format!("PEG extension requires a choice rule: {rule}"));
-    };
-    choices.insert(0, R(alternative));
-    Ok(())
-}
-
-fn add_pgq(rules: &mut Vec<Rule>) -> Result<(), String> {
-    rules.extend([
+        ("Where", s(vec![k("WHERE"), r("Or")])),
+        ("Having", s(vec![k("HAVING"), r("Or")])),
+        ("Group", s(vec![k("GROUP"), k("BY"), list("Or")])),
+        ("Order", s(vec![k("ORDER"), k("BY"), list("OrderItem")])),
         (
-            "PgqInput",
-            complete("CreatePropertyGraph", "end of statement"),
+            "OrderItem",
+            s(vec![
+                r("Or"),
+                o(c(vec![r("Ascending"), r("Descending")])),
+                o(r("NullOrder")),
+            ]),
+        ),
+        ("Ascending", k("ASC")),
+        ("Descending", k("DESC")),
+        (
+            "NullOrder",
+            s(vec![k("NULLS"), c(vec![r("First"), r("Last")])]),
+        ),
+        ("First", k("FIRST")),
+        ("Last", k("LAST")),
+        ("Limit", s(vec![k("LIMIT"), r("Or")])),
+        ("Offset", s(vec![k("OFFSET"), r("Or")])),
+        (
+            "RelationalLimit",
+            s(vec![k("LIMIT"), c(vec![r("LimitAll"), r("Or")])]),
+        ),
+        ("LimitAll", k("ALL")),
+        (
+            "RelationalOffset",
+            s(vec![k("OFFSET"), r("Or"), o(keywords(&["ROW", "ROWS"]))]),
         ),
         (
-            "GraphTableInput",
-            complete("GraphTable", "end of GRAPH_TABLE clause"),
+            "Locking",
+            s(vec![k("FOR"), c(vec![r("Share"), r("Update")])]),
+        ),
+        (
+            "RelationalLocking",
+            s(vec![r("Locking"), o(r("Nonblocking"))]),
+        ),
+        ("Share", k("SHARE")),
+        ("Update", k("UPDATE")),
+        (
+            "Nonblocking",
+            c(vec![k("NOWAIT"), s(vec![k("SKIP"), k("LOCKED")])]),
         ),
         (
             "GraphTable",
-            S(vec![
-                K("GRAPH_TABLE"),
-                Token(TokenKind::LeftParen, "("),
-                R("Name"),
-                K("MATCH"),
-                R("Pattern"),
-                K("COLUMNS"),
-                Token(TokenKind::LeftParen, "("),
-                R("Columns"),
-                Token(TokenKind::RightParen, ")"),
-                Token(TokenKind::RightParen, ")"),
-                R("Alias"),
+            s(vec![
+                k("GRAPH_TABLE"),
+                t(T::LeftParen),
+                r("Name"),
+                k("MATCH"),
+                r("Pattern"),
+                k("COLUMNS"),
+                t(T::LeftParen),
+                list("Labeled"),
+                t(T::RightParen),
+                t(T::RightParen),
+                o(r("Alias")),
             ]),
         ),
-        ("Pattern", native(native::pattern, false)),
-        ("Columns", native(native::columns, false)),
+        ("Pattern", s(vec![list("Path"), o(r("Where"))])),
+        ("Path", s(vec![r("Factor"), many(r("Factor"))])),
+        ("Factor", s(vec![r("Primary"), o(r("GraphQuantifier"))])),
+        ("Primary", c(vec![r("NestedPath"), r("Vertex"), r("Edge")])),
+        (
+            "NestedPath",
+            s(vec![
+                t(T::LeftParen),
+                E::Ahead(
+                    Box::new(c(vec![
+                        t(T::LeftParen),
+                        t(T::ArrowLeft),
+                        t(T::ArrowRight),
+                        t(T::Less),
+                        t(T::Minus),
+                    ])),
+                    "a nested graph path",
+                ),
+                r("NestedContents"),
+                t(T::RightParen),
+            ]),
+        ),
+        ("NestedContents", s(vec![r("Path"), o(r("Where"))])),
+        (
+            "Vertex",
+            s(vec![t(T::LeftParen), r("Fields"), t(T::RightParen)]),
+        ),
+        (
+            "Fields",
+            s(vec![o(r("Variable")), o(r("Labels")), o(r("Where"))]),
+        ),
+        (
+            "Variable",
+            s(vec![
+                not(keywords(&["IS", "WHERE"]), "a graph variable"),
+                r("Identifier"),
+            ]),
+        ),
+        (
+            "Labels",
+            s(vec![
+                k("IS"),
+                r("Identifier"),
+                many(s(vec![t(T::Pipe), r("Identifier")])),
+            ]),
+        ),
+        ("Edge", c(vec![r("LeftEdge"), r("RightOrAnyEdge")])),
+        (
+            "LeftEdge",
+            s(vec![
+                c(vec![t(T::ArrowLeft), s(vec![t(T::Less), t(T::Minus)])]),
+                o(s(vec![r("EdgeFields"), t(T::Minus)])),
+            ]),
+        ),
+        (
+            "RightOrAnyEdge",
+            c(vec![
+                t(T::ArrowRight),
+                s(vec![
+                    t(T::Minus),
+                    c(vec![
+                        s(vec![r("EdgeFields"), r("EdgeEnd")]),
+                        o(t(T::Greater)),
+                    ]),
+                ]),
+            ]),
+        ),
+        (
+            "EdgeFields",
+            s(vec![t(T::LeftBracket), r("Fields"), t(T::RightBracket)]),
+        ),
+        ("EdgeEnd", c(vec![r("RightEnd"), t(T::Minus)])),
+        (
+            "RightEnd",
+            c(vec![t(T::ArrowRight), s(vec![t(T::Minus), t(T::Greater)])]),
+        ),
+        (
+            "GraphQuantifier",
+            s(vec![
+                t(T::LeftBrace),
+                c(vec![
+                    s(vec![t(T::Comma), r("Number")]),
+                    s(vec![r("Number"), o(s(vec![t(T::Comma), r("Number")]))]),
+                ]),
+                t(T::RightBrace),
+            ]),
+        ),
         (
             "CreatePropertyGraph",
-            S(vec![
-                K("CREATE"),
-                optional(R("Temporary")),
-                K("PROPERTY"),
-                K("GRAPH"),
-                R("Name"),
-                optional(R("Vertices")),
-                optional(R("Edges")),
+            s(vec![
+                k("CREATE"),
+                o(r("Temporary")),
+                k("PROPERTY"),
+                k("GRAPH"),
+                r("Name"),
+                o(r("Vertices")),
+                o(r("Edges")),
             ]),
         ),
-        ("Temporary", Choice(vec![K("TEMP"), K("TEMPORARY")])),
+        ("Temporary", keywords(&["TEMP", "TEMPORARY"])),
         (
             "Vertices",
-            S(vec![
-                Choice(vec![K("VERTEX"), K("NODE")]),
-                K("TABLES"),
-                Token(TokenKind::LeftParen, "("),
-                R("VertexDefinitions"),
-                Token(TokenKind::RightParen, ")"),
+            s(vec![
+                keywords(&["VERTEX", "NODE"]),
+                k("TABLES"),
+                t(T::LeftParen),
+                list("VertexDefinition"),
+                t(T::RightParen),
             ]),
         ),
         (
             "Edges",
-            S(vec![
-                Choice(vec![K("EDGE"), K("RELATIONSHIP")]),
-                K("TABLES"),
-                Token(TokenKind::LeftParen, "("),
-                R("EdgeDefinitions"),
-                Token(TokenKind::RightParen, ")"),
+            s(vec![
+                keywords(&["EDGE", "RELATIONSHIP"]),
+                k("TABLES"),
+                t(T::LeftParen),
+                list("EdgeDefinition"),
+                t(T::RightParen),
             ]),
         ),
-        ("VertexDefinitions", native(native::vertices, false)),
-        ("EdgeDefinitions", native(native::edges, false)),
-    ]);
-    prepend_choice(rules, "Statement", "CreatePropertyGraph")?;
-    prepend_choice(rules, "FromItem", "GraphTable")
+        (
+            "VertexDefinition",
+            s(vec![
+                r("Name"),
+                o(r("AsAlias")),
+                o(r("Key")),
+                o(r("Exposure")),
+            ]),
+        ),
+        (
+            "EdgeDefinition",
+            s(vec![
+                r("Name"),
+                o(r("AsAlias")),
+                o(r("Key")),
+                k("SOURCE"),
+                r("Endpoint"),
+                k("DESTINATION"),
+                r("Endpoint"),
+                o(r("Exposure")),
+            ]),
+        ),
+        ("Key", s(vec![k("KEY"), r("Identifiers")])),
+        (
+            "Identifiers",
+            s(vec![t(T::LeftParen), list("Identifier"), t(T::RightParen)]),
+        ),
+        (
+            "Endpoint",
+            c(vec![
+                s(vec![
+                    r("Key"),
+                    k("REFERENCES"),
+                    r("Identifier"),
+                    r("Identifiers"),
+                ]),
+                r("Identifier"),
+            ]),
+        ),
+        (
+            "Exposure",
+            c(vec![
+                r("Properties"),
+                s(vec![r("LabelExposure"), many(r("LabelExposure"))]),
+            ]),
+        ),
+        (
+            "LabelExposure",
+            s(vec![
+                c(vec![r("NamedLabel"), r("DefaultLabel")]),
+                o(r("Properties")),
+            ]),
+        ),
+        ("NamedLabel", s(vec![k("LABEL"), r("Identifier")])),
+        ("DefaultLabel", s(vec![k("DEFAULT"), k("LABEL")])),
+        (
+            "Properties",
+            c(vec![
+                r("NoProperties"),
+                r("AllProperties"),
+                r("PropertyExpressions"),
+            ]),
+        ),
+        ("NoProperties", s(vec![k("NO"), k("PROPERTIES")])),
+        (
+            "AllProperties",
+            s(vec![k("PROPERTIES"), k("ALL"), k("COLUMNS")]),
+        ),
+        (
+            "PropertyExpressions",
+            s(vec![
+                k("PROPERTIES"),
+                t(T::LeftParen),
+                list("Labeled"),
+                t(T::RightParen),
+            ]),
+        ),
+    ];
+    rules.extend(
+        expression::rules()
+            .into_iter()
+            .filter(|(name, _)| !matches!(*name, "Input" | "Distinct")),
+    );
+    Grammar::compile_with_nesting(
+        rules,
+        &[
+            (
+                expression::NESTING_RULES,
+                super::super::MAX_EXPRESSION_NESTING,
+                crate::SyntaxErrorCode::ExpressionNestingLimitExceeded,
+            ),
+            (
+                &["NestedContents"],
+                super::super::MAX_GRAPH_PATTERN_NESTING,
+                crate::SyntaxErrorCode::GraphPatternNestingLimitExceeded,
+            ),
+        ],
+    )
 }

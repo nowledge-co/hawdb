@@ -140,6 +140,7 @@ impl<T> Expression<T> {
         names: &HashMap<&'static str, usize>,
     ) -> Result<Expression<T, usize>, String> {
         Ok(match self {
+            Self::Parameter => Expression::Parameter,
             Self::Keyword(keyword) => Expression::Keyword(keyword),
             Self::Token(kind, expected) => Expression::Token(kind, expected),
             Self::Rule(name) => Expression::Rule(

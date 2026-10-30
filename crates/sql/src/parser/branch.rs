@@ -17,308 +17,257 @@ use crate::{
     DropBranchStatement, ShowBranchStatement, ShowBranchesStatement, SqlBound, SqlStatement,
 };
 use hawdb_core::{HawDBError, Result};
-use sqlparser::{
-    dialect::PostgreSqlDialect,
-    tokenizer::{Token, Tokenizer, Whitespace},
-};
+use hawdb_sql_syntax::{self as syntax, Token, TokenKind as T};
+use std::sync::OnceLock;
+use syntax::peg::{Expression as E, Grammar, Limits, NodeId, ParseTree};
 
-/// Parses the branch-only SQL surface before the relational PostgreSQL parser.
-/// `sqlparser` intentionally has no dialect extension point for these project
-/// commands, so this consumes its token stream and produces the same public
-/// HawDB SQL AST used by normal statement dispatch.
+/// Project branch commands share the bounded SQL lexer and PEG matcher.
 pub(super) fn parse_branch_statement(input: &str) -> Result<Option<SqlStatement>> {
-    if !is_branch_command_candidate(input) {
+    let first = syntax::first_token(input).map_err(parse_error)?;
+    if !["SHOW", "USE", "CREATE", "DROP"]
+        .iter()
+        .any(|word| first.is_keyword(input, word))
+    {
         return Ok(None);
     }
-    let dialect = PostgreSqlDialect {};
-    let tokens = Tokenizer::new(&dialect, input)
-        .tokenize()
-        .map_err(|error| HawDBError::Parse(format!("failed to tokenize PostgreSQL SQL: {error}")))?
-        .into_iter()
-        .filter(|token| {
-            !matches!(
-                token,
-                Token::Whitespace(
-                    Whitespace::Space
-                        | Whitespace::Newline
-                        | Whitespace::Tab
-                        | Whitespace::SingleLineComment { .. }
-                        | Whitespace::MultiLineComment(_)
-                )
-            )
-        })
-        .collect::<Vec<_>>();
-    let Some(first) = tokens.first() else {
-        return Ok(None);
-    };
-    if !matches_keyword(first, &["SHOW", "USE", "CREATE", "DROP"]) {
+    let suffix = &input[first.span.end..];
+    let second = syntax::first_token(suffix).map_err(parse_error)?;
+    if !["BRANCHES", "BRANCH", "CURRENT"]
+        .iter()
+        .any(|word| second.is_keyword(suffix, word))
+    {
         return Ok(None);
     }
-    let Some(second) = tokens.get(1) else {
-        return Ok(None);
-    };
-    if !matches_keyword(second, &["BRANCHES", "BRANCH", "CURRENT"]) {
-        return Ok(None);
-    }
-
-    let mut parser = BranchParser {
+    let tokens = syntax::tokenize(input).map_err(parse_error)?;
+    let tree = grammar()
+        .parse(input, &tokens, "BranchInput", Limits::default())
+        .map_err(parse_error)?;
+    let fold = Fold {
+        input,
         tokens: &tokens,
-        cursor: 0,
+        tree: &tree,
     };
-    let statement = if parser.consume_keyword("USE") {
-        parser.expect_keyword("BRANCH")?;
-        BranchSqlStatement::UseBranch(parser.parse_selection_selector()?)
-    } else if parser.consume_keyword("CREATE") {
-        parser.expect_keyword("BRANCH")?;
-        let name = if parser.consume_keyword("FROM") {
-            None
-        } else {
-            let name = if parser.consume_keyword("NAME") {
-                parser.parse_selector_value()?
-            } else {
-                parser.parse_name_identifier()?
-            };
-            parser.expect_keyword("FROM")?;
-            Some(name)
-        };
-        let source = parser.parse_selection_selector()?;
-        parser.expect_keyword("AT")?;
-        parser.expect_keyword("REVISION")?;
-        let expected_source_revision = parser.parse_bound()?;
-        parser.expect_keyword("REQUEST")?;
-        parser.expect_keyword("KEY")?;
-        let request_key = parser.parse_selector_value()?;
-        let owner = if parser.consume_keyword("OWNER") {
-            Some(parser.parse_selector_value()?)
-        } else {
-            None
-        };
-        BranchSqlStatement::CreateBranch(CreateBranchStatement {
-            name,
-            source,
-            expected_source_revision,
-            request_key,
-            owner,
-        })
-    } else if parser.consume_keyword("DROP") {
-        parser.expect_keyword("BRANCH")?;
-        parser.expect_keyword("ID")?;
-        let id = parser.parse_selector_value()?;
-        parser.expect_keyword("AT")?;
-        parser.expect_keyword("REVISION")?;
-        BranchSqlStatement::DropBranch(DropBranchStatement {
-            id,
-            expected_metadata_revision: parser.parse_bound()?,
-        })
-    } else {
-        parser.expect_keyword("SHOW")?;
-        if parser.consume_keyword("BRANCHES") {
-            let (limit, offset) = parser.parse_page_bounds()?;
-            BranchSqlStatement::ShowBranches(ShowBranchesStatement { limit, offset })
-        } else if parser.consume_keyword("BRANCH") {
-            BranchSqlStatement::ShowBranch(ShowBranchStatement {
-                selector: parser.parse_selector()?,
-            })
-        } else if parser.consume_keyword("CURRENT") {
-            parser.expect_keyword("BRANCH")?;
-            BranchSqlStatement::ShowCurrentBranch
-        } else {
-            return Err(HawDBError::Parse(
-                "SHOW supports only BRANCHES or BRANCH in the current branch SQL surface"
-                    .to_string(),
-            ));
-        }
-    };
-    parser.expect_end()?;
+    let statement = fold.statement(tree.children(tree.root)[0])?;
     Ok(Some(SqlStatement::Branch(statement)))
 }
-
-struct BranchParser<'a> {
+fn parse_error(error: syntax::SyntaxError) -> HawDBError {
+    if error.code == syntax::SyntaxErrorCode::InvalidParameter {
+        HawDBError::Semantic("PostgreSQL parameters must use one-based $n syntax".into())
+    } else {
+        HawDBError::Parse(error.to_string())
+    }
+}
+fn s(items: Vec<E<()>>) -> E<()> {
+    E::Sequence(items)
+}
+fn c(items: Vec<E<()>>) -> E<()> {
+    E::Choice(items)
+}
+fn o(item: E<()>) -> E<()> {
+    E::Optional(Box::new(item))
+}
+fn r(name: &'static str) -> E<()> {
+    E::Rule(name)
+}
+fn k(name: &'static str) -> E<()> {
+    E::Keyword(name)
+}
+fn t(kind: T) -> E<()> {
+    E::Token(kind, "a branch SQL token")
+}
+fn grammar() -> &'static Grammar<()> {
+    static GRAMMAR: OnceLock<Grammar<()>> = OnceLock::new();
+    GRAMMAR.get_or_init(|| {
+        Grammar::compile(vec![
+            (
+                "BranchInput",
+                s(vec![r("Statement"), o(t(T::Semicolon)), t(T::End)]),
+            ),
+            (
+                "Statement",
+                c(vec![
+                    r("Use"),
+                    r("Create"),
+                    r("Drop"),
+                    r("ShowBranches"),
+                    r("ShowBranch"),
+                    r("ShowCurrent"),
+                ]),
+            ),
+            ("Use", s(vec![k("USE"), k("BRANCH"), r("Selection")])),
+            (
+                "Create",
+                s(vec![
+                    k("CREATE"),
+                    k("BRANCH"),
+                    o(r("NewName")),
+                    k("FROM"),
+                    r("Selection"),
+                    k("AT"),
+                    k("REVISION"),
+                    r("Bound"),
+                    k("REQUEST"),
+                    k("KEY"),
+                    r("Value"),
+                    o(r("Owner")),
+                ]),
+            ),
+            (
+                "NewName",
+                c(vec![
+                    s(vec![k("NAME"), r("Value")]),
+                    s(vec![
+                        E::Not(Box::new(k("FROM")), "a new branch name"),
+                        r("Identifier"),
+                    ]),
+                ]),
+            ),
+            ("Owner", s(vec![k("OWNER"), r("Value")])),
+            (
+                "Drop",
+                s(vec![
+                    k("DROP"),
+                    k("BRANCH"),
+                    k("ID"),
+                    r("Value"),
+                    k("AT"),
+                    k("REVISION"),
+                    r("Bound"),
+                ]),
+            ),
+            (
+                "ShowBranches",
+                s(vec![
+                    k("SHOW"),
+                    k("BRANCHES"),
+                    c(vec![
+                        s(vec![r("Limit"), o(r("Offset"))]),
+                        s(vec![r("Offset"), r("Limit")]),
+                    ]),
+                ]),
+            ),
+            ("Limit", s(vec![k("LIMIT"), r("Bound")])),
+            ("Offset", s(vec![k("OFFSET"), r("Bound")])),
+            ("ShowBranch", s(vec![k("SHOW"), k("BRANCH"), r("Selector")])),
+            ("ShowCurrent", s(vec![k("SHOW"), k("CURRENT"), k("BRANCH")])),
+            ("Selection", c(vec![r("Selector"), r("Identifier")])),
+            ("Selector", c(vec![r("Name"), r("Id")])),
+            ("Name", s(vec![k("NAME"), r("Value")])),
+            ("Id", s(vec![k("ID"), r("Value")])),
+            ("Identifier", c(vec![t(T::Word), t(T::QuotedIdentifier)])),
+            ("Value", c(vec![t(T::String), E::Parameter])),
+            ("Bound", c(vec![t(T::Number), E::Parameter])),
+        ])
+        .expect("valid branch SQL PEG grammar")
+    })
+}
+struct Fold<'a> {
+    input: &'a str,
     tokens: &'a [Token],
-    cursor: usize,
+    tree: &'a ParseTree<()>,
 }
-
-impl BranchParser<'_> {
-    fn parse_selection_selector(&mut self) -> Result<BranchSqlSelector> {
-        if self
-            .tokens
-            .get(self.cursor)
-            .is_some_and(|token| matches_keyword(token, &["NAME", "ID"]))
-        {
-            self.parse_selector()
-        } else {
-            self.parse_name_identifier().map(BranchSqlSelector::Name)
-        }
+impl Fold<'_> {
+    fn child(&self, node: NodeId, name: &str) -> NodeId {
+        self.tree.required(node, name)
     }
-
-    fn parse_name_identifier(&mut self) -> Result<BranchSqlValue> {
-        match self.next() {
-            Some(Token::Word(word)) => Ok(BranchSqlValue::Literal(word.value.clone())),
-            _ => Err(HawDBError::Parse(
-                "branch name requires an identifier or NAME followed by a string value".into(),
-            )),
-        }
+    fn first(&self, node: NodeId) -> NodeId {
+        self.tree.children(node)[0]
     }
-
-    fn parse_page_bounds(&mut self) -> Result<(SqlBound, Option<SqlBound>)> {
-        let mut limit = None;
-        let mut offset = None;
-        while !self.at_end() {
-            if self.consume_keyword("LIMIT") {
-                if limit.replace(self.parse_bound()?).is_some() {
+    fn value(&self, node: NodeId) -> Result<BranchSqlValue> {
+        let token = self.tokens[self.tree.nodes[node].start];
+        match token.kind {
+            T::Parameter(position) => Ok(BranchSqlValue::Parameter(position as usize)),
+            T::String => {
+                let raw = token.text(self.input);
+                if !raw.starts_with('\'') {
                     return Err(HawDBError::Parse(
-                        "SHOW BRANCHES accepts LIMIT only once".to_string(),
+                        "branch selector values must be a string literal or positional parameter"
+                            .into(),
                     ));
                 }
-            } else if self.consume_keyword("OFFSET") {
-                if offset.replace(self.parse_bound()?).is_some() {
-                    return Err(HawDBError::Parse(
-                        "SHOW BRANCHES accepts OFFSET only once".to_string(),
-                    ));
-                }
-            } else {
-                return Err(HawDBError::Parse(
-                    "SHOW BRANCHES expects LIMIT or OFFSET".to_string(),
-                ));
+                Ok(BranchSqlValue::Literal(
+                    raw[1..raw.len() - 1].replace("''", "'"),
+                ))
             }
-        }
-        let limit = limit.ok_or_else(|| {
-            HawDBError::Parse("SHOW BRANCHES requires an explicit LIMIT".to_string())
-        })?;
-        Ok((limit, offset))
-    }
-
-    fn parse_bound(&mut self) -> Result<SqlBound> {
-        match self.next() {
-            Some(Token::Number(value, false)) => value
-                .replace('_', "")
-                .parse::<u64>()
-                .map(SqlBound::Literal)
-                .map_err(|_| {
-                    HawDBError::Parse(format!(
-                        "branch SQL bound {value} is outside the supported range"
-                    ))
-                }),
-            Some(Token::Placeholder(value)) => {
-                super::postgres_parameter_position(value).map(SqlBound::Parameter)
+            T::QuotedIdentifier => {
+                let raw = token.text(self.input);
+                Ok(BranchSqlValue::Literal(
+                    raw[1..raw.len() - 1].replace("\"\"", "\""),
+                ))
             }
-            _ => Err(HawDBError::Parse(
-                "branch SQL bounds must be an unsigned integer literal or positional parameter"
-                    .to_string(),
-            )),
+            T::Word => Ok(BranchSqlValue::Literal(token.text(self.input).to_owned())),
+            _ => unreachable!("matched branch value"),
         }
     }
-
-    fn parse_selector(&mut self) -> Result<BranchSqlSelector> {
-        if self.consume_keyword("NAME") {
-            return self.parse_selector_value().map(BranchSqlSelector::Name);
+    fn bound(&self, node: NodeId) -> Result<SqlBound> {
+        let token = self.tokens[self.tree.nodes[node].start];
+        if let T::Parameter(position) = token.kind {
+            return Ok(SqlBound::Parameter(position as usize));
         }
-        if self.consume_keyword("ID") {
-            return self.parse_selector_value().map(BranchSqlSelector::Id);
-        }
-        Err(HawDBError::Parse(
-            "branch selector requires NAME or ID followed by a string literal or positional parameter"
-                .to_string(),
-        ))
+        let raw = token.text(self.input);
+        raw.replace('_', "")
+            .parse()
+            .map(SqlBound::Literal)
+            .map_err(|_| {
+                HawDBError::Parse(format!(
+                    "branch SQL bound {raw} is outside the supported range"
+                ))
+            })
     }
-
-    fn parse_selector_value(&mut self) -> Result<BranchSqlValue> {
-        match self.next() {
-            Some(Token::SingleQuotedString(value)) => Ok(BranchSqlValue::Literal(value.clone())),
-            Some(Token::Placeholder(value)) => {
-                super::postgres_parameter_position(value).map(BranchSqlValue::Parameter)
+    fn selector(&self, node: NodeId) -> Result<BranchSqlSelector> {
+        let child = self.first(node);
+        match self.tree.nodes[child].name {
+            Some("Selector") => self.selector(child),
+            Some("Identifier") => self.value(child).map(BranchSqlSelector::Name),
+            Some("Name") => self
+                .value(self.child(child, "Value"))
+                .map(BranchSqlSelector::Name),
+            Some("Id") => self
+                .value(self.child(child, "Value"))
+                .map(BranchSqlSelector::Id),
+            _ => unreachable!("matched branch selector"),
+        }
+    }
+    fn statement(&self, node: NodeId) -> Result<BranchSqlStatement> {
+        let node = self.first(node);
+        Ok(match self.tree.nodes[node].name {
+            Some("Use") => {
+                BranchSqlStatement::UseBranch(self.selector(self.child(node, "Selection"))?)
             }
-            _ => Err(HawDBError::Parse(
-                "branch selector values must be a string literal or positional parameter"
-                    .to_string(),
-            )),
-        }
+            Some("ShowCurrent") => BranchSqlStatement::ShowCurrentBranch,
+            Some("ShowBranch") => BranchSqlStatement::ShowBranch(ShowBranchStatement {
+                selector: self.selector(self.child(node, "Selector"))?,
+            }),
+            Some("ShowBranches") => BranchSqlStatement::ShowBranches(ShowBranchesStatement {
+                limit: self.bound(self.child(self.child(node, "Limit"), "Bound"))?,
+                offset: self
+                    .tree
+                    .child(node, "Offset")
+                    .map(|id| self.bound(self.child(id, "Bound")))
+                    .transpose()?,
+            }),
+            Some("Drop") => BranchSqlStatement::DropBranch(DropBranchStatement {
+                id: self.value(self.child(node, "Value"))?,
+                expected_metadata_revision: self.bound(self.child(node, "Bound"))?,
+            }),
+            Some("Create") => BranchSqlStatement::CreateBranch(CreateBranchStatement {
+                name: self
+                    .tree
+                    .child(node, "NewName")
+                    .map(|id| self.value(self.first(id)))
+                    .transpose()?,
+                source: self.selector(self.child(node, "Selection"))?,
+                expected_source_revision: self.bound(self.child(node, "Bound"))?,
+                request_key: self.value(self.child(node, "Value"))?,
+                owner: self
+                    .tree
+                    .child(node, "Owner")
+                    .map(|id| self.value(self.child(id, "Value")))
+                    .transpose()?,
+            }),
+            _ => unreachable!("matched branch statement"),
+        })
     }
-
-    fn consume_keyword(&mut self, expected: &str) -> bool {
-        if self
-            .tokens
-            .get(self.cursor)
-            .is_some_and(|token| is_keyword(token, expected))
-        {
-            self.cursor += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn expect_keyword(&mut self, expected: &str) -> Result<()> {
-        if self.consume_keyword(expected) {
-            Ok(())
-        } else {
-            Err(HawDBError::Parse(format!(
-                "expected branch SQL keyword {expected}"
-            )))
-        }
-    }
-
-    fn next(&mut self) -> Option<&Token> {
-        let token = self.tokens.get(self.cursor)?;
-        self.cursor += 1;
-        Some(token)
-    }
-
-    fn expect_end(&mut self) -> Result<()> {
-        if self
-            .tokens
-            .get(self.cursor)
-            .is_some_and(|token| matches!(token, Token::SemiColon))
-        {
-            self.cursor += 1;
-        }
-        if self.cursor == self.tokens.len() {
-            Ok(())
-        } else {
-            Err(HawDBError::Parse(
-                "unexpected trailing tokens in branch SQL statement".to_string(),
-            ))
-        }
-    }
-
-    fn at_end(&self) -> bool {
-        self.tokens
-            .get(self.cursor)
-            .is_none_or(|token| matches!(token, Token::SemiColon))
-    }
-}
-
-fn is_branch_command_candidate(mut input: &str) -> bool {
-    loop {
-        input = input.trim_start();
-        if let Some(comment) = input.strip_prefix("--") {
-            input = comment.split_once('\n').map_or("", |(_, rest)| rest);
-            continue;
-        }
-        if let Some(comment) = input.strip_prefix("/*") {
-            let Some((_, rest)) = comment.split_once("*/") else {
-                return false;
-            };
-            input = rest;
-            continue;
-        }
-        break;
-    }
-    let keyword = input
-        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-        .next()
-        .unwrap_or("");
-    ["SHOW", "USE", "CREATE", "DROP"]
-        .iter()
-        .any(|expected| keyword.eq_ignore_ascii_case(expected))
-}
-
-fn is_keyword(token: &Token, expected: &str) -> bool {
-    matches!(token, Token::Word(word) if word.quote_style.is_none() && word.value.eq_ignore_ascii_case(expected))
-}
-
-fn matches_keyword(token: &Token, expected: &[&str]) -> bool {
-    expected.iter().any(|expected| is_keyword(token, expected))
 }
 
 #[cfg(test)]
@@ -400,6 +349,40 @@ mod tests {
             parse_postgres_sql("CREATE TABLE documents (id BIGINT PRIMARY KEY)").unwrap(),
             SqlStatement::CreateTable(_)
         ));
+    }
+
+    #[test]
+    fn branch_page_bounds_are_explicit_unique_and_order_independent() {
+        for input in [
+            "SHOW BRANCHES LIMIT 10 OFFSET $1",
+            "SHOW BRANCHES OFFSET $1 LIMIT 10",
+        ] {
+            assert_eq!(
+                parse_postgres_sql(input).unwrap(),
+                SqlStatement::Branch(BranchSqlStatement::ShowBranches(ShowBranchesStatement {
+                    limit: SqlBound::Literal(10),
+                    offset: Some(SqlBound::Parameter(1))
+                }))
+            );
+        }
+        for input in [
+            "SHOW BRANCHES",
+            "SHOW BRANCHES OFFSET 1",
+            "SHOW BRANCHES LIMIT 1 LIMIT 2",
+            "SHOW BRANCHES LIMIT 1 OFFSET 2 OFFSET 3",
+            "SHOW BRANCHES LIMIT -1",
+            "SHOW BRANCHES LIMIT 18446744073709551616",
+            "SHOW BRANCHES LIMIT 1; SHOW CURRENT BRANCH",
+        ] {
+            assert!(parse_postgres_sql(input).is_err(), "{input}");
+        }
+        assert_eq!(
+            parse_postgres_sql("USE BRANCH \"知识\"\"分支\"").unwrap(),
+            SqlStatement::Branch(BranchSqlStatement::UseBranch(BranchSqlSelector::Name(
+                BranchSqlValue::Literal("知识\"分支".into())
+            )))
+        );
+        assert!(parse_postgres_sql("USE BRANCH NAME E'line\\n'").is_err());
     }
 
     #[test]

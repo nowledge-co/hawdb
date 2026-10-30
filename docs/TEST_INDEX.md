@@ -2085,10 +2085,11 @@ The existing `//crates/sql-syntax:hawdb_sql_syntax_tests` target owns the token
 PEG engine regressions: ordered choice, successful and failed packrat reuse,
 lookahead diagnostics, long invalid token text, invalid grammar rejection,
 linear malformed recursion,
-fatal work/storage/depth budgets, capture rollback with memo reuse, and exact
-entry/edge accounting across direct and sparse memo storage. The existing
+fatal work/storage/depth budgets, independent language-depth admission through
+memo reuse, capture rollback, and exact entry/edge accounting across direct and sparse memo storage. The existing
 `postgres_pgq_tests` and `postgres_select_pgq_tests` targets own syntax ASTs,
-graph nesting, aliases,
+pure PEG expression/graph rules, independent exact 128-level expression and
+graph nesting (including their combination on the ordinary test thread), aliases,
 joins, byte spans and composed GRAPH_TABLE rejection. All use the ordinary
 checked profile and existing SQL syntax CI lanes.
 
@@ -2105,7 +2106,13 @@ owned full-input cap on legacy bodies, while oversized SELECT/EXPLAIN still
 fail closed. Malformed numeric separator cases cover both SQL frontends and
 PGQ syntax refusal before creation binding. Existing root relational SQL tests own embedded
 query results, plans, parameters, caching, joins, aggregates and vector execution.
-DDL/DML retain upstream routing pending separate qualification.
+DDL/DML retain upstream routing pending separate qualification. Additional
+frozen Debug-AST SHA-256 fixtures captured from main `0f611b6dec` check all 1,009
+SQL inventory outcomes and both Cypher public entries for all 1,427 inventory
+queries (2,854 records). These checks include locations and Parse/Semantic
+refusal classes without needing a live reference parser. Existing branch SQL
+unit tests own PEG lifecycle selectors, revision/request-key admission and page
+bounds in either clause order; the handwritten branch token driver is removed.
 Local Shiro parser campaigns and
 `//crates/sql-syntax:hawdb_sql_alias_boundary_fuzz_tests` remain manual/local.
 The ignored `parser::owned::tests::parser_timing_diagnostic` is a manual

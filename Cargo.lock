@@ -404,6 +404,7 @@ dependencies = [
  "hawdb-ddl",
  "hawdb-sql-syntax",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

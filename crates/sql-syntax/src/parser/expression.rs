@@ -12,591 +12,446 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{identifier_from_token, is_identifier_kind, Parser, MAX_EXPRESSION_NESTING};
+//! SQL expression precedence is recognized by token PEG rules. The CST fold
+//! constructs syntax nodes without making parsing decisions or rescanning SQL.
+
+use super::identifier_from_token;
+use crate::peg::{Expression as E, NodeId, ParseTree};
 use crate::{
-    BinaryOperatorSyntax, ExpressionKindSyntax, ExpressionSyntax, Identifier, LiteralSyntax,
-    QualifiedName, Span, SyntaxError, SyntaxErrorCode, Token, TokenKind, UnaryOperatorSyntax,
+    BinaryOperatorSyntax as B, ExpressionKindSyntax as Kind, ExpressionSyntax, LiteralSyntax,
+    QualifiedName, Span, Token, TokenKind as T, UnaryOperatorSyntax as U,
 };
 
-impl Parser<'_> {
-    pub(super) fn parse_expression_range(
-        &self,
-        start_position: usize,
-        end_position: usize,
-    ) -> Result<ExpressionSyntax, SyntaxError> {
-        if start_position == end_position {
-            return Err(self.unexpected("an expression"));
-        }
-        ExpressionParser::new(self.input, self.tokens, start_position, end_position)
-            .parse_complete()
-    }
+type Rule = (&'static str, E<()>);
+fn seq(items: Vec<E<()>>) -> E<()> {
+    E::Sequence(items)
+}
+fn choice(items: Vec<E<()>>) -> E<()> {
+    E::Choice(items)
+}
+fn opt(item: E<()>) -> E<()> {
+    E::Optional(Box::new(item))
+}
+fn rep(item: E<()>) -> E<()> {
+    E::Repeat(Box::new(item))
+}
+fn r(name: &'static str) -> E<()> {
+    E::Rule(name)
+}
+fn k(name: &'static str) -> E<()> {
+    E::Keyword(name)
+}
+fn t(kind: T) -> E<()> {
+    E::Token(kind, "an expression token")
+}
+fn list(name: &'static str) -> E<()> {
+    seq(vec![r(name), rep(seq(vec![t(T::Comma), r(name)]))])
+}
+fn binary(name: &'static str, operand: &'static str, operator: &'static str) -> Rule {
+    (
+        name,
+        seq(vec![r(operand), rep(seq(vec![r(operator), r(operand)]))]),
+    )
+}
+pub(super) const NESTING_RULES: &[&str] = &[
+    "NotOperand",
+    "SignOperand",
+    "ParenthesizedContents",
+    "ArgumentContents",
+    "InContents",
+    "FilterContents",
+];
+pub(super) fn rules() -> Vec<Rule> {
+    vec![
+        ("Input", seq(vec![r("Or"), t(T::End)])),
+        binary("Or", "And", "OrOp"),
+        ("OrOp", k("OR")),
+        binary("And", "Not", "AndOp"),
+        ("AndOp", k("AND")),
+        ("Not", choice(vec![r("NotPrefix"), r("Compare")])),
+        ("NotPrefix", seq(vec![k("NOT"), r("NotOperand")])),
+        ("NotOperand", r("Not")),
+        ("Compare", seq(vec![r("Concat"), rep(r("Comparison"))])),
+        (
+            "Comparison",
+            choice(vec![
+                r("BinaryComparison"),
+                r("IsNull"),
+                r("In"),
+                r("Between"),
+                r("Like"),
+            ]),
+        ),
+        ("BinaryComparison", seq(vec![r("CompareOp"), r("Concat")])),
+        (
+            "CompareOp",
+            choice(vec![
+                t(T::Equal),
+                t(T::NotEqual),
+                t(T::Less),
+                t(T::LessOrEqual),
+                t(T::Greater),
+                t(T::GreaterOrEqual),
+            ]),
+        ),
+        ("IsNull", seq(vec![k("IS"), opt(r("Negated")), k("NULL")])),
+        ("Negated", k("NOT")),
+        ("InContents", list("Or")),
+        ("In", seq(vec![opt(r("Negated")), k("IN"), r("InValues")])),
+        (
+            "InValues",
+            seq(vec![t(T::LeftParen), r("InContents"), t(T::RightParen)]),
+        ),
+        (
+            "Between",
+            seq(vec![
+                opt(r("Negated")),
+                k("BETWEEN"),
+                r("Concat"),
+                k("AND"),
+                r("Concat"),
+            ]),
+        ),
+        (
+            "Like",
+            seq(vec![
+                opt(r("Negated")),
+                r("LikeOp"),
+                r("Concat"),
+                opt(r("Escape")),
+            ]),
+        ),
+        ("LikeOp", choice(vec![k("LIKE"), k("ILIKE")])),
+        ("Escape", seq(vec![k("ESCAPE"), r("Concat")])),
+        binary("Concat", "Sum", "ConcatOp"),
+        ("ConcatOp", t(T::Concat)),
+        binary("Sum", "Product", "SumOp"),
+        ("SumOp", choice(vec![t(T::Plus), t(T::Minus)])),
+        binary("Product", "Signed", "ProductOp"),
+        (
+            "ProductOp",
+            choice(vec![t(T::Star), t(T::Slash), t(T::Percent)]),
+        ),
+        (
+            "Signed",
+            choice(vec![r("SignPrefix"), r("NotPrefix"), r("Postfix")]),
+        ),
+        ("SignPrefix", seq(vec![r("SumOp"), r("SignOperand")])),
+        ("SignOperand", r("Signed")),
+        (
+            "Postfix",
+            seq(vec![r("Atom"), rep(choice(vec![r("Cast"), r("Collate")]))]),
+        ),
+        ("Cast", seq(vec![t(T::DoubleColon), r("Name")])),
+        ("Collate", seq(vec![k("COLLATE"), r("Name")])),
+        (
+            "Atom",
+            choice(vec![
+                r("Parenthesized"),
+                r("Wildcard"),
+                r("Parameter"),
+                r("Number"),
+                r("String"),
+                r("Null"),
+                r("True"),
+                r("False"),
+                r("TypedString"),
+                r("Function"),
+                r("QualifiedWildcard"),
+                r("Column"),
+            ]),
+        ),
+        (
+            "Parenthesized",
+            seq(vec![
+                t(T::LeftParen),
+                r("ParenthesizedContents"),
+                t(T::RightParen),
+            ]),
+        ),
+        ("ParenthesizedContents", r("Or")),
+        ("Wildcard", t(T::Star)),
+        ("Parameter", E::Parameter),
+        ("Number", t(T::Number)),
+        ("String", t(T::String)),
+        ("Null", k("NULL")),
+        ("True", k("TRUE")),
+        ("False", k("FALSE")),
+        (
+            "TypedString",
+            seq(vec![
+                choice(vec![k("DATE"), k("TIME"), k("TIMESTAMP"), k("INTERVAL")]),
+                t(T::String),
+            ]),
+        ),
+        (
+            "Function",
+            seq(vec![r("Name"), r("Arguments"), opt(r("Filter"))]),
+        ),
+        (
+            "Arguments",
+            seq(vec![
+                t(T::LeftParen),
+                r("ArgumentContents"),
+                t(T::RightParen),
+            ]),
+        ),
+        (
+            "ArgumentContents",
+            seq(vec![
+                opt(choice(vec![r("Distinct"), k("ALL")])),
+                opt(list("Or")),
+            ]),
+        ),
+        ("Distinct", k("DISTINCT")),
+        (
+            "Filter",
+            seq(vec![
+                k("FILTER"),
+                t(T::LeftParen),
+                r("FilterContents"),
+                t(T::RightParen),
+            ]),
+        ),
+        ("FilterContents", seq(vec![k("WHERE"), r("Or")])),
+        (
+            "QualifiedWildcard",
+            seq(vec![r("Name"), t(T::Dot), t(T::Star)]),
+        ),
+        ("Column", r("Name")),
+        (
+            "Name",
+            seq(vec![
+                r("Identifier"),
+                rep(seq(vec![t(T::Dot), r("Identifier")])),
+            ]),
+        ),
+        (
+            "Identifier",
+            choice(vec![t(T::Word), t(T::QuotedIdentifier)]),
+        ),
+    ]
 }
 
-struct ExpressionParser<'a> {
-    input: &'a str,
-    tokens: &'a [Token],
-    position: usize,
-    end_position: usize,
-    nesting: usize,
+pub(super) struct Fold<'a> {
+    pub(super) tree: &'a ParseTree<()>,
+    pub(super) tokens: &'a [Token],
 }
-
-impl<'a> ExpressionParser<'a> {
-    fn new(
-        input: &'a str,
-        tokens: &'a [Token],
-        start_position: usize,
-        end_position: usize,
-    ) -> Self {
-        Self {
-            input,
-            tokens,
-            position: start_position,
-            end_position,
-            nesting: 0,
+impl Fold<'_> {
+    fn span(&self, node: NodeId) -> Span {
+        self.tree.span(node, self.tokens)
+    }
+    fn first(&self, node: NodeId) -> NodeId {
+        self.tree.children(node)[0]
+    }
+    pub(super) fn name(&self, node: NodeId) -> QualifiedName {
+        QualifiedName {
+            parts: self
+                .tree
+                .children(node)
+                .iter()
+                .map(|id| identifier_from_token(self.tokens[self.tree.nodes[*id].start]))
+                .collect(),
+            span: self.span(node),
         }
     }
-
-    fn parse_complete(mut self) -> Result<ExpressionSyntax, SyntaxError> {
-        let expression = self.parse_expression(0)?;
-        if self.position != self.end_position {
-            return Err(self.unexpected("an operator or end of expression"));
-        }
-        Ok(expression)
-    }
-
-    fn parse_expression(
-        &mut self,
-        minimum_binding_power: u8,
-    ) -> Result<ExpressionSyntax, SyntaxError> {
-        let mut left = self.parse_prefix()?;
-        loop {
-            if self.at_keyword("FILTER")
-                && matches!(left.kind, ExpressionKindSyntax::Function { .. })
-            {
-                self.advance();
-                let open = self.expect_kind(TokenKind::LeftParen, "(")?;
-                self.enter_nesting(open.span)?;
-                let result = (|| {
-                    self.expect_keyword("WHERE")?;
-                    let predicate = self.parse_expression(0)?;
-                    let end = self.expect_kind(TokenKind::RightParen, ")")?.span.end;
-                    Ok((predicate, end))
-                })();
-                self.nesting -= 1;
-                let (predicate, end) = result?;
-                left = ExpressionSyntax {
-                    span: Span::new(left.span.start, end),
-                    kind: ExpressionKindSyntax::Filtered {
-                        function: Box::new(left),
-                        predicate: Box::new(predicate),
-                    },
-                };
-                continue;
+    pub(super) fn expression(&self, node: NodeId) -> ExpressionSyntax {
+        let children = self.tree.children(node);
+        let span = self.span(node);
+        let kind = match self.tree.nodes[node].name.expect("named expression node") {
+            "Not" | "Signed" | "Atom" | "NotOperand" | "SignOperand" | "ParenthesizedContents" => {
+                return self.expression(self.first(node))
             }
-            if self.at_keyword("LIKE")
-                || self.at_keyword("ILIKE")
-                || (self.at_keyword("NOT")
-                    && (self.peek_keyword(1, "LIKE") || self.peek_keyword(1, "ILIKE")))
-            {
-                if 30 < minimum_binding_power {
-                    break;
+            "Or" | "And" | "Concat" | "Sum" | "Product" => {
+                let mut left = self.expression(children[0]);
+                for pair in children[1..].chunks_exact(2) {
+                    let right = self.expression(pair[1]);
+                    let operator = self.operator(pair[0]);
+                    left = ExpressionSyntax {
+                        span: Span::new(left.span.start, right.span.end),
+                        kind: Kind::Binary {
+                            left: Box::new(left),
+                            operator,
+                            right: Box::new(right),
+                        },
+                    };
                 }
-                let negated = self.consume_keyword("NOT");
-                let case_insensitive = self.consume_keyword("ILIKE");
-                if !case_insensitive {
-                    self.expect_keyword("LIKE")?;
+                return left;
+            }
+            "Compare" => {
+                let mut left = self.expression(children[0]);
+                for suffix in &children[1..] {
+                    left = self.comparison(left, self.first(*suffix));
                 }
-                let pattern = self.parse_expression(31)?;
-                let escape = if self.consume_keyword("ESCAPE") {
-                    Some(Box::new(self.parse_expression(31)?))
+                return left;
+            }
+            "Postfix" => {
+                let mut expression = self.expression(children[0]);
+                for suffix in &children[1..] {
+                    let name = self.name(self.tree.required(*suffix, "Name"));
+                    let end = name.span.end;
+                    let kind = if self.tree.nodes[*suffix].name == Some("Cast") {
+                        Kind::Cast {
+                            expression: Box::new(expression),
+                            data_type: name,
+                        }
+                    } else {
+                        Kind::Collate {
+                            expression: Box::new(expression),
+                            collation: name,
+                        }
+                    };
+                    expression = ExpressionSyntax {
+                        kind,
+                        span: Span::new(span.start, end),
+                    };
+                }
+                return expression;
+            }
+            "NotPrefix" => Kind::Unary {
+                operator: U::Not,
+                expression: Box::new(self.expression(children[0])),
+            },
+            "SignPrefix" => Kind::Unary {
+                operator: if self.tokens[self.tree.nodes[node].start].kind == T::Minus {
+                    U::Minus
                 } else {
-                    None
-                };
-                let end = escape
-                    .as_ref()
-                    .map_or(pattern.span.end, |escape| escape.span.end);
-                left = ExpressionSyntax {
-                    span: Span::new(left.span.start, end),
-                    kind: ExpressionKindSyntax::Like {
-                        expression: Box::new(left),
-                        pattern: Box::new(pattern),
-                        escape,
-                        negated,
-                        case_insensitive,
-                    },
-                };
-                continue;
-            }
-            if self.at_keyword("COLLATE") {
-                const POSTFIX_BINDING_POWER: u8 = 70;
-                if POSTFIX_BINDING_POWER < minimum_binding_power {
-                    break;
-                }
-                self.advance();
-                let collation = self.parse_qualified_name()?;
-                left = ExpressionSyntax {
-                    span: Span::new(left.span.start, collation.span.end),
-                    kind: ExpressionKindSyntax::Collate {
-                        expression: Box::new(left),
-                        collation,
-                    },
-                };
-                continue;
-            }
-            if self.current().kind == TokenKind::DoubleColon {
-                const POSTFIX_BINDING_POWER: u8 = 70;
-                if POSTFIX_BINDING_POWER < minimum_binding_power {
-                    break;
-                }
-                self.advance();
-                let data_type = self.parse_qualified_name()?;
-                left = ExpressionSyntax {
-                    span: Span::new(left.span.start, data_type.span.end),
-                    kind: ExpressionKindSyntax::Cast {
-                        expression: Box::new(left),
-                        data_type,
-                    },
-                };
-                continue;
-            }
-
-            if self.at_keyword("IS") {
-                const COMPARISON_BINDING_POWER: u8 = 30;
-                if COMPARISON_BINDING_POWER < minimum_binding_power {
-                    break;
-                }
-                self.advance();
-                let negated = self.consume_keyword("NOT");
-                let null = self.expect_keyword("NULL")?;
-                left = ExpressionSyntax {
-                    span: Span::new(left.span.start, null.span.end),
-                    kind: ExpressionKindSyntax::IsNull {
-                        expression: Box::new(left),
-                        negated,
-                    },
-                };
-                continue;
-            }
-
-            let negated_predicate = self.at_keyword("NOT")
-                && (self.peek_keyword(1, "IN") || self.peek_keyword(1, "BETWEEN"));
-            if self.at_keyword("IN") || (negated_predicate && self.peek_keyword(1, "IN")) {
-                const COMPARISON_BINDING_POWER: u8 = 30;
-                if COMPARISON_BINDING_POWER < minimum_binding_power {
-                    break;
-                }
-                let negated = self.consume_keyword("NOT");
-                self.expect_keyword("IN")?;
-                let values = self.parse_parenthesized_expression_list()?;
-                let end = self.previous_end();
-                left = ExpressionSyntax {
-                    span: Span::new(left.span.start, end),
-                    kind: ExpressionKindSyntax::InList {
-                        expression: Box::new(left),
-                        values,
-                        negated,
-                    },
-                };
-                continue;
-            }
-            if self.at_keyword("BETWEEN") || (negated_predicate && self.peek_keyword(1, "BETWEEN"))
-            {
-                const COMPARISON_BINDING_POWER: u8 = 30;
-                if COMPARISON_BINDING_POWER < minimum_binding_power {
-                    break;
-                }
-                let negated = self.consume_keyword("NOT");
-                self.expect_keyword("BETWEEN")?;
-                let low = self.parse_expression(COMPARISON_BINDING_POWER + 1)?;
-                self.expect_keyword("AND")?;
-                let high = self.parse_expression(COMPARISON_BINDING_POWER + 1)?;
-                let end = high.span.end;
-                left = ExpressionSyntax {
-                    span: Span::new(left.span.start, end),
-                    kind: ExpressionKindSyntax::Between {
-                        expression: Box::new(left),
-                        low: Box::new(low),
-                        high: Box::new(high),
-                        negated,
-                    },
-                };
-                continue;
-            }
-
-            let Some((left_binding_power, right_binding_power, operator)) =
-                self.current_binary_operator()
-            else {
-                break;
-            };
-            if left_binding_power < minimum_binding_power {
-                break;
-            }
-            self.advance();
-            let right = self.parse_expression(right_binding_power)?;
-            let end = right.span.end;
-            left = ExpressionSyntax {
-                span: Span::new(left.span.start, end),
-                kind: ExpressionKindSyntax::Binary {
-                    left: Box::new(left),
-                    operator,
-                    right: Box::new(right),
+                    U::Plus
                 },
-            };
-        }
-        Ok(left)
-    }
-
-    fn parse_prefix(&mut self) -> Result<ExpressionSyntax, SyntaxError> {
-        const NOT_BINDING_POWER: u8 = 25;
-        const SIGN_BINDING_POWER: u8 = 65;
-
-        let token = self.current();
-        let unary = if self.consume_keyword("NOT") {
-            Some((UnaryOperatorSyntax::Not, NOT_BINDING_POWER))
-        } else if self.consume_kind(TokenKind::Plus) {
-            Some((UnaryOperatorSyntax::Plus, SIGN_BINDING_POWER))
-        } else if self.consume_kind(TokenKind::Minus) {
-            Some((UnaryOperatorSyntax::Minus, SIGN_BINDING_POWER))
-        } else {
-            None
-        };
-        if let Some((operator, binding_power)) = unary {
-            self.enter_nesting(token.span)?;
-            let expression = self.parse_expression(binding_power);
-            self.nesting -= 1;
-            let expression = expression?;
-            return Ok(ExpressionSyntax {
-                span: Span::new(token.span.start, expression.span.end),
-                kind: ExpressionKindSyntax::Unary {
-                    operator,
-                    expression: Box::new(expression),
-                },
-            });
-        }
-
-        match token.kind {
-            TokenKind::LeftParen => self.parse_parenthesized_expression(),
-            TokenKind::Star => {
-                self.advance();
-                Ok(ExpressionSyntax {
-                    kind: ExpressionKindSyntax::Wildcard(None),
-                    span: token.span,
-                })
-            }
-            TokenKind::Parameter(position) => {
-                self.advance();
-                Ok(ExpressionSyntax {
-                    kind: ExpressionKindSyntax::Parameter(position),
-                    span: token.span,
-                })
-            }
-            TokenKind::Number => {
-                self.advance();
-                Ok(ExpressionSyntax {
-                    kind: ExpressionKindSyntax::Literal(LiteralSyntax::Number(token.span)),
-                    span: token.span,
-                })
-            }
-            TokenKind::String => {
-                self.advance();
-                Ok(ExpressionSyntax {
-                    kind: ExpressionKindSyntax::Literal(LiteralSyntax::String(token.span)),
-                    span: token.span,
-                })
-            }
-            TokenKind::Word if token.is_keyword(self.input, "NULL") => {
-                self.advance();
-                Ok(ExpressionSyntax {
-                    kind: ExpressionKindSyntax::Literal(LiteralSyntax::Null),
-                    span: token.span,
-                })
-            }
-            TokenKind::Word if token.is_keyword(self.input, "TRUE") => {
-                self.advance();
-                Ok(ExpressionSyntax {
-                    kind: ExpressionKindSyntax::Literal(LiteralSyntax::Boolean(true)),
-                    span: token.span,
-                })
-            }
-            TokenKind::Word if token.is_keyword(self.input, "FALSE") => {
-                self.advance();
-                Ok(ExpressionSyntax {
-                    kind: ExpressionKindSyntax::Literal(LiteralSyntax::Boolean(false)),
-                    span: token.span,
-                })
-            }
-            TokenKind::Word
-                if is_typed_string_keyword(token.text(self.input))
-                    && self.peek(1).kind == TokenKind::String =>
-            {
-                self.advance();
-                let value = self.advance();
-                Ok(ExpressionSyntax {
-                    kind: ExpressionKindSyntax::TypedString {
-                        data_type: identifier_from_token(token),
-                        value: value.span,
-                    },
-                    span: Span::new(token.span.start, value.span.end),
-                })
-            }
-            kind if is_identifier_kind(kind) => self.parse_name_expression(),
-            _ => Err(self.unexpected("a PostgreSQL expression")),
-        }
-    }
-
-    fn parse_parenthesized_expression(&mut self) -> Result<ExpressionSyntax, SyntaxError> {
-        let start = self.advance().span.start;
-        self.enter_nesting(Span::new(start, start + 1))?;
-        let result = (|| {
-            let expression = self.parse_expression(0)?;
-            let end = self.expect_kind(TokenKind::RightParen, ")")?.span.end;
-            Ok(ExpressionSyntax {
-                kind: ExpressionKindSyntax::Parenthesized(Box::new(expression)),
-                span: Span::new(start, end),
-            })
-        })();
-        self.nesting -= 1;
-        result
-    }
-
-    fn parse_name_expression(&mut self) -> Result<ExpressionSyntax, SyntaxError> {
-        let first = self.parse_identifier()?;
-        let start = first.span.start;
-        let mut end = first.span.end;
-        let mut parts = vec![first];
-        while self.consume_kind(TokenKind::Dot) {
-            if self.consume_kind(TokenKind::Star) {
-                let qualifier = QualifiedName {
-                    parts,
-                    span: Span::new(start, end),
+                expression: Box::new(self.expression(children[1])),
+            },
+            "Parenthesized" => Kind::Parenthesized(Box::new(self.expression(children[0]))),
+            "Wildcard" => Kind::Wildcard(None),
+            "QualifiedWildcard" => Kind::Wildcard(Some(self.name(children[0]))),
+            "Column" => Kind::Column(self.name(children[0])),
+            "Parameter" => {
+                let T::Parameter(position) = self.tokens[self.tree.nodes[node].start].kind else {
+                    unreachable!()
                 };
-                return Ok(ExpressionSyntax {
-                    kind: ExpressionKindSyntax::Wildcard(Some(qualifier)),
-                    span: Span::new(start, self.previous_end()),
-                });
+                Kind::Parameter(position)
             }
-            let part = self.parse_identifier()?;
-            end = part.span.end;
-            parts.push(part);
-        }
-        let name = QualifiedName {
-            parts,
-            span: Span::new(start, end),
-        };
-        if self.current().kind != TokenKind::LeftParen {
-            return Ok(ExpressionSyntax {
-                span: name.span,
-                kind: ExpressionKindSyntax::Column(name),
-            });
-        }
-
-        self.advance();
-        self.enter_nesting(Span::new(start, self.previous_end()))?;
-        let result = (|| {
-            let distinct = self.consume_keyword("DISTINCT");
-            if !distinct {
-                self.consume_keyword("ALL");
-            }
-            let mut arguments = Vec::new();
-            if self.current().kind != TokenKind::RightParen {
-                loop {
-                    arguments.push(self.parse_expression(0)?);
-                    if !self.consume_kind(TokenKind::Comma) {
-                        break;
-                    }
-                }
-            }
-            let end = self.expect_kind(TokenKind::RightParen, ")")?.span.end;
-            Ok(ExpressionSyntax {
-                kind: ExpressionKindSyntax::Function {
-                    name,
+            "Number" => Kind::Literal(LiteralSyntax::Number(span)),
+            "String" => Kind::Literal(LiteralSyntax::String(span)),
+            "Null" => Kind::Literal(LiteralSyntax::Null),
+            "True" => Kind::Literal(LiteralSyntax::Boolean(true)),
+            "False" => Kind::Literal(LiteralSyntax::Boolean(false)),
+            "TypedString" => Kind::TypedString {
+                data_type: identifier_from_token(self.tokens[self.tree.nodes[node].start]),
+                value: self.tokens[self.tree.nodes[node].start + 1].span,
+            },
+            "Function" => {
+                let args = self.tree.required(node, "Arguments");
+                let contents = self.tree.required(args, "ArgumentContents");
+                let arguments = self
+                    .tree
+                    .children(contents)
+                    .iter()
+                    .filter(|id| self.tree.nodes[**id].name == Some("Or"))
+                    .map(|id| self.expression(*id))
+                    .collect();
+                let function_end = self.span(args).end;
+                let function = Kind::Function {
+                    name: self.name(children[0]),
                     arguments,
-                    distinct,
-                },
-                span: Span::new(start, end),
-            })
-        })();
-        self.nesting -= 1;
-        result
-    }
-
-    fn parse_parenthesized_expression_list(
-        &mut self,
-    ) -> Result<Vec<ExpressionSyntax>, SyntaxError> {
-        let open = self.expect_kind(TokenKind::LeftParen, "(")?;
-        self.enter_nesting(open.span)?;
-        let result = (|| {
-            if self.current().kind == TokenKind::RightParen {
-                return Err(self.unexpected("at least one expression in IN"));
-            }
-            let mut values = Vec::new();
-            loop {
-                values.push(self.parse_expression(0)?);
-                if !self.consume_kind(TokenKind::Comma) {
-                    break;
+                    distinct: self.tree.child(contents, "Distinct").is_some(),
+                };
+                if let Some(filter) = self.tree.child(node, "Filter") {
+                    Kind::Filtered {
+                        function: Box::new(ExpressionSyntax {
+                            kind: function,
+                            span: Span::new(span.start, function_end),
+                        }),
+                        predicate: Box::new(
+                            self.expression(
+                                self.tree
+                                    .required(self.tree.required(filter, "FilterContents"), "Or"),
+                            ),
+                        ),
+                    }
+                } else {
+                    function
                 }
             }
-            self.expect_kind(TokenKind::RightParen, ")")?;
-            Ok(values)
-        })();
-        self.nesting -= 1;
-        result
+            other => unreachable!("unexpected expression CST node {other}"),
+        };
+        ExpressionSyntax { kind, span }
     }
-
-    fn parse_qualified_name(&mut self) -> Result<QualifiedName, SyntaxError> {
-        let first = self.parse_identifier()?;
-        let start = first.span.start;
-        let mut end = first.span.end;
-        let mut parts = vec![first];
-        while self.consume_kind(TokenKind::Dot) {
-            let part = self.parse_identifier()?;
-            end = part.span.end;
-            parts.push(part);
+    fn operator(&self, node: NodeId) -> B {
+        match self.tokens[self.tree.nodes[node].start].kind {
+            T::Equal => B::Equal,
+            T::NotEqual => B::NotEqual,
+            T::Less => B::Less,
+            T::LessOrEqual => B::LessOrEqual,
+            T::Greater => B::Greater,
+            T::GreaterOrEqual => B::GreaterOrEqual,
+            T::Concat => B::Concat,
+            T::Plus => B::Add,
+            T::Minus => B::Subtract,
+            T::Star => B::Multiply,
+            T::Slash => B::Divide,
+            T::Percent => B::Modulo,
+            T::Word if self.tree.nodes[node].name == Some("OrOp") => B::Or,
+            T::Word => B::And,
+            _ => unreachable!("operator matched by grammar"),
         }
-        Ok(QualifiedName {
-            parts,
-            span: Span::new(start, end),
-        })
     }
-
-    fn parse_identifier(&mut self) -> Result<Identifier, SyntaxError> {
-        let token = self.current();
-        if !is_identifier_kind(token.kind) {
-            return Err(self.unexpected("an identifier"));
-        }
-        self.advance();
-        Ok(identifier_from_token(token))
-    }
-
-    fn current_binary_operator(&self) -> Option<(u8, u8, BinaryOperatorSyntax)> {
-        let token = self.current();
-        let (binding_power, operator) = match token.kind {
-            TokenKind::Equal => (30, BinaryOperatorSyntax::Equal),
-            TokenKind::NotEqual => (30, BinaryOperatorSyntax::NotEqual),
-            TokenKind::Less => (30, BinaryOperatorSyntax::Less),
-            TokenKind::LessOrEqual => (30, BinaryOperatorSyntax::LessOrEqual),
-            TokenKind::Greater => (30, BinaryOperatorSyntax::Greater),
-            TokenKind::GreaterOrEqual => (30, BinaryOperatorSyntax::GreaterOrEqual),
-            TokenKind::Concat => (40, BinaryOperatorSyntax::Concat),
-            TokenKind::Plus => (50, BinaryOperatorSyntax::Add),
-            TokenKind::Minus => (50, BinaryOperatorSyntax::Subtract),
-            TokenKind::Star => (60, BinaryOperatorSyntax::Multiply),
-            TokenKind::Slash => (60, BinaryOperatorSyntax::Divide),
-            TokenKind::Percent => (60, BinaryOperatorSyntax::Modulo),
-            TokenKind::Word if token.is_keyword(self.input, "OR") => (10, BinaryOperatorSyntax::Or),
-            TokenKind::Word if token.is_keyword(self.input, "AND") => {
-                (20, BinaryOperatorSyntax::And)
+    fn comparison(&self, left: ExpressionSyntax, suffix: NodeId) -> ExpressionSyntax {
+        let span = Span::new(left.span.start, self.span(suffix).end);
+        let negated = self.tree.child(suffix, "Negated").is_some();
+        let children = self.tree.children(suffix);
+        let expression = Box::new(left);
+        let kind = match self.tree.nodes[suffix].name.unwrap() {
+            "BinaryComparison" => Kind::Binary {
+                left: expression,
+                operator: self.operator(children[0]),
+                right: Box::new(self.expression(children[1])),
+            },
+            "IsNull" => Kind::IsNull {
+                expression,
+                negated,
+            },
+            "In" => {
+                let values = self
+                    .tree
+                    .required(self.tree.required(suffix, "InValues"), "InContents");
+                Kind::InList {
+                    expression,
+                    negated,
+                    values: self
+                        .tree
+                        .children(values)
+                        .iter()
+                        .map(|id| self.expression(*id))
+                        .collect(),
+                }
             }
-            _ => return None,
+            "Between" => {
+                let values: Vec<_> = children
+                    .iter()
+                    .filter(|id| self.tree.nodes[**id].name == Some("Concat"))
+                    .collect();
+                Kind::Between {
+                    expression,
+                    negated,
+                    low: Box::new(self.expression(*values[0])),
+                    high: Box::new(self.expression(*values[1])),
+                }
+            }
+            "Like" => {
+                let op = self.tree.required(suffix, "LikeOp");
+                Kind::Like {
+                    expression,
+                    negated,
+                    case_insensitive: self.tokens[self.tree.nodes[op].start].span.len() == 5,
+                    pattern: Box::new(self.expression(self.tree.required(suffix, "Concat"))),
+                    escape: self
+                        .tree
+                        .child(suffix, "Escape")
+                        .map(|id| Box::new(self.expression(self.tree.required(id, "Concat")))),
+                }
+            }
+            _ => unreachable!("comparison matched by grammar"),
         };
-        Some((binding_power, binding_power + 1, operator))
+        ExpressionSyntax { kind, span }
     }
-
-    fn enter_nesting(&mut self, span: Span) -> Result<(), SyntaxError> {
-        if self.nesting == MAX_EXPRESSION_NESTING {
-            return Err(SyntaxError::new(
-                SyntaxErrorCode::ExpressionNestingLimitExceeded,
-                span,
-            ));
-        }
-        self.nesting += 1;
-        Ok(())
-    }
-
-    fn current(&self) -> Token {
-        self.peek(0)
-    }
-
-    fn peek(&self, offset: usize) -> Token {
-        let position = self.position.saturating_add(offset);
-        if position >= self.end_position {
-            let span = self
-                .tokens
-                .get(self.end_position)
-                .map_or(Span::new(self.input.len(), self.input.len()), |token| {
-                    token.span
-                });
-            return Token::new(TokenKind::End, Span::new(span.start, span.start));
-        }
-        self.tokens[position]
-    }
-
-    fn advance(&mut self) -> Token {
-        let token = self.current();
-        if self.position < self.end_position {
-            self.position += 1;
-        }
-        token
-    }
-
-    fn previous_end(&self) -> usize {
-        self.position
-            .checked_sub(1)
-            .and_then(|position| self.tokens.get(position))
-            .map_or(0, |token| token.span.end)
-    }
-
-    fn at_keyword(&self, keyword: &str) -> bool {
-        self.current().is_keyword(self.input, keyword)
-    }
-
-    fn peek_keyword(&self, offset: usize, keyword: &str) -> bool {
-        self.peek(offset).is_keyword(self.input, keyword)
-    }
-
-    fn consume_keyword(&mut self, keyword: &str) -> bool {
-        if self.at_keyword(keyword) {
-            self.advance();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn expect_keyword(&mut self, keyword: &'static str) -> Result<Token, SyntaxError> {
-        if self.at_keyword(keyword) {
-            Ok(self.advance())
-        } else {
-            Err(self.unexpected(keyword))
-        }
-    }
-
-    fn consume_kind(&mut self, kind: TokenKind) -> bool {
-        if self.current().kind == kind {
-            self.advance();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn expect_kind(
-        &mut self,
-        kind: TokenKind,
-        expected: &'static str,
-    ) -> Result<Token, SyntaxError> {
-        if self.current().kind == kind {
-            Ok(self.advance())
-        } else {
-            Err(self.unexpected(expected))
-        }
-    }
-
-    fn unexpected(&self, expected: &'static str) -> SyntaxError {
-        let token = self.current();
-        let code = if token.kind == TokenKind::End {
-            SyntaxErrorCode::UnexpectedEnd
-        } else {
-            SyntaxErrorCode::UnexpectedToken
-        };
-        SyntaxError::new(code, token.span)
-            .expected(expected)
-            .found(token.text(self.input))
-    }
-}
-
-fn is_typed_string_keyword(word: &str) -> bool {
-    ["DATE", "TIME", "TIMESTAMP", "INTERVAL"]
-        .into_iter()
-        .any(|keyword| word.eq_ignore_ascii_case(keyword))
 }

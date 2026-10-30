@@ -1,5 +1,16 @@
 // Copyright 2026 Nowledge
-// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Lower the owned PEG SELECT AST without reparsing source text.
 use super::*;
@@ -814,5 +825,57 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod peg_baseline {
+    use super::super::parse_postgres_sql;
+    use hawdb_core::HawDBError;
+
+    // Captured from main 0f611b6dec. Hash complete Debug IR, including locations.
+    #[test]
+    fn frozen_peg_baseline_preserves_ast_spans_and_rejection_classes() {
+        let cases: std::collections::BTreeMap<_, _> =
+            include_str!("../../fixtures/frontend_corpus_v1.jsonl")
+                .lines()
+                .map(|line| {
+                    let case: serde_json::Value = serde_json::from_str(line).unwrap();
+                    (
+                        case["id"].as_str().unwrap().to_owned(),
+                        case["sql"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect();
+        let mut count = 0;
+        for line in include_str!("../../fixtures/frontend_peg_baseline_v1.jsonl").lines() {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            let input = &cases[expected["id"].as_str().unwrap()];
+            let (kind, digest) = match parse_postgres_sql(input) {
+                Ok(ast) => (
+                    "accept",
+                    Some(crate::test_support::sha256_hex(
+                        format!("{ast:?}").as_bytes(),
+                    )),
+                ),
+                Err(HawDBError::Parse(_)) => ("Parse", None),
+                Err(HawDBError::Semantic(_)) => ("Semantic", None),
+                other => panic!("unexpected baseline result: {other:?}"),
+            };
+            assert_eq!(
+                kind,
+                expected["kind"].as_str().unwrap(),
+                "{}: {input}",
+                expected["id"]
+            );
+            assert_eq!(
+                digest.as_deref(),
+                expected["ast_sha256"].as_str(),
+                "{}: {input}",
+                expected["id"]
+            );
+            count += 1;
+        }
+        assert_eq!(count, 1009);
     }
 }

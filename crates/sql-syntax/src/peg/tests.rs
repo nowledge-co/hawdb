@@ -1,5 +1,16 @@
 // Copyright 2026 Nowledge
-// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use super::*;
 use crate::tokenize;
@@ -491,4 +502,147 @@ fn memo_keeps_successes_and_failures_at_multiple_positions_with_exact_accounting
         .code,
         SyntaxErrorCode::ParserLimitExceeded,
     );
+}
+
+#[test]
+fn memoized_subtree_cannot_bypass_language_depth_admission() {
+    for limit in [1, 2] {
+        let grammar = Grammar::<()>::compile_bounded(
+            vec![
+                (
+                    "Root",
+                    S(vec![
+                        Expression::Ahead(Box::new(R("Leaf")), "lookahead"),
+                        R("Deep"),
+                        Tok(TokenKind::End, "end"),
+                    ]),
+                ),
+                ("Deep", R("Leaf")),
+                ("Leaf", K("SELECT")),
+            ],
+            &["Leaf", "Deep"],
+            limit,
+        )
+        .unwrap();
+        let result = parse(&grammar, "SELECT", Limits::default());
+        if limit == 1 {
+            assert_eq!(
+                result.err().unwrap().code,
+                SyntaxErrorCode::ParserLimitExceeded
+            );
+        } else {
+            let tree = result.unwrap();
+            assert!(tree.memo_hits > 0);
+        }
+    }
+}
+
+#[test]
+fn language_depth_refuses_before_internal_peg_stack_budget() {
+    let grammar = Grammar::<()>::compile_bounded(
+        vec![
+            ("Root", S(vec![R("Nest"), Tok(TokenKind::End, "end")])),
+            (
+                "Nest",
+                Choice(vec![
+                    S(vec![
+                        Tok(TokenKind::LeftParen, "("),
+                        R("Nest"),
+                        Tok(TokenKind::RightParen, ")"),
+                    ]),
+                    K("SELECT"),
+                ]),
+            ),
+        ],
+        &["Nest"],
+        4,
+    )
+    .unwrap();
+    assert!(parse(&grammar, "(((SELECT)))", Limits::default()).is_ok());
+    let error = parse(&grammar, "((((SELECT))))", Limits::default())
+        .err()
+        .unwrap();
+    assert_eq!(error.code, SyntaxErrorCode::ParserLimitExceeded);
+    assert_eq!(
+        error.expected,
+        Some("language nesting within the parser limit")
+    );
+}
+
+#[test]
+fn independent_language_budgets_survive_memo_reuse() {
+    let rules = || {
+        vec![
+            (
+                "Root",
+                Expression::Sequence(vec![
+                    Expression::Ahead(
+                        Box::new(Expression::Sequence(vec![
+                            Expression::Keyword("SELECT"),
+                            Expression::Rule("Expr"),
+                        ])),
+                        "cached expression",
+                    ),
+                    Expression::Rule("Graph"),
+                    Expression::Token(TokenKind::End, "end"),
+                ]),
+            ),
+            (
+                "Graph",
+                Expression::Sequence(vec![
+                    Expression::Keyword("SELECT"),
+                    Expression::Rule("Expr"),
+                ]),
+            ),
+            ("Expr", Expression::Keyword("SELECT")),
+        ]
+    };
+    let input = "SELECT SELECT";
+    let tokens = crate::tokenize(input).unwrap();
+    let grammar: Grammar<()> = Grammar::compile_with_nesting(
+        rules(),
+        &[
+            (
+                &["Expr"],
+                1,
+                SyntaxErrorCode::ExpressionNestingLimitExceeded,
+            ),
+            (
+                &["Graph"],
+                1,
+                SyntaxErrorCode::GraphPatternNestingLimitExceeded,
+            ),
+        ],
+    )
+    .unwrap();
+    let tree = grammar
+        .parse(input, &tokens, "Root", Limits::default())
+        .unwrap();
+    assert!(tree.memo_hits > 0);
+    for (expression_limit, graph_limit, expected) in [
+        (0, 1, SyntaxErrorCode::ExpressionNestingLimitExceeded),
+        (1, 0, SyntaxErrorCode::GraphPatternNestingLimitExceeded),
+    ] {
+        let grammar: Grammar<()> = Grammar::compile_with_nesting(
+            rules(),
+            &[
+                (
+                    &["Expr"],
+                    expression_limit,
+                    SyntaxErrorCode::ExpressionNestingLimitExceeded,
+                ),
+                (
+                    &["Graph"],
+                    graph_limit,
+                    SyntaxErrorCode::GraphPatternNestingLimitExceeded,
+                ),
+            ],
+        )
+        .unwrap();
+        let error = grammar
+            .parse(input, &tokens, "Root", Limits::default())
+            .err()
+            .unwrap();
+        assert_eq!(error.code, expected);
+    }
 }
