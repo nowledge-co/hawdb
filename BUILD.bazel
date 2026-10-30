@@ -1,5 +1,7 @@
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
 load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
+load("@python_test_deps//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_test")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//:benchmarks.bzl", "HAWDB_BENCHMARKS", "HAWDB_BENCHMARK_TARGETS", "hawdb_benchmark_binaries")
@@ -468,6 +470,16 @@ test_suite(
     ],
 )
 
+py_test(
+    name = "pypi_publish_script_test",
+    size = "small",
+    srcs = ["scripts/pypi-publish.test.py"],
+    data = [".github/workflows/pypi.yaml"],
+    legacy_create_init = False,
+    main = "scripts/pypi-publish.test.py",
+    deps = [requirement("packaging")],
+)
+
 sh_test(
     name = "root_unit_partition_script_test",
     size = "small",
@@ -714,6 +726,7 @@ test_suite(
         ":hawdb_wasm_playground_bridge_tests",
         ":hawdb_unit_fast_tests",
         ":root_unit_partition_script_test",
+        ":pypi_publish_script_test",
         ":storage_tla_evidence_script_test",
         ":power_loss_partition_script_test",
         ":mvcc_joined_read_shard_script_test",

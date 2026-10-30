@@ -6,6 +6,16 @@ authoritative; this is a map of test families, not an exhaustive list of every
 Rust test function. Update it when changing a family's scope, build profile,
 execution lane, fixture size, isolation or known failure mode.
 
+`//:pypi_publish_script_test` belongs to the required root
+`//:hawdb_unit_tests` aggregate. It executes the publisher workflow's Python
+preflight and registry verification with temporary distributions and mocked
+PyPI responses. It covers publisher-created attestation sidecars, frozen
+pre-upload hashes, incomplete or conflicting uploads, delayed visibility and
+network failures without credentials, uploads or real sleeps. Replay with
+`bazel test //:pypi_publish_script_test`, or
+`python scripts/pypi-publish.test.py` with `packaging` installed. Actual Trusted
+Publishing and public-install smoke verification remain release-workflow gates.
+
 `//:storage_tla_evidence_script_test` belongs to the required root
 `//:hawdb_unit_tests` aggregate. It validates the actual checked-in TLA model
 inventory through `scripts/check-storage-tla.sh --manifest-json` before running

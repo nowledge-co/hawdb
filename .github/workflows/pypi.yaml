@@ -274,6 +274,12 @@ jobs:
               for item in existing["urls"]:
                   if expected.get(item["filename"]) != item["digests"]["sha256"]:
                       raise SystemExit("Existing PyPI files differ; retry the original publisher without rebuilding")
+          # The publisher adds attestation sidecars to dist. Freeze the verified
+          # distributions outside that directory before handing it to the action.
+          manifest = Path(os.environ["RUNNER_TEMP"]) / "pypi-verified-files.json"
+          manifest.write_text(
+              json.dumps(expected, sort_keys=True) + "\n", encoding="utf-8"
+          )
           PY
       - name: Publish with the configured Trusted Publisher
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
@@ -284,7 +290,6 @@ jobs:
           RELEASE_VERSION: ${{ needs.sdist.outputs.version }}
         run: |
           python - <<'PY'
-          import hashlib
           import json
           import os
           import time
@@ -293,7 +298,8 @@ jobs:
           from pathlib import Path
           from packaging.version import Version
 
-          expected = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in Path("dist").iterdir()}
+          manifest = Path(os.environ["RUNNER_TEMP"]) / "pypi-verified-files.json"
+          expected = json.loads(manifest.read_text(encoding="utf-8"))
           version = str(Version(os.environ["RELEASE_VERSION"]))
           url = f"https://pypi.org/pypi/hawdb/{version}/json"
           for attempt in range(12):
@@ -301,12 +307,20 @@ jobs:
                   with urllib.request.urlopen(url, timeout=30) as response:
                       published = json.load(response)
                   actual = {item["filename"]: item["digests"]["sha256"] for item in published["urls"]}
-                  if all(actual.get(name) == digest for name, digest in expected.items()):
+                  missing = sorted(expected.keys() - actual.keys())
+                  mismatched = {
+                      name: {"expected": digest, "actual": actual[name]}
+                      for name, digest in expected.items()
+                      if name in actual and actual[name] != digest
+                  }
+                  if not missing and not mismatched:
                       print(f"Verified {len(expected)} PyPI file hashes")
                       break
-              except (urllib.error.URLError, TimeoutError):
-                  pass
-              time.sleep(10)
+                  print(f"Attempt {attempt + 1}/12: missing={missing}, mismatched={mismatched}")
+              except (urllib.error.URLError, TimeoutError) as error:
+                  print(f"Attempt {attempt + 1}/12: PyPI metadata request failed: {error}")
+              if attempt < 11:
+                  time.sleep(10)
           else:
               raise SystemExit("PyPI did not expose every expected file with its verified hash")
           PY
