@@ -62,3 +62,6 @@ See [test ownership](TEST_INDEX.md) for the existing regression owners. The
 manual `row_goal_planning` benchmark compares complete embedded calls, selected
 plans, source-work reports and admitted peak memory over uniform and clustered
 cohorts. It is not a CI performance gate or a device-cold storage benchmark.
+The [source-bound Apple Silicon experiment](benchmarks/row_goal_costing_macos_2026_10_31/README.md)
+establishes the selection boundary and consumed-work report change; its final
+matrix does not establish a query-latency improvement.
