@@ -86,7 +86,6 @@ test_suite(
         ":hawdb_executor_unit_tests",
         ":hawdb_morsel_oracle_tests",
         ":hawdb_projection_allocation_tests",
-        ":hawdb_query_observer_release_tests",
     ],
 )
 

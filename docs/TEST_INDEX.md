@@ -1135,7 +1135,9 @@ The ignored executor regression
 `observer::query::tests::query_observer_registration_without_debug_assertions`
 is explicitly selected by `//crates/executor:hawdb_query_observer_release_tests`
 under `--config=release` in the required Linux native-bindings job. Its target
-is manual so the ordinary checked crate suite cannot run it in the wrong mode.
+is manual and is excluded from the ordinary `:hawdb_executor_tests` aggregate.
+Manual tags alone do not prevent a suite from explicitly including a test; the
+checked aggregate must not list this release-only target.
 Its assertion remains intact; moving its execution does not waive coverage.
 Tide gates on the `Bazel native bindings (ubuntu-24.04)` context: the current
 [context policy](https://github.com/nowledge-co/test-infra/blob/5a7b3995d384ed4b3f3ba576fe6d06cd700f27e6/config/prow/cluster/config.yaml#L108)
