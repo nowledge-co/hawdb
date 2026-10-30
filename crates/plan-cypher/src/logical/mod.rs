@@ -28,7 +28,8 @@ pub use hawdb_ddl::{SchemaObjectState, SchemaPropertyType, SchemaTableKind};
 pub use hawdb_expression::{
     CaseColumnSearchRankProjection, CaseEntitySearchRankProjection,
     CoalesceDifferenceProjectionTerm, ComparisonOp, DatePart, ListComprehensionProjection,
-    Predicate, ProjectionExpression, ScalarBinaryOp, SortDirection, SortItem, SortKey,
+    PathFunction, Predicate, ProjectionExpression, ScalarBinaryOp, SortDirection, SortItem,
+    SortKey,
 };
 use std::collections::{BTreeMap, BTreeSet};
 

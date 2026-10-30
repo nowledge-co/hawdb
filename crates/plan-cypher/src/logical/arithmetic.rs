@@ -187,9 +187,13 @@ impl ComposedReturnBinder<'_> {
                     Ok((projection.expression, name))
                 }
             }
-            ReturnExpressionKind::Path(_) => Err(HawDBError::Semantic(
-                "path projection requires a bound path".to_string(),
-            )),
+            ReturnExpressionKind::Path(path) => self.bind(&AstNode {
+                kind: ReturnExpressionKind::Value(AstNode {
+                    kind: ScalarExpressionKind::Path(path.clone()),
+                    span: expression.span,
+                }),
+                span: expression.span,
+            }),
         }
     }
 }
@@ -243,6 +247,7 @@ pub(super) fn scalar_expression_is_scoped(
         | ScalarExpressionKind::JsonValue { expression, .. } => {
             scalar_expression_is_scoped(expression, scope, column_names)
         }
+        ScalarExpressionKind::Path(path) => column_names.contains(path.path_variable()),
         ScalarExpressionKind::Id(_)
         | ScalarExpressionKind::RelationshipType(_)
         | ScalarExpressionKind::DatePart { .. } => false,

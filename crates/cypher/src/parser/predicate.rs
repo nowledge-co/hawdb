@@ -178,7 +178,16 @@ impl Parser<'_> {
         }
         if (matches_ignore_ascii_case(
             &variable,
-            &["coalesce", "left", "lower", "json_value", "case"],
+            &[
+                "coalesce",
+                "left",
+                "lower",
+                "json_value",
+                "case",
+                "length",
+                "nodes",
+                "relationships",
+            ],
         ) || hawdb_core::ListFunction::from_function_name(&variable).is_some())
             && self.peek_char() == Some('(')
         {
@@ -572,6 +581,24 @@ impl Parser<'_> {
         expression: ScalarExpression,
     ) -> Result<PropertyPredicate> {
         self.skip_ws();
+        if self.consume_keyword("IS") {
+            // `p IS [NOT] NULL` over a column such as a path variable.
+            let negated = self.consume_keyword("NOT");
+            self.expect_keyword("NULL")?;
+            let span = expression.span;
+            return Ok(PropertyPredicate::ExpressionEq {
+                expression: AstNode {
+                    kind: ScalarExpressionKind::IsNull {
+                        expression: Box::new(expression),
+                        negated,
+                    },
+                    span,
+                },
+                value: AstNode::synthetic(ScalarExpressionKind::Value(AstNode::synthetic(
+                    ValueExpressionKind::Literal(hawdb_core::Value::Bool(true)),
+                ))),
+            });
+        }
         if self.consume_keyword("IN") {
             let start = expression.span.map_or(self.pos, |span| span.start);
             return Ok(match self.parse_in_right()? {
@@ -714,13 +741,16 @@ impl Parser<'_> {
     }
 
     pub(super) fn parse_match_relationship_pattern(&mut self) -> Result<MatchRelationshipPattern> {
-        self.parse_match_relationship_pattern_with_search(false)
+        self.parse_match_relationship_pattern_with_search(false, false)
             .map(|(pattern, _)| pattern)
     }
 
+    /// `shortest_function` is true inside `shortestPath(...)`, where, as with
+    /// a `SHORTEST` selector, the hop range may omit its upper bound.
     pub(super) fn parse_match_relationship_pattern_with_search(
         &mut self,
         allow_shortest: bool,
+        shortest_function: bool,
     ) -> Result<(MatchRelationshipPattern, PathSearch)> {
         self.expect_char('[')?;
         let (variable, rel_type) = if self.consume_char(':') {
@@ -742,8 +772,15 @@ impl Parser<'_> {
             if allow_shortest && self.consume_keyword("ALL") {
                 self.expect_keyword("SHORTEST")?;
                 search = PathSearch::AllShortest;
+            } else if allow_shortest && self.consume_keyword("ANY") {
+                self.expect_keyword("SHORTEST")?;
+                search = PathSearch::AnyShortest;
             }
-            self.parse_bounded_hops()?
+            if shortest_function || search.is_shortest() {
+                self.parse_shortest_path_hops()?
+            } else {
+                self.parse_bounded_hops()?
+            }
         } else {
             (1, 1)
         };
@@ -755,6 +792,31 @@ impl Parser<'_> {
         };
         self.expect_char(']')?;
         Ok(((variable, rel_type, properties, min_hops, max_hops), search))
+    }
+
+    /// Like [`Self::parse_bounded_hops`], but `*`, `*min..` and `*..` leave
+    /// the upper bound as [`UNBOUNDED_MAX_HOPS`].
+    fn parse_shortest_path_hops(&mut self) -> Result<(usize, usize)> {
+        self.skip_ws();
+        let min = if matches!(self.peek_char(), Some(ch) if ch.is_ascii_digit()) {
+            Some(self.parse_usize()?)
+        } else {
+            None
+        };
+        if self.consume_char('.') {
+            self.expect_char('.')?;
+            let max = if matches!(self.peek_char(), Some(ch) if ch.is_ascii_digit()) {
+                self.parse_usize()?
+            } else {
+                UNBOUNDED_MAX_HOPS
+            };
+            let min = min.unwrap_or(1);
+            if min > max {
+                return Err(self.error("relationship min hop must not exceed max hop"));
+            }
+            return Ok((min, max));
+        }
+        Ok(min.map_or((1, UNBOUNDED_MAX_HOPS), |exact| (exact, exact)))
     }
 
     pub(super) fn parse_bounded_hops(&mut self) -> Result<(usize, usize)> {

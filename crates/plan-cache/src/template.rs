@@ -4,8 +4,9 @@
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_cypher as cypher;
 use hawdb_plan_cypher::{
-    self as planner, AggregateTarget, Aggregation, GraphMatchStep, LogicalPlan, PhysicalPlan,
-    Predicate, Projection, ProjectionExpression, RelationshipCountFilter, SortItem, SortKey,
+    self as planner, AggregateTarget, Aggregation, GraphMatchStep, LogicalPlan, PathFunction,
+    PhysicalPlan, Predicate, Projection, ProjectionExpression, RelationshipCountFilter, SortItem,
+    SortKey,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
@@ -739,6 +740,8 @@ fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
                             marker_use.combine(values_marker_use(properties.values(), name));
                         target
                     }
+                    // Hop bounds and types are literals; endpoints are Node steps.
+                    GraphMatchStep::ShortestPath(_) => continue,
                 };
                 marker_use = marker_use.combine(values_marker_use(node.properties.values(), name));
             }
@@ -1129,6 +1132,7 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
                         bind_value_map(properties, parameters)?;
                         target
                     }
+                    GraphMatchStep::ShortestPath(_) => continue,
                 };
                 bind_value_map(&mut node.properties, parameters)?;
             }

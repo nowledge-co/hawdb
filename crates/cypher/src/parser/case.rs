@@ -18,10 +18,12 @@ use hawdb_core::Result;
 
 impl Parser<'_> {
     pub(super) fn parse_case_expression(&mut self) -> Result<ScalarExpressionKind> {
+        // A simple CASE operand may itself be a condition, as in
+        // `CASE path IS NULL WHEN true THEN -1 ELSE length(path) END`.
         let operand = if self.next_keyword_is("WHEN") {
             None
         } else {
-            Some(Box::new(self.parse_case_scalar()?))
+            Some(Box::new(self.parse_case_or()?))
         };
         let mut branches = Vec::new();
         self.expect_keyword("WHEN")?;

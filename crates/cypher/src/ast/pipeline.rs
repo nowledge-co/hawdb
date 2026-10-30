@@ -113,8 +113,24 @@ pub struct RelationshipPatternKind {
     pub search: PathSearch,
 }
 
+/// Path-selection mode of a relationship pattern.
+///
+/// `AnyShortest` is written `shortestPath(...)` or `* ANY SHORTEST`, and
+/// `AllShortest` is written `allShortestPaths(...)` or `* ALL SHORTEST`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathSearch {
     All,
+    AnyShortest,
     AllShortest,
 }
+
+impl PathSearch {
+    pub fn is_shortest(self) -> bool {
+        matches!(self, Self::AnyShortest | Self::AllShortest)
+    }
+}
+
+/// `max_hops` of a shortest-path pattern written without an upper bound, such
+/// as `[:KNOWS*]` or `[:KNOWS*1..]`. Only shortest-path patterns may be
+/// unbounded; the binder replaces it with an explicit execution hop cap.
+pub const UNBOUNDED_MAX_HOPS: usize = usize::MAX;

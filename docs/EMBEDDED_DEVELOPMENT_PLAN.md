@@ -723,8 +723,11 @@ Nowledge graph path reads support the endpoint-id bounded
 `MATCH p = (a)-[e* ALL SHORTEST 1..3]-(b) WHERE a.id = $from_id AND b.id = $to_id RETURN properties(nodes(p), 'id') AS node_ids, properties(nodes(p), 'name') AS names, length(p) AS hops`
 through a dedicated shortest-path read operator. The operator returns all
 simple paths at the first target depth and only supports `properties(nodes(p),
-...)` plus `length(p)` projections; generic returned path values and
-unbounded shortest-path searches remain outside the supported subset.
+...)` plus `length(p)` projections. Other shortest-path reads use
+`shortestPath(...)` / `allShortestPaths(...)` (and `* ANY|ALL SHORTEST`) as a
+correlated MATCH or OPTIONAL MATCH step over bound endpoints, in any
+direction, with optional upper bounds capped at 256 hops; see
+[shortest-path execution](SHORTEST_PATH_EXECUTION.md).
 Nowledge feed reads support the bounded synthesized-source aggregation
 `MATCH (c:Memory)-[:SYNTHESIZED_FROM]->(s:Memory) WHERE c.id IN $ids WITH c, COLLECT(DISTINCT s.id) AS source_ids RETURN c.id, source_ids`
 as a direct group-by-property plus collected-property list. General `WITH`

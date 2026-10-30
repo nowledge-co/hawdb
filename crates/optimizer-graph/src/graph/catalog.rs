@@ -564,6 +564,19 @@ impl OptimizerCatalog {
             .max(1)
     }
 
+    /// Relationships a traversal of `rel_type` may visit; an untyped pattern
+    /// (empty type) may visit every relationship.
+    pub(super) fn traversable_relationship_count(&self, rel_type: &str) -> u64 {
+        if rel_type.is_empty() {
+            self.rel_type_counts
+                .values()
+                .fold(0u64, |total, count| total.saturating_add(*count))
+                .max(1)
+        } else {
+            self.relationship_count(rel_type)
+        }
+    }
+
     pub(super) fn path_source_distinct_count(
         &self,
         source_label: &str,

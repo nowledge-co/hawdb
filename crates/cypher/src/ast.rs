@@ -225,6 +225,23 @@ pub enum ShortestPathReturnExpression {
     Length {
         path_variable: String,
     },
+    Nodes {
+        path_variable: String,
+    },
+    Relationships {
+        path_variable: String,
+    },
+}
+
+impl ShortestPathReturnExpression {
+    pub fn path_variable(&self) -> &str {
+        match self {
+            Self::NodePropertyList { path_variable, .. }
+            | Self::Length { path_variable }
+            | Self::Nodes { path_variable }
+            | Self::Relationships { path_variable } => path_variable,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -536,6 +553,9 @@ pub enum ScalarExpressionKind {
         start: Option<Box<ScalarExpression>>,
         end: Option<Box<ScalarExpression>>,
     },
+    /// `length(p)`, `nodes(p)`, `relationships(p)` or
+    /// `properties(nodes(p), 'key')` over a bound path variable.
+    Path(ShortestPathReturnExpression),
 }
 
 /// A projection or grouping expression, with aggregation explicit in its type.

@@ -763,7 +763,7 @@ impl GraphStore {
         // pinned by the main UUID lease throughout this operation.
         for reference in &root.checkpoint_references {
             objects
-                .read(*reference)
+                .verify_stored(*reference)
                 .map_err(HawDBError::from_storage_error)?;
         }
         objects

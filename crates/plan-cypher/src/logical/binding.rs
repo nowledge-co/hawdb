@@ -1427,6 +1427,9 @@ pub(super) fn collect_scalar_expression_variables(
             body.remove(variable);
             variables.extend(body);
         }
+        ScalarExpressionKind::Path(path) => {
+            variables.insert(path.path_variable().to_string());
+        }
         ScalarExpressionKind::Case { .. }
         | ScalarExpressionKind::Binary { .. }
         | ScalarExpressionKind::Not(_)

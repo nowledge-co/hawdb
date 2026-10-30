@@ -397,16 +397,23 @@ pub(super) fn plan_projection_with_columns(
     item: &ReturnItem,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Projection> {
-    let AstNode {
-        kind: ReturnExpressionKind::Value(value),
-        ..
-    } = &item.expression
-    else {
-        return Err(HawDBError::Semantic(
-            "expected projection return item".to_string(),
-        ));
+    let value = match &item.expression.kind {
+        ReturnExpressionKind::Value(value) => value,
+        ReturnExpressionKind::Path(path) => {
+            let (expression, name) = plan_path_function(column_scope, path)?;
+            return Ok(Projection {
+                expression,
+                name: item.alias.clone().unwrap_or(name),
+            });
+        }
+        _ => {
+            return Err(HawDBError::Semantic(
+                "expected projection return item".to_string(),
+            ))
+        }
     };
     let (expression, default_name) = match &value.kind {
+        ScalarExpressionKind::Path(path) => plan_path_function(column_scope, path)?,
         ScalarExpressionKind::Variable(variable) => {
             if column_scope.contains(variable) {
                 return Ok(Projection {
@@ -1282,6 +1289,9 @@ pub(super) fn plan_scalar_expression_with_columns(
         ScalarExpressionKind::Lower(expression) => Ok(ProjectionExpression::Lower(Box::new(
             plan_scalar_expression_with_columns(scope, column_scope, expression, parameters)?,
         ))),
+        ScalarExpressionKind::Path(path) => {
+            plan_path_function(column_scope, path).map(|(expression, _)| expression)
+        }
         ScalarExpressionKind::DatePart {
             part,
             variable,
@@ -1545,6 +1555,35 @@ fn bind_list_local(expression: &mut ProjectionExpression, variable: &str) -> Res
 fn unsupported_list_local(variable: &str) -> HawDBError {
     HawDBError::Semantic(format!(
         "this CASE form is not supported over list comprehension variable '{variable}'; use a generic CASE WHEN expression"
+    ))
+}
+
+/// Lowers a path function over a path column bound by a shortest-path MATCH.
+/// Other path aliases are never materialized and cannot be projected.
+pub(super) fn plan_path_function(
+    column_scope: &BTreeSet<String>,
+    path: &hawdb_cypher::ShortestPathReturnExpression,
+) -> Result<(ProjectionExpression, String)> {
+    use hawdb_cypher::ShortestPathReturnExpression as Path;
+    let column = path.path_variable();
+    if !column_scope.contains(column) {
+        return Err(HawDBError::Semantic(format!(
+            "path function requires a path value (bound by shortestPath or allShortestPaths, or carried through WITH), got unknown variable '{column}'"
+        )));
+    }
+    let function = match path {
+        Path::Length { .. } => PathFunction::Length,
+        Path::Nodes { .. } => PathFunction::Nodes,
+        Path::Relationships { .. } => PathFunction::Relationships,
+        Path::NodePropertyList { property, .. } => PathFunction::NodeProperties(property.clone()),
+    };
+    let name = function.display(column);
+    Ok((
+        ProjectionExpression::Path {
+            function,
+            column: column.to_string(),
+        },
+        name,
     ))
 }
 

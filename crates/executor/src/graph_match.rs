@@ -1,13 +1,21 @@
 //! Correlated MATCH execution with one optional boundary around the complete clause.
 
-use crate::binding::{binding_memory_bytes, node_memory_bytes, relationship_memory_bytes, Binding};
-use crate::expression::evaluate_predicate_with_context;
+use crate::binding::{
+    binding_memory_bytes, node_memory_bytes, relationship_memory_bytes, value_memory_bytes, Binding,
+};
+use crate::expression::{
+    evaluate_predicate_with_context, node_value, path_value, relationship_value,
+};
+use crate::kernel::OperatorMemoryTracker;
 use crate::pipeline::{
     runtime_checkpoint, AccountedBindingBatch, BatchControl, BatchExecutionContext, BindingBatch,
     BindingBatchSource,
 };
 use crate::predicate::{label_ids_for_pattern, node_matches_label_pattern};
 use crate::store::{admit_graph_read, AdjacencyReadMemory, GraphExecutionRead, ScanControl};
+use crate::traversal::shortest_path_bfs::{
+    ShortestPathBfs, ShortestPathBfsOutcome, ShortestPathBfsSpec,
+};
 use crate::traversal::{
     visit_bounded_expand_trails, visit_one_hop_relationships_with_context,
     visit_zero_hop_expand_target, BoundedExpandSpec, OneHopRelationshipSpec,
@@ -15,10 +23,12 @@ use crate::traversal::{
 use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryClass};
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_plan_cypher::{
-    GraphEntityKind, GraphMatchNode, GraphMatchProgram, GraphMatchStep, PhysicalPlan,
+    GraphEntityKind, GraphMatchNode, GraphMatchProgram, GraphMatchShortestPath, GraphMatchStep,
+    PhysicalPlan, ShortestPathSelection,
 };
 use hawdb_storage::read_view::{
-    AdmittedNodeRead, AdmittedVec, GraphReadAdmission, GraphReadAllocation,
+    AdmittedNodeRead, AdmittedRelationshipRead, AdmittedVec, GraphReadAdmission,
+    GraphReadAllocation,
 };
 use hawdb_storage::{adjacency::AdjacencyDirection, NodeId, NodeRecord, RelId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -476,7 +486,194 @@ impl MatchRuntime<'_> {
                     },
                 )
             }
+            GraphMatchStep::ShortestPath(step) => {
+                self.visit_shortest_paths(index, row, used, step, emit)
+            }
         }
+    }
+
+    /// Binds the path variable to each selected shortest path between the two
+    /// bound endpoints. Relationships bound earlier in the clause are not
+    /// traversed, and the path's relationships are unavailable to later steps.
+    fn visit_shortest_paths(
+        &self,
+        index: usize,
+        row: &Binding,
+        used: &BTreeSet<RelId>,
+        step: &GraphMatchShortestPath,
+        emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        let endpoint = |name: &str| match row.nodes.get(name) {
+            Some(node) => Ok(Some(node.id)),
+            None if row.values.get(name) == Some(&Value::Null) => Ok(None),
+            None => Err(HawDBError::Execution(format!(
+                "shortestPath endpoint '{name}' is not bound"
+            ))),
+        };
+        let (Some(source), Some(target)) = (endpoint(&step.source)?, endpoint(&step.target)?)
+        else {
+            return Ok(ScanControl::Continue);
+        };
+        let rel_type_id = if step.rel_type.is_empty() {
+            None
+        } else {
+            match self.context.catalog.rel_type_id(&step.rel_type) {
+                Some(id) => Some(id),
+                // An unknown type has no relationships; only a zero-length
+                // path can match.
+                None if source != target => return Ok(ScanControl::Continue),
+                None => None,
+            }
+        };
+        let spec = ShortestPathBfsSpec {
+            source,
+            target,
+            direction: step.direction,
+            min_hops: step.min_hops,
+            max_hops: step.max_hops,
+            bounded: step.bounded,
+            all: step.selection == ShortestPathSelection::All,
+            excluded: used,
+        };
+        let task_context = self.context.task_context;
+        let memory = self.adjacency_memory();
+        let mut tracker = OperatorMemoryTracker::with_account(
+            self.context.memory.blocking_operator_bytes,
+            self.account.clone(),
+        );
+        let mut checkpoint = || runtime_checkpoint(task_context);
+        let mut adjacency =
+            |node: NodeId,
+             direction: AdjacencyDirection,
+             visit: &mut dyn FnMut(RelId, NodeId) -> Result<ScanControl>| {
+                self.store
+                    .visit_ordered_adjacent_relationships_with_allocation(
+                        node,
+                        rel_type_id,
+                        direction,
+                        memory,
+                        &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                            &mut |bytes| memory.admit_node(bytes, 0, task_context).map(Some),
+                            task_context,
+                        ),
+                        &mut |input| {
+                            let (relationship, _allocation) = input.into_parts();
+                            // An undirected self-loop appears in both adjacency
+                            // directions; traverse it once, as other patterns do.
+                            if direction == AdjacencyDirection::Incoming
+                                && step.direction == hawdb_core::RelationshipDirection::Undirected
+                                && relationship.source == relationship.target
+                            {
+                                return Ok(ScanControl::Continue);
+                            }
+                            let neighbor = match direction {
+                                AdjacencyDirection::Outgoing => relationship.target,
+                                AdjacencyDirection::Incoming => relationship.source,
+                            };
+                            visit(relationship.id, neighbor)
+                        },
+                    )
+            };
+        let search =
+            match ShortestPathBfs::search(&spec, &mut adjacency, &mut tracker, &mut checkpoint)? {
+                ShortestPathBfsOutcome::NotFound => return Ok(ScanControl::Continue),
+                ShortestPathBfsOutcome::ZeroLength => {
+                    return self.visit_path(index, row, used, step, (&[source], &[]), emit)
+                }
+                ShortestPathBfsOutcome::Found(search) => search,
+            };
+        let control = search.visit_paths(
+            &mut tracker,
+            &mut checkpoint,
+            &mut |nodes, relationships| {
+                self.visit_path(index, row, used, step, (nodes, relationships), emit)
+            },
+        );
+        (*search).release(&mut tracker);
+        control
+    }
+
+    fn visit_path(
+        &self,
+        index: usize,
+        row: &Binding,
+        used: &BTreeSet<RelId>,
+        step: &GraphMatchShortestPath,
+        path: (&[NodeId], &[RelId]),
+        emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        runtime_checkpoint(self.context.task_context)?;
+        let (node_ids, relationship_ids) = path;
+        let catalog = self.context.catalog;
+        let task_context = self.context.task_context;
+        let mut admit =
+            |bytes: usize| admit_graph_read(self.source_account, task_context, bytes).map(Some);
+        // Owns the copied path payload until the bound row is released.
+        let mut payload = self.source_account.reserve(
+            node_ids
+                .len()
+                .saturating_add(relationship_ids.len())
+                .saturating_mul(std::mem::size_of::<Value>())
+                .saturating_add(256),
+        )?;
+        let mut nodes = Vec::with_capacity(node_ids.len());
+        for &id in node_ids {
+            let AdmittedNodeRead::Node(node) = self.store.node_with_allocation(
+                id,
+                None,
+                &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                    &mut admit,
+                    task_context,
+                ),
+            )?
+            else {
+                return Err(HawDBError::Execution(
+                    "shortestPath node disappeared during MATCH".to_string(),
+                ));
+            };
+            let (node, _allocation) = node.into_parts();
+            let value = node_value(&node, catalog);
+            payload.grow(value_memory_bytes(&value))?;
+            nodes.push(value);
+        }
+        let mut relationships = Vec::with_capacity(relationship_ids.len());
+        for &id in relationship_ids {
+            let AdmittedRelationshipRead::Relationship(relationship) =
+                self.store.relationship_with_allocation(
+                    id,
+                    &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                        &mut admit,
+                        task_context,
+                    ),
+                )?
+            else {
+                return Err(HawDBError::Execution(
+                    "shortestPath relationship disappeared during MATCH".to_string(),
+                ));
+            };
+            let (relationship, _allocation) = relationship.into_parts();
+            let value = relationship_value(&relationship, catalog);
+            payload.grow(value_memory_bytes(&value))?;
+            relationships.push(value);
+        }
+        let value = path_value(nodes, relationships);
+        let _lease = self.source_account.reserve(
+            binding_memory_bytes(row)
+                .saturating_add(step.path.len())
+                .saturating_add(
+                    used.len()
+                        .saturating_add(relationship_ids.len())
+                        .saturating_mul(48),
+                ),
+        )?;
+        let mut next = row.clone();
+        next.values.insert(step.path.clone(), value);
+        if relationship_ids.is_empty() {
+            return self.visit(index + 1, &next, used, emit);
+        }
+        let mut used = used.clone();
+        used.extend(relationship_ids.iter().copied());
+        self.visit(index + 1, &next, &used, emit)
     }
 
     fn visit_target(

@@ -233,6 +233,90 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
         drop(cache);
         assert_eq!(window.retained(), 0);
     }
+    // Keep newly added path IR in the actual cache owner under this same
+    // independent allocator. Spare string capacities and the boxed traversal
+    // descriptor must be charged even when their visible names are short.
+    for selection in [
+        hawdb_plan_cypher::ShortestPathSelection::Any,
+        hawdb_plan_cypher::ShortestPathSelection::All,
+    ] {
+        use hawdb_plan_cypher::{
+            GraphMatchNode, GraphMatchProgram, GraphMatchShortestPath, GraphMatchStep,
+            PathFunction, Projection, ProjectionExpression,
+        };
+        let (query, parameters) = fixture(20);
+        let statement = cypher::parse(&query).unwrap();
+        let window = Window::new();
+        let mut cache = PlanCache::with_byte_limits(Some(8), Some(16 << 20), Some(8 << 20));
+        let (key, mut value, _) = cached(&query, &statement, &parameters);
+        let spare = |value: &str| {
+            let mut owned = String::with_capacity(1024);
+            owned.push_str(value);
+            owned
+        };
+        let program = GraphMatchProgram {
+            imports: Vec::new(),
+            introduced: vec!["a".into(), "b".into(), "p".into()],
+            steps: vec![
+                GraphMatchStep::Node(GraphMatchNode {
+                    variable: "a".into(),
+                    label: "Person".into(),
+                    properties: BTreeMap::from([("id".into(), Value::Int(1))]),
+                }),
+                GraphMatchStep::Node(GraphMatchNode {
+                    variable: "b".into(),
+                    label: "Person".into(),
+                    properties: BTreeMap::from([("id".into(), Value::Int(7))]),
+                }),
+                GraphMatchStep::ShortestPath(Box::new(GraphMatchShortestPath {
+                    path: spare("p"),
+                    source: spare("a"),
+                    target: spare("b"),
+                    rel_type: spare("KNOWS"),
+                    direction: cypher::RelationshipDirection::Outgoing,
+                    min_hops: 1,
+                    max_hops: 4,
+                    bounded: true,
+                    selection,
+                })),
+            ],
+            predicate: None,
+            optional: true,
+        };
+        let items = [
+            PathFunction::Length,
+            PathFunction::Nodes,
+            PathFunction::Relationships,
+            PathFunction::NodeProperties(spare("name")),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, function)| Projection {
+            name: format!("path_field_{index}"),
+            expression: ProjectionExpression::Path {
+                function,
+                column: spare("p"),
+            },
+        })
+        .collect();
+        Arc::get_mut(&mut value).unwrap().physical_template = PhysicalPlan::ProjectExec {
+            items,
+            input: Box::new(PhysicalPlan::GraphMatchExec {
+                program,
+                input: None,
+            }),
+        };
+        let charge = key
+            .retained_heap_bytes()
+            .unwrap()
+            .checked_add(value.retained_heap_bytes().unwrap())
+            .unwrap();
+        cache.insert_weighted(key, value, charge);
+        assert_eq!(cache.stats().entries, 1);
+        assert!(window.retained() <= cache.charged_bytes().unwrap());
+        drop(cache);
+        assert_eq!(window.retained(), 0);
+    }
     let (query, parameters) = fixture(20);
     let statement = cypher::parse(&query).unwrap();
     let entry_charge = cached(&query, &statement, &parameters).2;

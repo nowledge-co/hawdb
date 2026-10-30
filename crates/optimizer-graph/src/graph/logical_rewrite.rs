@@ -437,7 +437,8 @@ fn collect_projection_columns(
         ProjectionExpression::ColumnDefaultIfNullOrEq { column, .. }
         | ProjectionExpression::ColumnValueDefaultIfNull { column, .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { column, .. }
-        | ProjectionExpression::ColumnProperty { column, .. } => {
+        | ProjectionExpression::ColumnProperty { column, .. }
+        | ProjectionExpression::Path { column, .. } => {
             columns.insert(column.clone());
             true
         }
@@ -479,6 +480,7 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         | ProjectionExpression::ColumnValueDefaultIfNull { .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { .. }
         | ProjectionExpression::ColumnProperty { .. }
+        | ProjectionExpression::Path { .. }
         | ProjectionExpression::CaseColumnSearchRank(_) => true,
         ProjectionExpression::Coalesce(expressions) => expressions
             .iter()

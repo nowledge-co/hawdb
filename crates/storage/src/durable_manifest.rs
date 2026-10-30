@@ -19,7 +19,7 @@ use crate::artifact_files::{
     checkpoint_generation_file, property_projection_manifest_generation_file,
     property_spill_manifest_generation_file, wal_generation_file,
 };
-use crate::checkpoint_closure::{read_closure_artifact, CheckpointArtifactInput};
+use crate::checkpoint_closure::{digest_closure_artifact, CheckpointArtifactInput};
 use crate::file_io::{self as fs, File};
 use crate::immutable_object::ObjectKind;
 use crate::text::parse_u64;
@@ -432,14 +432,14 @@ impl DurableManifest {
                     path.display()
                 )));
             };
-            let bytes = read_closure_artifact(&path, "read manifest-bound artifact")?;
-            if bytes.len() as u64 != byte_length {
+            let digest = digest_closure_artifact(&path, kind, "read manifest-bound artifact")?;
+            if digest.byte_length != byte_length {
                 return Err(HawDBError::Storage(format!(
                     "manifest-bound artifact {} length differs from its binding",
                     path.display()
                 )));
             }
-            if hawdb_integrity::sha256(&bytes) != content_sha256 {
+            if digest.content.sha256 != content_sha256 {
                 return Err(HawDBError::Storage(format!(
                     "manifest-bound artifact {} digest differs from its binding",
                     path.display()
@@ -447,11 +447,7 @@ impl DurableManifest {
             }
             inputs.push(CheckpointArtifactInput {
                 path,
-                reference: crate::immutable_object::ObjectReference::for_bytes(
-                    kind,
-                    kind.current_format_version(),
-                    &bytes,
-                ),
+                reference: digest.reference,
             });
             Ok(())
         };

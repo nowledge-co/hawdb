@@ -30,7 +30,8 @@ rounding and caller-owned in-flight copies; these checks are not RSS or latency
 benchmarks. The facade's `api::plan_cache::retention_allocation` oracle belongs
 to `//:hawdb_unit_general_tests`: it observes complete private cache keys,
 physical IR, traces, shared metadata, both scoring-key forms and table capacity
-at 20/100/512 candidates, owned list expressions and byte-driven eviction. Its thread-local
+at 20/100/512 candidates, owned list/path expressions, boxed shortest-path
+descriptors with spare string capacities (Any/All selection), and byte-driven eviction. Its thread-local
 observer is enabled only in that one unit test. Replay with `cargo test --locked
 -p hawdb --lib retention_allocation -- --test-threads=1 --nocapture`.
 The same existing root owner covers `simple_case_dispatch` physical cache hits,
@@ -120,6 +121,18 @@ and the overflow check through partial and buffered paths), the
 root `api::tests::aggregates`. Replay with `cargo test --locked -p
 hawdb-executor --lib aggregate` and `cargo test --locked -p hawdb --lib --
 api::tests::aggregates`. No lane, profile or deadline changes.
+
+General `shortestPath` / `allShortestPaths` coverage is owned by existing
+targets: executor `traversal::shortest_path_bfs::tests` (directions,
+deterministic single/all selection, parallel relationships, equal endpoints,
+bounded and capped hops, excluded relationships, operator-budget refusal,
+cancellation during discovery and enumeration), `hawdb-cypher` parser tests,
+`logical::pipeline::tests` binder/normalization tests and root
+`api::tests::shortest_paths` (IC13 OPTIONAL MATCH, WITH/ORDER BY/LIMIT,
+exact-parameter plan caching, hop cap and blocking-budget failures). Replay with
+`cargo test --locked -p hawdb-executor --lib shortest_path_bfs` and
+`cargo test --locked -p hawdb --lib api::tests::shortest_paths`. No lane,
+profile or deadline changes. See [contract](SHORTEST_PATH_EXECUTION.md).
 
 The adaptive execution family extends those existing executor owners with
 encoded non-expression key selection, complete-record validation, 64-KiB nested

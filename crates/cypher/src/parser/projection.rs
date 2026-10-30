@@ -205,7 +205,15 @@ impl Parser<'_> {
             } else if first.eq_ignore_ascii_case("case")
                 || ((matches_ignore_ascii_case(
                     &first,
-                    &["coalesce", "left", "lower", "json_value"],
+                    &[
+                        "coalesce",
+                        "left",
+                        "lower",
+                        "json_value",
+                        "length",
+                        "nodes",
+                        "relationships",
+                    ],
                 ) || hawdb_core::ListFunction::from_function_name(&first).is_some())
                     && self.peek_char() == Some('('))
             {
@@ -474,6 +482,9 @@ impl Parser<'_> {
                 length,
             });
         }
+        if let Some(path) = self.parse_path_function(&variable)? {
+            return Ok(ScalarExpressionKind::Path(path));
+        }
         if variable.eq_ignore_ascii_case("lower") && self.consume_char('(') {
             let expression = self.parse_scalar_expression()?;
             self.expect_char(')')?;
@@ -527,6 +538,46 @@ impl Parser<'_> {
         } else {
             Ok(ScalarExpressionKind::Variable(variable))
         }
+    }
+
+    /// Parses the remainder of `length(p)`, `nodes(p)`, `relationships(p)` or
+    /// `properties(nodes(p), 'key')` after the function name.
+    fn parse_path_function(&mut self, name: &str) -> Result<Option<ShortestPathReturnExpression>> {
+        let checkpoint = self.checkpoint();
+        if !matches_ignore_ascii_case(name, &["length", "nodes", "relationships", "properties"])
+            || !self.consume_char('(')
+        {
+            return Ok(None);
+        }
+        let path = if name.eq_ignore_ascii_case("properties") {
+            if !self.consume_keyword("nodes") || !self.consume_char('(') {
+                // `properties(n)` over a node or relationship is not a path function.
+                self.restore(checkpoint);
+                return Ok(None);
+            }
+            let path_variable = self.parse_ident()?;
+            self.expect_char(')')?;
+            self.expect_char(',')?;
+            let property = match self.parse_value()?.kind {
+                ValueExpressionKind::Literal(hawdb_core::Value::String(property)) => property,
+                _ => return Err(self.error("node property projection requires a string key")),
+            };
+            ShortestPathReturnExpression::NodePropertyList {
+                path_variable,
+                property,
+            }
+        } else {
+            let path_variable = self.parse_ident()?;
+            if name.eq_ignore_ascii_case("length") {
+                ShortestPathReturnExpression::Length { path_variable }
+            } else if name.eq_ignore_ascii_case("nodes") {
+                ShortestPathReturnExpression::Nodes { path_variable }
+            } else {
+                ShortestPathReturnExpression::Relationships { path_variable }
+            }
+        };
+        self.expect_char(')')?;
+        Ok(Some(path))
     }
 
     fn parse_case_lower_property_default_expression(&mut self) -> Result<ScalarExpressionKind> {

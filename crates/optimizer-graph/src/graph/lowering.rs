@@ -1765,6 +1765,7 @@ fn collect_projection_properties(
         | ProjectionExpression::RelationshipType { .. }
         | ProjectionExpression::Column(_)
         | ProjectionExpression::ColumnProperty { .. }
+        | ProjectionExpression::Path { .. }
         | ProjectionExpression::ColumnDefaultIfNullOrEq { .. }
         | ProjectionExpression::ColumnValueDefaultIfNull { .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { .. }

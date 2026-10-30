@@ -256,7 +256,8 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
         | ProjectionExpression::ColumnValueDefaultIfNull { .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { .. }
         | ProjectionExpression::Column(_)
-        | ProjectionExpression::ColumnProperty { .. } => false,
+        | ProjectionExpression::ColumnProperty { .. }
+        | ProjectionExpression::Path { .. } => false,
     }
 }
 

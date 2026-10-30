@@ -1,5 +1,7 @@
 use super::*;
-use crate::{GraphEntityKind, GraphMatchNode, GraphMatchProgram, GraphMatchStep};
+use crate::{
+    GraphEntityKind, GraphMatchNode, GraphMatchProgram, GraphMatchStep, ShortestPathSelection,
+};
 
 pub(super) fn write_program(output: &mut String, program: &GraphMatchProgram) {
     output.push_str(if program.optional {
@@ -59,6 +61,34 @@ pub(super) fn write_program(output: &mut String, program: &GraphMatchProgram) {
                 output.push_str(&max_hops.to_string());
                 output.push(',');
                 write_node(output, target);
+                output.push(')');
+            }
+            GraphMatchStep::ShortestPath(step) => {
+                output.push_str(match step.selection {
+                    ShortestPathSelection::Any => "shortest_path(",
+                    ShortestPathSelection::All => "all_shortest_paths(",
+                });
+                write_identifier(output, &step.path);
+                output.push(',');
+                write_identifier(output, &step.source);
+                output.push(',');
+                write_identifier(output, &step.rel_type);
+                output.push(',');
+                output.push_str(match step.direction {
+                    RelationshipDirection::Outgoing => "out",
+                    RelationshipDirection::Incoming => "in",
+                    RelationshipDirection::Undirected => "both",
+                });
+                output.push(',');
+                output.push_str(&step.min_hops.to_string());
+                output.push_str("..");
+                output.push_str(&step.max_hops.to_string());
+                output.push_str(if step.bounded {
+                    ",bounded,"
+                } else {
+                    ",capped,"
+                });
+                write_identifier(output, &step.target);
                 output.push(')');
             }
         }
