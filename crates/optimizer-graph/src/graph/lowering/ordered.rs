@@ -5,6 +5,42 @@ use super::*;
 use hawdb_core::PropertyType;
 use hawdb_plan_cypher::{ComparisonOp, CompositeOrderedSeek, SortDirection};
 
+/// Marginal NDV cannot distinguish uniform matches from a rejected prefix.
+/// Only discount an ordered alternative when its residual cannot reject access
+/// rows. This is a local exact implication, not a statistical uniqueness proof.
+pub(super) fn prefix_consumption_is_proven(plan: &PhysicalPlan) -> bool {
+    let PhysicalPlan::NodeProjectionScanExec {
+        variable,
+        access: NodeProjectionAccess::CompositeOrdered { seek },
+        predicate,
+        ..
+    } = plan
+    else {
+        return false;
+    };
+    fn implied(predicate: &Predicate, variable: &str, seek: &CompositeOrderedSeek) -> bool {
+        match predicate {
+            Predicate::ConstantBool(true) => true,
+            Predicate::And(parts) => parts.iter().all(|part| implied(part, variable, seek)),
+            Predicate::PropertyEq {
+                variable: source,
+                property,
+                value,
+            } => {
+                source == variable
+                    && seek
+                        .equality_prefix
+                        .iter()
+                        .any(|(key, expected)| key == property && expected == value)
+            }
+            _ => false,
+        }
+    }
+    predicate
+        .as_ref()
+        .is_none_or(|predicate| implied(predicate, variable, seek))
+}
+
 fn conjuncts<'a>(predicate: &'a Predicate, output: &mut Vec<&'a Predicate>) {
     if let Predicate::And(parts) = predicate {
         for part in parts {
@@ -141,9 +177,15 @@ fn access_predicates(access: &NodeProjectionAccess, variable: &str) -> Option<Ve
         };
     Some(match access {
         NodeProjectionAccess::LabelScan => vec![],
-        NodeProjectionAccess::PropertyValues { property, values } => vec![Predicate::Or(
-            values.iter().map(|value| eq(property, value)).collect(),
-        )],
+        NodeProjectionAccess::PropertyValues { property, values } => {
+            if let [value] = values.as_slice() {
+                vec![eq(property, value)]
+            } else {
+                vec![Predicate::Or(
+                    values.iter().map(|value| eq(property, value)).collect(),
+                )]
+            }
+        }
         NodeProjectionAccess::CompositeEquality { predicates } => predicates
             .iter()
             .map(|(property, value)| eq(property, value))
@@ -199,6 +241,13 @@ pub(super) fn candidate(
     let second = property(&order[1].key, items, variable)?;
     let mut predicates = access_predicates(access, variable)?;
     if let Some(predicate) = predicate {
+        // An access constraint can also remain in the residual filter. Keep
+        // one exact syntactic copy: changing access must not make costing
+        // multiply the same selectivity twice. These synthesized constraints
+        // are pure property comparisons; no errorful expression is reordered.
+        let mut residual_parts = Vec::new();
+        conjuncts(predicate, &mut residual_parts);
+        predicates.retain(|part| !residual_parts.contains(&part));
         predicates.push(predicate.clone());
     }
     let predicate = Predicate::And(predicates);

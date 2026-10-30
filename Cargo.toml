@@ -345,3 +345,7 @@ harness = false
 [[bench]]
 name = "mem_query_resources"
 harness = false
+
+[[bench]]
+name = "row_goal_planning"
+harness = false
