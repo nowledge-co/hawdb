@@ -111,7 +111,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     )));
     std::fs::create_dir(&directory.0)?;
     for rows in [64, 1024] {
-        for dimension in [32, 384, 1536] {
+        for dimension in [3, 32, 384, 1536] {
             let mut index =
                 SearchIndex::open(directory.0.join(format!("resident-{rows}-{dimension}")))?;
             for row in 0..rows {

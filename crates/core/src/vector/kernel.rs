@@ -194,9 +194,47 @@ fn scalar_values(
     mode: Mode,
     sums: &mut Sums,
 ) -> bool {
-    for (left, right) in left.zip(right) {
-        if !scalar_coordinate(left, right, mode, sums) {
-            return false;
+    // Select the operation outside the coordinate loop. Keep this portable
+    // reference as direct arithmetic, without a per-coordinate helper/dispatch.
+    match mode {
+        Mode::Cosine => {
+            for (left, right) in left.zip(right) {
+                if !left.is_finite() || !right.is_finite() {
+                    return false;
+                }
+                let (left, right) = (f64::from(left), f64::from(right));
+                sums.dot += left * right;
+                sums.left += left * left;
+                sums.right += right * right;
+            }
+        }
+        Mode::PreparedCosine => {
+            for (left, right) in left.zip(right) {
+                if !left.is_finite() || !right.is_finite() {
+                    return false;
+                }
+                let (left, right) = (f64::from(left), f64::from(right));
+                sums.dot += left * right;
+                sums.right += right * right;
+            }
+        }
+        Mode::Euclidean => {
+            for (left, right) in left.zip(right) {
+                if !left.is_finite() || !right.is_finite() {
+                    return false;
+                }
+                let (left, right) = (f64::from(left), f64::from(right));
+                sums.squared += (left - right).powi(2);
+            }
+        }
+        Mode::Norm => {
+            for (left, right) in left.zip(right) {
+                if !left.is_finite() || !right.is_finite() {
+                    return false;
+                }
+                let left = f64::from(left);
+                sums.left += left * left;
+            }
         }
     }
     true

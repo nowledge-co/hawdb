@@ -184,6 +184,13 @@ impl VectorDistance {
         if left.dimension != right.dimension {
             return Err(invalid("distance dimensions must match"));
         }
+        if distance_kernel_name(self, left.dimension.get() as usize) == "scalar" {
+            return self.scalar_distance_coordinates(
+                left.coordinates(),
+                right.coordinates(),
+                checkpoint,
+            );
+        }
         self.distance_inputs(
             Input::Encoded(&left.encoded[4..]),
             Input::Encoded(&right.encoded[4..]),
@@ -205,6 +212,13 @@ impl VectorDistance {
         if left.is_empty() || u32::try_from(left.len()).is_err() {
             return Err(invalid("dimension must be a positive u32"));
         }
+        if distance_kernel_name(self, left.len()) == "scalar" {
+            return self.scalar_distance_coordinates(
+                left.iter().copied(),
+                right.iter().copied(),
+                checkpoint,
+            );
+        }
         self.distance_inputs(Input::Slice(left), Input::Slice(right), checkpoint)
     }
 
@@ -218,6 +232,13 @@ impl VectorDistance {
     ) -> Result<f64> {
         if left.len() != right.dimension.get() as usize {
             return Err(invalid("distance dimensions must match"));
+        }
+        if distance_kernel_name(self, left.len()) == "scalar" {
+            return self.scalar_distance_coordinates(
+                left.iter().copied(),
+                right.coordinates(),
+                checkpoint,
+            );
         }
         self.distance_inputs(
             Input::Slice(left),
@@ -238,6 +259,44 @@ impl VectorDistance {
         };
         let sums = Kernel::for_mode(mode, left.len()).calculate(left, right, mode, checkpoint)?;
         finish_distance(self, &sums, sums.left.sqrt())
+    }
+
+    fn scalar_distance_coordinates(
+        self,
+        left: impl Iterator<Item = f32>,
+        right: impl Iterator<Item = f32>,
+        mut checkpoint: impl FnMut() -> Result<()>,
+    ) -> Result<f64> {
+        let (mut dot, mut left_norm, mut right_norm, mut squared) =
+            (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for (index, (left, right)) in left.zip(right).enumerate() {
+            // Read at most 64 KiB across both operands between checkpoints.
+            if index % (64 * 1024 / (2 * std::mem::size_of::<f32>())) == 0 {
+                checkpoint()?;
+            }
+            if !left.is_finite() || !right.is_finite() {
+                return Err(invalid("coordinates must be finite"));
+            }
+            let (left, right) = (f64::from(left), f64::from(right));
+            match self {
+                Self::Euclidean => squared += (left - right).powi(2),
+                Self::Cosine => {
+                    dot += left * right;
+                    left_norm += left * left;
+                    right_norm += right * right;
+                }
+            }
+        }
+        checkpoint()?;
+        match self {
+            Self::Euclidean => Ok(squared.sqrt()),
+            Self::Cosine if left_norm == 0.0 || right_norm == 0.0 => {
+                Err(invalid("cosine distance requires nonzero vectors"))
+            }
+            Self::Cosine => {
+                Ok(1.0 - (dot / (left_norm.sqrt() * right_norm.sqrt())).clamp(-1.0, 1.0))
+            }
+        }
     }
 
     pub fn evaluate(self, left: ValueRef<'_>, right: ValueRef<'_>) -> Result<Option<f64>> {
@@ -329,6 +388,11 @@ impl<'a> PreparedVectorQuery<'a> {
         if self.coordinates.len() != right.len() {
             return Err(invalid("distance dimensions must match"));
         }
+        if metric == VectorDistance::Euclidean
+            && distance_kernel_name(metric, right.len()) == "scalar"
+        {
+            return metric.distance_slices_with_work(self.coordinates, right, checkpoint);
+        }
         self.distance_input(metric, Input::Slice(right), checkpoint)
     }
 
@@ -340,6 +404,11 @@ impl<'a> PreparedVectorQuery<'a> {
     ) -> Result<f64> {
         if self.coordinates.len() != right.dimension.get() as usize {
             return Err(invalid("distance dimensions must match"));
+        }
+        if metric == VectorDistance::Euclidean
+            && distance_kernel_name(metric, self.coordinates.len()) == "scalar"
+        {
+            return metric.distance_slice_to_vector_with_work(self.coordinates, right, checkpoint);
         }
         self.distance_input(metric, Input::Encoded(&right.encoded[4..]), checkpoint)
     }

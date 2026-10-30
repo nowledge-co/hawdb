@@ -7669,11 +7669,19 @@ impl<'a> CosineQuery<'a> {
     fn new(query: &'a [f32]) -> Self {
         Self {
             query,
-            prepared: hawdb_core::vector::PreparedVectorQuery::new(query).ok(),
+            prepared: (query.len() >= 16)
+                .then(|| hawdb_core::vector::PreparedVectorQuery::new(query).ok())
+                .flatten(),
         }
     }
 
     fn with_work(query: &'a [f32], mut checkpoint: impl FnMut() -> Result<()>) -> Result<Self> {
+        if query.len() < 16 {
+            return Ok(Self {
+                query,
+                prepared: None,
+            });
+        }
         let mut failure = None;
         let prepared = hawdb_core::vector::PreparedVectorQuery::with_work(query, || {
             checkpoint().map_err(|error| {
