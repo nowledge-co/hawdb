@@ -11,6 +11,8 @@ use hawdb::{
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::error::Error;
+use std::io::{self, BufRead, Write};
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -45,6 +47,82 @@ fn options() -> SearchQueryOptions {
         metadata_filters: BTreeMap::new(),
         policy_epoch: None,
     }
+}
+
+fn build_file(path: &Path, rows: usize, dimension: usize) -> Result<(), Box<dyn Error>> {
+    // A persistent comparison fixture must be newly created by this invocation.
+    std::fs::create_dir(path)?;
+    let mut writer = SearchOutOfCoreGenerationWriter::create(
+        path,
+        SearchOutOfCoreGenerationBuildOptions {
+            vector_backend: Some(VectorIndexBackend::default()),
+            source_graph_commit_epoch: Some(1),
+            embedding_manifest: Some(SearchEmbeddingManifest {
+                model: "hawdb-exact-distance-profile".into(),
+                version: Some("v1".into()),
+                dimension,
+            }),
+            ..Default::default()
+        },
+    )?;
+    for row in 0..rows {
+        writer.push(document(row, dimension))?;
+    }
+    writer.finish()?;
+    Ok(())
+}
+
+fn file_worker(path: &Path, rows: usize, dimension: usize) -> Result<(), Box<dyn Error>> {
+    let reader = SearchOutOfCoreReader::open(path)?;
+    let embedding = vector(999_999, dimension);
+    println!("READY");
+    io::stdout().flush()?;
+    for (repetition, line) in io::stdin().lock().lines().enumerate() {
+        let exact = match line?.as_str() {
+            "default" => false,
+            "exact" => true,
+            "quit" => return Ok(()),
+            _ => return Err("expected default, exact or quit".into()),
+        };
+        let start = Instant::now();
+        let output = if exact {
+            reader.search_with_options_exact("", Some(&embedding), SearchMode::Vector, options())?
+        } else {
+            reader.search_with_options("", Some(&embedding), SearchMode::Vector, options())?
+        };
+        let nanos = start.elapsed().as_nanos();
+        let metrics = output.metrics;
+        println!(
+            "QUERY_RESULT {}",
+            json!({
+                "residency":"file","rows":rows,"dimension":dimension,"exact":exact,
+                "repetition":repetition,"elapsed_ns":nanos,
+                "hits":output.result.hits.iter().map(|hit|
+                    (&hit.id,hit.vector_score.to_bits())).collect::<Vec<_>>(),
+                "metrics":{
+                    "segment_range_reads":metrics.segment_range_reads,
+                    "segment_bytes_read":metrics.segment_bytes_read,
+                    "metadata_segment_bytes_read":metrics.metadata_segment_bytes_read,
+                    "vector_segment_bytes_read":metrics.vector_segment_bytes_read,
+                    "hydration_segment_bytes_read":metrics.hydration_segment_bytes_read,
+                    "vector_bytes_read":metrics.vector_bytes_read,
+                    "rabitq_payload_bytes_read":metrics.rabitq_payload_bytes_read,
+                    "hydrated_documents":metrics.hydrated_documents,
+                    "hydrated_bytes":metrics.hydrated_bytes,
+                },
+                "retrievers":output.result.retrievers.iter().map(|report| json!({
+                    "name":report.name,"backend":report.backend,
+                    "kernel":report.candidate_scan_kernel,
+                    "scored_documents":report.candidate_scan_scored_document_count,
+                    "reranked_candidates":report.reranked_candidate_count,
+                    "raw_vector_bytes":report.raw_vector_bytes_read,
+                    "candidate_working_bytes":report.candidate_scan_admitted_working_bytes,
+                })).collect::<Vec<_>>(),
+            })
+        );
+        io::stdout().flush()?;
+    }
+    Ok(())
 }
 
 fn measure(
@@ -103,6 +181,24 @@ impl Drop for Directory {
 fn main() -> Result<(), Box<dyn Error>> {
     if cfg!(debug_assertions) {
         return Err("use the repository-wide release profile".into());
+    }
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if !args.is_empty() {
+        let [command, path, rows, dimension] = args.as_slice() else {
+            return Err(
+                "expected build-file|file-worker <new-fixture-path> <rows> <dimension>".into(),
+            );
+        };
+        let rows = rows.parse::<usize>()?;
+        let dimension = dimension.parse::<usize>()?;
+        if rows == 0 || dimension == 0 {
+            return Err("rows and dimension must be positive".into());
+        }
+        return match command.as_str() {
+            "build-file" => build_file(Path::new(path), rows, dimension),
+            "file-worker" => file_worker(Path::new(path), rows, dimension),
+            _ => Err("expected build-file or file-worker".into()),
+        };
     }
     let directory = Directory(std::env::temp_dir().join(format!(
         "hawdb-exact-profile-{}-{}",

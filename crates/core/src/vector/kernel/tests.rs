@@ -184,6 +184,43 @@ fn prepared_distances_and_positive_scores_preserve_scalar_bits() {
 }
 
 #[test]
+fn prepared_tiny_distances_preserve_scalar_errors_and_work() {
+    for dimension in [1, 3, 15, 16] {
+        let left = vec![1.0; dimension];
+        let prepared = PreparedVectorQuery::new(&left).unwrap();
+        for value in [0.0, 0.25, f32::MAX, f32::NAN] {
+            let right = vec![value; dimension];
+            for metric in [VectorDistance::Cosine, VectorDistance::Euclidean] {
+                for cancel_at in [0, 1, usize::MAX] {
+                    let run = |prepared_path: bool| {
+                        let mut calls = 0;
+                        let checkpoint = || {
+                            let current = calls;
+                            calls += 1;
+                            if current == cancel_at {
+                                Err(crate::HawDBError::ProjectionBusy)
+                            } else {
+                                Ok(())
+                            }
+                        };
+                        let result = if prepared_path {
+                            prepared.distance_slices_with_work(metric, &right, checkpoint)
+                        } else {
+                            metric.distance_slices_with_work(&left, &right, checkpoint)
+                        };
+                        (
+                            result.map(f64::to_bits).map_err(|error| error.to_string()),
+                            calls,
+                        )
+                    };
+                    assert_eq!(run(true), run(false));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn errors_and_work_boundaries_preserve_scalar_precedence() {
     for kernel in kernels() {
         for dimension in [1, 7, 8192, 8193, 20000] {

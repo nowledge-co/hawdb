@@ -5108,8 +5108,22 @@ fn validate_unselected_embedding(input: &str) -> Result<(usize, bool)> {
     }
     let mut dimension = 0usize;
     let mut finite = true;
-    for raw in input.split(',') {
-        if !is_common_finite_decimal(raw) {
+    let mut remaining = input;
+    loop {
+        // Locate the delimiter while validating canonical finite decimals. Do
+        // not scan every common coordinate twice through split + digit checks.
+        let (raw, rest, common) = match common_finite_decimal_end(remaining.as_bytes()) {
+            Some(end) => (
+                &remaining[..end],
+                (end < remaining.len()).then(|| &remaining[end + 1..]),
+                true,
+            ),
+            None => match remaining.split_once(',') {
+                Some((raw, rest)) => (raw, Some(rest), false),
+                None => (remaining, None, false),
+            },
+        };
+        if !common {
             let value = raw
                 .parse::<f32>()
                 .map_err(|_| HawDBError::Storage(format!("invalid embedding value: {raw}")))?;
@@ -5117,10 +5131,40 @@ fn validate_unselected_embedding(input: &str) -> Result<(usize, bool)> {
             finite &= value.is_finite();
         }
         dimension += 1;
+        match rest {
+            Some(rest) => remaining = rest,
+            None => return Ok((dimension, finite)),
+        }
     }
-    Ok((dimension, finite))
 }
 
+/// Ends only at a comma or EOF after an ASCII decimal known to be finite.
+/// Other forms use the original f32 parser for just that coordinate.
+fn common_finite_decimal_end(value: &[u8]) -> Option<usize> {
+    let mut end = usize::from(value.first() == Some(&b'-'));
+    let integer = *value.get(end)?;
+    if integer != b'0' && integer != b'1' {
+        return None;
+    }
+    end += 1;
+    if integer == b'0' && value.get(end) == Some(&b'.') {
+        end += 1;
+        let fraction = end;
+        while value.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+        if end == fraction {
+            return None;
+        }
+    }
+    match value.get(end) {
+        None | Some(b',') => Some(end),
+        _ => None,
+    }
+}
+
+// The manual selected-materialization prototype retains its original guard.
+#[cfg(test)]
 fn is_common_finite_decimal(value: &str) -> bool {
     // These normalized decimal forms are finite without conversion. All other
     // representations retain the same parser, including exponent and overflow cases.

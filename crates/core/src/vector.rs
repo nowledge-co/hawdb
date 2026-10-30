@@ -389,8 +389,11 @@ impl<'a> PreparedVectorQuery<'a> {
         if self.coordinates.len() != right.len() {
             return Err(invalid("distance dimensions must match"));
         }
-        if metric == VectorDistance::Euclidean
-            && distance_kernel_name(metric, right.len()) == "scalar"
+        // Tiny vectors cannot amortize the prepared-kernel wrapper. Keep the
+        // direct ordered scalar path even when a query norm is available.
+        if self.coordinates.len() < 16
+            || (metric == VectorDistance::Euclidean
+                && distance_kernel_name(metric, right.len()) == "scalar")
         {
             return metric.distance_slices_with_work(self.coordinates, right, checkpoint);
         }
@@ -406,8 +409,9 @@ impl<'a> PreparedVectorQuery<'a> {
         if self.coordinates.len() != right.dimension.get() as usize {
             return Err(invalid("distance dimensions must match"));
         }
-        if metric == VectorDistance::Euclidean
-            && distance_kernel_name(metric, self.coordinates.len()) == "scalar"
+        if self.coordinates.len() < 16
+            || (metric == VectorDistance::Euclidean
+                && distance_kernel_name(metric, self.coordinates.len()) == "scalar")
         {
             return metric.distance_slice_to_vector_with_work(self.coordinates, right, checkpoint);
         }

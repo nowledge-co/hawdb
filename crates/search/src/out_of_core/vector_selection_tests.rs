@@ -249,6 +249,13 @@ fn unmaterialized_embedding_validation_matches_float_parsing() {
         "0.\u{ff11}",
         "\u{2212}0.1",
         "NaN,bad",
+        "0,0.,1.,-0.25,1e2",
+        "0.125,NaN,-0.25,bad",
+        "0.125,inf,-0.25,0.5",
+        "0,0.5,,1",
+        "-1,",
+        "0.25,-0.5,0.\u{ff11}",
+        "0.25,-0.5,\u{2212}0.1",
     ] {
         check(input);
     }
@@ -256,6 +263,10 @@ fn unmaterialized_embedding_validation_matches_float_parsing() {
         for digit in ['0', '1', '9'] {
             check(&format!("0.{}", digit.to_string().repeat(length)));
             check(&format!("-0.{}", digit.to_string().repeat(length)));
+        }
+        let common = format!("-0.{}", "1".repeat(length));
+        for suffix in ["0.5", "+0.5", "1e39", "NaN,bad", "0.5,", "0.\u{ff11}"] {
+            check(&format!("0.125,{common},{suffix}"));
         }
     }
     let mut state = 0x7d91_650e_1f04_9940u64;
