@@ -1320,7 +1320,7 @@ and Bf-Tree dependency do not change canonical storage or production test scope.
 
 ## Windows native contract ownership
 
-The native workflow runs twelve independent Bazel shards and a separate strict
+The native workflow runs seventeen independent Bazel shards and a separate strict
 Cargo Clippy job. The original `Windows native contracts` check requires every
 result to pass. See [Windows native CI](WINDOWS_NATIVE_CI.md) for the complete
 selection/profile/count matrix, cache policy, cold-build costs and local replay.
