@@ -1,0 +1,790 @@
+{
+  "evidence_kind": "Native-agent reported summary; raw x86 samples/logs/binary audits retained by that agent outside Git, not independently re-read on the ARM host.",
+  "source_url": "https://github.com/nowledge-co/hawdb/pull/1346#issuecomment-6516743307",
+  "comment_updated_at": "2026-10-30T08:20:30Z",
+  "comment_body_sha256": "8424a9193132268356a71323efb786503d631cd8d9d977cc92c39432bb517516",
+  "production_source": "5a9330507b86fb3844a1900e48178a396c7a42be",
+  "equivalent_report_only_head": "b1e4d6e6e904662f78e6a9286aa7f6ddecf87bd2",
+  "previous_head": "56a2bda53f4836675e89ad6dbb25aea84df7fa09",
+  "previous_production_source": "be74735402536ba5e248160f300e6b755d0a58d8",
+  "baseline": "65a0011c20e0225fbe84f791996ea9f4add8b5a0",
+  "cpu": "AMD Ryzen 7 7735HS, 8 cores / 16 threads, AVX2",
+  "os": "Garuda Linux x86_64, kernel 7.1.10-zen1-1-zen",
+  "toolchain": "Rust 1.97.1 / LLVM 22.1.6",
+  "profile": "Repository release, opt-level 3, thin LTO, codegen-units 1; no CPU-native flags or profile overrides.",
+  "harness_sha256": "75ce8adf44631758469a927559044bd187bdbfe8175caf242b2eb8aadb3b03c4",
+  "correctness_reported": {
+    "fmt": "PASS",
+    "core_checked_passed": 10,
+    "core_release_passed": 10,
+    "core_manual_probe_ignored_per_configuration": 1,
+    "search_raw_math_all_features_passed": 2,
+    "search_vector_selection_all_features_passed": 4,
+    "search_vector_selection_manual_ignored": 1,
+    "search_layout_all_features_passed": 1,
+    "search_layout_manual_ignored": 2,
+    "diskann_all_features_passed": 33,
+    "diskann_ignored": 1,
+    "primary_component_observations": 2916,
+    "supplemental_fixed_cpu_component_observations": 2916,
+    "ordinary_complete_query_observations": 2688,
+    "shared_file_observations": 7344,
+    "reported_checksums_hit_bits_work_and_shared_read_counters_equal": true,
+    "shared_fixture_hashes_unchanged": true,
+    "full_native_x86_fuzz_or_clippy_qualified": false
+  },
+  "components": [
+    {
+      "dimension": 3,
+      "portable_positive_over_reference": 1.557,
+      "auto_positive_over_reference": 1.568,
+      "auto_over_portable_positive": 1.007,
+      "public_cosine_over_reference": 1.079,
+      "previous_prepared_cosine_over_reference": 3.314,
+      "prepared_cosine_over_reference": 1.036,
+      "prepared_cosine_over_previous": 0.579
+    },
+    {
+      "dimension": 32,
+      "portable_positive_over_reference": 0.87,
+      "auto_positive_over_reference": 0.614,
+      "auto_over_portable_positive": 0.706,
+      "public_cosine_over_reference": 0.94,
+      "previous_prepared_cosine_over_reference": 1.059,
+      "prepared_cosine_over_reference": 1.023,
+      "prepared_cosine_over_previous": 0.962
+    },
+    {
+      "dimension": 384,
+      "portable_positive_over_reference": 0.576,
+      "auto_positive_over_reference": 0.356,
+      "auto_over_portable_positive": 0.618,
+      "public_cosine_over_reference": 0.769,
+      "previous_prepared_cosine_over_reference": 0.778,
+      "prepared_cosine_over_reference": 0.782,
+      "prepared_cosine_over_previous": 1.024
+    },
+    {
+      "dimension": 768,
+      "portable_positive_over_reference": 0.569,
+      "auto_positive_over_reference": 0.346,
+      "auto_over_portable_positive": 0.607,
+      "public_cosine_over_reference": 0.758,
+      "previous_prepared_cosine_over_reference": 0.776,
+      "prepared_cosine_over_reference": 0.768,
+      "prepared_cosine_over_previous": 1.008
+    },
+    {
+      "dimension": 1536,
+      "portable_positive_over_reference": 0.559,
+      "auto_positive_over_reference": 0.343,
+      "auto_over_portable_positive": 0.614,
+      "public_cosine_over_reference": 0.753,
+      "previous_prepared_cosine_over_reference": 0.761,
+      "prepared_cosine_over_reference": 0.763,
+      "prepared_cosine_over_previous": 1.014
+    },
+    {
+      "dimension": 8193,
+      "portable_positive_over_reference": 0.555,
+      "auto_positive_over_reference": 0.338,
+      "auto_over_portable_positive": 0.61,
+      "public_cosine_over_reference": 0.752,
+      "previous_prepared_cosine_over_reference": 0.76,
+      "prepared_cosine_over_reference": 0.757,
+      "prepared_cosine_over_previous": 1.007
+    }
+  ],
+  "public_l2_over_reference": {
+    "384": 0.873,
+    "768": 0.882,
+    "1536": 0.911
+  },
+  "prepared_l2_dimension_32": {
+    "over_reference": 1.1,
+    "over_public_unprepared": 1.302
+  },
+  "component_method": "Three fresh processes per version, counterbalanced; nine rotating repetitions per arm. Ratios use median of three process medians. Reference-relative tiny ratios have varying denominators and are not fixed-reference speedup estimates.",
+  "tiny_fixed_cpu_control": {
+    "cpu": 2,
+    "dimension": 3,
+    "distances_per_batch": 4096,
+    "unmeasured_full_process_warmups_per_binary": 1,
+    "fresh_measured_processes_per_binary": 3,
+    "previous_reference_us": 29.036,
+    "current_reference_us": 28.033,
+    "previous_prepared_us": 91.885,
+    "current_prepared_us": 29.005,
+    "prepared_current_over_previous": 0.316,
+    "paired_range": [
+      0.314,
+      0.33
+    ],
+    "scope": "Separate supplemental component measurement only; query cohorts remain unpinned; clocks uncontrolled."
+  },
+  "shared_file_method": {
+    "fixtures": 8,
+    "fresh_readers_per_source_fixture": 3,
+    "warmups_per_mode": 3,
+    "timed_queries_per_mode_reader": 51,
+    "sources": 3,
+    "top_k": 10,
+    "rank_window": 128,
+    "order": "Rotate source order and alternate default/exact; queries serial while other workers wait on stdin.",
+    "timer_scope": "Search and hydration; excludes opening, warmups, pipe waiting and JSON.",
+    "summary": "Median of three reader-process medians; paired ranges are not confidence intervals."
+  },
+  "shared_file_queries": [
+    {
+      "rows": 64,
+      "dimension": 3,
+      "mode": "default",
+      "baseline_us": 164.1,
+      "previous_us": 159.8,
+      "current_us": 162.3,
+      "current_over_baseline": 0.989,
+      "current_over_previous": 1.015,
+      "paired_range": [
+        1.0,
+        1.076
+      ]
+    },
+    {
+      "rows": 64,
+      "dimension": 3,
+      "mode": "exact",
+      "baseline_us": 150.2,
+      "previous_us": 142.9,
+      "current_us": 151.7,
+      "current_over_baseline": 1.01,
+      "current_over_previous": 1.062,
+      "paired_range": [
+        1.025,
+        1.072
+      ]
+    },
+    {
+      "rows": 64,
+      "dimension": 32,
+      "mode": "default",
+      "baseline_us": 389.8,
+      "previous_us": 382.3,
+      "current_us": 386.5,
+      "current_over_baseline": 0.992,
+      "current_over_previous": 1.011,
+      "paired_range": [
+        0.969,
+        1.011
+      ]
+    },
+    {
+      "rows": 64,
+      "dimension": 32,
+      "mode": "exact",
+      "baseline_us": 366.7,
+      "previous_us": 368.5,
+      "current_us": 372.2,
+      "current_over_baseline": 1.015,
+      "current_over_previous": 1.01,
+      "paired_range": [
+        0.868,
+        1.02
+      ]
+    },
+    {
+      "rows": 64,
+      "dimension": 384,
+      "mode": "default",
+      "baseline_us": 2610.3,
+      "previous_us": 2572.0,
+      "current_us": 2572.1,
+      "current_over_baseline": 0.985,
+      "current_over_previous": 1.0,
+      "paired_range": [
+        0.996,
+        1.0
+      ]
+    },
+    {
+      "rows": 64,
+      "dimension": 384,
+      "mode": "exact",
+      "baseline_us": 2536.3,
+      "previous_us": 2555.9,
+      "current_us": 2503.4,
+      "current_over_baseline": 0.987,
+      "current_over_previous": 0.979,
+      "paired_range": [
+        0.979,
+        1.0
+      ]
+    },
+    {
+      "rows": 64,
+      "dimension": 1536,
+      "mode": "default",
+      "baseline_us": 12985.5,
+      "previous_us": 12916.8,
+      "current_us": 12834.3,
+      "current_over_baseline": 0.988,
+      "current_over_previous": 0.994,
+      "paired_range": [
+        0.986,
+        1.02
+      ]
+    },
+    {
+      "rows": 64,
+      "dimension": 1536,
+      "mode": "exact",
+      "baseline_us": 12526.8,
+      "previous_us": 12744.0,
+      "current_us": 12854.5,
+      "current_over_baseline": 1.026,
+      "current_over_previous": 1.009,
+      "paired_range": [
+        1.0,
+        1.01
+      ]
+    },
+    {
+      "rows": 1024,
+      "dimension": 3,
+      "mode": "default",
+      "baseline_us": 1504.9,
+      "previous_us": 1555.5,
+      "current_us": 1483.9,
+      "current_over_baseline": 0.986,
+      "current_over_previous": 0.954,
+      "paired_range": [
+        0.911,
+        0.958
+      ]
+    },
+    {
+      "rows": 1024,
+      "dimension": 3,
+      "mode": "exact",
+      "baseline_us": 1423.4,
+      "previous_us": 1406.0,
+      "current_us": 1421.5,
+      "current_over_baseline": 0.999,
+      "current_over_previous": 1.011,
+      "paired_range": [
+        1.011,
+        1.016
+      ]
+    },
+    {
+      "rows": 1024,
+      "dimension": 32,
+      "mode": "default",
+      "baseline_us": 4275.9,
+      "previous_us": 4357.6,
+      "current_us": 4003.1,
+      "current_over_baseline": 0.936,
+      "current_over_previous": 0.919,
+      "paired_range": [
+        0.91,
+        0.938
+      ]
+    },
+    {
+      "rows": 1024,
+      "dimension": 32,
+      "mode": "exact",
+      "baseline_us": 4556.9,
+      "previous_us": 4551.3,
+      "current_us": 4601.8,
+      "current_over_baseline": 1.01,
+      "current_over_previous": 1.011,
+      "paired_range": [
+        0.996,
+        1.021
+      ]
+    },
+    {
+      "rows": 1024,
+      "dimension": 384,
+      "mode": "default",
+      "baseline_us": 32933.2,
+      "previous_us": 32383.6,
+      "current_us": 28874.6,
+      "current_over_baseline": 0.877,
+      "current_over_previous": 0.892,
+      "paired_range": [
+        0.878,
+        0.892
+      ]
+    },
+    {
+      "rows": 1024,
+      "dimension": 384,
+      "mode": "exact",
+      "baseline_us": 37467.2,
+      "previous_us": 36526.7,
+      "current_us": 36638.4,
+      "current_over_baseline": 0.978,
+      "current_over_previous": 1.003,
+      "paired_range": [
+        0.997,
+        1.008
+      ]
+    },
+    {
+      "rows": 1024,
+      "dimension": 1536,
+      "mode": "default",
+      "baseline_us": 150102.0,
+      "previous_us": 148114.2,
+      "current_us": 132228.7,
+      "current_over_baseline": 0.881,
+      "current_over_previous": 0.893,
+      "paired_range": [
+        0.871,
+        0.935
+      ]
+    },
+    {
+      "rows": 1024,
+      "dimension": 1536,
+      "mode": "exact",
+      "baseline_us": 165581.9,
+      "previous_us": 163370.5,
+      "current_us": 162269.7,
+      "current_over_baseline": 0.98,
+      "current_over_previous": 0.993,
+      "paired_range": [
+        0.967,
+        1.051
+      ]
+    }
+  ],
+  "ordinary_method": "Unchanged no-argument example; independent equivalent fixtures; baseline/current/current/baseline; 21 timed queries per case/process; median of two process medians.",
+  "ordinary_queries": [
+    {
+      "residency": "file",
+      "rows": 64,
+      "dimension": 3,
+      "mode": "default",
+      "baseline_us": 120.9,
+      "current_us": 130.9,
+      "current_over_baseline": 1.083,
+      "paired_range": [
+        0.988,
+        1.187
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 64,
+      "dimension": 3,
+      "mode": "exact",
+      "baseline_us": 117.1,
+      "current_us": 118.7,
+      "current_over_baseline": 1.014,
+      "paired_range": [
+        0.956,
+        1.076
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 64,
+      "dimension": 32,
+      "mode": "default",
+      "baseline_us": 344.0,
+      "current_us": 336.7,
+      "current_over_baseline": 0.979,
+      "paired_range": [
+        0.904,
+        1.056
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 64,
+      "dimension": 32,
+      "mode": "exact",
+      "baseline_us": 325.0,
+      "current_us": 326.7,
+      "current_over_baseline": 1.005,
+      "paired_range": [
+        0.931,
+        1.083
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 64,
+      "dimension": 384,
+      "mode": "default",
+      "baseline_us": 2716.3,
+      "current_us": 2652.6,
+      "current_over_baseline": 0.977,
+      "paired_range": [
+        0.937,
+        1.018
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 64,
+      "dimension": 384,
+      "mode": "exact",
+      "baseline_us": 2665.8,
+      "current_us": 2615.1,
+      "current_over_baseline": 0.981,
+      "paired_range": [
+        0.942,
+        1.022
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 64,
+      "dimension": 1536,
+      "mode": "default",
+      "baseline_us": 10959.3,
+      "current_us": 10570.7,
+      "current_over_baseline": 0.965,
+      "paired_range": [
+        0.93,
+        1.003
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 64,
+      "dimension": 1536,
+      "mode": "exact",
+      "baseline_us": 10935.9,
+      "current_us": 10233.8,
+      "current_over_baseline": 0.936,
+      "paired_range": [
+        0.891,
+        0.984
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 1024,
+      "dimension": 3,
+      "mode": "default",
+      "baseline_us": 1505.7,
+      "current_us": 1408.5,
+      "current_over_baseline": 0.935,
+      "paired_range": [
+        0.894,
+        0.979
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 1024,
+      "dimension": 3,
+      "mode": "exact",
+      "baseline_us": 1439.8,
+      "current_us": 1394.7,
+      "current_over_baseline": 0.969,
+      "paired_range": [
+        0.934,
+        1.005
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 1024,
+      "dimension": 32,
+      "mode": "default",
+      "baseline_us": 4129.9,
+      "current_us": 3955.3,
+      "current_over_baseline": 0.958,
+      "paired_range": [
+        0.955,
+        0.96
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 1024,
+      "dimension": 32,
+      "mode": "exact",
+      "baseline_us": 4528.1,
+      "current_us": 4622.0,
+      "current_over_baseline": 1.021,
+      "paired_range": [
+        1.015,
+        1.026
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 1024,
+      "dimension": 384,
+      "mode": "default",
+      "baseline_us": 32919.2,
+      "current_us": 28382.7,
+      "current_over_baseline": 0.862,
+      "paired_range": [
+        0.853,
+        0.872
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 1024,
+      "dimension": 384,
+      "mode": "exact",
+      "baseline_us": 37171.2,
+      "current_us": 35955.6,
+      "current_over_baseline": 0.967,
+      "paired_range": [
+        0.943,
+        0.993
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 1024,
+      "dimension": 1536,
+      "mode": "default",
+      "baseline_us": 131415.5,
+      "current_us": 130121.5,
+      "current_over_baseline": 0.99,
+      "paired_range": [
+        0.931,
+        1.049
+      ]
+    },
+    {
+      "residency": "file",
+      "rows": 1024,
+      "dimension": 1536,
+      "mode": "exact",
+      "baseline_us": 165803.6,
+      "current_us": 174771.4,
+      "current_over_baseline": 1.054,
+      "paired_range": [
+        1.037,
+        1.073
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 64,
+      "dimension": 3,
+      "mode": "default",
+      "baseline_us": 41.5,
+      "current_us": 44.7,
+      "current_over_baseline": 1.078,
+      "paired_range": [
+        0.924,
+        1.253
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 64,
+      "dimension": 3,
+      "mode": "exact",
+      "baseline_us": 38.1,
+      "current_us": 39.9,
+      "current_over_baseline": 1.048,
+      "paired_range": [
+        0.913,
+        1.201
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 64,
+      "dimension": 32,
+      "mode": "default",
+      "baseline_us": 57.3,
+      "current_us": 53.4,
+      "current_over_baseline": 0.931,
+      "paired_range": [
+        0.906,
+        0.959
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 64,
+      "dimension": 32,
+      "mode": "exact",
+      "baseline_us": 48.8,
+      "current_us": 45.2,
+      "current_over_baseline": 0.926,
+      "paired_range": [
+        0.898,
+        0.955
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 64,
+      "dimension": 384,
+      "mode": "default",
+      "baseline_us": 161.6,
+      "current_us": 104.7,
+      "current_over_baseline": 0.648,
+      "paired_range": [
+        0.588,
+        0.712
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 64,
+      "dimension": 384,
+      "mode": "exact",
+      "baseline_us": 147.5,
+      "current_us": 80.9,
+      "current_over_baseline": 0.549,
+      "paired_range": [
+        0.497,
+        0.604
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 64,
+      "dimension": 1536,
+      "mode": "default",
+      "baseline_us": 456.5,
+      "current_us": 240.9,
+      "current_over_baseline": 0.528,
+      "paired_range": [
+        0.525,
+        0.53
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 64,
+      "dimension": 1536,
+      "mode": "exact",
+      "baseline_us": 451.3,
+      "current_us": 184.8,
+      "current_over_baseline": 0.41,
+      "paired_range": [
+        0.405,
+        0.414
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 1024,
+      "dimension": 3,
+      "mode": "default",
+      "baseline_us": 725.1,
+      "current_us": 755.3,
+      "current_over_baseline": 1.042,
+      "paired_range": [
+        0.951,
+        1.145
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 1024,
+      "dimension": 3,
+      "mode": "exact",
+      "baseline_us": 848.2,
+      "current_us": 802.9,
+      "current_over_baseline": 0.947,
+      "paired_range": [
+        0.886,
+        1.013
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 1024,
+      "dimension": 32,
+      "mode": "default",
+      "baseline_us": 918.6,
+      "current_us": 955.0,
+      "current_over_baseline": 1.04,
+      "paired_range": [
+        0.922,
+        1.174
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 1024,
+      "dimension": 32,
+      "mode": "exact",
+      "baseline_us": 988.9,
+      "current_us": 918.2,
+      "current_over_baseline": 0.929,
+      "paired_range": [
+        0.875,
+        0.987
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 1024,
+      "dimension": 384,
+      "mode": "default",
+      "baseline_us": 1557.6,
+      "current_us": 1336.5,
+      "current_over_baseline": 0.858,
+      "paired_range": [
+        0.828,
+        0.89
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 1024,
+      "dimension": 384,
+      "mode": "exact",
+      "baseline_us": 2501.4,
+      "current_us": 1404.4,
+      "current_over_baseline": 0.561,
+      "paired_range": [
+        0.552,
+        0.571
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 1024,
+      "dimension": 1536,
+      "mode": "default",
+      "baseline_us": 3669.4,
+      "current_us": 2579.5,
+      "current_over_baseline": 0.703,
+      "paired_range": [
+        0.658,
+        0.756
+      ]
+    },
+    {
+      "residency": "resident",
+      "rows": 1024,
+      "dimension": 1536,
+      "mode": "exact",
+      "baseline_us": 7542.5,
+      "current_us": 3208.8,
+      "current_over_baseline": 0.425,
+      "paired_range": [
+        0.424,
+        0.427
+      ]
+    }
+  ],
+  "limits": [
+    "No task-owned build/tests overlapped accepted timings; shared host and uncontrolled clocks.",
+    "Primary cohorts unpinned; only the separately labelled tiny component control pins CPU 2.",
+    "Warm OS caches and synthetic embedded Search data; no physical-I/O, RSS, full Mem-route or device-cold claim.",
+    "1024-row/1536-dimensional file exact is approximately neutral in shared-file control, but ordinary sequential cohort retains +5.4% against baseline; cause unestablished.",
+    "64-row/3-dimensional file exact is +6.2% versus previous in shared-file control and remains retained.",
+    "Prior broad native x86 Bazel run was incomplete; this focused replay does not claim full current-head native x86 fuzz, full Clippy or CI qualification."
+  ]
+}
