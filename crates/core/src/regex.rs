@@ -60,6 +60,16 @@ impl PartialEq for ValidatedRegex {
 
 impl Eq for ValidatedRegex {}
 
+impl crate::RetainedHeapBytes for ValidatedRegex {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        // regex owns opaque automata and interior caches that may grow after
+        // matching. Pattern length cannot bound their retained allocations.
+        // Query execution remains available; weighted cache admission refuses
+        // this opaque ownership instead of retaining an uncharged program.
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

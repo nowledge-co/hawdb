@@ -16,6 +16,31 @@ network failures without credentials, uploads or real sleeps. Replay with
 `python scripts/pypi-publish.test.py` with `packaging` installed. Actual Trusted
 Publishing and public-install smoke verification remain release-workflow gates.
 
+The plan-cache retention family uses
+`//crates/plan-cache:hawdb_plan_cache_tests` for weighted LFU total/per-entry
+limits, zero budgets, overflow, replacement and spare table-capacity accounting.
+`//crates/plan-cache:hawdb_template_retention_tests` is its independent native
+requested-allocation oracle: logical and physical CASE templates at 20/100/512
+candidates, nested values and byte-driven churn must retain no more requested
+heap than their conservative charges. The observer is thread-local and runs as
+one test; requalify its standard-library layout assumptions on toolchain
+changes. Replay with `cargo test --locked -p hawdb-plan-cache --test
+template_retention -- --test-threads=1`. Requested heap excludes allocator
+rounding and caller-owned in-flight copies; these checks are not RSS or latency
+benchmarks. The facade's `api::plan_cache::retention_allocation` oracle belongs
+to `//:hawdb_unit_general_tests`: it observes complete private cache keys,
+physical IR, traces, shared metadata, both scoring-key forms and table capacity
+at 20/100/512 candidates, owned list expressions and byte-driven eviction. Its thread-local
+observer is enabled only in that one unit test. Replay with `cargo test --locked
+-p hawdb --lib retention_allocation -- --test-threads=1 --nocapture`.
+The same existing root owner covers `simple_case_dispatch` physical cache hits,
+changed parameters, folded guards, lazy errors and zero/tiny budget refusals;
+`query_observability` checks opaque regex refusal without evicting a hot plan.
+Its vector-procedure pipeline check preserves default-feature cache bypass
+and minimal-feature capability refusal before any cache lookup or bypass.
+Run those filters with default and `--no-default-features` configurations.
+Existing target profiles and execution lanes are unchanged.
+
 `//:storage_tla_evidence_script_test` belongs to the required root
 `//:hawdb_unit_tests` aggregate. It validates the actual checked-in TLA model
 inventory through `scripts/check-storage-tla.sh --manifest-json` before running

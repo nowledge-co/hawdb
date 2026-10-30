@@ -752,3 +752,13 @@ mod tests {
         });
     }
 }
+
+// Retained query ownership: ScoringSeedGraphInput.
+hawdb_core::impl_retained_heap_for_struct!(ScoringSeedGraphInput {
+    kind,
+    seed_variable,
+    candidate_variable
+});
+
+// Retained query ownership: ScoringSeedKind.
+hawdb_core::impl_retained_heap_for_copy!(ScoringSeedKind);

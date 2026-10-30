@@ -4,7 +4,7 @@
 //! Independent requested-allocation oracle for the pinned standard-library
 //! layouts. Run this target again when an embedding host changes toolchains.
 
-use hawdb_core::Value;
+use hawdb_core::{RetainedHeapBytes, Value};
 use hawdb_plan_cache::{parameterize_logical_plan, LfuCache, ParameterBindingTemplate};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -128,6 +128,25 @@ fn charges_cover_actual_template_and_churn_allocations() {
             (retained, charged)
         };
         println!("candidates={candidates} retained={retained} charged={charged}");
+
+        let (retained, charged) = {
+            let window = Window::new();
+            let logical = parameterize_logical_plan(&statement, &parameters).unwrap();
+            let physical = Arc::new(
+                hawdb_optimizer_graph::CascadesOptimizer::default().optimize(logical.logical()),
+            );
+            drop(logical);
+            let retained = window.retained();
+            let charged = physical.retained_heap_bytes().unwrap();
+            assert!(
+                retained <= charged,
+                "physical {candidates}: {retained} > {charged}"
+            );
+            drop(physical);
+            assert_eq!(window.retained(), 0);
+            (retained, charged)
+        };
+        println!("physical candidates={candidates} retained={retained} charged={charged}");
     }
 
     // General projection parameters retain exact guards. Include a large
@@ -156,6 +175,31 @@ fn charges_cover_actual_template_and_churn_allocations() {
         (retained, charged)
     };
     println!("exact_payload retained={retained} charged={charged}");
+
+    // Allocate the entire nested/shared owner inside the window, including
+    // spare capacity. The observer must see the backing allocation and Arc
+    // control block rather than only a clone of pre-existing test input.
+    {
+        let window = Window::new();
+        let mut values = Vec::with_capacity(64);
+        let mut encoded = Vec::with_capacity(32 * 1024);
+        encoded.extend_from_slice(&2u32.to_le_bytes());
+        encoded.extend_from_slice(&0.5f32.to_le_bytes());
+        encoded.extend_from_slice(&0.25f32.to_le_bytes());
+        values.push(Value::Vector(
+            hawdb_core::Vector::from_encoded(encoded).unwrap(),
+        ));
+        let mut text = String::with_capacity(4096);
+        text.push_str("retained");
+        values.push(Value::Map(BTreeMap::from([(
+            "key".into(),
+            Value::String(text),
+        )])));
+        let shared = Arc::new(values);
+        assert!(window.retained() <= shared.retained_heap_bytes().unwrap());
+        drop(shared);
+        assert_eq!(window.retained(), 0);
+    }
 
     let (maximum_retained, maximum_charged) = {
         let window = Window::new();

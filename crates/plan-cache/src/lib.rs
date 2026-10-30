@@ -78,6 +78,12 @@ impl PlanCacheBypassReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanCacheStats {
     pub max_entries: Option<usize>,
+    /// Requested-heap retention limit; absent for a count-only cache.
+    pub max_bytes: Option<usize>,
+    /// Per-entry key/value limit, including the inline entry layout.
+    pub max_entry_bytes: Option<usize>,
+    /// Conservative retained charge, available only for weighted caches.
+    pub charged_bytes: Option<usize>,
     pub entries: usize,
     pub hits: u64,
     pub misses: u64,
@@ -86,6 +92,7 @@ pub struct PlanCacheStats {
     pub bypasses: u64,
     pub evictions: u64,
     pub memory_pressure_events: u64,
+    pub rejected_admissions: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +107,7 @@ struct LfuCacheEntry<V> {
 pub struct LfuCache<K, V> {
     max_entries: Option<usize>,
     max_bytes: Option<usize>,
+    max_entry_bytes: Option<usize>,
     entry_heap_charge: usize,
     table_capacity_high_water: usize,
     entries: HashMap<K, LfuCacheEntry<V>>,
@@ -111,6 +119,7 @@ pub struct LfuCache<K, V> {
     bypasses: u64,
     evictions: u64,
     memory_pressure_events: u64,
+    rejected_admissions: u64,
 }
 
 impl<K, V> LfuCache<K, V>
@@ -125,9 +134,21 @@ where
     /// A byte-limited cache requires `insert_weighted` with conservative heap
     /// charges for both key and value. Table storage is charged separately.
     pub fn with_byte_limit(max_entries: Option<usize>, max_bytes: Option<usize>) -> Self {
+        Self::with_byte_limits(max_entries, max_bytes, None)
+    }
+
+    /// Bound both aggregate retention and one key/value entry. The per-entry
+    /// limit includes its inline layout; the aggregate additionally accounts
+    /// for spare hash-table capacity. Zero disables retention.
+    pub fn with_byte_limits(
+        max_entries: Option<usize>,
+        max_bytes: Option<usize>,
+        max_entry_bytes: Option<usize>,
+    ) -> Self {
         Self {
             max_entries,
             max_bytes,
+            max_entry_bytes,
             entry_heap_charge: 0,
             table_capacity_high_water: 0,
             entries: HashMap::new(),
@@ -139,11 +160,15 @@ where
             bypasses: 0,
             evictions: 0,
             memory_pressure_events: 0,
+            rejected_admissions: 0,
         }
     }
 
     pub fn get(&mut self, key: &K) -> Option<V> {
-        if self.max_entries == Some(0) || self.max_bytes == Some(0) {
+        if self.max_entries == Some(0)
+            || self.max_bytes == Some(0)
+            || self.max_entry_bytes == Some(0)
+        {
             self.misses += 1;
             self.disabled_misses += 1;
             return None;
@@ -163,11 +188,17 @@ where
         self.bypasses = self.bypasses.saturating_add(1);
     }
 
+    pub fn record_rejected_admission(&mut self) {
+        self.rejected_admissions = self.rejected_admissions.saturating_add(1);
+    }
+
     /// Legacy count-only admission. Byte-limited caches refuse this path so
     /// callers cannot accidentally retain an uncharged key/value payload.
     pub fn insert(&mut self, key: K, value: V) {
-        if self.max_bytes.is_none() {
+        if self.max_bytes.is_none() && self.max_entry_bytes.is_none() {
             self.insert_weighted(key, value, 0);
+        } else {
+            self.rejected_admissions = self.rejected_admissions.saturating_add(1);
         }
     }
 
@@ -175,11 +206,17 @@ where
     /// bucket layout. Rejected admissions leave an existing entry unchanged.
     /// In-flight cloned values are owned by callers, outside this cache bound.
     pub fn insert_weighted(&mut self, key: K, value: V, heap_charge: usize) {
-        if self.max_entries == Some(0)
+        let entry_bytes = heap_charge.checked_add(std::mem::size_of::<(K, LfuCacheEntry<V>)>());
+        if entry_bytes.is_none()
+            || self
+                .max_entry_bytes
+                .is_some_and(|limit| limit == 0 || entry_bytes.is_none_or(|bytes| bytes > limit))
+            || self.max_entries == Some(0)
             || self
                 .max_bytes
                 .is_some_and(|limit| limit == 0 || heap_charge > limit)
         {
+            self.rejected_admissions = self.rejected_admissions.saturating_add(1);
             return;
         }
         let previous = self.entries.get(&key).map_or(0, |entry| entry.heap_charge);
@@ -188,6 +225,7 @@ where
             .checked_sub(previous)
             .and_then(|bytes| bytes.checked_add(heap_charge))
         else {
+            self.rejected_admissions = self.rejected_admissions.saturating_add(1);
             return;
         };
         self.entry_heap_charge = total;
@@ -285,6 +323,11 @@ where
     pub fn stats(&self) -> PlanCacheStats {
         PlanCacheStats {
             max_entries: self.max_entries,
+            max_bytes: self.max_bytes,
+            max_entry_bytes: self.max_entry_bytes,
+            charged_bytes: (self.max_bytes.is_some() || self.max_entry_bytes.is_some())
+                .then(|| self.charged_bytes())
+                .flatten(),
             entries: self.entries.len(),
             hits: self.hits,
             misses: self.misses,
@@ -293,6 +336,7 @@ where
             bypasses: self.bypasses,
             evictions: self.evictions,
             memory_pressure_events: self.memory_pressure_events,
+            rejected_admissions: self.rejected_admissions,
         }
     }
 }
@@ -302,6 +346,40 @@ mod tests {
     use super::{LfuCache, PlanCacheBypassReason, PlanCacheLookup};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
+
+    #[test]
+    fn per_entry_limit_refuses_oversize_replacement_without_evicting_hot_entries() {
+        let mut cache = LfuCache::with_byte_limits(Some(8), Some(8192), Some(1024));
+        cache.insert_weighted(1, vec![1; 256], 256);
+        cache.insert_weighted(2, vec![2; 256], 256);
+        let before = cache.charged_bytes();
+        cache.insert_weighted(1, vec![3; 1024], 1024);
+        assert_eq!(cache.charged_bytes(), before);
+        assert_eq!(cache.get(&1), Some(vec![1; 256]));
+        assert_eq!(cache.get(&2), Some(vec![2; 256]));
+        assert_eq!(cache.stats().entries, 2);
+        assert_eq!(cache.stats().evictions, 0);
+        assert_eq!(cache.stats().rejected_admissions, 1);
+        assert_eq!(cache.stats().max_entry_bytes, Some(1024));
+        assert_eq!(cache.stats().charged_bytes, before);
+    }
+
+    #[test]
+    fn per_entry_only_limit_requires_weighted_admission_and_zero_disables_retention() {
+        let mut cache = LfuCache::with_byte_limits(None, None, Some(1024));
+        cache.insert(1, vec![0; 8192]);
+        assert_eq!(cache.stats().entries, 0);
+        cache.insert_weighted(1, vec![1; 64], 64);
+        assert_eq!(cache.get(&1), Some(vec![1; 64]));
+        assert!(cache.stats().charged_bytes.unwrap() >= 64);
+
+        let mut disabled = LfuCache::with_byte_limits(None, Some(8192), Some(0));
+        disabled.insert_weighted(1, (), 0);
+        assert_eq!(disabled.get(&1), None);
+        assert_eq!(disabled.stats().disabled_misses, 1);
+        assert_eq!(disabled.stats().charged_bytes, Some(0));
+        assert_eq!(disabled.stats().rejected_admissions, 1);
+    }
 
     #[test]
     fn weighted_replacement_retains_the_charged_key_capacity() {
@@ -471,6 +549,43 @@ mod tests {
         assert_eq!(cache.stats().admissions, 2);
         assert_eq!(cache.stats().memory_pressure_events, 0);
         assert_eq!(cache.stats().evictions, 0);
+    }
+
+    #[test]
+    fn weighted_cache_bounds_survive_concurrent_misses_replacements_and_refusals() {
+        let cache = Arc::new(Mutex::new(LfuCache::with_byte_limits(
+            Some(8),
+            Some(4096),
+            Some(512),
+        )));
+        let start = Arc::new(Barrier::new(4));
+        let handles = (0..4)
+            .map(|worker| {
+                let cache = Arc::clone(&cache);
+                let start = Arc::clone(&start);
+                thread::spawn(move || {
+                    start.wait();
+                    for offset in 0..64 {
+                        // Build misses outside the cache lock, as the facade does.
+                        let key = format!("key-{}", (worker + offset) % 32);
+                        let value = vec![worker as u8; if offset % 11 == 0 { 1024 } else { 256 }];
+                        let charge = key.capacity() + value.capacity();
+                        let mut cache = cache.lock().unwrap();
+                        cache.insert_weighted(key.clone(), value, charge);
+                        let _ = cache.get(&key);
+                        assert!(cache.stats().entries <= 8);
+                        assert!(cache.charged_bytes().unwrap() <= 4096);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let stats = cache.lock().unwrap().stats();
+        assert!(stats.rejected_admissions > 0);
+        assert!(stats.evictions > 0);
+        assert!(stats.hits > 0);
     }
 
     #[test]

@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 
 /// Bound graph work for one MATCH clause; its predicate belongs inside the optional boundary.
@@ -43,4 +46,60 @@ pub enum GraphMatchStep {
         max_hops: usize,
         target: GraphMatchNode,
     },
+}
+
+// Retained query ownership: GraphMatchProgram.
+hawdb_core::impl_retained_heap_for_struct!(GraphMatchProgram {
+    imports,
+    introduced,
+    steps,
+    predicate,
+    optional
+});
+
+// Retained query ownership: GraphMatchNode.
+hawdb_core::impl_retained_heap_for_struct!(GraphMatchNode {
+    variable,
+    label,
+    properties
+});
+
+// Retained query ownership: GraphBindingImport.
+hawdb_core::impl_retained_heap_for_struct!(GraphBindingImport {
+    variable,
+    column,
+    kind
+});
+
+// Retained query ownership: GraphEntityKind.
+hawdb_core::impl_retained_heap_for_copy!(GraphEntityKind);
+
+// Retained query ownership: GraphMatchStep.
+impl hawdb_core::RetainedHeapBytes for GraphMatchStep {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Node(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::Expand {
+                source,
+                relationship,
+                rel_type,
+                properties,
+                direction,
+                min_hops,
+                max_hops,
+                target,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(source),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(relationship),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(rel_type),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(properties),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(direction),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(min_hops),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(max_hops),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(target),
+            ]),
+        }
+    }
 }

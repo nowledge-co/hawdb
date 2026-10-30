@@ -24,7 +24,11 @@ impl DatabaseTransactionRuntime {
             instance_identity: db.instance_identity()?,
             session_config,
             optimizer: runtime.optimizer.clone(),
-            plan_cache: SharedState::new(PlanCache::new(db.config.max_plan_cache_entries)),
+            plan_cache: SharedState::new(PlanCache::with_byte_limits(
+                db.config.max_plan_cache_entries,
+                Some(db.config.max_physical_plan_cache_bytes),
+                Some(db.config.max_physical_plan_cache_entry_bytes),
+            )),
             relational_plan_template_cache: Arc::clone(&runtime.relational_plan_template_cache),
             optimizer_planning_cache: SharedState::new(
                 runtime.optimizer_planning_cache.borrow().clone(),

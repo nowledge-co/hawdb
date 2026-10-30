@@ -14,6 +14,8 @@
 
 pub(super) mod determinism;
 mod output_schema;
+#[cfg(test)]
+mod retention_allocation;
 
 use super::query_request::{BoundScoringRequest, ScoringPlanCacheKey};
 use super::{
@@ -30,6 +32,7 @@ use crate::planner::{self, LogicalPlan, Predicate};
 use crate::schema::{Catalog, GraphStatistics, IndexKind, LabelId, PropertyType, TableKind};
 use crate::store::GraphStore;
 use crate::value::Value;
+use hawdb_core::RetainedHeapBytes;
 use hawdb_optimizer::graph::{
     node_equality_index_seek_is_cheaper, optimizer_catalog_from_graph_statistics,
     NODE_INDEX_SMALL_LABEL_SCAN_THRESHOLD,
@@ -731,17 +734,9 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
             binding_template_hit = hit;
             plan
         });
-    // The new CASE marker trees are large. Keep physical copies request-owned
-    // until the physical cache has its own byte budget; logical reuse remains
-    // enabled under the separate bounded cache above.
-    let physical_cache_mode = if parameterized
-        .as_ref()
-        .is_some_and(ParameterizedLogicalPlan::has_case_parameter_slots)
-    {
-        PlanCacheMode::Bypass(PlanCacheBypassReason::ParameterizedCaseTemplate)
-    } else {
-        cache_mode
-    };
+    // Every retained key/plan/trace is charged before weighted admission. CASE
+    // marker trees use the same bounded policy as other immutable templates.
+    let physical_cache_mode = cache_mode;
     let point_statistics = if trace_mode == PlanTraceMode::Template {
         parameterized
             .as_ref()
@@ -935,14 +930,32 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
     if physical_cache_mode == PlanCacheMode::Use {
         let mut key = key.take().expect("cache key exists in use mode");
         key.environment = catalog_access.environment.clone();
-        context.cache.borrow_mut().insert(
-            key,
-            Arc::new(CachedPlan {
-                physical_template,
-                trace: cached_trace.expect("cached trace exists in physical cache use mode"),
-                has_parameter_slots,
-            }),
-        );
+        let cached = Arc::new(CachedPlan {
+            physical_template,
+            trace: cached_trace.expect("cached trace exists in physical cache use mode"),
+            has_parameter_slots,
+        });
+        // Walk immutable ownership outside the host cache lock. Unknown or
+        // overflowing retained allocations refuse admission without changing
+        // the executable bound plan or weakening any query budget.
+        let charged = key
+            .retained_heap_bytes()
+            .and_then(|key_bytes| key_bytes.checked_add(cached.retained_heap_bytes()?));
+        if let Some(charged) = charged {
+            context
+                .cache
+                .borrow_mut()
+                .insert_weighted(key, cached, charged);
+            trace.decisions.push(format!(
+                "physical plan cache requested heap charge: {charged}"
+            ));
+        } else {
+            context.cache.borrow_mut().record_rejected_admission();
+            trace.decisions.push(
+                "physical plan cache admission refused: retained allocation cannot be bounded"
+                    .into(),
+            );
+        }
         trace
             .decisions
             .push("plan cache miss: optimized parameterized physical plan template".to_string());
@@ -2625,3 +2638,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
     }
 }
+
+// Retained query ownership: CachedPlan.
+hawdb_core::impl_retained_heap_for_struct!(CachedPlan {
+    physical_template,
+    trace,
+    has_parameter_slots
+});
+
+// Retained query ownership: PlanCacheKey.
+hawdb_core::impl_retained_heap_for_struct!(PlanCacheKey {
+    normalized_query,
+    parameters,
+    environment,
+    max_optimizer_groups,
+    access_control,
+    scoring,
+    point_statistics
+});
+
+// Retained query ownership: PointStatisticsKey.
+hawdb_core::impl_retained_heap_for_struct!(PointStatisticsKey {
+    label,
+    property,
+    matched_rows,
+    index_seek_is_cheaper
+});
+
+// Retained query ownership: AccessControlPlanCacheKey.
+hawdb_core::impl_retained_heap_for_struct!(AccessControlPlanCacheKey {
+    policy_epoch,
+    visibility_property,
+    visibility_value_count
+});
+
+// Retained query ownership: OptimizerEnvironmentKey.
+hawdb_core::impl_retained_heap_for_struct!(OptimizerEnvironmentKey {
+    schema,
+    statistics_generation,
+    ordered_range_indexes,
+    ordered_composite_indexes,
+    node_index_size_classes
+});

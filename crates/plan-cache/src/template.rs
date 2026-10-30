@@ -2597,3 +2597,47 @@ mod tests {
         );
     }
 }
+
+// Retained query ownership: ParameterCacheValue.
+impl hawdb_core::RetainedHeapBytes for ParameterCacheValue {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Slot(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::CaseSlot(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::Exact(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+        }
+    }
+}
+
+// Retained query ownership: ParameterValueShape.
+impl hawdb_core::RetainedHeapBytes for ParameterValueShape {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Null => hawdb_core::checked_retained_heap_sum([]),
+            Self::Bool => hawdb_core::checked_retained_heap_sum([]),
+            Self::Int => hawdb_core::checked_retained_heap_sum([]),
+            Self::Float => hawdb_core::checked_retained_heap_sum([]),
+            Self::String => hawdb_core::checked_retained_heap_sum([]),
+            Self::Binary => hawdb_core::checked_retained_heap_sum([]),
+            Self::Vector(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::Uuid => hawdb_core::checked_retained_heap_sum([]),
+            Self::List(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::Map(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+        }
+    }
+}
+
+// Retained query ownership: PlanParameterCacheKey.
+hawdb_core::impl_retained_heap_for_struct!(PlanParameterCacheKey { values });

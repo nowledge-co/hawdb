@@ -24,6 +24,7 @@ pub mod list_function;
 pub mod logical_type;
 pub mod projection;
 pub mod regex;
+mod retained_heap;
 pub mod schema;
 mod shared_allocation;
 pub mod time;
@@ -62,6 +63,8 @@ pub use list_function::{
 };
 pub use logical_type::{LogicalType, VectorDimension};
 pub use regex::ValidatedRegex;
+#[doc(hidden)]
+pub use retained_heap::{checked_retained_heap_sum, RetainedHeapBytes};
 pub use schema::{
     AdvancedStatisticsFreshness, BasicGraphStatistics, Catalog, CompositeIndexDescriptor,
     ConstraintDescriptor, ConstraintId, ConstraintKind, ConstraintSubject, GraphStatistics,
