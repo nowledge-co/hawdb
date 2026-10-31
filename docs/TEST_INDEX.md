@@ -173,7 +173,12 @@ and `cargo test --locked -p hawdb --all-features --lib native_decimal`.
 Python parameter tests cover native `decimal.Decimal` and seeded arithmetic
 against an independent `fractions.Fraction` oracle; C JSON tests cover the
 exact `$decimal` marker. Existing binding lanes remain unchanged; retained
-foreign numeric buffers do not gain a Decimal ABI type.
+foreign numeric buffers do not gain a Decimal ABI type. Manual Shiro result
+controls distinguish Decimal scale in ordered and bag comparisons, including
+nested lists/maps, while retaining duplicate multiplicities and float bits.
+Replay: `cargo test --locked --manifest-path tools/shiro/Cargo.toml --lib
+decimal_report_preserves_exact_digits_and_scale` and the `comparison` filter.
+These controls remain in the existing local-only Shiro test targets.
 
 Cypher `sum()` and expression-argument aggregates are owned by existing
 targets: `blocking::aggregate::tests` (Sum numeric/NULL/empty/overflow/
