@@ -2310,7 +2310,10 @@ The shared engine has no native matcher API or AST value arena. Its existing
 33 unit tests retain fatal budget propagation through alternatives, optional,
 repeat and lookahead using real bounded PEG rules, and retain memoized subtree
 identity/edges after capture rollback. Empty rules preserve zero-length source
-spans. SQL and Cypher share the same nongeneric CST grammar API.
+spans. The adaptive-cache cases also retain pending/failed/matched state,
+end positions, node identity and logical entry counts across forward/backward
+visits, replacement and density changes with compact nonzero memo records.
+SQL and Cypher share the same nongeneric CST grammar API.
 
 Latest-main integration at `2ae7e88614` (#1411) adds bare row-bound values in
 node patterns and classifies read-only UNWIND as a query pipeline. The PEG

@@ -117,10 +117,16 @@ nesting admission.
 
 A parser invocation owns its memo table and capture arena. Successful and
 failed named rules are cached by rule ID and token position; successful hits
-reuse capture IDs instead of cloning syntax trees. Each rule's first memo entry
-uses a direct indexed slot; other positions use a sparse hash table. Both tiers
-share the same entry budget and retain successful and failed results. The direct
-slots are bounded by the compiled grammar's 256-rule cap, not the input length.
+reuse capture IDs instead of cloning syntax trees. Each rule caches its greatest
+visited token directly; older positions use a bounded small vector, dense slots,
+or permanent sparse storage. These forms share the same logical entry budget
+and retain pending, successful and failed results. The direct slots are bounded
+by the compiled grammar's 256-rule cap, not the input length.
+
+A nonzero state word also encodes the matched arena node ID, leaving zero for
+empty optional slots without a separate enum discriminant. End positions and
+optional diagnostics are retained. Node IDs come from the capture arena's
+allocation range, so this representation adds no input or node admission cap.
 
 Capture children are ranges in one edge arena. A reusable scratch vector
 collects children during matching. Failed expressions and lookahead roll back

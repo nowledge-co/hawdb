@@ -172,30 +172,55 @@ impl<'a> Older<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::MemoState;
     use super::*;
 
     #[test]
     fn forward_cache_preserves_pending_backwards_and_replaced_entries() {
         let mut table = MemoTable::new(2);
-        table.insert(0, 1, Memo::Pending);
-        table.insert(0, 3, Memo::Pending);
-        table.insert(1, 2, Memo::Failed(None));
-        assert!(matches!(table.get(0, 1), Some(Memo::Pending)));
-        assert!(matches!(table.get(0, 3), Some(Memo::Pending)));
+        table.insert(0, 1, Memo::pending());
+        table.insert(0, 3, Memo::pending());
+        table.insert(1, 2, Memo::failed(None));
+        assert!(matches!(
+            table.get(0, 1).map(Memo::value),
+            Some(MemoState::Pending)
+        ));
+        assert!(matches!(
+            table.get(0, 3).map(Memo::value),
+            Some(MemoState::Pending)
+        ));
         assert!(table.get(0, 4).is_none());
         assert!(table.get(0, 2).is_none());
-        table.insert(0, 1, Memo::Matched(2, 10, None));
-        table.insert(0, 3, Memo::Failed(None));
+        table.insert(0, 1, Memo::matched(2, 10, None));
+        table.insert(0, 3, Memo::failed(None));
         assert_eq!(table.len(), 3);
-        assert!(matches!(table.get(0, 1), Some(Memo::Matched(2, 10, None))));
-        assert!(matches!(table.get(0, 3), Some(Memo::Failed(None))));
-        table.insert(0, 2, Memo::Failed(None));
-        table.insert(0, 5, Memo::Matched(6, 11, None));
+        assert!(matches!(
+            table.get(0, 1).map(Memo::value),
+            Some(MemoState::Matched(2, 10, None))
+        ));
+        assert!(matches!(
+            table.get(0, 3).map(Memo::value),
+            Some(MemoState::Failed(None))
+        ));
+        table.insert(0, 2, Memo::failed(None));
+        table.insert(0, 5, Memo::matched(6, 11, None));
         assert_eq!(table.len(), 5);
-        assert!(matches!(table.get(0, 2), Some(Memo::Failed(None))));
-        assert!(matches!(table.get(0, 3), Some(Memo::Failed(None))));
-        assert!(matches!(table.get(0, 5), Some(Memo::Matched(6, 11, None))));
-        assert!(matches!(table.get(1, 2), Some(Memo::Failed(None))));
+        assert!(matches!(
+            table.get(0, 2).map(Memo::value),
+            Some(MemoState::Failed(None))
+        ));
+        assert!(matches!(
+            table.get(0, 3).map(Memo::value),
+            Some(MemoState::Failed(None))
+        ));
+        assert!(matches!(
+            table.get(0, 5).map(Memo::value),
+            Some(MemoState::Matched(6, 11, None))
+        ));
+        assert!(matches!(
+            table.get(1, 2).map(Memo::value),
+            Some(MemoState::Failed(None))
+        ));
     }
 
     #[test]
@@ -216,12 +241,12 @@ mod tests {
                 .enumerate()
             {
                 let rule = index % 2;
-                table.insert(rule, position, Memo::Matched(position + 1, index, None));
+                table.insert(rule, position, Memo::matched(position + 1, index, None));
                 oracle.insert((rule, position), index);
                 assert_eq!(table.len(), oracle.len());
                 for (&(rule, key), &value) in &oracle {
                     assert!(
-                        matches!(table.get(rule, key), Some(Memo::Matched(end, node, None)) if *end == key + 1 && *node == value)
+                        matches!(table.get(rule, key).map(Memo::value), Some(MemoState::Matched(end, node, None)) if end == key + 1 && node == value)
                     );
                 }
                 assert!(table.get(rule, 1000000).is_none());

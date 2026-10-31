@@ -15,6 +15,7 @@
 //! Token PEG matching is independent of syntax AST construction.
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::ops::Range;
 
 use crate::{Span, SyntaxError, SyntaxErrorCode, Token, TokenKind};
@@ -235,7 +236,60 @@ struct Diagnostic<'a> {
     expected: &'a &'static str,
 }
 
-enum Memo<'a> {
+// Reserve zero for Option's empty slot; arena-derived node IDs leave room
+// for the pending and failed states without another enum discriminant.
+struct Memo<'a> {
+    state: NonZeroUsize,
+    end: usize,
+    error: Option<Diagnostic<'a>>,
+}
+
+impl<'a> Memo<'a> {
+    const PENDING: usize = 1;
+    const FAILED: usize = 2;
+    const NODE_OFFSET: usize = 3;
+
+    fn pending() -> Self {
+        Self {
+            state: NonZeroUsize::MIN,
+            end: 0,
+            error: None,
+        }
+    }
+
+    fn failed(error: Option<Diagnostic<'a>>) -> Self {
+        Self {
+            state: NonZeroUsize::new(Self::FAILED).expect("failed state is nonzero"),
+            end: 0,
+            error,
+        }
+    }
+
+    fn matched(end: usize, node: NodeId, error: Option<Diagnostic<'a>>) -> Self {
+        // Node IDs come from Vec<Node>, whose allocation limit is below
+        // isize::MAX / size_of::<Node>(); this adds no parser admission cap.
+        let state = node
+            .checked_add(Self::NODE_OFFSET)
+            .expect("arena node ID fits memo state");
+        Self {
+            state: NonZeroUsize::new(state).expect("matched state is nonzero"),
+            end,
+            error,
+        }
+    }
+
+    #[cfg(test)]
+    fn value(&self) -> MemoState<'a> {
+        match self.state.get() {
+            Self::PENDING => MemoState::Pending,
+            Self::FAILED => MemoState::Failed(self.error),
+            node => MemoState::Matched(self.end, node - Self::NODE_OFFSET, self.error),
+        }
+    }
+}
+
+#[cfg(test)]
+enum MemoState<'a> {
     Pending,
     Matched(usize, NodeId, Option<Diagnostic<'a>>),
     Failed(Option<Diagnostic<'a>>),
@@ -429,34 +483,35 @@ impl<'a> Matcher<'a> {
                         {
                             self.memo_hits += 1;
                         }
-                        match memo {
-                            Memo::Pending => {
+                        match memo.state.get() {
+                            Memo::PENDING => {
                                 return Err(
                                     self.limit(position, "a PEG grammar without left recursion")
                                 )
                             }
-                            Memo::Matched(end, node, error) => {
+                            Memo::FAILED => {
+                                let error = memo.error;
+                                if let Some(error) = error {
+                                    self.remember(error);
+                                }
+                                result = Err(Failure::Mismatch);
+                            }
+                            state => {
+                                let node = state - Memo::NODE_OFFSET;
                                 for domain in 0..2 {
                                     if self.nesting_depth[domain]
-                                        .saturating_add(self.nodes[*node].nesting_height[domain])
+                                        .saturating_add(self.nodes[node].nesting_height[domain])
                                         > self.grammar.nesting_limits[domain].0
                                     {
                                         return Err(self.nesting_limit(position, domain));
                                     }
                                 }
-                                let (end, node, error) = (*end, *node, *error);
+                                let (end, error) = (memo.end, memo.error);
                                 if let Some(error) = error {
                                     self.remember(error);
                                 }
                                 self.captures.push(node);
                                 result = Ok(end);
-                            }
-                            Memo::Failed(error) => {
-                                let error = *error;
-                                if let Some(error) = error {
-                                    self.remember(error);
-                                }
-                                result = Err(Failure::Mismatch);
                             }
                         }
                         continue;
@@ -475,7 +530,7 @@ impl<'a> Matcher<'a> {
                             return Err(self.nesting_limit(position, domain));
                         }
                     }
-                    self.memo.insert(rule, position, Memo::Pending);
+                    self.memo.insert(rule, position, Memo::pending());
                     let outer_error = self.farthest.take();
                     for domain in 0..2 {
                         self.nesting_depth[domain] += usize::from(weight & (1 << domain) != 0);
@@ -513,11 +568,11 @@ impl<'a> Matcher<'a> {
                                 weight,
                             )?;
                             self.memo
-                                .insert(rule, position, Memo::Matched(end, node, local_error));
+                                .insert(rule, position, Memo::matched(end, node, local_error));
                             self.captures.push(node);
                         }
                         Err(Failure::Mismatch) => {
-                            self.memo.insert(rule, position, Memo::Failed(local_error));
+                            self.memo.insert(rule, position, Memo::failed(local_error));
                         }
                         Err(fatal) => return Err(fatal),
                     }
