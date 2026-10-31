@@ -15,7 +15,6 @@
 use hawdb_core::Result;
 
 use super::super::ast::*;
-use super::Parser;
 
 const MAX_PROJECTED_RELATIONSHIP_PREDICATE_BYTES: usize = 16 * 1024;
 const MAX_PROJECTED_RELATIONSHIP_PREDICATE_CONJUNCTS: usize = 16;
@@ -26,9 +25,7 @@ pub(super) fn parse_projected_relationship_predicate(input: &str) -> Result<Prop
             "projected relationship predicate exceeds limit of {MAX_PROJECTED_RELATIONSHIP_PREDICATE_BYTES} UTF-8 bytes"
         )));
     }
-    let mut parser = Parser::new(input);
-    let predicate = parser.parse_predicate(false)?;
-    parser.expect_eof()?;
+    let predicate = super::frontend::parse_predicate(input, false)?;
     validate_projected_relationship_predicate(&predicate)?;
     Ok(predicate)
 }

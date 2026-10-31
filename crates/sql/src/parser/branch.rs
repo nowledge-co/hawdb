@@ -57,26 +57,26 @@ fn parse_error(error: syntax::SyntaxError) -> HawDBError {
         HawDBError::Parse(error.to_string())
     }
 }
-fn s(items: Vec<E<()>>) -> E<()> {
+fn s(items: Vec<E>) -> E {
     E::Sequence(items)
 }
-fn c(items: Vec<E<()>>) -> E<()> {
+fn c(items: Vec<E>) -> E {
     E::Choice(items)
 }
-fn o(item: E<()>) -> E<()> {
+fn o(item: E) -> E {
     E::Optional(Box::new(item))
 }
-fn r(name: &'static str) -> E<()> {
+fn r(name: &'static str) -> E {
     E::Rule(name)
 }
-fn k(name: &'static str) -> E<()> {
+fn k(name: &'static str) -> E {
     E::Keyword(name)
 }
-fn t(kind: T) -> E<()> {
+fn t(kind: T) -> E {
     E::Token(kind, "a branch SQL token")
 }
-fn grammar() -> &'static Grammar<()> {
-    static GRAMMAR: OnceLock<Grammar<()>> = OnceLock::new();
+fn grammar() -> &'static Grammar {
+    static GRAMMAR: OnceLock<Grammar> = OnceLock::new();
     GRAMMAR.get_or_init(|| {
         Grammar::compile(vec![
             (
@@ -164,7 +164,7 @@ fn grammar() -> &'static Grammar<()> {
 struct Fold<'a> {
     input: &'a str,
     tokens: &'a [Token],
-    tree: &'a ParseTree<()>,
+    tree: &'a ParseTree,
 }
 impl Fold<'_> {
     fn child(&self, node: NodeId, name: &str) -> NodeId {

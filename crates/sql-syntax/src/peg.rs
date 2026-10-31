@@ -16,21 +16,13 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::Arc;
 
 use crate::{Span, SyntaxError, SyntaxErrorCode, Token, TokenKind};
 
 use memo::MemoTable;
 
 pub type NodeId = usize;
-pub type NativeMatcher<T> = fn(&str, &[Token], usize) -> NativeMatch<T>;
-
-pub struct NativeMatch<T> {
-    pub end: usize,
-    pub value: Result<T, SyntaxError>,
-}
-
-pub enum Expression<T, R = &'static str> {
+pub enum Expression<R = &'static str> {
     Keyword(&'static str),
     Token(TokenKind, &'static str),
     Parameter,
@@ -43,21 +35,17 @@ pub enum Expression<T, R = &'static str> {
     Tight(Box<Self>),
     Ahead(Box<Self>, &'static str),
     Not(Box<Self>, &'static str),
-    Native {
-        matcher: NativeMatcher<T>,
-        nullable: bool,
-    },
 }
 
-pub struct Grammar<T> {
-    rules: Vec<(&'static str, Expression<T, usize>)>,
+pub struct Grammar {
+    rules: Vec<(&'static str, Expression<usize>)>,
     names: HashMap<&'static str, usize>,
     nesting_rules: Vec<u8>,
     nesting_limits: [(usize, SyntaxErrorCode); 2],
 }
 
-impl<T> Grammar<T> {
-    pub fn compile(rules: Vec<(&'static str, Expression<T>)>) -> Result<Self, String> {
+impl Grammar {
+    pub fn compile(rules: Vec<(&'static str, Expression)>) -> Result<Self, String> {
         if rules.len() > 256 {
             return Err("too many PEG rules".into());
         }
@@ -86,7 +74,7 @@ impl<T> Grammar<T> {
     /// Memoized subtrees retain their guarded height, so lookahead reuse cannot
     /// bypass the limit when the same subtree is entered in a deeper context.
     pub fn compile_bounded(
-        rules: Vec<(&'static str, Expression<T>)>,
+        rules: Vec<(&'static str, Expression)>,
         nesting_rules: &[&'static str],
         nesting_limit: usize,
     ) -> Result<Self, String> {
@@ -103,7 +91,7 @@ impl<T> Grammar<T> {
     /// Independent expression and graph recursion budgets. The CST stores both
     /// subtree heights to enforce the same admission on memoized rule reuse.
     pub fn compile_with_nesting(
-        rules: Vec<(&'static str, Expression<T>)>,
+        rules: Vec<(&'static str, Expression)>,
         budgets: &[(&[&'static str], usize, SyntaxErrorCode)],
     ) -> Result<Self, String> {
         if budgets.len() > 2 {
@@ -129,7 +117,7 @@ impl<T> Grammar<T> {
         tokens: &[Token],
         root: &'static str,
         limits: Limits,
-    ) -> Result<ParseTree<T>, SyntaxError> {
+    ) -> Result<ParseTree, SyntaxError> {
         let mut parser = Matcher {
             grammar: self,
             input,
@@ -139,7 +127,6 @@ impl<T> Grammar<T> {
             nodes: Vec::new(),
             edges: Vec::new(),
             captures: Vec::new(),
-            values: Vec::new(),
             steps: 0,
             depth: 0,
             nesting_depth: [0; 2],
@@ -153,7 +140,6 @@ impl<T> Grammar<T> {
             Ok((_, root)) => Ok(ParseTree {
                 nodes: parser.nodes,
                 edges: parser.edges,
-                values: parser.values,
                 root,
                 #[cfg(test)]
                 steps: parser.steps,
@@ -195,14 +181,12 @@ pub struct Node {
     pub start: usize,
     pub end: usize,
     children: Range<usize>,
-    value: Option<usize>,
     nesting_height: [usize; 2],
 }
 
-pub struct ParseTree<T> {
+pub struct ParseTree {
     pub nodes: Vec<Node>,
     edges: Vec<NodeId>,
-    values: Vec<Option<T>>,
     pub root: NodeId,
     #[cfg(test)]
     pub steps: usize,
@@ -212,7 +196,7 @@ pub struct ParseTree<T> {
     pub memo_hits: usize,
 }
 
-impl<T> ParseTree<T> {
+impl ParseTree {
     pub fn child(&self, node: NodeId, name: &str) -> Option<NodeId> {
         self.children(node)
             .iter()
@@ -227,14 +211,6 @@ impl<T> ParseTree<T> {
 
     pub fn children(&self, node: NodeId) -> &[NodeId] {
         &self.edges[self.nodes[node].children.clone()]
-    }
-
-    pub fn take(&mut self, node: NodeId) -> T {
-        let native = self.children(node)[0];
-        let value = self.nodes[native].value.expect("native node has a value");
-        self.values[value]
-            .take()
-            .expect("native value is transformed exactly once")
     }
 
     pub fn span(&self, node: NodeId, tokens: &[Token]) -> Span {
@@ -257,7 +233,6 @@ enum Diagnostic {
         position: usize,
         expected: &'static str,
     },
-    Native(Arc<SyntaxError>),
 }
 
 enum Memo {
@@ -275,7 +250,7 @@ type MatchResult = Result<usize, Failure>;
 
 // Continuations refer only to immutable compiled grammar nodes. Pending frames
 // are bounded by the expression-depth budget; repetitions reuse their frame.
-enum Frame<'a, T> {
+enum Frame<'a> {
     Rule(usize, usize),
     RuleDone {
         rule: usize,
@@ -283,11 +258,11 @@ enum Frame<'a, T> {
         captures: usize,
         outer_error: Option<Diagnostic>,
     },
-    Expression(&'a Expression<T, usize>, usize),
+    Expression(&'a Expression<usize>, usize),
     ExpressionDone(usize),
-    Sequence(&'a [Expression<T, usize>], usize),
+    Sequence(&'a [Expression<usize>], usize),
     Choice {
-        items: &'a [Expression<T, usize>],
+        items: &'a [Expression<usize>],
         next: usize,
         position: usize,
     },
@@ -295,9 +270,9 @@ enum Frame<'a, T> {
         position: usize,
         saved: Option<Diagnostic>,
     },
-    Repeat(&'a Expression<T, usize>, usize),
+    Repeat(&'a Expression<usize>, usize),
     RepeatDone {
-        inner: &'a Expression<T, usize>,
+        inner: &'a Expression<usize>,
         position: usize,
         saved: Option<Diagnostic>,
     },
@@ -311,18 +286,17 @@ enum Frame<'a, T> {
     },
 }
 
-struct Matcher<'a, T> {
-    grammar: &'a Grammar<T>,
+struct Matcher<'a> {
+    grammar: &'a Grammar,
     input: &'a str,
     tokens: &'a [Token],
     limits: Limits,
     memo: MemoTable,
     nodes: Vec<Node>,
     edges: Vec<NodeId>,
-    // Only captures roll back. Memoized nodes, edges and native values remain
-    // append-only so a later alternative can reuse their IDs.
+    // Only captures roll back. Memoized nodes and edges remain append-only
+    // so a later alternative can reuse their IDs.
     captures: Vec<NodeId>,
-    values: Vec<Option<T>>,
     steps: usize,
     depth: usize,
     nesting_depth: [usize; 2],
@@ -331,7 +305,7 @@ struct Matcher<'a, T> {
     memo_hits: usize,
 }
 
-impl<'a, T> Matcher<'a, T> {
+impl<'a> Matcher<'a> {
     fn token(&self, position: usize) -> Token {
         self.tokens.get(position).copied().unwrap_or(Token::new(
             TokenKind::End,
@@ -384,14 +358,12 @@ impl<'a, T> Matcher<'a, T> {
     fn diagnostic_start(&self, diagnostic: &Diagnostic) -> usize {
         match diagnostic {
             Diagnostic::Token { position, .. } => self.token(*position).span.start,
-            Diagnostic::Native(error) => error.span.start,
         }
     }
 
     fn render(&self, diagnostic: &Diagnostic) -> SyntaxError {
         match diagnostic {
             Diagnostic::Token { position, expected } => self.error(*position, expected),
-            Diagnostic::Native(error) => (**error).clone(),
         }
     }
 
@@ -416,7 +388,6 @@ impl<'a, T> Matcher<'a, T> {
         start: usize,
         end: usize,
         children_start: usize,
-        value: Option<T>,
         nesting_weight: u8,
     ) -> Result<NodeId, Failure> {
         let children = &self.captures[children_start..];
@@ -436,18 +407,12 @@ impl<'a, T> Matcher<'a, T> {
         let edges_start = self.edges.len();
         self.edges.extend_from_slice(children);
         self.captures.truncate(children_start);
-        let value = value.map(|value| {
-            let id = self.values.len();
-            self.values.push(Some(value));
-            id
-        });
         let id = self.nodes.len();
         self.nodes.push(Node {
             name,
             start,
             end,
             children: edges_start..self.edges.len(),
-            value,
             nesting_height,
         });
         Ok(id)
@@ -549,7 +514,6 @@ impl<'a, T> Matcher<'a, T> {
                                 position,
                                 end,
                                 captures,
-                                None,
                                 weight,
                             )?;
                             self.memo
@@ -638,45 +602,6 @@ impl<'a, T> Matcher<'a, T> {
                                 captures: self.captures.len(),
                             });
                             work.push(Frame::Expression(inner, position));
-                        }
-                        Expression::Native { matcher, nullable } => {
-                            let matched = matcher(self.input, self.tokens, position);
-                            if matched.end < position || matched.end >= self.tokens.len() {
-                                return Err(
-                                    self.limit(position, "a valid native matcher token range")
-                                );
-                            }
-                            self.charge(matched.end - position, position)?;
-                            result = match matched.value {
-                                Ok(value) => {
-                                    if !nullable && matched.end == position {
-                                        return Err(
-                                            self.limit(position, "a consuming native terminal")
-                                        );
-                                    }
-                                    let node = self.push(
-                                        None,
-                                        position,
-                                        matched.end,
-                                        self.captures.len(),
-                                        Some(value),
-                                        0,
-                                    )?;
-                                    self.captures.push(node);
-                                    Ok(matched.end)
-                                }
-                                Err(error)
-                                    if matches!(
-                                        error.code,
-                                        SyntaxErrorCode::UnexpectedToken
-                                            | SyntaxErrorCode::UnexpectedEnd
-                                    ) =>
-                                {
-                                    self.remember(Diagnostic::Native(Arc::new(error)));
-                                    Err(Failure::Mismatch)
-                                }
-                                Err(error) => return Err(Failure::Fatal(error)),
-                            };
                         }
                     }
                 }
@@ -789,23 +714,19 @@ mod validation;
 /// Compose the executable relational grammar with additional HawDB statement
 /// rules. These internal building blocks are not a host query API.
 pub fn sql_grammar(
-    extra: Vec<(&'static str, Expression<()>)>,
+    extra: Vec<(&'static str, Expression)>,
     root: &'static str,
-) -> Result<Grammar<()>, String> {
+) -> Result<Grammar, String> {
     crate::parser::frontend::grammar::build_with_rules(extra, &[root], true)
 }
 
-pub fn sql_expression(
-    tree: &ParseTree<()>,
-    tokens: &[Token],
-    node: NodeId,
-) -> crate::ExpressionSyntax {
+pub fn sql_expression(tree: &ParseTree, tokens: &[Token], node: NodeId) -> crate::ExpressionSyntax {
     crate::parser::expression::Fold { tree, tokens }.expression(node)
 }
 
 pub fn sql_select(
     input: &str,
-    tree: &ParseTree<()>,
+    tree: &ParseTree,
     tokens: &[Token],
     node: NodeId,
 ) -> crate::PostgresSelectSyntax {

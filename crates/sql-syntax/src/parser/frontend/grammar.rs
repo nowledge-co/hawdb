@@ -17,35 +17,35 @@ use super::super::expression;
 use crate::peg::{Expression as E, Grammar};
 use crate::TokenKind as T;
 
-type Rule = (&'static str, E<()>);
-fn s(items: Vec<E<()>>) -> E<()> {
+type Rule = (&'static str, E);
+fn s(items: Vec<E>) -> E {
     E::Sequence(items)
 }
-fn c(items: Vec<E<()>>) -> E<()> {
+fn c(items: Vec<E>) -> E {
     E::Choice(items)
 }
-fn o(item: E<()>) -> E<()> {
+fn o(item: E) -> E {
     E::Optional(Box::new(item))
 }
-fn many(item: E<()>) -> E<()> {
+fn many(item: E) -> E {
     E::Repeat(Box::new(item))
 }
-fn r(name: &'static str) -> E<()> {
+fn r(name: &'static str) -> E {
     E::Rule(name)
 }
-fn k(name: &'static str) -> E<()> {
+fn k(name: &'static str) -> E {
     E::Keyword(name)
 }
-fn t(kind: T) -> E<()> {
+fn t(kind: T) -> E {
     E::Token(kind, "a SQL/PGQ token")
 }
-fn not(item: E<()>, expected: &'static str) -> E<()> {
+fn not(item: E, expected: &'static str) -> E {
     E::Not(Box::new(item), expected)
 }
-fn list(name: &'static str) -> E<()> {
+fn list(name: &'static str) -> E {
     s(vec![r(name), many(s(vec![t(T::Comma), r(name)]))])
 }
-fn complete(name: &'static str) -> E<()> {
+fn complete(name: &'static str) -> E {
     s(vec![
         r(name),
         o(t(T::Semicolon)),
@@ -59,11 +59,11 @@ fn complete(name: &'static str) -> E<()> {
         ),
     ])
 }
-fn keywords(names: &[&'static str]) -> E<()> {
+fn keywords(names: &[&'static str]) -> E {
     c(names.iter().copied().map(k).collect())
 }
 
-pub(super) fn build() -> Result<Grammar<()>, String> {
+pub(super) fn build() -> Result<Grammar, String> {
     build_with_rules(
         Vec::new(),
         &[
@@ -81,7 +81,7 @@ pub(crate) fn build_with_rules(
     extra: Vec<Rule>,
     roots: &[&'static str],
     double_equal: bool,
-) -> Result<Grammar<()>, String> {
+) -> Result<Grammar, String> {
     let mut rules: Vec<Rule> = vec![
         ("SqlInput", complete("Statement")),
         ("SelectInput", complete("Select")),
@@ -644,7 +644,7 @@ pub(crate) fn build_with_rules(
     )
 }
 
-fn references(expression: &E<()>, names: &mut std::collections::HashSet<&'static str>) {
+fn references(expression: &E, names: &mut std::collections::HashSet<&'static str>) {
     match expression {
         E::Rule(name) => {
             names.insert(name);

@@ -4,7 +4,7 @@
 use hawdb_core::Result;
 use hawdb_sql_syntax::peg::NodeId;
 
-use super::{native::Value, Transformer};
+use super::Transformer;
 use crate::*;
 
 impl Transformer<'_> {
@@ -19,7 +19,7 @@ impl Transformer<'_> {
                 let analyze = self.tree.child(selected, "analyze").is_some();
                 let child = self.tree.required(selected, "statement");
                 let statement = self.statement(child, depth + 1)?;
-                let body = super::super::explain_statement_body(&statement);
+                let body = explain_statement_body(&statement);
                 if control_statement(body) {
                     return Err(
                         self.error(selected, "EXPLAIN requires a query or mutation statement")
@@ -97,22 +97,11 @@ impl Transformer<'_> {
                 clauses.push(self.procedure_clause(child, depth)?);
                 continue;
             }
-            if !matches!(name, "with_clause" | "return_clause") {
+            if matches!(name, "with_clause" | "return_clause") {
+                clauses.push(self.projection_clause(child, depth, anonymous)?);
+            } else {
                 clauses.push(self.graph_clause(child, depth, anonymous)?);
-                continue;
             }
-            let Value::Clause {
-                mut clause,
-                anonymous: count,
-                depth: native_depth,
-            } = self.tree.take(child)
-            else {
-                unreachable!()
-            };
-            self.check_depth(child, depth, native_depth)?;
-            rebase_clause(&mut clause.kind, *anonymous);
-            *anonymous += count;
-            clauses.push(*clause);
         }
         if !matches!(
             clauses.last().map(|clause| &clause.kind),
@@ -164,7 +153,12 @@ fn control_statement(statement: &Statement) -> bool {
 }
 
 pub(super) fn admit_optional(pipeline: &QueryPipeline) -> std::result::Result<(), &'static str> {
-    if !super::super::Parser::is_multi_stage_pipeline(pipeline)
+    if pipeline
+        .clauses
+        .iter()
+        .filter(|clause| matches!(clause.kind, ClauseKind::With(_)))
+        .count()
+        < 2
         && pipeline.clauses.iter().any(|clause| {
             matches!(&clause.kind,
             ClauseKind::Match { optional: true, patterns, .. } if patterns.iter().any(|pattern|
@@ -177,73 +171,9 @@ pub(super) fn admit_optional(pipeline: &QueryPipeline) -> std::result::Result<()
     Ok(())
 }
 
-// Deferred names cannot collide with source identifiers: NUL is not legal in
-// an identifier. Rebase only fields populated by parse_match_node_pattern;
-// explicit __anonN variables and string/property values remain untouched.
-fn rebase_name(variable: &mut String, offset: usize) {
-    if let Some(index) = variable.strip_prefix("\0anon") {
-        *variable = format!(
-            "__anon{}",
-            offset + index.parse::<usize>().expect("generated ordinal")
-        );
-    }
-}
-fn rebase_node(node: &mut NodePattern, offset: usize) {
-    if node.anonymous {
-        rebase_name(&mut node.variable, offset);
-    }
-}
-fn rebase_pattern(pattern: &mut MatchPattern, offset: usize) {
-    rebase_node(&mut pattern.first, offset);
-    for step in &mut pattern.steps {
-        rebase_node(&mut step.target, offset);
-    }
-}
-pub(super) fn rebase_predicate(predicate: &mut PropertyPredicate, offset: usize) {
-    match predicate {
-        PropertyPredicate::And(items) | PropertyPredicate::Or(items) => {
-            for item in items {
-                rebase_predicate(item, offset);
-            }
-        }
-        PropertyPredicate::Not(inner) => rebase_predicate(inner, offset),
-        PropertyPredicate::RelationshipExists { variable, .. } => rebase_name(variable, offset),
-        PropertyPredicate::BoundRelationshipExists {
-            source_variable,
-            target_variable,
-            ..
-        } => {
-            rebase_name(source_variable, offset);
-            rebase_name(target_variable, offset);
-        }
-        _ => {}
-    }
-}
-fn rebase_clause(clause: &mut ClauseKind, offset: usize) {
-    match clause {
-        ClauseKind::Match {
-            patterns,
-            predicate,
-            ..
-        } => {
-            for pattern in patterns {
-                rebase_pattern(pattern, offset);
-            }
-            if let Some(predicate) = predicate {
-                rebase_predicate(&mut predicate.kind, offset);
-            }
-        }
-        ClauseKind::Create(patterns) => {
-            for pattern in patterns {
-                rebase_pattern(pattern, offset);
-            }
-        }
-        ClauseKind::Merge { pattern, .. } => rebase_pattern(pattern, offset),
-        ClauseKind::With(projection) => {
-            if let Some(predicate) = &mut projection.predicate {
-                rebase_predicate(&mut predicate.kind, offset);
-            }
-        }
-        _ => {}
+fn explain_statement_body(statement: &Statement) -> &Statement {
+    match statement {
+        Statement::CypherQuery(query) => &query.statement,
+        _ => statement,
     }
 }

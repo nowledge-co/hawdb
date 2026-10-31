@@ -6,10 +6,10 @@ use hawdb_core::{Result, Value};
 use hawdb_sql_syntax::peg::{Expression as E, NodeId};
 use hawdb_sql_syntax::TokenKind as T;
 
-use super::{native::Value as Capture, values::*, Transformer};
+use super::{values::*, Transformer};
 use crate::*;
 
-pub(super) fn rules() -> Vec<(&'static str, E<Capture>)> {
+pub(super) fn rules() -> Vec<(&'static str, E)> {
     vec![
         (
             "d_create_data",

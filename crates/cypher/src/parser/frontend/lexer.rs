@@ -4,7 +4,7 @@
 use hawdb_core::Result;
 use hawdb_sql_syntax::{Span, Token, TokenKind};
 
-use super::super::Parser;
+use super::parse_error;
 
 /// Preserve Cypher's whitespace, backslash strings and ASCII keyword boundaries.
 /// SQL's lexer cannot be used: `--` is a relationship, and `"..."` is a string.
@@ -16,9 +16,11 @@ pub(super) fn tokenize(input: &str) -> Result<Vec<Token>> {
             continue;
         }
         if tokens.len() == 1_000_000 {
-            let mut parser = Parser::new(input);
-            parser.pos = start;
-            return Err(parser.error("Cypher token count exceeds limit of 1000000"));
+            return Err(parse_error(
+                input,
+                start,
+                "Cypher token count exceeds limit of 1000000",
+            ));
         }
         let mut end = start + ch.len_utf8();
         let kind = if ch.is_ascii_alphabetic() || ch == '_' {
@@ -40,7 +42,7 @@ pub(super) fn tokenize(input: &str) -> Result<Vec<Token>> {
             }
             TokenKind::Number
         } else if matches!(ch, '\'' | '"') {
-            // Native terminals diagnose escapes and unterminated strings with
+            // AST folding diagnoses escapes and unterminated strings with
             // the original Cypher byte/line/column and context text.
             while let Some((offset, next)) = chars.next() {
                 end = offset + next.len_utf8();
@@ -78,6 +80,7 @@ pub(super) fn tokenize(input: &str) -> Result<Vec<Token>> {
                 '|' => TokenKind::Pipe,
                 '$' => TokenKind::Parameter(0),
                 '!' => TokenKind::NotEqual,
+                '~' => TokenKind::Tilde,
                 _ => TokenKind::Question,
             }
         };

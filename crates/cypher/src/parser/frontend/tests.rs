@@ -22,14 +22,78 @@ fn corpus_matches_reference() {
 }
 
 fn equivalent(input: &str) {
-    let expected = super::super::parse_inner(input);
-    let actual = crate::parse(input);
-    match (&expected, &actual) {
-        (Ok(expected), Ok(actual)) => assert_eq!(expected, actual, "{input}"),
-        (Err(hawdb_core::HawDBError::Parse(_)), Err(hawdb_core::HawDBError::Parse(_)))
-        | (Err(hawdb_core::HawDBError::Semantic(_)), Err(hawdb_core::HawDBError::Semantic(_))) => {}
-        _ => panic!("{input}\nreference: {expected:?}\nPEG: {actual:?}"),
+    frozen_equivalent(input, "statement");
+}
+
+fn frozen_equivalent(input: &str, entry: &str) {
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+    static BASELINE: OnceLock<BTreeMap<(String, String), serde_json::Value>> = OnceLock::new();
+    let baseline = BASELINE.get_or_init(|| {
+        include_str!("../../../fixtures/migration_expressions_predicates_peg_baseline_v1.jsonl")
+            .lines()
+            .map(|line| {
+                let case: serde_json::Value = serde_json::from_str(line).unwrap();
+                (
+                    (
+                        case["query"].as_str().unwrap().to_owned(),
+                        case["entry"].as_str().unwrap().to_owned(),
+                    ),
+                    case,
+                )
+            })
+            .collect()
+    });
+    assert_frozen(&baseline[&(input.to_owned(), entry.to_owned())]);
+}
+
+fn assert_frozen(expected: &serde_json::Value) {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+    let input = expected["query"].as_str().unwrap();
+    let result = if expected["entry"] == "statement" {
+        crate::parse(input).map(|ast| format!("{ast:?}"))
+    } else {
+        crate::parse_pipeline(input).map(|ast| format!("{ast:?}"))
+    };
+    let (kind, digest) = match result {
+        Ok(ast) => {
+            let mut digest = String::with_capacity(64);
+            for byte in Sha256::digest(ast.as_bytes()) {
+                write!(digest, "{byte:02x}").unwrap();
+            }
+            ("accept", Some(digest))
+        }
+        Err(hawdb_core::HawDBError::Parse(_)) => ("Parse", None),
+        Err(hawdb_core::HawDBError::Semantic(_)) => ("Semantic", None),
+        other => panic!("unexpected baseline result: {other:?}"),
+    };
+    assert_eq!(
+        kind,
+        expected["kind"].as_str().unwrap(),
+        "{}: {input}",
+        expected["entry"]
+    );
+    assert_eq!(
+        digest.as_deref(),
+        expected["ast_sha256"].as_str(),
+        "{}: {input}",
+        expected["entry"]
+    );
+}
+
+#[test]
+fn frozen_expressions_and_predicates_preserve_main_ir() {
+    // Exported from independently built main 9c355e9a46, in a main-only target.
+    let mut count = 0;
+    for line in
+        include_str!("../../../fixtures/migration_expressions_predicates_peg_baseline_v1.jsonl")
+            .lines()
+    {
+        assert_frozen(&serde_json::from_str(line).unwrap());
+        count += 1;
     }
+    assert_eq!(count, 8946);
 }
 
 #[test]
@@ -94,37 +158,14 @@ fn nesting_budget_includes_statement_wrappers() {
         }
         // Standalone pipeline parsing has no enclosing statement frame.
         let input = format!("UNWIND {value} AS x RETURN x");
-        let mut parser = super::super::Parser::new(&input);
-        let expected = parser.parse_query_pipeline();
-        let actual = crate::parse_pipeline(&input);
-        assert_eq!(expected.is_ok(), actual.is_ok(), "{input}");
-        if let (Ok(expected), Ok(actual)) = (expected, actual) {
-            assert_eq!(expected, actual);
-        }
+        frozen_equivalent(&input, "pipeline");
     }
 }
 
 #[test]
-fn lookahead_reuses_native_clause_captures() {
-    super::native::CLAUSE_POSITIONS.with(|positions| positions.borrow_mut().clear());
+fn lookahead_allocates_anonymous_names_only_for_selected_tree() {
     let query = "UNWIND [1] AS x WITH x WITH x MATCH () WHERE (x)-[:REL]->() MATCH () RETURN x";
-    let expected = super::super::parse_inner(query).unwrap();
-    assert_eq!(crate::parse_profiled(query).result.unwrap(), expected);
-    super::native::CLAUSE_POSITIONS.with(|positions| {
-        let positions = positions.borrow();
-        assert_eq!(
-            positions.len(),
-            3,
-            "each remaining native projection must be parsed once"
-        );
-        assert_eq!(
-            positions
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len(),
-            positions.len()
-        );
-    });
+    equivalent(query);
 }
 
 #[test]
@@ -216,16 +257,10 @@ fn current_scalar_aggregates_match_reference() {
 }
 
 #[test]
-fn invalid_multi_stage_procedure_reports_the_native_semantic_refusal() {
+fn invalid_multi_stage_procedure_preserves_the_semantic_refusal() {
     let input =
         "CREATE (:E) WITH 1 AS x WITH x CALL project_graph('g', ['E'], {'R': 'r.foo IN [1]'})";
-    // The old speculative driver discarded the procedure refusal, selected a
-    // CREATE-node template, then reported trailing WITH. PEG commits native
-    // semantic refusals rather than disguising them as another grammar miss.
-    assert!(matches!(
-        super::super::parse_inner(input),
-        Err(hawdb_core::HawDBError::Parse(_))
-    ));
+    // Semantic refusals remain visible after syntactic recognition.
     assert!(matches!(
         crate::parse(input),
         Err(hawdb_core::HawDBError::Semantic(_))

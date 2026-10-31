@@ -22,29 +22,29 @@ use crate::{
     QualifiedName, Span, Token, TokenKind as T, UnaryOperatorSyntax as U,
 };
 
-type Rule = (&'static str, E<()>);
-fn seq(items: Vec<E<()>>) -> E<()> {
+type Rule = (&'static str, E);
+fn seq(items: Vec<E>) -> E {
     E::Sequence(items)
 }
-fn choice(items: Vec<E<()>>) -> E<()> {
+fn choice(items: Vec<E>) -> E {
     E::Choice(items)
 }
-fn opt(item: E<()>) -> E<()> {
+fn opt(item: E) -> E {
     E::Optional(Box::new(item))
 }
-fn rep(item: E<()>) -> E<()> {
+fn rep(item: E) -> E {
     E::Repeat(Box::new(item))
 }
-fn r(name: &'static str) -> E<()> {
+fn r(name: &'static str) -> E {
     E::Rule(name)
 }
-fn k(name: &'static str) -> E<()> {
+fn k(name: &'static str) -> E {
     E::Keyword(name)
 }
-fn t(kind: T) -> E<()> {
+fn t(kind: T) -> E {
     E::Token(kind, "an expression token")
 }
-fn list(name: &'static str) -> E<()> {
+fn list(name: &'static str) -> E {
     seq(vec![r(name), rep(seq(vec![t(T::Comma), r(name)]))])
 }
 fn binary(name: &'static str, operand: &'static str, operator: &'static str) -> Rule {
@@ -234,7 +234,7 @@ pub(super) fn rules() -> Vec<Rule> {
 }
 
 pub(crate) struct Fold<'a> {
-    pub(crate) tree: &'a ParseTree<()>,
+    pub(crate) tree: &'a ParseTree,
     pub(crate) tokens: &'a [Token],
 }
 impl Fold<'_> {

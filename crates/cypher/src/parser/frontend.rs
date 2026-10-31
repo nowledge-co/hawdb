@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Cypher statement and clause PEG, sharing the SQL/PGQ packrat engine.
-//! Native terminals construct ASTs once; ordered-choice probes have no mutable
-//! name-allocation state. Only captures in the selected tree are materialized.
+//! Recognition produces a concrete syntax tree. AST folding allocates names
+//! only for the selected tree; ordered-choice probes have no mutable state.
 
 use std::sync::OnceLock;
 
@@ -11,26 +11,26 @@ use hawdb_core::{HawDBError, Result};
 use hawdb_sql_syntax::peg::{Grammar, Limits, NodeId, ParseTree};
 use hawdb_sql_syntax::{SyntaxError, SyntaxErrorCode, Token};
 
-use super::{Parser, MAX_CYPHER_INPUT_BYTES, MAX_CYPHER_PARSER_DEPTH};
+use super::{MAX_CYPHER_INPUT_BYTES, MAX_CYPHER_PARSER_DEPTH};
 use crate::*;
 
 mod data;
+mod expressions;
 mod grammar;
 mod lexer;
-mod native;
 mod patterns;
+mod predicates;
 mod procedures;
+mod projection;
 mod schema;
 #[cfg(test)]
 mod tests;
 mod transform;
 mod values;
 
-use native::Value;
-
-fn grammar(multi_stage: bool) -> &'static Grammar<Value> {
-    static FULL: OnceLock<Grammar<Value>> = OnceLock::new();
-    static SIMPLE: OnceLock<Grammar<Value>> = OnceLock::new();
+fn grammar(multi_stage: bool) -> &'static Grammar {
+    static FULL: OnceLock<Grammar> = OnceLock::new();
+    static SIMPLE: OnceLock<Grammar> = OnceLock::new();
     let grammar = if multi_stage { &FULL } else { &SIMPLE };
     grammar.get_or_init(|| grammar::build(multi_stage).expect("valid built-in Cypher PEG grammar"))
 }
@@ -79,77 +79,100 @@ pub(super) fn parse(input: &str) -> Result<Statement> {
 
 pub(super) fn parse_pipeline(input: &str) -> Result<QueryPipeline> {
     check_input(input)?;
-    let mut parser = Parser::new(input);
-    pipeline_at(&mut parser)
-}
-
-pub(super) fn pipeline_at(parser: &mut Parser<'_>) -> Result<QueryPipeline> {
-    check_input(parser.input)?;
-    let tokens = lexer::tokenize(parser.input)?;
-    let start = tokens.partition_point(|token| token.span.start < parser.pos);
-    let tokens = &tokens[start..];
+    let tokens = lexer::tokenize(input)?;
     let tree = grammar(false)
         .parse(
-            parser.input,
-            tokens,
+            input,
+            &tokens,
             "pipeline_root",
             Limits {
                 depth: 8192,
                 ..Limits::default()
             },
         )
-        .map_err(|error| render(parser.input, error))?;
+        .map_err(|error| render(input, error))?;
     let root = tree.required(tree.root, "pipeline");
-    let mut transformer = Transformer {
+    Transformer {
         tree,
-        input: parser.input,
-        tokens,
+        input,
+        tokens: &tokens,
         peak_depth: 0,
-    };
-    let pipeline = transformer.pipeline(
-        root,
-        parser.recursion_depth,
-        &mut parser.anonymous_variable_id,
-    )?;
-    parser.pos = pipeline.span.expect("source pipeline").end;
-    parser.peak_depth = parser
-        .peak_depth
-        .max(parser.recursion_depth + transformer.peak_depth);
-    Ok(pipeline)
+    }
+    .pipeline(root, 0, &mut 0)
+}
+
+pub(super) fn parse_predicate(input: &str, columns: bool) -> Result<PropertyPredicate> {
+    check_input(input)?;
+    let tokens = lexer::tokenize(input)?;
+    let tree = grammar(false)
+        .parse(
+            input,
+            &tokens,
+            "w_input",
+            Limits {
+                depth: 8192,
+                ..Limits::default()
+            },
+        )
+        .map_err(|error| render(input, error))?;
+    let root = tree.required(tree.root, "w_or");
+    Transformer {
+        tree,
+        input,
+        tokens: &tokens,
+        peak_depth: 0,
+    }
+    .where_or(root, 0, &mut 0, columns)
+}
+
+fn parse_error(input: &str, position: usize, message: &str) -> HawDBError {
+    let mut line = 1;
+    let mut column = 1;
+    for ch in input[..position].chars() {
+        if ch == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    let near: String = input[position..]
+        .chars()
+        .take(24)
+        .flat_map(char::escape_default)
+        .collect();
+    HawDBError::Parse(format!(
+        "{message} at byte {position} line {line} column {column} near `{near}`"
+    ))
 }
 
 fn render(input: &str, error: SyntaxError) -> HawDBError {
-    if error.expected == Some("Cypher native diagnostic") {
-        let message = error.found.expect("native diagnostic text");
-        return if error.code == SyntaxErrorCode::NativeSemanticError {
-            HawDBError::Semantic(message)
-        } else {
-            HawDBError::Parse(message)
-        };
-    }
-    let mut parser = Parser::new(input);
-    parser.pos = error.span.start;
+    let mut position = error.span.start;
     if error.code == SyntaxErrorCode::ParserLimitExceeded {
-        return parser.error("Cypher parser nesting exceeds limit or PEG resource budget");
+        return parse_error(
+            input,
+            position,
+            "Cypher parser nesting exceeds limit or PEG resource budget",
+        );
     }
     let expected = error.expected.unwrap_or("a Cypher statement");
     // Legacy fixed-character diagnostics point after the unexpected character.
     if matches!(expected, "','" | "'.'")
-        && let Some(ch) = input[parser.pos..].chars().next()
+        && let Some(ch) = input[position..].chars().next()
     {
-        parser.pos += ch.len_utf8();
+        position += ch.len_utf8();
     }
     if expected == "unexpected trailing input" {
-        parser.error(expected)
-    } else if parser.pos == 0 {
-        parser.error("expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, UNWIND, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK")
+        parse_error(input, position, expected)
+    } else if position == 0 {
+        parse_error(input, position, "expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, UNWIND, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK")
     } else {
-        parser.error(&format!("expected {expected}"))
+        parse_error(input, position, &format!("expected {expected}"))
     }
 }
 
 struct Transformer<'a> {
-    tree: ParseTree<Value>,
+    tree: ParseTree,
     input: &'a str,
     tokens: &'a [Token],
     peak_depth: usize,
@@ -157,20 +180,16 @@ struct Transformer<'a> {
 
 impl Transformer<'_> {
     fn error_at(&self, position: usize, message: &str) -> HawDBError {
-        let mut parser = Parser::new(self.input);
-        parser.pos = position;
-        parser.error(message)
+        parse_error(self.input, position, message)
     }
 
     fn error(&self, node: NodeId, message: &str) -> HawDBError {
-        let mut parser = Parser::new(self.input);
-        parser.pos = self.tree.span(node, self.tokens).start;
-        parser.error(message)
+        self.error_at(self.tree.span(node, self.tokens).start, message)
     }
 
-    fn check_depth(&mut self, node: NodeId, active: usize, native: usize) -> Result<()> {
-        self.peak_depth = self.peak_depth.max(native);
-        if active + native > MAX_CYPHER_PARSER_DEPTH {
+    fn check_depth(&mut self, node: NodeId, active: usize, language: usize) -> Result<()> {
+        self.peak_depth = self.peak_depth.max(language);
+        if active + language > MAX_CYPHER_PARSER_DEPTH {
             return Err(self.error(node, "Cypher parser nesting exceeds limit of 32"));
         }
         Ok(())

@@ -21,7 +21,7 @@ pub(crate) mod grammar;
 mod transform;
 
 pub(super) fn parse(input: &str, root: &'static str) -> Result<Output, SyntaxError> {
-    static GRAMMAR: OnceLock<Grammar<()>> = OnceLock::new();
+    static GRAMMAR: OnceLock<Grammar> = OnceLock::new();
     let grammar = GRAMMAR.get_or_init(|| grammar::build().expect("valid built-in SQL/PGQ grammar"));
     let tokens = tokenize(input)?;
     let tree = grammar.parse(
@@ -61,7 +61,7 @@ pub(super) fn parse(input: &str, root: &'static str) -> Result<Output, SyntaxErr
 
 struct Transformer<'a> {
     input: &'a str,
-    tree: &'a ParseTree<()>,
+    tree: &'a ParseTree,
     tokens: &'a [Token],
 }
 
@@ -81,7 +81,7 @@ mod tests;
 pub(crate) fn select_from_tree(
     input: &str,
     tokens: &[Token],
-    tree: &ParseTree<()>,
+    tree: &ParseTree,
     node: crate::peg::NodeId,
 ) -> crate::PostgresSelectSyntax {
     Transformer {

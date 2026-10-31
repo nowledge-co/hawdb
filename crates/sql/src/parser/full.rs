@@ -28,7 +28,7 @@ fn semantic(message: impl Into<String>) -> HawDBError {
     HawDBError::Semantic(message.into())
 }
 pub(super) fn parse(input: &str) -> Result<SqlStatement> {
-    static GRAMMAR: OnceLock<Grammar<()>> = OnceLock::new();
+    static GRAMMAR: OnceLock<Grammar> = OnceLock::new();
     let grammar =
         GRAMMAR.get_or_init(|| grammar::build().expect("valid executable SQL PEG grammar"));
     // Keep the established DDL/DML byte admission (including large single
@@ -70,7 +70,7 @@ fn parse_error(error: syntax::SyntaxError) -> HawDBError {
 struct Fold<'a> {
     input: &'a str,
     tokens: &'a [Token],
-    tree: &'a ParseTree<()>,
+    tree: &'a ParseTree,
     lowerer: Lowerer<'a>,
 }
 impl Fold<'_> {

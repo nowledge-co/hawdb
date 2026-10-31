@@ -6,16 +6,16 @@ use hawdb_core::{Result, Value};
 use hawdb_sql_syntax::peg::{Expression as E, NodeId};
 use hawdb_sql_syntax::TokenKind as T;
 
-use super::{native::Value as Capture, Transformer};
+use super::Transformer;
 use crate::*;
 
-pub(super) fn r(name: &'static str) -> E<Capture> {
+pub(super) fn r(name: &'static str) -> E {
     E::Rule(name)
 }
-pub(super) fn k(name: &'static str) -> E<Capture> {
+pub(super) fn k(name: &'static str) -> E {
     E::Keyword(name)
 }
-pub(super) fn t(kind: T) -> E<Capture> {
+pub(super) fn t(kind: T) -> E {
     E::Token(
         kind,
         match kind {
@@ -26,29 +26,29 @@ pub(super) fn t(kind: T) -> E<Capture> {
         },
     )
 }
-pub(super) fn s(items: Vec<E<Capture>>) -> E<Capture> {
+pub(super) fn s(items: Vec<E>) -> E {
     E::Sequence(items)
 }
-pub(super) fn c(items: Vec<E<Capture>>) -> E<Capture> {
+pub(super) fn c(items: Vec<E>) -> E {
     E::Choice(items)
 }
-pub(super) fn o(item: E<Capture>) -> E<Capture> {
+pub(super) fn o(item: E) -> E {
     E::Optional(Box::new(item))
 }
-pub(super) fn many(item: E<Capture>) -> E<Capture> {
+pub(super) fn many(item: E) -> E {
     E::Repeat(Box::new(item))
 }
-pub(super) fn group(item: E<Capture>) -> E<Capture> {
+pub(super) fn group(item: E) -> E {
     s(vec![t(T::LeftParen), item, t(T::RightParen)])
 }
-pub(super) fn list(name: &'static str) -> E<Capture> {
+pub(super) fn list(name: &'static str) -> E {
     s(vec![r(name), many(s(vec![t(T::Comma), r(name)]))])
 }
-fn tight(item: E<Capture>) -> E<Capture> {
+fn tight(item: E) -> E {
     E::Tight(Box::new(item))
 }
 
-pub(super) fn rules() -> Vec<(&'static str, E<Capture>)> {
+pub(super) fn rules() -> Vec<(&'static str, E)> {
     vec![
         ("v_identifier", t(T::Word)),
         (

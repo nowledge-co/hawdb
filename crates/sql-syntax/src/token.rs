@@ -51,6 +51,7 @@ pub enum TokenKind {
     Ampersand,
     Caret,
     Question,
+    Tilde,
     End,
 }
 

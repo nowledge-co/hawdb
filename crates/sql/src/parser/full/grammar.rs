@@ -16,41 +16,41 @@ use hawdb_sql_syntax::{
     peg::{Expression as E, Grammar},
     TokenKind as T,
 };
-fn s(items: Vec<E<()>>) -> E<()> {
+fn s(items: Vec<E>) -> E {
     E::Sequence(items)
 }
-fn c(items: Vec<E<()>>) -> E<()> {
+fn c(items: Vec<E>) -> E {
     E::Choice(items)
 }
-fn o(item: E<()>) -> E<()> {
+fn o(item: E) -> E {
     E::Optional(Box::new(item))
 }
-fn many(item: E<()>) -> E<()> {
+fn many(item: E) -> E {
     E::Repeat(Box::new(item))
 }
-fn r(name: &'static str) -> E<()> {
+fn r(name: &'static str) -> E {
     E::Rule(name)
 }
-fn k(name: &'static str) -> E<()> {
+fn k(name: &'static str) -> E {
     E::Keyword(name)
 }
-fn t(kind: T) -> E<()> {
+fn t(kind: T) -> E {
     E::Token(kind, "a SQL statement token")
 }
-fn kw(names: &[&'static str]) -> E<()> {
+fn kw(names: &[&'static str]) -> E {
     c(names.iter().copied().map(k).collect())
 }
-fn list(name: &'static str) -> E<()> {
+fn list(name: &'static str) -> E {
     s(vec![r(name), many(s(vec![t(T::Comma), r(name)]))])
 }
-fn group(item: E<()>) -> E<()> {
+fn group(item: E) -> E {
     s(vec![t(T::LeftParen), item, t(T::RightParen)])
 }
-fn not_keyword(word: &'static str) -> E<()> {
+fn not_keyword(word: &'static str) -> E {
     E::Not(Box::new(k(word)), "an identifier")
 }
 
-pub(super) fn build() -> Result<Grammar<()>, String> {
+pub(super) fn build() -> Result<Grammar, String> {
     let rules = vec![
         (
             "HawInput",

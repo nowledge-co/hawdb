@@ -20,7 +20,7 @@
 //! and graph patterns are recognized by PEG rules.
 //! Semantic binding and logical-plan lowering belong to `hawdb-sql`.
 //! The internal PEG machinery is also reused by `hawdb-cypher`, with its own
-//! lexer and native terminals; SQL tokenization rules do not apply to Cypher.
+//! lexer and PEG grammar; SQL tokenization rules do not apply to Cypher.
 //!
 //! `Database::query_sql*` selects the relational PEG entry for SELECT and EXPLAIN
 //! SELECT. Relational DDL/DML import the same PEG expression rules and lower

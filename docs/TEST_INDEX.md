@@ -2176,3 +2176,23 @@ errors. No CI lane or fuzz target is added.
 Focused replays: `cargo test --locked -p hawdb-storage compatibility_tests`,
 `cargo test --locked -p hawdb-storage append_wal_versions`, and
 `cargo test --locked -p hawdb --test branch_project_open storage_format`.
+
+
+### Full Cypher PEG continuation
+
+`//crates/cypher:hawdb_cypher_tests` retains the existing pipeline and public
+parser tests after deletion of the handwritten parser files. The independent
+`migration_expressions_predicates_peg_baseline_v1.jsonl` adds 8,946 statement
+and pipeline outcomes from main `9c355e9a46`, compiled in its main-only Cargo
+target directory. Complete Debug-AST SHA-256 hashes include source spans;
+rejections retain Parse/Semantic classes. These cases replace the old live
+handwritten oracle for generated clauses, wrappers, Unicode truncations,
+expressions and combined depth boundaries. Nine independently captured legacy
+algorithm diagnostics remain exact-string assertions. The earlier 2,854 corpus
+and 420 value/pattern/procedure records remain unchanged.
+
+The shared engine has no native matcher API or AST value arena. Its existing
+32 unit tests retain fatal budget propagation through alternatives, optional,
+repeat and lookahead using real bounded PEG rules, and retain memoized subtree
+identity/edges after capture rollback. Empty rules preserve zero-length source
+spans. SQL and Cypher share the same nongeneric CST grammar API.

@@ -6,14 +6,10 @@ use hawdb_core::Result;
 use hawdb_sql_syntax::peg::{Expression as E, NodeId};
 use hawdb_sql_syntax::TokenKind as T;
 
-use super::{
-    native::{self, Value as Capture},
-    values::*,
-    Transformer,
-};
+use super::{values::*, Transformer};
 use crate::*;
 
-pub(super) fn rules() -> Vec<(&'static str, E<Capture>)> {
+pub(super) fn rules() -> Vec<(&'static str, E)> {
     vec![
         ("p_patterns", list("p_pattern")),
         (
@@ -125,16 +121,6 @@ pub(super) fn rules() -> Vec<(&'static str, E<Capture>)> {
                 k("MATCH"),
                 r("p_patterns"),
                 o(r("p_where")),
-            ]),
-        ),
-        (
-            "p_where",
-            s(vec![
-                k("WHERE"),
-                E::Native {
-                    matcher: native::predicate,
-                    nullable: false,
-                },
             ]),
         ),
         (
@@ -365,22 +351,7 @@ impl Transformer<'_> {
                 if name == "create_clause" {
                     ClauseKind::Create(result)
                 } else {
-                    let predicate = if let Some(id) = self.tree.child(node, "p_where") {
-                        let Capture::Predicate {
-                            mut predicate,
-                            anonymous: count,
-                            depth: native_depth,
-                        } = self.tree.take(id)
-                        else {
-                            unreachable!()
-                        };
-                        self.check_depth(id, depth, native_depth)?;
-                        super::transform::rebase_predicate(&mut predicate.kind, *anonymous);
-                        *anonymous += count;
-                        Some(*predicate)
-                    } else {
-                        None
-                    };
+                    let predicate = self.fold_where(node, depth, anonymous)?;
                     ClauseKind::Match {
                         optional: name == "optional_clause",
                         patterns: result,

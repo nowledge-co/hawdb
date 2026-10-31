@@ -6,35 +6,35 @@ use hawdb_core::{Result, VectorDimension};
 use hawdb_sql_syntax::peg::{Expression as E, NodeId};
 use hawdb_sql_syntax::TokenKind as T;
 
-use super::{native::Value, Transformer};
+use super::Transformer;
 use crate::*;
 
-fn r(name: &'static str) -> E<Value> {
+fn r(name: &'static str) -> E {
     E::Rule(name)
 }
-fn k(name: &'static str) -> E<Value> {
+fn k(name: &'static str) -> E {
     E::Keyword(name)
 }
-fn t(kind: T) -> E<Value> {
+fn t(kind: T) -> E {
     E::Token(kind, "a Cypher schema token")
 }
-fn s(items: Vec<E<Value>>) -> E<Value> {
+fn s(items: Vec<E>) -> E {
     E::Sequence(items)
 }
-fn c(items: Vec<E<Value>>) -> E<Value> {
+fn c(items: Vec<E>) -> E {
     E::Choice(items)
 }
-fn o(item: E<Value>) -> E<Value> {
+fn o(item: E) -> E {
     E::Optional(Box::new(item))
 }
-fn kw(names: &[&'static str]) -> E<Value> {
+fn kw(names: &[&'static str]) -> E {
     c(names.iter().copied().map(k).collect())
 }
-fn group(item: E<Value>) -> E<Value> {
+fn group(item: E) -> E {
     s(vec![t(T::LeftParen), item, t(T::RightParen)])
 }
 
-pub(super) fn rules() -> Vec<(&'static str, E<Value>)> {
+pub(super) fn rules() -> Vec<(&'static str, E)> {
     vec![
         (
             "schema_create",

@@ -5,12 +5,11 @@ SELECT and EXPLAIN SELECT execution paths, including prepared statements and
 plan-template cache misses. No feature, environment variable or host opt-in is
 required. The syntax-only CREATE PROPERTY GRAPH and GRAPH_TABLE entry points
 also use PEG. Relational DDL/DML, materialized views, branch lifecycle and paged SHOW commands use PEG as well.
-Cypher uses the same engine with its own token grammar and
-recognizes schema, system hints/settings, standalone data mutations, MATCH and
-ordered mutation patterns, UNWIND and procedure calls directly with PEG. Native
-callbacks remain for WHERE predicates and WITH/RETURN projection expressions,
-including existence patterns inside predicates. The old DDL and procedure
-drivers and standalone mutation drivers are test-only.
+Cypher uses the same engine with its own token grammar for all supported
+statements, clauses, patterns, values, predicates and projection expressions.
+Both languages construct ASTs only after matching the selected concrete syntax
+tree. The handwritten parsers, including test-only drivers, and native parser
+callbacks have been removed.
 
 Parser routing is explicit by statement family:
 
@@ -22,8 +21,8 @@ Parser routing is explicit by statement family:
 | Branch commands | Bounded SQL token PEG and branch AST transformation |
 
 All supported SQL families now use PEG without a fallback or an upstream
-parser dependency, including test builds. Cypher's predicate/projection callbacks remain the
-outstanding migration under [#1375](https://github.com/nowledge-co/hawdb/issues/1375).
+parser dependency, including test builds. Cypher also uses PEG throughout; resource and performance
+qualification remains tracked under [#1375](https://github.com/nowledge-co/hawdb/issues/1375).
 A PEG syntax, semantic or resource error is returned directly. Accepting PGQ
 syntax does not activate unqualified PGQ execution.
 
@@ -123,15 +122,14 @@ uses a direct indexed slot; other positions use a sparse hash table. Both tiers
 share the same entry budget and retain successful and failed results. The direct
 slots are bounded by the compiled grammar's 256-rule cap, not the input length.
 
-Capture children are ranges in one edge arena, and native values occupy a
-separate arena instead of enlarging every named node. A reusable scratch vector
+Capture children are ranges in one edge arena. A reusable scratch vector
 collects children during matching. Failed expressions and lookahead roll back
-only that scratch vector; nodes, edges and values remain append-only because
+only that scratch vector; nodes and edges remain append-only because
 memoized results may reference them. The AST transformer reads child ranges
 without cloning temporary child lists.
 
-Token failures store positions and static expectations, rendering source text only for the final error; native
-errors share their existing diagnostic. Cached diagnostics preserve
+Token failures store positions and static expectations, rendering source text
+only for the final error. Cached diagnostics preserve
 the farthest failure through later reuse. Lookahead discards its own speculative diagnostic. Optional/repeated
 branches discard absent-prefix mismatches while preserving deeper failures. Ordinary syntax errors select the farthest byte
 position, with the first expectation retained on ties. Expected-token sets and
@@ -143,23 +141,20 @@ nested matcher expressions. SQL/PGQ uses an 8,192-frame internal matcher budget
 because each language level spans multiple grammar rules; its independent
 expression and graph language budgets remain exactly 128. The explicit work
 stack enforces internal frame admission without recursive host-stack growth.
-Work counts rule dispatch, combinator evaluation and
-native consumed/scanned token ranges. Native terminals are atomic bounded
-operations: their token-range charge is checked after they return; the lexer
-input/token caps and their own nesting checks also apply. These are logical
+Work counts rule dispatch, combinator evaluation and token-adjacency checks.
+The engine has no native matcher callbacks or AST value arena. These are logical
 bounds, not a byte-precise allocator admission guarantee or a wall-clock limit.
 The existing full lexer limits remain 16 MiB input, 1,000,000 tokens and 64 nested
 block comments; expression and graph language nesting each remain 128. The
 first-token dispatch helper reads only the prefix and does not enforce the
 whole-input byte cap. Complete owned SELECT/EXPLAIN and SQL/PGQ syntax parsing
-still enforce that cap; legacy-routed DML/DDL bodies retain their existing
-admission behavior. Numeric underscores must be surrounded by digits; malformed
+still enforce that cap; DML/DDL bodies retain their existing admission behavior. Numeric underscores must be surrounded by digits; malformed
 separators fail lexically in both the relational and PGQ syntax entries.
 
 `ParserLimitExceeded` identifies PEG work/storage/internal-depth refusal.
 Expression and graph language-depth failures retain
 `ExpressionNestingLimitExceeded` and `GraphPatternNestingLimitExceeded`.
-Native resource errors retain their existing error codes. Resource failures are fatal across
+Resource failures are fatal across
 choice, optional, repetition and lookahead, and are never treated as a failed
 alternative. All state is per invocation, so rejected input cannot poison the
 next parse. No syntax repairs are applied.
@@ -236,14 +231,15 @@ Cypher's value rules cover exact negative/decimal token adjacency, parameters,
 strings, row-bound properties, nested lists and timestamp forms. Data rules
 construct CREATE/MERGE and system-variable ASTs directly. Pattern rules cover
 labels, directions, finite/shortest hop ranges and ordered mutation clauses;
-anonymous names are allocated only while folding the selected CST. Remaining
-native predicates retain deferred-name rebasing against that same counter.
+anonymous names, including existence-pattern names inside predicates, are
+allocated in source order only while folding the selected CST.
 
 Procedure rules match positional/named options, maps, yields and legacy graph
 algorithm RETURN lists before typed lowering. The standalone vector-search
 and legacy graph-algorithm admission boundaries, exact legacy diagnostic
 positions, duplicate checks and bounded projected-filter contract remain.
-`project_graph` string predicates still use the remaining predicate frontend.
+`project_graph` string predicates use the same WHERE PEG with the existing
+16 KiB and sixteen-conjunct semantic contract.
 Balanced procedure-option maps share the 32-level recursive-language budget.
 The generic PEG `Tight` combinator checks token-source adjacency with charged
 work; it retains capture rollback, memo reuse and fatal resource failures.
@@ -255,3 +251,23 @@ compiled main `9c355e9a46` in its main-only target directory. They cover these
 newly migrated families, source spans, exact numeric and hop-range spacing,
 legacy CALL admission and combined nesting. No fixture is refreshed from the
 candidate. Pure-path tests also verify the absence of native AST captures.
+
+WHERE rules preserve boolean grouping, comparison chains, indexable property
+comparisons, ID comparison spacing, IN, string predicates and bounded existence
+patterns. WITH/RETURN rules cover precedence, aggregates, list functions and
+postfixes, CASE, ordering, pagination and aliases. Scalar and CASE-value contexts
+retain their different timestamp admission. Specialized CASE AST variants are
+folded only from recognized equivalent CST shapes; arbitrary CASE expressions
+retain the general AST and recursive budget.
+
+A further 8,946 statement/pipeline records freeze expressions, predicates,
+wrappers, truncation, schema and combined depth boundaries. Their complete
+Debug-AST hashes and rejection classes were exported from independently built
+main `9c355e9a46`, then compared with the candidate with zero differences. They
+replace live calls into the deleted handwritten test oracle. Nine independently
+exported malformed graph-algorithm cases preserve exact diagnostics. Existing
+pipeline and anonymous-name tests remain against the public PEG entry points.
+
+Removing the legacy parsers establishes routing, not performance readiness.
+Parser timing and allocator/RSS qualification must still be assessed against
+independent baseline builds without weakening existing resource gates.
