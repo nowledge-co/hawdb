@@ -16,6 +16,8 @@
 use super::*;
 use hawdb_sql_syntax as syntax;
 
+mod expression;
+
 pub(super) fn parse(input: &str) -> Result<SqlStatement> {
     let first = syntax::first_token(input).map_err(|error| HawDBError::Parse(error.to_string()))?;
     if first.is_keyword(input, "EXPLAIN") {
@@ -60,14 +62,14 @@ pub(super) fn parse(input: &str) -> Result<SqlStatement> {
     }
 }
 
-struct Lowerer<'a> {
+pub(super) struct Lowerer<'a> {
     input: &'a str,
     lines: Vec<(usize, usize)>,
     checkpoints: Vec<(usize, usize)>,
 }
 
 impl<'a> Lowerer<'a> {
-    fn new(input: &'a str) -> Self {
+    pub(super) fn new(input: &'a str) -> Self {
         let mut lines = vec![(0, 0)];
         let mut checkpoints = Vec::new();
         if input.is_ascii() {
@@ -94,7 +96,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn location(&self, byte: usize) -> sqlparser::tokenizer::Location {
+    fn location(&self, byte: usize) -> SqlSourceLocation {
         let line = self.lines.partition_point(|(start, _)| *start <= byte) - 1;
         let character = if self.checkpoints.is_empty() {
             byte
@@ -106,246 +108,17 @@ impl<'a> Lowerer<'a> {
             let (start, character) = self.checkpoints[checkpoint];
             character + self.input[start..byte].chars().count()
         };
-        sqlparser::tokenizer::Location::new(
-            (line + 1) as u64,
-            (character - self.lines[line].1 + 1) as u64,
-        )
-    }
-
-    fn span(&self, span: syntax::Span) -> sqlparser::tokenizer::Span {
-        sqlparser::tokenizer::Span::new(self.location(span.start), self.location(span.end))
-    }
-
-    fn ident(&self, ident: &syntax::Identifier) -> Ident {
-        let raw = &self.input[ident.span.start..ident.span.end];
-        Ident {
-            value: if ident.quoted {
-                raw[1..raw.len() - 1].replace("\"\"", "\"")
-            } else {
-                raw.to_owned()
-            },
-            quote_style: ident.quoted.then_some('"'),
-            span: self.span(ident.span),
+        SqlSourceLocation {
+            line: (line + 1) as u64,
+            column: (character - self.lines[line].1 + 1) as u64,
         }
     }
 
-    fn name(&self, name: &syntax::QualifiedName) -> ObjectName {
-        ObjectName(
-            name.parts
-                .iter()
-                .map(|part| ObjectNamePart::Identifier(self.ident(part)))
-                .collect(),
-        )
-    }
-
-    fn expression(&self, expression: &syntax::ExpressionSyntax) -> Result<Expr> {
-        use syntax::{ExpressionKindSyntax as E, LiteralSyntax as L};
-        let boxed = |e| self.expression(e).map(Box::new);
-        Ok(match &expression.kind {
-            E::Column(name) => {
-                let mut parts = name
-                    .parts
-                    .iter()
-                    .map(|part| self.ident(part))
-                    .collect::<Vec<_>>();
-                if parts.len() == 1 {
-                    Expr::Identifier(parts.remove(0))
-                } else {
-                    Expr::CompoundIdentifier(parts)
-                }
-            }
-            E::Parameter(position) => Expr::Value(ValueWithSpan {
-                value: ParserValue::Placeholder(format!("${position}")),
-                span: self.span(expression.span),
-            }),
-            E::Literal(literal) => Expr::Value(ValueWithSpan {
-                value: match literal {
-                    L::Null => ParserValue::Null,
-                    L::Boolean(value) => ParserValue::Boolean(*value),
-                    L::Number(span) => {
-                        ParserValue::Number(self.input[span.start..span.end].to_owned(), false)
-                    }
-                    L::String(span) => {
-                        let raw = &self.input[span.start..span.end];
-                        if raw.starts_with('$') {
-                            return Err(HawDBError::Semantic(
-                                "unsupported PostgreSQL dollar-quoted literal".into(),
-                            ));
-                        }
-                        let value = if raw.starts_with(['E', 'e', 'U', 'u']) {
-                            // Decode one already matched lexical terminal with the
-                            // established PostgreSQL escape policy, not a SQL parser.
-                            let tokens =
-                                sqlparser::tokenizer::Tokenizer::new(&PostgreSqlDialect {}, raw)
-                                    .tokenize()
-                                    .map_err(|error| HawDBError::Parse(error.to_string()))?;
-                            let [sqlparser::tokenizer::Token::EscapedStringLiteral(value)
-                            | sqlparser::tokenizer::Token::UnicodeStringLiteral(value)] =
-                                tokens.as_slice()
-                            else {
-                                return Err(HawDBError::Parse(
-                                    "invalid escaped string literal".into(),
-                                ));
-                            };
-                            value.clone()
-                        } else {
-                            raw[1..raw.len() - 1].replace("''", "'")
-                        };
-                        ParserValue::SingleQuotedString(value)
-                    }
-                },
-                span: self.span(expression.span),
-            }),
-            E::Parenthesized(inner) => Expr::Nested(boxed(inner)?),
-            E::Unary {
-                operator,
-                expression,
-            } => Expr::UnaryOp {
-                op: match operator {
-                    syntax::UnaryOperatorSyntax::Not => sqlparser::ast::UnaryOperator::Not,
-                    syntax::UnaryOperatorSyntax::Plus => sqlparser::ast::UnaryOperator::Plus,
-                    syntax::UnaryOperatorSyntax::Minus => sqlparser::ast::UnaryOperator::Minus,
-                },
-                expr: boxed(expression)?,
-            },
-            E::Binary {
-                left,
-                operator,
-                right,
-            } => Expr::BinaryOp {
-                left: boxed(left)?,
-                right: boxed(right)?,
-                op: match operator {
-                    syntax::BinaryOperatorSyntax::Or => BinaryOperator::Or,
-                    syntax::BinaryOperatorSyntax::And => BinaryOperator::And,
-                    syntax::BinaryOperatorSyntax::Equal => BinaryOperator::Eq,
-                    syntax::BinaryOperatorSyntax::NotEqual => BinaryOperator::NotEq,
-                    syntax::BinaryOperatorSyntax::Less => BinaryOperator::Lt,
-                    syntax::BinaryOperatorSyntax::LessOrEqual => BinaryOperator::LtEq,
-                    syntax::BinaryOperatorSyntax::Greater => BinaryOperator::Gt,
-                    syntax::BinaryOperatorSyntax::GreaterOrEqual => BinaryOperator::GtEq,
-                    syntax::BinaryOperatorSyntax::Add => BinaryOperator::Plus,
-                    syntax::BinaryOperatorSyntax::Subtract => BinaryOperator::Minus,
-                    syntax::BinaryOperatorSyntax::Multiply => BinaryOperator::Multiply,
-                    syntax::BinaryOperatorSyntax::Divide => BinaryOperator::Divide,
-                    syntax::BinaryOperatorSyntax::Modulo => BinaryOperator::Modulo,
-                    syntax::BinaryOperatorSyntax::Concat => BinaryOperator::StringConcat,
-                },
-            },
-            E::Filtered {
-                function,
-                predicate,
-            } => {
-                let Expr::Function(mut function) = self.expression(function)? else {
-                    unreachable!("FILTER requires a function")
-                };
-                function.filter = Some(boxed(predicate)?);
-                Expr::Function(function)
-            }
-            E::Like {
-                expression,
-                pattern,
-                escape,
-                negated,
-                case_insensitive,
-            } => {
-                let expr = boxed(expression)?;
-                let pattern = boxed(pattern)?;
-                let escape_char = escape.as_deref().map(boxed).transpose()?;
-                if *case_insensitive {
-                    Expr::ILike {
-                        negated: *negated,
-                        any: false,
-                        expr,
-                        pattern,
-                        escape_char,
-                    }
-                } else {
-                    Expr::Like {
-                        negated: *negated,
-                        any: false,
-                        expr,
-                        pattern,
-                        escape_char,
-                    }
-                }
-            }
-            E::IsNull {
-                expression,
-                negated,
-            } => {
-                if *negated {
-                    Expr::IsNotNull(boxed(expression)?)
-                } else {
-                    Expr::IsNull(boxed(expression)?)
-                }
-            }
-            E::InList {
-                expression,
-                values,
-                negated,
-            } => Expr::InList {
-                expr: boxed(expression)?,
-                list: values
-                    .iter()
-                    .map(|value| self.expression(value))
-                    .collect::<Result<_>>()?,
-                negated: *negated,
-            },
-            E::Between {
-                expression,
-                low,
-                high,
-                negated,
-            } => Expr::Between {
-                expr: boxed(expression)?,
-                low: boxed(low)?,
-                high: boxed(high)?,
-                negated: *negated,
-            },
-            E::Function {
-                name,
-                arguments,
-                distinct,
-            } => Expr::Function(sqlparser::ast::Function {
-                name: self.name(name),
-                uses_odbc_syntax: false,
-                parameters: FunctionArguments::None,
-                args: FunctionArguments::List(sqlparser::ast::FunctionArgumentList {
-                    duplicate_treatment: distinct.then_some(DuplicateTreatment::Distinct),
-                    args: arguments
-                        .iter()
-                        .map(|arg| {
-                            Ok(FunctionArg::Unnamed(match &arg.kind {
-                                E::Wildcard(None) => FunctionArgExpr::Wildcard,
-                                E::Wildcard(Some(name)) => {
-                                    FunctionArgExpr::QualifiedWildcard(self.name(name))
-                                }
-                                _ => FunctionArgExpr::Expr(self.expression(arg)?),
-                            }))
-                        })
-                        .collect::<Result<_>>()?,
-                    clauses: Vec::new(),
-                }),
-                filter: None,
-                null_treatment: None,
-                over: None,
-                within_group: Vec::new(),
-            }),
-            _ => {
-                return Err(HawDBError::Semantic(
-                    "unsupported PostgreSQL expression".into(),
-                ))
-            }
-        })
-    }
-
-    fn lower(
-        &self,
-        expression: &syntax::ExpressionSyntax,
-        position: ExpressionPosition,
-    ) -> Result<crate::Expr> {
-        lower_expression(&self.expression(expression)?, position)
+    fn span(&self, span: syntax::Span) -> SqlSourceSpan {
+        SqlSourceSpan {
+            start: self.location(span.start),
+            end: self.location(span.end),
+        }
     }
 
     fn relation(
@@ -366,13 +139,13 @@ impl<'a> Lowerer<'a> {
                         "PostgreSQL table column aliases are not supported".into(),
                     ));
                 }
-                Ok(normalize_ident(&self.ident(&alias.name)))
+                Ok(self.ident(&alias.name))
             })
             .transpose()?;
-        Ok((lower_table_name(&self.name(&relation.name))?, alias))
+        Ok((self.name(&relation.name)?, alias))
     }
 
-    fn select(&self, select: &syntax::PostgresSelectSyntax) -> Result<SqlStatement> {
+    pub(super) fn select(&self, select: &syntax::PostgresSelectSyntax) -> Result<SqlStatement> {
         if select.locking.as_ref().is_some_and(|lock| lock.nonblocking) {
             return Err(HawDBError::Semantic(
                 "FOR UPDATE/SHARE OF, NOWAIT, and SKIP LOCKED are not supported".into(),
@@ -390,10 +163,7 @@ impl<'a> Lowerer<'a> {
                 }
                 Ok(SelectProjection::Expression {
                     expression: self.lower(&item.expression, ExpressionPosition::Scalar)?,
-                    alias: item
-                        .alias
-                        .as_ref()
-                        .map(|alias| normalize_ident(&self.ident(alias))),
+                    alias: item.alias.as_ref().map(|alias| self.ident(alias)),
                 })
             })
             .collect::<Result<_>>()?;
@@ -405,28 +175,7 @@ impl<'a> Lowerer<'a> {
             relation
                 .arguments
                 .as_ref()
-                .map(|arguments| {
-                    let args = sqlparser::ast::TableFunctionArgs {
-                        settings: None,
-                        args: arguments
-                            .iter()
-                            .map(|argument| {
-                                let arg =
-                                    FunctionArgExpr::Expr(self.expression(&argument.expression)?);
-                                Ok(match &argument.name {
-                                    Some(name) => FunctionArg::Named {
-                                        name: self.ident(name),
-                                        arg,
-                                        operator: sqlparser::ast::FunctionArgOperator::RightArrow,
-                                    },
-                                    None => FunctionArg::Unnamed(arg),
-                                })
-                            })
-                            .collect::<Result<_>>()?,
-                    };
-                    vector_index::lower_call(lower_table_name(&self.name(&relation.name))?, &args)
-                        .map(Box::new)
-                })
+                .map(|arguments| self.vector_call(&relation.name, arguments).map(Box::new))
                 .transpose()?
         } else {
             None
@@ -498,7 +247,7 @@ impl<'a> Lowerer<'a> {
             group_by: select
                 .group_by
                 .iter()
-                .map(|expr| lower_column_expr(&self.expression(expr)?))
+                .map(|expr| self.column(expr))
                 .collect::<Result<_>>()?,
             having: select
                 .having
@@ -528,12 +277,12 @@ impl<'a> Lowerer<'a> {
             limit: select
                 .limit
                 .as_ref()
-                .map(|expr| lower_nonnegative_integer_expr(&self.expression(expr)?))
+                .map(|expr| self.bound(expr))
                 .transpose()?,
             offset: select
                 .offset
                 .as_ref()
-                .map(|expr| lower_nonnegative_integer_expr(&self.expression(expr)?))
+                .map(|expr| self.bound(expr))
                 .transpose()?,
             lock_strength: select.locking.as_ref().map(|lock| match lock.strength {
                 syntax::LockStrengthSyntax::Share => SqlLockStrength::Share,
@@ -851,31 +600,48 @@ mod peg_baseline {
         for line in include_str!("../../fixtures/frontend_peg_baseline_v1.jsonl").lines() {
             let expected: serde_json::Value = serde_json::from_str(line).unwrap();
             let input = &cases[expected["id"].as_str().unwrap()];
-            let (kind, digest) = match parse_postgres_sql(input) {
-                Ok(ast) => (
-                    "accept",
-                    Some(crate::test_support::sha256_hex(
-                        format!("{ast:?}").as_bytes(),
-                    )),
-                ),
-                Err(HawDBError::Parse(_)) => ("Parse", None),
-                Err(HawDBError::Semantic(_)) => ("Semantic", None),
-                other => panic!("unexpected baseline result: {other:?}"),
-            };
-            assert_eq!(
-                kind,
-                expected["kind"].as_str().unwrap(),
-                "{}: {input}",
-                expected["id"]
-            );
-            assert_eq!(
-                digest.as_deref(),
-                expected["ast_sha256"].as_str(),
-                "{}: {input}",
-                expected["id"]
-            );
+            assert_case(input, &expected);
             count += 1;
         }
         assert_eq!(count, 1009);
+    }
+    #[test]
+    fn frozen_literal_decoding_and_contributing_locations() {
+        // Exported from independent main 9c355e9a46, before deleting its
+        // tokenizer/AST conversion. Includes ASCII byte escape admission,
+        // Unicode, escaped NUL refusal, UTF-8 locations and partial spans.
+        let mut count = 0;
+        for line in include_str!("../../fixtures/frontend_literals_peg_baseline_v1.jsonl").lines() {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_case(expected["sql"].as_str().unwrap(), &expected);
+            count += 1;
+        }
+        assert_eq!(count, 102);
+    }
+
+    fn assert_case(input: &str, expected: &serde_json::Value) {
+        let (kind, digest) = match parse_postgres_sql(input) {
+            Ok(ast) => (
+                "accept",
+                Some(crate::test_support::sha256_hex(
+                    format!("{ast:?}").as_bytes(),
+                )),
+            ),
+            Err(HawDBError::Parse(_)) => ("Parse", None),
+            Err(HawDBError::Semantic(_)) => ("Semantic", None),
+            other => panic!("unexpected baseline result: {other:?}"),
+        };
+        assert_eq!(
+            kind,
+            expected["kind"].as_str().unwrap(),
+            "{}: {input}",
+            expected["id"]
+        );
+        assert_eq!(
+            digest.as_deref(),
+            expected["ast_sha256"].as_str(),
+            "{}: {input}",
+            expected["id"]
+        );
     }
 }

@@ -2122,7 +2122,11 @@ query results, plans, parameters, caching, joins, aggregates and vector executio
 DDL/DML retain upstream routing pending separate qualification. Additional
 frozen Debug-AST SHA-256 fixtures captured from main `0f611b6dec` check all 1,009
 SQL inventory outcomes and both Cypher public entries for all 1,427 inventory
-queries (2,854 records). These checks include locations and Parse/Semantic
+queries (2,854 records). An additional 102-case literal/contributing-span
+baseline was independently exported from main `9c355e9a46` before removing
+upstream expression AST conversion and string retokenization. The original
+3,863 inventory outcomes were also re-exported from that main revision and
+matched the earlier baseline exactly. These checks include locations and Parse/Semantic
 refusal classes without needing a live reference parser. Existing branch SQL
 unit tests own PEG lifecycle selectors, revision/request-key admission and page
 bounds in either clause order; the handwritten branch token driver is removed.

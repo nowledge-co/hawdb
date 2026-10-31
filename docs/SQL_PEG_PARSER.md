@@ -68,13 +68,16 @@ LIKE/ILIKE/ESCAPE, function ALL and aggregate FILTER are syntax nodes; their
 existing relational semantic restrictions remain authoritative. PGQ binders
 reject the newly represented relational-only expressions until qualified.
 
-`hawdb-sql/src/parser/owned.rs` converts selected expressions into the existing
-semantic lowerer's AST types in memory; it never serializes or reparses SQL.
-This preserves position-sensitive semantic restrictions and the shared
-relational expression IR. Byte locations become character-based line/column
-locations using line starts and sparse UTF-8 checkpoints, avoiding repeated
-whole-line scans for wide statements. SQL statement, expression and table
-function parsing is bounded by the lexer and PEG limits.
+`hawdb-sql/src/parser/owned.rs` lowers selected syntax directly into HawDB's
+relational expression IR. It no longer constructs upstream semantic ASTs or
+runs a second tokenizer for string literals. Contributing-token source spans
+retain their established contract (parentheses/unary punctuation and function
+closing delimiters do not enlarge them). Line starts and sparse UTF-8
+checkpoints translate byte locations without repeatedly scanning whole lines.
+An independent 102-case literal/span fixture from main `9c355e9a46` freezes
+PostgreSQL E/U& decoding, invalid escape refusals and source locations.
+SQL statement, expression and table-function parsing remains bounded by lexer
+and PEG limits.
 
 Grammar compilation rejects duplicate or unresolved names, direct/indirect
 left recursion (including through nullable prefixes/lookahead), and nullable
