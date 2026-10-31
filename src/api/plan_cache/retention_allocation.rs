@@ -129,6 +129,14 @@ fn cached(
         parameters: parameterized.cache_key().clone(),
         environment: OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(&Catalog::default()),
+            proof_schema: Some(ProofSchemaKey {
+                public_tables: vec![hawdb_core::TableId(7); 32],
+                public_properties: vec![hawdb_core::PropertyId(9); 64],
+                exists: vec![(
+                    hawdb_core::ConstraintSubject::Node(LabelId(7)),
+                    "required".repeat(32),
+                )],
+            }),
             statistics_generation: Some(42),
             ordered_range_indexes: vec![("Memory".into(), "updated_at".into())],
             ordered_composite_indexes: Some(Arc::new(vec![(
@@ -222,7 +230,7 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
     // Exercise every owned list-expression form introduced by #1360, keeping
     // their allocation lifetime entirely inside the same independent observer.
     {
-        let query = "MATCH (n:Memory) RETURN [x IN reverse(range(0, 128))[1..100] WHERE x > 3 | x] AS filtered, range(0, 12)[1] AS indexed";
+        let query = "MATCH (n:Memory) RETURN [x IN reverse(range(0, 128))[1..100] WHERE x > 3 | x] AS filtered, range(0, 12)[1] AS indexed, [n.id, [n.body, 'literal-owned-payload']] AS literal_list";
         let statement = cypher::parse(query).unwrap();
         let parameters = BTreeMap::new();
         let window = Window::new();

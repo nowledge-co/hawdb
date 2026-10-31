@@ -876,5 +876,60 @@ mod tests {
             assert!(error.contains("memory"), "{error}");
             assert_eq!(account.available_bytes(), available);
         }
+
+        #[test]
+        fn list_literals_evaluate_elements_in_order_under_the_memory_account() {
+            let list = ProjectionExpression::List(vec![
+                column("name"),
+                literal(Value::Null),
+                column("missing"),
+                ProjectionExpression::List(vec![column("xs"), literal(Value::Int(4))]),
+                call(ListFunction::Size, vec![column("xs")]),
+            ]);
+            let expected = Value::List(vec![
+                Value::String("h\u{e9}llo".to_string()),
+                Value::Null,
+                Value::Null,
+                Value::List(vec![ints(&[1, 2, 3]), Value::Int(4)]),
+                Value::Int(3),
+            ]);
+            assert_eq!(evaluate(&list).unwrap(), expected);
+            assert_eq!(
+                evaluate(&ProjectionExpression::List(Vec::new())).unwrap(),
+                ints(&[])
+            );
+
+            let ledger = QueryMemoryLedger::new(NonZeroUsize::new(1 << 20).unwrap());
+            let account = ledger.account(
+                QueryMemoryClass::PipelineBatch,
+                "list literal test",
+                NonZeroUsize::new(64 * 1024).unwrap(),
+            );
+            let catalog = Catalog::default();
+            let binding = binding();
+            let available = account.available_bytes();
+            let value =
+                evaluate_projection_borrowed(&list, &catalog, &binding, Some(&account)).unwrap();
+            assert_eq!(value.as_ref(), &expected);
+            assert!(
+                available - account.available_bytes() >= value_memory_bytes(value.as_ref()),
+                "list literal charge must cover the materialized value"
+            );
+            drop(value);
+            assert_eq!(account.available_bytes(), available);
+
+            // Elements are charged as they are copied, so an oversized
+            // element fails before the list is complete.
+            let small = ledger.account(
+                QueryMemoryClass::PipelineBatch,
+                "small list literal test",
+                NonZeroUsize::new(64).unwrap(),
+            );
+            let error = evaluate_projection_borrowed(&list, &catalog, &binding, Some(&small))
+                .err()
+                .expect("a list literal beyond the account budget must fail")
+                .to_string();
+            assert!(error.contains("memory"), "{error}");
+        }
     }
 }

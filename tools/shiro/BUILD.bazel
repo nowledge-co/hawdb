@@ -258,7 +258,7 @@ rust_binary(
     tags = ["manual"],
     name = "shiro",
     crate_root = "src/main.rs",
-    srcs = ["src/main.rs"],
+    srcs = ["src/main.rs", "src/qualification_cli.rs"],
     edition = "2024",
     deps = ["@crate_index//:serde_json"] + [":shiro_core"],
 
@@ -268,7 +268,7 @@ rust_test(
     tags = ["manual"],
     name = "shiro_cli_tests",
     crate_root = "src/main.rs",
-    srcs = ["src/main.rs"],
+    srcs = ["src/main.rs", "src/qualification_cli.rs"],
     data = [":shiro"],
     edition = "2024",
     deps = ["@crate_index//:serde_json"] + [":shiro_core"],

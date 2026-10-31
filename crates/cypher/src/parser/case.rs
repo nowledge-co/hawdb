@@ -150,18 +150,9 @@ impl Parser<'_> {
                 start,
             ));
         }
-        let op = if self.consume_token("<>") || self.consume_token("!=") {
-            ScalarBinaryOp::NotEq
-        } else if self.consume_token("<=") {
-            ScalarBinaryOp::Lte
-        } else if self.consume_token(">=") {
-            ScalarBinaryOp::Gte
-        } else if self.consume_char('=') {
-            ScalarBinaryOp::Eq
-        } else if self.consume_char('<') {
-            ScalarBinaryOp::Lt
-        } else if self.consume_char('>') {
-            ScalarBinaryOp::Gt
+        let op = if let Some(op) = self.consume_comparison_operator() {
+            let right = self.parse_case_scalar()?;
+            return self.parse_case_comparison_chain(left, op.scalar_op(), right, start);
         } else if self.consume_keyword("CONTAINS") {
             ScalarBinaryOp::Contains
         } else if self.consume_keyword("IN") {
@@ -178,5 +169,55 @@ impl Parser<'_> {
             },
             start,
         ))
+    }
+
+    /// `a < b <= c` in a condition means `a < b AND b <= c` (openCypher
+    /// chained comparison). Links are joined by the three-valued scalar
+    /// `AND`; the shared side-effect-free operand is repeated in both links.
+    fn parse_case_comparison_chain(
+        &mut self,
+        left: ScalarExpression,
+        op: ScalarBinaryOp,
+        right: ScalarExpression,
+        start: usize,
+    ) -> Result<ScalarExpression> {
+        let (mut left, mut op, mut right) = (left, op, right);
+        let mut links = Vec::new();
+        while let Some(next) = self.consume_comparison_operator() {
+            let following = self.parse_case_scalar()?;
+            links.push(binary(left, op, right.clone()));
+            (left, op, right) = (right, next.scalar_op(), following);
+        }
+        if links.is_empty() {
+            return Ok(self.source_node(
+                ScalarExpressionKind::Binary {
+                    left: Box::new(left),
+                    op,
+                    right: Box::new(right),
+                },
+                start,
+            ));
+        }
+        links.push(binary(left, op, right));
+        Ok(links
+            .into_iter()
+            .reduce(|chain, link| binary(chain, ScalarBinaryOp::And, link))
+            .expect("a comparison chain has at least two links"))
+    }
+}
+
+/// A binary node spanning from its left operand to its right operand.
+fn binary(left: ScalarExpression, op: ScalarBinaryOp, right: ScalarExpression) -> ScalarExpression {
+    let span = left.span.zip(right.span).map(|(left, right)| SourceSpan {
+        start: left.start,
+        end: right.end,
+    });
+    AstNode {
+        kind: ScalarExpressionKind::Binary {
+            left: Box::new(left),
+            op,
+            right: Box::new(right),
+        },
+        span,
     }
 }

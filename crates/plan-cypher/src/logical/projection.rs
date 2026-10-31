@@ -718,6 +718,10 @@ pub(super) fn plan_projection_with_columns(
             plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
             function.function_name().to_string(),
         ),
+        ScalarExpressionKind::List(_) => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "list".to_string(),
+        ),
         ScalarExpressionKind::ListComprehension { .. } => (
             plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
             "list_comprehension".to_string(),
@@ -1421,6 +1425,14 @@ pub(super) fn plan_scalar_expression_with_columns(
         | ScalarExpressionKind::IsNull { .. } => {
             plan_case_scalar(scope, column_scope, expression, parameters, false)
         }
+        ScalarExpressionKind::List(elements) => Ok(ProjectionExpression::List(
+            elements
+                .iter()
+                .map(|element| {
+                    plan_scalar_expression_with_columns(scope, column_scope, element, parameters)
+                })
+                .collect::<Result<Vec<_>>>()?,
+        )),
         ScalarExpressionKind::ListFunction {
             function,
             arguments,

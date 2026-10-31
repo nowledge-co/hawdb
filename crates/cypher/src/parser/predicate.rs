@@ -37,6 +37,38 @@ enum PropertyPredicateRight {
     Expression(ScalarExpression),
 }
 
+/// One comparison operator of an openCypher comparison chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ChainedComparison {
+    Eq,
+    NotEq,
+    Order(ComparisonOp),
+}
+
+impl ChainedComparison {
+    /// The operator with its operands swapped: `a < b` is `b > a`.
+    fn mirrored(self) -> Self {
+        match self {
+            Self::Order(ComparisonOp::Lt) => Self::Order(ComparisonOp::Gt),
+            Self::Order(ComparisonOp::Lte) => Self::Order(ComparisonOp::Gte),
+            Self::Order(ComparisonOp::Gt) => Self::Order(ComparisonOp::Lt),
+            Self::Order(ComparisonOp::Gte) => Self::Order(ComparisonOp::Lte),
+            op @ (Self::Eq | Self::NotEq) => op,
+        }
+    }
+
+    pub(super) fn scalar_op(self) -> ScalarBinaryOp {
+        match self {
+            Self::Eq => ScalarBinaryOp::Eq,
+            Self::NotEq => ScalarBinaryOp::NotEq,
+            Self::Order(ComparisonOp::Lt) => ScalarBinaryOp::Lt,
+            Self::Order(ComparisonOp::Lte) => ScalarBinaryOp::Lte,
+            Self::Order(ComparisonOp::Gt) => ScalarBinaryOp::Gt,
+            Self::Order(ComparisonOp::Gte) => ScalarBinaryOp::Gte,
+        }
+    }
+}
+
 impl Parser<'_> {
     pub(super) fn parse_predicate(&mut self, allow_columns: bool) -> Result<PropertyPredicate> {
         let mut predicates = vec![self.parse_property_conjunction(allow_columns)?];
@@ -117,26 +149,32 @@ impl Parser<'_> {
                     }
                 });
             }
-            if self.consume_char('=') {
-                return Ok(PropertyPredicate::ParameterEq {
-                    left: parameter,
-                    right: self.parse_value()?,
-                });
+            if self.consume_keyword("IS") {
+                let is_not = self.consume_keyword("NOT");
+                self.expect_keyword("NULL")?;
+                return if is_not {
+                    Ok(PropertyPredicate::ParameterIsNotNull { parameter })
+                } else {
+                    Ok(PropertyPredicate::ParameterIsNull { parameter })
+                };
             }
-            if self.consume_token("<>") || self.consume_token("!=") {
-                return Ok(PropertyPredicate::ParameterNotEq {
-                    left: parameter,
-                    right: self.parse_value()?,
-                });
-            }
-            self.expect_keyword("IS")?;
-            let is_not = self.consume_keyword("NOT");
-            self.expect_keyword("NULL")?;
-            return if is_not {
-                Ok(PropertyPredicate::ParameterIsNotNull { parameter })
-            } else {
-                Ok(PropertyPredicate::ParameterIsNull { parameter })
+            let Some(op) = self.consume_comparison_operator() else {
+                return Err(self.error("expected IS"));
             };
+            let left = AstNode::from_source(
+                ScalarExpressionKind::Value(AstNode::from_source(
+                    ValueExpressionKind::Parameter(parameter),
+                    parameter_span,
+                )),
+                parameter_span,
+            );
+            let right = self.parse_comparison_right(allow_columns)?;
+            return self.parse_comparison_chain(left, op, right);
+        }
+        if self.next_is_literal_comparison_operand() {
+            // A literal on the left, as in `5 < n.x` or `1 <= n.x < 10`.
+            let left = self.parse_case_scalar()?;
+            return self.parse_expression_predicate(left);
         }
         let expression_start = self.checkpoint();
         let variable = self.parse_ident()?;
@@ -203,7 +241,7 @@ impl Parser<'_> {
         if variable.eq_ignore_ascii_case("id") && self.consume_char('(') {
             let variable = self.parse_ident()?;
             self.expect_char(')')?;
-            return self.parse_id_predicate(variable);
+            return self.parse_id_predicate(variable, expression_start.pos);
         }
         self.skip_ws();
         if allow_columns && self.peek_char() == Some('[') {
@@ -283,88 +321,15 @@ impl Parser<'_> {
                 property,
                 pattern,
             })
-        } else if self.consume_char('<') {
-            if self.consume_char('>') {
-                return match self.parse_property_predicate_right(allow_columns)? {
-                    PropertyPredicateRight::Value(value) => Ok(PropertyPredicate::NotEq {
-                        variable,
-                        property,
-                        value,
-                    }),
-                    PropertyPredicateRight::Expression(value) => {
-                        Ok(PropertyPredicate::ExpressionNotEq {
-                            expression: AstNode::from_source(
-                                ScalarExpressionKind::Property { variable, property },
-                                property_span,
-                            ),
-                            value,
-                        })
-                    }
-                };
-            }
-            let op = if self.consume_char('=') {
-                ComparisonOp::Lte
-            } else {
-                ComparisonOp::Lt
-            };
-            match self.parse_property_predicate_right(allow_columns)? {
-                PropertyPredicateRight::Value(value) => Ok(PropertyPredicate::Compare {
-                    variable,
-                    property,
-                    op,
-                    value,
-                }),
-                PropertyPredicateRight::Expression(value) => {
-                    Ok(PropertyPredicate::ExpressionCompare {
-                        expression: AstNode::from_source(
-                            ScalarExpressionKind::Property { variable, property },
-                            property_span,
-                        ),
-                        op,
-                        value,
-                    })
-                }
-            }
-        } else if self.consume_char('>') {
-            let op = if self.consume_char('=') {
-                ComparisonOp::Gte
-            } else {
-                ComparisonOp::Gt
-            };
-            match self.parse_property_predicate_right(allow_columns)? {
-                PropertyPredicateRight::Value(value) => Ok(PropertyPredicate::Compare {
-                    variable,
-                    property,
-                    op,
-                    value,
-                }),
-                PropertyPredicateRight::Expression(value) => {
-                    Ok(PropertyPredicate::ExpressionCompare {
-                        expression: AstNode::from_source(
-                            ScalarExpressionKind::Property { variable, property },
-                            property_span,
-                        ),
-                        op,
-                        value,
-                    })
-                }
-            }
+        } else if let Some(op) = self.consume_comparison_operator() {
+            let left = AstNode::from_source(
+                ScalarExpressionKind::Property { variable, property },
+                property_span,
+            );
+            let right = self.parse_comparison_right(allow_columns)?;
+            self.parse_comparison_chain(left, op, right)
         } else {
-            self.expect_char('=')?;
-            match self.parse_property_predicate_right(allow_columns)? {
-                PropertyPredicateRight::Value(value) => Ok(PropertyPredicate::Eq {
-                    variable,
-                    property,
-                    value,
-                }),
-                PropertyPredicateRight::Expression(value) => Ok(PropertyPredicate::ExpressionEq {
-                    expression: AstNode::from_source(
-                        ScalarExpressionKind::Property { variable, property },
-                        property_span,
-                    ),
-                    value,
-                }),
-            }
+            Err(self.comparison_operator_error())
         }
     }
 
@@ -393,6 +358,25 @@ impl Parser<'_> {
             });
         }
         self.parse_value().map(PropertyPredicateRight::Value)
+    }
+
+    fn parse_comparison_right(&mut self, allow_columns: bool) -> Result<ScalarExpression> {
+        Ok(match self.parse_property_predicate_right(allow_columns)? {
+            PropertyPredicateRight::Value(value) => AstNode {
+                span: value.span,
+                kind: ScalarExpressionKind::Value(value),
+            },
+            PropertyPredicateRight::Expression(value) => value,
+        })
+    }
+
+    /// Returns true at a number, string or boolean/null literal, which can
+    /// only start a predicate as the left operand of a comparison.
+    fn next_is_literal_comparison_operand(&mut self) -> bool {
+        matches!(self.peek_char(), Some('\'' | '"' | '-' | '0'..='9'))
+            || self.next_keyword_is("true")
+            || self.next_keyword_is("false")
+            || self.next_keyword_is("null")
     }
 
     fn looks_like_relationship_exists_predicate(&self) -> bool {
@@ -608,61 +592,84 @@ impl Parser<'_> {
                 }
             });
         }
-        if self.consume_char('<') {
-            if self.consume_char('>') {
-                return Ok(PropertyPredicate::ExpressionNotEq {
-                    expression,
-                    value: self.parse_scalar_expression()?,
-                });
-            }
-            let op = if self.consume_char('=') {
-                ComparisonOp::Lte
-            } else {
-                ComparisonOp::Lt
-            };
-            return Ok(PropertyPredicate::ExpressionCompare {
-                expression,
-                op,
-                value: self.parse_scalar_expression()?,
-            });
-        }
-        if self.consume_char('>') {
-            let op = if self.consume_char('=') {
-                ComparisonOp::Gte
-            } else {
-                ComparisonOp::Gt
-            };
-            return Ok(PropertyPredicate::ExpressionCompare {
-                expression,
-                op,
-                value: self.parse_scalar_expression()?,
-            });
-        }
         if self.consume_keyword("CONTAINS") {
             return Ok(PropertyPredicate::ExpressionContains {
                 expression,
                 value: self.parse_scalar_expression()?,
             });
         }
-        self.expect_char('=')?;
-        Ok(PropertyPredicate::ExpressionEq {
-            expression,
-            value: self.parse_scalar_expression()?,
+        let Some(op) = self.consume_comparison_operator() else {
+            return Err(self.comparison_operator_error());
+        };
+        let value = self.parse_scalar_expression()?;
+        self.parse_comparison_chain(expression, op, value)
+    }
+
+    /// Consumes one of `=`, `<>`, `!=`, `<`, `<=`, `>` or `>=`.
+    pub(super) fn consume_comparison_operator(&mut self) -> Option<ChainedComparison> {
+        let op = if self.consume_token("<>") || self.consume_token("!=") {
+            ChainedComparison::NotEq
+        } else if self.consume_token("<=") {
+            ChainedComparison::Order(ComparisonOp::Lte)
+        } else if self.consume_token(">=") {
+            ChainedComparison::Order(ComparisonOp::Gte)
+        } else if self.consume_char('<') {
+            ChainedComparison::Order(ComparisonOp::Lt)
+        } else if self.consume_char('>') {
+            ChainedComparison::Order(ComparisonOp::Gt)
+        } else if self.consume_char('=') {
+            ChainedComparison::Eq
+        } else {
+            return None;
+        };
+        Some(op)
+    }
+
+    /// Reports a missing comparison operator after the offending character,
+    /// as `expect_char('=')` does.
+    fn comparison_operator_error(&mut self) -> hawdb_core::HawDBError {
+        self.next_char();
+        self.error("expected '='")
+    }
+
+    /// Parses the rest of an openCypher comparison chain after its first link
+    /// `left op right`. `a < b <= c` means `a < b AND b <= c`: every link is
+    /// lowered on its own and joined by the three-valued `AND`, so a null
+    /// operand makes its links unknown rather than false. Shared operands are
+    /// side-effect-free scalars, so repeating them in adjacent links is
+    /// equivalent to evaluating them once.
+    fn parse_comparison_chain(
+        &mut self,
+        left: ScalarExpression,
+        op: ChainedComparison,
+        right: ScalarExpression,
+    ) -> Result<PropertyPredicate> {
+        let (mut left, mut op, mut right) = (left, op, right);
+        let mut links = Vec::new();
+        while let Some(next) = self.consume_comparison_operator() {
+            let following = self.parse_case_scalar()?;
+            links.push(comparison_predicate(left, op, right.clone()));
+            (left, op, right) = (right, next, following);
+        }
+        links.push(comparison_predicate(left, op, right));
+        Ok(if links.len() == 1 {
+            links.remove(0)
+        } else {
+            PropertyPredicate::And(links)
         })
     }
 
-    /// Parses the right side of `IN`. Literal lists and parameters keep the
-    /// value-list predicate forms; any other scalar list uses the generic
-    /// three-valued `IN` operator.
+    /// Parses the right side of `IN`. Constant lists and parameters keep the
+    /// value-list predicate forms; any other scalar list, including a list
+    /// literal with row-bound elements, uses the generic three-valued `IN`
+    /// operator.
     fn parse_in_right(&mut self) -> Result<InRight> {
         self.skip_ws();
         let checkpoint = self.checkpoint();
         if matches!(self.peek_char(), Some('$' | '[')) && !self.next_is_list_comprehension() {
             if let Ok(value) = self.parse_value() {
                 self.skip_ws();
-                if self.peek_char() != Some('[')
-                    && !matches!(value.kind, ValueExpressionKind::BindingProperty { .. })
-                {
+                if self.peek_char() != Some('[') && !value.kind.reads_row_binding() {
                     return Ok(InRight::Value(value));
                 }
             }
@@ -695,12 +702,17 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_id_predicate(&mut self, variable: String) -> Result<PropertyPredicate> {
+    fn parse_id_predicate(&mut self, variable: String, start: usize) -> Result<PropertyPredicate> {
+        let id_span = self.source_span(start);
         self.skip_ws();
         if self.consume_keyword("IN") {
-            return Ok(PropertyPredicate::IdIn {
-                variable,
-                values: self.parse_value()?,
+            return Ok(match self.parse_in_right()? {
+                InRight::Value(values) => PropertyPredicate::IdIn { variable, values },
+                InRight::Expression(list) => self.boolean_expression_predicate(
+                    AstNode::from_source(ScalarExpressionKind::Id(variable), id_span),
+                    list,
+                    start,
+                ),
             });
         }
         if self.consume_char('<') {
@@ -1024,6 +1036,87 @@ impl Parser<'_> {
             variable: condition_variable,
             property: condition_property,
         })
+    }
+}
+
+/// Lowers one link of a comparison chain. A property compared with a value
+/// keeps the property predicate forms that index and range pushdown match;
+/// a value on the left is mirrored onto the property, so `$start <= n.x` is
+/// planned as `n.x >= $start`. A parameter compared for (in)equality with a
+/// value keeps its constant-folded form. Other shapes compare expressions.
+fn comparison_predicate(
+    left: ScalarExpression,
+    op: ChainedComparison,
+    right: ScalarExpression,
+) -> PropertyPredicate {
+    let (left, op, right) = match (&left.kind, &right.kind) {
+        (ScalarExpressionKind::Value(_), ScalarExpressionKind::Property { .. }) => {
+            (right, op.mirrored(), left)
+        }
+        _ => (left, op, right),
+    };
+    match (left.kind, right.kind) {
+        (
+            ScalarExpressionKind::Property { variable, property },
+            ScalarExpressionKind::Value(value),
+        ) => match op {
+            ChainedComparison::Eq => PropertyPredicate::Eq {
+                variable,
+                property,
+                value,
+            },
+            ChainedComparison::NotEq => PropertyPredicate::NotEq {
+                variable,
+                property,
+                value,
+            },
+            ChainedComparison::Order(op) => PropertyPredicate::Compare {
+                variable,
+                property,
+                op,
+                value,
+            },
+        },
+        (
+            ScalarExpressionKind::Value(AstNode {
+                kind: ValueExpressionKind::Parameter(parameter),
+                ..
+            }),
+            ScalarExpressionKind::Value(value),
+        ) if matches!(op, ChainedComparison::Eq | ChainedComparison::NotEq) => {
+            if op == ChainedComparison::Eq {
+                PropertyPredicate::ParameterEq {
+                    left: parameter,
+                    right: value,
+                }
+            } else {
+                PropertyPredicate::ParameterNotEq {
+                    left: parameter,
+                    right: value,
+                }
+            }
+        }
+        (left_kind, right_kind) => {
+            let expression = AstNode {
+                kind: left_kind,
+                span: left.span,
+            };
+            let value = AstNode {
+                kind: right_kind,
+                span: right.span,
+            };
+            match op {
+                ChainedComparison::Eq => PropertyPredicate::ExpressionEq { expression, value },
+                ChainedComparison::NotEq => {
+                    PropertyPredicate::ExpressionNotEq { expression, value }
+                }
+                ChainedComparison::Order(op) => PropertyPredicate::ExpressionCompare {
+                    expression,
+                    op,
+                    value,
+                },
+            }
+        }
     }
 }
 

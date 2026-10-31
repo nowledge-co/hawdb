@@ -1435,6 +1435,7 @@ pub(super) fn collect_scalar_expression_variables(
         | ScalarExpressionKind::Not(_)
         | ScalarExpressionKind::IsNull { .. }
         | ScalarExpressionKind::ListFunction { .. }
+        | ScalarExpressionKind::List(_)
         | ScalarExpressionKind::ListIndex { .. }
         | ScalarExpressionKind::ListSlice { .. } => {
             expression.kind.all_children(|child| {

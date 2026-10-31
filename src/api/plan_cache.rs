@@ -263,9 +263,40 @@ impl From<&QueryAccessControlContext> for AccessControlPlanCacheKey {
     }
 }
 
+// Lifecycle and existence constraints affect semantic proofs, while the
+// existing statistics identity intentionally ignores lifecycle churn. Track
+// this identity only for logical shapes on which proof rewrites can run.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ProofSchemaKey {
+    public_tables: Vec<hawdb_core::TableId>,
+    public_properties: Vec<hawdb_core::PropertyId>,
+    exists: Vec<(hawdb_core::ConstraintSubject, String)>,
+}
+impl ProofSchemaKey {
+    fn from_catalog(catalog: &Catalog) -> Self {
+        Self {
+            public_tables: catalog
+                .table_descriptors()
+                .filter(|table| table.state == hawdb_core::SchemaObjectState::Public)
+                .map(|table| table.id)
+                .collect(),
+            public_properties: catalog
+                .property_descriptors()
+                .filter(|property| property.state == hawdb_core::SchemaObjectState::Public)
+                .map(|property| property.id)
+                .collect(),
+            exists: catalog
+                .node_property_exists_constraints()
+                .map(|constraint| (constraint.subject, constraint.property.clone()))
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct OptimizerEnvironmentKey {
     schema: OptimizerSchemaKey,
+    proof_schema: Option<ProofSchemaKey>,
     // Query-local point estimates do not depend on published advanced statistics.
     statistics_generation: Option<u64>,
     ordered_range_indexes: Vec<(String, String)>,
@@ -449,6 +480,10 @@ impl OptimizerEnvironmentKey {
         store: &R,
     ) -> bool {
         self.schema == OptimizerSchemaKey::from_catalog(catalog)
+            && self
+                .proof_schema
+                .as_ref()
+                .is_none_or(|proof| proof == &ProofSchemaKey::from_catalog(catalog))
             && self.ordered_range_indexes == ordered_range_indexes(catalog, store)
             && self
                 .ordered_composite_indexes
@@ -523,7 +558,7 @@ impl OptimizerPlanningCache {
         catalog: &Catalog,
         store: &R,
         query_local_statistics: bool,
-        tracks_composite_ordering: bool,
+        tracks_properties: bool,
     ) -> OptimizerEnvironmentKey {
         // A cache lookup must retain the last published statistics generation:
         // ordinary data commits do not make a physical plan illegal. A cache
@@ -537,9 +572,10 @@ impl OptimizerPlanningCache {
         }
         OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
+            proof_schema: tracks_properties.then(|| ProofSchemaKey::from_catalog(catalog)),
             statistics_generation: (!query_local_statistics).then_some(self.statistics_generation),
             ordered_range_indexes: ordered_range_indexes(catalog, store),
-            ordered_composite_indexes: tracks_composite_ordering
+            ordered_composite_indexes: tracks_properties
                 .then(|| Arc::new(ordered_composite_indexes(catalog, store))),
             node_index_size_classes: node_index_size_classes(catalog, store),
         }
@@ -593,7 +629,7 @@ impl OptimizerPlanningCache {
         catalog: &Catalog,
         store: &R,
         statistics_commit_lag: Option<u64>,
-        tracks_composite_ordering: bool,
+        tracks_properties: bool,
     ) -> OptimizerCatalogAccess {
         let mut decisions = Vec::new();
         // This path is reached only after the physical-plan cache missed or
@@ -637,9 +673,10 @@ impl OptimizerPlanningCache {
         ));
         let environment = OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
+            proof_schema: tracks_properties.then(|| ProofSchemaKey::from_catalog(catalog)),
             statistics_generation: Some(self.statistics_generation),
             ordered_range_indexes: ordered_range_indexes(catalog, store),
-            ordered_composite_indexes: tracks_composite_ordering
+            ordered_composite_indexes: tracks_properties
                 .then(|| Arc::new(ordered_composite_indexes(catalog, store))),
             node_index_size_classes: node_index_size_classes(catalog, store),
         };
@@ -757,7 +794,7 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
             point_statistics.is_some(),
             parameterized
                 .as_ref()
-                .is_some_and(|plan| ordered_query_shape(plan.logical())),
+                .is_some_and(|plan| tracks_property_proofs(plan.logical())),
         )
     });
     let mut key = parameterized
@@ -1016,6 +1053,22 @@ fn ordered_query_shape(logical: &LogicalPlan) -> bool {
     }
 }
 
+fn tracks_property_proofs(logical: &LogicalPlan) -> bool {
+    match logical {
+        LogicalPlan::Sort { .. } | LogicalPlan::Distinct { .. } => true,
+        LogicalPlan::Aggregate {
+            group_keys, input, ..
+        } => !group_keys.is_empty() || tracks_property_proofs(input),
+        LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Project { input, .. }
+        | LogicalPlan::Filter { input, .. } => tracks_property_proofs(input),
+        LogicalPlan::NodeCartesianProduct { left, right } => {
+            tracks_property_proofs(left) || tracks_property_proofs(right)
+        }
+        _ => false,
+    }
+}
+
 fn refresh_materialized_plan_trace(trace: &mut OptimizerTrace, physical_plan: &PhysicalPlan) {
     trace.selected_plan = physical_plan.explain(0);
     trace.selected_plan_fingerprint = physical_plan.fingerprint();
@@ -1057,7 +1110,7 @@ fn optimizer_catalog_access_for_logical<S: crate::executor::ExecutionStore>(
             operation: BatchMutationOperation::CreateNode { .. },
             ..
         } => "UnwindCreateNode",
-        _ => return optimizer_catalog_access(context, ordered_query_shape(logical)),
+        _ => return optimizer_catalog_access(context, tracks_property_proofs(logical)),
     };
     // These bound leaves have no graph input or competing access path. Keep
     // schema and maintained counts current without scanning data or publishing
@@ -1068,6 +1121,7 @@ fn optimizer_catalog_access_for_logical<S: crate::executor::ExecutionStore>(
     );
     let environment = OptimizerEnvironmentKey {
         schema: OptimizerSchemaKey::from_catalog(context.catalog),
+        proof_schema: None,
         statistics_generation: Some(context.planning_cache.borrow().statistics_generation),
         ordered_range_indexes: ordered_range_indexes(context.catalog, context.store),
         ordered_composite_indexes: None,
@@ -1091,13 +1145,13 @@ fn optimizer_catalog_access_for_logical<S: crate::executor::ExecutionStore>(
 
 fn optimizer_catalog_access<S: crate::executor::ExecutionStore>(
     context: &PlanCacheContext<'_, S>,
-    tracks_composite_ordering: bool,
+    tracks_properties: bool,
 ) -> OptimizerCatalogAccess {
     context.planning_cache.borrow_mut().optimizer_catalog(
         context.catalog,
         context.store,
         context.config.optimizer_statistics_inline_commit_lag,
-        tracks_composite_ordering,
+        tracks_properties,
     )
 }
 
@@ -2691,9 +2745,16 @@ hawdb_core::impl_retained_heap_for_struct!(AccessControlPlanCacheKey {
     visibility_value_count
 });
 
-// Retained query ownership: OptimizerEnvironmentKey.
+// Retained query ownership: ProofSchemaKey.
+hawdb_core::impl_retained_heap_for_struct!(ProofSchemaKey {
+    public_tables,
+    public_properties,
+    exists
+});
+
 hawdb_core::impl_retained_heap_for_struct!(OptimizerEnvironmentKey {
     schema,
+    proof_schema,
     statistics_generation,
     ordered_range_indexes,
     ordered_composite_indexes,

@@ -597,6 +597,26 @@ fn multi_label_match_reads_any_listed_label() {
         .query("MATCH (n:MissingLabel) RETURN n.id AS id")
         .unwrap();
     assert!(output.rows.is_empty());
+
+    // Counting must agree with the any-of scan, including the count fast
+    // path that otherwise answers single-label counts from statistics.
+    for query in [
+        "MATCH (n:Entity:Memory) RETURN count(n) AS n",
+        "MATCH (n:Entity:Memory) RETURN count(*) AS n",
+        "MATCH (n:Memory:Source:Entity) RETURN count(n) AS n",
+    ] {
+        let expected = if query.contains("Source") { 3 } else { 2 };
+        let output = db.query(query).unwrap();
+        assert_eq!(
+            output.rows[0].get("n"),
+            Some(&Value::Int(expected)),
+            "{query}"
+        );
+    }
+    let output = db
+        .query("MATCH (n:Entity:MissingLabel) RETURN count(n) AS n")
+        .unwrap();
+    assert_eq!(output.rows[0].get("n"), Some(&Value::Int(1)));
 }
 
 #[test]
