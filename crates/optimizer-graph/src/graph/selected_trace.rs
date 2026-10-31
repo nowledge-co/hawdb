@@ -30,10 +30,10 @@ pub(super) fn selected_plan_trace(
     catalog: &OptimizerCatalog,
     context: &OptimizerContext,
 ) -> SelectedPlanTrace {
-    selected_plan_trace_with_width(plan, catalog, context).0
+    selected_plan_trace_with_diagnostics(plan, catalog, context).0
 }
 
-pub(super) fn selected_plan_trace_with_width(
+pub(super) fn selected_plan_trace_with_diagnostics(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
     context: &OptimizerContext,
@@ -101,6 +101,13 @@ fn collect_costed_plan<'a>(
         diagnostics.push(diagnostic);
     }
     estimates[ordinal].estimated_rows = costed.cost.estimated_rows;
+    if let Some(statistics) = costed.statistics {
+        diagnostics.push(format!(
+            "cardinality statistics: operator_id={ordinal} operator={:?} {}",
+            plan.kind(),
+            statistics.explain()
+        ));
+    }
     costed
 }
 

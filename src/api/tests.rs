@@ -73,6 +73,7 @@ mod graph_hash_join;
 mod graph_meta;
 mod graph_rag_schema_guidance;
 mod induced_edge_reads;
+mod joint_ndv_statistics;
 mod knowledge_community_entity_visibility;
 mod knowledge_community_memories;
 mod knowledge_context_memory_preview;

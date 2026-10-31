@@ -21,6 +21,8 @@ use hawdb_core::{Catalog, GraphStatistics, IndexKind, Value};
 use hawdb_plan_cypher::ComparisonOp;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod joint;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ExpandEstimate {
     pub(super) path_count: Option<u64>,
@@ -73,6 +75,7 @@ pub struct OptimizerCatalog {
     property_equality_row_count: Option<((String, String), u64)>,
     pub(super) composite_index_statistics:
         BTreeMap<(String, Vec<String>), OptimizerIndexStatistics>,
+    joint_statistics: BTreeMap<(String, Vec<String>), Option<OptimizerIndexStatistics>>,
     pub(super) property_distinct_counts: BTreeMap<(String, String), u64>,
     pub(super) rel_property_distinct_counts: BTreeMap<(String, String), u64>,
     pub(super) property_histograms: BTreeMap<(String, String), Vec<Value>>,
@@ -388,6 +391,10 @@ impl OptimizerCatalog {
     }
 
     pub fn new(indexes: OptimizerCatalogIndexes, statistics: OptimizerCatalogStatistics) -> Self {
+        let joint_statistics = joint::canonical_statistics(
+            &statistics.composite_index_statistics,
+            &indexes.composite_property_indexes,
+        );
         Self {
             source_schema: None,
             parameter_scalar_types: BTreeMap::new(),
@@ -411,6 +418,7 @@ impl OptimizerCatalog {
             property_index_statistics: statistics.property_index_statistics,
             property_equality_row_count: None,
             composite_index_statistics: statistics.composite_index_statistics,
+            joint_statistics,
             property_distinct_counts: statistics.property_distinct_counts,
             rel_property_distinct_counts: statistics.rel_property_distinct_counts,
             property_histograms: statistics.property_histograms,

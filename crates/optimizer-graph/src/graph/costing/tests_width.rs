@@ -392,3 +392,83 @@ fn traversal_opaque_width_remains_visible_in_sort_reports() {
         assert_eq!(costed.width_report.unwrap().proxy_fields, hops);
     }
 }
+
+#[test]
+fn joint_group_cardinality_and_input_alias_width_share_the_cost_fold() {
+    use crate::graph::{
+        OptimizerCatalogIndexes, OptimizerCatalogStatistics, OptimizerIndexStatistics,
+    };
+    let mut schema = Catalog::default();
+    let table = schema.get_or_create_table(TableKind::Node, "Item");
+    for (name, kind) in [
+        ("a", PropertyType::Int),
+        ("b", PropertyType::Int),
+        ("body", PropertyType::Text),
+    ] {
+        schema.get_or_create_property(table, name, kind, false);
+    }
+    for (joint, expected_rows, spills) in [(true, 20, false), (false, 400, true)] {
+        let index = ("Item".into(), vec!["a".into(), "b".into()]);
+        let mut catalog = OptimizerCatalog::new(
+            OptimizerCatalogIndexes::new([], [index.clone()], [], []),
+            OptimizerCatalogStatistics::new(
+                [("Item".into(), 400)],
+                [],
+                [],
+                [],
+                [],
+                [
+                    (("Item".into(), "a".into()), 20),
+                    (("Item".into(), "b".into()), 20),
+                ],
+                [],
+            )
+            .with_composite_index_statistics(joint.then_some((
+                index,
+                OptimizerIndexStatistics {
+                    index_size: 400,
+                    distinct_count: 20,
+                },
+            ))),
+        );
+        catalog.source_schema = Some(schema.clone());
+        let aggregate = PhysicalPlan::AggregateExec {
+            group_keys: [("a", "body"), ("b", "group")]
+                .map(|(property, name)| Projection {
+                    name: name.into(),
+                    expression: ProjectionExpression::Property {
+                        variable: "n".into(),
+                        property: property.into(),
+                    },
+                })
+                .to_vec(),
+            items: vec![hawdb_plan_cypher::Aggregation {
+                function: hawdb_plan_cypher::AggregateFunction::Count,
+                target: hawdb_plan_cypher::AggregateTarget::Variable("n".into()),
+                distinct: false,
+                name: "total".into(),
+            }],
+            input: Box::new(scan()),
+        };
+        let plan = PhysicalPlan::SortExec {
+            items: vec![SortItem {
+                key: SortKey::Column("body".into()),
+                direction: SortDirection::Asc,
+            }],
+            input: Box::new(aggregate),
+        };
+        let inputs = estimate_input_costs(&plan, |input| estimate_costed_plan(input, &catalog));
+        let costed =
+            estimate_operator_cost_internal(&plan, &catalog, inputs, None, Some(32 * 1024));
+        let report = costed.width_report.unwrap();
+        assert_eq!(costed.cost.estimated_rows, expected_rows);
+        assert_eq!(
+            report.proxy_fields, 1,
+            "only the accumulator is opaque; the body alias refers to the incoming INT, not TEXT"
+        );
+        assert_eq!(
+            report.spill_work > 0,
+            spills && !cfg!(target_arch = "wasm32")
+        );
+    }
+}

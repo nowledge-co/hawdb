@@ -5,9 +5,11 @@
 [![Release](https://img.shields.io/github/v/release/nowledge-co/hawdb?style=flat)](https://github.com/nowledge-co/hawdb/releases/latest)
 [![Rust](https://img.shields.io/badge/rust-1.97.1-dea584?style=flat&logo=rust&logoColor=white)](rust-toolchain.toml)
 
-HawDB is an embedded knowledge and context database. It keeps the facts an agent or application reasons over — entities, relationships, documents, and events — in one crash-safe process, and returns them as bounded context.
+HawDB is an AI-native embedded database for agents. It keeps the facts an agent reasons over — entities, relationships, documents, and events — in one crash-safe process, returns them as bounded context, and gives each agent its own durable branch to work in.
 
-Graph structure, relational rows, lexical search, and vector search share one engine. A retrieval request takes search candidates, filters them, walks the authorized graph, reranks with a typed score, and hydrates the result from the canonical snapshot.
+- **Context layer.** Graph structure, relational rows, lexical search, and vector search share one engine. A retrieval request takes search candidates, filters them, walks the authorized graph, reranks with a typed score, and hydrates the result from the canonical snapshot. See [Context, in one pipeline](#context-in-one-pipeline).
+- **Built for agent workloads.** Agents talk to the database through parameterized Cypher and SQL. Every read has an explicit row and payload budget, and an over-budget request fails instead of returning a silently truncated answer. A read transaction pins one published snapshot, so a multi-step plan sees one consistent state.
+- **Branches for agents.** A copy-on-write branch costs metadata and an empty WAL, not a copy of the data. An agent can try a plan, write intermediate facts, or run a long task on its own branch without disturbing `main` or other agents. See [Branches for agents](#branches-for-agents).
 
 HawDB is written in Rust and licensed under Apache-2.0. It is built for Nowledge Mem, currently in nightly integration. The library is the product: any host that needs a durable context layer opens it the same way.
 
@@ -125,6 +127,28 @@ host process
                                       ▼
                               rerank ──► top-k ──► hydrate from the snapshot
 ```
+
+## Branches for agents
+
+An agent often needs its own copy of the world: to explore a plan, stage facts it is not yet sure of, or run a long task while the user and other agents keep reading `main`. A HawDB branch is that copy.
+
+- **Cheap to create.** A new branch shares the parent's sealed durable root and writes only catalog metadata and an empty branch-local WAL. It does not scan, import, or copy the parent's data, so creation cost does not grow with the database.
+- **Fully writable and isolated.** Cypher and SQL reads, writes, and branch-local schema changes run on the selected branch exactly as on `main`. A branch can itself be branched.
+- **Named for agents.** Omitting the name generates `agent/<branch-uuid>`; the `agent/` prefix is reserved for these generated names. Every branch also has a stable UUID that is never reused.
+- **Safe to retry.** Creation carries a request key, so a retry after a lost response returns the same branch instead of a duplicate. Dropping a branch requires its UUID and metadata revision, so a delayed request cannot delete a newer branch that reused the name.
+- **Durable until dropped.** Branches survive handle closure, process crashes, and restarts. There is no TTL; an idle branch keeps its data until it is explicitly dropped.
+
+Branch lifecycle and selection are SQL statements on the same handle:
+
+```sql
+CREATE BRANCH FROM main AT REVISION $1 REQUEST KEY $2;  -- returns branch_id, metadata_revision, ...
+USE BRANCH ID $1;
+SHOW CURRENT BRANCH;
+SHOW BRANCHES LIMIT 10;
+DROP BRANCH ID $1 AT REVISION $2;
+```
+
+`AT REVISION` is the source branch's committed epoch (`Database::commit_epoch`). Branches do not merge: lineage records where a branch came from, and the host writes the results it wants to keep back to the target branch. The durability, identity, and reclamation contract is [`docs/specs/BRANCHING_STORAGE_SPEC.md`](docs/specs/BRANCHING_STORAGE_SPEC.md).
 
 ## What the engine stores
 
@@ -323,6 +347,7 @@ HawDB is a single-process embedded engine.
 - One database directory, one writer lease, one process.
 - Cypher covers the statements listed above. That is the executed surface, and it is smaller than the whole of openCypher.
 - Search and analytics artifacts are rebuilt from canonical state.
+- Branches live inside one project directory. There is no branch merge, point-in-time source selection, remote replication, or automatic expiry.
 - Multi-process writers, distributed replication, and a standalone database server are outside this release. Design notes for later storage work live with the specs and are not serving features.
 
 ## Contributing

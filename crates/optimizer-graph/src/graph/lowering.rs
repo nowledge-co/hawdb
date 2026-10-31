@@ -21,7 +21,7 @@ use super::{
     },
     logical_rewrite::{rewrite_logical_plan_with_catalog, LogicalRewriteOutput},
     properties::satisfies_ordering,
-    selected_trace::selected_plan_trace_with_width,
+    selected_trace::selected_plan_trace_with_diagnostics,
     stages::{
         ACCESS_PATH_SELECTION_STAGE, DIRECT_PHYSICAL_FALLBACK_STAGE, LOGICAL_GROUPING_STAGE,
         PHYSICAL_SEARCH_STAGE, PLAN_FINALIZATION_STAGE, SELECTED_PLAN_COSTING_STAGE,
@@ -87,11 +87,12 @@ impl CascadesOptimizer {
         plan: &PhysicalPlan,
         catalog: &OptimizerCatalog,
     ) {
-        let (selected, widths) = selected_plan_trace_with_width(plan, catalog, &self.context);
+        let (selected, widths) = selected_plan_trace_with_diagnostics(plan, catalog, &self.context);
         refresh_selected_plan_trace(trace, selected);
-        trace
-            .decisions
-            .retain(|decision| !decision.starts_with("physical width cost: "));
+        trace.decisions.retain(|decision| {
+            !decision.starts_with("physical width cost: ")
+                && !decision.starts_with("cardinality statistics: ")
+        });
         trace.decisions.extend(widths);
     }
 
@@ -209,7 +210,8 @@ impl CascadesOptimizer {
                 DIRECT_PHYSICAL_FALLBACK_STAGE.trace(StageStats::new(required_groups, 1)),
             );
             report.extend_decisions(decisions);
-            let (selected, widths) = selected_plan_trace_with_width(&plan, catalog, &self.context);
+            let (selected, widths) =
+                selected_plan_trace_with_diagnostics(&plan, catalog, &self.context);
             report.extend_decisions(widths);
             report.push_stage_event(SELECTED_PLAN_COSTING_STAGE.trace(StageStats::new(1, 1)));
             report.record_selected_plan_cost(selected.cost);
@@ -241,7 +243,8 @@ impl CascadesOptimizer {
             StageStats::new(memo.group_count(), 1).with_rule_counts(applied_rules, skipped_rules),
         ));
         report.extend_decisions(decisions);
-        let (selected, widths) = selected_plan_trace_with_width(&plan, catalog, &self.context);
+        let (selected, widths) =
+            selected_plan_trace_with_diagnostics(&plan, catalog, &self.context);
         report.extend_decisions(widths);
         report.push_stage_event(SELECTED_PLAN_COSTING_STAGE.trace(StageStats::new(1, 1)));
         report.record_selected_plan_cost(selected.cost);
