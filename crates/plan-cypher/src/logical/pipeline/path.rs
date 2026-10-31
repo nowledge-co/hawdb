@@ -59,6 +59,7 @@ pub(super) fn bind_shortest_path_pipeline(
     }
     if relationship.min_hops == 0
         || relationship.max_hops == 0
+        || relationship.max_hops == hawdb_cypher::UNBOUNDED_MAX_HOPS
         || relationship.min_hops > relationship.max_hops
     {
         return Err(unsupported(
@@ -214,4 +215,314 @@ pub(super) fn find_endpoint_id_value(
         }
         _ => Ok(None),
     }
+}
+
+/// Clause-level input of [`bind_shortest_path_match`].
+pub(super) struct ShortestPathMatch<'a> {
+    pub(super) optional: bool,
+    pub(super) patterns: &'a [hawdb_cypher::MatchPattern],
+    pub(super) predicate: Option<&'a hawdb_cypher::PredicateExpression>,
+}
+
+/// Refuses WHERE conjuncts that read a shortest-path variable of the same
+/// MATCH clause, before either shortest-path binder runs, so the refusal is
+/// reported for every syntax form. Neo4j applies such predicates during the
+/// search; evaluating them after selection would silently differ.
+pub(super) fn reject_shortest_path_predicates(clauses: &[hawdb_cypher::Clause]) -> Result<()> {
+    for clause in clauses {
+        let hawdb_cypher::ClauseKind::Match {
+            patterns,
+            predicate: Some(predicate),
+            ..
+        } = &clause.kind
+        else {
+            continue;
+        };
+        let paths = patterns
+            .iter()
+            .filter(|pattern| is_shortest_path_pattern(pattern))
+            .filter_map(|pattern| pattern.variable.clone())
+            .collect::<BTreeSet<_>>();
+        if paths.is_empty() {
+            continue;
+        }
+        let mut variables = BTreeSet::new();
+        collect_predicate_variables(&predicate.kind, &mut variables);
+        if let Some(path) = variables.intersection(&paths).next() {
+            return Err(HawDBError::Semantic(format!(
+                "WHERE predicates on shortest-path variable '{path}' are not supported in the same MATCH clause; filter after the search with `WITH {path} WHERE ...`"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn is_shortest_path_pattern(pattern: &hawdb_cypher::MatchPattern) -> bool {
+    pattern
+        .steps
+        .iter()
+        .any(|step| step.relationship.search.is_shortest())
+}
+
+/// Binds a MATCH or OPTIONAL MATCH clause containing `shortestPath(...)` or
+/// `allShortestPaths(...)` patterns.
+///
+/// Each shortest-path pattern becomes endpoint `Node` steps followed by a
+/// `ShortestPath` step, so both endpoints are bound before the search. A
+/// required MATCH whose other patterns are single nodes first binds every
+/// endpoint under the WHERE conjuncts that do not read a path variable, so
+/// endpoint predicates are applied (and may use indexes) before any search.
+/// OPTIONAL MATCH keeps the whole clause in one program because its NULL row
+/// belongs to the complete pattern, and so do clauses with relationship
+/// patterns, whose relationships the searches must not reuse.
+pub(super) fn bind_shortest_path_match(
+    clause: ShortestPathMatch<'_>,
+    input: Option<LogicalPlan>,
+    scope: &mut Scope,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    let ShortestPathMatch {
+        optional,
+        patterns,
+        predicate,
+    } = clause;
+    let imports = scope.imports();
+    let mut constrained = scope.graph_names();
+    if let Some(predicate) = predicate {
+        collect_predicate_variables(&predicate.kind, &mut constrained);
+    }
+    for pattern in patterns
+        .iter()
+        .filter(|pattern| !is_shortest_path_pattern(pattern))
+    {
+        constrained.insert(pattern.first.variable.clone());
+        constrained.extend(
+            pattern
+                .steps
+                .iter()
+                .map(|step| step.target.variable.clone()),
+        );
+    }
+    let mut introduced = Vec::new();
+    let mut steps = Vec::new();
+    let mut path_steps = Vec::new();
+    let mut paths = Vec::new();
+    for (index, pattern) in patterns.iter().enumerate() {
+        if !is_shortest_path_pattern(pattern) {
+            bind_ordinary_pattern(pattern, scope, &mut introduced, &mut steps, parameters)?;
+            continue;
+        }
+        let [step] = pattern.steps.as_slice() else {
+            return Err(unsupported(
+                "shortestPath requires exactly one relationship pattern",
+            ));
+        };
+        let relationship = &step.relationship;
+        if relationship.variable.is_some() {
+            return Err(unsupported(
+                "shortestPath does not bind relationship variables; use relationships(path)",
+            ));
+        }
+        if !relationship.properties.is_empty() {
+            return Err(unsupported(
+                "shortestPath does not support relationship property patterns",
+            ));
+        }
+        if relationship.min_hops > 1 {
+            return Err(unsupported(
+                "shortestPath supports a minimum of 0 or 1 hops",
+            ));
+        }
+        let bounded = relationship.max_hops != hawdb_cypher::UNBOUNDED_MAX_HOPS;
+        if bounded && relationship.max_hops > MAX_SHORTEST_PATH_HOPS {
+            return Err(HawDBError::Semantic(format!(
+                "shortestPath maximum of {} hops exceeds the limit of {MAX_SHORTEST_PATH_HOPS}",
+                relationship.max_hops
+            )));
+        }
+        let path = pattern
+            .variable
+            .clone()
+            .unwrap_or_else(|| format!("\0shortest_path.{index}"));
+        if scope.0.contains_key(&path) {
+            return Err(HawDBError::Semantic(format!(
+                "path variable '{path}' is already bound"
+            )));
+        }
+        // Bind the path first so an endpoint cannot reuse its name.
+        scope.0.insert(path.clone(), BindingType::Path);
+        for endpoint in [&pattern.first, &step.target] {
+            if endpoint.anonymous
+                || (endpoint.properties.is_empty() && !constrained.contains(&endpoint.variable))
+            {
+                return Err(HawDBError::Semantic(format!(
+                    "shortestPath endpoint '{}' must be bound by an earlier clause, an inline property map or a WHERE predicate",
+                    if endpoint.anonymous {
+                        "()"
+                    } else {
+                        endpoint.variable.as_str()
+                    }
+                )));
+            }
+            scope.bind_graph(&endpoint.variable, GraphEntityKind::Node, &mut introduced)?;
+            let node = bind_node(endpoint, parameters)?;
+            steps.push(GraphMatchStep::Node(node.clone()));
+            path_steps.push(GraphMatchStep::Node(node));
+        }
+        path_steps.push(GraphMatchStep::ShortestPath(Box::new(
+            GraphMatchShortestPath {
+                path: path.clone(),
+                source: pattern.first.variable.clone(),
+                target: step.target.variable.clone(),
+                rel_type: relationship.rel_type.clone(),
+                direction: relationship.direction,
+                min_hops: relationship.min_hops,
+                max_hops: if bounded {
+                    relationship.max_hops
+                } else {
+                    MAX_SHORTEST_PATH_HOPS
+                },
+                bounded,
+                selection: if relationship.search == PathSearch::AllShortest {
+                    ShortestPathSelection::All
+                } else {
+                    ShortestPathSelection::Any
+                },
+            },
+        )));
+        paths.push(path);
+    }
+    if steps.len().saturating_add(path_steps.len()) > 32 {
+        return Err(HawDBError::Semantic(
+            "MATCH exceeds maximum pattern depth".to_string(),
+        ));
+    }
+    scope.materialized();
+    // Relationship uniqueness spans the clause, so ordinary relationship
+    // patterns stay in the same program as the searches they constrain.
+    let split = !optional
+        && patterns
+            .iter()
+            .all(|pattern| is_shortest_path_pattern(pattern) || pattern.steps.is_empty());
+    let path_names = paths.iter().cloned().collect::<BTreeSet<_>>();
+    let mut endpoint_conjuncts = Vec::new();
+    let mut path_conjuncts = Vec::new();
+    if let Some(predicate) = predicate {
+        let conjuncts = match &predicate.kind {
+            PropertyPredicate::And(children) => children.iter().collect(),
+            predicate => vec![predicate],
+        };
+        for conjunct in conjuncts {
+            let mut variables = BTreeSet::new();
+            collect_predicate_variables(conjunct, &mut variables);
+            // Neo4j applies WHERE predicates on a shortest-path variable while
+            // searching (the shortest path that satisfies them). Evaluating
+            // them after selection would silently differ, so require the
+            // explicit post-filter form instead.
+            if let Some(path) = variables.intersection(&path_names).next() {
+                return Err(HawDBError::Semantic(format!(
+                    "WHERE predicates on shortest-path variable '{path}' are not supported in the same MATCH clause; filter after the search with `WITH {path} WHERE ...`"
+                )));
+            }
+            let bound = bind_predicate(conjunct, scope, parameters)?;
+            if !split {
+                path_conjuncts.push(bound);
+            } else {
+                endpoint_conjuncts.push(bound);
+            }
+        }
+    }
+    let combine = |mut predicates: Vec<Predicate>| match predicates.len() {
+        0 => None,
+        1 => predicates.pop(),
+        _ => Some(Predicate::And(predicates)),
+    };
+    if !split {
+        introduced.extend(paths);
+        steps.extend(path_steps);
+        return Ok(LogicalPlan::GraphMatch {
+            program: GraphMatchProgram {
+                imports,
+                introduced,
+                steps,
+                predicate: combine(path_conjuncts),
+                optional,
+            },
+            input: input.map(Box::new),
+        });
+    }
+    let endpoint_predicate = combine(endpoint_conjuncts);
+    // Endpoints that were all bound earlier need no separate binding program.
+    let (input, imports) = if introduced.is_empty()
+        && endpoint_predicate.is_none()
+        && patterns.iter().all(is_shortest_path_pattern)
+    {
+        (input, imports)
+    } else {
+        let endpoints = LogicalPlan::GraphMatch {
+            program: GraphMatchProgram {
+                imports,
+                introduced,
+                steps,
+                predicate: endpoint_predicate,
+                optional: false,
+            },
+            input: input.map(Box::new),
+        };
+        (Some(endpoints), Vec::new())
+    };
+    Ok(LogicalPlan::GraphMatch {
+        program: GraphMatchProgram {
+            imports,
+            introduced: paths,
+            steps: path_steps,
+            predicate: combine(path_conjuncts),
+            optional: false,
+        },
+        input: input.map(Box::new),
+    })
+}
+
+/// The ordinary-pattern half of the generic MATCH binder, shared with
+/// clauses that also contain shortest-path patterns.
+fn bind_ordinary_pattern(
+    pattern: &hawdb_cypher::MatchPattern,
+    scope: &mut Scope,
+    introduced: &mut Vec<String>,
+    steps: &mut Vec<GraphMatchStep>,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<()> {
+    if let Some(variable) = &pattern.variable {
+        if scope.0.contains_key(variable) {
+            return Err(HawDBError::Semantic(format!(
+                "path variable '{variable}' is already bound"
+            )));
+        }
+        scope
+            .0
+            .insert(variable.clone(), BindingType::UnmaterializedPath);
+    }
+    scope.bind_graph(&pattern.first.variable, GraphEntityKind::Node, introduced)?;
+    steps.push(GraphMatchStep::Node(bind_node(&pattern.first, parameters)?));
+    let mut source = pattern.first.variable.clone();
+    for step in &pattern.steps {
+        let relationship = &step.relationship;
+        validate_bounded_relationship(relationship)?;
+        if let Some(variable) = &relationship.variable {
+            scope.bind_graph(variable, GraphEntityKind::Relationship, introduced)?;
+        }
+        scope.bind_graph(&step.target.variable, GraphEntityKind::Node, introduced)?;
+        steps.push(GraphMatchStep::Expand {
+            source,
+            relationship: relationship.variable.clone(),
+            rel_type: relationship.rel_type.clone(),
+            properties: bind_properties(&relationship.properties, parameters)?,
+            direction: relationship.direction,
+            min_hops: relationship.min_hops,
+            max_hops: relationship.max_hops,
+            target: bind_node(&step.target, parameters)?,
+        });
+        source = step.target.variable.clone();
+    }
+    Ok(())
 }

@@ -377,6 +377,16 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             write_identifier(output, property);
             output.push(')');
         }
+        ProjectionExpression::List(elements) => {
+            output.push_str("list(");
+            for (index, element) in elements.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                write_projection_expression(output, element);
+            }
+            output.push(')');
+        }
         ProjectionExpression::ListFunction {
             function,
             arguments,
@@ -431,6 +441,21 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             if let Some(end) = end {
                 write_projection_expression(output, end);
             }
+            output.push(')');
+        }
+        ProjectionExpression::Path { function, column } => {
+            output.push_str("path_");
+            match function {
+                PathFunction::Length => output.push_str("length("),
+                PathFunction::Nodes => output.push_str("nodes("),
+                PathFunction::Relationships => output.push_str("relationships("),
+                PathFunction::NodeProperties(property) => {
+                    output.push_str("node_properties(");
+                    write_identifier(output, property);
+                    output.push(',');
+                }
+            }
+            write_identifier(output, column);
             output.push(')');
         }
     }

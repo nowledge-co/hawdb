@@ -163,7 +163,7 @@ impl WalRepairBoundary {
             .chain(root.sealed_wals.iter().map(|interval| interval.object))
         {
             objects
-                .read(reference)
+                .verify_stored(reference)
                 .map_err(HawDBError::from_storage_error)?;
         }
         validate_sealed_formats(&objects, &root, manifest, &mut format_limits)?;

@@ -15,7 +15,7 @@
 use super::{NodeProjectionAccess, PhysicalPlan, PlanChildren};
 use crate::{
     AggregateFunction, AggregateTarget, Aggregation, BatchMutationOperation, BatchMutationValue,
-    ComparisonOp, GraphAlgorithmKind, Predicate, Projection, ProjectionExpression,
+    ComparisonOp, GraphAlgorithmKind, PathFunction, Predicate, Projection, ProjectionExpression,
     RelationshipCountFilter, RelationshipCountLeg, RelationshipOnCreateValue, SetAssignment,
     SetNodePropertiesReturnMode, SetValue, SortDirection, SortItem, SortKey,
 };

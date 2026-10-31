@@ -88,10 +88,21 @@ some comparison involved `NULL` (including inside nested lists); otherwise
 `false`. `x IN []` is `false`, and `x IN NULL` is `NULL`. `WHERE` keeps only
 `true` rows, so `NOT x IN [1, NULL]` filters out every `x <> 1`.
 
-Literal lists and parameters on the right side (`n.id IN [1, 2]`,
+Constant lists and parameters on the right side (`n.id IN [1, 2]`,
 `n.id IN $ids`) keep the existing value-list predicates. Any other list
-(`n.id IN tags`, `$id IN n.ids`) uses the generic operator, which `WHERE`
-compares with `true` internally.
+(`n.id IN tags`, `$id IN n.ids`, `country IN [countryX, countryY]`) uses the
+generic operator, which `WHERE` compares with `true` internally.
+
+## List literals
+
+A list literal may hold any scalar expression: variables, properties,
+parameters, literals, functions, `CASE`, conditions and nested lists, for
+example `[n.name, r.classYear, m.name]` or `[a, b]`. A list of only literals
+and parameters stays a constant value, so it keeps the value-list predicates
+and index pushdown above. Any other list literal is evaluated per row, in
+element order; a missing OPTIONAL MATCH value is a `NULL` element. Node and
+relationship elements compare as `n = m` does, so `x IN [a, b]` matches by
+identity.
 
 ## Where expressions are accepted
 
@@ -114,7 +125,7 @@ Parameters inside list expressions are detected by the plan cache and keyed
 exactly, like other parameters in generic scalar expressions; changing such a
 parameter plans again instead of reusing a stale template.
 
-Every newly built list (`range`, `tail`, `reverse`, slices and comprehension
-results) reserves query working memory for its header, element slots and
+Every newly built list (`range`, `tail`, `reverse`, slices, comprehension
+results and row-evaluated list literals) reserves query working memory for its header, element slots and
 copied payloads before the elements are stored. Results derived from an
 already computed list reuse that list's reservation.

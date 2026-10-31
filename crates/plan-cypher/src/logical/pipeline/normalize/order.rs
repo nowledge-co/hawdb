@@ -242,6 +242,7 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
         ProjectionExpression::IsNull { expression, .. } => has_native_bindings(expression, input),
         ProjectionExpression::ListFunction { .. }
         | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. } => {
             expression.all_children(|child| has_native_bindings(child, input))
@@ -256,7 +257,8 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
         | ProjectionExpression::ColumnValueDefaultIfNull { .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { .. }
         | ProjectionExpression::Column(_)
-        | ProjectionExpression::ColumnProperty { .. } => false,
+        | ProjectionExpression::ColumnProperty { .. }
+        | ProjectionExpression::Path { .. } => false,
     }
 }
 

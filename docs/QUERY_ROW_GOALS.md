@@ -29,6 +29,8 @@ distributed in index order. `LIMIT 0` is safe regardless of distribution.
 The same projection-fused comparison also applies to unbounded ORDER BY. A
 prefix-only ordered path then consumes its full estimated output, reports
 `row_goal=None` and receives no limit discount.
+Offline qualification can perturb only candidate ranking, including the
+Sort/TopN competitor choice; consumed-work reports retain their raw estimates.
 Existing ordering, type, uniqueness, capability and directive guards
 continue to determine which alternatives are legal.
 

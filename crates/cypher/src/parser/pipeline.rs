@@ -250,9 +250,34 @@ impl Parser<'_> {
         loop {
             self.skip_ws();
             let start = self.pos;
-            let expression = self.parse_pipeline_arithmetic(false)?;
+            let mut expression = self.parse_pipeline_arithmetic(false)?;
             if arithmetic_depth(&expression) > MAX_CYPHER_PARSER_DEPTH {
                 return Err(self.error("arithmetic expression exceeds maximum nesting depth"));
+            }
+            if self.consume_keyword("IS") {
+                // `RETURN path IS NULL`: a postfix null test over one operand.
+                let negated = self.consume_keyword("NOT");
+                self.expect_keyword("NULL")?;
+                let operand = match expression.kind {
+                    ReturnExpressionKind::Value(operand) => operand,
+                    ReturnExpressionKind::Path(path) => AstNode {
+                        kind: ScalarExpressionKind::Path(path),
+                        span: expression.span,
+                    },
+                    _ => {
+                        return Err(
+                            self.error("IS NULL in a projection requires a non-aggregate operand")
+                        )
+                    }
+                };
+                let test = self.source_node(
+                    ScalarExpressionKind::IsNull {
+                        expression: Box::new(operand),
+                        negated,
+                    },
+                    start,
+                );
+                expression = self.source_node(ReturnExpressionKind::Value(test), start);
             }
             let alias = if self.consume_keyword("AS") {
                 Some(self.parse_ident()?)
@@ -409,6 +434,16 @@ impl Parser<'_> {
         }))
     }
 
+    fn consume_shortest_path_function(&mut self) -> Option<PathSearch> {
+        if self.consume_pipeline_function("shortestPath") {
+            Some(PathSearch::AnyShortest)
+        } else if self.consume_pipeline_function("allShortestPaths") {
+            Some(PathSearch::AllShortest)
+        } else {
+            None
+        }
+    }
+
     fn consume_pipeline_function(&mut self, name: &str) -> bool {
         let checkpoint = self.checkpoint();
         if self.consume_keyword(name) && self.consume_char('(') {
@@ -429,11 +464,15 @@ impl Parser<'_> {
     fn parse_pipeline_pattern(&mut self) -> Result<MatchPattern> {
         self.skip_ws();
         let start = self.pos;
-        let variable = if self.peek_char() == Some('(') {
+        // `shortestPath(...)` / `allShortestPaths(...)` select paths over the
+        // enclosed pattern; the binder validates its single-relationship shape.
+        let mut function_search = self.consume_shortest_path_function();
+        let variable = if function_search.is_some() || self.peek_char() == Some('(') {
             None
         } else {
             let variable = self.parse_ident()?;
             self.expect_char('=')?;
+            function_search = self.consume_shortest_path_function();
             Some(variable)
         };
         let first = self.parse_pipeline_node()?;
@@ -449,7 +488,15 @@ impl Parser<'_> {
                 self.expect_char('-')?;
             }
             let ((variable, rel_type, properties, min_hops, max_hops), search) =
-                self.parse_match_relationship_pattern_with_search(true)?;
+                self.parse_match_relationship_pattern_with_search(true, function_search.is_some())?;
+            let search = match (function_search, search) {
+                (Some(function), PathSearch::All) => function,
+                (Some(_), _) => {
+                    return Err(self
+                        .error("shortest-path functions do not accept a nested SHORTEST selector"))
+                }
+                (None, search) => search,
+            };
             self.expect_char('-')?;
             let direction = if incoming {
                 RelationshipDirection::Incoming
@@ -478,6 +525,12 @@ impl Parser<'_> {
                 },
                 relationship_start,
             ));
+        }
+        if function_search.is_some() {
+            if steps.is_empty() {
+                return Err(self.error("shortest-path functions require a relationship pattern"));
+            }
+            self.expect_char(')')?;
         }
         Ok(self.source_node(
             MatchPatternKind {
@@ -818,6 +871,105 @@ mod tests {
                 ScalarExpressionKind::Variable(name.to_string())
             );
             assert_eq!(expression.span.unwrap().text(query), Some(name));
+        }
+    }
+
+    #[test]
+    fn shortest_path_functions_parse_as_search_modes_with_optional_upper_bounds() {
+        let query = "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}) OPTIONAL MATCH path = shortestPath((p1)-[:KNOWS*]-(p2)) RETURN CASE path IS NULL WHEN true THEN -1 ELSE length(path) END AS len, path IS NOT NULL AS found";
+        for parsed in [parse_pipeline(query).unwrap(), {
+            let crate::Statement::Pipeline(parsed) = crate::parse(query).unwrap() else {
+                panic!("public MATCH parses as a pipeline");
+            };
+            *parsed
+        }] {
+            let ClauseKind::Match {
+                optional: true,
+                patterns,
+                ..
+            } = &parsed.clauses[1].kind
+            else {
+                panic!("expected OPTIONAL MATCH");
+            };
+            assert_eq!(patterns[0].variable.as_deref(), Some("path"));
+            let relationship = &patterns[0].steps[0].relationship;
+            assert_eq!(relationship.search, PathSearch::AnyShortest);
+            assert_eq!(relationship.direction, RelationshipDirection::Undirected);
+            assert_eq!(
+                (relationship.min_hops, relationship.max_hops),
+                (1, UNBOUNDED_MAX_HOPS)
+            );
+            let ClauseKind::Return(projection) = &parsed.clauses[2].kind else {
+                panic!("expected RETURN");
+            };
+            let ReturnExpressionKind::Value(case) = &projection.items[0].expression.kind else {
+                panic!("expected CASE");
+            };
+            let ScalarExpressionKind::Case {
+                operand: Some(operand),
+                otherwise: Some(otherwise),
+                ..
+            } = &case.kind
+            else {
+                panic!("expected simple CASE: {case:?}");
+            };
+            assert!(matches!(
+                operand.kind,
+                ScalarExpressionKind::IsNull { negated: false, .. }
+            ));
+            assert!(matches!(
+                &otherwise.kind,
+                ScalarExpressionKind::Path(ShortestPathReturnExpression::Length { path_variable })
+                    if path_variable == "path"
+            ));
+            let ReturnExpressionKind::Value(found) = &projection.items[1].expression.kind else {
+                panic!("expected IS NOT NULL");
+            };
+            assert!(matches!(
+                found.kind,
+                ScalarExpressionKind::IsNull { negated: true, .. }
+            ));
+        }
+        for (query, search, direction, hops) in [
+            (
+                "MATCH p = allShortestPaths((a)<-[:LINK*0..4]-(b)) RETURN nodes(p), relationships(p)",
+                PathSearch::AllShortest,
+                RelationshipDirection::Incoming,
+                (0, 4),
+            ),
+            (
+                "MATCH shortestPath((a)-[*..3]->(b)) RETURN a",
+                PathSearch::AnyShortest,
+                RelationshipDirection::Outgoing,
+                (1, 3),
+            ),
+            (
+                "MATCH p = (a)-[:LINK* ANY SHORTEST 0..]->(b) RETURN length(p)",
+                PathSearch::AnyShortest,
+                RelationshipDirection::Outgoing,
+                (0, UNBOUNDED_MAX_HOPS),
+            ),
+        ] {
+            let parsed = parse_pipeline(query).unwrap();
+            let ClauseKind::Match { patterns, .. } = &parsed.clauses[0].kind else {
+                panic!("expected MATCH");
+            };
+            let relationship = &patterns[0].steps[0].relationship;
+            assert_eq!(relationship.search, search, "{query}");
+            assert_eq!(relationship.direction, direction, "{query}");
+            assert_eq!(
+                (relationship.min_hops, relationship.max_hops),
+                hops,
+                "{query}"
+            );
+        }
+        for query in [
+            "MATCH (a)-[:LINK*]->(b) RETURN a",
+            "MATCH p = shortestPath((a)-[:LINK* ALL SHORTEST]->(b)) RETURN a",
+            "MATCH p = shortestPath((a)) RETURN a",
+            "MATCH p = shortestPath((a)-[:LINK*]->(b) RETURN a",
+        ] {
+            assert!(parse_pipeline(query).is_err(), "{query}");
         }
     }
 

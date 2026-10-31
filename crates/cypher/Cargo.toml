@@ -9,10 +9,10 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-hawdb-core = { path = "../core", version = "0.21.0" }
-hawdb-ddl = { path = "../ddl", version = "0.21.0" }
+hawdb-core = { path = "../core", version = "0.22.0" }
+hawdb-ddl = { path = "../ddl", version = "0.22.0" }
 
-hawdb-sql-syntax = { path = "../sql-syntax", version = "0.21.0" }
+hawdb-sql-syntax = { path = "../sql-syntax", version = "0.22.0" }
 
 [dev-dependencies]
 serde_json = "1"

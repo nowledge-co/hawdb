@@ -31,6 +31,11 @@ const OBJECTS_DIRECTORY: &str = "objects";
 const STAGING_DIRECTORY: &str = ".staging";
 const IDENTITY_DOMAIN: &[u8] = b"HAWDB-IMMUTABLE-OBJECT-V1\0";
 const DEFAULT_MAX_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
+/// Checkpoint data and artifacts are only ever streamed (published, verified
+/// and mounted in bounded buffers), so their size is bounded by the
+/// checkpoint encoding limit rather than by the in-memory object bound.
+const DEFAULT_MAX_STREAMED_OBJECT_BYTES: u64 = crate::config::DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES;
+const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -285,7 +290,10 @@ pub(crate) struct ImmutableObjectInventory {
 #[derive(Debug)]
 pub struct ImmutableObjectStore {
     root: PathBuf,
+    /// Bound for objects that may be read whole into memory.
     max_object_bytes: u64,
+    /// Bound for checkpoint objects, which are only streamed.
+    max_streamed_object_bytes: u64,
     poisoned: bool,
     synchronized_kinds: BTreeSet<ObjectKind>,
     namespace_synchronized: bool,
@@ -296,6 +304,7 @@ impl ImmutableObjectStore {
         Self {
             root,
             max_object_bytes,
+            max_streamed_object_bytes: max_object_bytes.max(DEFAULT_MAX_STREAMED_OBJECT_BYTES),
             poisoned: false,
             synchronized_kinds: BTreeSet::new(),
             namespace_synchronized: false,
@@ -303,14 +312,29 @@ impl ImmutableObjectStore {
     }
 
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, ImmutableObjectError> {
-        Self::open_with_limit(root, DEFAULT_MAX_OBJECT_BYTES)
+        Self::open_with_limits(
+            root,
+            DEFAULT_MAX_OBJECT_BYTES,
+            DEFAULT_MAX_STREAMED_OBJECT_BYTES,
+        )
     }
 
+    /// Opens with one bound for every object kind.
     pub fn open_with_limit(
         root: impl Into<PathBuf>,
         max_object_bytes: u64,
     ) -> Result<Self, ImmutableObjectError> {
-        if max_object_bytes == 0 {
+        Self::open_with_limits(root, max_object_bytes, max_object_bytes)
+    }
+
+    /// Opens with separate bounds for objects that may be read into memory
+    /// and for checkpoint objects, which are only streamed.
+    pub fn open_with_limits(
+        root: impl Into<PathBuf>,
+        max_object_bytes: u64,
+        max_streamed_object_bytes: u64,
+    ) -> Result<Self, ImmutableObjectError> {
+        if max_object_bytes == 0 || max_streamed_object_bytes == 0 {
             return Err(ImmutableObjectError::ObjectTooLarge {
                 length: 1,
                 limit: max_object_bytes,
@@ -329,10 +353,39 @@ impl ImmutableObjectStore {
         Ok(Self {
             root,
             max_object_bytes,
+            max_streamed_object_bytes,
             poisoned: false,
             synchronized_kinds: BTreeSet::new(),
             namespace_synchronized: false,
         })
+    }
+
+    /// The size bound for an object of `kind` handled through streaming
+    /// paths. Buffered APIs (`publish`, `read`) always use the in-memory bound.
+    fn streamed_limit(&self, kind: ObjectKind) -> u64 {
+        match kind {
+            ObjectKind::Checkpoint | ObjectKind::CheckpointArtifact => {
+                self.max_streamed_object_bytes
+            }
+            ObjectKind::SealedWal | ObjectKind::SealedRoot | ObjectKind::DurableManifest => {
+                self.max_object_bytes
+            }
+        }
+    }
+
+    /// Buffered payloads keep the in-memory bound; file-backed (streamed)
+    /// publication uses the per-kind streamed bound.
+    fn payload_limit(&self, reference: ObjectReference, payload: Option<&[u8]>) -> u64 {
+        match payload {
+            Some(_) => self.max_object_bytes,
+            None => self.streamed_limit(reference.kind),
+        }
+    }
+
+    /// Verifies a stored object by streaming its identity, without reading it
+    /// into memory.
+    pub fn verify_stored(&self, reference: ObjectReference) -> Result<(), ImmutableObjectError> {
+        self.verify(reference)
     }
 
     pub fn object_path(&self, reference: ObjectReference) -> PathBuf {
@@ -474,7 +527,7 @@ impl ImmutableObjectStore {
         )?;
         if !metadata.is_file()
             || metadata.len() != reference.byte_length
-            || metadata.len() > self.max_object_bytes
+            || metadata.len() > self.streamed_limit(reference.kind)
             || reference.format_version == 0
         {
             return Err(ImmutableObjectError::ExistingObjectCorrupt { path });
@@ -740,7 +793,60 @@ impl ImmutableObjectStore {
             return Err(ImmutableObjectError::PublisherPoisoned);
         }
         validate_reference(reference, payload, self.max_object_bytes)?;
+        let destination = self.prepare_kind_directory(reference)?;
+        if destination.exists() {
+            return self.validate_existing(reference, Some(payload), &destination);
+        }
 
+        let staging = self.stage_payload(payload)?;
+        let install_result = self.install_staged(reference, Some(payload), &staging, &destination);
+        if install_result.is_err() {
+            let _ = fs::remove_file(&staging);
+        }
+        install_result
+    }
+
+    /// Publishes a file-backed payload without buffering it. The source is
+    /// streamed into staging while its identity is recomputed, and both the
+    /// staged read-back and reuse of an existing object are authenticated by
+    /// streaming identity checks, so memory stays bounded by one I/O buffer
+    /// regardless of the object size.
+    pub fn publish_file(
+        &mut self,
+        reference: ObjectReference,
+        source: &Path,
+    ) -> Result<PublishOutcome, ImmutableObjectError> {
+        if self.poisoned {
+            return Err(ImmutableObjectError::PublisherPoisoned);
+        }
+        if reference.format_version == 0 {
+            return Err(ImmutableObjectError::InvalidFormatVersion);
+        }
+        if reference.byte_length > self.streamed_limit(reference.kind) {
+            return Err(ImmutableObjectError::ObjectTooLarge {
+                length: reference.byte_length,
+                limit: self.streamed_limit(reference.kind),
+            });
+        }
+        let destination = self.prepare_kind_directory(reference)?;
+        if destination.exists() {
+            return self.validate_existing(reference, None, &destination);
+        }
+
+        let staging = self.stage_file(reference, source)?;
+        let install_result = self.install_staged(reference, None, &staging, &destination);
+        if install_result.is_err() {
+            let _ = fs::remove_file(&staging);
+        }
+        install_result
+    }
+
+    /// Establishes the object namespace and kind directory name barriers and
+    /// returns the content-addressed destination path.
+    fn prepare_kind_directory(
+        &mut self,
+        reference: ObjectReference,
+    ) -> Result<PathBuf, ImmutableObjectError> {
         if !self.namespace_synchronized {
             // Opening a reader is not a publication boundary. Establish all
             // directory names before the first acknowledged publication, and
@@ -772,17 +878,7 @@ impl ImmutableObjectStore {
             // bytes and final entry still get their own publication barriers.
             self.synchronized_kinds.insert(reference.kind);
         }
-
-        if destination.exists() {
-            return self.validate_existing(reference, payload, &destination);
-        }
-
-        let staging = self.stage_payload(payload)?;
-        let install_result = self.install_staged(reference, payload, &staging, &destination);
-        if install_result.is_err() {
-            let _ = fs::remove_file(&staging);
-        }
-        install_result
+        Ok(destination)
     }
 
     fn stage_payload(&self, payload: &[u8]) -> Result<PathBuf, ImmutableObjectError> {
@@ -803,14 +899,67 @@ impl ImmutableObjectStore {
         Ok(path)
     }
 
+    fn stage_file(
+        &self,
+        reference: ObjectReference,
+        source: &Path,
+    ) -> Result<PathBuf, ImmutableObjectError> {
+        let mut input = map_io("open immutable object source", File::open(source))?;
+        let staging_directory = self.root.join(OBJECTS_DIRECTORY).join(STAGING_DIRECTORY);
+        let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = staging_directory.join(format!("{}-{sequence}.stage", std::process::id()));
+        let mut file = map_io(
+            "create immutable object staging file",
+            OpenOptions::new().write(true).create_new(true).open(&path),
+        )?;
+        let copied = (|| -> Result<(), ImmutableObjectError> {
+            let mut identity = ObjectReferenceWriter::new(
+                reference.kind,
+                reference.format_version,
+                reference.byte_length,
+            )?;
+            let mut buffer = vec![0; STREAM_BUFFER_BYTES];
+            loop {
+                let length = map_io("read immutable object source", input.read(&mut buffer))?;
+                if length == 0 {
+                    break;
+                }
+                // A source longer than its reference fails here instead of
+                // growing the staged object past the admitted length.
+                identity
+                    .write_all(&buffer[..length])
+                    .map_err(|_| ImmutableObjectError::ReferenceMismatch)?;
+                map_io(
+                    "write immutable object staging file",
+                    file.write_all(&buffer[..length]),
+                )?;
+            }
+            if identity.finish()? != reference {
+                return Err(ImmutableObjectError::ReferenceMismatch);
+            }
+            map_io("sync immutable object staging file", file.sync_all())
+        })();
+        if let Err(error) = copied {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return Err(error);
+        }
+        Ok(path)
+    }
+
     fn install_staged(
         &mut self,
         reference: ObjectReference,
-        payload: &[u8],
+        payload: Option<&[u8]>,
         staging: &Path,
         destination: &Path,
     ) -> Result<PublishOutcome, ImmutableObjectError> {
-        validate_file(staging, reference, payload, self.max_object_bytes)?;
+        validate_file(
+            staging,
+            reference,
+            payload,
+            self.payload_limit(reference, payload),
+        )?;
         match fs::hard_link(staging, destination) {
             Ok(()) => {
                 if let Err(error) = fs::remove_file(staging) {
@@ -836,7 +985,7 @@ impl ImmutableObjectStore {
     fn validate_existing(
         &mut self,
         reference: ObjectReference,
-        payload: &[u8],
+        payload: Option<&[u8]>,
         path: &Path,
     ) -> Result<PublishOutcome, ImmutableObjectError> {
         let metadata = map_io("read immutable object metadata", fs::symlink_metadata(path))?;
@@ -845,7 +994,12 @@ impl ImmutableObjectStore {
                 path: path.to_path_buf(),
             });
         }
-        validate_file(path, reference, payload, self.max_object_bytes)?;
+        validate_file(
+            path,
+            reference,
+            payload,
+            self.payload_limit(reference, payload),
+        )?;
         // A previous publisher may have installed complete bytes but failed its
         // final namespace barrier. Acknowledging reuse must close that window.
         if let Err(source) = sync_publication_directories(path, None) {
@@ -966,36 +1120,48 @@ fn validate_reference(
     Ok(())
 }
 
+/// Streams a stored object once, checking its length and identity and, when
+/// the publisher still holds the payload, its exact bytes.
 fn validate_file(
     path: &Path,
     reference: ObjectReference,
-    expected: &[u8],
+    expected: Option<&[u8]>,
     max_object_bytes: u64,
 ) -> Result<(), ImmutableObjectError> {
+    let corrupt = || ImmutableObjectError::ExistingObjectCorrupt {
+        path: path.to_path_buf(),
+    };
     let metadata = map_io("read immutable object length", fs::metadata(path))?;
-    if metadata.len() != reference.byte_length || metadata.len() > max_object_bytes {
-        return Err(ImmutableObjectError::ExistingObjectCorrupt {
-            path: path.to_path_buf(),
-        });
-    }
-    let capacity = usize::try_from(metadata.len()).map_err(|_| {
-        ImmutableObjectError::ExistingObjectCorrupt {
-            path: path.to_path_buf(),
-        }
-    })?;
-    let mut bytes = Vec::with_capacity(capacity);
-    let mut file = map_io("read immutable object", File::open(path))?;
-    file.read_to_end(&mut bytes)
-        .map_err(|error| ImmutableObjectError::Io {
-            operation: "read immutable object",
-            source: error,
-        })?;
-    if bytes != expected
-        || identity_digest(reference.kind, reference.format_version, &bytes) != reference.sha256
+    if metadata.len() != reference.byte_length
+        || metadata.len() > max_object_bytes
+        || expected.is_some_and(|expected| expected.len() as u64 != reference.byte_length)
     {
-        return Err(ImmutableObjectError::ExistingObjectCorrupt {
-            path: path.to_path_buf(),
-        });
+        return Err(corrupt());
+    }
+    let mut file = map_io("read immutable object", File::open(path))?;
+    let mut hasher = identity_hasher(
+        reference.kind,
+        reference.format_version,
+        reference.byte_length,
+    );
+    let mut buffer = vec![0; STREAM_BUFFER_BYTES];
+    let mut offset = 0_usize;
+    loop {
+        let length = map_io("read immutable object", file.read(&mut buffer))?;
+        if length == 0 {
+            break;
+        }
+        let end = offset.checked_add(length).ok_or_else(corrupt)?;
+        if end as u64 > reference.byte_length
+            || expected.is_some_and(|expected| expected[offset..end] != buffer[..length])
+        {
+            return Err(corrupt());
+        }
+        hasher.update(&buffer[..length]);
+        offset = end;
+    }
+    if offset as u64 != reference.byte_length || hasher.finish().sha256 != reference.sha256 {
+        return Err(corrupt());
     }
     Ok(())
 }
@@ -1122,6 +1288,12 @@ mod tests {
         ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, payload)
     }
 
+    fn staging_entries(root: &Path) -> usize {
+        fs::read_dir(root.join(OBJECTS_DIRECTORY).join(STAGING_DIRECTORY))
+            .unwrap()
+            .count()
+    }
+
     #[test]
     fn identity_is_domain_separated_by_kind_and_version() {
         let payload = b"same bytes";
@@ -1156,6 +1328,118 @@ mod tests {
             reopened.publish(reference, payload).unwrap(),
             PublishOutcome::Reused
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publish_file_streams_across_buffers_and_matches_byte_publication() {
+        let root = test_root("publish-file");
+        let source = root.join("source.bin");
+        fs::create_dir_all(&root).unwrap();
+        // Spans several stream buffers and ends mid-buffer.
+        let payload = (0..(3 * STREAM_BUFFER_BYTES + 17))
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&source, &payload).unwrap();
+        let reference = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, &payload);
+        let mut store = ImmutableObjectStore::open(&root).unwrap();
+        assert_eq!(
+            store.publish_file(reference, &source).unwrap(),
+            PublishOutcome::Published
+        );
+        assert_eq!(fs::read(store.object_path(reference)).unwrap(), payload);
+        assert_eq!(
+            store.publish_file(reference, &source).unwrap(),
+            PublishOutcome::Reused
+        );
+        assert_eq!(
+            store.publish(reference, &payload).unwrap(),
+            PublishOutcome::Reused
+        );
+        assert_eq!(staging_entries(&root), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publish_file_rejects_changed_sources_and_limits_without_staging_residue() {
+        let root = test_root("publish-file-reject");
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.bin");
+        fs::write(&source, b"payload").unwrap();
+        let mut store = ImmutableObjectStore::open_with_limit(&root, 16).unwrap();
+        let expected = reference(b"PAYLOAD");
+        assert!(matches!(
+            store.publish_file(expected, &source),
+            Err(ImmutableObjectError::ReferenceMismatch)
+        ));
+        let mut shorter = reference(b"payload");
+        shorter.byte_length = 3;
+        assert!(matches!(
+            store.publish_file(shorter, &source),
+            Err(ImmutableObjectError::ReferenceMismatch)
+        ));
+        fs::write(&source, b"this payload is too long").unwrap();
+        assert!(matches!(
+            store.publish_file(reference(b"this payload is too long"), &source),
+            Err(ImmutableObjectError::ObjectTooLarge { .. })
+        ));
+        assert!(matches!(
+            store.publish_file(reference(b"missing"), &root.join("missing.bin")),
+            Err(ImmutableObjectError::Io {
+                operation: "open immutable object source",
+                ..
+            })
+        ));
+        assert!(!store.object_path(expected).exists());
+        assert_eq!(staging_entries(&root), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn streamed_checkpoint_objects_use_the_streamed_bound_only() {
+        let root = test_root("streamed-bound");
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("artifact.bin");
+        let payload = vec![7u8; 64];
+        fs::write(&source, &payload).unwrap();
+        // 16 bytes may be read into memory; checkpoint objects may stream 1 KiB.
+        let mut store = ImmutableObjectStore::open_with_limits(&root, 16, 1024).unwrap();
+        for kind in [ObjectKind::Checkpoint, ObjectKind::CheckpointArtifact] {
+            let reference = ObjectReference::for_bytes(kind, 1, &payload);
+            assert_eq!(
+                store.publish_file(reference, &source).unwrap(),
+                PublishOutcome::Published
+            );
+            store.verify_stored(reference).unwrap();
+            // Buffered APIs keep the in-memory bound.
+            assert!(matches!(
+                store.publish(reference, &payload),
+                Err(ImmutableObjectError::ObjectTooLarge { .. })
+            ));
+            assert!(store.read(reference).is_err());
+        }
+        // Kinds that are read whole into memory keep the in-memory bound even
+        // when published from a file.
+        for kind in [
+            ObjectKind::SealedWal,
+            ObjectKind::SealedRoot,
+            ObjectKind::DurableManifest,
+        ] {
+            let reference = ObjectReference::for_bytes(kind, 1, &payload);
+            assert!(matches!(
+                store.publish_file(reference, &source),
+                Err(ImmutableObjectError::ObjectTooLarge { limit: 16, .. })
+            ));
+        }
+        // The streamed bound still applies.
+        let large = vec![1u8; 2048];
+        fs::write(&source, &large).unwrap();
+        let reference = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, &large);
+        assert!(matches!(
+            store.publish_file(reference, &source),
+            Err(ImmutableObjectError::ObjectTooLarge { limit: 1024, .. })
+        ));
+        assert_eq!(staging_entries(&root), 0);
         fs::remove_dir_all(root).unwrap();
     }
 

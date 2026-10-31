@@ -286,6 +286,8 @@ fn disjoint_native_bindings(input: &LogicalPlan, variables: &BTreeSet<&str>, dep
                                 .as_ref()
                                 .is_none_or(|name| !variables.contains(name.as_str()))
                     }
+                    // A path is a value binding, never a native one.
+                    GraphMatchStep::ShortestPath(_) => true,
                 })
                 && input
                     .as_ref()

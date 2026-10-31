@@ -47,6 +47,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 
 mod shortest_path;
+pub(crate) mod shortest_path_bfs;
 use shortest_path::{search_shortest_paths, ShortestPathSearchResult};
 
 pub struct ShortestPathExecInput<'a> {

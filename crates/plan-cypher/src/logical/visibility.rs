@@ -20,9 +20,12 @@ pub fn apply_node_visibility_predicates(
             let variables = program
                 .steps
                 .iter()
-                .map(|step| match step {
-                    GraphMatchStep::Node(node) => &node.variable,
-                    GraphMatchStep::Expand { target, .. } => &target.variable,
+                .filter_map(|step| match step {
+                    GraphMatchStep::Node(node) => Some(&node.variable),
+                    GraphMatchStep::Expand { target, .. } => Some(&target.variable),
+                    // Path endpoints are Node steps; intermediate nodes are
+                    // not bound and the path value has no visibility row.
+                    GraphMatchStep::ShortestPath(_) => None,
                 })
                 .collect::<BTreeSet<_>>();
             let mut predicates = variables

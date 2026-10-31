@@ -22,8 +22,10 @@ A = H or (T and not R and not P).
 
 Endpoint properties are a different operation: filtering the selected endpoint
 remains representable and is not rejected by this predicate. Unused path aliases
-also retain their existing scope behavior. ALL SHORTEST and mutation commands
-have separate lowering contracts; this change does not add capabilities there.
+also retain their existing scope behavior. Shortest-path patterns
+(`shortestPath`, `allShortestPaths`, `* ANY|ALL SHORTEST`) and mutation
+commands have separate lowering contracts; see
+[shortest-path execution](SHORTEST_PATH_EXECUTION.md).
 
 ## Why validation precedes execution and normalization
 

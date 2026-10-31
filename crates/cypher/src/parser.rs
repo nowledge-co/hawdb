@@ -235,7 +235,8 @@ impl<'a> Parser<'a> {
                 matches!(&clause.kind,
             super::ast::ClauseKind::Match { optional: true, patterns, .. }
             if patterns.iter().any(|pattern| pattern.steps.iter().any(|step|
-                step.relationship.min_hops != 1 || step.relationship.max_hops != 1)))
+                !step.relationship.search.is_shortest()
+                    && (step.relationship.min_hops != 1 || step.relationship.max_hops != 1))))
             })
         {
             return Err(self.error("OPTIONAL MATCH supports only one-hop relationships"));

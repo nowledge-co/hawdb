@@ -19,7 +19,7 @@ use super::{
         estimate_physical_plan_cost_with_row_goal,
         push_optional_relationship_count_sum_cost_decision,
     },
-    logical_rewrite::{rewrite_logical_plan, LogicalRewriteOutput},
+    logical_rewrite::{rewrite_logical_plan_with_catalog, LogicalRewriteOutput},
     properties::satisfies_ordering,
     selected_trace::selected_plan_trace,
     stages::{
@@ -159,7 +159,11 @@ impl CascadesOptimizer {
         catalog: &OptimizerCatalog,
         directive: OptimizerSearchDirective,
     ) -> Result<PhysicalPlanRoot, OptimizerSearchDirectiveError> {
-        let rewrite = rewrite_logical_plan(root.plan());
+        let rewrite = rewrite_logical_plan_with_catalog(
+            root.plan(),
+            catalog,
+            self.context.qualification_options(),
+        );
         let logical = rewrite.plan();
         let required_groups = logical_group_count(logical);
         let max_groups = self.context.optimizer_config().max_groups;
@@ -189,6 +193,7 @@ impl CascadesOptimizer {
                 OptimizationSearchReport::direct_fallback(required_groups, max_groups)
             };
             record_logical_rewrite(&mut report, &rewrite);
+            record_qualification(&mut report, &self.context);
             report.push_stage_event(
                 LOGICAL_GROUPING_STAGE.trace(StageStats::new(1, required_groups)),
             );
@@ -219,6 +224,7 @@ impl CascadesOptimizer {
         let plan = finalize_physical_plan(plan, &mut decisions, &mut stage_events);
         let mut report = OptimizationSearchReport::memo(memo.group_count());
         record_logical_rewrite(&mut report, &rewrite);
+        record_qualification(&mut report, &self.context);
         report
             .push_stage_event(LOGICAL_GROUPING_STAGE.trace(StageStats::new(1, memo.group_count())));
         let (applied_rules, skipped_rules) = stage_rule_counts(&stage_events);
@@ -236,6 +242,18 @@ impl CascadesOptimizer {
             report.push_decision("selected memo search: explicit optimizer search directive");
         }
         Ok(PhysicalPlanRoot::new(plan, report.into_trace(selected)))
+    }
+}
+
+fn record_qualification(report: &mut OptimizationSearchReport, context: &OptimizerContext) {
+    let options = context.qualification_options();
+    if options.is_active() {
+        let disabled = crate::OptionalOptimizerRule::ALL
+            .into_iter()
+            .filter(|rule| !options.rule_enabled(*rule))
+            .map(crate::OptionalOptimizerRule::as_str)
+            .collect::<Vec<_>>();
+        report.push_rule_event(RuleEvent::selected("optimizer qualification", format!("disabled={disabled:?} perturbation={:?}; legality/resource checks remain mandatory; reported costs are unperturbed", options.cost_perturbation())));
     }
 }
 
@@ -309,10 +327,20 @@ fn best_physical(
         .to_physical(memo, catalog, optimizer_context, decisions, stage_events)
 }
 
+fn ranking_cost(plan: &PhysicalPlan, cost: u64, context: &OptimizerContext) -> u64 {
+    context
+        .qualification_options()
+        .cost_perturbation()
+        .map_or(cost, |perturbation| {
+            perturbation.ranking_cost(cost, &plan.fingerprint())
+        })
+}
+
 fn ordered_alternative(
     input: PhysicalPlan,
     items: &[SortItem],
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
     row_goal: Option<u64>,
     decisions: &mut Vec<String>,
 ) -> PhysicalPlan {
@@ -344,25 +372,30 @@ fn ordered_alternative(
         Some(rows) => estimate_physical_plan_cost_with_row_goal(&candidate, catalog, rows),
         None => estimate_physical_plan_cost(&candidate, catalog),
     };
-    let mut unordered_cost = cost(&PhysicalPlan::SortExec {
+    let mut unordered = PhysicalPlan::SortExec {
         items: items.to_vec(),
         input: Box::new(cost_input.clone()),
-    });
+    };
+    let mut unordered_cost = cost(&unordered);
     if let Some(retained) = row_goal.and_then(|rows| usize::try_from(rows).ok()) {
-        // TopN with retained=OFFSET+LIMIT has the same input/heap work as the
-        // eventual bounded alternative. Its output cardinality is irrelevant
-        // to this scalar comparison; never price only the more costly Sort.
-        let top_n_cost = cost(&PhysicalPlan::TopNExec {
+        let top_n = PhysicalPlan::TopNExec {
             items: items.to_vec(),
             offset: 0,
             limit: retained,
             input: Box::new(cost_input.clone()),
-        });
-        if top_n_cost.cost < unordered_cost.cost {
+        };
+        let top_n_cost = cost(&top_n);
+        if ranking_cost(&top_n, top_n_cost.cost, context)
+            < ranking_cost(&unordered, unordered_cost.cost, context)
+        {
+            unordered = top_n;
             unordered_cost = top_n_cost;
         }
     }
-    if satisfies_ordering(&candidate, items, catalog) && ordered_cost.cost <= unordered_cost.cost {
+    if satisfies_ordering(&candidate, items, catalog)
+        && ranking_cost(&candidate, ordered_cost.cost, context)
+            <= ranking_cost(&unordered, unordered_cost.cost, context)
+    {
         decisions.push(format!(
             "choose composite ordered seek: ordered_cost={} unordered_cost={} row_goal={ordered_goal:?}",
             ordered_cost.cost, unordered_cost.cost
@@ -379,6 +412,7 @@ fn select_bounded_sort_plan(
     limit: usize,
     input: PhysicalPlan,
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
     decisions: &mut Vec<String>,
 ) -> PhysicalPlan {
     let row_goal = if limit == 0 {
@@ -386,7 +420,7 @@ fn select_bounded_sort_plan(
     } else {
         offset.saturating_add(limit) as u64
     };
-    let input = ordered_alternative(input, &items, catalog, Some(row_goal), decisions);
+    let input = ordered_alternative(input, &items, catalog, context, Some(row_goal), decisions);
     if satisfies_ordering(&input, &items, catalog) {
         decisions.push("elide bounded sort: access path satisfies required ordering".to_string());
         return PhysicalPlan::LimitExec {
@@ -411,7 +445,9 @@ fn select_bounded_sort_plan(
     };
     let top_n_cost = estimate_physical_plan_cost(&top_n, catalog);
     let sort_limit_cost = estimate_physical_plan_cost(&sort_limit, catalog);
-    if top_n_cost.cost < sort_limit_cost.cost {
+    if ranking_cost(&top_n, top_n_cost.cost, context)
+        < ranking_cost(&sort_limit, sort_limit_cost.cost, context)
+    {
         decisions.push(format!(
             "choose TopN for bounded sort: offset={offset} limit={limit} top_n_cost={} sort_limit_cost={}",
             top_n_cost.cost, sort_limit_cost.cost
@@ -1162,7 +1198,8 @@ fn lower_logical(
                 decisions,
                 stage_events,
             );
-            let input = ordered_alternative(input, items, catalog, None, decisions);
+            let input =
+                ordered_alternative(input, items, catalog, optimizer_context, None, decisions);
             if satisfies_ordering(&input, items, catalog) {
                 decisions
                     .push("elide SortExec: access path satisfies required ordering".to_string());
@@ -1192,7 +1229,15 @@ fn lower_logical(
                     decisions,
                     stage_events,
                 );
-                select_bounded_sort_plan(items.clone(), *offset, *limit, input, catalog, decisions)
+                select_bounded_sort_plan(
+                    items.clone(),
+                    *offset,
+                    *limit,
+                    input,
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                )
             } else {
                 PhysicalPlan::LimitExec {
                     offset: *offset,
@@ -1242,6 +1287,11 @@ fn select_node_count_fast_path(
     let LogicalPlan::NodeScan { variable, label } = input.as_ref() else {
         return None;
     };
+    // A repeated-label pattern such as `:Post:Comment` matches any of its
+    // labels; the per-label count cannot answer it, so scan instead.
+    if label.contains(':') {
+        return None;
+    }
     let exact_node_count = group_keys.is_empty()
         && item.function == AggregateFunction::Count
         && match &item.target {
@@ -1798,6 +1848,7 @@ fn collect_projection_properties(
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
         | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. } => expression
             .all_children(|child| collect_projection_properties(child, variable, required)),
@@ -1807,6 +1858,7 @@ fn collect_projection_properties(
         | ProjectionExpression::RelationshipType { .. }
         | ProjectionExpression::Column(_)
         | ProjectionExpression::ColumnProperty { .. }
+        | ProjectionExpression::Path { .. }
         | ProjectionExpression::ColumnDefaultIfNullOrEq { .. }
         | ProjectionExpression::ColumnValueDefaultIfNull { .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { .. }

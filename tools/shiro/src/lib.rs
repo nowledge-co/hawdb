@@ -14,7 +14,10 @@
 
 use hawdb::api::{Database, DatabaseReadTransaction};
 use hawdb::executor::Row;
-use hawdb::optimizer::OptimizerSearchDirective;
+pub use hawdb::optimizer::{
+    OptimizerCostPerturbation, OptimizerQualificationOptions, OptimizerRuleAssertion,
+    OptimizerSearchDirective, OptionalOptimizerRule,
+};
 use hawdb::{HawDBError, Value};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::cmp::Ordering;
@@ -25,6 +28,7 @@ use std::fmt::{Display, Formatter};
 mod append_oracle;
 mod coverage;
 mod generator;
+mod optimizer_qualification;
 mod output;
 mod parser_oracle;
 mod predicate_rewrite;
@@ -44,6 +48,11 @@ pub use coverage::PlanCoverageReport;
 pub use hawdb_fuzz_contracts::{
     NowledgeQueryFuzzCaseReport, NowledgeQueryFuzzHarnessOptions, NowledgeQueryFuzzHarnessReport,
     NOWLEDGE_QUERY_FUZZ_HARNESS_PROTOCOL,
+};
+pub use optimizer_qualification::{
+    qualify_generated_optimizer_case, qualify_optimizer_read,
+    GeneratedOptimizerQualificationReport, OptimizerQualificationComparison,
+    OptimizerQualificationReport, OptimizerQualificationVariant, PlanAgreement,
 };
 pub use output::{
     emit_fuzz_report, fuzz_current_report_path, read_fuzz_current_report,
@@ -558,6 +567,7 @@ pub struct ExecutionObservation {
     pub optimizer_search: Option<String>,
     pub search_mode: Option<String>,
     pub plan_fingerprint: Option<String>,
+    pub query_digest: Option<String>,
     pub optimizer_stages: Vec<String>,
     pub outcome: ExecutionOutcome,
 }
@@ -569,6 +579,7 @@ impl ExecutionObservation {
             "optimizer_search": self.optimizer_search,
             "search_mode": self.search_mode,
             "plan_fingerprint": self.plan_fingerprint,
+            "query_digest": self.query_digest,
             "optimizer_stages": self.optimizer_stages,
             "outcome": self.outcome.json(),
         })
@@ -943,62 +954,15 @@ fn execute_snapshot_case(
     query: &QueryInvocation,
     optimizer_search: OptimizerSearchDirective,
 ) -> ExecutionObservation {
-    let snapshot_epoch = Some(snapshot_epoch);
-    let optimizer_search_name = optimizer_search.as_str();
-    let hinted_cypher = format!(
-        "CYPHER system.optimizer_search = '{optimizer_search_name}' {}",
-        query.cypher
-    );
-
-    let explain = match snapshot.explain_query_with_params(&hinted_cypher, &query.parameters) {
-        Ok(explain) => explain,
-        Err(error) => {
-            return snapshot_error_observation(
-                snapshot_epoch,
-                Some(optimizer_search_name.to_string()),
-                "explain",
-                error,
-            );
-        }
-    };
-    let search_mode = Some(explain.trace.search_mode.as_str().to_string());
-    let plan_fingerprint = Some(explain.trace.selected_plan_fingerprint.clone());
-    let optimizer_stages = explain
-        .trace
-        .stage_events
-        .iter()
-        .map(|stage| {
-            let stats = stage.stats();
-            format!(
-                "{}:{}:{}:{}:{}:{}",
-                stage.name(),
-                stage.apply_order().as_str(),
-                stats.input_count,
-                stats.output_count,
-                stats.applied_rules,
-                stats.skipped_rules,
-            )
-        })
-        .collect();
-
-    match snapshot.query_with_params(&hinted_cypher, &query.parameters) {
-        Ok(output) => ExecutionObservation {
-            snapshot_epoch,
-            optimizer_search: Some(optimizer_search_name.to_string()),
-            search_mode,
-            plan_fingerprint,
-            optimizer_stages,
-            outcome: ExecutionOutcome::Rows(output.rows.into_rows()),
-        },
-        Err(error) => ExecutionObservation {
-            snapshot_epoch,
-            optimizer_search: Some(optimizer_search_name.to_string()),
-            search_mode,
-            plan_fingerprint,
-            optimizer_stages,
-            outcome: error_outcome("execute", error),
-        },
-    }
+    optimizer_qualification::execute_qualified(
+        snapshot,
+        snapshot_epoch,
+        query,
+        hawdb::optimizer::OptimizerQualificationOptions::default(),
+        optimizer_search,
+        &[],
+    )
+    .0
 }
 
 fn execute_graph_tlp_case(case: &FuzzCase) -> GraphTlpEvidence {
@@ -1383,6 +1347,7 @@ fn snapshot_error_observation(
         optimizer_search,
         search_mode: None,
         plan_fingerprint: None,
+        query_digest: None,
         optimizer_stages: Vec::new(),
         outcome: error_outcome(phase, error),
     }
@@ -1968,6 +1933,11 @@ pub fn run_campaign_until(
             memo_plan_fingerprint.as_deref(),
             direct_fallback_plan_fingerprint.as_deref(),
         );
+        plan_coverage.observe_agreement(
+            plan_differential_success,
+            memo_plan_fingerprint.as_deref(),
+            direct_fallback_plan_fingerprint.as_deref(),
+        );
         plan_coverage.observe_optimizer_stages(&optimizer_stages);
         let direction_reversal_applicable = case.metamorphic.direction_reversal.is_some();
         cases.push(CampaignCaseReport {
@@ -2065,6 +2035,11 @@ pub fn merge_campaign_report_json(
     let mut plan_coverage = PlanCoverageTracker::default();
     for case in indexed.values_mut() {
         let novel = plan_coverage.observe(
+            case["memo_plan_fingerprint"].as_str(),
+            case["direct_fallback_plan_fingerprint"].as_str(),
+        );
+        plan_coverage.observe_agreement(
+            case["plan_differential_success"].as_bool() == Some(true),
             case["memo_plan_fingerprint"].as_str(),
             case["direct_fallback_plan_fingerprint"].as_str(),
         );
