@@ -679,3 +679,242 @@ impl AggregateFunction {
         }
     }
 }
+
+// Retained query ownership: GraphAlgorithmKind.
+hawdb_core::impl_retained_heap_for_copy!(GraphAlgorithmKind);
+
+// Retained query ownership: GraphAlgorithmOptions.
+hawdb_core::impl_retained_heap_for_copy!(GraphAlgorithmOptions);
+
+// Retained query ownership: GraphAlgorithmOutput.
+hawdb_core::impl_retained_heap_for_struct!(GraphAlgorithmOutput {
+    algorithm,
+    graph_name,
+    options,
+    score_column,
+    identity,
+    node_visibility_predicate
+});
+
+// Retained query ownership: VectorIndexScan.
+impl<P: hawdb_core::RetainedHeapBytes> hawdb_core::RetainedHeapBytes for VectorIndexScan<P> {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        let Self {
+            index,
+            embedding_parameter,
+            candidate_limit,
+            top_k,
+            variable,
+            distance_column,
+            node_visibility_predicate,
+            mode,
+            eligible_variable,
+            max_work,
+            input,
+        } = self;
+        hawdb_core::checked_retained_heap_sum([
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(index),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(embedding_parameter),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(candidate_limit),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(top_k),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(variable),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(distance_column),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(node_visibility_predicate),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(mode),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(eligible_variable),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(max_work),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(input),
+        ])
+    }
+}
+
+// Retained query ownership: BatchMutationOperation.
+impl hawdb_core::RetainedHeapBytes for BatchMutationOperation {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::CreateNode { label, properties } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(label),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(properties),
+            ]),
+            Self::MergeNode {
+                label,
+                match_properties,
+                on_create_properties,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(label),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(match_properties),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(on_create_properties),
+            ]),
+        }
+    }
+}
+
+// Retained query ownership: SetAssignment.
+hawdb_core::impl_retained_heap_for_struct!(SetAssignment { property, value });
+
+// Retained query ownership: RelationshipOnCreateValue.
+impl hawdb_core::RetainedHeapBytes for RelationshipOnCreateValue {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Value(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::MatchedRelationshipProperty { property } => {
+                hawdb_core::checked_retained_heap_sum([
+                    hawdb_core::RetainedHeapBytes::retained_heap_bytes(property),
+                ])
+            }
+        }
+    }
+}
+
+// Retained query ownership: SetValue.
+impl hawdb_core::RetainedHeapBytes for SetValue {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Value(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::Coalesce { property, default } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(property),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(default),
+            ]),
+            Self::AddInt { property, amount } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(property),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(amount),
+            ]),
+            Self::DecrementFloorZero { property } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(property),
+            ]),
+            Self::PreserveNewerExisting {
+                property,
+                incoming,
+                preserve,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(property),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(incoming),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(preserve),
+            ]),
+        }
+    }
+}
+
+// Retained query ownership: SetNodePropertiesReturnMode.
+impl hawdb_core::RetainedHeapBytes for SetNodePropertiesReturnMode {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Project(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::Count { name } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(name),
+            ]),
+        }
+    }
+}
+
+// Retained query ownership: RelationshipSetAssignment.
+hawdb_core::impl_retained_heap_for_struct!(RelationshipSetAssignment { property, value });
+
+// Retained query ownership: RelationshipCountLeg.
+hawdb_core::impl_retained_heap_for_struct!(RelationshipCountLeg {
+    rel_type,
+    direction,
+    distinct,
+    filter
+});
+
+// Retained query ownership: ShortestPathProjection.
+hawdb_core::impl_retained_heap_for_struct!(ShortestPathProjection { expression, name });
+
+// Retained query ownership: Aggregation.
+hawdb_core::impl_retained_heap_for_struct!(Aggregation {
+    function,
+    target,
+    distinct,
+    name
+});
+
+// Retained query ownership: Projection.
+hawdb_core::impl_retained_heap_for_struct!(Projection { expression, name });
+
+// Retained query ownership: GraphAlgorithmIdentity.
+hawdb_core::impl_retained_heap_for_copy!(GraphAlgorithmIdentity);
+
+// Retained query ownership: BatchMutationValue.
+impl hawdb_core::RetainedHeapBytes for BatchMutationValue {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Static(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::RowProperty(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+        }
+    }
+}
+
+// Retained query ownership: RelationshipCountFilter.
+impl hawdb_core::RetainedHeapBytes for RelationshipCountFilter {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::PropertyNotEqOrEmpty { property, value } => {
+                hawdb_core::checked_retained_heap_sum([
+                    hawdb_core::RetainedHeapBytes::retained_heap_bytes(property),
+                    hawdb_core::RetainedHeapBytes::retained_heap_bytes(value),
+                ])
+            }
+        }
+    }
+}
+
+// Retained query ownership: ShortestPathProjectionExpression.
+impl hawdb_core::RetainedHeapBytes for ShortestPathProjectionExpression {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::NodePropertyList { property } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(property),
+            ]),
+            Self::Length => hawdb_core::checked_retained_heap_sum([]),
+        }
+    }
+}
+
+// Retained query ownership: AggregateFunction.
+hawdb_core::impl_retained_heap_for_copy!(AggregateFunction);
+
+// Retained query ownership: AggregateTarget.
+impl hawdb_core::RetainedHeapBytes for AggregateTarget {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Ranked {
+                document_id,
+                score,
+                limit,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(document_id),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(score),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(limit),
+            ]),
+            Self::Column(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::ColumnProperty { column, property } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(column),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(property),
+            ]),
+            Self::All => hawdb_core::checked_retained_heap_sum([]),
+            Self::Variable(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::Property { variable, property } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(variable),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(property),
+            ]),
+            Self::Expression(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+        }
+    }
+}

@@ -41,6 +41,8 @@ rust_test(
         ":hawdb_plan_cache",
         "//crates/core:hawdb_core",
         "//crates/cypher:hawdb_cypher",
+        "//crates/optimizer-graph:hawdb_optimizer_graph",
+        "//crates/plan-cypher:hawdb_plan_cypher",
     ],
 )
 

@@ -242,7 +242,7 @@ fn verify_width_reader(
 #[test]
 fn width_costing_preserves_nulls_ties_pinned_readers_and_warm_templates_under_pressure() {
     for max_groups in [0, 128] {
-        for memory_mib in [1, 8] {
+        for memory_mib in [1, 2, 8] {
             let config = DatabaseConfig {
                 max_optimizer_groups: Some(max_groups),
                 execution_memory: crate::executor::ExecutionMemoryConfig {

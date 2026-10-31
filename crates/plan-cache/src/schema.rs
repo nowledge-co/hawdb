@@ -130,3 +130,24 @@ mod tests {
         assert_ne!(baseline, OptimizerSchemaKey::from_catalog(&extended));
     }
 }
+
+// Retained query ownership: OptimizerSchemaKey.
+hawdb_core::impl_retained_heap_for_struct!(OptimizerSchemaKey {
+    labels,
+    unique_constraints,
+    relationship_types,
+    equality_indexes,
+    range_indexes,
+    full_text_indexes,
+    composite_indexes,
+    property_descriptors
+});
+
+// Retained query ownership: SchemaPropertyDescriptor.
+hawdb_core::impl_retained_heap_for_struct!(SchemaPropertyDescriptor {
+    table,
+    table_kind,
+    property,
+    value_type,
+    nullable
+});

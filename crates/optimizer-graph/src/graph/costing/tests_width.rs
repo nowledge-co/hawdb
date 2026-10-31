@@ -168,7 +168,12 @@ fn memory_hint_changes_actual_bounded_choice_in_both_lowerings_and_selected_cost
         OptimizerSearchDirective::DirectFallback,
     ] {
         for wide in [false, true] {
-            for memory in [1024 * 1024, 20 * 1024 * 1024, 1024 * 1024 * 1024] {
+            for memory in [
+                1024 * 1024,
+                20 * 1024 * 1024,
+                64 * 1024 * 1024,
+                1024 * 1024 * 1024,
+            ] {
                 let context = OptimizerContext::default().with_resource_hints(ResourceHints {
                     max_memory_bytes: Some(memory),
                     ..ResourceHints::default()

@@ -431,18 +431,22 @@ fn select_bounded_sort_plan(
             input: Box::new(input),
         };
     }
+    // Compare the shape that finalization will execute. Generic Project
+    // retains graph bindings; a fused projection scan can emit values only.
+    let finalized = finalized_cost_input(&input);
+    let cost_input = finalized.as_ref().unwrap_or(&input);
     let top_n = PhysicalPlan::TopNExec {
         items: items.clone(),
         offset,
         limit,
-        input: Box::new(input.clone()),
+        input: Box::new(cost_input.clone()),
     };
     let sort_limit = PhysicalPlan::LimitExec {
         offset,
         limit: Some(limit),
         input: Box::new(PhysicalPlan::SortExec {
-            items,
-            input: Box::new(input),
+            items: items.clone(),
+            input: Box::new(cost_input.clone()),
         }),
     };
     let top_n_cost = estimate_physical_plan_cost_with_context(&top_n, catalog, context);
@@ -454,13 +458,25 @@ fn select_bounded_sort_plan(
             "choose TopN for bounded sort: offset={offset} limit={limit} top_n_cost={} sort_limit_cost={}",
             top_n_cost.cost, sort_limit_cost.cost
         ));
-        top_n
+        PhysicalPlan::TopNExec {
+            items,
+            offset,
+            limit,
+            input: Box::new(input),
+        }
     } else {
         decisions.push(format!(
             "keep Sort + Limit for bounded sort: offset={offset} limit={limit} top_n_cost={} sort_limit_cost={}",
             top_n_cost.cost, sort_limit_cost.cost
         ));
-        sort_limit
+        PhysicalPlan::LimitExec {
+            offset,
+            limit: Some(limit),
+            input: Box::new(PhysicalPlan::SortExec {
+                items,
+                input: Box::new(input),
+            }),
+        }
     }
 }
 
