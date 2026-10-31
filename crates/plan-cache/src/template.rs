@@ -996,6 +996,7 @@ fn marker_use_in_projection_expression(
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
         | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. } => {
             let mut result = MarkerUse::None;
@@ -1535,6 +1536,7 @@ fn bind_projection_expression(
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
         | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. } => expression
             .try_for_each_child_mut(|child| bind_projection_expression(child, parameters))?,

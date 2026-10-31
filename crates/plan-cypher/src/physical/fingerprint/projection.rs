@@ -377,6 +377,16 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             write_identifier(output, property);
             output.push(')');
         }
+        ProjectionExpression::List(elements) => {
+            output.push_str("list(");
+            for (index, element) in elements.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                write_projection_expression(output, element);
+            }
+            output.push(')');
+        }
         ProjectionExpression::ListFunction {
             function,
             arguments,

@@ -247,6 +247,8 @@ pub enum ProjectionExpression {
         column: String,
         property: String,
     },
+    /// A list literal whose elements are evaluated per row, in order.
+    List(Vec<ProjectionExpression>),
     /// `size`, `head`, `last`, `tail`, `reverse` or `range`.
     ListFunction {
         function: hawdb_core::ListFunction,
@@ -393,6 +395,7 @@ impl ProjectionExpression {
             | Self::Left { expression, .. }
             | Self::JsonValue { expression, .. } => visit(expression),
             Self::Coalesce(expressions)
+            | Self::List(expressions)
             | Self::ListFunction {
                 arguments: expressions,
                 ..
@@ -451,6 +454,7 @@ impl ProjectionExpression {
             | Self::Left { expression, .. }
             | Self::JsonValue { expression, .. } => visit(expression)?,
             Self::Coalesce(expressions)
+            | Self::List(expressions)
             | Self::ListFunction {
                 arguments: expressions,
                 ..

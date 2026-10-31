@@ -45,3 +45,5 @@ pub use roots::{
 
 #[cfg(test)]
 mod tests;
+
+mod proofs;

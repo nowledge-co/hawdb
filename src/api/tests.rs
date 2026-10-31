@@ -57,6 +57,7 @@ mod community_cleanup;
 mod community_lifecycle;
 mod community_memberships;
 mod community_reads;
+mod comparison_chains;
 mod concurrent_transactions;
 mod crystal_reads;
 mod crystal_source;
@@ -116,6 +117,7 @@ mod knowledge_retrieval_pipeline;
 mod knowledge_retrieval_ranking;
 mod label_lifecycle;
 mod list_functions;
+mod list_literals;
 mod materialized_views;
 mod memory_lifecycle;
 mod merge_nodes;
@@ -2895,3 +2897,5 @@ fn community_parameters(ids: Vec<Value>) -> Result<BTreeMap<String, Value>> {
         ("limit".into(), Value::Int(10)),
     ]))
 }
+
+mod optimizer_proofs;

@@ -149,6 +149,127 @@ fn items(column: &str) -> Vec<Projection> {
     }]
 }
 
+#[test]
+fn column_literal_projection_reserves_the_actual_transfer_under_a_small_query_budget() {
+    let projections = vec![
+        items("value").remove(0),
+        Projection {
+            name: "count".into(),
+            expression: ProjectionExpression::Literal(Value::Int(1)),
+        },
+    ];
+    let input = Binding::values(BTreeMap::from([(
+        "value".into(),
+        Value::String("x".repeat(64)),
+    )]));
+    let mut source = Source::new(vec![input], 16);
+    let mut output = Vec::new();
+    with_context(16, 2048, |context| {
+        stream_projection_batches(
+            &projections,
+            &PhysicalPlan::EmptyExec,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].values,
+        BTreeMap::from([
+            ("alias".into(), Value::String("x".repeat(64))),
+            ("count".into(), Value::Int(1))
+        ])
+    );
+}
+
+#[test]
+fn duplicate_projection_aliases_preserve_suffixes_without_a_false_payload_refusal() {
+    let projections = [
+        Projection {
+            name: "alias".into(),
+            expression: ProjectionExpression::Literal(Value::Int(1)),
+        },
+        Projection {
+            name: "alias".into(),
+            expression: ProjectionExpression::Literal(Value::Int(2)),
+        },
+    ];
+    let mut source = Source::new(vec![Binding::values(BTreeMap::new())], 1);
+    let mut output = Vec::new();
+    with_context(16, 64 * 1024, |context| {
+        stream_projection_batches(
+            &projections,
+            &PhysicalPlan::EmptyExec,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].values,
+        BTreeMap::from([
+            ("alias".into(), Value::Int(1)),
+            ("alias#2".into(), Value::Int(2))
+        ])
+    );
+}
+
+#[test]
+fn projection_budget_keeps_the_ceiling_for_graph_columns_and_computed_evaluators() {
+    let input = rows(1, 0);
+    let ceiling = NonZeroUsize::new(4096).unwrap();
+    assert_eq!(
+        projection_batch_budget(&items("n"), &input, ceiling, false),
+        ceiling
+    );
+    let pure = items("value");
+    assert_eq!(
+        projection_batch_budget(&pure, &input, ceiling, false),
+        ceiling
+    );
+    let input = vec![Binding::values(input[0].values.clone())];
+    assert_eq!(
+        projection_batch_budget(
+            &[Projection {
+                name: "value".into(),
+                expression: ProjectionExpression::IsNull {
+                    expression: Box::new(ProjectionExpression::Column("value".into())),
+                    negated: false
+                }
+            }],
+            &input,
+            ceiling,
+            false
+        ),
+        ceiling
+    );
+    assert_eq!(
+        projection_batch_budget(&pure, &input, ceiling, true),
+        ceiling
+    );
+    let sized = projection_batch_budget(&pure, &input, ceiling, false);
+    assert!(sized.get() < ceiling.get());
+    assert_eq!(
+        sized.get(),
+        binding_memory_bytes_with_values(
+            &input[0],
+            std::iter::once(("alias", &input[0].values["value"]))
+        )
+    );
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Kernel {
     Filter,

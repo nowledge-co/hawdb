@@ -49,6 +49,30 @@ pub(super) fn rewrite_logical_plan(plan: &LogicalPlan) -> LogicalRewriteOutput {
     rewrite_logical_plan_with_pass_limit(plan, MAX_FIXED_POINT_PASSES)
 }
 
+pub(super) fn rewrite_logical_plan_with_catalog(
+    plan: &LogicalPlan,
+    catalog: &super::OptimizerCatalog,
+    options: crate::OptimizerQualificationOptions,
+) -> LogicalRewriteOutput {
+    let mut output = rewrite_logical_plan(plan);
+    output.plan = super::proofs::rewrite(output.plan, catalog, options, &mut output.events);
+    let applied = output
+        .events
+        .iter()
+        .filter(|event| event.outcome() == crate::RuleOutcome::Applied)
+        .count();
+    let skipped = output
+        .events
+        .iter()
+        .filter(|event| event.outcome() == crate::RuleOutcome::Skipped)
+        .count();
+    output.trace = LOGICAL_REWRITE_STAGE.trace(
+        StageStats::new(logical_node_count(plan), logical_node_count(&output.plan))
+            .with_rule_counts(applied, skipped),
+    );
+    output
+}
+
 fn rewrite_logical_plan_with_pass_limit(
     plan: &LogicalPlan,
     max_passes: usize,
@@ -415,6 +439,7 @@ fn collect_projection_columns(
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
         | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. } => {
             expression.all_children(|child| collect_projection_columns(child, columns))
@@ -470,6 +495,7 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
         | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. } => {
             !expression.all_children(|child| !projection_expression_references_column(child))

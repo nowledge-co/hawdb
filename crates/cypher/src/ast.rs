@@ -435,6 +435,20 @@ pub enum ValueExpressionKind {
     Timestamp(Box<ValueExpression>),
 }
 
+impl ValueExpressionKind {
+    /// True when the value reads a row binding (`variable` or `variable.property`), which
+    /// only mutation `UNWIND` contexts can bind; scalar contexts parse such
+    /// lists as [`ScalarExpressionKind::List`] instead.
+    pub fn reads_row_binding(&self) -> bool {
+        match self {
+            Self::BindingProperty { .. } | Self::BindingVariable(_) => true,
+            Self::List(values) => values.iter().any(|value| value.kind.reads_row_binding()),
+            Self::Timestamp(value) => value.kind.reads_row_binding(),
+            Self::Literal(_) | Self::Parameter(_) | Self::CurrentTimestamp => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReturnItemKind {
     pub expression: ReturnExpression,
@@ -528,6 +542,10 @@ pub enum ScalarExpressionKind {
         expression: Box<ScalarExpression>,
         negated: bool,
     },
+    /// A list literal with at least one row-bound element, such as
+    /// `[n, m.name, $p]`. Lists of constants and parameters stay
+    /// [`ScalarExpressionKind::Value`] so they keep value-list fast paths.
+    List(Vec<ScalarExpression>),
     /// `size`, `head`, `last`, `tail`, `reverse` or `range`.
     ListFunction {
         function: hawdb_core::ListFunction,
@@ -742,6 +760,7 @@ impl ScalarExpressionKind {
             | Self::Left { expression, .. }
             | Self::JsonValue { expression, .. } => visit(expression),
             Self::Coalesce(expressions)
+            | Self::List(expressions)
             | Self::ListFunction {
                 arguments: expressions,
                 ..
