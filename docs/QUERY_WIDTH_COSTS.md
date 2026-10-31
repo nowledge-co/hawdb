@@ -23,6 +23,8 @@ Their owned encoded buffer is deep-cloned when the value is cloned. TEXT uses
 a 4-KiB type proxy; LIST uses 256 bytes. These types deliberately do not acquire
 new value histograms. Missing or unsupported scalar metadata uses a positive
 64-byte payload proxy. Unknown full graph records use 4 KiB.
+Core value kinds without explicit payload models use the existing unknown-width
+fallback for literals and samples.
 
 Existing eligible scalar histograms can supply at most 32 evenly spaced distinct
 values. The maximum observed supported payload length is a **distinct-domain

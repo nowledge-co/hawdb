@@ -79,7 +79,9 @@ fn observed_payload(value: &Value) -> Option<u64> {
         Value::String(value) => Some(value.len() as u64),
         Value::Binary(value) => Some(value.len() as u64),
         Value::Vector(value) => Some(value.encoded().len() as u64),
-        Value::List(_) | Value::Map(_) => None,
+        // Containers and value kinds without a width model use the existing
+        // unknown proxy. New core value variants must not be assumed scalar.
+        _ => None,
     }
 }
 
