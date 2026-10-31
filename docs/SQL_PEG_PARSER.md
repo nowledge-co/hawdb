@@ -4,7 +4,7 @@
 SELECT and EXPLAIN SELECT execution paths, including prepared statements and
 plan-template cache misses. No feature, environment variable or host opt-in is
 required. The syntax-only CREATE PROPERTY GRAPH and GRAPH_TABLE entry points
-also use PEG. Branch lifecycle and paged SHOW commands use PEG as well.
+also use PEG. Relational DDL/DML, materialized views, branch lifecycle and paged SHOW commands use PEG as well.
 Cypher uses the same engine with its own token grammar and
 currently retains native clause terminals.
 
@@ -14,13 +14,27 @@ Parser routing is explicit by statement family:
 | --- | --- |
 | SELECT, EXPLAIN [ANALYZE] SELECT | Owned token PEG, then relational IR lowering |
 | CREATE PROPERTY GRAPH, GRAPH_TABLE syntax APIs | Owned token PEG; existing catalog/binder/execution admission still applies |
-| Relational DDL/DML and materialized-view statements | Upstream `sqlparser` and existing lowering |
+| Relational DDL/DML and materialized-view statements | Owned token PEG in `hawdb-sql`, then direct relational IR lowering |
 | Branch commands | Bounded SQL token PEG and branch AST transformation |
 
-This is a SELECT-family promotion under [#1328](https://github.com/nowledge-co/hawdb/issues/1328),
-not completion of every SQL statement family's migration. A PEG syntax,
-semantic or resource error is returned directly; it never retries the upstream
-parser. Accepting PGQ syntax does not activate unqualified PGQ execution.
+All supported SQL families now use PEG without a fallback or an upstream
+parser dependency, including test builds. Cypher's native clauses remain the
+outstanding migration under [#1375](https://github.com/nowledge-co/hawdb/issues/1375).
+A PEG syntax, semantic or resource error is returned directly. Accepting PGQ
+syntax does not activate unqualified PGQ execution.
+
+The executable grammar imports only reachable shared relational/expression rules
+before compilation. DDL/DML CSTs lower directly to HawDB IR. Balanced raw groups
+are confined to recognized unsupported clauses and custom type modifiers; they
+never produce executable expressions. Unsupported clause diagnostics use owned,
+static priority metadata and do not echo source payloads.
+
+The frozen admission keyword inventory preserves the previous conservative token
+and recursive-work accounting while using HawDB's lexer. The SELECT/EXPLAIN
+16 MiB input cap stays in place. DDL/DML preserve acceptance of larger inputs
+containing a single large literal or comment, with token, PEG work, capture,
+memo and language nesting limits still enforced. Contiguous `==` remains valid
+in DDL/DML expressions as before; the SELECT syntax profile rejects it.
 
 ## Design reference
 
@@ -186,3 +200,11 @@ record Parse or Semantic. These fixtures supplement semantic equality checks:
 Cypher `AstNode` equality deliberately ignores spans. They must not be refreshed
 from the candidate parser to hide migration differences. The original query
 inventories remain the source of query text and provenance.
+
+An independently exported 489-case generated SELECT/DDL/DML baseline from
+main `9c355e9a46` covers quoted and Unicode locations, empty forms, storage
+options, aliases, conflict clauses and rejected statements. Eight additional
+frozen timing shapes preserve full Debug-IR validation before measurement.
+The manual timing diagnostic emits nine candidate samples per unchanged shape
+(2,000 iterations for short queries, 100 for each 500-column projection).
+Compare against the separately built baseline revision and discard sample zero.

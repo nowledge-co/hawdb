@@ -165,6 +165,10 @@ fn tokenize_inner(
                 TokenKind::Concat
             }
             b'|' => single(&mut position, TokenKind::Pipe),
+            b'=' if bytes.get(position + 1) == Some(&b'=') => {
+                position += 2;
+                TokenKind::DoubleEqual
+            }
             b'=' => single(&mut position, TokenKind::Equal),
             b'!' if bytes.get(position + 1) == Some(&b'=') => {
                 position += 2;

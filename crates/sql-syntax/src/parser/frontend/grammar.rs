@@ -64,6 +64,24 @@ fn keywords(names: &[&'static str]) -> E<()> {
 }
 
 pub(super) fn build() -> Result<Grammar<()>, String> {
+    build_with_rules(
+        Vec::new(),
+        &[
+            "SqlInput",
+            "SelectInput",
+            "RelationalStatementInput",
+            "PgqInput",
+            "GraphTableInput",
+        ],
+        false,
+    )
+}
+
+pub(crate) fn build_with_rules(
+    extra: Vec<Rule>,
+    roots: &[&'static str],
+    double_equal: bool,
+) -> Result<Grammar<()>, String> {
     let mut rules: Vec<Rule> = vec![
         ("SqlInput", complete("Statement")),
         ("SelectInput", complete("Select")),
@@ -124,7 +142,13 @@ pub(super) fn build() -> Result<Grammar<()>, String> {
             ]),
         ),
         ("Projection", list("Labeled")),
-        ("RelationalProjection", o(list("RelationalLabeled"))),
+        (
+            "RelationalProjection",
+            c(vec![
+                list("RelationalLabeled"),
+                E::Ahead(Box::new(k("FROM")), "FROM"),
+            ]),
+        ),
         ("Labeled", s(vec![r("Or"), o(r("AsAlias"))])),
         (
             "RelationalLabeled",
@@ -242,6 +266,7 @@ pub(super) fn build() -> Result<Grammar<()>, String> {
                 "LATERAL",
                 "TABLESAMPLE",
                 "WINDOW",
+                "RETURNING",
             ]),
         ),
         (
@@ -567,19 +592,71 @@ pub(super) fn build() -> Result<Grammar<()>, String> {
             .into_iter()
             .filter(|(name, _)| *name != "Input"),
     );
+    if double_equal {
+        let (_, expression) = rules
+            .iter_mut()
+            .find(|(name, _)| *name == "CompareOp")
+            .expect("comparison rule");
+        let E::Choice(options) = expression else {
+            unreachable!()
+        };
+        options.push(t(T::DoubleEqual));
+    }
+    rules.extend(extra);
+    // SQL execution imports relational/expression rules without PGQ syntax-only
+    // envelopes. Prune by named dependencies before enforcing the rule cap.
+    let mut needed: std::collections::HashSet<_> = roots.iter().copied().collect();
+    loop {
+        let previous = needed.len();
+        for (name, expression) in &rules {
+            if needed.contains(name) {
+                references(expression, &mut needed);
+            }
+        }
+        if needed.len() == previous {
+            break;
+        }
+    }
+    rules.retain(|(name, _)| needed.contains(name));
+    let expression_guards: Vec<_> = expression::NESTING_RULES
+        .iter()
+        .copied()
+        .filter(|guard| rules.iter().any(|(name, _)| name == guard))
+        .collect();
+    let graph_guards: Vec<_> = ["NestedContents"]
+        .into_iter()
+        .filter(|guard| rules.iter().any(|(name, _)| name == guard))
+        .collect();
     Grammar::compile_with_nesting(
         rules,
         &[
             (
-                expression::NESTING_RULES,
+                &expression_guards,
                 super::super::MAX_EXPRESSION_NESTING,
                 crate::SyntaxErrorCode::ExpressionNestingLimitExceeded,
             ),
             (
-                &["NestedContents"],
+                &graph_guards,
                 super::super::MAX_GRAPH_PATTERN_NESTING,
                 crate::SyntaxErrorCode::GraphPatternNestingLimitExceeded,
             ),
         ],
     )
+}
+
+fn references(expression: &E<()>, names: &mut std::collections::HashSet<&'static str>) {
+    match expression {
+        E::Rule(name) => {
+            names.insert(name);
+        }
+        E::Sequence(items) | E::Choice(items) => {
+            for item in items {
+                references(item, names);
+            }
+        }
+        E::Optional(item) | E::Repeat(item) | E::Ahead(item, _) | E::Not(item, _) => {
+            references(item, names)
+        }
+        _ => {}
+    }
 }

@@ -2109,35 +2109,40 @@ checked profile and existing SQL syntax CI lanes.
 `//crates/sql:hawdb_sql_tests` retains the frozen production/owned frontend
 corpus and PGQ binder/lowering tests. It must preserve the recorded acceptance
 and rejection codes, including the explicitly reviewed SELECT-family promotion
-changes. The default SELECT/EXPLAIN PEG path is compared with the legacy parser
-for complete accepted relational IRs (including source positions) and rejected
-inputs across the frozen corpus. Error classes must match outside the 11
-explicit frozen Semantic-to-Parse exceptions; the generated vector `:=` refusal
-has its own explicit exception. Keep those exceptions exercised. Oversized
-INSERT/DDL regression inputs verify that prefix dispatch does not impose the
-owned full-input cap on legacy bodies, while oversized SELECT/EXPLAIN still
-fail closed. Malformed numeric separator cases cover both SQL frontends and
-PGQ syntax refusal before creation binding. Existing root relational SQL tests own embedded
-query results, plans, parameters, caching, joins, aggregates and vector execution.
-DDL/DML retain upstream routing pending separate qualification. Additional
-frozen Debug-AST SHA-256 fixtures captured from main `0f611b6dec` check all 1,009
-SQL inventory outcomes and both Cypher public entries for all 1,427 inventory
-queries (2,854 records). An additional 102-case literal/contributing-span
-baseline was independently exported from main `9c355e9a46` before removing
-upstream expression AST conversion and string retokenization. The original
-3,863 inventory outcomes were also re-exported from that main revision and
-matched the earlier baseline exactly. These checks include locations and Parse/Semantic
-refusal classes without needing a live reference parser. Existing branch SQL
-unit tests own PEG lifecycle selectors, revision/request-key admission and page
-bounds in either clause order; the handwritten branch token driver is removed.
+changes. All supported SQL families now use PEG, including DDL/DML,
+materialized views and branches; production and test builds have no upstream
+SQL parser dependency. Frozen Debug-AST SHA-256 fixtures preserve all 1,009 SQL
+inventory outcomes and both Cypher public entries for 1,427 queries (2,854
+records), exported from main `0f611b6dec` and independently rechecked against
+`9c355e9a46`. Accepted hashes include source locations. The recorded 11
+SELECT-family Semantic-to-Parse changes remain part of the frozen outcome
+contract. The 102-case literal/contributing-span baseline and a new 489-case
+generated SELECT/DDL/DML baseline were exported independently from main
+`9c355e9a46`; the latter includes the generated `:=` rejection, all three comment
+prefixes, empty SELECT/VALUES/storage forms, qualified aliases, mutation
+predicates and unsupported statements. Never refresh these from the candidate.
+
+The clause diagnostic campaign preserves 59 CREATE/15 INSERT condition cases,
+1,816 priority pairs and 9,216 SQL sources through parse and prepare. Priority
+conditions now exercise owned rejection metadata used by the CST lowerer;
+foreign AST-field injection is retired along with that parser. Source tests
+cover unsupported aliases, mutation OUTPUT, multi-table INSERT and ordering.
+Oversized INSERT/DDL regressions preserve acceptance of large literals/comments;
+oversized SELECT/EXPLAIN still fail closed at the existing input-byte cap.
+The frozen 1,102-keyword admission inventory and explicit token/work tests
+preserve conservative execution admission with the shared lexer. Existing root
+SQL/materialized-view tests own query results, plans, parameters, caching,
+joins, aggregates, vector execution and mutations. Existing branch SQL tests
+own PEG lifecycle selectors, revision/request-key admission and page bounds.
 Local Shiro parser campaigns and
 `//crates/sql-syntax:hawdb_sql_alias_boundary_fuzz_tests` remain manual/local.
 The ignored `parser::owned::tests::parser_timing_diagnostic` is a manual
 production SELECT parser comparison, run with `cargo test --locked --release
 -p hawdb-sql parser::owned::tests::parser_timing_diagnostic -- --exact --ignored
---nocapture`. It compares the legacy reference and default PEG in one binary,
-checks complete successful IRs first, alternates order, and emits nine samples
-per shape (discard the first). It covers short queries, vector calls, rejection,
+--nocapture`. It checks the eight independently exported main Debug-IR fingerprints first
+and emits nine PEG samples per unchanged shape (discard the first). Compare
+with a separate baseline revision using identical iteration counts: 2,000 short
+queries and 100 wide queries. It covers short queries, vector calls, rejection,
 and 500-column ASCII/UTF-8 projections; it is not a CI timing gate.
 `cargo bench --locked -p hawdb-sql-syntax --bench frontend` is a manual parser-only
 release benchmark; `-- --shapes` adds wide projections, many joins and rejected

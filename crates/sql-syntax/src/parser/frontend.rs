@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 use crate::peg::{Grammar, Limits, ParseTree};
 use crate::{tokenize, SyntaxError, Token};
 
-mod grammar;
+pub(crate) mod grammar;
 mod transform;
 
 pub(super) fn parse(input: &str, root: &'static str) -> Result<Output, SyntaxError> {
@@ -53,7 +53,7 @@ pub(super) fn parse(input: &str, root: &'static str) -> Result<Output, SyntaxErr
     }
     Ok(Transformer {
         input,
-        tree,
+        tree: &tree,
         tokens: &tokens,
     }
     .output(root))
@@ -61,7 +61,7 @@ pub(super) fn parse(input: &str, root: &'static str) -> Result<Output, SyntaxErr
 
 struct Transformer<'a> {
     input: &'a str,
-    tree: ParseTree<()>,
+    tree: &'a ParseTree<()>,
     tokens: &'a [Token],
 }
 
@@ -77,3 +77,17 @@ pub(super) enum Output {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn select_from_tree(
+    input: &str,
+    tokens: &[Token],
+    tree: &ParseTree<()>,
+    node: crate::peg::NodeId,
+) -> crate::PostgresSelectSyntax {
+    Transformer {
+        input,
+        tokens,
+        tree,
+    }
+    .select(node)
+}

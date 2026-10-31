@@ -307,183 +307,13 @@ impl<'a> Lowerer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
-
-    const REVIEWED_ERROR_CLASS_TRANSITIONS: &[&str] = &[
-        "case-0091",
-        "case-0092",
-        "case-0093",
-        "case-0094",
-        "case-0924",
-        "case-0986",
-        "case-0987",
-        "case-0988",
-        "case-0989",
-        "case-0990",
-        "case-1006",
-    ];
-
-    fn assert_rejection_class(
-        expected: HawDBError,
-        actual: HawDBError,
-        reviewed_semantic_to_parse: bool,
-        input: &str,
-    ) {
-        if reviewed_semantic_to_parse {
-            assert!(matches!((&expected, &actual), (HawDBError::Semantic(_), HawDBError::Parse(_))),
-                "reviewed Semantic-to-Parse transition changed: {input}\nlegacy {expected:?}\nPEG {actual:?}");
-        } else {
-            assert_eq!(
-                std::mem::discriminant(&actual),
-                std::mem::discriminant(&expected),
-                "unreviewed error-class transition: {input}\nlegacy {expected:?}\nPEG {actual:?}"
-            );
-        }
-    }
-
-    fn reference(input: &str) -> Result<SqlStatement> {
-        let statements = Parser::parse_sql(&PostgreSqlDialect {}, input)
-            .map_err(|error| HawDBError::Parse(error.to_string()))?;
-        let [statement] = statements.as_slice() else {
-            return Err(HawDBError::Parse("one statement required".into()));
-        };
-        lower_statement(statement)
-    }
-
     #[test]
-    fn frozen_corpus_preserves_complete_accepted_ir_and_rejection_boundaries() {
-        let mut accepted = 0;
-        let mut rejected = 0;
-        let mut reviewed = BTreeSet::new();
-        for line in include_str!("../../fixtures/frontend_corpus_v1.jsonl").lines() {
-            let case: serde_json::Value = serde_json::from_str(line).unwrap();
-            let input = case["sql"].as_str().unwrap();
-            let Ok(first) = syntax::first_token(input) else {
-                continue;
-            };
-            if !first.is_keyword(input, "SELECT") && !first.is_keyword(input, "EXPLAIN") {
-                continue;
-            }
-            let expected = reference(input);
-            let actual = parse_postgres_sql(input);
-            match (expected, actual) {
-                (Ok(expected), Ok(actual)) => {
-                    assert_eq!(actual, expected, "{}: {input}", case["id"]);
-                    accepted += 1;
-                }
-                (Err(expected), Err(actual)) => {
-                    let id = case["id"].as_str().unwrap();
-                    let transition = REVIEWED_ERROR_CLASS_TRANSITIONS.contains(&id);
-                    if transition {
-                        reviewed.insert(id.to_owned());
-                    }
-                    assert_rejection_class(expected, actual, transition, input);
-                    rejected += 1;
-                }
-                (expected, actual) => panic!(
-                    "{}: {input}\nreference {expected:?}\nPEG {actual:?}",
-                    case["id"]
-                ),
-            }
-        }
-        assert_eq!(accepted, 66, "frozen accepted statement inventory");
-        assert_eq!(
-            reviewed,
-            REVIEWED_ERROR_CLASS_TRANSITIONS
-                .iter()
-                .map(|id| (*id).to_owned())
-                .collect(),
-            "every reviewed transition must still be exercised"
-        );
-        assert!(
-            rejected >= 500,
-            "must compare negative cases, got {rejected}"
-        );
-    }
-    #[test]
-    fn generated_select_forms_preserve_legacy_ir() {
-        let mut inputs = Vec::new();
-        for value in [
-            "NULL",
-            "TRUE",
-            "-1",
-            "1.25",
-            ".5",
-            "1.",
-            "1_000",
-            "1_",
-            "1__0",
-            "1._5",
-            "1.0_0",
-            "1.0e1_0",
-            "U&'d\\0061t'",
-            "$1",
-            "'a''b'",
-            "E'a\\n'",
-            "E'a\\\'b'",
-            "$tag$text$tag$",
-            "COALESCE(id, $1)",
-            "COUNT(ALL id)",
-            "SUM(id) FILTER (WHERE id > $1)",
-            "\"列\"",
-        ] {
-            for tail in [
-                "",
-                " FROM items",
-                " AS label FROM items",
-                " label FROM items",
-            ] {
-                inputs.push(format!("SELECT {value}{tail}"));
-            }
-        }
-        for input in [
-            "SELECT id FROM items WHERE name LIKE $1 ESCAPE '!'",
-            "EXPLAIN ANALYZE SELECT id FROM items WHERE id = $1",
-            "SELECT id FROM items OFFSET 1 LIMIT 2",
-            "SELECT id FROM items LIMIT ALL",
-            "SELECT id FROM items OFFSET 2 ROWS",
-            "SELECT ALL id FROM items",
-            "SELECT * AS renamed FROM items",
-            "SELECT * renamed FROM items",
-            "SELECT id FROM items FOR SHARE",
-            "SELECT * FROM vector_index_search('items', $1, top_k => 1, candidates => 8)",
-            "SELECT * FROM vector_index_search('items', $1, top_k := 1, candidates := 8)",
-        ] {
-            inputs.push(input.into());
-        }
-        for input in inputs {
-            // This previously reviewed generated negative uses unsupported
-            // assignment syntax; the owned grammar rejects it before lowering.
-            let transition = input
-                == "SELECT * FROM vector_index_search('items', $1, top_k := 1, candidates := 8)";
-            for prefix in ["", "-- lead\n", "/* 知識 /* inner */ */\n"] {
-                let input = format!("{prefix}{input}");
-                match (reference(&input), parse_postgres_sql(&input)) {
-                    (Ok(expected), Ok(actual)) => assert_eq!(actual, expected, "{input}"),
-                    (Err(expected), Err(actual)) => {
-                        assert_rejection_class(expected, actual, transition, &input)
-                    }
-                    (expected, actual) => panic!("{input}\nreference {expected:?}\nPEG {actual:?}"),
-                }
-            }
-        }
-    }
-    #[test]
-    fn malformed_numeric_separators_are_rejected_by_both_frontends() {
-        for number in ["1_", "1__0", "1._5"] {
-            let input = format!("SELECT {number} FROM items");
-            assert!(reference(&input).is_err(), "legacy accepted {input}");
-            assert!(parse_postgres_sql(&input).is_err(), "PEG accepted {input}");
-        }
-    }
-
-    #[test]
-    fn legacy_statement_bodies_do_not_inherit_owned_input_limit() {
+    fn non_select_statement_bodies_preserve_independent_input_limits() {
         let payload = "x".repeat(syntax::LexerConfig::default().max_input_bytes + 1);
         {
             let input = format!("-- dispatch only\nINSERT INTO items (id) VALUES ('{payload}')");
             let SqlStatement::Insert(insert) = parse_postgres_sql(&input).unwrap() else {
-                panic!("large INSERT must stay on the legacy parser path");
+                panic!("large single-literal INSERT must remain accepted");
             };
             assert_eq!(insert.rows.len(), 1);
             assert!(
@@ -510,14 +340,14 @@ mod tests {
         for prefix in ["SELECT", "EXPLAIN SELECT"] {
             let input = format!("{prefix} {expression} FROM items");
             let HawDBError::Parse(error) = parse_postgres_sql(&input).unwrap_err() else {
-                panic!("native nesting must fail during the selected PEG parse");
+                panic!("language nesting must fail during the selected PEG parse");
             };
             assert!(error.contains("ExpressionNestingLimitExceeded"), "{error}");
         }
-        assert_eq!(
+        assert!(matches!(
             parse_postgres_sql("SELECT id FROM items").unwrap(),
-            reference("SELECT id FROM items").unwrap()
-        );
+            SqlStatement::Select(_)
+        ));
         // DDL remains explicitly dispatched; a new SELECT lexer extension cannot
         // accidentally become a prerequisite for the other statement families.
         assert!(parse_postgres_sql("CREATE TABLE items (id TEXT DEFAULT E'line\\n')").is_ok());
@@ -525,53 +355,24 @@ mod tests {
     #[test]
     #[ignore = "manual parser-only timing diagnostic; use the repository release profile"]
     fn parser_timing_diagnostic() {
-        let mut cases = vec![
-            ("lookup", "SELECT id FROM messages WHERE thread_id = $1 ORDER BY id LIMIT 20".into(), 2_000),
-            ("aggregate", "SELECT thread_id, count(*) FILTER (WHERE active = $1) AS n FROM messages GROUP BY thread_id HAVING count(*) > 0".into(), 2_000),
-            ("left_join", "SELECT a.id, b.name FROM nodes a LEFT JOIN names b ON a.id = b.id WHERE b.name IS NOT NULL".into(), 2_000),
-            ("vector", "SELECT id FROM vector_index_search('items', $1, top_k => 1, candidates => 8) WHERE active = true".into(), 2_000),
-            ("constant", "SELECT 1 AS value".into(), 2_000),
-            ("rejected", "SELECT id FROM items WHERE".into(), 2_000),
-        ];
-        for (shape, quoted) in [("wide_ascii", false), ("wide_utf8", true)] {
-            let projection = (0..500)
-                .map(|index| {
-                    if quoted {
-                        format!("\"列_{index}\"")
-                    } else {
-                        format!("column_{index}")
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            cases.push((shape, format!("SELECT {projection} FROM items"), 100));
-        }
-        type ParseFn = fn(&str) -> Result<SqlStatement>;
         println!("shape,sample,frontend,iterations,nanos");
-        for (shape, input, iterations) in cases {
-            let expected = reference(&input);
-            let actual = parse_postgres_sql(&input);
-            match (expected, actual) {
-                (Ok(expected), Ok(actual)) => assert_eq!(actual, expected),
-                (Err(_), Err(_)) => (),
-                pair => panic!("{shape}: {pair:?}"),
-            }
+        for line in include_str!("../../fixtures/frontend_timing_peg_baseline_v1.jsonl").lines() {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            let input = expected["sql"].as_str().unwrap();
+            let shape = expected["shape"].as_str().unwrap();
+            let iterations = expected["iterations"].as_u64().unwrap();
+            super::peg_baseline::assert_case(input, &expected);
             for sample in 0..9 {
-                let mut parsers: [(&str, ParseFn); 2] =
-                    [("legacy", reference), ("peg", parse_postgres_sql)];
-                if sample % 2 != 0 {
-                    parsers.reverse();
+                let started = std::time::Instant::now();
+                for _ in 0..iterations {
+                    drop(std::hint::black_box(parse_postgres_sql(
+                        std::hint::black_box(input),
+                    )));
                 }
-                for (frontend, parser) in parsers {
-                    let started = std::time::Instant::now();
-                    for _ in 0..iterations {
-                        drop(std::hint::black_box(parser(std::hint::black_box(&input))));
-                    }
-                    println!(
-                        "{shape},{sample},{frontend},{iterations},{}",
-                        started.elapsed().as_nanos()
-                    );
-                }
+                println!(
+                    "{shape},{sample},peg,{iterations},{}",
+                    started.elapsed().as_nanos()
+                );
             }
         }
     }
@@ -619,7 +420,31 @@ mod peg_baseline {
         assert_eq!(count, 102);
     }
 
-    fn assert_case(input: &str, expected: &serde_json::Value) {
+    #[test]
+    fn frozen_generated_select_and_mutation_boundaries() {
+        let mut count = 0;
+        for line in include_str!("../../fixtures/frontend_generated_peg_baseline_v1.jsonl").lines()
+        {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            let input = expected["sql"].as_str().unwrap();
+            assert_case(input, &expected);
+            count += 1;
+        }
+        assert_eq!(count, 489);
+    }
+
+    #[test]
+    fn frozen_timing_shapes_preserve_complete_ir() {
+        let mut count = 0;
+        for line in include_str!("../../fixtures/frontend_timing_peg_baseline_v1.jsonl").lines() {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_case(expected["sql"].as_str().unwrap(), &expected);
+            count += 1;
+        }
+        assert_eq!(count, 8);
+    }
+
+    pub(super) fn assert_case(input: &str, expected: &serde_json::Value) {
         let (kind, digest) = match parse_postgres_sql(input) {
             Ok(ast) => (
                 "accept",

@@ -17,8 +17,8 @@ use crate::{
     SyntaxError, Token, TokenKind,
 };
 
-mod expression;
-mod frontend;
+pub(crate) mod expression;
+pub(crate) mod frontend;
 
 pub fn parse_postgres_statement(input: &str) -> Result<PostgresStatementSyntax, SyntaxError> {
     match frontend::parse(input, "SqlInput")? {

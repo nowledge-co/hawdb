@@ -57,15 +57,15 @@ SQL dependency exposed to the root crate.
 
 Tokens and syntax nodes retain byte spans into the caller-owned SQL text rather
 than cloning identifiers and literal payloads. Scalar expressions use a bounded
-Pratt AST; semantic binding owns only normalized names and typed values that
+precedence AST recognized by PEG rules; semantic binding owns only normalized names and typed values that
 survive past parsing. This keeps parse memory proportional to token and node
 count while preserving exact source locations for diagnostics.
 
 The owned statement envelopes use token PEG rules with ordered alternatives,
 packrat caching of successes and failures, and a separate AST transformer.
 SQL/PGQ composes into the statement and FROM-item rules before matching starts.
-Bounded native terminals retain the Pratt expression parser, graph patterns,
-and property-graph element definitions. See [SQL PEG parser](../SQL_PEG_PARSER.md)
+Expressions, graph patterns and property-graph definitions are recognized by
+pure PEG rules; the recursive syntax parsers and native SQL callbacks are removed. See [SQL PEG parser](../SQL_PEG_PARSER.md)
 for the resource and grammar-validation contract. This internal composition
 mechanism does not establish a public loadable-dialect API.
 
@@ -81,8 +81,11 @@ projection, filtering, grouping, ordering, limits, offsets, and locking clauses.
 It deliberately rejects subqueries, right/full/natural joins, join `USING`,
 `DISTINCT ON`, and other unqualified shapes. The default relational SELECT and EXPLAIN SELECT paths now use the PEG
 relational entry and lower into the existing relational IR, including constants,
-vector search, aggregate FILTER and LIKE/ILIKE. DDL/DML and materialized-view
-statements retain explicit upstream routing pending their own qualification.
+vector search, aggregate FILTER and LIKE/ILIKE. Supported DDL/DML and
+materialized-view statements now use an executable PEG grammar importing the
+same expression/SELECT rules and lowering directly to HawDB IR. Branch commands
+also use PEG. The upstream SQL parser and its live test oracle are removed;
+independently exported frozen IR/error fixtures preserve migration coverage.
 PGQ syntax nodes alone do not establish a production execution contract. An
 owned-parser failure MUST be returned directly and MUST NOT trigger a retry
 through the upstream parser.

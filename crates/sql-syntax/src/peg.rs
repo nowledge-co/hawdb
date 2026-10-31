@@ -754,3 +754,29 @@ mod memo;
 #[cfg(test)]
 mod tests;
 mod validation;
+
+/// Compose the executable relational grammar with additional HawDB statement
+/// rules. These internal building blocks are not a host query API.
+pub fn sql_grammar(
+    extra: Vec<(&'static str, Expression<()>)>,
+    root: &'static str,
+) -> Result<Grammar<()>, String> {
+    crate::parser::frontend::grammar::build_with_rules(extra, &[root], true)
+}
+
+pub fn sql_expression(
+    tree: &ParseTree<()>,
+    tokens: &[Token],
+    node: NodeId,
+) -> crate::ExpressionSyntax {
+    crate::parser::expression::Fold { tree, tokens }.expression(node)
+}
+
+pub fn sql_select(
+    input: &str,
+    tree: &ParseTree<()>,
+    tokens: &[Token],
+    node: NodeId,
+) -> crate::PostgresSelectSyntax {
+    crate::parser::frontend::select_from_tree(input, tokens, tree, node)
+}

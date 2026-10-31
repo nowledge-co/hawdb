@@ -38,6 +38,7 @@ pub enum TokenKind {
     Slash,
     Percent,
     Equal,
+    DoubleEqual,
     Less,
     Greater,
     LessOrEqual,

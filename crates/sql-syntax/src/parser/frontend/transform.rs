@@ -29,7 +29,7 @@ impl Transformer<'_> {
     }
     fn fold(&self) -> Fold<'_> {
         Fold {
-            tree: &self.tree,
+            tree: self.tree,
             tokens: self.tokens,
         }
     }
@@ -87,7 +87,7 @@ impl Transformer<'_> {
             .and_then(|clause| self.tree.child(clause, "Or"))
             .map(|id| self.expr(id))
     }
-    fn select(&self, node: NodeId) -> PostgresSelectSyntax {
+    pub(super) fn select(&self, node: NodeId) -> PostgresSelectSyntax {
         let relational = self.tree.nodes[node].name == Some("RelationalSelect");
         let projection = self.child(
             node,

@@ -233,9 +233,9 @@ pub(super) fn rules() -> Vec<Rule> {
     ]
 }
 
-pub(super) struct Fold<'a> {
-    pub(super) tree: &'a ParseTree<()>,
-    pub(super) tokens: &'a [Token],
+pub(crate) struct Fold<'a> {
+    pub(crate) tree: &'a ParseTree<()>,
+    pub(crate) tokens: &'a [Token],
 }
 impl Fold<'_> {
     fn span(&self, node: NodeId) -> Span {
@@ -255,7 +255,7 @@ impl Fold<'_> {
             span: self.span(node),
         }
     }
-    pub(super) fn expression(&self, node: NodeId) -> ExpressionSyntax {
+    pub(crate) fn expression(&self, node: NodeId) -> ExpressionSyntax {
         let children = self.tree.children(node);
         let span = self.span(node);
         let kind = match self.tree.nodes[node].name.expect("named expression node") {
@@ -378,7 +378,7 @@ impl Fold<'_> {
     }
     fn operator(&self, node: NodeId) -> B {
         match self.tokens[self.tree.nodes[node].start].kind {
-            T::Equal => B::Equal,
+            T::Equal | T::DoubleEqual => B::Equal,
             T::NotEqual => B::NotEqual,
             T::Less => B::Less,
             T::LessOrEqual => B::LessOrEqual,
