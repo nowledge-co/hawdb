@@ -82,6 +82,7 @@ pub(super) fn cost_operator(
     catalog: &OptimizerCatalog,
     inputs: [Option<ConsumptionCost>; 2],
     bindings: &PlanBindings<'_>,
+    statistics: &mut Option<super::StatisticsUsage>,
 ) -> ConsumptionCost {
     let mut costs = inputs.map(|input| input.map(|input| input.total));
     if let PhysicalPlan::LimitExec {
@@ -99,7 +100,7 @@ pub(super) fn cost_operator(
         };
         costs[0] = Some(inputs[0].expect("unary input cost").prefix(wanted));
     }
-    let total = estimate_local_operator_cost(plan, catalog, costs, bindings);
+    let total = estimate_local_operator_cost(plan, catalog, costs, bindings, statistics);
     let startup = match plan {
         PhysicalPlan::SeqNodeScan { .. } => {
             PlanCostBreakdown::new(1, 0, 0, super::NODE_FULL_SCAN_STARTUP_COST, 0)

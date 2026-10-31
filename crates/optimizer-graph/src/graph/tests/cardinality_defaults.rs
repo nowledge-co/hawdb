@@ -38,6 +38,7 @@ fn estimate_filter_rows(
         rows,
         catalog,
         &PlanBindings::for_plan(input),
+        &mut None,
     )
 }
 
@@ -47,7 +48,13 @@ fn estimate_aggregate_rows(
     rows: u64,
     catalog: &OptimizerCatalog,
 ) -> u64 {
-    cardinality::estimate_aggregate_rows(keys, &PlanBindings::for_plan(input), rows, catalog)
+    cardinality::estimate_aggregate_rows(
+        keys,
+        &PlanBindings::for_plan(input),
+        rows,
+        catalog,
+        &mut None,
+    )
 }
 
 const COUNTS: &[u64] = &[

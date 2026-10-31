@@ -307,59 +307,77 @@ pub fn stream_limit_batches(
         (None, Some(parent)) => parent,
         (None, None) => usize::MAX,
     };
-    let control = source.execute(
-        input,
-        ExecutionLimit {
-            output_rows: Some(offset.saturating_add(output_cap)),
-        },
-        &mut |batch| {
-            runtime_checkpoint(context.task_context)?;
-            let mut output = TransformBatchBuilder::new(
-                "LimitExec",
-                context.memory.batch_rows.get(),
-                context.memory.batch_payload_bytes,
-                context.memory_ledger,
-            )?;
-            let mut emit_output = |batch: BindingBatch| {
-                emitted.set(emitted.get().saturating_add(batch.len()));
-                let control = emit(batch)?;
-                consumer_stopped.set(consumer_stopped.get() || control == BatchControl::Stop);
-                if control == BatchControl::Continue {
-                    runtime_checkpoint(context.task_context)?;
-                }
-                Ok(control)
-            };
-            for binding in batch {
+    let control =
+        source.execute(
+            input,
+            ExecutionLimit {
+                output_rows: Some(offset.saturating_add(output_cap)),
+            },
+            &mut |batch| {
                 runtime_checkpoint(context.task_context)?;
-                if skipped.get() < offset {
-                    skipped.set(skipped.get().saturating_add(1));
-                    continue;
+                // These bindings already exist. Admit only the payload that can
+                // cross this window, before allocating its output vector. Reserving
+                // the entire configured batch ceiling made a tiny Sort + LIMIT
+                // require 16 MiB even when its selected rows fit a small query.
+                let skip = offset.saturating_sub(skipped.get()).min(batch.len());
+                let remaining = output_cap.saturating_sub(emitted.get());
+                let payload = batch.iter().skip(skip).take(remaining).try_fold(
+                    0usize,
+                    |total, binding| {
+                        runtime_checkpoint(context.task_context)?;
+                        Ok::<_, hawdb_core::HawDBError>(
+                            total
+                                .saturating_add(binding_memory_bytes(binding))
+                                .min(context.memory.batch_payload_bytes.get()),
+                        )
+                    },
+                )?;
+                let mut output = TransformBatchBuilder::new(
+                    "LimitExec",
+                    context.memory.batch_rows.get(),
+                    std::num::NonZeroUsize::new(payload.max(1)).expect("positive transfer budget"),
+                    context.memory_ledger,
+                )?;
+                let mut emit_output = |batch: BindingBatch| {
+                    emitted.set(emitted.get().saturating_add(batch.len()));
+                    let control = emit(batch)?;
+                    consumer_stopped.set(consumer_stopped.get() || control == BatchControl::Stop);
+                    if control == BatchControl::Continue {
+                        runtime_checkpoint(context.task_context)?;
+                    }
+                    Ok(control)
+                };
+                for binding in batch {
+                    runtime_checkpoint(context.task_context)?;
+                    if skipped.get() < offset {
+                        skipped.set(skipped.get().saturating_add(1));
+                        continue;
+                    }
+                    if emitted.get().saturating_add(output.len()) >= output_cap {
+                        break;
+                    }
+                    if output.reserve_row_before_allocation(
+                        binding_memory_bytes(&binding),
+                        &mut emit_output,
+                    )? == BatchControl::Stop
+                    {
+                        return Ok(BatchControl::Stop);
+                    }
+                    output.push(binding);
+                    if output.is_full() && output.emit(&mut emit_output)? == BatchControl::Stop {
+                        return Ok(BatchControl::Stop);
+                    }
                 }
-                if emitted.get() == output_cap {
-                    break;
-                }
-                if output.reserve_row_before_allocation(
-                    binding_memory_bytes(&binding),
-                    &mut emit_output,
-                )? == BatchControl::Stop
-                {
+                if !output.is_empty() && output.emit(&mut emit_output)? == BatchControl::Stop {
                     return Ok(BatchControl::Stop);
                 }
-                output.push(binding);
-                if output.is_full() && output.emit(&mut emit_output)? == BatchControl::Stop {
-                    return Ok(BatchControl::Stop);
-                }
-            }
-            if !output.is_empty() && output.emit(&mut emit_output)? == BatchControl::Stop {
-                return Ok(BatchControl::Stop);
-            }
-            Ok(if emitted.get() == output_cap {
-                BatchControl::Stop
-            } else {
-                BatchControl::Continue
-            })
-        },
-    )?;
+                Ok(if emitted.get() == output_cap {
+                    BatchControl::Stop
+                } else {
+                    BatchControl::Continue
+                })
+            },
+        )?;
     // Reaching this operator's window completes its input contract. Preserve
     // downstream stop and an upstream stop that did not fill the window.
     Ok(

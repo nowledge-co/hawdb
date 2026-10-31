@@ -14,7 +14,7 @@
 
 use super::cardinality::{
     estimate_aggregate_rows, estimate_aggregate_work_rows, estimate_filter_rows,
-    estimate_full_text_rows, estimate_optional_degree_work, PlanBindings,
+    estimate_full_text_rows, estimate_optional_degree_work, PlanBindings, StatisticsUsage,
 };
 use super::{OptimizerCatalog, PhysicalPlan, PlanCost, PlanCostBreakdown};
 use hawdb_core::Value;
@@ -241,6 +241,7 @@ pub(super) fn estimate_physical_plan_cost_with_row_goal(
 pub(super) struct CostedPlan<'a> {
     pub(super) cost: PlanCostBreakdown,
     startup: PlanCostBreakdown,
+    pub(super) statistics: Option<StatisticsUsage>,
     bindings: PlanBindings<'a>,
 }
 
@@ -263,7 +264,12 @@ pub(super) fn estimate_cost_with_test_bindings<'a>(
         bindings: &impl Fn(&'a PhysicalPlan) -> PlanBindings<'a>,
     ) -> row_goal::ConsumptionCost {
         let inputs = estimate_input_costs(plan, |input| visit(input, catalog, bindings));
-        row_goal::cost_operator(plan, catalog, inputs, &bindings(plan))
+        let source = if let PhysicalPlan::AggregateExec { input, .. } = plan {
+            input.as_ref()
+        } else {
+            plan
+        };
+        row_goal::cost_operator(plan, catalog, inputs, &bindings(source), &mut None)
     }
     visit(plan, catalog, bindings).total
 }
@@ -292,12 +298,28 @@ pub(super) fn estimate_operator_cost<'a>(
             startup: input.startup,
         })
     });
+    let mut statistics = None;
+    // Resolve grouping keys before replacing incoming bindings with output aliases.
+    let aggregate_cost = if matches!(plan, PhysicalPlan::AggregateExec { .. }) {
+        Some(row_goal::cost_operator(
+            plan,
+            catalog,
+            costs,
+            &inputs[0].as_ref().expect("unary input").bindings,
+            &mut statistics,
+        ))
+    } else {
+        None
+    };
     let bindings =
         PlanBindings::for_operator(plan, inputs.map(|input| input.map(|input| input.bindings)));
-    let cost = row_goal::cost_operator(plan, catalog, costs, &bindings);
+    let cost = aggregate_cost.unwrap_or_else(|| {
+        row_goal::cost_operator(plan, catalog, costs, &bindings, &mut statistics)
+    });
     CostedPlan {
         cost: cost.total,
         startup: cost.startup,
+        statistics,
         bindings,
     }
 }
@@ -307,6 +329,7 @@ fn estimate_local_operator_cost(
     catalog: &OptimizerCatalog,
     inputs: [Option<PlanCostBreakdown>; 2],
     bindings: &PlanBindings<'_>,
+    statistics: &mut Option<StatisticsUsage>,
 ) -> PlanCostBreakdown {
     #[cfg(test)]
     COST_EVALUATIONS.with(|count| count.set(count.get() + 1));
@@ -333,7 +356,8 @@ fn estimate_local_operator_cost(
             let access_cost = projected_access_cost(access, label, catalog);
             let input_rows = access_cost.estimated_rows;
             let rows = predicate.as_ref().map_or(input_rows, |predicate| {
-                estimate_filter_rows(predicate, plan, input_rows, catalog, bindings).max(1)
+                estimate_filter_rows(predicate, plan, input_rows, catalog, bindings, statistics)
+                    .max(1)
             });
             let cpu_rows = if !items.is_empty() || predicate.is_some() {
                 rows
@@ -382,16 +406,25 @@ fn estimate_local_operator_cost(
                 |cost| cost.with_cpu(rows, work, rows),
             )
         }
-        PhysicalPlan::HashJoinExec { .. } => {
+        PhysicalPlan::HashJoinExec {
+            left_key,
+            right_key,
+            ..
+        } => {
             let left = inputs[0].expect("left input cost");
             let right = inputs[1].expect("right input cost");
-            // Without cross-input key statistics, preserve the conservative
-            // duplicate-heavy output bound. Hashing adds one visit per input;
-            // the enclosing residual filter retains existing selectivity rules.
-            let rows = left
-                .estimated_rows
-                .saturating_mul(right.estimated_rows)
-                .max(1);
+            // Hash one key exactly as execution does. Additional equalities
+            // remain residual work over this intermediate, even when joint
+            // statistics estimate fewer final rows.
+            let rows = super::cardinality::estimate_hash_join_rows(
+                left_key,
+                right_key,
+                left.estimated_rows,
+                right.estimated_rows,
+                catalog,
+                bindings,
+                statistics,
+            );
             let work = left
                 .estimated_rows
                 .saturating_add(right.estimated_rows)
@@ -528,6 +561,7 @@ fn estimate_local_operator_cost(
                 input_cost.estimated_rows,
                 catalog,
                 bindings,
+                statistics,
             );
             input_cost.with_cpu(rows, input_cost.estimated_rows, 0)
         }
@@ -580,8 +614,13 @@ fn estimate_local_operator_cost(
             group_keys, items, ..
         } => {
             let input_cost = inputs[0].expect("unary input cost");
-            let rows =
-                estimate_aggregate_rows(group_keys, bindings, input_cost.estimated_rows, catalog);
+            let rows = estimate_aggregate_rows(
+                group_keys,
+                bindings,
+                input_cost.estimated_rows,
+                catalog,
+                statistics,
+            );
             let work_rows =
                 estimate_aggregate_work_rows(items, bindings, input_cost.estimated_rows, catalog);
             input_cost.with_cpu(rows, work_rows, 0)

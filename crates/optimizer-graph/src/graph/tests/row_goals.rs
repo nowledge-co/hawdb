@@ -366,3 +366,75 @@ fn bounded_ordered_choice_requires_a_nonrejecting_residual_or_zero_goal() {
             .any(|decision| decision.contains("row_goal=Some(20)")));
     }
 }
+
+#[test]
+fn joint_filter_statistics_feed_row_goals_and_keep_selected_provenance() {
+    use crate::graph::{
+        OptimizerCatalogIndexes, OptimizerCatalogStatistics, OptimizerIndexStatistics,
+    };
+    let catalog = |joint: bool| {
+        let index = ("Memory".into(), vec!["a".into(), "b".into()]);
+        OptimizerCatalog::new(
+            OptimizerCatalogIndexes::new([], [index.clone()], [], []),
+            OptimizerCatalogStatistics::new(
+                [("Memory".into(), 10_000)],
+                [],
+                [],
+                [],
+                [],
+                [
+                    (("Memory".into(), "a".into()), 100),
+                    (("Memory".into(), "b".into()), 100),
+                ],
+                [],
+            )
+            .with_composite_index_statistics(joint.then_some((
+                index,
+                OptimizerIndexStatistics {
+                    index_size: 10_000,
+                    distinct_count: 100,
+                },
+            ))),
+        )
+    };
+    let filtered = PhysicalPlan::FilterExec {
+        predicate: Predicate::And(
+            ["a", "b"]
+                .map(|property| Predicate::PropertyEq {
+                    variable: "n".into(),
+                    property: property.into(),
+                    value: Value::Int(1),
+                })
+                .to_vec(),
+        ),
+        input: Box::new(scan()),
+    };
+    let joint = catalog(true);
+    assert_eq!(
+        costing::estimate_physical_plan_cost_breakdown(&filtered, &joint).estimated_rows,
+        100
+    );
+    let limited = PhysicalPlan::LimitExec {
+        offset: 0,
+        limit: Some(2),
+        input: Box::new(filtered),
+    };
+    let (trace, diagnostics) = super::super::selected_trace::selected_plan_trace_with_diagnostics(
+        &limited,
+        &joint,
+        &crate::OptimizerContext::default(),
+    );
+    assert_eq!(trace.cost.estimated_rows, 2);
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|line| line.starts_with("cardinality statistics: "))
+            .count(),
+        1
+    );
+    let independent = costing::estimate_physical_plan_cost_breakdown(&limited, &catalog(false));
+    assert!(
+        trace.cost.cost < independent.cost / 10,
+        "joint selectivity must reach consumed-work costing rather than leaving the full scan cost"
+    );
+}

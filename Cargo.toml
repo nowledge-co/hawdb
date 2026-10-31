@@ -353,3 +353,7 @@ harness = false
 [[bench]]
 name = "row_goal_planning"
 harness = false
+
+[[bench]]
+name = "joint_ndv_planning"
+harness = false
