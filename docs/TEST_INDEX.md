@@ -1687,6 +1687,38 @@ read-only refusal, incident-edge removal, unchanged unrelated nodes and one-batc
 recovery. They no longer use generic entity-delete response DTOs or business
 read helpers for their postconditions. Native CI retains the existing owners.
 
+### Matched UNWIND relationship MERGE
+
+The existing plan-cypher relationship-batch family also checks retained heap
+ownership of the boxed command, nested mutation values and projection spare
+capacity. The allocation-free scalar row marker adds no reachable heap. These
+cases protect integration with the shared retained-plan admission contract.
+Scalar row references use the same AST binding as read-only node-pattern
+properties; both planner families and the root read/mutation regressions
+protect their independent scope and lowering paths. Bare scalar row mutation
+values remain limited to relationship MERGE; node CREATE/MERGE retain their
+existing row-property-only binding and refuse unsupported scalar row values.
+
+The existing root general owner (`//:hawdb_unit_general_tests`) runs
+`api::tests::merge_relationships::matched_*`: exact projected member rows,
+duplicate input multiplicity, missing/NULL/empty matches, ON CREATE retention,
+all database/concurrent transaction result-budget refusals, full-batch input and
+storage refusal, NULL relationship-property refusal, large endpoint fan-out
+with pending property-subset matches, and embedded host count-guard rollback
+followed by WAL reopen. The executor preflight family (`//crates/executor:hawdb_executor_unit_tests`)
+counts one projected scan/index lookup per endpoint pattern, preserves
+unlabelled all-node matching even with an empty named catalog label, and covers early
+fan-out refusal before ID rewriting, empty pairs, host memory budgets and
+cancellation. Storage's existing `id_in_mutation` family in
+`//crates/storage:hawdb_storage_tests` retains the independent scan oracle and
+checks ID-led property/label rechecks over 4,096 candidates and pending nodes.
+The parser and plan-cypher crate owners retain the syntax and scope/refusal
+checks. No carrier, feature matrix, timeout or CI lane is added. Local replay:
+`cargo test --locked -p hawdb --lib api::tests::merge_relationships::matched_`
+and `cargo test --locked -p hawdb-plan-cypher --lib relationship_merge_batch`.
+See [the supported pipeline contract](CYPHER_DEFAULT_PIPELINE.md#bounded-relationship-mutation-input)
+and [#1397](https://github.com/nowledge-co/hawdb/issues/1397).
+
 ### Property mutation query fixtures
 
 The property mutation cases in `src/api/tests.rs` and

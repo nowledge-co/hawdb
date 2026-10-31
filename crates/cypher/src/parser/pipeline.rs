@@ -707,6 +707,12 @@ mod tests {
 
     #[test]
     fn unwind_is_a_bounded_row_source_clause() {
+        let scalar = parse_pipeline("MATCH (s:Skill) UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id").unwrap();
+        let ClauseKind::Match { patterns, .. } = &scalar.clauses[2].kind else {
+            panic!("MATCH")
+        };
+        assert!(matches!(&patterns[0].first.properties["id"].kind,
+            ValueExpressionKind::Binding(variable) if variable == "key"));
         let query = "UNWIND $rows AS row MERGE (entity:Entity {id: row.id}) ON CREATE SET entity.name = row.name";
         let parsed = parse_pipeline(query).unwrap();
         assert_eq!(parsed.clauses.len(), 2);
