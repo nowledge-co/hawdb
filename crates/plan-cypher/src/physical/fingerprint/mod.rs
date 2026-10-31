@@ -1411,6 +1411,34 @@ impl PhysicalPlan {
 
 fn write_batch_mutation_operation(output: &mut String, operation: &BatchMutationOperation) {
     match operation {
+        BatchMutationOperation::MergeRelationship(merge) => {
+            output.push_str("MergeRelationship(");
+            for name in [
+                &merge.source_variable,
+                &merge.source_label,
+                &merge.target_variable,
+                &merge.target_label,
+                &merge.rel_type,
+            ] {
+                write_identifier(output, name);
+                output.push(',');
+            }
+            for properties in [
+                &merge.source_properties,
+                &merge.target_properties,
+                &merge.rel_match_properties,
+                &merge.on_create_properties,
+            ] {
+                write_batch_mutation_properties(output, properties);
+                output.push(',');
+            }
+            if let Some(returns) = &merge.returns {
+                write_projection_list(output, returns);
+            } else {
+                output.push_str("no_return");
+            }
+            output.push(')');
+        }
         BatchMutationOperation::CreateNode { label, properties } => {
             output.push_str("CreateNode(");
             write_identifier(output, label);
@@ -1447,6 +1475,7 @@ fn write_batch_mutation_properties(
         output.push('=');
         match value {
             BatchMutationValue::Static(value) => write_value(output, value),
+            BatchMutationValue::Row => output.push_str("row"),
             BatchMutationValue::RowProperty(property) => {
                 output.push_str("row.");
                 write_identifier(output, property);

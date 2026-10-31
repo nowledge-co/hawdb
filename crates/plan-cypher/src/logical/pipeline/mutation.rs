@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bind mutation clauses directly to the existing atomic storage commands.
 
 use super::*;
@@ -8,6 +11,7 @@ use hawdb_cypher::{
 
 mod node;
 mod relationship;
+mod relationship_batch;
 
 #[derive(Default)]
 struct MutationInput<'a> {
@@ -36,6 +40,9 @@ pub(super) fn bind_unwind_mutation_pipeline(
     query: &QueryPipeline,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
+    if query.clauses.len() != 2 {
+        return bind_mutation_pipeline(query, parameters);
+    }
     let [unwind, mutation] = query.clauses.as_slice() else {
         return Err(unsupported(
             "UNWIND mutations require exactly one following mutation clause",
@@ -199,6 +206,25 @@ pub(super) fn bind_mutation_pipeline(
     query: &QueryPipeline,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
+    let has_unwind = query
+        .clauses
+        .iter()
+        .any(|clause| matches!(clause.kind, ClauseKind::Unwind { .. }));
+    let has_relationship_merge = query.clauses.iter().any(|clause| matches!(&clause.kind, ClauseKind::Merge { pattern, .. } if !pattern.steps.is_empty()));
+    if has_relationship_merge
+        && (has_unwind
+            || matches!(
+                query.clauses.last().map(|clause| &clause.kind),
+                Some(ClauseKind::Return(_))
+            ))
+    {
+        return relationship_batch::bind(query, parameters);
+    }
+    if has_unwind {
+        return Err(unsupported(
+            "UNWIND mutation pipeline is unsupported for this mutation shape",
+        ));
+    }
     let mut input = MutationInput::default();
     let mut clauses = query.clauses.as_slice();
     while let Some(clause) = clauses.first() {

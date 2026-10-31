@@ -107,12 +107,29 @@ impl<P> VectorIndexScan<P> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchMutationValue {
     Static(Value),
+    Row,
     RowProperty(String),
+}
+
+/// Two independently matched endpoints, evaluated for every bounded input row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchRelationshipMerge {
+    pub source_variable: String,
+    pub source_label: String,
+    pub source_properties: BTreeMap<String, BatchMutationValue>,
+    pub target_variable: String,
+    pub target_label: String,
+    pub target_properties: BTreeMap<String, BatchMutationValue>,
+    pub rel_type: String,
+    pub rel_match_properties: BTreeMap<String, BatchMutationValue>,
+    pub on_create_properties: BTreeMap<String, BatchMutationValue>,
+    pub returns: Option<Vec<Projection>>,
 }
 
 /// The mutation operations currently fed by a bounded `UNWIND` row source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchMutationOperation {
+    MergeRelationship(Box<BatchRelationshipMerge>),
     CreateNode {
         label: String,
         properties: BTreeMap<String, BatchMutationValue>,
@@ -732,10 +749,27 @@ impl<P: hawdb_core::RetainedHeapBytes> hawdb_core::RetainedHeapBytes for VectorI
     }
 }
 
+// Retained query ownership: BatchRelationshipMerge.
+hawdb_core::impl_retained_heap_for_struct!(BatchRelationshipMerge {
+    source_variable,
+    source_label,
+    source_properties,
+    target_variable,
+    target_label,
+    target_properties,
+    rel_type,
+    rel_match_properties,
+    on_create_properties,
+    returns,
+});
+
 // Retained query ownership: BatchMutationOperation.
 impl hawdb_core::RetainedHeapBytes for BatchMutationOperation {
     fn retained_heap_bytes(&self) -> Option<usize> {
         match self {
+            Self::MergeRelationship(merge) => {
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(merge)
+            }
             Self::CreateNode { label, properties } => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(label),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(properties),
@@ -849,6 +883,7 @@ hawdb_core::impl_retained_heap_for_copy!(GraphAlgorithmIdentity);
 impl hawdb_core::RetainedHeapBytes for BatchMutationValue {
     fn retained_heap_bytes(&self) -> Option<usize> {
         match self {
+            Self::Row => Some(0),
             Self::Static(value0) => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
             ]),

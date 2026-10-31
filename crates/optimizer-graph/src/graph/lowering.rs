@@ -16,6 +16,7 @@ use super::{
     access_path::index_seek_from_filter,
     costing::{
         estimate_node_cartesian_product_cost, estimate_physical_plan_cost,
+        estimate_physical_plan_cost_with_row_goal,
         push_optional_relationship_count_sum_cost_decision,
     },
     logical_rewrite::{rewrite_logical_plan_with_catalog, LogicalRewriteOutput},
@@ -350,24 +351,64 @@ fn ordered_alternative(
     items: &[SortItem],
     catalog: &OptimizerCatalog,
     context: &OptimizerContext,
+    row_goal: Option<u64>,
     decisions: &mut Vec<String>,
 ) -> PhysicalPlan {
     let Some(candidate) = ordered::candidate(&input, items, catalog) else {
         return input;
     };
-    let ordered_cost = estimate_physical_plan_cost(&candidate, catalog);
-    let sorted = PhysicalPlan::SortExec {
-        items: items.to_vec(),
-        input: Box::new(input.clone()),
+    // The ordered candidate has already fused a supported projection into its
+    // access leaf. Price the competing producer after the same existing
+    // finalization; charging an unfused Project + Filter here can select an
+    // ordered prefix over a cheaper, narrow seek + TopN at small cardinalities.
+    let projected_input = if let PhysicalPlan::ProjectExec { items, input } = &input {
+        select_node_projection_scan(items, input, &mut Vec::new(), &mut Vec::new())
+    } else {
+        None
     };
-    let sort_cost = estimate_physical_plan_cost(&sorted, catalog);
+    let cost_input = projected_input.as_ref().unwrap_or(&input);
+    let cost = |plan: &PhysicalPlan| match row_goal {
+        Some(rows) => estimate_physical_plan_cost_with_row_goal(plan, catalog, rows),
+        None => estimate_physical_plan_cost(plan, catalog),
+    };
+    let ordered_goal =
+        row_goal.filter(|rows| *rows == 0 || ordered::prefix_consumption_is_proven(&candidate));
+    if row_goal.is_some() && ordered_goal.is_none() {
+        decisions.push(format!(
+            "retain full ordered alternative work: unproven residual distribution row_goal={row_goal:?}"
+        ));
+    }
+    let ordered_cost = match ordered_goal {
+        Some(rows) => estimate_physical_plan_cost_with_row_goal(&candidate, catalog, rows),
+        None => estimate_physical_plan_cost(&candidate, catalog),
+    };
+    let mut unordered = PhysicalPlan::SortExec {
+        items: items.to_vec(),
+        input: Box::new(cost_input.clone()),
+    };
+    let mut unordered_cost = cost(&unordered);
+    if let Some(retained) = row_goal.and_then(|rows| usize::try_from(rows).ok()) {
+        let top_n = PhysicalPlan::TopNExec {
+            items: items.to_vec(),
+            offset: 0,
+            limit: retained,
+            input: Box::new(cost_input.clone()),
+        };
+        let top_n_cost = cost(&top_n);
+        if ranking_cost(&top_n, top_n_cost.cost, context)
+            < ranking_cost(&unordered, unordered_cost.cost, context)
+        {
+            unordered = top_n;
+            unordered_cost = top_n_cost;
+        }
+    }
     if satisfies_ordering(&candidate, items, catalog)
         && ranking_cost(&candidate, ordered_cost.cost, context)
-            <= ranking_cost(&sorted, sort_cost.cost, context)
+            <= ranking_cost(&unordered, unordered_cost.cost, context)
     {
         decisions.push(format!(
-            "choose composite ordered seek: ordered_cost={} sort_cost={}",
-            ordered_cost.cost, sort_cost.cost
+            "choose composite ordered seek: ordered_cost={} unordered_cost={} row_goal={ordered_goal:?}",
+            ordered_cost.cost, unordered_cost.cost
         ));
         candidate
     } else {
@@ -384,7 +425,12 @@ fn select_bounded_sort_plan(
     context: &OptimizerContext,
     decisions: &mut Vec<String>,
 ) -> PhysicalPlan {
-    let input = ordered_alternative(input, &items, catalog, context, decisions);
+    let row_goal = if limit == 0 {
+        0
+    } else {
+        offset.saturating_add(limit) as u64
+    };
+    let input = ordered_alternative(input, &items, catalog, context, Some(row_goal), decisions);
     if satisfies_ordering(&input, &items, catalog) {
         decisions.push("elide bounded sort: access path satisfies required ordering".to_string());
         return PhysicalPlan::LimitExec {
@@ -1164,7 +1210,8 @@ fn lower_logical(
                 decisions,
                 stage_events,
             );
-            let input = ordered_alternative(input, items, catalog, optimizer_context, decisions);
+            let input =
+                ordered_alternative(input, items, catalog, optimizer_context, None, decisions);
             if satisfies_ordering(&input, items, catalog) {
                 decisions
                     .push("elide SortExec: access path satisfies required ordering".to_string());

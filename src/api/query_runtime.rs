@@ -929,10 +929,8 @@ impl Database {
                 let mut mutation_limits = self.config.mutation_limits;
                 // Graph mutation payloads use MutationLimits, checked by the
                 // executor preflight and storage tracker before publication.
-                if !matches!(
-                    optimized.physical_plan,
-                    PhysicalPlan::SetNodePropertiesReturn { .. }
-                ) && let Some(limit) = output_limits.max_rows.and_then(NonZeroUsize::new)
+                if !hawdb_executor::mutation::mutation_returns_rows(&optimized.physical_plan)
+                    && let Some(limit) = output_limits.max_rows.and_then(NonZeroUsize::new)
                 {
                     mutation_limits.max_result_rows = mutation_limits.max_result_rows.min(limit);
                 }
@@ -955,6 +953,7 @@ impl Database {
                                     output_limits.max_payload_bytes,
                                 ),
                             },
+                            &self.config.execution_memory,
                             task_context,
                         )
                     }?)?,

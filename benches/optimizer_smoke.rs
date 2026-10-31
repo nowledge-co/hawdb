@@ -431,13 +431,13 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
             catalog: community_synthesized_source_coverage_catalog(),
             expected_cost: PlanCost {
                 estimated_rows: 1,
-                cost: 43,
+                cost: 37,
             },
             instance_fingerprint_contains: "ExpressionEq(column(7:covered)=int:3)",
             decision_contains: &[
                 "choose IndexNodeSeek for Community.id",
                 "estimate AdjacencyExpand for Community-[:SYNTHESIZED_FROM*1..1]->Source",
-                "selected physical plan cost: estimated_rows=1 cost=43",
+                "selected physical plan cost: estimated_rows=1 cost=37",
             ],
         },
         OptimizerSmokeCase {

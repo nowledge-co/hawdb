@@ -36,7 +36,15 @@ mod preflight;
 pub use preflight::{
     execute_mutation_with_store, execute_mutation_with_store_output_limits,
     materialize_node_mutation, materialize_unwind_mutations, project_staged_mutation_return_rows,
+    resolve_relationship_merge_endpoints,
 };
+
+pub fn mutation_returns_rows(plan: &PhysicalPlan) -> bool {
+    matches!(plan, PhysicalPlan::SetNodePropertiesReturn { .. })
+        || matches!(plan, PhysicalPlan::UnwindMutation {
+            operation: hawdb_plan_cypher::BatchMutationOperation::MergeRelationship(merge), ..
+        } if merge.returns.is_some())
+}
 
 pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
     match plan {

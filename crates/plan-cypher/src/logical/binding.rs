@@ -609,7 +609,7 @@ pub(super) fn bind_value(
             .collect::<Result<Vec<_>>>()
             .map(Value::List),
         ValueExpressionKind::Binding(variable) => Err(HawDBError::Semantic(format!(
-            "row-bound value '{variable}' requires a read MATCH context"
+            "row-bound value '{variable}' requires a read MATCH or UNWIND mutation context"
         ))),
         ValueExpressionKind::BindingProperty { variable, property } => Err(HawDBError::Semantic(
             format!("row-bound value '{variable}.{property}' requires an UNWIND mutation context"),

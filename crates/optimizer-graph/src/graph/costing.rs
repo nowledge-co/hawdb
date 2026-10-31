@@ -25,6 +25,8 @@ use hawdb_plan_cypher::{
 };
 use std::collections::BTreeMap;
 
+mod row_goal;
+
 pub(super) const NODE_INDEX_EQ_STARTUP_COST: u64 = 1;
 pub(super) const NODE_INDEX_RANGE_STARTUP_COST: u64 = 2;
 pub(super) const NODE_INDEX_TEXT_STARTUP_COST: u64 = 3;
@@ -222,8 +224,23 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
     estimate_costed_plan(plan, catalog).cost
 }
 
+pub(super) fn estimate_physical_plan_cost_with_row_goal(
+    plan: &PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    rows: u64,
+) -> PlanCost {
+    let costed = estimate_costed_plan(plan, catalog);
+    row_goal::ConsumptionCost {
+        total: costed.cost,
+        startup: costed.startup,
+    }
+    .prefix(rows)
+    .as_plan_cost()
+}
+
 pub(super) struct CostedPlan<'a> {
     pub(super) cost: PlanCostBreakdown,
+    startup: PlanCostBreakdown,
     pub(super) statistics: Option<StatisticsUsage>,
     bindings: PlanBindings<'a>,
 }
@@ -241,15 +258,20 @@ pub(super) fn estimate_cost_with_test_bindings<'a>(
     catalog: &OptimizerCatalog,
     bindings: &impl Fn(&'a PhysicalPlan) -> PlanBindings<'a>,
 ) -> PlanCostBreakdown {
-    let inputs = estimate_input_costs(plan, |input| {
-        estimate_cost_with_test_bindings(input, catalog, bindings)
-    });
-    let source = if let PhysicalPlan::AggregateExec { input, .. } = plan {
-        input.as_ref()
-    } else {
-        plan
-    };
-    estimate_local_operator_cost(plan, catalog, inputs, &bindings(source), &mut None)
+    fn visit<'a>(
+        plan: &'a PhysicalPlan,
+        catalog: &OptimizerCatalog,
+        bindings: &impl Fn(&'a PhysicalPlan) -> PlanBindings<'a>,
+    ) -> row_goal::ConsumptionCost {
+        let inputs = estimate_input_costs(plan, |input| visit(input, catalog, bindings));
+        let source = if let PhysicalPlan::AggregateExec { input, .. } = plan {
+            input.as_ref()
+        } else {
+            plan
+        };
+        row_goal::cost_operator(plan, catalog, inputs, &bindings(source), &mut None)
+    }
+    visit(plan, catalog, bindings).total
 }
 
 // Finish the child traversal before entering the large operator-cost match, so
@@ -270,15 +292,16 @@ pub(super) fn estimate_operator_cost<'a>(
     catalog: &OptimizerCatalog,
     inputs: [Option<CostedPlan<'a>>; 2],
 ) -> CostedPlan<'a> {
-    let costs = inputs
-        .each_ref()
-        .map(|input| input.as_ref().map(|input| input.cost));
+    let costs = inputs.each_ref().map(|input| {
+        input.as_ref().map(|input| row_goal::ConsumptionCost {
+            total: input.cost,
+            startup: input.startup,
+        })
+    });
     let mut statistics = None;
-    // GROUP BY resolves expressions in the incoming scope; its output aliases
-    // are published only after costing. This matters when an output name
-    // shadows another incoming property alias.
+    // Resolve grouping keys before replacing incoming bindings with output aliases.
     let aggregate_cost = if matches!(plan, PhysicalPlan::AggregateExec { .. }) {
-        Some(estimate_local_operator_cost(
+        Some(row_goal::cost_operator(
             plan,
             catalog,
             costs,
@@ -291,10 +314,11 @@ pub(super) fn estimate_operator_cost<'a>(
     let bindings =
         PlanBindings::for_operator(plan, inputs.map(|input| input.map(|input| input.bindings)));
     let cost = aggregate_cost.unwrap_or_else(|| {
-        estimate_local_operator_cost(plan, catalog, costs, &bindings, &mut statistics)
+        row_goal::cost_operator(plan, catalog, costs, &bindings, &mut statistics)
     });
     CostedPlan {
-        cost,
+        cost: cost.total,
+        startup: cost.startup,
         statistics,
         bindings,
     }

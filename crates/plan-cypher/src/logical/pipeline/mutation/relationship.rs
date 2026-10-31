@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 
 pub(super) fn bind_create(
@@ -195,7 +198,7 @@ fn require_reference(node: &NodePattern) -> Result<()> {
     Ok(())
 }
 
-fn bound_endpoints<'a>(
+pub(super) fn bound_endpoints<'a>(
     input: &'a MutationInput<'_>,
     source: &NodePattern,
     target: &NodePattern,
