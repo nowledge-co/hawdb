@@ -304,6 +304,22 @@ reservation remains a refusal. Request parity also checks explicit zero SQL
 payload limits. CI owns these regressions; the weekly native runtime lane
 explicitly selects the prepared-source reservation/cancellation case.
 
+`api::concurrent::lock_dependency_tests` covers incremental pessimistic SQL
+locking after disjoint commits, unchanged snapshot reads and read-your-own-writes,
+overlapping/ABA changes, empty-range inserts, deterministic queued-wait commit
+and rollback, schema barriers, first-statement refresh, and both residency modes
+through pinned checkpoint and WAL/checkpoint reopen. It belongs to the
+existing root concurrent CI owner. Storage's
+`store::read_dependencies::locked_ranges::tests` checks interval boundaries
+against the standard-library range oracle, payload/rekey/tombstone summaries,
+oversized-key barriers, source/history refusal, metadata admission and a
+65,537-stamp fixture with constant point-seek work and bounded broad validation.
+The existing storage CI owner runs it. Focused replay uses
+`cargo test --locked -p hawdb --lib lock_dependency_tests` and
+`cargo test --locked -p hawdb-storage --all-features --lib locked_ranges`.
+Required manual MVCC and local fuzz campaigns keep their existing owners and
+profiles; these resource assertions do not measure transaction throughput.
+
 `api::sql_runtime::tests` passes prepared SQL mutations through the database and
 transaction kernels with diagnostic-only text, detecting accidental parser
 fallback. DDL, INSERT/RETURNING, UPDATE, DELETE and Strict Append preserve bound
@@ -1303,7 +1319,10 @@ versus cache hits, cold build cost and required target inventory.
 - MVCC: `make mvcc-fuzz` defaults to 30 seconds of local transaction histories.
   `MVCC_FUZZ_ARGS="--mode pessimistic"` instead runs two pessimistic
   transactions on worker threads and also checks lock waits, deadlock victims,
-  snapshot refresh and serialization aborts for SQL and Cypher writes.
+  snapshot refresh and serialization aborts for SQL and Cypher writes. Its
+  twelve families include incremental disjoint SQL locks; an independent
+  logical-key version map distinguishes overlapping changes from unrelated
+  epochs while checking original snapshot reads and committed results.
   Generate editable cases, replay failures and shrink them before introducing a
   focused deterministic regression. See [tools/mvcc-fuzz](../tools/mvcc-fuzz/README.md).
 - Local deterministic fuzz verification:

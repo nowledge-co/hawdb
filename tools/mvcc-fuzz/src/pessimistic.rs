@@ -28,7 +28,9 @@
 //!   aborted and all of its locks are released;
 //! - after a newly granted, previously uncovered lock, a transaction whose
 //!   snapshot epoch is stale refreshes its snapshot if it has no successful
-//!   statement yet, and otherwise aborts with a retryable serialization error;
+//!   statement yet, and otherwise validates committed changes in that SQL
+//!   resource while retaining its original snapshot; overlapping changes abort;
+//!   non-key predicate writes retain a database version barrier even when empty;
 //!   a graph statement never refreshes: it aborts on any stale new lock;
 //! - commit rebases the transaction's successful writes onto the current
 //!   visible state, in statement order.
@@ -39,6 +41,7 @@ use crate::case::{
 use crate::engine::{Failure, Observation};
 use hawdb::{ConcurrentDatabase, ConcurrentTransactionOptions, Database, QueryOutput, Value};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
@@ -63,7 +66,7 @@ fn wait_probe() -> Duration {
 /// A statement predicted to finish must answer within this bound.
 const COMPLETION_BOUND: Duration = Duration::from_secs(10);
 
-pub const FAMILIES: [&str; 11] = [
+pub const FAMILIES: [&str; 12] = [
     "same_key_wait",
     "disjoint_keys",
     "duplicate_insert",
@@ -75,6 +78,7 @@ pub const FAMILIES: [&str; 11] = [
     "graph_same_node",
     "graph_disjoint_nodes",
     "graph_sql_deadlock",
+    "incremental_disjoint_locks",
 ];
 
 // ---------------------------------------------------------------- generation
@@ -131,13 +135,17 @@ pub fn generate(seed: u64, index: u64) -> Case {
             }],
         ),
         9 => (vec![graph(key)], vec![graph(other)]),
-        _ => (
+        10 => (
             vec![graph(key), update(other)],
             vec![update(other), graph(key)],
         ),
+        _ => (
+            vec![update(key), update(other)],
+            vec![update((key + 2) % 4)],
+        ),
     };
     // A leading plain read is a successful statement: it decides whether a
-    // later wait refreshes the snapshot or aborts the transaction.
+    // later SQL wait refreshes the snapshot or validates its original versions.
     let transactions = [left, right].map(|operations| {
         let mut sequence = Vec::new();
         if random.next().is_multiple_of(2) {
@@ -281,6 +289,10 @@ pub struct Model {
     visible: Rows,
     visible_graph: Rows,
     epoch: u64,
+    // Independent committed logical-key history, including deletes and writes
+    // that restore an earlier value. Comparing final row values would miss ABA.
+    row_versions: BTreeMap<i64, u64>,
+    database_barrier: u64,
     txs: [Transaction; 2],
 }
 
@@ -308,6 +320,8 @@ impl Model {
             visible: initial.clone(),
             visible_graph: initial.clone(),
             epoch: 0,
+            row_versions: BTreeMap::new(),
+            database_barrier: 0,
             txs: [tx(), tx()],
         }
     }
@@ -352,13 +366,27 @@ impl Model {
         {
             self.txs[tx].held.push(lock);
             if self.txs[tx].base_epoch != self.epoch {
-                if self.txs[tx].successful > 0 || op.is_graph() {
+                let changed = self.database_barrier > self.txs[tx].base_epoch
+                    || match lock.resource {
+                        Resource::Point(id) => {
+                            self.row_versions.get(&id).copied().unwrap_or(0)
+                                > self.txs[tx].base_epoch
+                        }
+                        Resource::KeyRange | Resource::Table => self
+                            .row_versions
+                            .values()
+                            .any(|&epoch| epoch > self.txs[tx].base_epoch),
+                        Resource::Node(_) => true,
+                    };
+                if op.is_graph() || (self.txs[tx].successful > 0 && changed) {
                     self.abort(tx);
                     return Outcome::Serialization;
                 }
-                self.txs[tx].private = self.visible.clone();
-                self.txs[tx].graph = self.visible_graph.clone();
-                self.txs[tx].base_epoch = self.epoch;
+                if self.txs[tx].successful == 0 {
+                    self.txs[tx].private = self.visible.clone();
+                    self.txs[tx].graph = self.visible_graph.clone();
+                    self.txs[tx].base_epoch = self.epoch;
+                }
             }
         }
         let current = &mut self.txs[tx];
@@ -460,6 +488,24 @@ impl Model {
                         if let Operation::GraphUpdate { id, value } = *write {
                             self.visible_graph.insert(id, value);
                         } else {
+                            match *write {
+                                Operation::Insert { id, .. }
+                                | Operation::Update { id, .. }
+                                | Operation::Delete { id } => {
+                                    // Explicit mutation intents cover absence
+                                    // and false residuals, not only changed rows.
+                                    self.row_versions.insert(id, self.epoch + 1);
+                                }
+                                Operation::BroadUpdate { minimum, .. } => {
+                                    self.database_barrier = self.epoch + 1;
+                                    for (&id, &value) in &self.visible {
+                                        if value >= minimum {
+                                            self.row_versions.insert(id, self.epoch + 1);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
                             apply(&mut self.visible, write)
                                 .expect("locks exclude duplicate inserts");
                         }
@@ -887,6 +933,46 @@ mod tests {
 
     fn rows(pairs: &[(i64, i64)]) -> Rows {
         pairs.iter().copied().collect()
+    }
+
+    #[test]
+    fn disjoint_new_lock_keeps_prior_reads_and_private_writes() {
+        let mut model = Model::new(&rows(&[(1, 10), (2, 20), (3, 30)]));
+        model.execute(0, &Operation::Update { id: 1, value: 11 });
+        model.execute(1, &Operation::Update { id: 2, value: 21 });
+        model.terminate(1, false);
+        assert_eq!(
+            model
+                .execute(0, &Operation::Update { id: 3, value: 31 })
+                .outcome,
+            Some(Outcome::Ok)
+        );
+        assert_eq!(
+            model.execute(0, &Operation::Read).outcome,
+            Some(Outcome::Rows(rows(&[(1, 11), (2, 20), (3, 31)])))
+        );
+        model.terminate(0, false);
+        assert_eq!(model.visible(), &rows(&[(1, 11), (2, 21), (3, 31)]));
+    }
+
+    #[test]
+    fn empty_broad_write_retains_its_database_barrier() {
+        let mut model = Model::new(&Rows::new());
+        model.execute(1, &Operation::Read);
+        model.execute(
+            0,
+            &Operation::BroadUpdate {
+                minimum: 16,
+                value: 0,
+            },
+        );
+        model.terminate(0, false);
+        assert_eq!(
+            model
+                .execute(1, &Operation::Update { id: 2, value: 0 })
+                .outcome,
+            Some(Outcome::Serialization)
+        );
     }
 
     #[test]

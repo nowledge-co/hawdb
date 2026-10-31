@@ -380,10 +380,29 @@ be proven acquire the database target conservatively. The fallback is part of
 correctness, not a silent unlocked path.
 
 A pessimistic transaction that waits before its first successful statement
-refreshes its private snapshot after the lock is granted. Acquiring a new lock
-after an earlier successful statement fails with a retryable serialization
-error if the published epoch changed, avoiding execution against a resource
-that changed before it was protected. Lock-complete disjoint writes may rebase
+refreshes its private snapshot after the lock is granted. After an earlier
+successful statement, Snapshot Isolation keeps the original snapshot. A new
+relational lock validates the retained versions in its primary-key interval,
+or the payload-sensitive summaries in a supported declared secondary-index
+interval, under the commit sequencer after lock acquisition. Inserts into empty
+intervals, deletes, rekeys and ABA changes require a retry; disjoint commits do
+not. Table locks validate their table domain. Unrepresented secondary keys stamp
+an index barrier; nullable/unsupported index types and constraint-only indexes
+use the table domain. Schema changes, database/read barriers, unavailable
+history and validation admission failures retain a conservative retry. Graph
+lock discovery retains its existing epoch fence.
+
+Each pessimistic Snapshot Isolation transaction registers a source-history pin
+and read-summary lease at begin. This enables additional bounded summary work
+for concurrent writers; history uses the existing version-memory budgets. One
+validation admits at most 4,096 requests, 64 KiB of copied key metadata and
+65,536 visited stamps, seeking ordered version pages rather than scanning
+unrelated identities. These limits exclude allocator overhead and existing
+schema metadata. Validation failures appear in the existing read-dependency
+failure counters. Ordinary snapshot reads do not acquire serializable read
+dependencies, and Serializable retains its separate collector and commit check.
+
+Lock-complete disjoint writes may rebase
 their exact staged operations onto the current store at commit; constraint
 validation and the durable publication order still run against current state.
 Both transaction modes retain one WAL order, durable-before-publish, and one
@@ -401,7 +420,7 @@ remaining #231/#232 work: version-memory and reclamation qualification, narrower
 domains, and workload qualification. Checkpoints now clean eligible version
 tombstones using a separate registry of every storage snapshot, including
 sources that could start a later transaction. A new pessimistic lock
-acquisition after snapshot drift still uses the conservative retry rule above.
+acquisition after snapshot drift uses the bounded dependency validation above.
 
 Coordinator waits record every blocker in a multi-owner wait-for graph. Adding
 dependencies that close a cycle aborts the current waiter as the deterministic

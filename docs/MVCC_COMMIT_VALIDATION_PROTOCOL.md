@@ -407,10 +407,15 @@ Remaining acceptance work, without reimplementing existing mechanisms:
    1/4/8-writer lifecycle controls and full result/reopen checks; its outcomes
    must be assessed rather than treating the presence of a harness as acceptance.
 
-The late pessimistic lock-acquisition rule remains conservative: after earlier
-successful statements, acquiring a new resource against a changed epoch can
-still require retry. Per-key **write** validation does not validate the earlier
-reads of a newly acquired resource and cannot justify removing that guard.
+Late pessimistic SQL lock acquisition validates the original snapshot's newly
+protected key/range under the commit sequencer after waiting. It uses a
+begin-time history pin and read-summary lease, primary row stamps and
+payload-sensitive secondary-index summaries, including absent keys and
+tombstones. It does not refresh earlier reads or infer safety from the final
+write set. Schema/database barriers, incomplete summaries or history, and
+bounded-validation refusal still require retry; graph lock discovery retains
+its epoch fence. [Storage](STORAGE.md) documents the scope and limits. This
+changes Snapshot Isolation admission, not the separate Serializable contract.
 
 ## Future direction: table-scoped version retention
 

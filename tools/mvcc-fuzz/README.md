@@ -165,18 +165,23 @@ existing node takes an exclusive node lock. A request waits for a conflicting
 lock held by, or a conflicting request queued by, the other transaction. The
 waiter whose new wait closes a cycle is the deadlock victim and is aborted. A
 newly granted, previously uncovered SQL lock refreshes a stale snapshot when
-the transaction has no successful statement yet and otherwise aborts with the
-retryable serialization error; a graph statement aborts on any stale new lock.
+the transaction has no successful statement yet. After a prior statement, the
+model checks committed logical-key versions in that resource, including deleted
+keys and ABA, and aborts only on overlap while retaining its original snapshot.
+A non-key predicate write retains the existing database version barrier even
+when no rows match; explicit point intents also version missing keys.
+A graph statement aborts on any stale new lock.
 Commit rebases the successful writes onto current visible state.
 
 Every step checks the statement or terminal outcome class (rows, success,
 duplicate primary key, serialization abort, deadlock victim, call on an
 aborted transaction), visible table rows and graph nodes through autocommit
-reads, and the pinned initial snapshot. Eleven families cycle through same-key
+reads, and the pinned initial snapshot. Twelve families cycle through same-key
 waits, disjoint keys, duplicate inserts, table versus point writers, a shared
 upgrade deadlock, a locking range versus insert, delete versus delete/insert,
-rollback release, same and disjoint graph nodes, and a graph/SQL deadlock. An
-optional leading plain read decides whether a later wait refreshes or aborts.
+rollback release, same and disjoint graph nodes, a graph/SQL deadlock, and
+incremental disjoint SQL locks. An optional leading plain read decides whether
+a later SQL wait refreshes or validates the original snapshot.
 
 Pessimistic mode does not cover lock timeouts, three or more transactions,
 relationship or label locks, uniqueness constraints on graph labels, Strict
