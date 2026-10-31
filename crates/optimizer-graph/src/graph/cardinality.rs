@@ -25,7 +25,10 @@ use hawdb_plan_cypher::{
 use std::collections::{BTreeMap, BTreeSet};
 
 mod bindings;
+mod estimate;
+mod joint;
 pub(super) use bindings::PlanBindings;
+pub(super) use estimate::StatisticsUsage;
 
 #[cfg(test)]
 thread_local! {
@@ -47,11 +50,49 @@ pub(super) fn estimate_filter_rows(
     input_rows: u64,
     catalog: &OptimizerCatalog,
     bindings: &PlanBindings<'_>,
+    statistics: &mut Option<StatisticsUsage>,
 ) -> u64 {
+    *statistics = None;
+    let joint = joint::join_filter_estimate(predicate, input, input_rows, catalog, bindings)
+        .or_else(|| match predicate {
+            Predicate::And(parts) => joint::filter_estimate(parts, bindings, input_rows, catalog),
+            _ => None,
+        });
+    if let Some(estimate) = joint {
+        *statistics = estimate.statistics;
+        return estimate.rows.max(1);
+    }
     estimate_relationship_filter_rows(predicate, input, input_rows, catalog, bindings)
         .or_else(|| estimate_node_property_filter_rows(predicate, bindings, input_rows, catalog))
         .unwrap_or_else(|| input_rows.div_ceil(FILTER_SELECTIVITY_DIVISOR).max(1))
         .max(1)
+}
+
+pub(super) fn estimate_hash_join_rows(
+    left: &hawdb_plan_cypher::HashJoinKey,
+    right: &hawdb_plan_cypher::HashJoinKey,
+    left_rows: u64,
+    right_rows: u64,
+    catalog: &OptimizerCatalog,
+    bindings: &PlanBindings<'_>,
+    statistics: &mut Option<StatisticsUsage>,
+) -> u64 {
+    *statistics = None;
+    let product = u128::from(left_rows) * u128::from(right_rows);
+    let rows = match (
+        joint::key_ndv(left, catalog, bindings),
+        joint::key_ndv(right, catalog, bindings),
+    ) {
+        (Some(left), Some(right)) => {
+            *statistics = Some(StatisticsUsage::HashJoin {
+                left_ndv: left,
+                right_ndv: right,
+            });
+            product.div_ceil(u128::from(left.max(right)))
+        }
+        _ => product,
+    };
+    rows.min(u128::from(u64::MAX)).max(1) as u64
 }
 
 pub(super) fn estimate_aggregate_rows(
@@ -59,13 +100,19 @@ pub(super) fn estimate_aggregate_rows(
     input: &PlanBindings<'_>,
     input_rows: u64,
     catalog: &OptimizerCatalog,
+    statistics: &mut Option<StatisticsUsage>,
 ) -> u64 {
+    *statistics = None;
     if group_keys.is_empty() {
         return 1;
     }
+    if let Some(estimate) = joint::group_estimate(group_keys, input, input_rows, catalog) {
+        *statistics = estimate.statistics;
+        return estimate.rows;
+    }
     let mut distinct_product = 1_u64;
     for group_key in group_keys {
-        let ProjectionExpression::Property { variable, property } = &group_key.expression else {
+        let Some((variable, property)) = input.property_source(&group_key.expression) else {
             return input_rows.div_ceil(AGGREGATE_GROUPS_DIVISOR).max(1);
         };
         let distinct_count = if let Some(label) = input.node_label(variable) {
@@ -248,9 +295,13 @@ fn estimate_node_property_filter_rows(
             .node_label(variable)
             .map(|_| estimate_id_in_rows(values, input_rows)),
         Predicate::PropertyEq {
-            variable, property, ..
+            variable,
+            property,
+            value,
         } => {
-            if input.covers_property(variable, property) {
+            if let Some(expected) = input.fixed_access_value(variable, property) {
+                Some(if expected == value { input_rows } else { 1 })
+            } else if input.covers_property(variable, property) {
                 None
             } else {
                 input
@@ -339,9 +390,14 @@ fn estimate_node_property_filter_rows(
 fn exact_property_predicate_is_covered(predicate: &Predicate, input: &PlanBindings<'_>) -> bool {
     match predicate {
         Predicate::PropertyEq {
-            variable, property, ..
-        }
-        | Predicate::PropertyIn {
+            variable,
+            property,
+            value,
+        } => input.fixed_access_value(variable, property).map_or_else(
+            || input.covers_property(variable, property),
+            |expected| expected == value,
+        ),
+        Predicate::PropertyIn {
             variable, property, ..
         }
         | Predicate::PropertyCompare {

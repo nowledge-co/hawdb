@@ -6,6 +6,36 @@ authoritative; this is a map of test families, not an exhaustive list of every
 Rust test function. Update it when changing a family's scope, build profile,
 execution lane, fixture size, isolation or known failure mode.
 
+The optimizer-graph joint-statistics owner also covers a residual filter above
+HashJoin when either or both marginal key NDVs are missing. Single-key and
+multi-key predicates retain the existing default selectivity; compatible
+marginals still avoid double counting an already-estimated hash key. Replay:
+`cargo test --locked -p hawdb-optimizer-graph --lib unknown_hash_key_ndv_preserves`.
+
+Joint graph statistics extend the existing
+`//crates/optimizer-graph:hawdb_optimizer_graph_tests` owner with bounded,
+unordered catalog key sets, invalid/stale/sampled/incomplete statistics,
+correlated/independent reference populations, conditional access coverage,
+duplicate bindings, NULL-bearing grouping, alias scope, optional rebindings,
+single-key hash intermediates and selected-trace provenance. Replay with
+`cargo test --locked -p hawdb-optimizer-graph --lib`. Root
+`api::tests::joint_ndv_statistics` covers exact rows in auto/memo/direct modes,
+pinned readers, warm cache reuse, correlated/independent/skewed keys, NULLs,
+duplicate join pairs, optional unmatched rows and deterministic tied sort windows.
+It belongs to `//:hawdb_unit_general_tests`; the supported minimal replay is
+`cargo test --locked -p hawdb --no-default-features --lib --
+api::tests::joint_ndv_statistics:: api::tests::aggregates::
+api::tests::statistics:: --test-threads=1`. The default-feature replay omits
+`--no-default-features`. Executor `transform::tests::limit_admission` is owned by
+`//crates/executor:hawdb_executor_unit_tests`; it checks selected-window payload
+admission, skipped wide rows, exhausted offsets and one-byte-deficit refusal.
+Replay the complete unchanged transform family with `cargo test --locked -p
+hawdb-executor --lib transform::tests`. The root integration keeps a changed
+Sort plus LIMIT choice within a 2-MiB query budget. Existing batch/payload and
+query ceilings remain enforced. See [the estimation contract](QUERY_JOINT_STATISTICS.md).
+The manual `joint_ndv_planning` benchmark is local-only; no test lane, feature
+matrix, timeout or compilation profile changes.
+
 `//:pypi_publish_script_test` belongs to the required root
 `//:hawdb_unit_tests` aggregate. It executes the publisher workflow's Python
 preflight and registry verification with temporary distributions and mocked
@@ -15,6 +45,47 @@ network failures without credentials, uploads or real sleeps. Replay with
 `bazel test //:pypi_publish_script_test`, or
 `python scripts/pypi-publish.test.py` with `packaging` installed. Actual Trusted
 Publishing and public-install smoke verification remain release-workflow gates.
+
+The plan-cache retention family uses
+`//crates/plan-cache:hawdb_plan_cache_tests` for weighted LFU total/per-entry
+limits, zero budgets, overflow, replacement and spare table-capacity accounting.
+`//crates/plan-cache:hawdb_template_retention_tests` is its independent native
+requested-allocation oracle: logical and physical CASE templates at 20/100/512
+candidates, nested values, source-only regex templates and byte-driven churn must retain no more requested
+heap than their conservative charges. The observer is thread-local and runs as
+one test; requalify its standard-library layout assumptions on toolchain
+changes. Replay with `cargo test --locked -p hawdb-plan-cache --test
+template_retention -- --test-threads=1`. Requested heap excludes allocator
+rounding and caller-owned in-flight copies; these checks are not RSS or latency
+benchmarks. The facade's `api::plan_cache::retention_allocation` oracle belongs
+to `//:hawdb_unit_general_tests`: it observes complete private cache keys,
+physical IR, traces, shared metadata, proof-schema table/property IDs and EXISTS
+strings, both scoring-key forms and table capacity
+at 20/100/512 candidates, owned row-bound/nested list and path expressions, boxed shortest-path
+descriptors with spare string capacities (Any/All selection), and byte-driven eviction. Its thread-local
+observer is enabled only in that one unit test. Replay with `cargo test --locked
+-p hawdb --lib retention_allocation -- --test-threads=1 --nocapture`.
+The same existing root owner covers `simple_case_dispatch` physical cache hits,
+changed parameters, folded guards, lazy/cached errors, result budgets,
+cancellation, zero/tiny cache-budget refusals and accepted/refused admission traces;
+`query_observability` checks regex source-template hits beside a hot plan.
+`knowledge_label_regex_memory_connections` retains its original physical-hit,
+complete bounded-query result, snapshot and budget/error assertions. Core regex
+and independent allocation tests prove that execution compilation neither lives
+in nor grows the source-only cache owner.
+Its vector-procedure pipeline check preserves default-feature cache bypass
+and minimal-feature capability refusal before any cache lookup or bypass.
+Run those filters with default and `--no-default-features` configurations.
+Existing target profiles and execution lanes are unchanged.
+
+`cargo build --locked --release --bench physical_plan_cache` builds the manual
+embedded CASE cache benchmark. It covers cold/reused/fresh-handle reads at
+20/100/512 candidates, scope and body scaling, complete result parity and a
+separate qualification-feature allocation/preparation observer. It adds no
+benchmark CI lane. With no arguments it runs a small 20-candidate, 512-row,
+three-repeat smoke using the same complete-result assertions. Explicit arguments
+retain the measured experiment sizes. Procedure, source-bound measurements and the per-read-handle
+reuse limitation are in the [physical cache report](benchmarks/physical_plan_cache_macos_2026_10_31/README.md).
 
 `//:storage_tla_evidence_script_test` belongs to the required root
 `//:hawdb_unit_tests` aggregate. It validates the actual checked-in TLA model
@@ -1606,6 +1677,11 @@ recovery. They no longer use generic entity-delete response DTOs or business
 read helpers for their postconditions. Native CI retains the existing owners.
 
 ### Matched UNWIND relationship MERGE
+
+The existing plan-cypher relationship-batch family also checks retained heap
+ownership of the boxed command, nested mutation values and projection spare
+capacity. The allocation-free scalar row marker adds no reachable heap. These
+cases protect integration with the shared retained-plan admission contract.
 
 The existing root general owner (`//:hawdb_unit_general_tests`) runs
 `api::tests::merge_relationships::matched_*`: exact projected member rows,

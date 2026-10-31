@@ -4316,6 +4316,10 @@ mod tests {
 
         let parameters = BTreeMap::from([("id".to_string(), Value::Int(42))]);
         let plan_cache_stats = PlanCacheStats {
+            max_bytes: None,
+            max_entry_bytes: None,
+            charged_bytes: None,
+            rejected_admissions: 0,
             max_entries: Some(128),
             entries: 1,
             hits: 2,

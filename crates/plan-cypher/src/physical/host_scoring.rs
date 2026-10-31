@@ -166,3 +166,29 @@ impl HostScoringPlan {
         &self.rank_policy
     }
 }
+
+// Retained query ownership: HostScoringPlan.
+hawdb_core::impl_retained_heap_for_struct!(HostScoringPlan {
+    name,
+    version,
+    cpu_units_per_row,
+    score_column,
+    max_candidate_rows,
+    limit,
+    seed_graph_input,
+    rank_policy
+});
+
+// Retained query ownership: HostScoringRankPolicy.
+impl hawdb_core::RetainedHeapBytes for HostScoringRankPolicy {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::ScoreDescending => hawdb_core::checked_retained_heap_sum([]),
+            Self::ContiguousEvidenceTies { reason_column } => {
+                hawdb_core::checked_retained_heap_sum([
+                    hawdb_core::RetainedHeapBytes::retained_heap_bytes(reason_column),
+                ])
+            }
+        }
+    }
+}

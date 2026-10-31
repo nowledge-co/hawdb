@@ -53,6 +53,19 @@ pub enum RuleOutcome {
 }
 
 impl RuleEvent {
+    /// Requested owned heap, excluding the containing vector/inline layout.
+    #[doc(hidden)]
+    pub fn retained_heap_bytes(&self) -> Option<usize> {
+        let Self {
+            rule,
+            outcome,
+            detail,
+        } = self;
+        fn leaf<T: Copy>(_: &T) {}
+        leaf(outcome);
+        rule.capacity().checked_add(detail.capacity())
+    }
+
     pub fn applied(rule: impl Into<String>, detail: impl Into<String>) -> Self {
         Self::new(rule, RuleOutcome::Applied, detail)
     }

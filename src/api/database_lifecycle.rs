@@ -38,8 +38,10 @@ impl Database {
                     ),
                     store,
                     optimizer,
-                    plan_cache: Arc::new(SharedState::new(PlanCache::new(
+                    plan_cache: Arc::new(SharedState::new(PlanCache::with_byte_limits(
                         config.max_plan_cache_entries,
+                        Some(config.max_physical_plan_cache_bytes),
+                        Some(config.max_physical_plan_cache_entry_bytes),
                     ))),
                     relational_plan_template_cache:
                         relational_plan_template_cache_from_database_config(&config),
@@ -183,8 +185,10 @@ impl Database {
                     ),
                     store,
                     optimizer: optimizer_from_database_config(&config),
-                    plan_cache: Arc::new(SharedState::new(PlanCache::new(
+                    plan_cache: Arc::new(SharedState::new(PlanCache::with_byte_limits(
                         config.max_plan_cache_entries,
+                        Some(config.max_physical_plan_cache_bytes),
+                        Some(config.max_physical_plan_cache_entry_bytes),
                     ))),
                     relational_plan_template_cache:
                         relational_plan_template_cache_from_database_config(&config),
