@@ -37,6 +37,108 @@ fn width_costing_tiny_sort_obeys_the_query_memory_budget() {
     );
 }
 
+#[test]
+fn width_costing_underestimated_correlated_filter_keeps_bounded_state() {
+    let spill = unique_test_dir("width-costing-underestimated-filter");
+    std::fs::create_dir_all(&spill).unwrap();
+    let mut db = Database::new_with_config(DatabaseConfig {
+        execution_memory: crate::executor::ExecutionMemoryConfig {
+            blocking_operator_bytes: NonZeroUsize::new(256 * 1024).unwrap(),
+            query_memory_bytes: NonZeroUsize::new(8 * 1024 * 1024).unwrap(),
+            spill_directory: spill.clone(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    db.query("CREATE NODE TABLE Item").unwrap();
+    for property in ["id", "rank", "a", "b", "c", "d", "e"] {
+        db.query(&format!(
+            "CREATE PROPERTY ON NODE TABLE Item({property}) TYPE INT NOT NULL"
+        ))
+        .unwrap();
+    }
+    db.query("CREATE PROPERTY ON NODE TABLE Item(body) TYPE TEXT")
+        .unwrap();
+    let body = "x".repeat(4096);
+    for start in (0..512).step_by(64) {
+        let rows = (start..start + 64)
+            .map(|id| {
+                Value::Map(BTreeMap::from([
+                    ("id".into(), Value::Int(id)),
+                    ("rank".into(), Value::Int(id % 17)),
+                    ("flag".into(), Value::Int(id % 2)),
+                    ("body".into(), Value::String(body.clone())),
+                ]))
+            })
+            .collect();
+        db.query_with_params(
+            "UNWIND $rows AS r CREATE (:Item {id:r.id,rank:r.rank,body:r.body,a:r.flag,b:r.flag,c:r.flag,d:r.flag,e:r.flag})",
+            &BTreeMap::from([("rows".into(), Value::List(rows))]),
+        ).unwrap();
+    }
+    let query = "MATCH (n:Item) WHERE n.a=0 AND n.b=0 AND n.c=0 AND n.d=0 AND n.e=0 RETURN n.id AS id,n.rank AS rank,n.body AS body ORDER BY rank,id SKIP 3 LIMIT 16";
+    let explain = db.explain_query(query).unwrap();
+    let selected = &explain.trace.selected_plan;
+    assert!(selected.contains("TopNExec"), "{selected}");
+    let input_rows = explain
+        .trace
+        .selected_plan_cardinality_estimates
+        .iter()
+        .find(|entry| entry.operator.as_str() == "NodeProjectionScanExec")
+        .unwrap()
+        .estimated_rows;
+    assert!(input_rows <= 19, "{input_rows}");
+    let mut ids = (0..512).step_by(2).collect::<Vec<_>>();
+    ids.sort_by_key(|id| (id % 17, *id));
+    let expected = ids
+        .into_iter()
+        .skip(3)
+        .take(16)
+        .map(|id| {
+            BTreeMap::from([
+                ("id".into(), Value::Int(id)),
+                ("rank".into(), Value::Int(id % 17)),
+                ("body".into(), Value::String(body.clone())),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let mut read = db.begin_read_transaction().unwrap();
+    for run in 0..2 {
+        let before = read.plan_cache_stats();
+        let mut rows = Vec::new();
+        let report = read
+            .query_request_streaming(crate::QueryRequest::new(query), |row| {
+                rows.push(row);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(rows, expected);
+        if run == 1 {
+            assert_eq!(read.plan_cache_stats().hits - before.hits, 1);
+        }
+        let top_n = report
+            .execution_profile
+            .blocking_operator_memory_reports
+            .iter()
+            .find(|entry| entry.operator == "TopNExec")
+            .unwrap();
+        assert_eq!(top_n.input_rows, 256);
+        assert_eq!(top_n.spilled_bytes, 0);
+        assert_eq!(top_n.spill_run_count, 0);
+        assert!(top_n.peak_tracked_bytes <= 256 * 1024);
+        assert_eq!(
+            report
+                .execution_profile
+                .pipeline_memory_report
+                .query_memory_completion_bytes,
+            0
+        );
+    }
+    drop(read);
+    drop(db);
+    std::fs::remove_dir_all(spill).unwrap();
+}
+
 fn width_fixture(config: DatabaseConfig, path: Option<&std::path::Path>) -> Database {
     let mut db = match path {
         Some(path) => Database::open_with_config(path, config).unwrap(),

@@ -364,15 +364,15 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
             catalog: source_memory_label_cross_pattern_catalog(),
             expected_cost: PlanCost {
                 estimated_rows: 10,
-                cost: 2932,
+                cost: 2922,
             },
             instance_fingerprint_contains: "AdjacencyExpandExec",
             decision_contains: &[
                 "choose IndexNodeSeek for Source.id",
                 "estimate AdjacencyExpand for Source-[:SOURCED_FROM*1..1]->Memory",
                 "estimate AdjacencyExpand for Memory-[:HAS_LABEL*1..1]->Label",
-                "keep Sort + Limit for bounded sort",
-                "selected physical plan cost: estimated_rows=10 cost=2932",
+                "choose TopN for bounded sort",
+                "selected physical plan cost: estimated_rows=10 cost=2922",
             ],
         },
         OptimizerSmokeCase {
@@ -461,15 +461,15 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
             catalog: skill_thread_source_provenance_workload_catalog(),
             expected_cost: PlanCost {
                 estimated_rows: 2,
-                cost: 86,
+                cost: 84,
             },
             instance_fingerprint_contains: "COMPACTS_TO",
             decision_contains: &[
                 "choose IndexNodeSeek for Skill.id",
                 "estimate AdjacencyExpand for Skill-[:SYNTHESIZED_FROM*1..1]->Memory",
                 "estimate AdjacencyExpand for Memory-[:COMPACTS_TO*1..1]->Thread",
-                "keep Sort + Limit for bounded sort",
-                "selected physical plan cost: estimated_rows=2 cost=86",
+                "choose TopN for bounded sort",
+                "selected physical plan cost: estimated_rows=2 cost=84",
             ],
         },
         OptimizerSmokeCase {

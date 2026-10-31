@@ -386,7 +386,7 @@ fn ordered_alternative(
         };
         let top_n_cost = cost(&top_n);
         if ranking_cost(&top_n, top_n_cost.cost, context)
-            < ranking_cost(&unordered, sort_cost.cost, context)
+            <= ranking_cost(&unordered, sort_cost.cost, context)
         {
             unordered = top_n;
             sort_cost = top_n_cost;
@@ -448,7 +448,7 @@ fn select_bounded_sort_plan(
     let top_n_cost = estimate_physical_plan_cost_with_context(&top_n, catalog, context);
     let sort_limit_cost = estimate_physical_plan_cost_with_context(&sort_limit, catalog, context);
     if ranking_cost(&top_n, top_n_cost.cost, context)
-        < ranking_cost(&sort_limit, sort_limit_cost.cost, context)
+        <= ranking_cost(&sort_limit, sort_limit_cost.cost, context)
     {
         decisions.push(format!(
             "choose TopN for bounded sort: offset={offset} limit={limit} top_n_cost={} sort_limit_cost={}",

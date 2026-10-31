@@ -61,7 +61,12 @@ comparison proxy, key width and the ordinal tie breaker. Binding payloads are
 retained in memory, but sorting moves headers/pointers rather than copying their
 entire bodies at every comparison. TopN models heap insertion, checking rejected
 rows, a bounded replacement heuristic and sorting its retained `OFFSET+LIMIT`
-rows for final delivery. Arrival order and adaptive standard-library sorting can
+rows for final delivery. When the estimated input fits within `OFFSET+LIMIT`,
+TopN uses the same ordering-work proxy as Sort, and equal candidate rankings
+prefer TopN. This deliberately avoids choosing unbounded retained state just to
+save estimated initial heap work when correlated filters or fanout underestimate
+actual input. It is a robustness heuristic, not a claim of identical comparison
+counts or a hard source-work bound. Arrival order and adaptive standard-library sorting can
 change actual comparisons; these are planning heuristics, not measured counts.
 A completely satisfied ordering is still elided by the existing property proof.
 A partially satisfied prefix receives no incremental-sort discount: the executor

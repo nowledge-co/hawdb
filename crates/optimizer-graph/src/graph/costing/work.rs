@@ -147,7 +147,7 @@ pub(super) fn apply(
                 .saturating_add(8);
             retained = count.saturating_mul(sort_row_bytes);
             spill_stream_bytes = rows.saturating_mul(sort_row_bytes);
-            let cmp_count = if matches!(plan, PhysicalPlan::TopNExec { .. }) {
+            let cmp_count = if matches!(plan, PhysicalPlan::TopNExec { .. }) && rows > count {
                 let remainder = rows.saturating_sub(count);
                 let replacements =
                     remainder.min(count.saturating_mul(ceil_log2(rows.div_ceil(count.max(1)))));
@@ -161,6 +161,10 @@ pub(super) fn apply(
                     .saturating_add(replacements.saturating_mul(depth).saturating_mul(2))
                     .saturating_add(sort_comparisons(count))
             } else {
+                // If the estimate fits in the window, use the same ordering
+                // proxy as Sort. Favor bounded retention on equal rankings:
+                // underestimated fanout must not force unbounded state merely
+                // to save the estimated initial heap construction.
                 sort_comparisons(rows)
             };
             comparisons = cmp_count.saturating_mul(comparison_units);

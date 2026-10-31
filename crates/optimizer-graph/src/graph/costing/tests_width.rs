@@ -218,6 +218,65 @@ fn memory_hint_changes_actual_bounded_choice_in_both_lowerings_and_selected_cost
 }
 
 #[test]
+fn estimated_input_within_window_prefers_bounded_retention_in_both_lowerings() {
+    for directive in [
+        OptimizerSearchDirective::Memo,
+        OptimizerSearchDirective::DirectFallback,
+    ] {
+        for rows in [1, 2, 25] {
+            for offset in [0, 3] {
+                let mut catalog = catalog(true);
+                catalog.label_counts.insert("Item".into(), rows);
+                let sort = PhysicalPlan::SortExec {
+                    items: order(),
+                    input: Box::new(fused()),
+                };
+                let top_n = PhysicalPlan::TopNExec {
+                    items: order(),
+                    offset,
+                    limit: 25,
+                    input: Box::new(fused()),
+                };
+                let sort_cost = estimate_costed_plan(&sort, &catalog);
+                let top_n_cost = estimate_costed_plan(&top_n, &catalog);
+                assert_eq!(top_n_cost.cost.cpu, sort_cost.cost.cpu);
+                assert_eq!(
+                    top_n_cost.width_report.unwrap().retained_bytes,
+                    sort_cost.width_report.unwrap().retained_bytes,
+                );
+                let logical = LogicalPlan::Limit {
+                    offset,
+                    limit: Some(25),
+                    input: Box::new(LogicalPlan::Sort {
+                        items: order(),
+                        input: Box::new(LogicalPlan::Project {
+                            items: projections(),
+                            input: Box::new(LogicalPlan::NodeScan {
+                                variable: "n".into(),
+                                label: "Item".into(),
+                            }),
+                        }),
+                    }),
+                };
+                let (plan, trace) = CascadesOptimizer::default()
+                    .optimize_root_with_catalog_and_directive(
+                        &LogicalPlanRoot::new(logical),
+                        &catalog,
+                        directive,
+                    )
+                    .unwrap()
+                    .into_parts();
+                assert!(plan.explain(0).contains("TopNExec"), "{}", plan.explain(0));
+                assert_eq!(
+                    trace.selected_plan_cost,
+                    estimate_physical_plan_cost(&plan, &catalog)
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn alias_scope_keeps_input_width_before_replacing_output_columns() {
     let catalog = catalog(true);
     let renamed = PhysicalPlan::ProjectExec {

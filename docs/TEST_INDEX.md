@@ -2186,7 +2186,10 @@ Existing optimizer-graph ownership covers `graph::costing::width::tests`,
 schema, bounded distinct-domain width sampling, required-only decoding,
 projection/graph ownership and alias scope, key-versus-body comparisons,
 context-sensitive choices in memo/direct lowering, selected trace refresh,
-metadata bounds and saturating row/cost arithmetic. Asymmetric hash-join
+metadata bounds and saturating row/cost arithmetic. Input estimates within the
+OFFSET+LIMIT window use an equal ordering-work proxy and prefer TopN on ties in
+both lowerings; greater-than-window controls retain comparison-aware choices.
+Asymmetric hash-join
 inputs pin right-build retention and spill; one-to-three-hop traversal controls
 keep opaque graph contributions visible in `proxy_fields`. Joint grouping and
 width costing share the incoming alias scope: correlated key counts change the
@@ -2196,8 +2199,14 @@ comparison/decode costs for all seven affected graph workloads, retaining exact
 row/cost, decision, fingerprint and repeated-planning assertions.
 Core schema snapshot tests
 cover table-qualified descriptor iteration, deletion and old snapshot identity.
+The joint-NDV small-budget control retains all 400 source rows and the original
+40-row window (TopN), and adds a 19-row window to keep Sort+Limit transfer
+admission covered under the same 2-MiB query budget.
 Root `api::tests::width_costing` checks complete NULL/tied output, pinned reads,
 warm templates, small budgets and checkpoint/reopen in all residency modes.
+A correlated-filter regression estimates at most 19 rows but consumes all 256
+matches, returns the exact offset/tied page on cold and warm calls, and verifies
+TopN stays within its 256-KiB blocking allowance without spill or leaked admission.
 `query_observability::order_by_limit_uses_top_n_and_preserves_stable_order`
 retains a selective TopN fixture under comparison-aware costing. Executor
 `transform::tests::limit_admission` verifies selected-window transfers, skipped
