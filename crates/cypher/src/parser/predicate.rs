@@ -859,6 +859,7 @@ impl Parser<'_> {
         Ok((exact, exact))
     }
 
+    #[cfg(test)]
     pub(super) fn parse_set_properties(&mut self) -> Result<Vec<SetProperty>> {
         let mut sets = Vec::new();
         loop {
@@ -871,6 +872,7 @@ impl Parser<'_> {
         Ok(sets)
     }
 
+    #[cfg(test)]
     fn parse_set_property(&mut self) -> Result<SetProperty> {
         let variable = self.parse_ident()?;
         self.expect_char('.')?;
@@ -935,6 +937,7 @@ impl Parser<'_> {
         })
     }
 
+    #[cfg(test)]
     fn parse_case_set_value(&mut self) -> Result<SetValueExpression> {
         self.expect_keyword("CASE")?;
         self.expect_keyword("WHEN")?;
@@ -945,6 +948,7 @@ impl Parser<'_> {
         self.parse_case_decrement_floor_zero_set_value_after_when()
     }
 
+    #[cfg(test)]
     fn parse_case_preserve_newer_existing_set_value(&mut self) -> Result<SetValueExpression> {
         let incoming = self.parse_value()?;
         self.expect_keyword("IS")?;
@@ -1003,6 +1007,7 @@ impl Parser<'_> {
         })
     }
 
+    #[cfg(test)]
     fn parse_case_decrement_floor_zero_set_value_after_when(
         &mut self,
     ) -> Result<SetValueExpression> {
@@ -1132,6 +1137,7 @@ fn keyword_matches_at(input: &str, index: usize, keyword: &str) -> bool {
         .is_some_and(|rest| keyword_matches(rest, keyword))
 }
 
+#[cfg(test)]
 fn is_identifier_start(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch == '_'
 }

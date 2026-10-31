@@ -6,8 +6,11 @@ plan-template cache misses. No feature, environment variable or host opt-in is
 required. The syntax-only CREATE PROPERTY GRAPH and GRAPH_TABLE entry points
 also use PEG. Relational DDL/DML, materialized views, branch lifecycle and paged SHOW commands use PEG as well.
 Cypher uses the same engine with its own token grammar and
-recognizes schema statements directly with PEG and currently retains native
-query/mutation clause terminals. The old Cypher DDL driver is test-only.
+recognizes schema, system hints/settings, standalone data mutations, MATCH and
+ordered mutation patterns, UNWIND and procedure calls directly with PEG. Native
+callbacks remain for WHERE predicates and WITH/RETURN projection expressions,
+including existence patterns inside predicates. The old DDL and procedure
+drivers and standalone mutation drivers are test-only.
 
 Parser routing is explicit by statement family:
 
@@ -19,7 +22,7 @@ Parser routing is explicit by statement family:
 | Branch commands | Bounded SQL token PEG and branch AST transformation |
 
 All supported SQL families now use PEG without a fallback or an upstream
-parser dependency, including test builds. Cypher's native clauses remain the
+parser dependency, including test builds. Cypher's predicate/projection callbacks remain the
 outstanding migration under [#1375](https://github.com/nowledge-co/hawdb/issues/1375).
 A PEG syntax, semantic or resource error is returned directly. Accepting PGQ
 syntax does not activate unqualified PGQ execution.
@@ -226,3 +229,29 @@ using measurements. All 1,608 SQL and 2,854 Cypher frozen records were re-export
 from independently compiled main `9c355e9a46` in a new main-only target directory;
 all acceptance/error classes and complete Debug-AST hashes matched. Earlier
 shared-target timing comparisons are invalid and must not support readiness.
+
+## Cypher grammar continuation
+
+Cypher's value rules cover exact negative/decimal token adjacency, parameters,
+strings, row-bound properties, nested lists and timestamp forms. Data rules
+construct CREATE/MERGE and system-variable ASTs directly. Pattern rules cover
+labels, directions, finite/shortest hop ranges and ordered mutation clauses;
+anonymous names are allocated only while folding the selected CST. Remaining
+native predicates retain deferred-name rebasing against that same counter.
+
+Procedure rules match positional/named options, maps, yields and legacy graph
+algorithm RETURN lists before typed lowering. The standalone vector-search
+and legacy graph-algorithm admission boundaries, exact legacy diagnostic
+positions, duplicate checks and bounded projected-filter contract remain.
+`project_graph` string predicates still use the remaining predicate frontend.
+Balanced procedure-option maps share the 32-level recursive-language budget.
+The generic PEG `Tight` combinator checks token-source adjacency with charged
+work; it retains capture rollback, memo reuse and fatal resource failures.
+Cypher uses an explicit 8,192-frame internal matcher budget while value/list/map
+language depth and combined statement/value depth retain the existing bound.
+
+A further 420 statement/pipeline records were exported from independently
+compiled main `9c355e9a46` in its main-only target directory. They cover these
+newly migrated families, source spans, exact numeric and hop-range spacing,
+legacy CALL admission and combined nesting. No fixture is refreshed from the
+candidate. Pure-path tests also verify the absence of native AST captures.

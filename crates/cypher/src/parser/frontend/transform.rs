@@ -32,15 +32,7 @@ impl Transformer<'_> {
                 let mut system_variables = Vec::new();
                 for child in children {
                     if self.tree.nodes[child].name == Some("hint") {
-                        let Value::Hint {
-                            hint,
-                            depth: native_depth,
-                        } = self.tree.take(child)
-                        else {
-                            unreachable!()
-                        };
-                        self.check_depth(child, depth, native_depth)?;
-                        system_variables.push(hint);
+                        system_variables.push(self.system_assignment(child, depth)?);
                     }
                 }
                 let child = self.tree.required(selected, "statement");
@@ -76,17 +68,16 @@ impl Transformer<'_> {
             "create" if self.tree.child(selected, "schema_create").is_some() => {
                 self.schema_statement(self.tree.required(selected, "schema_create"))
             }
-            "create" | "merge" | "set" | "call" => {
-                let Value::Statement {
-                    statement,
-                    depth: native_depth,
-                } = self.tree.take(selected)
-                else {
-                    unreachable!()
-                };
-                self.check_depth(selected, depth, native_depth)?;
-                Ok(*statement)
+            "create" => {
+                self.data_statement(self.tree.required(selected, "d_create_data"), false, depth)
             }
+            "merge" => {
+                self.data_statement(self.tree.required(selected, "d_merge_data"), true, depth)
+            }
+            "set" => self
+                .system_assignment(selected, depth)
+                .map(Statement::SetSystemVariable),
+            "call" => self.call_statement(selected, depth),
             _ => unreachable!("known statement grammar rule"),
         }
     }
@@ -101,6 +92,15 @@ impl Transformer<'_> {
         self.clause_nodes(node, &mut nodes);
         let mut clauses = Vec::with_capacity(nodes.len());
         for child in nodes {
+            let name = self.tree.nodes[child].name.expect("clause rule");
+            if name == "call_clause" {
+                clauses.push(self.procedure_clause(child, depth)?);
+                continue;
+            }
+            if !matches!(name, "with_clause" | "return_clause") {
+                clauses.push(self.graph_clause(child, depth, anonymous)?);
+                continue;
+            }
             let Value::Clause {
                 mut clause,
                 anonymous: count,
@@ -199,7 +199,7 @@ fn rebase_pattern(pattern: &mut MatchPattern, offset: usize) {
         rebase_node(&mut step.target, offset);
     }
 }
-fn rebase_predicate(predicate: &mut PropertyPredicate, offset: usize) {
+pub(super) fn rebase_predicate(predicate: &mut PropertyPredicate, offset: usize) {
     match predicate {
         PropertyPredicate::And(items) | PropertyPredicate::Or(items) => {
             for item in items {

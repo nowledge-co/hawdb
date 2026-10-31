@@ -39,6 +39,8 @@ pub enum Expression<T, R = &'static str> {
     Choice(Vec<Self>),
     Optional(Box<Self>),
     Repeat(Box<Self>),
+    /// Match a token sequence with no source whitespace between its tokens.
+    Tight(Box<Self>),
     Ahead(Box<Self>, &'static str),
     Not(Box<Self>, &'static str),
     Native {
@@ -299,6 +301,7 @@ enum Frame<'a, T> {
         position: usize,
         saved: Option<Diagnostic>,
     },
+    TightDone(usize),
     LookDone {
         position: usize,
         positive: bool,
@@ -622,6 +625,10 @@ impl<'a, T> Matcher<'a, T> {
                             work.push(Frame::Expression(inner, position));
                         }
                         Expression::Repeat(inner) => work.push(Frame::Repeat(inner, position)),
+                        Expression::Tight(inner) => {
+                            work.push(Frame::TightDone(position));
+                            work.push(Frame::Expression(inner, position));
+                        }
                         Expression::Ahead(inner, expected) | Expression::Not(inner, expected) => {
                             work.push(Frame::LookDone {
                                 position,
@@ -730,6 +737,18 @@ impl<'a, T> Matcher<'a, T> {
                     }
                     Err(fatal) => return Err(fatal),
                 },
+                Frame::TightDone(start) => {
+                    if let Ok(end) = result {
+                        for position in start.saturating_add(1)..end {
+                            self.charge(1, position)?;
+                            if self.token(position - 1).span.end != self.token(position).span.start
+                            {
+                                result = Err(self.mismatch(position, "adjacent tokens"));
+                                break;
+                            }
+                        }
+                    }
+                }
                 Frame::LookDone {
                     position,
                     positive,

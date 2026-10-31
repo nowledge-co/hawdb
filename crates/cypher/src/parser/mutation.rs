@@ -20,23 +20,7 @@ use super::super::ast::*;
 use super::Parser;
 
 impl Parser<'_> {
-    pub(super) fn parse_create_data(&mut self) -> Result<Statement> {
-        let source = self.parse_create_node_pattern()?;
-        if !self.consume_char('-') {
-            return Ok(Statement::CreateNode(source));
-        }
-        let (rel_type, properties) = self.parse_relationship_pattern()?;
-        self.expect_char('-')?;
-        self.expect_char('>')?;
-        let target = self.parse_create_node_pattern()?;
-        Ok(Statement::CreateRelationship(CreateRelationship {
-            source,
-            rel_type,
-            properties,
-            target,
-        }))
-    }
-
+    #[cfg(test)]
     pub(super) fn parse_merge_statement(&mut self) -> Result<Statement> {
         let source = self.parse_merge_node_pattern()?;
         if !self.consume_char('-') {
@@ -82,6 +66,7 @@ impl Parser<'_> {
         }))
     }
 
+    #[cfg(test)]
     fn parse_merge_node_pattern(&mut self) -> Result<MergeNode> {
         self.skip_ws();
         self.expect_char('(')?;
@@ -112,6 +97,7 @@ impl Parser<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn parse_create_node_pattern(&mut self) -> Result<CreateNode> {
         self.skip_ws();
         self.expect_char('(')?;
@@ -172,6 +158,7 @@ impl Parser<'_> {
         Ok(labels.join(":"))
     }
 
+    #[cfg(test)]
     pub(super) fn parse_relationship_pattern(
         &mut self,
     ) -> Result<(String, BTreeMap<String, ValueExpression>)> {

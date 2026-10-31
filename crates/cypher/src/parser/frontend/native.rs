@@ -6,7 +6,7 @@ use hawdb_sql_syntax::peg::NativeMatch;
 use hawdb_sql_syntax::{Span, SyntaxError, SyntaxErrorCode, Token};
 
 use super::super::Parser;
-use crate::{Clause, SetSystemVariable, Statement};
+use crate::{Clause, ClauseKind, PredicateExpression};
 
 #[cfg(test)]
 thread_local! {
@@ -19,12 +19,9 @@ pub(super) enum Value {
         anonymous: usize,
         depth: usize,
     },
-    Statement {
-        statement: Box<Statement>,
-        depth: usize,
-    },
-    Hint {
-        hint: SetSystemVariable,
+    Predicate {
+        predicate: Box<PredicateExpression>,
+        anonymous: usize,
         depth: usize,
     },
 }
@@ -74,7 +71,13 @@ pub(super) fn clause(input: &str, tokens: &[Token], position: usize) -> NativeMa
     run(input, tokens, position, |parser| {
         let start = parser.pos;
         parser.deferred_anonymous = true;
-        let kind = parser.parse_pipeline_clause()?;
+        let kind = if parser.consume_keyword("WITH") {
+            ClauseKind::With(parser.parse_pipeline_projection(true)?)
+        } else if parser.consume_keyword("RETURN") {
+            ClauseKind::Return(parser.parse_pipeline_projection(false)?)
+        } else {
+            unreachable!("native projection prefix")
+        };
         Ok(Value::Clause {
             clause: Box::new(parser.source_node(kind, start)),
             anonymous: parser.anonymous_variable_id,
@@ -83,47 +86,15 @@ pub(super) fn clause(input: &str, tokens: &[Token], position: usize) -> NativeMa
     })
 }
 
-pub(super) fn hint(input: &str, tokens: &[Token], position: usize) -> NativeMatch<Value> {
+pub(super) fn predicate(input: &str, tokens: &[Token], position: usize) -> NativeMatch<Value> {
     run(input, tokens, position, |parser| {
-        let hint = parser.parse_system_variable_assignment(false)?;
-        Ok(Value::Hint {
-            hint,
+        let start = parser.pos;
+        parser.deferred_anonymous = true;
+        let kind = parser.parse_predicate(true)?;
+        Ok(Value::Predicate {
+            predicate: Box::new(parser.source_node(kind, start)),
+            anonymous: parser.anonymous_variable_id,
             depth: parser.peak_depth,
         })
-    })
-}
-
-fn statement(
-    input: &str,
-    tokens: &[Token],
-    position: usize,
-    parse: impl FnOnce(&mut Parser<'_>) -> Result<Statement>,
-) -> NativeMatch<Value> {
-    run(input, tokens, position, |parser| {
-        let statement = parse(parser)?;
-        Ok(Value::Statement {
-            statement: Box::new(statement),
-            depth: parser.peak_depth,
-        })
-    })
-}
-
-pub(super) fn create(input: &str, tokens: &[Token], position: usize) -> NativeMatch<Value> {
-    statement(input, tokens, position, |parser| parser.parse_create_data())
-}
-pub(super) fn merge(input: &str, tokens: &[Token], position: usize) -> NativeMatch<Value> {
-    statement(input, tokens, position, |parser| {
-        parser.parse_merge_statement()
-    })
-}
-pub(super) fn set(input: &str, tokens: &[Token], position: usize) -> NativeMatch<Value> {
-    statement(input, tokens, position, |parser| {
-        parser.parse_set_system_variable_statement()
-    })
-}
-pub(super) fn call(input: &str, tokens: &[Token], position: usize) -> NativeMatch<Value> {
-    let start = tokens[position - 1].span.start;
-    statement(input, tokens, position, |parser| {
-        parser.parse_call_statement(start)
     })
 }

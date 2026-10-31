@@ -17,8 +17,7 @@ use hawdb_core::Result;
 use super::super::ast::*;
 use super::Parser;
 
-const MAX_PROJECTED_RELATIONSHIP_PREDICATE_BYTES: usize = 16 * 1024;
-const MAX_PROJECTED_RELATIONSHIP_PREDICATE_CONJUNCTS: usize = 16;
+use super::projected::parse_projected_relationship_predicate;
 
 impl Parser<'_> {
     pub(super) fn parse_call_statement(&mut self, call_start: usize) -> Result<Statement> {
@@ -703,48 +702,5 @@ impl Parser<'_> {
             return Err(self.error("unexpected procedure RETURN column"));
         }
         Ok((second, return_node_identity))
-    }
-}
-
-fn parse_projected_relationship_predicate(input: &str) -> Result<PropertyPredicate> {
-    if input.len() > MAX_PROJECTED_RELATIONSHIP_PREDICATE_BYTES {
-        return Err(hawdb_core::HawDBError::Semantic(format!(
-            "projected relationship predicate exceeds limit of {MAX_PROJECTED_RELATIONSHIP_PREDICATE_BYTES} UTF-8 bytes"
-        )));
-    }
-    let mut parser = Parser::new(input);
-    let predicate = parser.parse_predicate(false)?;
-    parser.expect_eof()?;
-    validate_projected_relationship_predicate(&predicate)?;
-    Ok(predicate)
-}
-
-fn validate_projected_relationship_predicate(predicate: &PropertyPredicate) -> Result<usize> {
-    match predicate {
-        PropertyPredicate::And(predicates) if !predicates.is_empty() => {
-            let mut conjuncts = 0;
-            for predicate in predicates {
-                conjuncts += validate_projected_relationship_predicate(predicate)?;
-                if conjuncts > MAX_PROJECTED_RELATIONSHIP_PREDICATE_CONJUNCTS {
-                    return Err(hawdb_core::HawDBError::Semantic(format!(
-                        "projected relationship predicate exceeds limit of {MAX_PROJECTED_RELATIONSHIP_PREDICATE_CONJUNCTS} conjuncts"
-                    )));
-                }
-            }
-            Ok(conjuncts)
-        }
-        PropertyPredicate::Eq {
-            variable, value, ..
-        } if variable == "r" && matches!(&value.kind, ValueExpressionKind::Literal(_)) => Ok(1),
-        PropertyPredicate::Compare {
-            variable,
-            op: ComparisonOp::Gte,
-            value,
-            ..
-        } if variable == "r" && matches!(&value.kind, ValueExpressionKind::Literal(_)) => Ok(1),
-        _ => Err(hawdb_core::HawDBError::Semantic(
-            "projected relationship predicates support only literal r.property comparisons joined by AND"
-                .to_string(),
-        )),
     }
 }

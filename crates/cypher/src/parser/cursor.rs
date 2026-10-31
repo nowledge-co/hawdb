@@ -92,6 +92,7 @@ impl Parser<'_> {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn expect_token(&mut self, expected: &str) -> Result<()> {
         self.skip_ws();
         if self.input[self.pos..].starts_with(expected) {

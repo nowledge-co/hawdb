@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::ast::Statement;
 #[cfg(test)]
-use super::ast::{CypherQuery, Explain};
-use super::ast::{SetSystemVariable, Statement};
+use super::ast::{CypherQuery, Explain, SetSystemVariable};
 use hawdb_core::time::Instant;
 #[cfg(test)]
 use hawdb_core::HawDBError;
@@ -29,7 +29,9 @@ mod mutation;
 mod pipeline;
 pub use pipeline::parse_pipeline;
 mod predicate;
+#[cfg(test)]
 mod procedure;
+mod projected;
 mod projection;
 mod scalar;
 
@@ -225,6 +227,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[cfg(test)]
     fn parse_public_query_pipeline(&mut self) -> Result<super::ast::QueryPipeline> {
         let query = self.parse_query_pipeline()?;
         // The standalone grammar API admits bounded shapes for binder tests.
@@ -303,6 +306,7 @@ impl<'a> Parser<'a> {
         variable
     }
 
+    #[cfg(test)]
     fn parse_set_system_variable_statement(&mut self) -> Result<Statement> {
         self.expect_keyword("SYSTEM")?;
         Ok(Statement::SetSystemVariable(
@@ -358,6 +362,7 @@ impl<'a> Parser<'a> {
         Ok(Statement::Explain(Box::new(Explain { analyze, statement })))
     }
 
+    #[cfg(test)]
     fn parse_system_variable_assignment(
         &mut self,
         allow_variable_keyword: bool,
@@ -376,6 +381,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[cfg(test)]
     fn parse_system_variable_name(&mut self) -> Result<String> {
         if self.consume_keyword("SYSTEM") {
             self.expect_char('.')?;

@@ -55,6 +55,7 @@ impl<T> Grammar<T> {
     fn nullable(expression: &Expression<T, usize>, nullable: &[bool]) -> bool {
         match expression {
             Expression::Rule(rule) => nullable[*rule],
+            Expression::Tight(item) => Self::nullable(item, nullable),
             Expression::Sequence(items) => items.iter().all(|item| Self::nullable(item, nullable)),
             Expression::Choice(items) => items.iter().any(|item| Self::nullable(item, nullable)),
             Expression::Optional(_)
@@ -81,7 +82,8 @@ impl<T> Grammar<T> {
                 }
                 Ok(())
             }
-            Expression::Optional(item)
+            Expression::Tight(item)
+            | Expression::Optional(item)
             | Expression::Repeat(item)
             | Expression::Ahead(item, _)
             | Expression::Not(item, _) => Self::check_repetition(item, nullable),
@@ -105,7 +107,8 @@ impl<T> Grammar<T> {
                     Self::leading_rules(item, nullable, edges);
                 }
             }
-            Expression::Optional(item)
+            Expression::Tight(item)
+            | Expression::Optional(item)
             | Expression::Repeat(item)
             | Expression::Ahead(item, _)
             | Expression::Not(item, _) => {
@@ -162,6 +165,7 @@ impl<T> Expression<T> {
             ),
             Self::Optional(item) => Expression::Optional(Box::new(item.resolve(names)?)),
             Self::Repeat(item) => Expression::Repeat(Box::new(item.resolve(names)?)),
+            Self::Tight(item) => Expression::Tight(Box::new(item.resolve(names)?)),
             Self::Ahead(item, expected) => {
                 Expression::Ahead(Box::new(item.resolve(names)?), expected)
             }

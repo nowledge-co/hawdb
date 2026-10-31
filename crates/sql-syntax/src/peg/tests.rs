@@ -646,3 +646,92 @@ fn independent_language_budgets_survive_memo_reuse() {
         assert_eq!(error.code, expected);
     }
 }
+
+#[test]
+fn tight_sequences_preserve_capture_rollback_and_packrat_reuse() {
+    let grammar = Grammar::<()>::compile(vec![
+        (
+            "Root",
+            S(vec![
+                Choice(vec![R("Tight"), R("Loose")]),
+                Tok(TokenKind::End, "end"),
+            ]),
+        ),
+        ("Tight", Expression::Tight(Box::new(R("Signed")))),
+        ("Loose", R("Signed")),
+        (
+            "Signed",
+            S(vec![
+                Tok(TokenKind::Minus, "minus"),
+                Tok(TokenKind::Number, "number"),
+            ]),
+        ),
+    ])
+    .unwrap();
+    let adjacent = parse(&grammar, "-1", Limits::default()).unwrap();
+    assert!(adjacent.child(adjacent.root, "Tight").is_some());
+    for text in ["- 1", "-/*gap*/1"] {
+        let loose = parse(&grammar, text, Limits::default()).unwrap();
+        assert!(loose.child(loose.root, "Loose").is_some());
+        assert!(loose.child(loose.root, "Tight").is_none());
+        assert_eq!(loose.memo_entries, 4);
+        assert_eq!(loose.memo_hits, 1);
+    }
+    // Cypher accepts Unicode whitespace; token PEG is independent of the SQL
+    // lexer's deliberately narrower whitespace policy.
+    let text = "-\u{2003}1";
+    let number = text.find('1').unwrap();
+    let tokens = [
+        crate::Token::new(TokenKind::Minus, Span::new(0, 1)),
+        crate::Token::new(TokenKind::Number, Span::new(number, number + 1)),
+        crate::Token::new(TokenKind::End, Span::new(text.len(), text.len())),
+    ];
+    let loose = grammar
+        .parse(text, &tokens, "Root", Limits::default())
+        .unwrap();
+    assert!(loose.child(loose.root, "Loose").is_some());
+    assert_eq!(loose.memo_hits, 1);
+}
+
+#[test]
+fn tight_adjacency_validation_is_bounded_work_and_not_nullable_repetition() {
+    let grammar = Grammar::<()>::compile(vec![(
+        "Root",
+        S(vec![
+            Expression::Tight(Box::new(S(vec![
+                Tok(TokenKind::Minus, "minus"),
+                Tok(TokenKind::Number, "number"),
+            ]))),
+            Tok(TokenKind::End, "end"),
+        ]),
+    )])
+    .unwrap();
+    let tree = parse(&grammar, "-1", Limits::default()).unwrap();
+    let error = parse(
+        &grammar,
+        "-1",
+        Limits {
+            steps: tree.steps - 2,
+            ..Limits::default()
+        },
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.code, SyntaxErrorCode::ParserLimitExceeded);
+    assert_eq!(
+        error.span.start, 1,
+        "adjacency checks must charge work at the second token"
+    );
+    let error = parse(&grammar, "- 1", Limits::default()).err().unwrap();
+    assert_eq!(error.expected, Some("adjacent tokens"));
+    assert!(Grammar::<()>::compile(vec![(
+        "Root",
+        Repeat(Box::new(Expression::Tight(Box::new(Optional(Box::new(
+            K("SELECT")
+        ))))))
+    )])
+    .is_err());
+    assert!(
+        Grammar::<()>::compile(vec![("Root", Expression::Tight(Box::new(R("Root"))))]).is_err()
+    );
+}

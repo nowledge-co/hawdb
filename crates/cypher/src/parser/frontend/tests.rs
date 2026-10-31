@@ -112,7 +112,11 @@ fn lookahead_reuses_native_clause_captures() {
     assert_eq!(crate::parse_profiled(query).result.unwrap(), expected);
     super::native::CLAUSE_POSITIONS.with(|positions| {
         let positions = positions.borrow();
-        assert_eq!(positions.len(), 6, "each clause must be parsed once");
+        assert_eq!(
+            positions.len(),
+            3,
+            "each remaining native projection must be parsed once"
+        );
         assert_eq!(
             positions
                 .iter()
@@ -382,6 +386,93 @@ fn schema_statements_match_without_native_ast_captures() {
         assert!(
             crate::parse(query).is_err(),
             "unsupported schema accepted: {query}"
+        );
+    }
+}
+
+#[test]
+fn frozen_values_patterns_and_procedures_preserve_main_ir() {
+    // Independently compiled main 9c355e9a46 in a main-only Cargo target.
+    // Neither AST output nor rejection classes are regenerated from candidate.
+    let mut count = 0;
+    for line in
+        include_str!("../../../fixtures/migration_values_patterns_procedures_peg_baseline_v1.jsonl")
+            .lines()
+    {
+        let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+        let query = expected["query"].as_str().unwrap();
+        let result = if expected["entry"] == "statement" {
+            crate::parse(query).map(|ast| format!("{ast:?}"))
+        } else {
+            crate::parse_pipeline(query).map(|ast| format!("{ast:?}"))
+        };
+        let (kind, digest) = match result {
+            Ok(ast) => {
+                use sha2::Digest;
+                (
+                    "accept",
+                    Some({
+                        use std::fmt::Write;
+                        let mut digest = String::with_capacity(64);
+                        for byte in sha2::Sha256::digest(ast.as_bytes()) {
+                            write!(digest, "{byte:02x}").unwrap();
+                        }
+                        digest
+                    }),
+                )
+            }
+            Err(hawdb_core::HawDBError::Parse(_)) => ("Parse", None),
+            Err(hawdb_core::HawDBError::Semantic(_)) => ("Semantic", None),
+            other => panic!("unexpected baseline result: {other:?}"),
+        };
+        assert_eq!(
+            kind,
+            expected["kind"].as_str().unwrap(),
+            "{} {}: {query}",
+            expected["id"],
+            expected["entry"]
+        );
+        assert_eq!(
+            digest.as_deref(),
+            expected["ast_sha256"].as_str(),
+            "{} {}: {query}",
+            expected["id"],
+            expected["entry"]
+        );
+        count += 1;
+    }
+    assert_eq!(count, 420);
+}
+
+#[test]
+fn graph_mutations_values_and_procedures_match_without_native_captures() {
+    for query in [
+        "CREATE (n:I {x:-.5, y:[1, timestamp($time)], z:CAST($time AS TIMESTAMP)})",
+        "MERGE (n:I {id:$id}) ON CREATE SET n.x=COALESCE(n.x,0)+1 ON MATCH SET n.x=n.x+1",
+        "SET SYSTEM VARIABLE SYSTEM.value = [null, $p]",
+        "CYPHER SYSTEM.value=1 CREATE (:I)",
+        "MATCH p=shortestPath((:I)-[:R*]->(:I)) DELETE p",
+        "UNWIND [1,2,] AS row CREATE (:I {id:row.id})",
+        "MATCH (a:A:B), (b) MERGE (a)-[r:R]->(b) ON CREATE SET r.x=true DELETE b",
+        "CALL text_search($q, complete:=true)",
+        "CALL vector_index_search('ix',$q,candidates:=8,topK:=2)",
+        "CALL page_rank('g') RETURN node, rank",
+        "CALL page_rank('g') RETURN node",
+        "CALL project_graph('g', ['I'], ['R'], {option:['a']})",
+    ] {
+        equivalent(query);
+        let tokens = super::lexer::tokenize(query).unwrap();
+        let tree = super::grammar(false)
+            .parse(
+                query,
+                &tokens,
+                "root",
+                hawdb_sql_syntax::peg::Limits::default(),
+            )
+            .unwrap();
+        assert!(
+            tree.nodes.iter().all(|node| node.name.is_some()),
+            "native AST capture in {query}"
         );
     }
 }

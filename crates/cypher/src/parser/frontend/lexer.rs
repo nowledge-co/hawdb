@@ -76,6 +76,8 @@ pub(super) fn tokenize(input: &str) -> Result<Vec<Token>> {
                 '<' => TokenKind::Less,
                 '>' => TokenKind::Greater,
                 '|' => TokenKind::Pipe,
+                '$' => TokenKind::Parameter(0),
+                '!' => TokenKind::NotEqual,
                 _ => TokenKind::Question,
             }
         };

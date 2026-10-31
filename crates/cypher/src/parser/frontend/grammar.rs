@@ -163,10 +163,6 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar<Value>, String> {
             ]),
         ),
         (
-            "hint",
-            seq(vec![E::Keyword("SYSTEM"), native(native::hint)]),
-        ),
-        (
             "begin",
             seq(vec![E::Keyword("BEGIN"), E::Keyword("TRANSACTION")]),
         ),
@@ -174,19 +170,7 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar<Value>, String> {
         ("commit", E::Keyword("COMMIT")),
         ("rollback", E::Keyword("ROLLBACK")),
     ];
-    for (name, keyword) in [
-        ("match_clause", "MATCH"),
-        ("optional_clause", "OPTIONAL"),
-        ("unwind_clause", "UNWIND"),
-        ("call_clause", "CALL"),
-        ("create_clause", "CREATE"),
-        ("merge_clause", "MERGE"),
-        ("set_clause", "SET"),
-        ("delete_clause", "DELETE"),
-        ("detach_clause", "DETACH"),
-        ("with_clause", "WITH"),
-        ("return_clause", "RETURN"),
-    ] {
+    for (name, keyword) in [("with_clause", "WITH"), ("return_clause", "RETURN")] {
         rules.push((
             name,
             seq(vec![
@@ -195,33 +179,39 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar<Value>, String> {
             ]),
         ));
     }
-    for (name, keyword, matcher) in [
-        ("merge", "MERGE", native::merge as NativeMatcher<Value>),
-        ("set", "SET", native::set),
-        ("call", "CALL", native::call),
-    ] {
-        rules.push((name, seq(vec![E::Keyword(keyword), native(matcher)])));
-    }
+    rules.push((
+        "call",
+        E::Choice(vec![
+            rule("u_legacy_call"),
+            seq(vec![
+                E::Ahead(Box::new(E::Keyword("CALL")), "CALL"),
+                rule("pipeline"),
+            ]),
+        ]),
+    ));
+    rules.extend(super::procedures::rules());
+    rules.push((
+        "merge",
+        seq(vec![E::Keyword("MERGE"), rule("d_merge_data")]),
+    ));
+    rules.extend(super::patterns::rules());
+    rules.extend(super::values::rules());
+    rules.extend(super::data::rules());
     rules.extend(super::schema::rules());
     rules.push((
         "create",
         seq(vec![
             E::Keyword("CREATE"),
-            E::Choice(vec![
-                rule("schema_create"),
-                seq(vec![
-                    E::Ahead(
-                        Box::new(E::Token(TokenKind::LeftParen, "a node pattern")),
-                        "a node pattern",
-                    ),
-                    native(native::create),
-                ]),
-            ]),
+            E::Choice(vec![rule("schema_create"), rule("d_create_data")]),
         ]),
     ));
     rules.push((
         "alter",
         seq(vec![E::Keyword("ALTER"), rule("schema_alter")]),
     ));
-    Grammar::compile(rules)
+    Grammar::compile_bounded(
+        rules,
+        &["v_list_contents", "v_call_contents", "u_map_contents"],
+        32,
+    )
 }

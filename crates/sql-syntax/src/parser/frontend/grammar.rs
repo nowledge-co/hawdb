@@ -654,9 +654,11 @@ fn references(expression: &E<()>, names: &mut std::collections::HashSet<&'static
                 references(item, names);
             }
         }
-        E::Optional(item) | E::Repeat(item) | E::Ahead(item, _) | E::Not(item, _) => {
-            references(item, names)
-        }
+        E::Tight(item)
+        | E::Optional(item)
+        | E::Repeat(item)
+        | E::Ahead(item, _)
+        | E::Not(item, _) => references(item, names),
         _ => {}
     }
 }

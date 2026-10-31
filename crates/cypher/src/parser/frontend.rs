@@ -14,13 +14,17 @@ use hawdb_sql_syntax::{SyntaxError, SyntaxErrorCode, Token};
 use super::{Parser, MAX_CYPHER_INPUT_BYTES, MAX_CYPHER_PARSER_DEPTH};
 use crate::*;
 
+mod data;
 mod grammar;
 mod lexer;
 mod native;
+mod patterns;
+mod procedures;
 mod schema;
 #[cfg(test)]
 mod tests;
 mod transform;
+mod values;
 
 use native::Value;
 
@@ -53,7 +57,15 @@ pub(super) fn parse(input: &str) -> Result<Statement> {
         .count()
         == 2;
     let tree = grammar(multi_stage)
-        .parse(input, &tokens, "root", Limits::default())
+        .parse(
+            input,
+            &tokens,
+            "root",
+            Limits {
+                depth: 8192,
+                ..Limits::default()
+            },
+        )
         .map_err(|error| render(input, error))?;
     let root = tree.required(tree.root, "statement");
     Transformer {
@@ -77,7 +89,15 @@ pub(super) fn pipeline_at(parser: &mut Parser<'_>) -> Result<QueryPipeline> {
     let start = tokens.partition_point(|token| token.span.start < parser.pos);
     let tokens = &tokens[start..];
     let tree = grammar(false)
-        .parse(parser.input, tokens, "pipeline_root", Limits::default())
+        .parse(
+            parser.input,
+            tokens,
+            "pipeline_root",
+            Limits {
+                depth: 8192,
+                ..Limits::default()
+            },
+        )
         .map_err(|error| render(parser.input, error))?;
     let root = tree.required(tree.root, "pipeline");
     let mut transformer = Transformer {
@@ -113,6 +133,12 @@ fn render(input: &str, error: SyntaxError) -> HawDBError {
         return parser.error("Cypher parser nesting exceeds limit or PEG resource budget");
     }
     let expected = error.expected.unwrap_or("a Cypher statement");
+    // Legacy fixed-character diagnostics point after the unexpected character.
+    if matches!(expected, "','" | "'.'")
+        && let Some(ch) = input[parser.pos..].chars().next()
+    {
+        parser.pos += ch.len_utf8();
+    }
     if expected == "unexpected trailing input" {
         parser.error(expected)
     } else if parser.pos == 0 {
@@ -130,6 +156,12 @@ struct Transformer<'a> {
 }
 
 impl Transformer<'_> {
+    fn error_at(&self, position: usize, message: &str) -> HawDBError {
+        let mut parser = Parser::new(self.input);
+        parser.pos = position;
+        parser.error(message)
+    }
+
     fn error(&self, node: NodeId, message: &str) -> HawDBError {
         let mut parser = Parser::new(self.input);
         parser.pos = self.tree.span(node, self.tokens).start;

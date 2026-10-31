@@ -12,6 +12,7 @@ pub fn parse_pipeline(input: &str) -> Result<QueryPipeline> {
 }
 
 impl Parser<'_> {
+    #[cfg(test)]
     pub(super) fn parse_query_pipeline(&mut self) -> Result<QueryPipeline> {
         #[cfg(test)]
         if !self.peg {
@@ -52,6 +53,7 @@ impl Parser<'_> {
         Ok(self.source_node(QueryPipelineKind { clauses }, start))
     }
 
+    #[cfg(test)]
     pub(super) fn parse_pipeline_clause(&mut self) -> Result<ClauseKind> {
         Ok(if self.consume_keyword("UNWIND") {
             self.parse_pipeline_unwind()?
@@ -105,6 +107,7 @@ impl Parser<'_> {
         })
     }
 
+    #[cfg(test)]
     fn parse_pipeline_unwind(&mut self) -> Result<ClauseKind> {
         let source = self.parse_value()?;
         if !matches!(
@@ -118,7 +121,8 @@ impl Parser<'_> {
         Ok(ClauseKind::Unwind { source, variable })
     }
 
-    fn parse_pipeline_call(&mut self) -> Result<ClauseKind> {
+    #[cfg(test)]
+    pub(super) fn parse_pipeline_call(&mut self) -> Result<ClauseKind> {
         self.skip_ws();
         let start = self.pos;
         let name = self.parse_ident()?;
@@ -169,6 +173,7 @@ impl Parser<'_> {
         Ok(ClauseKind::Call { procedure, yields })
     }
 
+    #[cfg(test)]
     pub(super) fn parse_procedure_yields(&mut self) -> Result<Vec<YieldItem>> {
         let mut yields = Vec::new();
         if self.consume_keyword("YIELD") {
@@ -190,6 +195,7 @@ impl Parser<'_> {
         Ok(yields)
     }
 
+    #[cfg(test)]
     fn parse_pipeline_match(&mut self, optional: bool) -> Result<ClauseKind> {
         let patterns = self.parse_pipeline_patterns()?;
         let predicate = self.parse_pipeline_where()?;
@@ -211,7 +217,7 @@ impl Parser<'_> {
         Ok(Some(self.source_node(predicate, start)))
     }
 
-    fn parse_pipeline_projection(&mut self, with: bool) -> Result<ProjectionClause> {
+    pub(super) fn parse_pipeline_projection(&mut self, with: bool) -> Result<ProjectionClause> {
         let distinct = self.consume_keyword("DISTINCT");
         let items = self.parse_pipeline_return_items()?;
         let predicate = if with {
@@ -434,6 +440,7 @@ impl Parser<'_> {
         }))
     }
 
+    #[cfg(test)]
     fn consume_shortest_path_function(&mut self) -> Option<PathSearch> {
         if self.consume_pipeline_function("shortestPath") {
             Some(PathSearch::AnyShortest)
@@ -453,6 +460,7 @@ impl Parser<'_> {
         false
     }
 
+    #[cfg(test)]
     fn parse_pipeline_patterns(&mut self) -> Result<Vec<MatchPattern>> {
         let mut patterns = vec![self.parse_pipeline_pattern()?];
         while self.consume_char(',') {
@@ -461,6 +469,7 @@ impl Parser<'_> {
         Ok(patterns)
     }
 
+    #[cfg(test)]
     fn parse_pipeline_pattern(&mut self) -> Result<MatchPattern> {
         self.skip_ws();
         let start = self.pos;
@@ -542,6 +551,7 @@ impl Parser<'_> {
         ))
     }
 
+    #[cfg(test)]
     fn parse_pipeline_node(&mut self) -> Result<NodePattern> {
         self.skip_ws();
         let start = self.pos;
