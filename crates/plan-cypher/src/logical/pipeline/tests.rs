@@ -235,6 +235,82 @@ fn required_shortest_path_clauses_bind_endpoints_before_searching() {
 }
 
 #[test]
+fn shortest_path_endpoints_named_in_the_same_clause_bind_once() {
+    let parameters = BTreeMap::from([
+        ("a".to_string(), Value::Int(1)),
+        ("b".to_string(), Value::Int(2)),
+    ]);
+    for query in [
+        "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}), path = shortestPath((p1)-[:KNOWS*]-(p2)) RETURN length(path) AS len",
+        "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}), path = allShortestPaths((p1)-[:KNOWS*]-(p2)) RETURN length(path) AS len",
+    ] {
+        let plan = plan_pipeline_query(query, &parameters).unwrap();
+        let LogicalPlan::Project { input, .. } = &plan else {
+            panic!("expected projection: {plan:?}");
+        };
+        let LogicalPlan::GraphMatch {
+            input: Some(endpoints),
+            ..
+        } = input.as_ref()
+        else {
+            panic!("expected path program: {input:?}");
+        };
+        let LogicalPlan::GraphMatch { program, .. } = endpoints.as_ref() else {
+            panic!("expected endpoint program: {endpoints:?}");
+        };
+        // One constrained step per endpoint, not a bare re-check per endpoint.
+        let nodes = program
+            .steps
+            .iter()
+            .map(|step| match step {
+                GraphMatchStep::Node(node) => node.clone(),
+                step => panic!("unexpected endpoint step {step:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            nodes,
+            vec![
+                GraphMatchNode {
+                    variable: "p1".into(),
+                    label: "Person".into(),
+                    properties: BTreeMap::from([("id".into(), Value::Int(1))]),
+                },
+                GraphMatchNode {
+                    variable: "p2".into(),
+                    label: "Person".into(),
+                    properties: BTreeMap::from([("id".into(), Value::Int(2))]),
+                },
+            ],
+            "{query}"
+        );
+        // Independent endpoints normalize to node access, not a generic match.
+        let plan = plan_normalized_pipeline_query(query, &parameters).unwrap();
+        let LogicalPlan::Project { input, .. } = &plan else {
+            panic!("expected projection: {plan:?}");
+        };
+        let LogicalPlan::GraphMatch {
+            input: Some(endpoints),
+            ..
+        } = input.as_ref()
+        else {
+            panic!("expected path program: {input:?}");
+        };
+        assert!(
+            matches!(endpoints.as_ref(), LogicalPlan::NodeCartesianProduct { .. }),
+            "{query}: {endpoints:?}"
+        );
+    }
+    // Constraints that do not fold without comparing values keep the re-check.
+    let plan = plan_pipeline_query(
+        "MATCH (a:Item {id: 1}), p = shortestPath((a {id: 2})-[:LINK*]->(b:Item {id: 3})) RETURN length(p) AS hops",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert_eq!(text.matches("variable: \"a\"").count(), 3, "{text}");
+}
+
+#[test]
 fn shortest_path_binding_rejects_unsupported_shapes() {
     for (query, message) in [
         (

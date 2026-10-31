@@ -366,7 +366,7 @@ pub(super) fn bind_shortest_path_match(
             }
             scope.bind_graph(&endpoint.variable, GraphEntityKind::Node, &mut introduced)?;
             let node = bind_node(endpoint, parameters)?;
-            steps.push(GraphMatchStep::Node(node.clone()));
+            push_endpoint_node(&mut steps, node.clone());
             path_steps.push(GraphMatchStep::Node(node));
         }
         path_steps.push(GraphMatchStep::ShortestPath(Box::new(
@@ -481,6 +481,43 @@ pub(super) fn bind_shortest_path_match(
         },
         input: input.map(Box::new),
     })
+}
+
+/// Adds a shortest-path endpoint to the binding steps without repeating a
+/// node the clause already binds.
+///
+/// `MATCH (a:Person {id: 1}), (b:Person {id: 2}), p = shortestPath((a)-..-(b))`
+/// names each endpoint twice. A repeated `Node` step only re-checks its label
+/// and properties against the bound node, so folding the endpoint's
+/// constraints into the earlier step keeps the same rows, and leaves one step
+/// per variable, which normalization can lower to independent node access
+/// (and so to index seeks) instead of a generic nested scan. Folding is
+/// limited to constraints that combine without comparing values: a label
+/// only into an unlabeled or identically labeled step, and properties only
+/// when at most one side has any, so the plan shape never depends on
+/// parameter values. Anything else keeps the explicit re-check step.
+fn push_endpoint_node(steps: &mut Vec<GraphMatchStep>, node: GraphMatchNode) {
+    let existing = steps.iter_mut().find_map(|step| match step {
+        GraphMatchStep::Node(existing) if existing.variable == node.variable => Some(existing),
+        _ => None,
+    });
+    let Some(existing) = existing else {
+        steps.push(GraphMatchStep::Node(node));
+        return;
+    };
+    let labels_fold =
+        node.label.is_empty() || existing.label.is_empty() || node.label == existing.label;
+    let properties_fold = node.properties.is_empty() || existing.properties.is_empty();
+    if !(labels_fold && properties_fold) {
+        steps.push(GraphMatchStep::Node(node));
+        return;
+    }
+    if existing.label.is_empty() {
+        existing.label = node.label;
+    }
+    if existing.properties.is_empty() {
+        existing.properties = node.properties;
+    }
 }
 
 /// The ordinary-pattern half of the generic MATCH binder, shared with
