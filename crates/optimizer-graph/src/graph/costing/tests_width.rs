@@ -536,3 +536,173 @@ fn joint_group_cardinality_and_input_alias_width_share_the_cost_fold() {
         );
     }
 }
+
+#[test]
+fn row_goals_retain_blocking_width_work_and_scale_streaming_decode() {
+    let context = OptimizerContext::default().with_resource_hints(ResourceHints {
+        max_memory_bytes: Some(1024 * 1024),
+        ..ResourceHints::default()
+    });
+    let wide = catalog(true);
+    let sorted = PhysicalPlan::SortExec {
+        items: order(),
+        input: Box::new(fused()),
+    };
+    let bounded = PhysicalPlan::LimitExec {
+        offset: 0,
+        limit: Some(7),
+        input: Box::new(sorted.clone()),
+    };
+    let full = estimate_costed_plan_with_context(&sorted, &wide, &context);
+    let page = estimate_costed_plan_with_context(&bounded, &wide, &context);
+    assert_eq!(
+        full.width_report.unwrap().spill_work > 0,
+        !cfg!(all(target_arch = "wasm32", target_os = "unknown"))
+    );
+    assert_eq!(page.cost.estimated_rows, 7);
+    assert_eq!(page.cost.sequential_io, full.cost.sequential_io);
+    assert!(page.cost.cpu >= full.cost.cpu);
+
+    let scan = fused();
+    let bounded = PhysicalPlan::LimitExec {
+        offset: 0,
+        limit: Some(7),
+        input: Box::new(scan.clone()),
+    };
+    let full = estimate_costed_plan_with_context(&scan, &wide, &context);
+    let page = estimate_costed_plan_with_context(&bounded, &wide, &context);
+    let narrow = catalog(false);
+    let small = estimate_costed_plan_with_context(&bounded, &narrow, &context);
+    assert!(page.cost.cpu < full.cost.cpu / 100);
+    assert!(page.cost.cpu > small.cost.cpu);
+    assert!(page.cost.sequential_io >= NODE_FULL_SCAN_STARTUP_COST);
+}
+
+#[test]
+fn bounded_ordered_wide_payload_competitors_keep_the_memory_context() {
+    let mut schema = Catalog::default();
+    let table = schema.get_or_create_table(TableKind::Node, "Item");
+    for (name, kind) in [
+        ("kind", PropertyType::String),
+        ("rank", PropertyType::Int),
+        ("id", PropertyType::String),
+        ("body", PropertyType::Text),
+    ] {
+        schema.get_or_create_property(table, name, kind, false);
+    }
+    let mut catalog = crate::graph::optimizer_catalog_from_graph_statistics(
+        &schema,
+        &hawdb_core::GraphStatistics::default(),
+    );
+    catalog.composite_property_indexes.insert((
+        "Item".into(),
+        vec!["kind".into(), "rank".into(), "id".into()],
+    ));
+    let mut catalog = catalog.with_ordered_composite_indexes([(
+        "Item".into(),
+        vec![
+            ("kind".into(), PropertyType::String),
+            ("rank".into(), PropertyType::Int),
+            ("id".into(), PropertyType::String),
+        ],
+    )]);
+    catalog.label_counts.insert("Item".into(), 10_000);
+    catalog
+        .property_distinct_counts
+        .insert(("Item".into(), "kind".into()), 1);
+    let logical = LogicalPlan::Limit {
+        offset: 0,
+        limit: Some(2000),
+        input: Box::new(LogicalPlan::Sort {
+            items: ["rank", "id"]
+                .into_iter()
+                .map(|name| SortItem {
+                    key: SortKey::Column(name.into()),
+                    direction: SortDirection::Asc,
+                })
+                .collect(),
+            input: Box::new(LogicalPlan::Project {
+                items: ["rank", "id", "body"]
+                    .into_iter()
+                    .map(|name| Projection {
+                        name: name.into(),
+                        expression: ProjectionExpression::Property {
+                            variable: "n".into(),
+                            property: name.into(),
+                        },
+                    })
+                    .collect(),
+                input: Box::new(LogicalPlan::Filter {
+                    predicate: hawdb_plan_cypher::Predicate::PropertyEq {
+                        variable: "n".into(),
+                        property: "kind".into(),
+                        value: Value::String("note".into()),
+                    },
+                    input: Box::new(LogicalPlan::NodeScan {
+                        variable: "n".into(),
+                        label: "Item".into(),
+                    }),
+                }),
+            }),
+        }),
+    };
+    for directive in [
+        OptimizerSearchDirective::Memo,
+        OptimizerSearchDirective::DirectFallback,
+    ] {
+        let mut competitor_costs = Vec::new();
+        for memory in [20 * 1024 * 1024, 1024 * 1024 * 1024] {
+            let context = OptimizerContext::default().with_resource_hints(ResourceHints {
+                max_memory_bytes: Some(memory),
+                ..ResourceHints::default()
+            });
+            let (plan, trace) = CascadesOptimizer::with_context(context.clone())
+                .optimize_root_with_catalog_and_directive(
+                    &LogicalPlanRoot::new(logical.clone()),
+                    &catalog,
+                    directive,
+                )
+                .unwrap()
+                .into_parts();
+            assert!(
+                plan.explain(0).contains("IndexNodeCompositeOrderedSeek"),
+                "{}",
+                plan.explain(0)
+            );
+            let decision = trace
+                .decisions
+                .iter()
+                .find(|entry| entry.starts_with("choose composite ordered seek:"))
+                .unwrap();
+            assert!(decision.contains("row_goal=Some(2000)"), "{decision}");
+            competitor_costs.push(
+                decision
+                    .split("unordered_cost=")
+                    .nth(1)
+                    .unwrap()
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap(),
+            );
+            assert_eq!(
+                trace.selected_plan_cost,
+                estimate_physical_plan_cost_with_context(&plan, &catalog, &context)
+            );
+            assert!(trace
+                .decisions
+                .iter()
+                .any(|entry| entry.starts_with("physical width cost:")
+                    && entry.contains(&format!("memory_hint=Some({memory})"))));
+        }
+        if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
+            assert_eq!(competitor_costs[0], competitor_costs[1]);
+        } else {
+            assert_ne!(
+                competitor_costs[0], competitor_costs[1],
+                "the bounded competitor must use the caller's spill hint"
+            );
+        }
+    }
+}

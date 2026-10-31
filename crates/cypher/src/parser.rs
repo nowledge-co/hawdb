@@ -205,9 +205,7 @@ impl<'a> Parser<'a> {
             StatementDispatch::Explain => self.parse_explain_statement(),
             StatementDispatch::Unwind => {
                 self.restore(statement_start);
-                Ok(Statement::UnwindMutation(Box::new(
-                    self.parse_query_pipeline()?,
-                )))
+                Ok(Box::new(self.parse_query_pipeline()?).into_unwind_statement())
             }
             StatementDispatch::Merge => self.parse_merge_statement(),
             StatementDispatch::Match => {

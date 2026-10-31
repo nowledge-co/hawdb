@@ -88,7 +88,7 @@ fn id_in_bounded_matching_agrees_with_scan_and_preserves_limits() {
     ] {
         for filter in &filters {
             // The wrapper keeps the original owned-scan path as an independent oracle.
-            let scan = PropertyFilter::And(vec![filter.clone()]);
+            let scan = PropertyFilter::Or(vec![filter.clone()]);
             for limit in 0..=4 {
                 let expected = store
                     .matching_node_ids_bounded(label, Some(&scan), limit, "test_limit")
@@ -300,5 +300,137 @@ fn id_in_relationship_batches_preserve_cartesian_order_pending_and_recovery() {
         }
         drop(store);
         fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
+fn id_led_endpoint_rechecks_properties_labels_and_large_fanout() {
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::default();
+    let mut expected = Vec::new();
+    let mut candidates = Vec::new();
+    for index in 0..4_096 {
+        let keep = index % 2 == 0;
+        let id = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("keep", Value::Bool(keep))]),
+            )
+            .unwrap();
+        candidates.push(id);
+        if keep {
+            expected.push(id);
+        }
+    }
+    candidates.push(
+        store
+            .create_node(
+                &mut catalog,
+                "Other",
+                properties([("keep", Value::Bool(true))]),
+            )
+            .unwrap(),
+    );
+    candidates.extend([NodeId(u64::MAX), candidates[0]]);
+    let filter = PropertyFilter::And(vec![
+        id_filter(&candidates),
+        PropertyFilter::Eq {
+            property: "keep".into(),
+            value: Value::Bool(true),
+        },
+    ]);
+    let label = catalog.label_id("Memory");
+    assert_eq!(
+        store
+            .matching_node_ids_bounded(label, Some(&filter), expected.len(), "fanout")
+            .unwrap(),
+        expected
+    );
+    assert!(store
+        .matching_node_ids_bounded(label, Some(&filter), expected.len() - 1, "fanout")
+        .is_err());
+    let pending = vec![
+        (
+            NodeId(9_000),
+            label.unwrap(),
+            properties([("keep", Value::Bool(true))]),
+        ),
+        (
+            NodeId(9_001),
+            label.unwrap(),
+            properties([("keep", Value::Bool(false))]),
+        ),
+    ];
+    let filter = PropertyFilter::And(vec![
+        id_filter(&[NodeId(9_001), NodeId(9_000)]),
+        PropertyFilter::Eq {
+            property: "keep".into(),
+            value: Value::Bool(true),
+        },
+    ]);
+    assert_eq!(
+        GraphStore::pending_node_ids_matching(label, Some(&filter), &pending),
+        vec![NodeId(9_000)]
+    );
+}
+
+#[test]
+fn pending_relationship_merge_index_preserves_subsets_and_mixed_batches() {
+    for mixed in [false, true] {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::default();
+        let source = store
+            .create_node(&mut catalog, "Memory", properties([]))
+            .unwrap();
+        let target = store
+            .create_node(&mut catalog, "Memory", properties([]))
+            .unwrap();
+        let merge = |match_properties| {
+            GraphMutation::MergeRelationshipsBetweenMatches(
+                crate::mutation::MatchedRelationshipMerge {
+                    source_label: "Memory".into(),
+                    source_filter: Some(id_filter(&[source])),
+                    target_label: "Memory".into(),
+                    target_filter: Some(id_filter(&[target])),
+                    rel_type: "LINK".into(),
+                    rel_match_properties: match_properties,
+                    on_create_properties: properties([("retained", Value::Bool(true))]),
+                },
+            )
+        };
+        let mut mutations = vec![merge(properties([("key", Value::Int(1))]))];
+        if mixed {
+            mutations.push(GraphMutation::CreateNode {
+                label: "Unrelated".into(),
+                properties: properties([]),
+            });
+        }
+        mutations.extend([
+            merge(properties([("key", Value::Int(2))])),
+            merge(properties([])),
+            merge(properties([("key", Value::Int(1))])),
+        ]);
+        let summary = store.commit_mutations(&mut catalog, mutations).unwrap();
+        let rows = summary
+            .rows
+            .iter()
+            .filter(|row| row.contains_key("rel_id"))
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["created"].clone())
+                .collect::<Vec<_>>(),
+            vec![
+                Value::Bool(true),
+                Value::Bool(true),
+                Value::Bool(false),
+                Value::Bool(false)
+            ]
+        );
+        assert_ne!(rows[0]["rel_id"], rows[1]["rel_id"]);
+        assert_eq!(rows[0]["rel_id"], rows[2]["rel_id"]);
+        assert_eq!(rows[0]["rel_id"], rows[3]["rel_id"]);
     }
 }

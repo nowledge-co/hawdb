@@ -25,6 +25,7 @@ use hawdb_plan_cypher::{
 };
 use std::collections::BTreeMap;
 
+mod row_goal;
 mod shape;
 mod width;
 mod work;
@@ -224,15 +225,20 @@ pub(super) fn estimate_physical_plan_cost_with_context(
     catalog: &OptimizerCatalog,
     context: &crate::OptimizerContext,
 ) -> PlanCost {
-    fn visit<'a>(
-        plan: &'a PhysicalPlan,
-        catalog: &OptimizerCatalog,
-        context: &crate::OptimizerContext,
-    ) -> CostedPlan<'a> {
-        let inputs = estimate_input_costs(plan, |input| visit(input, catalog, context));
-        estimate_operator_cost_with_context(plan, catalog, inputs, context)
-    }
-    visit(plan, catalog, context).cost.as_plan_cost()
+    estimate_costed_plan_with_context(plan, catalog, context)
+        .cost
+        .as_plan_cost()
+}
+
+fn estimate_costed_plan_with_context<'a>(
+    plan: &'a PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    context: &crate::OptimizerContext,
+) -> CostedPlan<'a> {
+    let inputs = estimate_input_costs(plan, |input| {
+        estimate_costed_plan_with_context(input, catalog, context)
+    });
+    estimate_operator_cost_with_context(plan, catalog, inputs, context)
 }
 
 pub(super) fn estimate_physical_plan_cost_breakdown(
@@ -242,8 +248,24 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
     estimate_costed_plan(plan, catalog).cost
 }
 
+pub(super) fn estimate_physical_plan_cost_with_row_goal(
+    plan: &PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    context: &crate::OptimizerContext,
+    rows: u64,
+) -> PlanCost {
+    let costed = estimate_costed_plan_with_context(plan, catalog, context);
+    row_goal::ConsumptionCost {
+        total: costed.cost,
+        startup: costed.startup,
+    }
+    .prefix(rows)
+    .as_plan_cost()
+}
+
 pub(super) struct CostedPlan<'a> {
     pub(super) cost: PlanCostBreakdown,
+    startup: PlanCostBreakdown,
     shape: shape::RowShape<'a>,
     width_report: Option<work::WidthReport>,
     pub(super) statistics: Option<StatisticsUsage>,
@@ -328,9 +350,13 @@ fn estimate_operator_cost_internal<'a>(
     bindings_override: Option<PlanBindings<'a>>,
     memory: Option<u64>,
 ) -> CostedPlan<'a> {
-    let costs = inputs
-        .each_ref()
-        .map(|input| input.as_ref().map(|input| input.cost));
+    let consumption_inputs = inputs.each_ref().map(|input| {
+        input.as_ref().map(|input| row_goal::ConsumptionCost {
+            total: input.cost,
+            startup: input.startup,
+        })
+    });
+    let costs = row_goal::input_costs(plan, consumption_inputs);
     let mut statistics = None;
     let aggregate_cost = if matches!(plan, PhysicalPlan::AggregateExec { .. }) {
         Some(estimate_local_operator_cost(
@@ -375,8 +401,12 @@ fn estimate_operator_cost_internal<'a>(
         cost,
         memory,
     );
+    // Width/decode/spill work participates in startup as well as total work.
+    // In particular, a LIMIT must never discount a blocking operator's spill.
+    let consumption = row_goal::cost_operator(plan, consumption_inputs, cost);
     CostedPlan {
-        cost,
+        cost: consumption.total,
+        startup: consumption.startup,
         shape,
         width_report,
         statistics,
@@ -397,6 +427,10 @@ fn estimate_local_operator_cost(
         PhysicalPlan::EmptyExec => PlanCostBreakdown::new(1, 0, 0, 0, 0),
         PhysicalPlan::NodeCountExec { .. } | PhysicalPlan::RelationshipCountExec { .. } => {
             PlanCostBreakdown::new(1, 1, 0, 0, 0)
+        }
+        PhysicalPlan::UnwindExec { rows, .. } => {
+            let count = rows.len() as u64;
+            PlanCostBreakdown::new(count.max(1), count, 0, 0, 0)
         }
         PhysicalPlan::UnwindMutation { rows, .. } => {
             let row_count = rows.len().max(1) as u64;

@@ -455,6 +455,7 @@ fn folded_predicate_parameters(statement: &cypher::Statement) -> BTreeSet<String
             }
             cypher::ValueExpressionKind::Timestamp(inner) => collect_value(inner, exact),
             cypher::ValueExpressionKind::Literal(_)
+            | cypher::ValueExpressionKind::Binding(_)
             | cypher::ValueExpressionKind::BindingProperty { .. }
             | cypher::ValueExpressionKind::CurrentTimestamp => {}
         }
@@ -722,6 +723,7 @@ fn values_marker_use<'a>(values: impl IntoIterator<Item = &'a Value>, name: &str
 
 fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
     match plan {
+        LogicalPlan::Unwind { rows, .. } => values_marker_use(rows, name),
         LogicalPlan::NodeScan { .. } | LogicalPlan::ThreadRepairStats { .. } => MarkerUse::None,
         LogicalPlan::NodeCartesianProduct { left, right } => {
             marker_use_in_logical_plan(left, name).combine(marker_use_in_logical_plan(right, name))
@@ -1180,7 +1182,8 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) ->
         | PhysicalPlan::HostScoringExec { input, .. }
         | PhysicalPlan::LimitExec { input, .. } => bind_physical_plan(input, parameters)?,
         PhysicalPlan::IndexNodeSeek { value, .. } => bind_value(value, parameters)?,
-        PhysicalPlan::IndexNodeMultiSeek { values, .. } => {
+        PhysicalPlan::UnwindExec { rows: values, .. }
+        | PhysicalPlan::IndexNodeMultiSeek { values, .. } => {
             bind_values(values, parameters)?;
         }
         PhysicalPlan::IndexNodeUnionSeek { branches, .. } => {
@@ -1364,6 +1367,7 @@ fn bind_composite_range_seek(
 
 fn bind_logical_plan(plan: &mut LogicalPlan, parameters: BindingAction<'_>) -> Result<()> {
     match plan {
+        LogicalPlan::Unwind { rows, .. } => bind_values(rows, parameters)?,
         LogicalPlan::VectorIndexSearch(scan) => {
             bind_optional_predicate(&mut scan.node_visibility_predicate, parameters)?;
             if let Some(input) = &mut scan.input {
@@ -1716,6 +1720,40 @@ mod tests {
         PhysicalPlan,
     };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn unwind_read_parameters_rebind_in_logical_and_physical_templates() {
+        let statement = cypher::parse(
+            "UNWIND $ids AS candidate_id OPTIONAL MATCH (n:Item {id: candidate_id}) RETURN n.id",
+        )
+        .unwrap();
+        let parameters = BTreeMap::from([(
+            "ids".into(),
+            Value::List(vec![Value::Int(1), Value::Int(1), Value::Null]),
+        )]);
+        let template = parameterize_logical_plan(&statement, &parameters).unwrap();
+        assert_eq!(template.slot_count(), 1);
+        let changed = BTreeMap::from([(
+            "ids".into(),
+            Value::List(vec![Value::Int(2), Value::Int(3), Value::Null]),
+        )]);
+        let mut rebound = template.logical().clone();
+        super::bind_logical_plan(&mut rebound, super::BindingAction::Execute(&changed)).unwrap();
+        assert_eq!(
+            rebound,
+            hawdb_plan_cypher::plan_with_params(&statement, &changed).unwrap()
+        );
+        let physical = CascadesOptimizer::default().optimize(template.logical());
+        let physical = bind_physical_plan_parameters(&physical, &changed, true).unwrap();
+        let mut sources = 0;
+        hawdb_plan_cypher::visit_plan(&physical, &mut |node| {
+            if let PhysicalPlan::UnwindExec { rows, .. } = node {
+                assert_eq!(rows, &[Value::Int(2), Value::Int(3), Value::Null]);
+                sources += 1;
+            }
+        });
+        assert_eq!(sources, 1);
+    }
 
     #[test]
     fn proven_binding_template_skips_planning_and_validates_complete_signature() {

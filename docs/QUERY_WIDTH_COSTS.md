@@ -93,6 +93,10 @@ projection fusion, and the unordered competitor includes TopN when applicable.
 This avoids charging an unfused full graph record to only one alternative.
 Offline qualification perturbs ranking only after raw width estimates; the
 Sort/TopN competitor comparison uses the same qualification controls.
+Width/decode/spill work enters the same startup/variable-work profile used by
+row goals. Blocking work remains startup work; streaming decode can scale with
+consumption. Bounded ordered and unordered candidates retain the caller's memory
+hint throughout this comparison.
 The selected plan uses the same context/cost fold as ranking. Only that fold
 formats `physical width cost:` diagnostics in existing query reports; alternative
 costing does not allocate diagnostic strings. Refreshing a cached plan replaces

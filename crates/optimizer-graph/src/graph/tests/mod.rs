@@ -19,6 +19,7 @@ mod ddl;
 mod fulltext_costing;
 mod ordering_enforcer;
 mod plan_structure;
+mod row_goals;
 mod search_costing;
 mod traversal_costing;
 mod vector_seed;

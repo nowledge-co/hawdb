@@ -1,4 +1,39 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
+
+#[test]
+fn relationship_merge_batch_preserves_scope_and_refuses_unrepresented_clauses() {
+    let parameters = BTreeMap::from([("ids".into(), Value::List(vec![Value::Int(1)]))]);
+    let prefix = "MATCH (s:Skill {id: 1}) UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[r:EVIDENCE]->(m)";
+    let plan = plan_pipeline_query(
+        &format!("{prefix} ON CREATE SET r.weight = 1.0 RETURN m.id"),
+        &parameters,
+    )
+    .unwrap();
+    assert!(matches!(
+        plan,
+        LogicalPlan::UnwindMutation {
+            operation: BatchMutationOperation::MergeRelationship(_),
+            ..
+        }
+    ));
+    for query in [
+        format!("{prefix} RETURN r.weight"),
+        format!("{prefix} RETURN DISTINCT m.id"),
+        format!("{prefix} RETURN m.id LIMIT 1"),
+        format!("{prefix} ON MATCH SET r.weight = 2 RETURN m.id"),
+        format!("{prefix} SET s.used = true RETURN m.id"),
+        "MATCH (s:Skill), (m:Memory) MERGE (s)-[s:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill {id: key}) UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) WHERE s.id = key UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) WHERE m.id = 1 UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) UNWIND $ids AS s MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) UNWIND $ids AS key UNWIND $ids AS other MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) OPTIONAL MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+    ] { assert!(plan_pipeline_query(&query, &parameters).is_err(), "{query}"); }
+}
 
 #[test]
 fn atomic_mutations_reject_conditions_the_storage_command_cannot_represent() {
@@ -782,5 +817,100 @@ fn nested_aggregate_arguments_are_rejected() {
     assert!(
         error.to_string().contains("cannot contain aggregate"),
         "{error}"
+    );
+}
+
+#[test]
+fn relationship_merge_batch_keeps_unrelated_mutation_errors_specific() {
+    for (query, expected) in [
+        (
+            "MERGE (n:A {id: 1}) RETURN n",
+            "mutation has unsupported following clauses",
+        ),
+        (
+            "UNWIND [1] AS row MATCH (n:A {id: row}) SET n.seen = true",
+            "UNWIND mutation pipeline is unsupported",
+        ),
+        (
+            "UNWIND [1] AS row CREATE (:A {id: row})",
+            "row-bound value 'row' is not supported in this position",
+        ),
+        (
+            "UNWIND [1] AS row MERGE (:A {id: row})",
+            "row-bound value 'row' is not supported in this position",
+        ),
+    ] {
+        let error = plan_pipeline_query(query, &BTreeMap::new()).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:?}");
+    }
+}
+
+#[test]
+fn relationship_merge_batch_retains_box_payload_and_projection_capacity() {
+    use hawdb_core::RetainedHeapBytes;
+    let parameters = BTreeMap::from([("ids".into(), Value::List(vec![Value::Int(1)]))]);
+    let plan = plan_pipeline_query("MATCH (s:Skill {id: 1}) UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[r:EVIDENCE]->(m) RETURN m.id", &parameters).unwrap();
+    let LogicalPlan::UnwindMutation { mut operation, .. } = plan else {
+        panic!("expected row mutation")
+    };
+    assert_eq!(BatchMutationValue::Row.retained_heap_bytes(), Some(0));
+    let baseline = operation.retained_heap_bytes().unwrap();
+    let payload_bytes = 64 * 1024;
+    {
+        let BatchMutationOperation::MergeRelationship(merge) = &mut operation else {
+            panic!("expected relationship mutation")
+        };
+        assert!(baseline >= std::mem::size_of_val(merge.as_ref()));
+        merge.on_create_properties.insert(
+            "payload".into(),
+            BatchMutationValue::Static(Value::String("x".repeat(payload_bytes))),
+        );
+    }
+    let with_payload = operation.retained_heap_bytes().unwrap();
+    assert!(with_payload >= baseline + payload_bytes);
+    {
+        let BatchMutationOperation::MergeRelationship(merge) = &mut operation else {
+            panic!("expected relationship mutation")
+        };
+        let projection = &mut merge.returns.as_mut().unwrap()[0];
+        projection
+            .name
+            .reserve_exact(payload_bytes + projection.name.capacity());
+    }
+    assert!(operation.retained_heap_bytes().unwrap() >= with_payload + payload_bytes);
+}
+
+#[test]
+fn row_bound_pattern_properties_reuse_lookup_and_optional_predicates() {
+    let parameters = BTreeMap::from([("ids".into(), Value::List(vec![Value::Int(1)]))]);
+    for optional in [false, true] {
+        let prefix = if optional { "OPTIONAL MATCH" } else { "MATCH" };
+        let query = format!("UNWIND $ids AS candidate_id WITH candidate_id {prefix} (n:Item {{id: candidate_id}}) RETURN n.id");
+        let plan = plan_normalized_pipeline_query(&query, &parameters).unwrap();
+        let LogicalPlan::Project { input, .. } = plan else {
+            panic!("expected projection")
+        };
+        assert!(
+            matches!(*input, LogicalPlan::NodeColumnLookup { optional: actual, .. } if actual == optional)
+        );
+    }
+    let plan = plan_normalized_pipeline_query(
+        "UNWIND $ids AS candidate_id OPTIONAL MATCH (n:Item {id: candidate_id, active: true}) WHERE n.other = 1 RETURN n.id",
+        &parameters,
+    ).unwrap();
+    let LogicalPlan::Project { input, .. } = plan else {
+        panic!("expected projection")
+    };
+    let LogicalPlan::GraphMatch { program, .. } = *input else {
+        panic!("expected correlated MATCH")
+    };
+    assert!(program.optional);
+    assert!(matches!(program.predicate, Some(Predicate::And(_))));
+    let GraphMatchStep::Node(node) = &program.steps[0] else {
+        panic!("expected node step")
+    };
+    assert_eq!(
+        node.properties,
+        BTreeMap::from([("active".into(), Value::Bool(true))])
     );
 }

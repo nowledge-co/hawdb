@@ -22,6 +22,7 @@ mod imports;
 mod mutation;
 mod normalize;
 mod path;
+mod pattern_properties;
 mod procedure;
 #[cfg(test)]
 mod tests;
@@ -202,12 +203,30 @@ fn bind_pipeline(
             "query exceeds maximum clause depth".to_string(),
         ));
     }
-    if matches!(
-        query.clauses.first().map(|clause| &clause.kind),
-        Some(ClauseKind::Unwind { .. })
-    ) {
+    let has_mutation = query.clauses.iter().any(|clause| {
+        matches!(
+            clause.kind,
+            ClauseKind::Create(_)
+                | ClauseKind::Merge { .. }
+                | ClauseKind::Set(_)
+                | ClauseKind::Delete { .. }
+        )
+    });
+    if has_mutation
+        && matches!(
+            query.clauses.first().map(|clause| &clause.kind),
+            Some(ClauseKind::Unwind { .. })
+        )
+    {
         return mutation::bind_unwind_mutation_pipeline(query, parameters);
     }
+    let lowered;
+    let query = if !has_mutation && pattern_properties::needs_lowering(query) {
+        lowered = pattern_properties::lower(query)?;
+        &lowered
+    } else {
+        query
+    };
     if let Some(plan) = bind_optional_relationship_count_sum(query, parameters) {
         return plan;
     }
@@ -217,15 +236,7 @@ fn bind_pipeline(
     if let Some(plan) = bind_optional_degree_pipeline(query, parameters) {
         return plan;
     }
-    if query.clauses.iter().any(|clause| {
-        matches!(
-            clause.kind,
-            ClauseKind::Create(_)
-                | ClauseKind::Merge { .. }
-                | ClauseKind::Set(_)
-                | ClauseKind::Delete { .. }
-        )
-    }) {
+    if has_mutation {
         return mutation::bind_mutation_pipeline(query, parameters);
     }
     if matches!(
@@ -1137,6 +1148,22 @@ fn bind_read_clauses(
 ) -> Result<LogicalPlan> {
     for clause in clauses {
         match &clause.kind {
+            ClauseKind::Unwind { source, variable } if input.is_none() && scope.0.is_empty() => {
+                let rows = match bind_value(source, parameters)? {
+                    Value::List(rows) => rows,
+                    Value::Null => Vec::new(),
+                    _ => {
+                        return Err(HawDBError::Semantic(
+                            "UNWIND source must resolve to a list value or NULL".into(),
+                        ))
+                    }
+                };
+                scope.0.insert(variable.clone(), BindingType::Scalar);
+                input = Some(LogicalPlan::Unwind {
+                    rows,
+                    variable: variable.clone(),
+                });
+            }
             ClauseKind::Call { procedure, yields } => {
                 let hawdb_cypher::ProcedureCallKind::VectorIndexSearch(search) = &procedure.kind
                 else {

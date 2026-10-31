@@ -429,18 +429,18 @@ pub enum ValueExpressionKind {
     Literal(Value),
     Parameter(String),
     List(Vec<ValueExpression>),
+    Binding(String),
     BindingProperty { variable: String, property: String },
     CurrentTimestamp,
     Timestamp(Box<ValueExpression>),
 }
 
 impl ValueExpressionKind {
-    /// True when the value reads a row binding (`variable.property`), which
-    /// only mutation `UNWIND` contexts can bind; scalar contexts parse such
+    /// True when the value reads a row binding. Scalar contexts parse such
     /// lists as [`ScalarExpressionKind::List`] instead.
     pub fn reads_row_binding(&self) -> bool {
         match self {
-            Self::BindingProperty { .. } => true,
+            Self::Binding(_) | Self::BindingProperty { .. } => true,
             Self::List(values) => values.iter().any(|value| value.kind.reads_row_binding()),
             Self::Timestamp(value) => value.kind.reads_row_binding(),
             Self::Literal(_) | Self::Parameter(_) | Self::CurrentTimestamp => false,
