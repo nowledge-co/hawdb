@@ -76,18 +76,26 @@ Each graph physical-plan cache has two typed `DatabaseConfig` limits:
 `max_physical_plan_cache_bytes` defaults to 16 MiB and
 `max_physical_plan_cache_entry_bytes` defaults to 8 MiB. Zero disables admission;
 `max_plan_cache_entries` remains an additional independent entry-count limit.
-These limits are per cache, including private caches in read handles; they are
-not an aggregate database or process-memory limit.
+These limits apply independently to each live cache, including private read
+and transaction caches. Total retention grows with the number of live handles;
+it is outside `query_memory_bytes` and is not an aggregate database or
+process-memory limit. Shared cache accounting is tracked separately in
+[issue #1371](https://github.com/nowledge-co/hawdb/issues/1371).
 
 Weighted admission charges requested heap reachable from the complete key,
 physical IR and optimizer trace, including container spare capacity, Arc control
 blocks and shared payloads, and the cache table's capacity high-water mark.
 Sharing is charged in full per reference. The single-entry limit also includes
 the inline key/value layout. Checked overflow or opaque, potentially growing
-owners (currently compiled regex automata and their interior caches) refuse
-admission and execute the freshly bound plan normally. The counters and limits
+owners refuse admission and execute the freshly bound plan normally. Compiled
+regex programs are opaque, so cached templates retain only their validated
+pattern sources. Each execution compiles its own program before evaluating rows;
+that program never populates the cached source. Regex patterns keep their exact
+parameter guards and invalid patterns still fail before cache reuse. The counters and limits
 are exposed by `plan_cache_stats()` and the derived `system.plan_cache` metrics
 `max_bytes`, `max_entry_bytes`, `charged_bytes`, and `rejected_admissions`.
+Admission decisions distinguish accepted and refused weighted entries. Accepted
+admission can still be followed by LFU eviction; it does not promise a later hit.
 
 Parameterized CASE marker trees now use physical template reuse under these
 limits. Parameter classification and exact guards still determine safe reuse;

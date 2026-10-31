@@ -149,6 +149,43 @@ fn charges_cover_actual_template_and_churn_allocations() {
         println!("physical candidates={candidates} retained={retained} charged={charged}");
     }
 
+    // Regex templates retain only validated source. Execution compilation must
+    // neither live in nor grow the charged cache owner.
+    {
+        // Initialize regex's process/thread bookkeeping outside the owner
+        // window; it survives dropping every Regex and is not cache ownership.
+        let warmup = hawdb_core::ValidatedRegex::new("warmup").unwrap();
+        assert!(warmup.is_match("warmup"));
+        drop(warmup);
+        let statement = hawdb_cypher::parse(
+            "MATCH (n:Memory) WHERE NOT (n.id =~ '(memory|thread)-[0-9]+') RETURN n.id AS id",
+        )
+        .unwrap();
+        let window = Window::new();
+        let logical = parameterize_logical_plan(&statement, &BTreeMap::new()).unwrap();
+        let mut physical =
+            hawdb_optimizer_graph::CascadesOptimizer::default().optimize(logical.logical());
+        drop(logical);
+        assert_eq!(physical.retained_heap_bytes(), None);
+        assert!(hawdb_plan_cache::prepare_physical_plan_for_cache(&mut physical).unwrap());
+        let physical = Arc::new(physical);
+        let retained = window.retained();
+        let charged = physical.retained_heap_bytes().unwrap();
+        assert!(retained <= charged, "regex source: {retained} > {charged}");
+        for _ in 0..3 {
+            let mut execution =
+                hawdb_plan_cache::bind_physical_plan_parameters(&physical, &BTreeMap::new(), false)
+                    .unwrap();
+            hawdb_plan_cache::prepare_physical_regexes_for_execution(&mut execution).unwrap();
+            assert_eq!(execution.retained_heap_bytes(), None);
+            drop(execution);
+            assert_eq!(window.retained(), retained);
+            assert_eq!(physical.retained_heap_bytes(), Some(charged));
+        }
+        drop(physical);
+        assert_eq!(window.retained(), 0);
+    }
+
     // General projection parameters retain exact guards. Include a large
     // nested map/list and vector, independently of the slot-marker fixtures.
     let properties = (0..512)

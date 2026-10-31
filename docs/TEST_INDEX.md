@@ -21,7 +21,7 @@ The plan-cache retention family uses
 limits, zero budgets, overflow, replacement and spare table-capacity accounting.
 `//crates/plan-cache:hawdb_template_retention_tests` is its independent native
 requested-allocation oracle: logical and physical CASE templates at 20/100/512
-candidates, nested values and byte-driven churn must retain no more requested
+candidates, nested values, source-only regex templates and byte-driven churn must retain no more requested
 heap than their conservative charges. The observer is thread-local and runs as
 one test; requalify its standard-library layout assumptions on toolchain
 changes. Replay with `cargo test --locked -p hawdb-plan-cache --test
@@ -36,8 +36,12 @@ observer is enabled only in that one unit test. Replay with `cargo test --locked
 -p hawdb --lib retention_allocation -- --test-threads=1 --nocapture`.
 The same existing root owner covers `simple_case_dispatch` physical cache hits,
 changed parameters, folded guards, lazy/cached errors, result budgets,
-cancellation and zero/tiny cache-budget refusals;
-`query_observability` checks opaque regex refusal without evicting a hot plan.
+cancellation, zero/tiny cache-budget refusals and accepted/refused admission traces;
+`query_observability` checks regex source-template hits beside a hot plan.
+`knowledge_label_regex_memory_connections` retains its original physical-hit,
+complete bounded-query result, snapshot and budget/error assertions. Core regex
+and independent allocation tests prove that execution compilation neither lives
+in nor grows the source-only cache owner.
 Its vector-procedure pipeline check preserves default-feature cache bypass
 and minimal-feature capability refusal before any cache lookup or bypass.
 Run those filters with default and `--no-default-features` configurations.
@@ -47,7 +51,9 @@ Existing target profiles and execution lanes are unchanged.
 embedded CASE cache benchmark. It covers cold/reused/fresh-handle reads at
 20/100/512 candidates, scope and body scaling, complete result parity and a
 separate qualification-feature allocation/preparation observer. It adds no
-benchmark CI lane. Procedure, source-bound measurements and the per-read-handle
+benchmark CI lane. With no arguments it runs a small 20-candidate, 512-row,
+three-repeat smoke using the same complete-result assertions. Explicit arguments
+retain the measured experiment sizes. Procedure, source-bound measurements and the per-read-handle
 reuse limitation are in the [physical cache report](benchmarks/physical_plan_cache_macos_2026_10_31/README.md).
 
 `//:storage_tla_evidence_script_test` belongs to the required root

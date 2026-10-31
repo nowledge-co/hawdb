@@ -28,8 +28,9 @@ pub use schema::OptimizerSchemaKey;
 
 pub use template::{
     bind_physical_plan_parameters, parameter_binding_shape_fingerprint, parameter_scalar_types,
-    parameterize_logical_plan, parameterize_value_list, resolve_plan_template_value,
-    ParameterBindingTemplate, ParameterizedLogicalPlan, PlanParameterCacheKey,
+    parameterize_logical_plan, parameterize_value_list, prepare_physical_plan_for_cache,
+    prepare_physical_regexes_for_execution, resolve_plan_template_value, ParameterBindingTemplate,
+    ParameterizedLogicalPlan, PlanParameterCacheKey,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +62,8 @@ pub enum PlanCacheBypassReason {
     MutationPlanning,
     OptimizerDirective,
     StatementNotCacheable,
+    /// Legacy diagnostic spelling retained for host source compatibility.
+    /// CASE templates now use ordinary weighted admission; no planner emits it.
     ParameterizedCaseTemplate,
 }
 
@@ -205,7 +208,9 @@ where
     /// Charge owned heap retained through the key/value, excluding their inline
     /// bucket layout. Rejected admissions leave an existing entry unchanged.
     /// In-flight cloned values are owned by callers, outside this cache bound.
-    pub fn insert_weighted(&mut self, key: K, value: V, heap_charge: usize) {
+    /// Returns whether admission checks accepted the entry. Subsequent LFU
+    /// eviction can still remove it; this does not promise a future cache hit.
+    pub fn insert_weighted(&mut self, key: K, value: V, heap_charge: usize) -> bool {
         let entry_bytes = heap_charge.checked_add(std::mem::size_of::<(K, LfuCacheEntry<V>)>());
         if entry_bytes.is_none()
             || self
@@ -222,7 +227,7 @@ where
             })
         {
             self.rejected_admissions = self.rejected_admissions.saturating_add(1);
-            return;
+            return false;
         }
         let previous = self.entries.get(&key).map_or(0, |entry| entry.heap_charge);
         let Some(total) = self
@@ -231,7 +236,7 @@ where
             .and_then(|bytes| bytes.checked_add(heap_charge))
         else {
             self.rejected_admissions = self.rejected_admissions.saturating_add(1);
-            return;
+            return false;
         };
         self.entry_heap_charge = total;
         self.access_tick = self.access_tick.saturating_add(1);
@@ -276,6 +281,7 @@ where
                 self.entries.shrink_to_fit();
             }
         }
+        true
     }
 
     pub fn max_bytes(&self) -> Option<usize> {
@@ -446,11 +452,11 @@ mod tests {
     #[test]
     fn byte_limited_lfu_replacement_and_oversize_admission_are_atomic() {
         let mut cache = LfuCache::with_byte_limit(Some(8), Some(4096));
-        cache.insert_weighted(1, vec![1; 1024], 1024);
-        cache.insert_weighted(1, vec![2; 2048], 2048);
+        assert!(cache.insert_weighted(1, vec![1; 1024], 1024));
+        assert!(cache.insert_weighted(1, vec![2; 2048], 2048));
         assert_eq!(cache.entry_heap_charge, 2048);
         let before = cache.charged_bytes();
-        cache.insert_weighted(1, vec![3; 8192], 8192);
+        assert!(!cache.insert_weighted(1, vec![3; 8192], 8192));
         assert_eq!(cache.charged_bytes(), before);
         assert_eq!(cache.get(&1), Some(vec![2; 2048]));
         assert_eq!(cache.stats().entries, 1);
@@ -459,12 +465,12 @@ mod tests {
     #[test]
     fn zero_and_overflowing_byte_budgets_cannot_leave_retained_entries() {
         let mut disabled = LfuCache::with_byte_limit(None, Some(0));
-        disabled.insert_weighted(1, 1, 0);
+        assert!(!disabled.insert_weighted(1, 1, 0));
         assert_eq!(disabled.get(&1), None);
         assert_eq!(disabled.stats().disabled_misses, 1);
         assert_eq!(disabled.charged_bytes(), Some(0));
         let mut overflow = LfuCache::with_byte_limit(None, Some(usize::MAX));
-        overflow.insert_weighted(1, 1, usize::MAX);
+        assert!(!overflow.insert_weighted(1, 1, usize::MAX));
         assert_eq!(overflow.stats().entries, 0);
         assert_eq!(overflow.charged_bytes(), Some(0));
     }

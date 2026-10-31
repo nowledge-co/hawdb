@@ -158,6 +158,42 @@ fn physical_case_cache_budget_refusals_preserve_bound_results() {
 }
 
 #[test]
+fn physical_cache_admission_trace_matches_the_reported_outcome() {
+    for (entry_limit, expected_admitted) in [(8 << 20, true), (1, false)] {
+        let mut db = Database::new_with_config(DatabaseConfig {
+            max_physical_plan_cache_entry_bytes: entry_limit,
+            ..Default::default()
+        });
+        db.query("CREATE (:Item {id: 0})").unwrap();
+        let mut read = db.begin_read_transaction().unwrap();
+        let query = "MATCH (n:Item) RETURN CASE n.id WHEN $id THEN $score ELSE null END AS score";
+        let parameters = BTreeMap::from([
+            ("id".into(), Value::Int(0)),
+            ("score".into(), Value::Int(99)),
+        ]);
+        let explain = read.explain_query_with_params(query, &parameters).unwrap();
+        let admitted = explain
+            .trace
+            .decisions
+            .iter()
+            .any(|decision| decision.starts_with("physical plan cache admission accepted:"));
+        let refused = explain
+            .trace
+            .decisions
+            .iter()
+            .any(|decision| decision.starts_with("physical plan cache admission refused:"));
+        assert_eq!(admitted, expected_admitted);
+        assert_eq!(refused, !expected_admitted);
+        let stats = read.plan_cache_stats();
+        assert_eq!(stats.admissions, u64::from(expected_admitted));
+        assert_eq!(stats.rejected_admissions, u64::from(!expected_admitted));
+        assert_eq!(stats.entries, usize::from(expected_admitted));
+        let output = read.query_with_params(query, &parameters).unwrap();
+        assert_eq!(output.rows[0]["score"], Value::Int(99));
+    }
+}
+
+#[test]
 fn physical_case_hits_keep_lazy_errors_and_recover_after_failed_reads() {
     let mut db = Database::new();
     db.query("CREATE (:Item {id: 0})").unwrap();

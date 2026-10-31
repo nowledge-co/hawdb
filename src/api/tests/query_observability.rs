@@ -20,9 +20,9 @@ use crate::{QueryAccessControlContext, RuntimeCapabilities, RuntimeCapability};
 mod query_identity;
 
 #[test]
-fn physical_plan_cache_refuses_opaque_regex_without_displacing_hot_plan() {
+fn physical_plan_cache_retains_regex_sources_without_displacing_hot_plan() {
     let mut db = Database::new_with_config(DatabaseConfig {
-        max_plan_cache_entries: Some(1),
+        max_plan_cache_entries: Some(2),
         ..Default::default()
     });
     db.query("CREATE (:Item {id: 0, name: 'alpha'})").unwrap();
@@ -35,18 +35,17 @@ fn physical_plan_cache_refuses_opaque_regex_without_displacing_hot_plan() {
     );
     let before = read.plan_cache_stats();
     let regex = "MATCH (n:Item) WHERE n.name =~ '(a|b).*' RETURN n.id AS id";
-    for _ in 0..2 {
+    for expected in [PlanCacheLookup::Miss, PlanCacheLookup::Hit] {
         let explain = read.explain_query(regex).unwrap();
-        assert_eq!(explain.plan_cache_lookup, PlanCacheLookup::Miss);
-        assert!(explain.trace.decisions.iter().any(|decision| decision
-            == "physical plan cache admission refused: retained allocation cannot be bounded"));
+        assert_eq!(explain.plan_cache_lookup, expected);
         let output = read.query(regex).unwrap();
+        assert_eq!(output.rows.len(), 1);
         assert_eq!(output.rows[0]["id"], Value::Int(0));
     }
     let after = read.plan_cache_stats();
-    assert_eq!(after.entries, before.entries);
-    assert_eq!(after.charged_bytes, before.charged_bytes);
-    assert_eq!(after.rejected_admissions, before.rejected_admissions + 4);
+    assert_eq!(after.entries, before.entries + 1);
+    assert!(after.charged_bytes.unwrap() > before.charged_bytes.unwrap());
+    assert_eq!(after.rejected_admissions, before.rejected_admissions);
     assert_eq!(
         read.explain_query(hot).unwrap().plan_cache_lookup,
         PlanCacheLookup::Hit

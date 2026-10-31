@@ -185,6 +185,7 @@ fn cached(
         physical_template,
         trace,
         has_parameter_slots: parameterized.slot_count() > 0,
+        has_source_regexes: false,
     });
     let charge = key
         .retained_heap_bytes()

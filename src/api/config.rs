@@ -103,6 +103,9 @@ pub struct DatabaseConfig {
     /// Includes keys, IR, traces, shared payloads and spare table capacity.
     /// Defaults to 16 MiB; zero disables admission. Allocator rounding,
     /// in-flight caller-owned plans and relational SQL templates are separate.
+    /// Applied independently to live cache instances, including private read
+    /// and transaction caches: total database/process retention grows with
+    /// their number and is not charged to `query_memory_bytes`.
     pub max_physical_plan_cache_bytes: usize,
     /// Maximum requested bytes for one retained physical-plan entry, including
     /// its key/value layout. Defaults to 8 MiB; zero disables admission.

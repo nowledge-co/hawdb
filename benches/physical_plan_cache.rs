@@ -146,7 +146,13 @@ fn run(
 }
 
 fn main() {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.is_empty() {
+        eprintln!("physical_plan_cache: small smoke run; pass candidates space_rows body_bytes repeats reused|fork for an experiment");
+        args = ["20", "512", "1", "3", "reused"]
+            .map(str::to_owned)
+            .to_vec();
+    }
     assert_eq!(
         args.len(),
         5,
