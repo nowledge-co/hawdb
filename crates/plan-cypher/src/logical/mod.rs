@@ -107,12 +107,29 @@ impl<P> VectorIndexScan<P> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchMutationValue {
     Static(Value),
+    Row,
     RowProperty(String),
+}
+
+/// Two independently matched endpoints, evaluated for every bounded input row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchRelationshipMerge {
+    pub source_variable: String,
+    pub source_label: String,
+    pub source_properties: BTreeMap<String, BatchMutationValue>,
+    pub target_variable: String,
+    pub target_label: String,
+    pub target_properties: BTreeMap<String, BatchMutationValue>,
+    pub rel_type: String,
+    pub rel_match_properties: BTreeMap<String, BatchMutationValue>,
+    pub on_create_properties: BTreeMap<String, BatchMutationValue>,
+    pub returns: Option<Vec<Projection>>,
 }
 
 /// The mutation operations currently fed by a bounded `UNWIND` row source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchMutationOperation {
+    MergeRelationship(Box<BatchRelationshipMerge>),
     CreateNode {
         label: String,
         properties: BTreeMap<String, BatchMutationValue>,

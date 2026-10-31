@@ -1,4 +1,39 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
+
+#[test]
+fn relationship_merge_batch_preserves_scope_and_refuses_unrepresented_clauses() {
+    let parameters = BTreeMap::from([("ids".into(), Value::List(vec![Value::Int(1)]))]);
+    let prefix = "MATCH (s:Skill {id: 1}) UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[r:EVIDENCE]->(m)";
+    let plan = plan_pipeline_query(
+        &format!("{prefix} ON CREATE SET r.weight = 1.0 RETURN m.id"),
+        &parameters,
+    )
+    .unwrap();
+    assert!(matches!(
+        plan,
+        LogicalPlan::UnwindMutation {
+            operation: BatchMutationOperation::MergeRelationship(_),
+            ..
+        }
+    ));
+    for query in [
+        format!("{prefix} RETURN r.weight"),
+        format!("{prefix} RETURN DISTINCT m.id"),
+        format!("{prefix} RETURN m.id LIMIT 1"),
+        format!("{prefix} ON MATCH SET r.weight = 2 RETURN m.id"),
+        format!("{prefix} SET s.used = true RETURN m.id"),
+        "MATCH (s:Skill), (m:Memory) MERGE (s)-[s:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill {id: key}) UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) WHERE s.id = key UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) WHERE m.id = 1 UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) UNWIND $ids AS s MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) UNWIND $ids AS key UNWIND $ids AS other MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) OPTIONAL MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+    ] { assert!(plan_pipeline_query(&query, &parameters).is_err(), "{query}"); }
+}
 
 #[test]
 fn atomic_mutations_reject_conditions_the_storage_command_cannot_represent() {

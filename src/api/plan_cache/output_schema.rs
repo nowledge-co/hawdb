@@ -23,6 +23,17 @@ pub(super) fn logical_output_columns(
 ) -> Option<Vec<String>> {
     let columns = loop {
         match plan {
+            LogicalPlan::UnwindMutation {
+                operation: hawdb_plan_cypher::BatchMutationOperation::MergeRelationship(merge),
+                ..
+            } => {
+                break merge
+                    .returns
+                    .as_ref()?
+                    .iter()
+                    .map(|item| item.name.clone())
+                    .collect();
+            }
             LogicalPlan::Project { items, .. } => {
                 break items
                     .iter()

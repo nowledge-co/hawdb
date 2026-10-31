@@ -430,6 +430,7 @@ pub enum ValueExpressionKind {
     Parameter(String),
     List(Vec<ValueExpression>),
     BindingProperty { variable: String, property: String },
+    BindingVariable(String),
     CurrentTimestamp,
     Timestamp(Box<ValueExpression>),
 }

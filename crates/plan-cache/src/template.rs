@@ -456,6 +456,7 @@ fn folded_predicate_parameters(statement: &cypher::Statement) -> BTreeSet<String
             cypher::ValueExpressionKind::Timestamp(inner) => collect_value(inner, exact),
             cypher::ValueExpressionKind::Literal(_)
             | cypher::ValueExpressionKind::BindingProperty { .. }
+            | cypher::ValueExpressionKind::BindingVariable(_)
             | cypher::ValueExpressionKind::CurrentTimestamp => {}
         }
     }

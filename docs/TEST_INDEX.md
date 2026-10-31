@@ -1604,6 +1604,20 @@ read-only refusal, incident-edge removal, unchanged unrelated nodes and one-batc
 recovery. They no longer use generic entity-delete response DTOs or business
 read helpers for their postconditions. Native CI retains the existing owners.
 
+### Matched UNWIND relationship MERGE
+
+The existing root general owner (`//:hawdb_unit_general_tests`) runs
+`api::tests::merge_relationships::matched_*`: exact projected member rows,
+duplicate input multiplicity, missing/NULL/empty matches, ON CREATE retention,
+all database/concurrent transaction result-budget refusals, full-batch input and
+storage refusal, and embedded host count-guard rollback followed by WAL reopen.
+The parser and plan-cypher crate owners retain the syntax and scope/refusal
+checks. No carrier, feature matrix, timeout or CI lane is added. Local replay:
+`cargo test --locked -p hawdb --lib api::tests::merge_relationships::matched_`
+and `cargo test --locked -p hawdb-plan-cypher --lib relationship_merge_batch`.
+See [the supported pipeline contract](CYPHER_DEFAULT_PIPELINE.md#bounded-relationship-mutation-input)
+and [#1397](https://github.com/nowledge-co/hawdb/issues/1397).
+
 ### Property mutation query fixtures
 
 The property mutation cases in `src/api/tests.rs` and

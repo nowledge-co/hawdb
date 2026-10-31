@@ -71,6 +71,7 @@ pub(in crate::api) fn value_is_deterministic(value: &cypher::ValueExpression) ->
         cypher::ValueExpressionKind::Literal(_)
         | cypher::ValueExpressionKind::Parameter(_)
         | cypher::ValueExpressionKind::BindingProperty { .. } => true,
+        cypher::ValueExpressionKind::BindingVariable(_) => true,
     }
 }
 

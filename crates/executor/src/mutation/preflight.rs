@@ -38,6 +38,8 @@ use hawdb_storage::{
 };
 use std::collections::BTreeMap;
 
+mod relationship;
+
 pub fn execute_mutation_with_store(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
@@ -72,6 +74,26 @@ pub fn execute_mutation_with_store_output_limits(
         operation,
     } = plan
     {
+        if let BatchMutationOperation::MergeRelationship(merge) = operation
+            && merge.returns.is_some()
+        {
+            let mutations =
+                materialize_unwind_mutations(rows, variable, operation, limits, task_context)?;
+            let output = relationship::project_before_commit(
+                merge,
+                &mutations,
+                catalog,
+                store,
+                limits,
+                output_limits,
+                task_context,
+            )?;
+            runtime_checkpoint(task_context)?;
+            if !mutations.is_empty() {
+                store.commit_mutations_with_limits(catalog, mutations, limits)?;
+            }
+            return Ok(output);
+        }
         return execute_unwind_mutation_with_limits(
             rows,
             variable,
@@ -181,6 +203,40 @@ fn resolve_unwind_mutation(
     row: &Value,
 ) -> Result<GraphMutation> {
     match operation {
+        BatchMutationOperation::MergeRelationship(merge) => {
+            let source = resolve_unwind_properties(&merge.source_properties, variable, row)?;
+            let target = resolve_unwind_properties(&merge.target_properties, variable, row)?;
+            let endpoint_filter = |properties: &BTreeMap<String, Value>| {
+                if properties
+                    .values()
+                    .any(|value| matches!(value, Value::Null))
+                {
+                    // Cypher equality with NULL never binds an endpoint.
+                    Some(hawdb_storage::mutation::PropertyFilter::Or(Vec::new()))
+                } else {
+                    crate::predicate::property_filter_from_properties(properties)
+                }
+            };
+            Ok(GraphMutation::MergeRelationshipsBetweenMatches(
+                hawdb_storage::mutation::MatchedRelationshipMerge {
+                    source_label: merge.source_label.clone(),
+                    source_filter: endpoint_filter(&source),
+                    target_label: merge.target_label.clone(),
+                    target_filter: endpoint_filter(&target),
+                    rel_type: merge.rel_type.clone(),
+                    rel_match_properties: resolve_unwind_properties(
+                        &merge.rel_match_properties,
+                        variable,
+                        row,
+                    )?,
+                    on_create_properties: resolve_unwind_properties(
+                        &merge.on_create_properties,
+                        variable,
+                        row,
+                    )?,
+                },
+            ))
+        }
         BatchMutationOperation::CreateNode { label, properties } => Ok(GraphMutation::CreateNode {
             label: label.clone(),
             properties: resolve_unwind_properties(properties, variable, row)?,
@@ -209,6 +265,7 @@ fn resolve_unwind_properties(
         .map(|(property, value)| {
             let value = match value {
                 BatchMutationValue::Static(value) => value.clone(),
+                BatchMutationValue::Row => row.clone(),
                 BatchMutationValue::RowProperty(row_property) => {
                     let Value::Map(values) = row else {
                         return Err(HawDBError::Semantic(format!(
@@ -230,6 +287,15 @@ pub fn project_staged_mutation_return_rows(
     mutation_rows: &[Row],
     limits: MutationLimits,
 ) -> Result<Option<Vec<Row>>> {
+    if let PhysicalPlan::UnwindMutation {
+        operation: BatchMutationOperation::MergeRelationship(merge),
+        ..
+    } = plan
+        && merge.returns.is_some()
+    {
+        return relationship::project_staged(merge, catalog, store, mutation_rows, limits)
+            .map(Some);
+    }
     let PhysicalPlan::SetNodePropertiesReturn {
         variable, returns, ..
     } = plan

@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bind mutation clauses directly to the existing atomic storage commands.
 
 use super::*;
@@ -8,6 +11,7 @@ use hawdb_cypher::{
 
 mod node;
 mod relationship;
+mod relationship_batch;
 
 #[derive(Default)]
 struct MutationInput<'a> {
@@ -36,6 +40,9 @@ pub(super) fn bind_unwind_mutation_pipeline(
     query: &QueryPipeline,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
+    if query.clauses.len() != 2 {
+        return bind_mutation_pipeline(query, parameters);
+    }
     let [unwind, mutation] = query.clauses.as_slice() else {
         return Err(unsupported(
             "UNWIND mutations require exactly one following mutation clause",
@@ -183,6 +190,9 @@ fn bind_batch_value(
     parameters: &BTreeMap<String, Value>,
 ) -> Result<BatchMutationValue> {
     match &value.kind {
+        ValueExpressionKind::BindingVariable(variable) if variable == row_variable => {
+            Ok(BatchMutationValue::Row)
+        }
         ValueExpressionKind::BindingProperty { variable, property } => {
             if variable != row_variable {
                 return Err(HawDBError::Semantic(format!(
@@ -199,6 +209,21 @@ pub(super) fn bind_mutation_pipeline(
     query: &QueryPipeline,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
+    if query
+        .clauses
+        .iter()
+        .any(|clause| matches!(clause.kind, ClauseKind::Unwind { .. }))
+        || (query
+            .clauses
+            .iter()
+            .any(|clause| matches!(clause.kind, ClauseKind::Merge { .. }))
+            && matches!(
+                query.clauses.last().map(|clause| &clause.kind),
+                Some(ClauseKind::Return(_))
+            ))
+    {
+        return relationship_batch::bind(query, parameters);
+    }
     let mut input = MutationInput::default();
     let mut clauses = query.clauses.as_slice();
     while let Some(clause) = clauses.first() {

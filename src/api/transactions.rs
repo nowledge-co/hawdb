@@ -301,10 +301,8 @@ pub(super) fn execute_graph_transaction_plan(
     }
     if executor::is_mutation_plan(&optimized.physical_plan)? {
         runtime.ensure_writable(transaction.store())?;
-        let is_mutation_return = matches!(
-            optimized.physical_plan,
-            PhysicalPlan::SetNodePropertiesReturn { .. }
-        );
+        let is_mutation_return =
+            hawdb_executor::mutation::mutation_returns_rows(&optimized.physical_plan);
         let mut mutation_limits = match &optimized.physical_plan {
             PhysicalPlan::SetNodePropertiesReturn {
                 returns: crate::planner::SetNodePropertiesReturnMode::Count { .. },
@@ -560,10 +558,7 @@ impl<'a> PreparedGraphTransactionRequest<'a> {
     }
 
     pub(super) fn returns_statement_rows(&self) -> bool {
-        matches!(
-            self.optimized.physical_plan,
-            PhysicalPlan::SetNodePropertiesReturn { .. }
-        )
+        hawdb_executor::mutation::mutation_returns_rows(&self.optimized.physical_plan)
     }
 
     pub(super) fn into_trace(self, capture_trace: bool) -> QueryExecutionTrace {

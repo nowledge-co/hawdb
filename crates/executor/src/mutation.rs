@@ -38,6 +38,13 @@ pub use preflight::{
     materialize_node_mutation, materialize_unwind_mutations, project_staged_mutation_return_rows,
 };
 
+pub fn mutation_returns_rows(plan: &PhysicalPlan) -> bool {
+    matches!(plan, PhysicalPlan::SetNodePropertiesReturn { .. })
+        || matches!(plan, PhysicalPlan::UnwindMutation {
+            operation: hawdb_plan_cypher::BatchMutationOperation::MergeRelationship(merge), ..
+        } if merge.returns.is_some())
+}
+
 pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
     match plan {
         PhysicalPlan::CreateNodeLabel { label } => Ok(Some(GraphMutation::CreateNodeLabel {

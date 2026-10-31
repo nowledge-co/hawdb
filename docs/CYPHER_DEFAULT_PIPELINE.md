@@ -45,6 +45,45 @@ at the WITH boundary; RETURN windows remain after lookup/aggregation. See
 [WITH semantics](CYPHER_WITH_SEMANTICS.md) and
 [cache eligibility](CYPHER_PLAN_CACHE_ELIGIBILITY.md).
 
+## Bounded relationship mutation input
+
+The atomic mutation binder accepts two independently bound, non-optional node
+endpoints with one optional parameter/list `UNWIND` before relationship `MERGE`.
+For example, the Mem candidate-evidence writer can use:
+
+```cypher
+MATCH (s:Skill {id: $id})
+UNWIND $ids AS memory_id
+MATCH (m:Memory {id: memory_id})
+MERGE (s)-[r:SYNTHESIZED_FROM]->(m)
+ON CREATE SET r.weight = 1.0, r.occasion_key = $occasion_key, r.created_at = $now
+RETURN m.id
+```
+
+Endpoint equalities may use pattern maps or AND-connected WHERE predicates.
+Scalar UNWIND elements and map-element properties are bound only after their
+row variable is introduced. A final RETURN projects the existing endpoints;
+relationship projections, aggregates, result modifiers, additional mutation
+clauses, optional matches and correlated graph traversals remain refused.
+The same endpoint RETURN is available without UNWIND. This does not enable
+general-purpose read-only UNWIND composition.
+
+Lowering produces the existing `UnwindMutationExec` with a typed matched-edge
+operation. It resolves the complete bounded input before submitting one storage
+batch; it does not run one committed query per row. Input duplicates retain
+result multiplicity while MERGE reuses the same relationship. Missing or NULL
+endpoint equalities produce no rows or invented nodes. ON CREATE changes only
+new relationships. Mutation plans remain excluded from parameter-template reuse.
+
+Node-only RETURN values are independent of the new edge. Autocommit preflight
+projects the same matched endpoint pairs and checks output limits before the
+atomic write. Explicit transactions project the staged result under the existing
+statement savepoint; output rejection restores that statement while retaining
+earlier statements. Ordinary rollback and WAL/reopen boundaries remain unchanged.
+This supplies exact member rows to a host count guard; it does not silently
+accept a partial match or implement Mem's complete Skills adapter/activation.
+Tracked in [#1397](https://github.com/nowledge-co/hawdb/issues/1397).
+
 ## Frozen corpus qualification
 
 The original 1,427 queries, their parameters, 94 Mem source hashes and historical
