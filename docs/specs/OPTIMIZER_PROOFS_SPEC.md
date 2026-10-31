@@ -53,6 +53,8 @@ Values-only column/literal projection transfers size their complete incoming bat
 borrowed values before allocating output. This prevents an otherwise redundant
 group's replacement from demanding the full 16-MiB payload ceiling under a
 2-MiB query budget. Oversized rows still fail against the configured ceiling;
+Duplicate aliases acquire `#N` suffixes and retain the existing admission path.
+The sizing fast path is bounded to 64 unique aliases of at most 128 bytes;
 computed expressions, retained graph bindings and scoring annotations keep the existing admission
 path. The preflight does not evaluate expressions twice or skip their errors.
 

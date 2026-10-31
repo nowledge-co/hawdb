@@ -224,7 +224,16 @@ fn projection_batch_budget(
     ceiling: NonZeroUsize,
     preserves_annotations: bool,
 ) -> NonZeroUsize {
-    if preserves_annotations
+    // Duplicate output names gain #N suffixes during projection. Retain the
+    // ceiling unless this bounded shape proves the original names are final.
+    if items.len() > 64
+        || items.iter().any(|item| item.name.len() > 128)
+        || items.iter().enumerate().any(|(index, item)| {
+            items[..index]
+                .iter()
+                .any(|previous| previous.name == item.name)
+        })
+        || preserves_annotations
         || batch
             .iter()
             .any(|row| !row.nodes.is_empty() || !row.relationships.is_empty())

@@ -189,6 +189,44 @@ fn column_literal_projection_reserves_the_actual_transfer_under_a_small_query_bu
 }
 
 #[test]
+fn duplicate_projection_aliases_preserve_suffixes_without_a_false_payload_refusal() {
+    let projections = [
+        Projection {
+            name: "alias".into(),
+            expression: ProjectionExpression::Literal(Value::Int(1)),
+        },
+        Projection {
+            name: "alias".into(),
+            expression: ProjectionExpression::Literal(Value::Int(2)),
+        },
+    ];
+    let mut source = Source::new(vec![Binding::values(BTreeMap::new())], 1);
+    let mut output = Vec::new();
+    with_context(16, 64 * 1024, |context| {
+        stream_projection_batches(
+            &projections,
+            &PhysicalPlan::EmptyExec,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].values,
+        BTreeMap::from([
+            ("alias".into(), Value::Int(1)),
+            ("alias#2".into(), Value::Int(2))
+        ])
+    );
+}
+
+#[test]
 fn projection_budget_keeps_the_ceiling_for_graph_columns_and_computed_evaluators() {
     let input = rows(1, 0);
     let ceiling = NonZeroUsize::new(4096).unwrap();
