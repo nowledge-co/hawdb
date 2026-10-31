@@ -2155,7 +2155,11 @@ Existing optimizer-graph ownership covers `graph::costing::width::tests`,
 schema, bounded distinct-domain width sampling, required-only decoding,
 projection/graph ownership and alias scope, key-versus-body comparisons,
 context-sensitive choices in memo/direct lowering, selected trace refresh,
-metadata bounds and saturating row/cost arithmetic. Core schema snapshot tests
+metadata bounds and saturating row/cost arithmetic. The existing
+`//:hawdb_linux_ci_optimizer_summary_smoke_test` pins the corresponding
+comparison/decode costs for all seven affected graph workloads, retaining exact
+row/cost, decision, fingerprint and repeated-planning assertions.
+Core schema snapshot tests
 cover table-qualified descriptor iteration, deletion and old snapshot identity.
 Root `api::tests::width_costing` checks complete NULL/tied output, pinned reads,
 warm templates, small budgets and checkpoint/reopen in all residency modes.
