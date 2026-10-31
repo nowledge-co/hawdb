@@ -478,11 +478,7 @@ impl Transformer<'_> {
         mut expression: ScalarExpression,
         depth: usize,
     ) -> Result<ScalarExpression> {
-        for (index, postfix) in self
-            .named_children(node, "x_postfix")
-            .into_iter()
-            .enumerate()
-        {
+        for (index, postfix) in self.iter_named_children(node, "x_postfix").enumerate() {
             self.expression_budget(postfix, depth + index + 1)?;
             let contents = self.tree.required(postfix, "x_postfix_contents");
             let first = self
@@ -616,7 +612,8 @@ impl Transformer<'_> {
                 for arg in self
                     .tree
                     .children(self.tree.required(node, "x_list_arguments"))
-                    .to_vec()
+                    .iter()
+                    .copied()
                 {
                     arguments.push(self.case_scalar(arg, depth)?);
                 }
@@ -653,7 +650,8 @@ impl Transformer<'_> {
                         for child in self
                             .tree
                             .children(self.tree.required(list, "x_expression_list_contents"))
-                            .to_vec()
+                            .iter()
+                            .copied()
                         {
                             elements.push(self.case_boolean(child, depth)?);
                         }
@@ -758,14 +756,14 @@ impl Transformer<'_> {
         ))
     }
     pub(super) fn case_boolean(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpression> {
-        let ands = self.named_children(node, "x_and");
+        let ands = self.iter_named_children(node, "x_and");
         let mut terms = Vec::new();
-        for (index, and) in ands.into_iter().enumerate() {
+        for (index, and) in ands.enumerate() {
             self.expression_budget(and, depth + index)?;
             terms.push(self.case_and(and, depth + index)?)
         }
         // Subsequent AND operands are captured under the corresponding OR rest.
-        for rest in self.named_children(node, "x_or_rest") {
+        for rest in self.iter_named_children(node, "x_or_rest") {
             let index = terms.len();
             self.expression_budget(rest, depth + index)?;
             terms.push(self.case_and(self.tree.required(rest, "x_and"), depth + index)?);
@@ -774,7 +772,7 @@ impl Transformer<'_> {
     }
     fn case_and(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpression> {
         let mut terms = vec![self.case_condition(self.tree.required(node, "x_condition"), depth)?];
-        for rest in self.named_children(node, "x_and_rest") {
+        for rest in self.iter_named_children(node, "x_and_rest") {
             let index = terms.len();
             self.expression_budget(rest, depth + index)?;
             terms.push(self.case_condition(self.tree.required(rest, "x_condition"), depth + index)?)
@@ -921,7 +919,7 @@ impl Transformer<'_> {
             return Err(self.error(node, "specialized CASE requires the same property"));
         }
         let mut values = Vec::new();
-        for child in self.named_children(node, "v_value") {
+        for child in self.iter_named_children(node, "v_value") {
             let value = self.value(child, 0)?;
             if value.kind.reads_row_binding() {
                 return Err(self.error(child, "expected a constant CASE value"));
@@ -992,7 +990,7 @@ impl Transformer<'_> {
             None
         };
         let mut branches = Vec::new();
-        for branch in self.named_children(
+        for branch in self.iter_named_children(
             body,
             if simple {
                 "x_simple_branch"
@@ -1037,10 +1035,10 @@ impl Transformer<'_> {
             }
         }
         let mut differences = Vec::new();
-        for difference in self.named_children(node, "x_difference") {
+        for difference in self.iter_named_children(node, "x_difference") {
             let mut variable = None;
             let mut terms = Vec::new();
-            for term in self.named_children(difference, "x_difference_term") {
+            for term in self.iter_named_children(difference, "x_difference_term") {
                 let names = self.ids(self.tree.required(term, "d_ref"));
                 if variable.as_ref().is_some_and(|v| v != &names[0]) {
                     return Err(

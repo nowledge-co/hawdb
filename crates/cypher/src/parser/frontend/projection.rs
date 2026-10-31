@@ -156,7 +156,7 @@ impl Transformer<'_> {
         let projection = self.tree.required(node, "r_projection");
         let distinct = self.tree.child(projection, "r_distinct").is_some();
         let mut items = Vec::new();
-        for item in self.named_children(projection, "r_item") {
+        for item in self.iter_named_children(projection, "r_item") {
             let expression = self.projection_expression(item, depth)?;
             let alias = self
                 .tree
@@ -167,7 +167,7 @@ impl Transformer<'_> {
         let predicate = self.fold_where(node, depth, anonymous)?;
         let mut order_by = Vec::new();
         if let Some(order) = self.tree.child(node, "r_order") {
-            for item in self.named_children(order, "r_order_item") {
+            for item in self.iter_named_children(order, "r_order_item") {
                 order_by.push(self.order_item(item, depth)?);
             }
         }
@@ -247,7 +247,7 @@ impl Transformer<'_> {
             self.return_expression(first, depth)?
         };
         let mut rest = Vec::new();
-        for item in self.named_children(
+        for item in self.iter_named_children(
             node,
             if product {
                 "r_product_rest"
@@ -348,13 +348,18 @@ impl Transformer<'_> {
                 for argument in self
                     .tree
                     .children(self.tree.required(call, "r_list_arguments"))
-                    .to_vec()
+                    .iter()
+                    .copied()
                 {
                     arguments.push(self.return_expression(argument, depth + 1)?)
                 }
                 self.list_arity(selected, function, arguments.len())?;
                 if arguments.iter().any(contains_aggregate) {
-                    if !self.named_children(selected, "x_postfix").is_empty() {
+                    if self
+                        .iter_named_children(selected, "x_postfix")
+                        .next()
+                        .is_some()
+                    {
                         return Err(self.error(
                             selected,
                             "aggregate list functions do not support postfixes",

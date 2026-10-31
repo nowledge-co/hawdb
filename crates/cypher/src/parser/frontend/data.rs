@@ -183,14 +183,20 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
     ]
 }
 
-impl Transformer<'_> {
-    pub(super) fn named_children(&self, node: NodeId, name: &str) -> Vec<NodeId> {
-        self.tree
-            .children(node)
+impl<'a> Transformer<'a> {
+    pub(super) fn iter_named_children<'n>(
+        &self,
+        node: NodeId,
+        name: &'n str,
+    ) -> impl Iterator<Item = NodeId> + use<'a, 'n> {
+        let tree = self.tree;
+        tree.children(node)
             .iter()
             .copied()
-            .filter(|id| self.tree.nodes[*id].name == Some(name))
-            .collect()
+            .filter(move |id| tree.nodes[*id].name == Some(name))
+    }
+    pub(super) fn named_children(&self, node: NodeId, name: &str) -> Vec<NodeId> {
+        self.iter_named_children(node, name).collect()
     }
     pub(super) fn system_assignment(
         &mut self,
@@ -258,7 +264,7 @@ impl Transformer<'_> {
             .map(|id| self.text(id).to_owned());
         let mut on_create_sets = Vec::new();
         let mut on_match_sets = Vec::new();
-        for sets in self.named_children(node, "d_on_sets") {
+        for sets in self.iter_named_children(node, "d_on_sets") {
             let create = self
                 .text(self.tree.required(sets, "d_on_kind"))
                 .eq_ignore_ascii_case("CREATE");
@@ -288,9 +294,8 @@ impl Transformer<'_> {
         self.identifier_pair(node)
     }
     pub(super) fn sets(&mut self, node: NodeId, depth: usize) -> Result<Vec<SetProperty>> {
-        let children = self.tree.children(node).to_vec();
+        let children = self.tree.children(node).iter().copied();
         children
-            .into_iter()
             .map(|assignment| {
                 let (variable, property) = self.reference(self.tree.required(assignment, "d_ref"));
                 let value = self.tree.required(assignment, "d_set_value");
@@ -345,7 +350,7 @@ impl Transformer<'_> {
                     .map(|id| self.reference(id))
                     .collect::<Vec<_>>();
                 let mut values = Vec::new();
-                for value in self.named_children(node, "v_value") {
+                for value in self.iter_named_children(node, "v_value") {
                     values.push(self.value(value, depth)?);
                 }
                 if refs.iter().any(|reference| *reference != refs[0]) {

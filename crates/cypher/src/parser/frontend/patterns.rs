@@ -207,7 +207,7 @@ impl Transformer<'_> {
         let chain = self.tree.required(node, "p_chain");
         let first = self.pattern_node(self.tree.required(chain, "p_node"), depth, anonymous)?;
         let mut steps = Vec::new();
-        for step in self.named_children(chain, "p_step") {
+        for step in self.iter_named_children(chain, "p_step") {
             let edge = self.tree.required(step, "p_relationship");
             let shape = self.tree.children(edge)[0];
             let direction = if self.tree.nodes[shape].name == Some("p_incoming") {
@@ -382,7 +382,7 @@ impl Transformer<'_> {
                     self.pattern(self.tree.required(node, "p_pattern"), depth, anonymous)?;
                 let mut on_create = Vec::new();
                 let mut on_match = Vec::new();
-                for sets in self.named_children(node, "d_on_sets") {
+                for sets in self.iter_named_children(node, "d_on_sets") {
                     let create = self
                         .text(self.tree.required(sets, "d_on_kind"))
                         .eq_ignore_ascii_case("CREATE");

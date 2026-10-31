@@ -69,7 +69,7 @@ pub(super) fn parse(input: &str) -> Result<Statement> {
         .map_err(|error| render(input, error))?;
     let root = tree.required(tree.root, "statement");
     Transformer {
-        tree,
+        tree: &tree,
         input,
         tokens: &tokens,
         peak_depth: 0,
@@ -93,7 +93,7 @@ pub(super) fn parse_pipeline(input: &str) -> Result<QueryPipeline> {
         .map_err(|error| render(input, error))?;
     let root = tree.required(tree.root, "pipeline");
     Transformer {
-        tree,
+        tree: &tree,
         input,
         tokens: &tokens,
         peak_depth: 0,
@@ -117,7 +117,7 @@ pub(super) fn parse_predicate(input: &str, columns: bool) -> Result<PropertyPred
         .map_err(|error| render(input, error))?;
     let root = tree.required(tree.root, "w_or");
     Transformer {
-        tree,
+        tree: &tree,
         input,
         tokens: &tokens,
         peak_depth: 0,
@@ -172,7 +172,7 @@ fn render(input: &str, error: SyntaxError) -> HawDBError {
 }
 
 struct Transformer<'a> {
-    tree: ParseTree,
+    tree: &'a ParseTree,
     input: &'a str,
     tokens: &'a [Token],
     peak_depth: usize,

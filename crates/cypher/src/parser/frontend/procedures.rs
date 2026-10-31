@@ -109,7 +109,8 @@ impl Transformer<'_> {
             let entries = self
                 .tree
                 .children(self.tree.required(map, "u_map_contents"))
-                .to_vec();
+                .iter()
+                .copied();
             let mut seen = BTreeSet::new();
             for entry in entries {
                 let key = self.tree.required(entry, "u_key");
@@ -161,7 +162,8 @@ impl Transformer<'_> {
             for entry in self
                 .tree
                 .children(self.tree.required(map, "u_map_contents"))
-                .to_vec()
+                .iter()
+                .copied()
             {
                 let key = self.tree.required(entry, "u_key");
                 if let Some(string) = self.tree.child(key, "v_string") {

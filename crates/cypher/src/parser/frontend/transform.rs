@@ -28,7 +28,7 @@ impl Transformer<'_> {
                 Ok(Statement::Explain(Box::new(Explain { analyze, statement })))
             }
             "cypher" => {
-                let children = self.tree.children(selected).to_vec();
+                let children = self.tree.children(selected).iter().copied();
                 let mut system_variables = Vec::new();
                 for child in children {
                     if self.tree.nodes[child].name == Some("hint") {

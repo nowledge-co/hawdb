@@ -230,10 +230,10 @@ impl Transformer<'_> {
                 let children = self
                     .tree
                     .children(self.tree.required(selected, "v_list_contents"))
-                    .to_vec();
+                    .iter()
+                    .copied();
                 ValueExpressionKind::List(
                     children
-                        .into_iter()
                         .map(|child| self.value(child, depth + 1))
                         .collect::<Result<_>>()?,
                 )
@@ -293,7 +293,7 @@ impl Transformer<'_> {
         node: NodeId,
         depth: usize,
     ) -> Result<std::collections::BTreeMap<String, ValueExpression>> {
-        let children = self.tree.children(node).to_vec();
+        let children = self.tree.children(node).iter().copied();
         let mut properties = std::collections::BTreeMap::new();
         for child in children {
             let name = self
