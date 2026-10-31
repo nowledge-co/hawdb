@@ -2316,6 +2316,12 @@ visits, replacement and density changes with compact nonzero memo records.
 These same sparse-oracle assertions cover on-demand history allocation, its two
 inline records, vector growth, dense holes and permanent sparse conversion; all
 logical entry counts, pending states, endpoints and node identities are retained.
+The same assertions retain the original entry accounting when the direct slots
+use the compiled grammar's existing 256-rule cap in a local array. Manual native
+qualification compares all 12,669 corpus records in cold/warmed worker threads
+against the preceding heap-backed table: release passes at 128/256/512 KiB and
+development passes at 256/512 KiB, with matching smaller-stack failures. This
+is separate from WASM compiler checks and from the standard owner test profile.
 Continuation-local results carry only match/mismatch; fatal resource errors
 return directly from the matcher. The existing fatal-propagation cases retain
 all original assertions across this representation change.

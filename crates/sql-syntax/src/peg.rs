@@ -23,6 +23,7 @@ use crate::{Span, SyntaxError, SyntaxErrorCode, Token, TokenKind};
 use memo::MemoTable;
 
 pub type NodeId = usize;
+const MAX_RULES: usize = 256;
 pub enum Expression<R = &'static str> {
     Keyword(&'static str),
     Token(TokenKind, &'static str),
@@ -47,7 +48,7 @@ pub struct Grammar {
 
 impl Grammar {
     pub fn compile(rules: Vec<(&'static str, Expression)>) -> Result<Self, String> {
-        if rules.len() > 256 {
+        if rules.len() > MAX_RULES {
             return Err("too many PEG rules".into());
         }
         let mut names = HashMap::new();
@@ -119,12 +120,13 @@ impl Grammar {
         root: &'static str,
         limits: Limits,
     ) -> Result<ParseTree, SyntaxError> {
+        let mut memo = MemoTable::new(self.rules.len());
         let mut parser = Matcher {
             grammar: self,
             input,
             tokens,
             limits,
-            memo: MemoTable::new(self.rules.len()),
+            memo: &mut memo,
             nodes: Vec::new(),
             edges: Vec::new(),
             captures: Vec::new(),
@@ -341,12 +343,12 @@ enum Frame<'a> {
     },
 }
 
-struct Matcher<'a> {
+struct Matcher<'a, 'm> {
     grammar: &'a Grammar,
     input: &'a str,
     tokens: &'a [Token],
     limits: Limits,
-    memo: MemoTable<'a>,
+    memo: &'m mut MemoTable<'a>,
     nodes: Vec<Node>,
     edges: Vec<NodeId>,
     // Only captures roll back. Memoized nodes and edges remain append-only
@@ -360,7 +362,7 @@ struct Matcher<'a> {
     memo_hits: usize,
 }
 
-impl<'a> Matcher<'a> {
+impl<'a> Matcher<'a, '_> {
     fn token(&self, position: usize) -> Token {
         self.tokens.get(position).copied().unwrap_or(Token::new(
             TokenKind::End,

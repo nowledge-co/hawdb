@@ -129,9 +129,20 @@ further visits use a bounded small vector, dense slots or permanent sparse
 storage. The direct slot remains accessible without following the history pointer.
 These forms share the same logical entry budget and retain pending, successful
 and failed results. The direct slots are bounded by the compiled grammar's
-256-rule cap, not the input length. On the qualified 64-bit platform, each rule's
-fixed memo metadata shrinks from 96 to 48 bytes; a rule with history also owns
-its separate storage, so this is not a per-entry or universal heap reduction.
+256-rule cap, not the input length. The direct slots occupy one local array,
+owned by the parse invocation and borrowed by the matcher. Constant initialization
+and borrowing avoid copying the whole table into the matcher. Compilation resolves
+all rule IDs within the same existing cap. The array contains 12,288 bytes of fixed
+metadata on the qualified 64-bit platform; histories still allocate separately and
+retain the same logical entry budget.
+
+This trades the fixed table's heap allocation for stack storage. Native ARM64
+release code reserves about 12.5 KiB for `Grammar::parse`, including its other
+locals. Against the previous heap-backed table, all 12,669 corpus records retain
+outcomes and diagnostics in cold and warmed worker threads: the qualified release
+probe passes at 128, 256 and 512 KiB; the development probe passes at 256 and
+512 KiB. Smaller tested stacks fail in both versions. These measurements cover
+the pinned compiler and those probe configurations.
 
 A nonzero state word also encodes the matched arena node ID, leaving zero for
 empty optional slots without a separate enum discriminant. End positions and

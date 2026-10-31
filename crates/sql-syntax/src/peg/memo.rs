@@ -3,10 +3,10 @@
 
 use std::collections::HashMap;
 
-use super::Memo;
+use super::{Memo, MAX_RULES};
 
 pub(super) struct MemoTable<'a> {
-    rules: Vec<RuleMemo<'a>>,
+    rules: [RuleMemo<'a>; MAX_RULES],
     len: usize,
 }
 
@@ -38,10 +38,14 @@ enum Older<'a> {
 
 impl<'a> MemoTable<'a> {
     pub fn new(rules: usize) -> Self {
+        assert!(rules <= MAX_RULES, "compiled grammar bounds the memo table");
         Self {
-            rules: std::iter::repeat_with(RuleMemo::default)
-                .take(rules)
-                .collect(),
+            rules: [const {
+                RuleMemo {
+                    latest: None,
+                    older: None,
+                }
+            }; MAX_RULES],
             len: 0,
         }
     }
@@ -49,6 +53,7 @@ impl<'a> MemoTable<'a> {
         self.len
     }
     pub fn get(&self, rule: usize, position: usize) -> Option<&Memo<'a>> {
+        // Grammar compilation resolves all IDs within its validated rule count.
         let entries = &self.rules[rule];
         match &entries.latest {
             Some((latest, memo)) if position == *latest => Some(memo),
