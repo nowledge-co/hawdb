@@ -13,47 +13,65 @@
 // limitations under the License.
 
 use super::{costing, properties, OptimizerCatalog, PhysicalPlan};
+#[cfg(test)]
+use crate::PlanCostBreakdown;
 use crate::{
     plan_class_counts, plan_operator_counts, OperatorCardinalityEstimate, OptimizerContext,
-    PlanCostBreakdown, SelectedPlanTrace,
+    SelectedPlanTrace,
 };
 use hawdb_plan_cypher::PhysicalOperatorId;
 
 #[cfg(test)]
 mod differential;
 
+#[cfg(test)]
 pub(super) fn selected_plan_trace(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
     context: &OptimizerContext,
 ) -> SelectedPlanTrace {
-    let mut cardinality_estimates = Vec::new();
-    let cost_breakdown = collect_operator_costs(plan, catalog, &mut cardinality_estimates);
-    SelectedPlanTrace {
-        query_digest: context.query_digest().map(str::to_string),
-        explain: plan.explain(0),
-        fingerprint: plan.fingerprint(),
-        cost: cost_breakdown.as_plan_cost(),
-        cost_breakdown,
-        properties: properties::selected_plan_properties(plan, catalog),
-        cardinality_estimates,
-        operator_counts: plan_operator_counts(plan),
-        class_counts: plan_class_counts(plan),
-    }
+    selected_plan_trace_with_diagnostics(plan, catalog, context).0
 }
 
+pub(super) fn selected_plan_trace_with_diagnostics(
+    plan: &PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
+) -> (SelectedPlanTrace, Vec<String>) {
+    let mut cardinality_estimates = Vec::new();
+    let mut diagnostics = Vec::new();
+    let cost_breakdown =
+        collect_costed_plan(plan, catalog, &mut cardinality_estimates, &mut diagnostics).cost;
+    (
+        SelectedPlanTrace {
+            query_digest: context.query_digest().map(str::to_string),
+            explain: plan.explain(0),
+            fingerprint: plan.fingerprint(),
+            cost: cost_breakdown.as_plan_cost(),
+            cost_breakdown,
+            properties: properties::selected_plan_properties(plan, catalog),
+            cardinality_estimates,
+            operator_counts: plan_operator_counts(plan),
+            class_counts: plan_class_counts(plan),
+        },
+        diagnostics,
+    )
+}
+
+#[cfg(test)]
 fn collect_operator_costs(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
     estimates: &mut Vec<OperatorCardinalityEstimate>,
 ) -> PlanCostBreakdown {
-    collect_costed_plan(plan, catalog, estimates).cost
+    collect_costed_plan(plan, catalog, estimates, &mut Vec::new()).cost
 }
 
 fn collect_costed_plan<'a>(
     plan: &'a PhysicalPlan,
     catalog: &OptimizerCatalog,
     estimates: &mut Vec<OperatorCardinalityEstimate>,
+    diagnostics: &mut Vec<String>,
 ) -> costing::CostedPlan<'a> {
     // Reserve IDs before traversing children, matching visit_plan_with_ids even
     // though a parent's cost is only available after both child costs.
@@ -63,10 +81,18 @@ fn collect_costed_plan<'a>(
         operator: plan.kind(),
         estimated_rows: 0,
     });
-    let inputs =
-        costing::estimate_input_costs(plan, |input| collect_costed_plan(input, catalog, estimates));
+    let inputs = costing::estimate_input_costs(plan, |input| {
+        collect_costed_plan(input, catalog, estimates, diagnostics)
+    });
     let costed = costing::estimate_operator_cost(plan, catalog, inputs);
     estimates[ordinal].estimated_rows = costed.cost.estimated_rows;
+    if let Some(statistics) = costed.statistics {
+        diagnostics.push(format!(
+            "cardinality statistics: operator_id={ordinal} operator={:?} {}",
+            plan.kind(),
+            statistics.explain()
+        ));
+    }
     costed
 }
 

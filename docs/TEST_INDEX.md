@@ -6,6 +6,36 @@ authoritative; this is a map of test families, not an exhaustive list of every
 Rust test function. Update it when changing a family's scope, build profile,
 execution lane, fixture size, isolation or known failure mode.
 
+The optimizer-graph joint-statistics owner also covers a residual filter above
+HashJoin when either or both marginal key NDVs are missing. Single-key and
+multi-key predicates retain the existing default selectivity; compatible
+marginals still avoid double counting an already-estimated hash key. Replay:
+`cargo test --locked -p hawdb-optimizer-graph --lib unknown_hash_key_ndv_preserves`.
+
+Joint graph statistics extend the existing
+`//crates/optimizer-graph:hawdb_optimizer_graph_tests` owner with bounded,
+unordered catalog key sets, invalid/stale/sampled/incomplete statistics,
+correlated/independent reference populations, conditional access coverage,
+duplicate bindings, NULL-bearing grouping, alias scope, optional rebindings,
+single-key hash intermediates and selected-trace provenance. Replay with
+`cargo test --locked -p hawdb-optimizer-graph --lib`. Root
+`api::tests::joint_ndv_statistics` covers exact rows in auto/memo/direct modes,
+pinned readers, warm cache reuse, correlated/independent/skewed keys, NULLs,
+duplicate join pairs, optional unmatched rows and deterministic tied sort windows.
+It belongs to `//:hawdb_unit_general_tests`; the supported minimal replay is
+`cargo test --locked -p hawdb --no-default-features --lib --
+api::tests::joint_ndv_statistics:: api::tests::aggregates::
+api::tests::statistics:: --test-threads=1`. The default-feature replay omits
+`--no-default-features`. Executor `transform::tests::limit_admission` is owned by
+`//crates/executor:hawdb_executor_unit_tests`; it checks selected-window payload
+admission, skipped wide rows, exhausted offsets and one-byte-deficit refusal.
+Replay the complete unchanged transform family with `cargo test --locked -p
+hawdb-executor --lib transform::tests`. The root integration keeps a changed
+Sort plus LIMIT choice within a 2-MiB query budget. Existing batch/payload and
+query ceilings remain enforced. See [the estimation contract](QUERY_JOINT_STATISTICS.md).
+The manual `joint_ndv_planning` benchmark is local-only; no test lane, feature
+matrix, timeout or compilation profile changes.
+
 `//:pypi_publish_script_test` belongs to the required root
 `//:hawdb_unit_tests` aggregate. It executes the publisher workflow's Python
 preflight and registry verification with temporary distributions and mocked
