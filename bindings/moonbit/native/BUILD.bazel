@@ -1,0 +1,32 @@
+load("@rules_rust//rust:defs.bzl", "rust_static_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# Build against the same Bazel HawDB facade as Python and the FFI/Go path.
+# The repository owns the engine version; there is no MoonBit-specific
+# Cargo dependency resolution or second engine compilation.
+_MOONBIT_DEPS = [
+    "//:hawdb",
+    "@crate_index//:serde_json",
+    "@ffi_crates//:base64",
+]
+
+rust_static_library(
+    name = "hawdb_moonbit_static",
+    crate_name = "hawdb_moonbit",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    srcs = ["src/lib.rs"],
+    deps = _MOONBIT_DEPS,
+)
+
+# #[cfg(test)] stubs provide runtime symbols for tests that never allocate
+# MoonBit objects; actual FFI execution is checked by the MoonBit binary tests.
+rust_test(
+    name = "hawdb_moonbit_rust_tests",
+    crate_name = "hawdb_moonbit",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    srcs = ["src/lib.rs"],
+    deps = _MOONBIT_DEPS,
+)

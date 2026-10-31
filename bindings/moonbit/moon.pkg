@@ -1,0 +1,9 @@
+import {
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/encoding/base64",
+  "moonbitlang/core/string",
+  "moonbitlang/core/json",
+}
+
+// Direct calls to MoonBit-specific symbols exported from Rust staticlib.
+// No C shim or dependency on bindings/ffi.

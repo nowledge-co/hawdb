@@ -1,0 +1,98 @@
+name: MoonBit Native SDK
+
+on:
+  push:
+    branches: [main, feat/moonbit-native-sdk]
+    paths:
+      - "bindings/moonbit/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "src/**"
+      - ".github/workflows/moonbit-native.yml"
+  pull_request:
+    paths:
+      - "bindings/moonbit/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "src/**"
+      - ".github/workflows/moonbit-native.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: moonbit-native-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows-conformance:
+    name: Full native conformance (windows-2025)
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - name: Disable Git automatic CRLF conversion
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      # Match colmugx/posoco's Windows native toolchain initialization.
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/moonbit/native
+      - name: Install MoonBit for Windows
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+          irm https://cli.moonbitlang.com/install/powershell.ps1 | iex
+          "$env:USERPROFILE\.moon\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Validate MoonBit toolchain
+        working-directory: bindings/moonbit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          moon version --all
+          rustc --version
+          cargo --version
+          python --version
+          moon check --target native
+          if ($LASTEXITCODE -ne 0) { throw "MoonBit native check failed" }
+      - name: Build against current HawDB source (rolling)
+        working-directory: bindings/moonbit/native
+        shell: pwsh
+        run: |
+          git ls-files --error-unmatch Cargo.lock 2>$null
+          if ($LASTEXITCODE -eq 0) { throw "SDK Cargo.lock must not be committed" }
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw "Rust formatting failed" }
+          cargo test --release --lib
+          if ($LASTEXITCODE -ne 0) { throw "Native lifecycle tests failed" }
+          cargo build --release
+          if ($LASTEXITCODE -ne 0) { throw "Rust staticlib build failed" }
+          if (!(Test-Path "target/release/hawdb_moonbit.lib")) { throw "Missing Rust .lib output" }
+      - name: Configure Windows native linker
+        working-directory: bindings/moonbit
+        shell: pwsh
+        run: |
+          python tools/configure_native_link.py --os windows
+          if ($LASTEXITCODE -ne 0) { throw "Linker config failed" }
+      - name: Run real embedded HawDB conformance
+        working-directory: bindings/moonbit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Test-Path tests/conformance-db) {
+            Remove-Item -Recurse -Force tests/conformance-db
+          }
+          moon run --target native tests/conformance 2>&1 | Tee-Object -FilePath conformance.log
+          if ($LASTEXITCODE -ne 0) { throw "MoonBit/HawDB native executable failed" }
+          $log = Get-Content -Path conformance.log -Raw
+          if ($log -match '(?m)^CASE_FAIL ') { throw "Native conformance contains CASE_FAIL" }
+          if ($log -notmatch '(?m)^HAWDB_MOONBIT_BUSINESS_SUITE_PASS\r?$') {
+            throw "Missing real-engine conformance success marker"
+          }

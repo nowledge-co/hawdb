@@ -1,0 +1,6 @@
+name = "nowledge-co/hawdb"
+version = "0.12.0"
+preferred_target = "native"
+supported_targets = "native"
+license = "Apache-2.0"
+description = "Native MoonBit binding for the HawDB embedded database"

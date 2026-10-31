@@ -1,0 +1,12 @@
+import {
+  "nowledge-co/hawdb" @hawdb,
+  "moonbitlang/core/json",
+}
+pkgtype(kind: "executable")
+options(
+  link: {
+    "native": {
+      "cc-link-flags": "native/target/release/libhawdb_moonbit.a -ldl -lpthread -lm",
+    },
+  },
+)
