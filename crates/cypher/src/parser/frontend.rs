@@ -17,6 +17,7 @@ use crate::*;
 mod grammar;
 mod lexer;
 mod native;
+mod schema;
 #[cfg(test)]
 mod tests;
 mod transform;

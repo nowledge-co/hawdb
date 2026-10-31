@@ -109,14 +109,7 @@ fn statement(
 }
 
 pub(super) fn create(input: &str, tokens: &[Token], position: usize) -> NativeMatch<Value> {
-    statement(input, tokens, position, |parser| {
-        parser.parse_create_statement()
-    })
-}
-pub(super) fn alter(input: &str, tokens: &[Token], position: usize) -> NativeMatch<Value> {
-    statement(input, tokens, position, |parser| {
-        parser.parse_alter_statement()
-    })
+    statement(input, tokens, position, |parser| parser.parse_create_data())
 }
 pub(super) fn merge(input: &str, tokens: &[Token], position: usize) -> NativeMatch<Value> {
     statement(input, tokens, position, |parser| {

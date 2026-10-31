@@ -72,7 +72,11 @@ impl Transformer<'_> {
             "checkpoint" => Ok(Statement::Checkpoint),
             "commit" => Ok(Statement::Commit),
             "rollback" => Ok(Statement::Rollback),
-            "create" | "alter" | "merge" | "set" | "call" => {
+            "alter" => self.schema_statement(self.tree.required(selected, "schema_alter")),
+            "create" if self.tree.child(selected, "schema_create").is_some() => {
+                self.schema_statement(self.tree.required(selected, "schema_create"))
+            }
+            "create" | "merge" | "set" | "call" => {
                 let Value::Statement {
                     statement,
                     depth: native_depth,

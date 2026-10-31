@@ -297,3 +297,91 @@ fn frozen_peg_baseline_preserves_ast_spans_and_rejection_classes() {
     }
     assert_eq!(count, 2854);
 }
+
+#[test]
+fn schema_statements_match_without_native_ast_captures() {
+    let mut queries: Vec<String> = [
+        "CREATE NODE TABLE Node",
+        "CREATE NODE LABEL Node",
+        "CREATE RELATIONSHIP TABLE Edge",
+        "CREATE RELATIONSHIP TYPE Edge",
+        "CREATE INDEX ON :Node(id)",
+        "CREATE INDEX ON :Node(id, name)",
+        "CREATE RANGE INDEX ON :Node(id)",
+        "CREATE FULLTEXT INDEX ON :Node(name)",
+        "CREATE CONSTRAINT ON :Node(id) ASSERT UNIQUE",
+        "CREATE CONSTRAINT ON :Node(id) ASSERT NOT NULL",
+        "CREATE CONSTRAINT ON -[:Edge(id)]-> ASSERT EXISTS",
+        "CREATE CONSTRAINT ON -[:Edge(id)]-> ASSERT UNIQUE",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    for value_type in [
+        "ANY",
+        "BOOL",
+        "BOOLEAN",
+        "INT",
+        "INTEGER",
+        "FLOAT",
+        "DOUBLE",
+        "STRING",
+        "TEXT",
+        "LIST",
+        "CHARACTER VARYING",
+        "VARCHAR",
+        "VECTOR(3)",
+    ] {
+        for nullable in ["", " NOT NULL"] {
+            queries.push(format!(
+                "CREATE PROPERTY ON NODE TABLE Node(value) TYPE {value_type}{nullable}"
+            ));
+        }
+    }
+    for state in [
+        "DELETE_ONLY",
+        "WRITE_ONLY",
+        "BACKFILL",
+        "VALIDATING",
+        "PUBLIC",
+        "GC",
+    ] {
+        queries.push(format!("ALTER NODE TABLE Node SET STATE {state}"));
+        queries.push(format!(
+            "ALTER PROPERTY ON RELATIONSHIP TABLE Edge(value) SET STATE {state}"
+        ));
+    }
+    assert_eq!(queries.len(), 50);
+    for query in queries {
+        equivalent(&query);
+        let tokens = super::lexer::tokenize(&query).unwrap();
+        let tree = super::grammar(false)
+            .parse(
+                &query,
+                &tokens,
+                "root",
+                hawdb_sql_syntax::peg::Limits::default(),
+            )
+            .unwrap();
+        assert!(
+            tree.nodes.iter().all(|node| node.name.is_some()),
+            "native AST capture in {query}"
+        );
+    }
+    for query in [
+        "CREATE RANGE INDEX ON :Node(a,b)",
+        "CREATE FULLTEXT INDEX ON :Node(a,b)",
+        "CREATE PROPERTY ON NODE TABLE Node(v) TYPE VECTOR(0)",
+        "CREATE PROPERTY ON NODE TABLE Node(v) TYPE VECTOR(4294967296)",
+        "CREATE PROPERTY ON NODE TABLE Node(v) TYPE VECTOR(1.5)",
+        "CREATE NODE TYPE Node",
+        "CREATE RELATIONSHIP LABEL Edge",
+        "ALTER NODE TABLE Node SET STATE UNKNOWN",
+    ] {
+        equivalent(query);
+        assert!(
+            crate::parse(query).is_err(),
+            "unsupported schema accepted: {query}"
+        );
+    }
+}

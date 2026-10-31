@@ -44,6 +44,7 @@ impl Parser<'_> {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn parse_keyword_choice<T: Copy>(
         &mut self,
         choices: &[(&str, T)],

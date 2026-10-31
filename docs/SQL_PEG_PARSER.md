@@ -6,7 +6,8 @@ plan-template cache misses. No feature, environment variable or host opt-in is
 required. The syntax-only CREATE PROPERTY GRAPH and GRAPH_TABLE entry points
 also use PEG. Relational DDL/DML, materialized views, branch lifecycle and paged SHOW commands use PEG as well.
 Cypher uses the same engine with its own token grammar and
-currently retains native clause terminals.
+recognizes schema statements directly with PEG and currently retains native
+query/mutation clause terminals. The old Cypher DDL driver is test-only.
 
 Parser routing is explicit by statement family:
 
@@ -208,3 +209,11 @@ frozen timing shapes preserve full Debug-IR validation before measurement.
 The manual timing diagnostic emits nine candidate samples per unchanged shape
 (2,000 iterations for short queries, 100 for each 500-column projection).
 Compare against the separately built baseline revision and discard sample zero.
+
+The memo table caches each rule's greatest visited token directly. Older entries
+use a bounded small vector, direct indexing for dense token visits, or a hash
+map for sparse visits. Dense storage has at most four logical slots per occupied
+entry and converts permanently to sparse storage on a large gap/backward range
+extension. Logical entry limits, failed/pending entries and cached nesting
+heights are unchanged. Lexical atoms check the same work/depth budget and finish
+without a redundant continuation frame.

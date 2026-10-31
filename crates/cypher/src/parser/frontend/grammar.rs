@@ -196,13 +196,32 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar<Value>, String> {
         ));
     }
     for (name, keyword, matcher) in [
-        ("create", "CREATE", native::create as NativeMatcher<Value>),
-        ("alter", "ALTER", native::alter),
-        ("merge", "MERGE", native::merge),
+        ("merge", "MERGE", native::merge as NativeMatcher<Value>),
         ("set", "SET", native::set),
         ("call", "CALL", native::call),
     ] {
         rules.push((name, seq(vec![E::Keyword(keyword), native(matcher)])));
     }
+    rules.extend(super::schema::rules());
+    rules.push((
+        "create",
+        seq(vec![
+            E::Keyword("CREATE"),
+            E::Choice(vec![
+                rule("schema_create"),
+                seq(vec![
+                    E::Ahead(
+                        Box::new(E::Token(TokenKind::LeftParen, "a node pattern")),
+                        "a node pattern",
+                    ),
+                    native(native::create),
+                ]),
+            ]),
+        ]),
+    ));
+    rules.push((
+        "alter",
+        seq(vec![E::Keyword("ALTER"), rule("schema_alter")]),
+    ));
     Grammar::compile(rules)
 }

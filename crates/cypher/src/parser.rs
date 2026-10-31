@@ -22,6 +22,7 @@ use hawdb_core::Result;
 
 mod case;
 mod cursor;
+#[cfg(test)]
 mod ddl;
 mod frontend;
 mod mutation;

@@ -54,11 +54,30 @@ pub(super) fn tokenize(input: &str) -> Result<Vec<Token>> {
                 }
             }
             TokenKind::String
-        } else if ch == ';' {
-            TokenKind::Semicolon
         } else {
-            // Punctuation is interpreted by the bounded native terminals.
-            TokenKind::Question
+            match ch {
+                '(' => TokenKind::LeftParen,
+                ')' => TokenKind::RightParen,
+                '[' => TokenKind::LeftBracket,
+                ']' => TokenKind::RightBracket,
+                '{' => TokenKind::LeftBrace,
+                '}' => TokenKind::RightBrace,
+                ':' => TokenKind::Colon,
+                ',' => TokenKind::Comma,
+                '.' => TokenKind::Dot,
+                ';' => TokenKind::Semicolon,
+                '-' => TokenKind::Minus,
+                '+' => TokenKind::Plus,
+                '*' => TokenKind::Star,
+                '/' => TokenKind::Slash,
+                '%' => TokenKind::Percent,
+                '^' => TokenKind::Caret,
+                '=' => TokenKind::Equal,
+                '<' => TokenKind::Less,
+                '>' => TokenKind::Greater,
+                '|' => TokenKind::Pipe,
+                _ => TokenKind::Question,
+            }
         };
         tokens.push(Token::new(kind, Span::new(start, end)));
     }
