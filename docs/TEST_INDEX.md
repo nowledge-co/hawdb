@@ -818,6 +818,22 @@ and recovers both access shapes with transient rows and primary-key changes.
 Surplus access entries must fail exact replay validation. Storage's existing
 checkpoint-admission cases also exercise controlled point-key allocation.
 
+Composite-key mutation coverage uses the same Storage owner, with no new lane
+or profile. `relational_row_workspace::tests::composite_key_mutations` compares
+prefix and interval UPDATE/DELETE with the legacy full-scan oracle, keeping a
+fixed eight-entry budget while unrelated orders grow from 3 to 1,000. It checks
+candidate decode/workspace counts, residuals and empty/open/closed intervals,
+transient/rekeyed rows, exact legacy and new WAL replay, admission refusal, and
+pinned old views. `relational::primary_key_range::tests` checks all supported
+ordered scalar domains, including signed zero, NaN payloads, embedded NUL and
+maximal keys, against predicate truth and encoded ordering. Root
+`storage_recovery::composite_mutations` in the existing general unit lane checks
+parameterized SQL, multi-statement rollback/commit, warehouse isolation, old
+reads, WAL reopen and checkpoint reopen under both residency modes. Focused
+replay: `cargo test --locked -p hawdb-storage --all-features --lib composite_mutation`,
+`cargo test --locked -p hawdb-storage --all-features --lib primary_key_range::tests`,
+and `cargo test --locked -p hawdb --lib composite_mutations`.
+
 The existing root vector API family additionally owns explicit source-capture
 capacity refusal/success, single-background-slot and held-catalog admission with
 unchanged selection and retry, no-op behavior under saturation, and

@@ -42,10 +42,13 @@ pub use materialized_view::{
 };
 mod admitted_point;
 mod ordered_key;
+mod primary_key_range;
 #[doc(hidden)]
 pub use admitted_point::{
     RelationalAdmittedPoint, RelationalPointAllocation, RelationalPointReadRequest,
 };
+pub use primary_key_range::RelationalPrimaryKeyRange;
+use primary_key_range::{equality as mutation_equality, mutation_primary_key_range};
 pub(crate) mod overflow;
 mod recovery;
 mod row_page;
@@ -1451,6 +1454,7 @@ pub struct RelationalSparseMutationHydrationPlan {
     point_access: Vec<RelationalReplayAccess>,
     monotonic_appends: Vec<RelationalMonotonicAppendHydration>,
     scan_tables: Vec<String>,
+    ranges: Vec<(String, RelationalPrimaryKeyRange)>,
     index_probes: Vec<RelationalSparseIndexProbe>,
 }
 
@@ -1465,6 +1469,10 @@ impl RelationalSparseMutationHydrationPlan {
 
     pub fn scan_tables(&self) -> &[String] {
         &self.scan_tables
+    }
+
+    pub fn ranges(&self) -> &[(String, RelationalPrimaryKeyRange)] {
+        &self.ranges
     }
 
     pub fn index_probes(&self) -> &[RelationalSparseIndexProbe] {
@@ -2208,6 +2216,35 @@ impl RelationalRowPages {
 
     fn iter(&self) -> impl DoubleEndedIterator<Item = (&RelationalKey, &RelationalRow)> {
         self.pages.iter().flat_map(|page| page.iter())
+    }
+
+    fn range(
+        &self,
+        range: Option<RelationalPrimaryKeyRange>,
+    ) -> impl Iterator<Item = (&RelationalKey, &RelationalRow)> {
+        use std::ops::Bound;
+        let range = range.unwrap_or(RelationalPrimaryKeyRange {
+            lower: Bound::Unbounded,
+            upper: Bound::Unbounded,
+        });
+        let start = match &range.lower {
+            Bound::Included(key) | Bound::Excluded(key) => self.page_index(key).unwrap_or(0),
+            Bound::Unbounded => 0,
+        };
+        let end = if range.is_empty() {
+            start
+        } else {
+            match &range.upper {
+                Bound::Included(key) | Bound::Excluded(key) => {
+                    self.page_index(key).map_or(0, |index| index + 1)
+                }
+                Bound::Unbounded => self.pages.len(),
+            }
+            .max(start)
+        };
+        self.pages[start..end]
+            .iter()
+            .flat_map(move |page| page.range((range.lower.as_ref(), range.upper.as_ref())))
     }
 
     fn first_key_after(&self, after: Option<&RelationalKey>) -> Option<&RelationalKey> {
@@ -4526,6 +4563,7 @@ impl RelationalState {
         let mut point_access = BTreeSet::new();
         let mut monotonic_appends = Vec::new();
         let mut scan_tables = BTreeSet::new();
+        let mut ranges = Vec::new();
         let mut index_probes = BTreeSet::new();
         let mut append_only_tables = BTreeMap::<&str, bool>::new();
         for write in &transaction.writes {
@@ -4627,6 +4665,12 @@ impl RelationalState {
                             table: table.clone(),
                             primary_key,
                         });
+                    } else if let Some(range) = mutation_primary_key_range(schema, predicate, None)?
+                    {
+                        let entry = (table.clone(), range);
+                        if !entry.1.is_empty() && !ranges.contains(&entry) {
+                            ranges.push(entry);
+                        }
                     } else {
                         scan_tables.insert(table.clone());
                     }
@@ -4657,10 +4701,12 @@ impl RelationalState {
             }
         }
         point_access.retain(|access| !scan_tables.contains(&access.table));
+        ranges.retain(|(table, _)| !scan_tables.contains(table));
         Ok(RelationalSparseMutationHydrationPlan {
             point_access: point_access.into_iter().collect(),
             monotonic_appends,
             scan_tables: scan_tables.into_iter().collect(),
+            ranges,
             index_probes: index_probes.into_iter().collect(),
         })
     }
@@ -6150,33 +6196,18 @@ fn mutation_primary_key(
     predicate: &RelationalPredicate,
     allocations: Option<&crate::background::CheckpointDecodeContext>,
 ) -> Result<Option<RelationalKey>, RelationalError> {
-    fn equality<'a>(
-        predicate: &'a RelationalPredicate,
-        column: &str,
-    ) -> Option<&'a RelationalValue> {
-        match predicate {
-            RelationalPredicate::And(left, right) => {
-                equality(left, column).or_else(|| equality(right, column))
-            }
-            RelationalPredicate::Compare {
-                column: name,
-                op: RelationalComparisonOp::Eq,
-                value,
-            } if name == column && !matches!(value, RelationalValue::Null) => Some(value),
-            _ => None,
-        }
-    }
     if schema.primary_key.is_empty()
         || schema
             .primary_key
             .iter()
-            .any(|column| equality(predicate, column).is_none())
+            .any(|column| mutation_equality(predicate, column).is_none())
     {
         return Ok(None);
     }
     collect_results_with_allocations(
         schema.primary_key.iter().map(|column| {
-            let value = equality(predicate, column).expect("complete primary key checked above");
+            let value =
+                mutation_equality(predicate, column).expect("complete primary key checked above");
             match allocations {
                 Some(context) => value.as_ref().to_owned_value_with_allocations(context),
                 None => Ok(value.clone()),
@@ -6203,7 +6234,12 @@ fn mutation_candidate_rows<'a>(
     };
     let scan_limit = if key.is_some() { 0 } else { usize::MAX };
     let point = key.and_then(|key| rows.get_key_value(&key));
-    Ok(point.into_iter().chain(rows.iter().take(scan_limit)))
+    let range = if primary_key_lookup && scan_limit != 0 {
+        mutation_primary_key_range(schema, predicate, allocations)?
+    } else {
+        None
+    };
+    Ok(point.into_iter().chain(rows.range(range).take(scan_limit)))
 }
 
 fn transaction_uses_primary_key_predicate_lookup(
@@ -6218,7 +6254,7 @@ fn transaction_uses_primary_key_predicate_lookup(
         TransactionIndexMode::AuthoritativeRecovery => checkpoint_access.is_some_and(|access| {
             // Legacy scans read every original key, including keys deleted earlier
             // in the transaction, which are retained by changed-key capture. An
-            // uncovered original key therefore identifies a point-access record.
+            // uncovered original key therefore identifies a bounded-access record.
             // The executor still verifies the complete resulting access set.
             state.segments.iter().any(|(table, segment)| {
                 transaction.writes.iter().any(|write| match write {

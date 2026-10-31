@@ -632,7 +632,7 @@ fn legacy_full_scan_replay_access_remains_valid_and_exact() {
 }
 
 #[test]
-fn composite_primary_keys_require_every_equality_in_schema_order() {
+fn composite_primary_keys_use_schema_order_for_points_and_prefix_ranges() {
     let mut table = schema();
     table.foreign_keys.clear();
     table.primary_key = vec!["id".into(), "body".into()];
@@ -702,11 +702,25 @@ fn composite_primary_keys_require_every_equality_in_schema_order() {
     let row = complete_sparse_projected_row("nodes", &[0, 1, 2], row.unwrap()).unwrap();
     assert_eq!(row.values()[1], RelationalValue::BigInt(99));
     assert_eq!(original_row.values()[1], RelationalValue::BigInt(2));
-    let error = hydrate_sparse_relational_workspace(
+    let (workspace, report, _) = hydrate_sparse_relational_workspace(
         &fixture.metadata,
         fixture.reader(Arc::clone(&fixture.view)),
         &RelationalTransaction {
             writes: vec![update(equals("id", RelationalValue::BigInt(3)))],
+        },
+        &index,
+        policy,
+        Arc::new(RelationalMonotonicAppendMetrics::default()),
+    )
+    .unwrap();
+    assert_eq!(report.range_reads, 1);
+    assert_eq!(report.rows_decoded, 1);
+    assert_eq!(workspace.len(), 2);
+    let error = hydrate_sparse_relational_workspace(
+        &fixture.metadata,
+        fixture.reader(Arc::clone(&fixture.view)),
+        &RelationalTransaction {
+            writes: vec![update(equals("body", original_row.values()[2].clone()))],
         },
         &index,
         policy,
