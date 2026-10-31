@@ -178,6 +178,7 @@ mod default_pipeline;
 mod list_functions;
 mod list_literals;
 mod migration_corpus;
+mod order_by_expressions;
 mod source_spans;
 
 const EXCESSIVE_CYPHER_NESTING: usize = 100_000;
@@ -3177,7 +3178,7 @@ fn parses_order_by_count_return_item() {
     );
     assert_eq!(
         pipeline_return(&query).order_by[0].expression,
-        OrderExpression::Column("count(r)".to_string())
+        OrderExpression::Projection(pipeline_return(&query).items[1].expression.clone())
     );
     assert_eq!(
         pipeline_return(&query).order_by[0].direction,

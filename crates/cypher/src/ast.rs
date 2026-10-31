@@ -708,12 +708,17 @@ pub struct OrderItemKind {
     pub direction: OrderDirection,
 }
 
+/// An `ORDER BY` key. `Projection` carries keys outside the scalar grammar,
+/// such as arithmetic or aggregates, planned like an unaliased projection
+/// item; an aggregate key must match an aggregate projected by the same
+/// `RETURN` or `WITH`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OrderExpression {
     Property { variable: String, property: String },
     Id { variable: String },
     Value(ScalarExpression),
     Column(String),
+    Projection(ReturnExpression),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

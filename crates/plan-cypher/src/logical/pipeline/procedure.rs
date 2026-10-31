@@ -443,6 +443,9 @@ fn graph_algorithm_requested_columns(yields: &[YieldItem], tail: &[Clause]) -> B
                 CypherOrderExpression::Value(value) => {
                     collect_scalar_expression_variables(value, &mut additional)
                 }
+                CypherOrderExpression::Projection(expression) => {
+                    collect_algorithm_return_columns(expression, &mut additional)
+                }
                 CypherOrderExpression::Column(name)
                 | CypherOrderExpression::Property { variable: name, .. }
                 | CypherOrderExpression::Id { variable: name } => {

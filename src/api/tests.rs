@@ -128,6 +128,7 @@ mod mutation_persistence;
 mod neighbor_reads;
 mod nowledge_graph_adapter;
 mod optional_match;
+mod order_by_expressions;
 mod ordered_composite;
 mod ordered_range;
 mod out_of_core_labeled_expand;

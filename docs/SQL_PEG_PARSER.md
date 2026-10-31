@@ -300,3 +300,14 @@ vectors. Existing independent Debug-AST/error fixtures cover the resulting
 ASTs, including comparison chains and nested boolean scopes. The shared VM and
 memo storage remain unchanged by this allocation cleanup; no parser budget or
 fixture is weakened. Parser peak allocation and RSS qualification remain open.
+
+Main #1403 unifies ORDER BY with RETURN/WITH expression syntax. The PEG sort
+rule now shares projection arithmetic, aggregates, path expressions and null
+tests; direct column/property/id forms retain their dedicated AST variants.
+The inherited planner resolves aggregate sort expressions against projected
+aggregates and retains grouped-scope checks for composite expressions.
+`migration_main_1403_order_expressions_peg_baseline_v1.jsonl` records 42 explicit
+transitions from the earlier oracles plus 672 new context, direction, depth and
+refusal cases, independently exported from main `0892820255`. Older fixtures
+remain immutable; transition layers require matching previous fingerprints.
+The dedicated sort whitelist is removed without raising any parser budget.

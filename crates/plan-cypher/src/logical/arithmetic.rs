@@ -64,6 +64,26 @@ pub(super) fn bind_aggregate_argument(
     .bind(argument)
 }
 
+/// Binds an aggregate-free composed expression, such as an `ORDER BY` key.
+pub(super) fn bind_composed_expression(
+    scope: &BTreeSet<String>,
+    columns: &BTreeSet<String>,
+    expression: &ReturnExpression,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<ProjectionExpression> {
+    ComposedReturnBinder {
+        scope,
+        columns,
+        parameters,
+        aggregate: false,
+        literal_names: false,
+        group_keys: Vec::new(),
+        aggregations: Vec::new(),
+    }
+    .bind(expression)
+    .map(|(expression, _)| expression)
+}
+
 fn literal_name(value: &ValueExpression) -> Option<String> {
     Some(match &value.kind {
         ValueExpressionKind::Parameter(name) => format!("${name}"),

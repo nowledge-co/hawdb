@@ -141,60 +141,7 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
             s(vec![r("r_order_expression"), o(r("r_direction"))]),
         ),
         ("r_direction", kw(&["ASC", "DESC"])),
-        (
-            "r_order_expression",
-            c(vec![
-                r("r_order_count"),
-                r("r_order_id"),
-                r("r_order_value"),
-                r("x_ref"),
-                r("x_variable"),
-            ]),
-        ),
-        (
-            "r_order_count",
-            s(vec![
-                k("COUNT"),
-                group(s(vec![
-                    o(r("r_distinct")),
-                    c(vec![r("r_star"), r("x_ref"), r("v_identifier")]),
-                ])),
-            ]),
-        ),
-        ("r_order_id", s(vec![k("ID"), group(r("v_identifier"))])),
-        (
-            "r_order_value",
-            s(vec![
-                E::Ahead(
-                    Box::new(c(vec![
-                        t(T::LeftBracket),
-                        k("CASE"),
-                        E::Tight(Box::new(s(vec![
-                            kw(&[
-                                "COALESCE",
-                                "LEFT",
-                                "LOWER",
-                                "JSON_VALUE",
-                                "LENGTH",
-                                "NODES",
-                                "RELATIONSHIPS",
-                                "SIZE",
-                                "HEAD",
-                                "LAST",
-                                "TAIL",
-                                "REVERSE",
-                                "RANGE",
-                            ]),
-                            t(T::LeftParen),
-                        ]))),
-                        s(vec![r("x_ref"), t(T::LeftBracket)]),
-                        s(vec![r("v_identifier"), t(T::LeftBracket)]),
-                    ])),
-                    "an order expression",
-                ),
-                r("x_scalar"),
-            ]),
-        ),
+        ("r_order_expression", s(vec![r("r_sum"), o(r("x_is_null"))])),
         ("r_offset", s(vec![kw(&["SKIP", "OFFSET"]), r("v_value")])),
         ("r_limit", s(vec![k("LIMIT"), r("v_value")])),
     ]
@@ -210,39 +157,7 @@ impl Transformer<'_> {
         let distinct = self.tree.child(projection, "r_distinct").is_some();
         let mut items = Vec::new();
         for item in self.named_children(projection, "r_item") {
-            let mut expression =
-                self.return_expression(self.tree.required(item, "r_sum"), depth)?;
-            if return_depth(&expression) > super::super::MAX_CYPHER_PARSER_DEPTH {
-                return Err(self.error(item, "arithmetic expression exceeds maximum nesting depth"));
-            }
-            if let Some(null) = self.tree.child(item, "x_is_null") {
-                let negated = self.tree.child(null, "x_negated").is_some();
-                let operand = match expression.kind {
-                    ReturnExpressionKind::Value(value) => value,
-                    ReturnExpressionKind::Path(path) => AstNode {
-                        kind: ScalarExpressionKind::Path(path),
-                        span: expression.span,
-                    },
-                    _ => {
-                        return Err(self.error(
-                            item,
-                            "IS NULL in a projection requires a non-aggregate operand",
-                        ))
-                    }
-                };
-                let span = SourceSpan {
-                    start: self.tree.span(item, self.tokens).start,
-                    end: self.tree.span(null, self.tokens).end,
-                };
-                let scalar = AstNode::from_source(
-                    ScalarExpressionKind::IsNull {
-                        expression: Box::new(operand),
-                        negated,
-                    },
-                    span,
-                );
-                expression = AstNode::from_source(ReturnExpressionKind::Value(scalar), span);
-            }
+            let expression = self.projection_expression(item, depth)?;
             let alias = self
                 .tree
                 .child(item, "r_alias")
@@ -282,6 +197,41 @@ impl Transformer<'_> {
                 ClauseKind::Return(projection)
             },
         ))
+    }
+    fn projection_expression(&mut self, node: NodeId, depth: usize) -> Result<ReturnExpression> {
+        let mut expression = self.return_expression(self.tree.required(node, "r_sum"), depth)?;
+        if return_depth(&expression) > super::super::MAX_CYPHER_PARSER_DEPTH {
+            return Err(self.error(node, "arithmetic expression exceeds maximum nesting depth"));
+        }
+        if let Some(null) = self.tree.child(node, "x_is_null") {
+            let negated = self.tree.child(null, "x_negated").is_some();
+            let operand = match expression.kind {
+                ReturnExpressionKind::Value(value) => value,
+                ReturnExpressionKind::Path(path) => AstNode {
+                    kind: ScalarExpressionKind::Path(path),
+                    span: expression.span,
+                },
+                _ => {
+                    return Err(self.error(
+                        node,
+                        "IS NULL in a projection requires a non-aggregate operand",
+                    ))
+                }
+            };
+            let span = SourceSpan {
+                start: self.tree.span(node, self.tokens).start,
+                end: self.tree.span(null, self.tokens).end,
+            };
+            let scalar = AstNode::from_source(
+                ScalarExpressionKind::IsNull {
+                    expression: Box::new(operand),
+                    negated,
+                },
+                span,
+            );
+            expression = AstNode::from_source(ReturnExpressionKind::Value(scalar), span);
+        }
+        Ok(expression)
     }
     pub(super) fn return_expression(
         &mut self,
@@ -554,44 +504,7 @@ impl Transformer<'_> {
     }
     fn order_item(&mut self, node: NodeId, depth: usize) -> Result<OrderItem> {
         let expression = self.tree.required(node, "r_order_expression");
-        let selected = self.tree.children(expression)[0];
-        let expression = match self.tree.nodes[selected].name {
-            Some("r_order_count") => {
-                let distinct = self.tree.child(selected, "r_distinct").is_some();
-                let argument = if self.tree.child(selected, "r_star").is_some() {
-                    if distinct {
-                        return Err(self.error(selected, "COUNT(DISTINCT *) is not supported"));
-                    }
-                    "*".to_owned()
-                } else if let Some(reference) = self.tree.child(selected, "x_ref") {
-                    self.joined_ids(reference, ".")
-                } else {
-                    self.text(self.tree.required(selected, "v_identifier"))
-                        .to_owned()
-                };
-                OrderExpression::Column(format!(
-                    "count({}{argument})",
-                    if distinct { "DISTINCT " } else { "" }
-                ))
-            }
-            Some("r_order_id") => OrderExpression::Id {
-                variable: self
-                    .text(self.tree.required(selected, "v_identifier"))
-                    .to_owned(),
-            },
-            Some("r_order_value") => OrderExpression::Value(
-                self.scalar(self.tree.required(selected, "x_scalar"), depth)?,
-            ),
-            Some("x_ref") => {
-                let (variable, property) = self.identifier_pair(selected);
-                OrderExpression::Property { variable, property }
-            }
-            Some("x_variable") => OrderExpression::Column(
-                self.text(self.tree.required(selected, "v_identifier"))
-                    .to_owned(),
-            ),
-            _ => unreachable!("order rule"),
-        };
+        let expression = order_expression(self.projection_expression(expression, depth)?);
         let direction = if self
             .tree
             .child(node, "r_direction")
@@ -633,5 +546,27 @@ fn contains_aggregate(value: &ReturnExpression) -> bool {
             arguments.iter().any(contains_aggregate)
         }
         _ => false,
+    }
+}
+
+fn order_expression(expression: ReturnExpression) -> OrderExpression {
+    let span = expression.span;
+    match expression.kind {
+        ReturnExpressionKind::Value(value) => match value.kind {
+            ScalarExpressionKind::Variable(name) => OrderExpression::Column(name),
+            ScalarExpressionKind::Property { variable, property } => {
+                OrderExpression::Property { variable, property }
+            }
+            ScalarExpressionKind::Id(variable) => OrderExpression::Id { variable },
+            kind => OrderExpression::Value(AstNode {
+                kind,
+                span: value.span,
+            }),
+        },
+        ReturnExpressionKind::Path(path) => OrderExpression::Value(AstNode {
+            kind: ScalarExpressionKind::Path(path),
+            span,
+        }),
+        kind => OrderExpression::Projection(AstNode { kind, span }),
     }
 }

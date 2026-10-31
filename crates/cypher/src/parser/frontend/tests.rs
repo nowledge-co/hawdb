@@ -47,43 +47,71 @@ fn frozen_equivalent(input: &str, entry: &str) {
     assert_frozen(&baseline[&(input.to_owned(), entry.to_owned())]);
 }
 
+fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json::Value {
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+    type TransitionMap = BTreeMap<(String, String), serde_json::Value>;
+    static TRANSITIONS: OnceLock<[TransitionMap; 2]> = OnceLock::new();
+    // Keep each earlier oracle immutable. Main #1411 changes row bindings and
+    // read-only UNWIND; #1403 expands ORDER BY and changes aggregate sort ASTs.
+    // Every transition was exported from an independently compiled main.
+    let transitions = TRANSITIONS.get_or_init(|| {
+        [
+            include_str!("../../../fixtures/migration_main_1411_peg_baseline_v1.jsonl"),
+            include_str!(
+                "../../../fixtures/migration_main_1403_order_expressions_peg_baseline_v1.jsonl"
+            ),
+        ]
+        .map(|fixture| {
+            fixture
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .filter(|case| case.get("previous_kind").is_some())
+                .map(|case| {
+                    (
+                        (
+                            case["query"].as_str().unwrap().to_owned(),
+                            case["entry"].as_str().unwrap().to_owned(),
+                        ),
+                        case,
+                    )
+                })
+                .collect()
+        })
+    });
+    let key = (
+        expected["query"].as_str().unwrap().to_owned(),
+        expected["entry"].as_str().unwrap().to_owned(),
+    );
+    // A fixture may already describe an intermediate or final main revision.
+    // Resume after that fingerprint instead of applying an older transition.
+    let start = transitions
+        .iter()
+        .rposition(|table| {
+            table.get(&key).is_some_and(|current| {
+                current["kind"] == expected["kind"]
+                    && current["ast_sha256"] == expected["ast_sha256"]
+            })
+        })
+        .map_or(0, |index| index + 1);
+    let mut expected = expected;
+    for table in &transitions[start..] {
+        if let Some(current) = table.get(&key) {
+            assert_eq!(expected["kind"], current["previous_kind"], "{key:?}");
+            assert_eq!(
+                expected["ast_sha256"], current["previous_ast_sha256"],
+                "{key:?}"
+            );
+            expected = current;
+        }
+    }
+    expected
+}
+
 fn assert_frozen(expected: &serde_json::Value) {
     use sha2::{Digest, Sha256};
     use std::fmt::Write;
-    // main #1411 intentionally admits bare row bindings and classifies read-only
-    // UNWIND as Pipeline. Keep the older oracle immutable; apply only these
-    // independently exported transitions with matching previous fingerprints.
-    use std::collections::BTreeMap;
-    use std::sync::OnceLock;
-    static TRANSITIONS: OnceLock<BTreeMap<(String, String), serde_json::Value>> = OnceLock::new();
-    let transitions = TRANSITIONS.get_or_init(|| {
-        include_str!("../../../fixtures/migration_main_1411_peg_baseline_v1.jsonl")
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .filter(|case| case.get("previous_kind").is_some())
-            .map(|case| {
-                (
-                    (
-                        case["query"].as_str().unwrap().to_owned(),
-                        case["entry"].as_str().unwrap().to_owned(),
-                    ),
-                    case,
-                )
-            })
-            .collect()
-    });
-    let expected = if let Some(current) = transitions.get(&(
-        expected["query"].as_str().unwrap().to_owned(),
-        expected["entry"].as_str().unwrap().to_owned(),
-    )) {
-        if current["ast_sha256"] != expected["ast_sha256"] || current["kind"] != expected["kind"] {
-            assert_eq!(expected["kind"], current["previous_kind"]);
-            assert_eq!(expected["ast_sha256"], current["previous_ast_sha256"]);
-        }
-        current
-    } else {
-        expected
-    };
+    let expected = expected_after_main_transitions(expected);
     let input = expected["query"].as_str().unwrap();
     let result = if expected["entry"] == "statement" {
         crate::parse(input).map(|ast| format!("{ast:?}"))
@@ -315,8 +343,6 @@ fn token_budget_checks_the_exact_boundary_before_ast_construction() {
 // includes source spans, which AstNode's semantic PartialEq intentionally omits.
 #[test]
 fn frozen_peg_baseline_preserves_ast_spans_and_rejection_classes() {
-    use sha2::{Digest, Sha256};
-    use std::fmt::Write;
     let cases: std::collections::BTreeMap<_, _> =
         include_str!("../../../fixtures/migration_corpus_v1.jsonl")
             .lines()
@@ -330,42 +356,9 @@ fn frozen_peg_baseline_preserves_ast_spans_and_rejection_classes() {
             .collect();
     let mut count = 0;
     for line in include_str!("../../../fixtures/migration_peg_baseline_v1.jsonl").lines() {
-        let expected: serde_json::Value = serde_json::from_str(line).unwrap();
-        let input = &cases[expected["id"].as_str().unwrap()];
-        let result = if expected["entry"] == "statement" {
-            crate::parse(input).map(|ast| format!("{ast:?}"))
-        } else {
-            crate::parse_pipeline(input).map(|ast| format!("{ast:?}"))
-        };
-        let (kind, digest) = match result {
-            Ok(ast) => (
-                "accept",
-                Some({
-                    let mut digest = String::with_capacity(64);
-                    for byte in Sha256::digest(ast.as_bytes()) {
-                        write!(digest, "{byte:02x}").unwrap();
-                    }
-                    digest
-                }),
-            ),
-            Err(hawdb_core::HawDBError::Parse(_)) => ("Parse", None),
-            Err(hawdb_core::HawDBError::Semantic(_)) => ("Semantic", None),
-            other => panic!("unexpected baseline result: {other:?}"),
-        };
-        assert_eq!(
-            kind,
-            expected["kind"].as_str().unwrap(),
-            "{} {}: {input}",
-            expected["id"],
-            expected["entry"]
-        );
-        assert_eq!(
-            digest.as_deref(),
-            expected["ast_sha256"].as_str(),
-            "{} {}: {input}",
-            expected["id"],
-            expected["entry"]
-        );
+        let mut expected: serde_json::Value = serde_json::from_str(line).unwrap();
+        expected["query"] = cases[expected["id"].as_str().unwrap()].clone().into();
+        assert_frozen(&expected);
         count += 1;
     }
     assert_eq!(count, 2854);
@@ -569,4 +562,18 @@ fn contextual_keywords_preserve_main_case_and_mutation_admission() {
         count += 1;
     }
     assert_eq!(count, 2380);
+}
+
+#[test]
+fn main_1403_order_expressions_preserve_independent_main_ir() {
+    let mut count = 0;
+    for line in include_str!(
+        "../../../fixtures/migration_main_1403_order_expressions_peg_baseline_v1.jsonl"
+    )
+    .lines()
+    {
+        assert_frozen(&serde_json::from_str(line).unwrap());
+        count += 1;
+    }
+    assert_eq!(count, 714);
 }
