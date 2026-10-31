@@ -190,9 +190,6 @@ fn bind_batch_value(
     parameters: &BTreeMap<String, Value>,
 ) -> Result<BatchMutationValue> {
     match &value.kind {
-        ValueExpressionKind::BindingVariable(variable) if variable == row_variable => {
-            Ok(BatchMutationValue::Row)
-        }
         ValueExpressionKind::BindingProperty { variable, property } => {
             if variable != row_variable {
                 return Err(HawDBError::Semantic(format!(

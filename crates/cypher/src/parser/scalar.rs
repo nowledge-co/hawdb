@@ -102,7 +102,7 @@ impl Parser<'_> {
                     let property = self.parse_ident()?;
                     Ok(ValueExpressionKind::BindingProperty { variable, property })
                 } else {
-                    Ok(ValueExpressionKind::BindingVariable(variable))
+                    Ok(ValueExpressionKind::Binding(variable))
                 }
             }
             _ => Err(self.error("expected value")),

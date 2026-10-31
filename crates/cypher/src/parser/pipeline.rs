@@ -712,7 +712,7 @@ mod tests {
             panic!("MATCH")
         };
         assert!(matches!(&patterns[0].first.properties["id"].kind,
-            ValueExpressionKind::BindingVariable(variable) if variable == "key"));
+            ValueExpressionKind::Binding(variable) if variable == "key"));
         let query = "UNWIND $rows AS row MERGE (entity:Entity {id: row.id}) ON CREATE SET entity.name = row.name";
         let parsed = parse_pipeline(query).unwrap();
         assert_eq!(parsed.clauses.len(), 2);

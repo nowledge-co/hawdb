@@ -48,7 +48,11 @@ pub(super) fn bind(
                 }
                 // A MATCH before UNWIND cannot reference the later row binding.
                 for pattern in patterns {
-                    bind_batch_properties(&pattern.first.properties, &row_variable, parameters)?;
+                    bind_relationship_properties(
+                        &pattern.first.properties,
+                        &row_variable,
+                        parameters,
+                    )?;
                 }
                 input.patterns.extend(patterns);
                 let scope = input
@@ -86,9 +90,9 @@ pub(super) fn bind(
         ));
     }
     let mut source_properties =
-        bind_batch_properties(&source.properties, &row_variable, parameters)?;
+        bind_relationship_properties(&source.properties, &row_variable, parameters)?;
     let mut target_properties =
-        bind_batch_properties(&target.properties, &row_variable, parameters)?;
+        bind_relationship_properties(&target.properties, &row_variable, parameters)?;
     for (predicate, predicate_row_variable) in predicates {
         bind_filter(
             predicate,
@@ -145,7 +149,9 @@ pub(super) fn bind(
             ));
         }
         let value = match &set.value {
-            SetValueExpression::Value(value) => bind_batch_value(value, &row_variable, parameters)?,
+            SetValueExpression::Value(value) => {
+                bind_relationship_value(value, &row_variable, parameters)?
+            }
             SetValueExpression::Property { variable, property } if variable == &row_variable => {
                 BatchMutationValue::RowProperty(property.clone())
             }
@@ -168,7 +174,7 @@ pub(super) fn bind(
             target_label: target.label.clone(),
             target_properties,
             rel_type: relationship.rel_type.clone(),
-            rel_match_properties: bind_batch_properties(
+            rel_match_properties: bind_relationship_properties(
                 &relationship.properties,
                 &row_variable,
                 parameters,
@@ -248,7 +254,7 @@ fn bind_filter(
                 ));
             };
             let value = match &value.kind {
-                S::Variable(variable) => ValueExpressionKind::BindingVariable(variable.clone()),
+                S::Variable(variable) => ValueExpressionKind::Binding(variable.clone()),
                 S::Property { variable, property } => ValueExpressionKind::BindingProperty {
                     variable: variable.clone(),
                     property: property.clone(),
@@ -277,7 +283,7 @@ fn bind_filter(
             "relationship MERGE predicate references an unknown endpoint",
         ));
     };
-    let value = bind_batch_value(&value, row_variable, parameters)?;
+    let value = bind_relationship_value(&value, row_variable, parameters)?;
     if properties
         .get(property)
         .is_some_and(|existing| existing != &value)
@@ -288,4 +294,33 @@ fn bind_filter(
     }
     properties.insert(property.clone(), value);
     Ok(())
+}
+
+fn bind_relationship_properties(
+    properties: &BTreeMap<String, ValueExpression>,
+    row_variable: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, BatchMutationValue>> {
+    properties
+        .iter()
+        .map(|(property, value)| {
+            Ok((
+                property.clone(),
+                bind_relationship_value(value, row_variable, parameters)?,
+            ))
+        })
+        .collect()
+}
+
+fn bind_relationship_value(
+    value: &ValueExpression,
+    row_variable: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<BatchMutationValue> {
+    match &value.kind {
+        ValueExpressionKind::Binding(variable) if variable == row_variable => {
+            Ok(BatchMutationValue::Row)
+        }
+        _ => bind_batch_value(value, row_variable, parameters),
+    }
 }

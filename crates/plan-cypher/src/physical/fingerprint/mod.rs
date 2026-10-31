@@ -349,6 +349,15 @@ impl PhysicalPlan {
                 write_properties(output, properties);
                 output.push(')');
             }
+            PhysicalPlan::UnwindExec { rows, variable } => {
+                output.push_str("Unwind(");
+                write_identifier(output, variable);
+                for row in rows {
+                    output.push(',');
+                    write_value(output, row);
+                }
+                output.push(')');
+            }
             PhysicalPlan::UnwindMutation {
                 rows,
                 variable,

@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 //! Preserve conventional read operators when a generic MATCH has the same semantics.
 
 use super::*;
@@ -229,7 +232,9 @@ fn disjoint_native_bindings(input: &LogicalPlan, variables: &BTreeSet<&str>, dep
     let next = depth + 1;
     match input {
         LogicalPlan::NodeScan { variable, .. } => !variables.contains(variable.as_str()),
-        LogicalPlan::VectorSeed { .. } | LogicalPlan::TextSeed { .. } => true,
+        LogicalPlan::VectorSeed { .. }
+        | LogicalPlan::TextSeed { .. }
+        | LogicalPlan::Unwind { .. } => true,
         LogicalPlan::GraphSeed { variable, .. } => !variables.contains(variable.as_str()),
         LogicalPlan::VectorIndexSearch(scan) => !variables.contains(scan.variable.as_str()),
         // Aggregate constructs fresh value-only bindings, including its spill

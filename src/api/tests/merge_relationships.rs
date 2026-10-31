@@ -687,13 +687,17 @@ fn merge_relationship_existing_pattern_does_not_write_wal() {
 fn matched_unwind_relationship_merge_preserves_large_fanout_and_pending_subsets() {
     let mut db = Database::new();
     db.query("CREATE (:Skill {id: 'skill'})").unwrap();
-    let ids = BTreeMap::from([(
-        "ids".into(),
-        Value::List((0..4_096).map(Value::Int).collect()),
+    let parameters = BTreeMap::from([(
+        "rows".into(),
+        Value::List(
+            (0..4_096)
+                .map(|id| Value::Map(BTreeMap::from([("id".into(), Value::Int(id))])))
+                .collect(),
+        ),
     )]);
     db.query_with_params(
-        "UNWIND $ids AS id CREATE (:Memory {id: id, cohort: 1})",
-        &ids,
+        "UNWIND $rows AS row CREATE (:Memory {id: row.id, cohort: 1})",
+        &parameters,
     )
     .unwrap();
     let rows = db.query("MATCH (s:Skill {id: 'skill'}) UNWIND [1, 2, 1] AS key MATCH (m:Memory {cohort: 1}) MERGE (s)-[:SYNTHESIZED_FROM {key: key}]->(m) RETURN m.id").unwrap();

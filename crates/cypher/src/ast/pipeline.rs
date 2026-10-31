@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 
 pub type QueryPipeline = AstNode<QueryPipelineKind>;
@@ -134,3 +137,21 @@ impl PathSearch {
 /// as `[:KNOWS*]` or `[:KNOWS*1..]`. Only shortest-path patterns may be
 /// unbounded; the binder replaces it with an explicit execution hop cap.
 pub const UNBOUNDED_MAX_HOPS: usize = usize::MAX;
+
+impl QueryPipeline {
+    pub(crate) fn into_unwind_statement(self: Box<QueryPipeline>) -> Statement {
+        if self.clauses.iter().any(|clause| {
+            matches!(
+                clause.kind,
+                ClauseKind::Create(_)
+                    | ClauseKind::Merge { .. }
+                    | ClauseKind::Set(_)
+                    | ClauseKind::Delete { .. }
+            )
+        }) {
+            Statement::UnwindMutation(self)
+        } else {
+            Statement::Pipeline(self)
+        }
+    }
+}

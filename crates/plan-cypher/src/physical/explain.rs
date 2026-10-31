@@ -177,6 +177,9 @@ impl PhysicalPlan {
             PhysicalPlan::CreateNode { label, .. } => {
                 format!("{pad}CreateNode label={label}")
             }
+            PhysicalPlan::UnwindExec { rows, variable } => {
+                format!("{pad}UnwindExec rows={} variable={variable}", rows.len())
+            }
             PhysicalPlan::UnwindMutation {
                 rows,
                 variable,
