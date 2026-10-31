@@ -115,6 +115,11 @@ retains its expression or graph error code. Grammar prefixes must match before
 entering guarded content, so a rejected alternative does not consume language
 nesting admission.
 
+Only match or mismatch travels between continuation frames. Fatal work, depth,
+memo, capture and repetition errors return immediately from the matcher, before
+optional, repeated or lookahead expressions can consume them. The local result
+therefore stores an optional end position without carrying an owned syntax error.
+
 A parser invocation owns its memo table and capture arena. Successful and
 failed named rules are cached by rule ID and token position; successful hits
 reuse capture IDs instead of cloning syntax trees. Each rule caches its greatest

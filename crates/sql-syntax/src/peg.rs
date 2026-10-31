@@ -300,7 +300,8 @@ enum Failure {
     Fatal(SyntaxError),
 }
 
-type MatchResult = Result<usize, Failure>;
+// Fatal errors return directly from rule; only match/mismatch travels between frames.
+type MatchResult = Option<usize>;
 
 // Continuations refer only to immutable compiled grammar nodes. Pending frames
 // are bounded by the expression-depth budget; repetitions reuse their frame.
@@ -427,9 +428,9 @@ impl<'a> Matcher<'a> {
         self.farthest = Some(error);
     }
 
-    fn mismatch(&mut self, position: usize, expected: &'a &'static str) -> Failure {
+    fn mismatch(&mut self, position: usize, expected: &'a &'static str) -> MatchResult {
         self.remember(Diagnostic { position, expected });
-        Failure::Mismatch
+        None
     }
 
     fn push(
@@ -473,7 +474,7 @@ impl<'a> Matcher<'a> {
         // thread stack. Expression depth and language-domain admission still
         // apply before scheduling children.
         let mut work = vec![Frame::Rule(root, start)];
-        let mut result: MatchResult = Err(Failure::Mismatch);
+        let mut result: MatchResult = None;
         while let Some(frame) = work.pop() {
             match frame {
                 Frame::Rule(rule, position) => {
@@ -494,7 +495,7 @@ impl<'a> Matcher<'a> {
                                 if let Some(error) = error {
                                     self.remember(error);
                                 }
-                                result = Err(Failure::Mismatch);
+                                result = None;
                             }
                             state => {
                                 let node = state - Memo::NODE_OFFSET;
@@ -511,7 +512,7 @@ impl<'a> Matcher<'a> {
                                     self.remember(error);
                                 }
                                 self.captures.push(node);
-                                result = Ok(end);
+                                result = Some(end);
                             }
                         }
                         continue;
@@ -559,7 +560,7 @@ impl<'a> Matcher<'a> {
                         self.remember(error);
                     }
                     match result {
-                        Ok(end) => {
+                        Some(end) => {
                             let node = self.push(
                                 Some(self.grammar.rules[rule].0),
                                 position,
@@ -571,10 +572,9 @@ impl<'a> Matcher<'a> {
                                 .insert(rule, position, Memo::matched(end, node, local_error));
                             self.captures.push(node);
                         }
-                        Err(Failure::Mismatch) => {
+                        None => {
                             self.memo.insert(rule, position, Memo::failed(local_error));
                         }
-                        Err(fatal) => return Err(fatal),
                     }
                 }
                 Frame::Expression(expression, position) => {
@@ -588,23 +588,23 @@ impl<'a> Matcher<'a> {
                     let terminal = match expression {
                         Expression::Keyword(keyword) => {
                             Some(if self.token(position).is_keyword(self.input, keyword) {
-                                Ok(position + 1)
+                                Some(position + 1)
                             } else {
-                                Err(self.mismatch(position, keyword))
+                                self.mismatch(position, keyword)
                             })
                         }
                         Expression::Token(kind, expected) => {
                             Some(if self.token(position).kind == *kind {
-                                Ok(position + usize::from(*kind != TokenKind::End))
+                                Some(position + usize::from(*kind != TokenKind::End))
                             } else {
-                                Err(self.mismatch(position, expected))
+                                self.mismatch(position, expected)
                             })
                         }
                         Expression::Parameter => Some(
                             if matches!(self.token(position).kind, TokenKind::Parameter(_)) {
-                                Ok(position + 1)
+                                Some(position + 1)
                             } else {
-                                Err(self.mismatch(position, &"a positional parameter"))
+                                self.mismatch(position, &"a positional parameter")
                             },
                         ),
                         _ => None,
@@ -621,11 +621,11 @@ impl<'a> Matcher<'a> {
                         }
                         Expression::Rule(rule) => work.push(Frame::Rule(*rule, position)),
                         Expression::Sequence(items) => {
-                            result = Ok(position);
+                            result = Some(position);
                             work.push(Frame::Sequence(items, 0));
                         }
                         Expression::Choice(items) => {
-                            result = Err(Failure::Mismatch);
+                            result = None;
                             work.push(Frame::Choice {
                                 items,
                                 next: 0,
@@ -657,13 +657,13 @@ impl<'a> Matcher<'a> {
                     }
                 }
                 Frame::ExpressionDone(captures) => {
-                    if result.is_err() {
+                    if result.is_none() {
                         self.captures.truncate(captures);
                     }
                     self.depth -= 1;
                 }
                 Frame::Sequence(items, next) => {
-                    if let Ok(position) = result
+                    if let Some(position) = result
                         && let Some(item) = items.get(next)
                     {
                         work.push(Frame::Sequence(items, next + 1));
@@ -675,7 +675,7 @@ impl<'a> Matcher<'a> {
                     next,
                     position,
                 } => {
-                    if matches!(result, Err(Failure::Mismatch))
+                    if result.is_none()
                         && let Some(item) = items.get(next)
                     {
                         work.push(Frame::Choice {
@@ -687,9 +687,9 @@ impl<'a> Matcher<'a> {
                     }
                 }
                 Frame::OptionalDone { position, saved } => {
-                    if matches!(result, Err(Failure::Mismatch)) {
+                    if result.is_none() {
                         self.restore_absence(position, saved);
-                        result = Ok(position);
+                        result = Some(position);
                     }
                 }
                 Frame::Repeat(inner, position) => {
@@ -705,21 +705,20 @@ impl<'a> Matcher<'a> {
                     position,
                     saved,
                 } => match result {
-                    Ok(next) if next > position => work.push(Frame::Repeat(inner, next)),
-                    Ok(_) => return Err(self.limit(position, "a consuming PEG repetition")),
-                    Err(Failure::Mismatch) => {
+                    Some(next) if next > position => work.push(Frame::Repeat(inner, next)),
+                    Some(_) => return Err(self.limit(position, "a consuming PEG repetition")),
+                    None => {
                         self.restore_absence(position, saved);
-                        result = Ok(position);
+                        result = Some(position);
                     }
-                    Err(fatal) => return Err(fatal),
                 },
                 Frame::TightDone(start) => {
-                    if let Ok(end) = result {
+                    if let Some(end) = result {
                         for position in start.saturating_add(1)..end {
                             self.charge(1, position)?;
                             if self.token(position - 1).span.end != self.token(position).span.start
                             {
-                                result = Err(self.mismatch(position, &"adjacent tokens"));
+                                result = self.mismatch(position, &"adjacent tokens");
                                 break;
                             }
                         }
@@ -735,15 +734,16 @@ impl<'a> Matcher<'a> {
                     self.captures.truncate(captures);
                     self.farthest = saved;
                     result = match result {
-                        Ok(_) if positive => Ok(position),
-                        Err(Failure::Mismatch) if !positive => Ok(position),
-                        Ok(_) | Err(Failure::Mismatch) => Err(self.mismatch(position, expected)),
-                        Err(fatal) => return Err(fatal),
+                        Some(_) if positive => Some(position),
+                        None if !positive => Some(position),
+                        Some(_) | None => self.mismatch(position, expected),
                     };
                 }
             }
         }
-        result.map(|end| (end, self.captures.pop().expect("successful root capture")))
+        result
+            .map(|end| (end, self.captures.pop().expect("successful root capture")))
+            .ok_or(Failure::Mismatch)
     }
 
     fn restore_absence(&mut self, position: usize, saved: Option<Diagnostic<'a>>) {

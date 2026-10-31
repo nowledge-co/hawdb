@@ -2313,6 +2313,9 @@ identity/edges after capture rollback. Empty rules preserve zero-length source
 spans. The adaptive-cache cases also retain pending/failed/matched state,
 end positions, node identity and logical entry counts across forward/backward
 visits, replacement and density changes with compact nonzero memo records.
+Continuation-local results carry only match/mismatch; fatal resource errors
+return directly from the matcher. The existing fatal-propagation cases retain
+all original assertions across this representation change.
 SQL and Cypher share the same nongeneric CST grammar API.
 
 Latest-main integration at `2ae7e88614` (#1411) adds bare row-bound values in
