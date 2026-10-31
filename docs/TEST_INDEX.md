@@ -2177,3 +2177,10 @@ inputs, exact complete output checks, explicit row/payload budgets, cache and
 spill/admission counters. No default target, profile, resource limit or CI lane
 is changed. Read [the cost contract](QUERY_WIDTH_COSTS.md) before interpreting
 logical width/CPU/IO units as measurements.
+
+The source-bound [macOS ARM experiment](benchmarks/width_costs_macos_2026_10_31/README.md)
+contains 19 cells, 114 processes and 684 fully checked calls, including narrow,
+TEXT/STRING/vector, arrival order/native ordering, small/full K, three blocking
+budgets, width-proxy misses and persistent residency controls. It shows gains
+when TopN removes measured spill and records neutral/adverse outcomes explicitly;
+it is not a CI performance gate or a bound on actual heap allocation.
