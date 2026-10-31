@@ -480,7 +480,7 @@ fn candidate_encodings(values: &[Value]) -> Vec<ChunkEncoding> {
                 all_string = false;
                 all_binary = false;
             }
-            Value::Vector(_) | Value::List(_) | Value::Map(_) => {
+            Value::Decimal(_) | Value::Vector(_) | Value::List(_) | Value::Map(_) => {
                 all_int = false;
                 all_float = false;
                 all_bool = false;

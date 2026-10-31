@@ -43,7 +43,12 @@ fn value_capacity(value: &Value, depth: usize) -> Option<usize> {
             |bytes, value| bytes.checked_add(value_capacity(value, depth + 1)?),
         ),
         Value::Map(values) => properties_capacity(values, depth + 1),
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Uuid(_) => Some(0),
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Uuid(_)
+        | Value::Decimal(_) => Some(0),
     }
 }
 

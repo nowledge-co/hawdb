@@ -292,7 +292,12 @@ fn retained_value_heap_bytes(value: &Value) -> Result<usize> {
                 )
             },
         ),
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Uuid(_) => Ok(0),
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Decimal(_)
+        | Value::Uuid(_) => Ok(0),
     }
 }
 
@@ -321,6 +326,7 @@ fn cloned_value_heap_bytes(value: ValueRef<'_>) -> Result<usize> {
         | ValueRef::Bool(_)
         | ValueRef::Int(_)
         | ValueRef::Float(_)
+        | ValueRef::Decimal(_)
         | ValueRef::Uuid(_) => Ok(0),
     }
 }

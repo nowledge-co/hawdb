@@ -3413,6 +3413,7 @@ fn append_canonical_value(body: &mut String, value: &Value) {
         Value::Null => body.push_str("null"),
         Value::Bool(value) => body.push_str(if *value { "bool:true" } else { "bool:false" }),
         Value::Int(value) => body.push_str(&format!("int:{value}")),
+        Value::Decimal(value) => body.push_str(&format!("decimal:{value}")),
         Value::Float(value) => body.push_str(&format!("float:{:016x}", value.to_bits())),
         Value::String(value) => {
             body.push_str("string:");

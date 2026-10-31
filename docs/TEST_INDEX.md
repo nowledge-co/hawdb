@@ -149,6 +149,37 @@ adaptive buffers below an observed peak while preserving hard root refusal,
 as well as the tie-order and wide-row controls. Test lanes, profiles and deadlines stay
 unchanged; allocation microprobes do not establish end-to-end RSS or latency.
 
+Native Decimal and shared numeric SQL execution (#1419) use the existing core,
+SQL, SQL-syntax, plan-cache, relational, system-SQL, storage, executor and root
+unit owners. Core tests check exact arithmetic, bounded parsing, midpoint-away
+rounding, overflow, numeric identity/order and ordered-key encodings against
+integer/rational comparisons. SQL tests check both frontends, prepared parameters,
+CAST metadata and flat expression depth limits. Relational tests check exact
+index boundaries, integer/Decimal joins, SUM/HAVING and atomic failed UPDATEs.
+Native locking tests keep comparison bounds unrounded across both residency
+modes. Serializable tests retain true incompatible-type and volatile-value
+refusals while checking mixed BIGINT/DOUBLE results above 2^53, fail-closed
+cross-domain key capture, and exact integral Decimal-to-BIGINT capture.
+Storage and spill tests check raw scale, malformed/truncated payload rejection,
+page projection and subsequent-record alignment. Cache keys distinguish equal
+numeric values with different scales when cached results retain representation.
+Root `api::tests::decimal` runs persistent SQL in both Materialized and OutOfCore
+modes with demand-paged indexes, plus graph WAL/checkpoint reopen. These tests
+do not independently qualify machine power-loss behavior. Replay with
+`cargo test --locked -p hawdb-core -p hawdb-plan-cache -p hawdb-relational
+-p hawdb-storage -p hawdb-executor --lib decimal`,
+`cargo test --locked -p hawdb-sql -p hawdb-sql-syntax -p hawdb-system-sql --lib`,
+and `cargo test --locked -p hawdb --all-features --lib native_decimal`.
+Python parameter tests cover native `decimal.Decimal` and seeded arithmetic
+against an independent `fractions.Fraction` oracle; C JSON tests cover the
+exact `$decimal` marker. Existing binding lanes remain unchanged; retained
+foreign numeric buffers do not gain a Decimal ABI type. Manual Shiro result
+controls distinguish Decimal scale in ordered and bag comparisons, including
+nested lists/maps, while retaining duplicate multiplicities and float bits.
+Replay: `cargo test --locked --manifest-path tools/shiro/Cargo.toml --lib
+decimal_report_preserves_exact_digits_and_scale` and the `comparison` filter.
+These controls remain in the existing local-only Shiro test targets.
+
 Cypher `sum()` and expression-argument aggregates are owned by existing
 targets: `blocking::aggregate::tests` (Sum numeric/NULL/empty/overflow/
 non-numeric/DISTINCT accumulator and partial-merge rules),

@@ -296,7 +296,9 @@ fn scalar_binding_round_trips_and_keeps_exact_errors() {
     }
     assert_eq!(
         bind_sql_value(&SqlValue::Parameter(0), &[Value::Int(9)]),
-        Ok(Value::Int(9))
+        Err(HawDBError::Semantic(
+            "missing PostgreSQL parameter $0".into()
+        ))
     );
     let overflow = overflow();
     let expected = Err(HawDBError::Execution(

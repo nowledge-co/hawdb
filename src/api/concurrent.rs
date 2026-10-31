@@ -2017,8 +2017,10 @@ fn bind_sql_lock_value(
     parameters: &[Value],
     scalar_type: hawdb_storage::relational::RelationalScalarType,
 ) -> Option<RelationalValue> {
-    let value = crate::relational_sql::bind_relational_value(value.clone(), parameters).ok()?;
-    hawdb_relational::coerce_relational_value(value, scalar_type).ok()
+    let value = hawdb_sql::bind_sql_value(value, parameters).ok()?;
+    let value = hawdb_relational::query_value::value_to_relational_as(value, scalar_type).ok()?;
+    (value == RelationalValue::Null || scalar_type.same_value_domain(value.scalar_type()))
+        .then_some(value)
 }
 
 fn column_matches(

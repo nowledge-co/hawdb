@@ -42,6 +42,7 @@ fn scalar_type(value: RelationalScalarType) -> SqlDataType {
         RelationalScalarType::Boolean => SqlDataType::Boolean,
         RelationalScalarType::BigInt => SqlDataType::BigInt,
         RelationalScalarType::DoublePrecision => SqlDataType::DoublePrecision,
+        RelationalScalarType::Decimal(kind) => SqlDataType::Decimal(kind),
         RelationalScalarType::Text => SqlDataType::Text,
         RelationalScalarType::Bytea => SqlDataType::Bytea,
         RelationalScalarType::Uuid => SqlDataType::Uuid,

@@ -5670,6 +5670,7 @@ fn value_to_projection_string(value: &Value) -> String {
         Value::Bool(value) => value.to_string(),
         Value::Int(value) => value.to_string(),
         Value::Float(value) => value.to_string(),
+        Value::Decimal(value) => value.to_string(),
         Value::String(value) => value.clone(),
         Value::Binary(value) => format!(
             "\\x{}",

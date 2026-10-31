@@ -68,6 +68,16 @@ pub(super) fn decode_value<D: ValueDecoder>(
                 let encoded = decode_len_body(bytes, &mut pos)?;
                 value = Some(Value::Vector(decoder.vector(encoded)?));
             }
+            (VALUE_FIELD_DECIMAL, WIRE_TYPE_LEN) => {
+                let encoded = decode_len_body(bytes, &mut pos)?;
+                let bytes = encoded.try_into().map_err(|_| {
+                    HawDBError::Storage("WAL Decimal value must contain 17 bytes".into())
+                })?;
+                value = Some(Value::Decimal(
+                    hawdb_core::Decimal::from_le_bytes(bytes)
+                        .map_err(|error| HawDBError::Storage(error.to_string()))?,
+                ));
+            }
             (VALUE_FIELD_UUID, WIRE_TYPE_LEN) => {
                 let encoded = decode_len_body(bytes, &mut pos)?;
                 let bytes: [u8; 16] = encoded.try_into().map_err(|_| {

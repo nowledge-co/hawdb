@@ -98,6 +98,13 @@ fn prefix_successor(
                 }
                 None => false,
             },
+            RelationalValue::Decimal(value) => match value.next_up() {
+                Some(next) => {
+                    *value = next;
+                    true
+                }
+                None => false,
+            },
             RelationalValue::DoublePrecision(value) => {
                 let bits = value.to_bits();
                 if bits == i64::MAX as u64 {
@@ -280,6 +287,21 @@ mod tests {
     #[test]
     fn scalar_prefix_bounds_preserve_predicate_truth_and_encoded_key_order() {
         let domains = [
+            [
+                "-99999999999999999999999999999999999999",
+                "-1.01",
+                "-1.00",
+                "-1e-38",
+                "0.00",
+                "1e-38",
+                "1.00",
+                "1.0000000000000000000000000000000000001",
+                "1.01",
+                "99999999999999999999999999999999999999",
+            ]
+            .into_iter()
+            .map(|value| RelationalValue::Decimal(value.parse().unwrap()))
+            .collect(),
             vec![
                 RelationalValue::Boolean(false),
                 RelationalValue::Boolean(true),

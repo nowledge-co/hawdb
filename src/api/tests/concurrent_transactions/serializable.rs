@@ -632,7 +632,10 @@ fn dependency_read_unversioned_and_oversized_inputs_refuse_before_private_mutati
 fn dependency_read_incompatible_types_and_volatile_values_never_seal() {
     let mut db = fixture();
     assert!(matches!(
-        db.query_sql_with_params("SELECT id FROM inputs WHERE id = $1", &[Value::Float(1.0)]),
+        db.query_sql_with_params(
+            "SELECT id FROM inputs WHERE id = $1",
+            &[Value::String("1".into())]
+        ),
         Err(HawDBError::Semantic(_))
     ));
     let mut tx = db
@@ -642,7 +645,10 @@ fn dependency_read_incompatible_types_and_volatile_values_never_seal() {
         )
         .unwrap();
     assert!(tx
-        .query_sql_with_params("SELECT id FROM inputs WHERE id = $1", &[Value::Float(1.0)])
+        .query_sql_with_params(
+            "SELECT id FROM inputs WHERE id = $1",
+            &[Value::String("1".into())]
+        )
         .is_err());
     assert!(tx.read_dependency_usage().unwrap().refused);
     assert!(matches!(
@@ -684,6 +690,63 @@ fn dependency_read_incompatible_types_and_volatile_values_never_seal() {
         .unwrap()
         .rows
         .is_empty());
+}
+
+#[test]
+fn dependency_read_mixed_numeric_values_keep_exact_results_and_capture_boundaries() {
+    let mut db = fixture();
+    db.query_sql("INSERT INTO inputs (id, team, payload) VALUES (9007199254740993, 9, 30)")
+        .unwrap();
+    for (value, expected) in [
+        (Value::Float(1.0), vec![Value::Int(1)]),
+        (Value::Float(1.25), vec![]),
+        (Value::Float(9_007_199_254_740_992.0), vec![]),
+    ] {
+        let rows = db
+            .query_sql_with_params(
+                "SELECT id FROM inputs WHERE id = $1",
+                std::slice::from_ref(&value),
+            )
+            .unwrap()
+            .rows;
+        assert_eq!(
+            rows.iter().map(|row| row["id"].clone()).collect::<Vec<_>>(),
+            expected
+        );
+        let mut tx = db
+            .begin_transaction_with_isolation(
+                TransactionIsolation::Serializable,
+                TransactionReadDependencyLimits::default(),
+            )
+            .unwrap();
+        // Valid numeric execution does not authorize a cross-domain point
+        // stamp. The existing capture protocol must continue to fail closed.
+        assert!(matches!(
+            tx.query_sql_with_params("SELECT id FROM inputs WHERE id = $1", &[value]),
+            Err(HawDBError::TransactionReadDependencyRefused { .. })
+        ));
+        assert!(tx.read_dependency_usage().unwrap().refused);
+        assert!(matches!(
+            tx.commit(),
+            Err(HawDBError::TransactionReadDependencyRefused { .. })
+        ));
+    }
+    let mut tx = db
+        .begin_transaction_with_isolation(
+            TransactionIsolation::Serializable,
+            TransactionReadDependencyLimits::default(),
+        )
+        .unwrap();
+    let rows = tx
+        .query_sql_with_params(
+            "SELECT id FROM inputs WHERE id = $1",
+            &[Value::Decimal("9007199254740993.000".parse().unwrap())],
+        )
+        .unwrap()
+        .rows;
+    assert_eq!(rows[0]["id"], Value::Int(9_007_199_254_740_993));
+    assert_eq!(tx.read_dependency_usage().unwrap().exact_relational_rows, 1);
+    tx.commit().unwrap();
 }
 
 #[test]

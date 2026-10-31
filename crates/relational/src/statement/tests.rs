@@ -219,11 +219,21 @@ fn campaign(cases: usize) {
                 table: "items".into(),
                 assignments: vec![RelationalUpdateAssignment {
                     column: "counter".into(),
-                    value: RelationalUpdateValue::BigIntArithmetic {
-                        left: RelationalBigIntOperand::Column("counter".into()),
-                        operator: RelationalBigIntArithmeticOperator::Add,
-                        right: RelationalBigIntOperand::Value(RelationalValue::BigInt(delta)),
-                    },
+                    value: RelationalUpdateValue::Numeric(
+                        hawdb_storage::relational::RelationalNumericExpression::Binary {
+                            left: Box::new(
+                                hawdb_storage::relational::RelationalNumericExpression::Column(
+                                    "counter".into()
+                                )
+                            ),
+                            op: hawdb_core::numeric::NumericBinaryOp::Add,
+                            right: Box::new(
+                                hawdb_storage::relational::RelationalNumericExpression::Value(
+                                    RelationalValue::BigInt(delta)
+                                )
+                            ),
+                        }
+                    ),
                 }],
                 predicate: predicate.clone(),
             }],

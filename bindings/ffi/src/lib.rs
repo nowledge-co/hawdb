@@ -60,6 +60,9 @@ mod error_tests;
 #[cfg(test)]
 mod vector_tests;
 
+#[cfg(test)]
+mod decimal_tests;
+
 /// Developer profiling build only. This observation is not an admission ledger
 /// or an allocator-capacity bound. NULL output is a no-op; no buffer is allocated.
 ///
@@ -279,6 +282,7 @@ fn value_to_json(value: &Value) -> serde_json::Value {
         Value::String(item) => json!(item),
         Value::Binary(item) => json!({ "$binary": BASE64.encode(item) }),
         Value::Uuid(item) => json!({ "$uuid": item.to_string() }),
+        Value::Decimal(item) => json!({ "$decimal": item.to_string() }),
         Value::Vector(item) => {
             json!({ "$vector": item.as_ref().coordinates().collect::<Vec<_>>() })
         }
@@ -317,6 +321,14 @@ fn json_to_value(value: &serde_json::Value) -> Result<Value, String> {
         }
         serde_json::Value::Object(items) => {
             if items.len() == 1 {
+                if let Some(encoded) = items.get("$decimal") {
+                    return encoded
+                        .as_str()
+                        .ok_or("$decimal must be a decimal string")?
+                        .parse::<hawdb::Decimal>()
+                        .map(Value::Decimal)
+                        .map_err(|error| format!("invalid $decimal parameter: {error}"));
+                }
                 if let Some(encoded) = items.get("$vector") {
                     let coordinates = encoded
                         .as_array()

@@ -1576,9 +1576,16 @@ fn has_index_mutation(mutations: &[Mutation]) -> bool {
 }
 
 pub fn compare_rows(left: &[Row], right: &[Row], semantics: ResultSemantics) -> Result<(), String> {
+    let equal = |left: &[Row], right: &[Row]| {
+        left.len() == right.len()
+            && left
+                .iter()
+                .zip(right)
+                .all(|(left, right)| compare_row(left, right).is_eq())
+    };
     match semantics {
         ResultSemantics::Ordered => {
-            if left == right {
+            if equal(left, right) {
                 Ok(())
             } else {
                 Err(format!(
@@ -1593,7 +1600,7 @@ pub fn compare_rows(left: &[Row], right: &[Row], semantics: ResultSemantics) -> 
             let mut right = right.to_vec();
             left.sort_by(compare_row);
             right.sort_by(compare_row);
-            if left == right {
+            if equal(&left, &right) {
                 Ok(())
             } else {
                 Err(format!(
@@ -1607,7 +1614,33 @@ pub fn compare_rows(left: &[Row], right: &[Row], semantics: ResultSemantics) -> 
 }
 
 fn compare_row(left: &Row, right: &Row) -> Ordering {
-    left.iter().cmp(right.iter())
+    left.iter()
+        .zip(right)
+        .map(|((left_name, left), (right_name, right))| {
+            left_name
+                .cmp(right_name)
+                .then_with(|| compare_value(left, right))
+        })
+        .find(|order| !order.is_eq())
+        .unwrap_or_else(|| left.len().cmp(&right.len()))
+}
+
+fn compare_value(left: &Value, right: &Value) -> Ordering {
+    match (left, right) {
+        // SQL numeric identity intentionally ignores scale. The result oracle
+        // must also detect representation changes, including nested values.
+        (Value::Decimal(left), Value::Decimal(right)) => {
+            left.to_le_bytes().cmp(&right.to_le_bytes())
+        }
+        (Value::List(left), Value::List(right)) => left
+            .iter()
+            .zip(right)
+            .map(|(left, right)| compare_value(left, right))
+            .find(|order| !order.is_eq())
+            .unwrap_or_else(|| left.len().cmp(&right.len())),
+        (Value::Map(left), Value::Map(right)) => compare_row(left, right),
+        _ => left.cmp(right),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2279,6 +2312,7 @@ fn typed_value_json(value: &Value) -> JsonValue {
         Value::Null => json!({"type": "null"}),
         Value::Bool(value) => json!({"type": "bool", "value": value}),
         Value::Int(value) => json!({"type": "int", "value": value}),
+        Value::Decimal(value) => json!({"type": "decimal", "value": value.to_string()}),
         Value::Float(value) => json!({
             "type": "float",
             "bits": format!("{:016x}", value.to_bits()),
@@ -2391,6 +2425,57 @@ mod tests {
                 "type": "vector", "hex": "020000000000803f00000080"
             })
         );
+    }
+
+    #[test]
+    fn decimal_report_preserves_exact_digits_and_scale() {
+        let value = Value::Decimal("9007199254740993.0100".parse().unwrap());
+        assert_eq!(
+            typed_value_json(&value),
+            json!({"type": "decimal", "value": "9007199254740993.0100"})
+        );
+        let same_number = Value::Decimal("9007199254740993.01".parse().unwrap());
+        assert_eq!(value, same_number);
+        let wrap = |value: Value| {
+            [
+                value.clone(),
+                Value::List(vec![value.clone()]),
+                Value::Map(BTreeMap::from([(
+                    "nested".into(),
+                    Value::List(vec![value]),
+                )])),
+            ]
+        };
+        for (left, right) in wrap(value).into_iter().zip(wrap(same_number)) {
+            let left = row([("value", left)]);
+            let right = row([("value", right)]);
+            for semantics in [ResultSemantics::Ordered, ResultSemantics::Bag] {
+                assert!(compare_rows(
+                    std::slice::from_ref(&left),
+                    std::slice::from_ref(&left),
+                    semantics
+                )
+                .is_ok());
+                assert!(compare_rows(
+                    std::slice::from_ref(&left),
+                    std::slice::from_ref(&right),
+                    semantics
+                )
+                .is_err());
+                assert!(compare_rows(
+                    &[left.clone(), right.clone()],
+                    &[left.clone(), left.clone()],
+                    semantics
+                )
+                .is_err());
+            }
+            assert!(compare_rows(
+                &[left.clone(), right.clone(), left.clone()],
+                &[right, left.clone(), left],
+                ResultSemantics::Bag
+            )
+            .is_ok());
+        }
     }
 
     #[test]

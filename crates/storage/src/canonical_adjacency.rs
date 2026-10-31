@@ -2644,6 +2644,7 @@ fn estimated_value_bytes(value: &Value) -> u64 {
         Value::Null => 1,
         Value::Bool(_) => 2,
         Value::Int(_) | Value::Float(_) => 9,
+        Value::Decimal(_) => 18,
         Value::String(value) => 5u64.saturating_add(value.len() as u64),
         Value::Binary(value) => 5u64.saturating_add(value.len() as u64),
         Value::Vector(value) => 5u64.saturating_add(value.encoded().len() as u64),

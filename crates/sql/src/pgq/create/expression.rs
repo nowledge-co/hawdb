@@ -323,7 +323,15 @@ impl Binder<'_> {
             Syntax::Cast {
                 expression,
                 data_type,
+                type_parameters,
             } => {
+                if !type_parameters.is_empty() {
+                    return Err(self.error(
+                        Code::UnsupportedExpression,
+                        span,
+                        "parameterized scalar casts are not supported in PGQ",
+                    ));
+                }
                 let target = self.type_name(&self.name(data_type)?, data_type.span)?;
                 let mut inner = bind(expression)?;
                 if unknown(inner.data_type) {

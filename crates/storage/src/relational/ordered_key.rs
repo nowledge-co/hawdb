@@ -258,6 +258,7 @@ impl<'a> OrderedKeyDecoder<'a> {
                 )?))
             }
             5 => Ok(RelationalValue::Bytea(self.escaped_bytes(true)?)),
+            9 => self.decimal().map(RelationalValue::Decimal),
             6 => Ok(RelationalValue::Uuid(hawdb_core::Uuid::from_bytes(
                 self.fixed("UUID value")?,
             ))),
@@ -317,6 +318,7 @@ impl<'a> OrderedKeyDecoder<'a> {
                 self.escaped_bytes_into(&mut bytes)?;
                 *target = RelationalValue::Bytea(bytes);
             }
+            9 => *target = RelationalValue::Decimal(self.decimal()?),
             6 => {
                 *target =
                     RelationalValue::Uuid(hawdb_core::Uuid::from_bytes(self.fixed("UUID value")?));
@@ -328,6 +330,11 @@ impl<'a> OrderedKeyDecoder<'a> {
             }
         }
         Ok(())
+    }
+
+    fn decimal(&mut self) -> Result<hawdb_core::Decimal, OrderedRelationalKeyError> {
+        hawdb_core::Decimal::from_ordered_bytes(self.fixed("Decimal value")?)
+            .map_err(|error| OrderedRelationalKeyError::Corrupt(error.to_string()))
     }
 
     fn skip_value(&mut self) -> Result<bool, OrderedRelationalKeyError> {
@@ -343,6 +350,7 @@ impl<'a> OrderedKeyDecoder<'a> {
             3 => self.skip_fixed(8, "DOUBLE PRECISION value").map(|()| false),
             4 | 5 => self.escaped_bytes(false).map(|_| false),
             6 => self.skip_fixed(16, "UUID value").map(|()| false),
+            9 => self.decimal().map(|_| false),
             tag => Err(OrderedRelationalKeyError::Corrupt(format!(
                 "invalid value tag {tag}"
             ))),
@@ -493,6 +501,10 @@ mod tests {
             RelationalValue::Bytea(vec![0]),
             RelationalValue::Bytea(vec![0, 1]),
             RelationalValue::Bytea(vec![1]),
+            RelationalValue::Decimal("-1.234".parse().unwrap()),
+            RelationalValue::Decimal("0.00".parse().unwrap()),
+            RelationalValue::Decimal("0.00000000000000000000000000000000000001".parse().unwrap()),
+            RelationalValue::Decimal("9007199254740993.01".parse().unwrap()),
         ];
         assert!(values.windows(2).all(|pair| pair[0] < pair[1]));
         let keys = values

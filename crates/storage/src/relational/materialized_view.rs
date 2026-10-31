@@ -238,6 +238,20 @@ fn clone_filter(
         Ok::<_, RelationalError>(Box::new(clone_filter(filter, context)?))
     };
     Ok(match filter {
+        RelationalPredicate::NumericCompare { left, op, right } => {
+            RelationalPredicate::NumericCompare {
+                left: left.clone_with_allocations(context)?,
+                op: *op,
+                right: right.clone_with_allocations(context)?,
+            }
+        }
+        RelationalPredicate::NumericIsNull {
+            expression,
+            negated,
+        } => RelationalPredicate::NumericIsNull {
+            expression: expression.clone_with_allocations(context)?,
+            negated: *negated,
+        },
         RelationalPredicate::And(left, right) => {
             RelationalPredicate::And(boxed(left)?, boxed(right)?)
         }

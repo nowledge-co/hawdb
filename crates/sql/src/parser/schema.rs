@@ -393,11 +393,26 @@ fn lower_column_default(expr: &Expr) -> Result<SqlColumnDefault> {
     }
 }
 
-fn lower_data_type(data_type: &DataType) -> Result<SqlDataType> {
+pub(super) fn lower_data_type(data_type: &DataType) -> Result<SqlDataType> {
     match data_type {
         DataType::Boolean | DataType::Bool => Ok(SqlDataType::Boolean),
         DataType::BigInt(_) | DataType::Int8(_) => Ok(SqlDataType::BigInt),
         DataType::DoublePrecision | DataType::Float8 => Ok(SqlDataType::DoublePrecision),
+        DataType::Decimal(info) | DataType::Numeric(info) | DataType::Dec(info) => {
+            use sqlparser::ast::ExactNumberInfo;
+            let (precision, scale) = match info {
+                ExactNumberInfo::None => (38, 0),
+                ExactNumberInfo::Precision(precision) => (*precision, 0),
+                ExactNumberInfo::PrecisionAndScale(precision, scale) => (*precision, *scale),
+            };
+            let precision = u8::try_from(precision)
+                .map_err(|_| HawDBError::Semantic("Decimal precision must be 1..38".into()))?;
+            let scale = u8::try_from(scale)
+                .map_err(|_| HawDBError::Semantic("Decimal scale must be 0..precision".into()))?;
+            hawdb_core::DecimalType::new(precision, scale)
+                .map(SqlDataType::Decimal)
+                .map_err(|error| HawDBError::Semantic(error.to_string()))
+        }
         DataType::Text => Ok(SqlDataType::Text),
         DataType::Bytea => Ok(SqlDataType::Bytea),
         DataType::Uuid => Ok(SqlDataType::Uuid),

@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::predicate::{predicate_comparison_truth, PredicateTruth};
 use super::*;
 use hawdb_plan_cypher::ScalarBinaryOp;
@@ -251,51 +254,16 @@ fn truth_value(truth: PredicateTruth) -> Value {
 }
 
 fn evaluate_arithmetic(left: &Value, op: ScalarBinaryOp, right: &Value) -> Result<Value> {
-    if matches!(left, Value::Null) || matches!(right, Value::Null) {
-        return Ok(Value::Null);
-    }
-    if let (Value::Int(left), Value::Int(right)) = (left, right) {
-        if matches!(op, ScalarBinaryOp::Divide | ScalarBinaryOp::Remainder) && *right == 0 {
-            return Err(HawDBError::Execution("division by zero".to_string()));
-        }
-        let value = match op {
-            ScalarBinaryOp::Add => left.checked_add(*right),
-            ScalarBinaryOp::Subtract => left.checked_sub(*right),
-            ScalarBinaryOp::Multiply => left.checked_mul(*right),
-            ScalarBinaryOp::Divide => left.checked_div(*right),
-            ScalarBinaryOp::Remainder => left.checked_rem(*right),
-            _ => unreachable!("arithmetic operators only"),
-        };
-        return value
-            .map(Value::Int)
-            .ok_or_else(|| HawDBError::Execution("integer arithmetic overflow".to_string()));
-    }
-    let numeric = |value: &Value| match value {
-        Value::Int(value) => Ok(*value as f64),
-        Value::Float(value) => Ok(*value),
-        _ => Err(HawDBError::Execution(
-            "arithmetic requires numeric operands".to_string(),
-        )),
-    };
-    let left = numeric(left)?;
-    let right = numeric(right)?;
-    if matches!(op, ScalarBinaryOp::Divide | ScalarBinaryOp::Remainder) && right == 0.0 {
-        return Err(HawDBError::Execution("division by zero".to_string()));
-    }
-    let value = match op {
-        ScalarBinaryOp::Add => left + right,
-        ScalarBinaryOp::Subtract => left - right,
-        ScalarBinaryOp::Multiply => left * right,
-        ScalarBinaryOp::Divide => left / right,
-        ScalarBinaryOp::Remainder => left % right,
+    use hawdb_core::numeric::{evaluate_numeric, NumericBinaryOp};
+    let op = match op {
+        ScalarBinaryOp::Add => NumericBinaryOp::Add,
+        ScalarBinaryOp::Subtract => NumericBinaryOp::Subtract,
+        ScalarBinaryOp::Multiply => NumericBinaryOp::Multiply,
+        ScalarBinaryOp::Divide => NumericBinaryOp::Divide,
+        ScalarBinaryOp::Remainder => NumericBinaryOp::Remainder,
         _ => unreachable!("arithmetic operators only"),
     };
-    if !value.is_finite() {
-        return Err(HawDBError::Execution(
-            "non-finite arithmetic result".to_string(),
-        ));
-    }
-    Ok(Value::Float(value))
+    evaluate_numeric(left.as_ref(), op, right.as_ref())
 }
 
 #[cfg(test)]
@@ -600,6 +568,18 @@ mod arithmetic_tests {
                 Value::Null,
             ),
             (ScalarBinaryOp::Add, Value::Null, Value::Int(7), Value::Null),
+            (
+                ScalarBinaryOp::Add,
+                Value::Decimal("9007199254740993.01".parse().unwrap()),
+                Value::Decimal("0.0001".parse().unwrap()),
+                Value::Decimal("9007199254740993.0101".parse().unwrap()),
+            ),
+            (
+                ScalarBinaryOp::Multiply,
+                Value::Decimal("1.25".parse().unwrap()),
+                Value::Int(3),
+                Value::Decimal("3.75".parse().unwrap()),
+            ),
         ] {
             assert_eq!(evaluate_arithmetic(&left, op, &right).unwrap(), expected);
         }

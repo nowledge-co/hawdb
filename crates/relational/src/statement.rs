@@ -34,6 +34,8 @@ use hawdb_storage::relational::{
     RelationalWrite,
 };
 
+mod numeric;
+
 pub fn compile_relational_statement_sql(
     sql: &str,
     parameters: &[Value],
@@ -215,7 +217,7 @@ fn compile_relational_mutation(
                                             value.clone(), parameters,
                                         )?)
                                     }
-                                    SqlAssignmentValue::Arithmetic { .. } => {
+                                    SqlAssignmentValue::Expression(_) | SqlAssignmentValue::Arithmetic { .. } => {
                                         return Err(HawDBError::Semantic(
                                             "ON CONFLICT assignments do not support arithmetic expressions"
                                                 .to_string(),
@@ -292,6 +294,15 @@ fn compile_relational_mutation(
                         .expect("assignment column was validated")]
                     .scalar_type;
                     let value = match &assignment.value {
+                        SqlAssignmentValue::Expression(expression) => {
+                            RelationalUpdateValue::Numeric(numeric::compile_numeric(
+                                expression,
+                                parameters,
+                                schema,
+                                update.alias.as_deref(),
+                                &update.table.name,
+                            )?)
+                        }
                         SqlAssignmentValue::Column(column) => {
                             validate_mutation_column(
                                 column,
@@ -299,7 +310,15 @@ fn compile_relational_mutation(
                                 update.alias.as_deref(),
                                 &update.table.name,
                             )?;
-                            RelationalUpdateValue::Column(column.name.clone())
+                            if target_type.logical_type().is_numeric() {
+                                RelationalUpdateValue::Numeric(
+                                    hawdb_storage::relational::RelationalNumericExpression::Column(
+                                        column.name.clone(),
+                                    ),
+                                )
+                            } else {
+                                RelationalUpdateValue::Column(column.name.clone())
+                            }
                         }
                         SqlAssignmentValue::Value(value) => RelationalUpdateValue::Value(
                             bind_relational_value_as(value, parameters, target_type)?,
@@ -434,24 +453,7 @@ pub(super) fn compile_mutation_predicate(
         }
         ExprKind::Not(predicate) => RelationalPredicate::Not(Box::new(compile(predicate)?)),
         ExprKind::Compare { left, op, right } => {
-            if right.as_column().is_some() {
-                return Err(HawDBError::Semantic(
-                    "single-table mutation predicates do not support column-to-column comparison"
-                        .to_owned(),
-                ));
-            }
-            let left = left.require_column()?;
-            let right = mutation_value_expression(right)?;
-            validate_mutation_column(left, schema, alias, table)?;
-            let scalar_type = schema.columns[schema
-                .column_position(&left.name)
-                .expect("mutation column was validated")]
-            .scalar_type;
-            RelationalPredicate::Compare {
-                column: left.name.clone(),
-                op: compile_comparison_op(*op),
-                value: bind_relational_value_as(right, parameters, scalar_type)?,
-            }
+            numeric::compile_comparison(left, *op, right, parameters, schema, alias, table)?
         }
         ExprKind::Like { .. } => {
             return Err(HawDBError::Semantic(
@@ -463,25 +465,22 @@ pub(super) fn compile_mutation_predicate(
             values,
             negated,
         } => {
-            let left = left.require_column()?;
-            validate_mutation_column(left, schema, alias, table)?;
-            let scalar_type = schema.columns[schema
-                .column_position(&left.name)
-                .expect("mutation column was validated")]
-            .scalar_type;
             let mut predicates = values
                 .iter()
-                .map(|value| {
-                    let value = mutation_value_expression(value)?;
-                    Ok(RelationalPredicate::Compare {
-                        column: left.name.clone(),
-                        op: if *negated {
-                            RelationalComparisonOp::NotEq
+                .map(|right| {
+                    numeric::compile_comparison(
+                        left,
+                        if *negated {
+                            SqlComparisonOp::NotEq
                         } else {
-                            RelationalComparisonOp::Eq
+                            SqlComparisonOp::Eq
                         },
-                        value: bind_relational_value_as(value, parameters, scalar_type)?,
-                    })
+                        right,
+                        parameters,
+                        schema,
+                        alias,
+                        table,
+                    )
                 })
                 .collect::<Result<Vec<_>>>()?
                 .into_iter();
@@ -500,11 +499,19 @@ pub(super) fn compile_mutation_predicate(
             expression,
             negated,
         } => {
-            let column = expression.require_column()?;
-            validate_mutation_column(column, schema, alias, table)?;
-            RelationalPredicate::IsNull {
-                column: column.name.clone(),
-                negated: *negated,
+            if let Some(column) = expression.as_column() {
+                validate_mutation_column(column, schema, alias, table)?;
+                RelationalPredicate::IsNull {
+                    column: column.name.clone(),
+                    negated: *negated,
+                }
+            } else {
+                RelationalPredicate::NumericIsNull {
+                    expression: numeric::compile_numeric(
+                        expression, parameters, schema, alias, table,
+                    )?,
+                    negated: *negated,
+                }
             }
         }
         _ => {
@@ -513,15 +520,6 @@ pub(super) fn compile_mutation_predicate(
             ));
         }
     })
-}
-
-fn mutation_value_expression(expression: &hawdb_sql::Expr) -> Result<&SqlValue> {
-    match &expression.kind {
-        ExprKind::Value(value) => Ok(value),
-        _ => Err(HawDBError::Semantic(
-            "mutation predicate requires a literal or parameter".to_owned(),
-        )),
-    }
 }
 
 pub(super) fn validate_mutation_column(

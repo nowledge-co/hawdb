@@ -143,7 +143,12 @@ fn invalid(message: &str) -> HawDBError {
 
 fn scalar_payload_bytes(value: &Value) -> usize {
     match value {
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Uuid(_) => 0,
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Decimal(_)
+        | Value::Uuid(_) => 0,
         Value::String(text) => text.len(),
         Value::Binary(bytes) => bytes.len(),
         Value::Vector(vector) => vector.encoded().len(),

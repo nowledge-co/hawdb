@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! One aliased INNER JOIN from a bounded child domain to a complete parent PK.
 //! The original SQL still executes in the pinned runtime, including residuals.
@@ -99,6 +99,7 @@ pub(super) fn keys(
         };
         let value = match value {
             SqlValue::Literal(value) => value,
+            SqlValue::Expression(_) => return Ok(vec![VersionKey::Database]),
             SqlValue::Parameter(position) => parameters
                 .get(position.saturating_sub(1))
                 .ok_or_else(|| refusal("missing join parameter"))?,

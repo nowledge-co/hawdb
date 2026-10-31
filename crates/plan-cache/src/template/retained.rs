@@ -66,7 +66,8 @@ fn shape_bytes(shape: &ParameterValueShape) -> Option<usize> {
         | ParameterValueShape::String
         | ParameterValueShape::Binary
         | ParameterValueShape::Vector(_)
-        | ParameterValueShape::Uuid => Some(0),
+        | ParameterValueShape::Uuid
+        | ParameterValueShape::Decimal(_) => Some(0),
     }
 }
 

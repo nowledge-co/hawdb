@@ -159,6 +159,7 @@ const VALUE_FIELD_MAP_ENTRY: u32 = 7;
 const VALUE_FIELD_BINARY: u32 = 8;
 const VALUE_FIELD_UUID: u32 = 9;
 const VALUE_FIELD_VECTOR: u32 = 10;
+const VALUE_FIELD_DECIMAL: u32 = 11;
 
 const ENTRY_FIELD_KEY: u32 = 1;
 const ENTRY_FIELD_VALUE: u32 = 2;
@@ -332,6 +333,7 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
         Value::Binary(value) => encode_len_field(VALUE_FIELD_BINARY, value, out),
         Value::Vector(value) => encode_len_field(VALUE_FIELD_VECTOR, value.encoded(), out),
         Value::Uuid(value) => encode_len_field(VALUE_FIELD_UUID, value.as_bytes(), out),
+        Value::Decimal(value) => encode_len_field(VALUE_FIELD_DECIMAL, &value.to_le_bytes(), out),
         Value::List(values) => {
             for value in values {
                 let mut body = Vec::new();
@@ -819,6 +821,32 @@ mod tests {
         // The legacy text renderer remains the canonical identity for
         // comparison because WalOp intentionally does not implement PartialEq.
         assert_eq!(decoded.encode(), entry.encode());
+    }
+
+    #[test]
+    fn decimal_wal_payload_preserves_scale_and_rejects_malformed_values() {
+        let value = Value::Decimal("9007199254740993.0100".parse().unwrap());
+        let mut encoded = Vec::new();
+        encode_value_message(&value, &mut encoded);
+        assert_eq!(&encoded[..2], &[0x5a, 17]);
+        let Value::Decimal(decoded) = decode_value_message(&encoded, 1).unwrap() else {
+            panic!("native Decimal");
+        };
+        assert_eq!(decoded.to_string(), "9007199254740993.0100");
+        for end in 0..encoded.len() {
+            assert!(decode_value_message(&encoded[..end], 1).is_err());
+        }
+        let mut corrupt = encoded.clone();
+        corrupt[18] = 39;
+        assert!(decode_value_message(&corrupt, 1).is_err());
+        corrupt = encoded;
+        corrupt[2..18].copy_from_slice(&i128::MAX.to_le_bytes());
+        assert!(decode_value_message(&corrupt, 1).is_err());
+        assert_op_round_trips(WalOp::SetNodeProperty {
+            id: NodeId(1),
+            property: "amount".into(),
+            value,
+        });
     }
 
     #[test]

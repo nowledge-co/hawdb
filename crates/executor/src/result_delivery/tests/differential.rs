@@ -65,6 +65,7 @@ fn value_sizes(value: &Value) -> (usize, usize) {
         Value::Binary(value) => (value.len(), value.len()),
         Value::Vector(value) => (value.encoded().len(), value.encoded().len()),
         Value::Uuid(_) => (16, 16),
+        Value::Decimal(_) => (17, 0),
         Value::List(values) => {
             let sizes: Vec<_> = values.iter().map(value_sizes).collect();
             (

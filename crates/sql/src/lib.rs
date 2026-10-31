@@ -28,6 +28,7 @@ pub mod syntax {
 }
 
 pub use ast::*;
+pub use hawdb_expression::sql::bind_sql_value;
 pub use parameters::{prepare_postgres_sql, PostgresParameterMetadata, PreparedPostgresStatement};
 pub use parser::parse_postgres_sql;
 pub use pgq::*;

@@ -492,6 +492,14 @@ fn synthetic_value(
                 .saturating_add(i64::try_from(salt).unwrap_or(i64::MAX))
                 .saturating_add(i64::try_from(ordinal).unwrap_or(i64::MAX)),
         ),
+        RelationalScalarType::Decimal(kind) => {
+            let limit = 10_i128.pow(u32::from(kind.precision()));
+            let coefficient = -((salt as i128).saturating_add(ordinal as i128) % limit);
+            RelationalValue::Decimal(
+                hawdb_core::Decimal::new(coefficient, kind.scale())
+                    .map_err(|error| hawdb_core::HawDBError::Semantic(error.to_string()))?,
+            )
+        }
         RelationalScalarType::DoublePrecision => {
             RelationalValue::DoublePrecision(-1.0e300 + salt as f64 + ordinal as f64 / 64.0)
         }

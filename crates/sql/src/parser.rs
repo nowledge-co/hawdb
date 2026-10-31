@@ -26,6 +26,7 @@ use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
 mod branch;
+mod expression_limit;
 mod materialized_view;
 mod mutation;
 mod owned;
@@ -36,6 +37,8 @@ mod clause_tests;
 
 #[cfg(test)]
 mod compatibility_tests;
+#[cfg(test)]
+mod numeric_tests;
 
 fn reject_unsupported_clauses(
     statement: &'static str,
@@ -360,6 +363,7 @@ pub(super) enum ExpressionPosition {
     Predicate,
     Having,
     HavingScalar,
+    PredicateScalar,
     Scalar,
     Column,
     Value,
@@ -368,22 +372,83 @@ pub(super) enum ExpressionPosition {
 // These position checks preserve the existing language surface independently of
 // the shared representation. New expression shapes require separate semantics.
 pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Result<crate::Expr> {
-    use ExpressionPosition::{Column, Having, HavingScalar, Predicate, Scalar, Value};
+    expression_limit::validate(expr, 0)?;
+    use ExpressionPosition::{
+        Column, Having, HavingScalar, Predicate, PredicateScalar, Scalar, Value,
+    };
     let having = matches!(position, Having | HavingScalar);
-    let operand = if having { HavingScalar } else { Column };
+    let operand = if having {
+        HavingScalar
+    } else {
+        PredicateScalar
+    };
     let lower = |expr: &Expr, position| lower_expression(expr, position).map(Box::new);
     let kind = match position {
         Column => ExprKind::Column(lower_column_expr(expr)?),
         Value => ExprKind::Value(lower_literal_expr(expr)?),
-        Scalar | HavingScalar => match expr {
-            Expr::Nested(inner) if having => lower_expression(inner, HavingScalar)?.kind,
+        Scalar | HavingScalar | PredicateScalar => match expr {
+            Expr::Nested(inner) => lower_expression(inner, position)?.kind,
             Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
                 ExprKind::Column(lower_column_expr(expr)?)
             }
-            Expr::Value(_) | Expr::Nested(_) | Expr::UnaryOp { .. } => {
-                ExprKind::Value(lower_literal_expr(expr)?)
+            Expr::Value(_) => ExprKind::Value(lower_literal_expr(expr)?),
+            Expr::UnaryOp {
+                op: sqlparser::ast::UnaryOperator::Minus,
+                expr: inner,
+            } => {
+                if let Expr::Value(value) = inner.as_ref()
+                    && let ParserValue::Number(raw, _) = &value.value
+                {
+                    ExprKind::Value(SqlValue::Literal(lower_number(&format!("-{raw}"))?))
+                } else {
+                    ExprKind::Negate(lower(inner, position)?)
+                }
             }
-            Expr::Function(function) => lower_function_expression(function, position)?,
+            Expr::UnaryOp {
+                op: sqlparser::ast::UnaryOperator::Plus,
+                expr: inner,
+            } => lower_expression(inner, position)?.kind,
+            Expr::BinaryOp { left, op, right } => ExprKind::Arithmetic {
+                left: lower(left, position)?,
+                op: lower_numeric_operator(op)?,
+                right: lower(right, position)?,
+            },
+            Expr::Cast {
+                kind,
+                expr: inner,
+                data_type,
+                format,
+            } => {
+                if format.is_some()
+                    || !matches!(
+                        kind,
+                        sqlparser::ast::CastKind::Cast | sqlparser::ast::CastKind::DoubleColon
+                    )
+                {
+                    return Err(HawDBError::Semantic(
+                        "only CAST and :: numeric conversions are supported".into(),
+                    ));
+                }
+                let target = match schema::lower_data_type(data_type)? {
+                    SqlDataType::BigInt => hawdb_core::numeric::NumericType::BigInt,
+                    SqlDataType::DoublePrecision => {
+                        hawdb_core::numeric::NumericType::DoublePrecision
+                    }
+                    SqlDataType::Decimal(kind) => hawdb_core::numeric::NumericType::Decimal(kind),
+                    _ => {
+                        return Err(HawDBError::Semantic(
+                            "CAST requires a numeric target type".into(),
+                        ))
+                    }
+                };
+                ExprKind::Cast {
+                    expression: lower(inner, position)?,
+                    target,
+                }
+            }
+            Expr::Function(function) if !matches!(position, PredicateScalar) => {
+                lower_function_expression(function, position)?
+            }
             _ => {
                 return Err(HawDBError::Semantic(format!(
                     "unsupported PostgreSQL projection expression {expr}"
@@ -404,17 +469,7 @@ pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Res
                 | BinaryOperator::GtEq => ExprKind::Compare {
                     left: lower(left, operand)?,
                     op: lower_comparison_op(op),
-                    right: lower(
-                        right,
-                        if having {
-                            HavingScalar
-                        } else {
-                            match right.as_ref() {
-                                Expr::Identifier(_) | Expr::CompoundIdentifier(_) => Column,
-                                _ => Value,
-                            }
-                        },
-                    )?,
+                    right: lower(right, operand)?,
                 },
                 _ => {
                     return Err(HawDBError::Semantic(format!(
@@ -435,7 +490,7 @@ pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Res
                 left: lower(expr, operand)?,
                 values: list
                     .iter()
-                    .map(|value| lower_expression(value, if having { HavingScalar } else { Value }))
+                    .map(|value| lower_expression(value, operand))
                     .collect::<Result<_>>()?,
                 negated: *negated,
             },
@@ -813,18 +868,41 @@ pub(super) fn lower_literal_expr(expr: &Expr) -> Result<SqlValue> {
     match expr {
         Expr::Value(value) => lower_value(value),
         Expr::Nested(inner) => lower_literal_expr(inner),
-        Expr::UnaryOp {
-            op: sqlparser::ast::UnaryOperator::Minus,
-            expr,
-        } => match lower_literal_expr(expr)? {
-            SqlValue::Literal(Value::Int(value)) => Ok(SqlValue::Literal(Value::Int(-value))),
-            SqlValue::Literal(Value::Float(value)) => Ok(SqlValue::Literal(Value::Float(-value))),
-            value => Err(HawDBError::Semantic(format!(
-                "cannot negate literal value {value}"
-            ))),
-        },
+        _ => {
+            let expression = lower_expression(expr, ExpressionPosition::Scalar)?;
+            if let ExprKind::Value(value) = expression.kind {
+                return Ok(value);
+            }
+            let mut constant_numeric = true;
+            expression.visit(&mut |child| {
+                constant_numeric &= matches!(
+                    child.kind,
+                    ExprKind::Value(_)
+                        | ExprKind::Arithmetic { .. }
+                        | ExprKind::Negate(_)
+                        | ExprKind::Cast { .. }
+                );
+            });
+            if !constant_numeric {
+                return Err(HawDBError::Semantic(
+                    "expected a constant numeric expression".into(),
+                ));
+            }
+            Ok(SqlValue::Expression(Box::new(expression)))
+        }
+    }
+}
+
+fn lower_numeric_operator(op: &BinaryOperator) -> Result<hawdb_core::numeric::NumericBinaryOp> {
+    use hawdb_core::numeric::NumericBinaryOp;
+    match op {
+        BinaryOperator::Plus => Ok(NumericBinaryOp::Add),
+        BinaryOperator::Minus => Ok(NumericBinaryOp::Subtract),
+        BinaryOperator::Multiply => Ok(NumericBinaryOp::Multiply),
+        BinaryOperator::Divide => Ok(NumericBinaryOp::Divide),
+        BinaryOperator::Modulo => Ok(NumericBinaryOp::Remainder),
         _ => Err(HawDBError::Semantic(format!(
-            "expected a literal value, got {expr}"
+            "unsupported numeric operator {op}"
         ))),
     }
 }
@@ -850,15 +928,16 @@ fn lower_value(value: &ValueWithSpan) -> Result<SqlValue> {
 }
 
 fn lower_number(raw: &str) -> Result<Value> {
-    if raw.contains('.') {
-        raw.parse::<f64>().map(Value::Float).map_err(|error| {
-            HawDBError::Semantic(format!("invalid PostgreSQL number {raw}: {error}"))
-        })
-    } else {
-        raw.parse::<i64>().map(Value::Int).map_err(|error| {
-            HawDBError::Semantic(format!("invalid PostgreSQL integer {raw}: {error}"))
-        })
+    if !raw.contains(['.', 'e', 'E'])
+        && let Ok(value) = raw.parse::<i64>()
+    {
+        return Ok(Value::Int(value));
     }
+    raw.parse::<hawdb_core::Decimal>()
+        .map(Value::Decimal)
+        .map_err(|error| {
+            HawDBError::Semantic(format!("invalid exact PostgreSQL number {raw}: {error}"))
+        })
 }
 
 fn lower_nonnegative_integer_expr(expr: &Expr) -> Result<SqlBound> {

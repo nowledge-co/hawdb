@@ -1240,9 +1240,11 @@ fn bind_null_rejection_value(value: &hawdb_sql::SqlValue) -> BoundScalarExpressi
     match value {
         hawdb_sql::SqlValue::Literal(Value::Null) => BoundScalarExpression::LiteralNull,
         hawdb_sql::SqlValue::Literal(_) => BoundScalarExpression::LiteralNonNull,
-        hawdb_sql::SqlValue::Parameter(_) => BoundScalarExpression::Parameter {
-            nullability: ScalarNullability::MaybeNull,
-        },
+        hawdb_sql::SqlValue::Parameter(_) | hawdb_sql::SqlValue::Expression(_) => {
+            BoundScalarExpression::Parameter {
+                nullability: ScalarNullability::MaybeNull,
+            }
+        }
     }
 }
 

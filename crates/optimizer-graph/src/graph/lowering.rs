@@ -741,6 +741,7 @@ fn seed_metadata_value(value: &Value) -> Option<String> {
         Value::Float(value) if value.is_finite() => Some(value.to_string()),
         Value::Uuid(value) => Some(value.to_string()),
         Value::Null
+        | Value::Decimal(_)
         | Value::Float(_)
         | Value::Binary(_)
         | Value::Vector(_)

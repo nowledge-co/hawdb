@@ -184,11 +184,12 @@ fn numeric_overflow_and_type_errors_keep_the_prior_state() {
         .map(|_| ())
         .unwrap_err();
         assert!(
-            matches!(error, HawDBError::Execution(ref message) if message == "BIGINT SUM overflow")
+            matches!(error, HawDBError::Execution(ref message) if message == "integer arithmetic overflow")
         );
         assert_eq!(result, Some(RelationalValue::BigInt(first)));
     }
-    let mut result = Some(RelationalValue::BigInt(2));
+    let mut result = Some(RelationalValue::Decimal("2.00".parse().unwrap()));
+    let original = result.clone();
     let error = state::update_numeric_aggregate(
         &mut result,
         RelationalValue::DoublePrecision(1.0),
@@ -196,10 +197,18 @@ fn numeric_overflow_and_type_errors_keep_the_prior_state() {
     )
     .map(|_| ())
     .unwrap_err();
-    assert!(
-        matches!(error, HawDBError::Semantic(ref message) if message == "SUM requires BIGINT or DOUBLE PRECISION input")
+    assert!(error.to_string().contains("explicit CAST"));
+    assert_eq!(result, original);
+    state::update_numeric_aggregate(
+        &mut result,
+        RelationalValue::BigInt(1),
+        NumericAggregate::Sum,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        Some(RelationalValue::Decimal("3.00".parse().unwrap()))
     );
-    assert_eq!(result, Some(RelationalValue::BigInt(2)));
     let mut result = Some(RelationalValue::DoublePrecision(1.5));
     state::update_numeric_aggregate(
         &mut result,

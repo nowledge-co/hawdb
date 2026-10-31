@@ -2485,6 +2485,9 @@ pub(super) fn relational_schema_digest(
         if let RelationalScalarType::Vector(dimension) = column.scalar_type {
             encoded.extend_from_slice(&dimension.get().to_le_bytes());
         }
+        if let RelationalScalarType::Decimal(kind) = column.scalar_type {
+            encoded.extend_from_slice(&[kind.precision(), kind.scale()]);
+        }
         encoded.push(u8::from(column.nullable));
         match &column.default {
             None => encoded.push(0),
@@ -2735,6 +2738,7 @@ fn scalar_type_tag(scalar_type: RelationalScalarType) -> u8 {
         RelationalScalarType::Bytea => 5,
         RelationalScalarType::Uuid => 6,
         RelationalScalarType::Vector(_) => 7,
+        RelationalScalarType::Decimal(_) => 8,
     }
 }
 

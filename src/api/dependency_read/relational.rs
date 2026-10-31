@@ -260,6 +260,7 @@ fn refusal(shape: &str) -> HawDBError {
 fn scalar_bytes(value: &Value) -> Result<usize> {
     match value {
         Value::String(value) => Ok(value.len()),
+        Value::Decimal(_) => Ok(17),
         Value::Binary(value) => Ok(value.len()),
         Value::Vector(value) => Ok(value.encoded().len()),
         Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Uuid(_) => Ok(16),
@@ -312,10 +313,14 @@ fn qualify_expression(expression: &Expr, nodes: &mut usize, depth: usize) -> Res
         return Err(refusal("expression exceeding metadata work admission"));
     }
     match &expression.kind {
+        ExprKind::Value(SqlValue::Expression(expression)) => {
+            qualify_expression(expression, nodes, depth + 1)
+        }
         ExprKind::Column(_) | ExprKind::Value(_) => Ok(()),
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Compare { left, right, .. }
+        | ExprKind::Arithmetic { left, right, .. }
         | ExprKind::Like {
             left,
             pattern: right,
@@ -324,9 +329,10 @@ fn qualify_expression(expression: &Expr, nodes: &mut usize, depth: usize) -> Res
             qualify_expression(left, nodes, depth + 1)?;
             qualify_expression(right, nodes, depth + 1)
         }
-        ExprKind::Not(expression) | ExprKind::IsNull { expression, .. } => {
-            qualify_expression(expression, nodes, depth + 1)
-        }
+        ExprKind::Not(expression)
+        | ExprKind::IsNull { expression, .. }
+        | ExprKind::Negate(expression)
+        | ExprKind::Cast { expression, .. } => qualify_expression(expression, nodes, depth + 1),
         ExprKind::InList { left, values, .. } => {
             qualify_expression(left, nodes, depth + 1)?;
             for value in values {
@@ -365,6 +371,7 @@ fn primary_key(
         };
         let value = match value {
             SqlValue::Literal(value) => value,
+            SqlValue::Expression(_) => return Ok(VersionKey::Database),
             SqlValue::Parameter(position) => {
                 parameters.get(position.saturating_sub(1)).ok_or_else(|| {
                     HawDBError::Semantic(format!("missing PostgreSQL parameter ${position}"))
@@ -383,7 +390,7 @@ fn primary_key(
         if matches!(value, RelationalValue::Null) {
             return Ok(VersionKey::Database);
         }
-        if value.scalar_type() != Some(scalar_type) {
+        if !scalar_type.same_value_domain(value.scalar_type()) {
             return Err(refusal(
                 "primary-key comparison with incompatible scalar types",
             ));

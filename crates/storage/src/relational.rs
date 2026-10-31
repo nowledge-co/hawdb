@@ -32,6 +32,7 @@ mod constraints;
 mod index_range;
 mod index_shadow;
 mod materialized_view;
+mod numeric_expression;
 pub(crate) use index_range::EncodedRelationalIndexRange;
 pub use index_range::{RelationalIndexBound, RelationalIndexBounds};
 pub(crate) use index_shadow::{
@@ -39,6 +40,9 @@ pub(crate) use index_shadow::{
 };
 pub use materialized_view::{
     MaterializedViewColumn, MaterializedViewDefinition, MaterializedViewExpression,
+};
+pub use numeric_expression::{
+    RelationalNumericExpression, MAX_NUMERIC_EXPRESSION_DEPTH, MAX_NUMERIC_EXPRESSION_NODES,
 };
 mod admitted_point;
 mod ordered_key;
@@ -274,6 +278,7 @@ pub enum RelationalScalarType {
     Boolean,
     BigInt,
     DoublePrecision,
+    Decimal(hawdb_core::DecimalType),
     Text,
     Bytea,
     Uuid,
@@ -281,11 +286,25 @@ pub enum RelationalScalarType {
 }
 
 impl RelationalScalarType {
+    /// Index identity is numeric for Decimal, independent of declaration scale.
+    pub fn same_value_domain(self, other: Option<Self>) -> bool {
+        matches!((self, other), (Self::Decimal(_), Some(Self::Decimal(_)))) || other == Some(self)
+    }
+
+    pub fn accepts(self, value: RelationalValueRef<'_>) -> bool {
+        match (self, value) {
+            (_, RelationalValueRef::Null) => true,
+            (Self::Decimal(kind), RelationalValueRef::Decimal(value)) => kind.accepts(value),
+            (_, value) => value.scalar_type() == Some(self),
+        }
+    }
+
     pub const fn logical_type(self) -> LogicalType {
         match self {
             Self::Boolean => LogicalType::Boolean,
             Self::BigInt => LogicalType::Int64,
             Self::DoublePrecision => LogicalType::Float64,
+            Self::Decimal(_) => LogicalType::Decimal,
             Self::Text => LogicalType::Text,
             Self::Bytea => LogicalType::Binary,
             Self::Uuid => LogicalType::Uuid,
@@ -300,6 +319,7 @@ pub enum RelationalValue {
     Boolean(bool),
     BigInt(i64),
     DoublePrecision(f64),
+    Decimal(hawdb_core::Decimal),
     Text(String),
     Bytea(Vec<u8>),
     Vector(hawdb_core::Vector),
@@ -318,6 +338,7 @@ pub enum RelationalValueRef<'a> {
     Boolean(bool),
     BigInt(i64),
     DoublePrecision(f64),
+    Decimal(hawdb_core::Decimal),
     Text(&'a str),
     Bytea(&'a [u8]),
     Vector(hawdb_core::VectorRef<'a>),
@@ -336,6 +357,7 @@ impl RelationalValue {
             Self::Boolean(_) => Some(RelationalScalarType::Boolean),
             Self::BigInt(_) => Some(RelationalScalarType::BigInt),
             Self::DoublePrecision(_) => Some(RelationalScalarType::DoublePrecision),
+            Self::Decimal(value) => Some(RelationalScalarType::Decimal(value.decimal_type())),
             Self::Text(_) => Some(RelationalScalarType::Text),
             Self::Bytea(_) => Some(RelationalScalarType::Bytea),
             Self::Vector(value) => Some(RelationalScalarType::Vector(value.dimension())),
@@ -353,6 +375,7 @@ impl RelationalValue {
             Self::Null => 0,
             Self::Boolean(_) => 1,
             Self::BigInt(_) | Self::DoublePrecision(_) => 8,
+            Self::Decimal(_) => hawdb_core::Decimal::ENCODED_LEN,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
             Self::Vector(value) => value.encoded().len(),
@@ -366,6 +389,7 @@ impl RelationalValue {
             Self::Null => 0,
             Self::Boolean(_) => 1,
             Self::BigInt(_) => 2,
+            Self::Decimal(_) => 9,
             Self::DoublePrecision(_) => 3,
             Self::Text(_) => 4,
             Self::Bytea(_) => 5,
@@ -383,6 +407,7 @@ impl<'a> RelationalValueRef<'a> {
             Self::Boolean(_) => Some(RelationalScalarType::Boolean),
             Self::BigInt(_) => Some(RelationalScalarType::BigInt),
             Self::DoublePrecision(_) => Some(RelationalScalarType::DoublePrecision),
+            Self::Decimal(value) => Some(RelationalScalarType::Decimal(value.decimal_type())),
             Self::Text(_) => Some(RelationalScalarType::Text),
             Self::Bytea(_) => Some(RelationalScalarType::Bytea),
             Self::Vector(value) => Some(RelationalScalarType::Vector(value.dimension())),
@@ -403,6 +428,7 @@ impl<'a> RelationalValueRef<'a> {
             Self::Null => 0,
             Self::Boolean(_) => 1,
             Self::BigInt(_) | Self::DoublePrecision(_) => 8,
+            Self::Decimal(_) => hawdb_core::Decimal::ENCODED_LEN,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
             Self::Vector(value) => value.encoded().len(),
@@ -416,6 +442,7 @@ impl<'a> RelationalValueRef<'a> {
             Self::Null => RelationalValue::Null,
             Self::Boolean(value) => RelationalValue::Boolean(value),
             Self::BigInt(value) => RelationalValue::BigInt(value),
+            Self::Decimal(value) => RelationalValue::Decimal(value),
             Self::DoublePrecision(value) => RelationalValue::DoublePrecision(value),
             Self::Text(value) => RelationalValue::Text(value.to_owned()),
             Self::Bytea(value) => RelationalValue::Bytea(value.to_vec()),
@@ -469,6 +496,7 @@ impl<'a> RelationalValueRef<'a> {
             Self::Null => 0,
             Self::Boolean(_) => 1,
             Self::BigInt(_) => 2,
+            Self::Decimal(_) => 9,
             Self::DoublePrecision(_) => 3,
             Self::Text(_) => 4,
             Self::Bytea(_) => 5,
@@ -485,6 +513,7 @@ impl<'a> From<&'a RelationalValue> for RelationalValueRef<'a> {
             RelationalValue::Null => Self::Null,
             RelationalValue::Boolean(value) => Self::Boolean(*value),
             RelationalValue::BigInt(value) => Self::BigInt(*value),
+            RelationalValue::Decimal(value) => Self::Decimal(*value),
             RelationalValue::DoublePrecision(value) => Self::DoublePrecision(*value),
             RelationalValue::Text(value) => Self::Text(value),
             RelationalValue::Bytea(value) => Self::Bytea(value),
@@ -517,6 +546,7 @@ impl Ord for RelationalValueRef<'_> {
                 (Self::Null, Self::Null) => Ordering::Equal,
                 (Self::Boolean(left), Self::Boolean(right)) => left.cmp(&right),
                 (Self::BigInt(left), Self::BigInt(right)) => left.cmp(&right),
+                (Self::Decimal(left), Self::Decimal(right)) => left.cmp(&right),
                 (Self::DoublePrecision(left), Self::DoublePrecision(right)) => {
                     left.total_cmp(&right)
                 }
@@ -552,6 +582,7 @@ impl Ord for RelationalValue {
                 (Self::Null, Self::Null) => Ordering::Equal,
                 (Self::Boolean(left), Self::Boolean(right)) => left.cmp(right),
                 (Self::BigInt(left), Self::BigInt(right)) => left.cmp(right),
+                (Self::Decimal(left), Self::Decimal(right)) => left.cmp(right),
                 (Self::DoublePrecision(left), Self::DoublePrecision(right)) => {
                     left.total_cmp(right)
                 }
@@ -572,6 +603,7 @@ impl Hash for RelationalValue {
             Self::Null => {}
             Self::Boolean(value) => value.hash(state),
             Self::BigInt(value) => value.hash(state),
+            Self::Decimal(value) => value.hash(state),
             Self::DoublePrecision(value) => value.to_bits().hash(state),
             Self::Text(value) => value.hash(state),
             Self::Bytea(value) => value.hash(state),
@@ -6175,6 +6207,15 @@ pub enum RelationalComparisonOp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalPredicate {
+    NumericCompare {
+        left: RelationalNumericExpression,
+        op: RelationalComparisonOp,
+        right: RelationalNumericExpression,
+    },
+    NumericIsNull {
+        expression: RelationalNumericExpression,
+        negated: bool,
+    },
     And(Box<RelationalPredicate>, Box<RelationalPredicate>),
     Or(Box<RelationalPredicate>, Box<RelationalPredicate>),
     Not(Box<RelationalPredicate>),
@@ -6291,6 +6332,7 @@ pub struct RelationalUpsertAssignment {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalUpdateValue {
+    Numeric(RelationalNumericExpression),
     Column(String),
     Value(RelationalValue),
     BigIntArithmetic {
@@ -8339,6 +8381,22 @@ fn apply_update(
                 ))
             })?;
             let value = match &assignment.value {
+                RelationalUpdateValue::Numeric(expression) => {
+                    let expression = expression.compile(&schema, assignment_context.as_ref())?;
+                    if !schema.columns[target]
+                        .scalar_type
+                        .logical_type()
+                        .is_numeric()
+                        || expression
+                            .result_type
+                            .is_some_and(|kind| !kind.is_numeric())
+                    {
+                        return Err(RelationalError::Schema(
+                            "numeric assignment requires numeric operands and target".into(),
+                        ));
+                    }
+                    ResolvedUpdateValue::Numeric(expression)
+                }
                 RelationalUpdateValue::Column(column) => {
                     let source = schema.column_position(column).ok_or_else(|| {
                         RelationalError::Schema(format!(
@@ -8450,6 +8508,9 @@ fn apply_update(
         // later, so arithmetic errors keep the ordinary transaction contract.
         for (target, value) in &resolved {
             let value = match value {
+                ResolvedUpdateValue::Numeric(expression) => {
+                    expression.assignment(row, schema.columns[*target].scalar_type)?
+                }
                 ResolvedUpdateValue::Column(source) => row.values()[*source].as_ref(),
                 ResolvedUpdateValue::Value(value) => value.as_ref(),
                 ResolvedUpdateValue::BigIntArithmetic {
@@ -8639,6 +8700,7 @@ fn insert_changed_key_with_allocations(
 }
 
 enum ResolvedUpdateValue<'a> {
+    Numeric(numeric_expression::CompiledNumericExpression<'a>),
     Column(usize),
     Value(&'a RelationalValue),
     BigIntArithmetic {
@@ -8714,6 +8776,14 @@ fn validate_predicate(
     predicate: &RelationalPredicate,
 ) -> Result<(), RelationalError> {
     match predicate {
+        RelationalPredicate::NumericCompare { left, right, .. } => {
+            let left = left.compile(schema, None)?;
+            let right = right.compile(schema, None)?;
+            numeric_expression::validate_numeric_comparison(left.result_type, right.result_type)
+        }
+        RelationalPredicate::NumericIsNull { expression, .. } => {
+            expression.compile(schema, None).map(|_| ())
+        }
         RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
             validate_predicate(schema, left)?;
             validate_predicate(schema, right)
@@ -8724,7 +8794,9 @@ fn validate_predicate(
                 RelationalError::Schema(format!("predicate references unknown column {column}"))
             })?;
             if !matches!(value, RelationalValue::Null)
-                && value.scalar_type() != Some(schema.columns[position].scalar_type)
+                && !schema.columns[position]
+                    .scalar_type
+                    .same_value_domain(value.scalar_type())
             {
                 return Err(RelationalError::Schema(format!(
                     "predicate on column {column} has an incompatible value type"
@@ -8749,6 +8821,29 @@ fn predicate_truth(
     predicate: &RelationalPredicate,
 ) -> Result<Option<bool>, RelationalError> {
     match predicate {
+        RelationalPredicate::NumericCompare { left, op, right } => {
+            let left = left.evaluate_row(schema, row)?;
+            let right = right.evaluate_row(schema, row)?;
+            if left.is_null() || right.is_null() {
+                return Ok(None);
+            }
+            let ordering = hawdb_core::numeric::compare_numeric(left, right)
+                .map_err(|error| RelationalError::Constraint(error.to_string()))?;
+            Ok(Some(match op {
+                RelationalComparisonOp::Eq => ordering.is_eq(),
+                RelationalComparisonOp::NotEq => !ordering.is_eq(),
+                RelationalComparisonOp::Lt => ordering.is_lt(),
+                RelationalComparisonOp::Lte => !ordering.is_gt(),
+                RelationalComparisonOp::Gt => ordering.is_gt(),
+                RelationalComparisonOp::Gte => !ordering.is_lt(),
+            }))
+        }
+        RelationalPredicate::NumericIsNull {
+            expression,
+            negated,
+        } => Ok(Some(
+            expression.evaluate_row(schema, row)?.is_null() != *negated,
+        )),
         RelationalPredicate::And(left, right) => match (
             predicate_truth(schema, row, left)?,
             predicate_truth(schema, row, right)?,
@@ -8966,7 +9061,7 @@ fn validate_value_type(
             "overflow values require TEXT or BYTEA".into(),
         ));
     }
-    if value.scalar_type() != Some(column.scalar_type) {
+    if !column.scalar_type.accepts(value.as_ref()) {
         return Err(RelationalError::Schema(format!(
             "column {} expects {:?} but received {:?}",
             column.name,
@@ -9884,6 +9979,7 @@ fn estimated_relational_values_encoding_bytes<'a>(
             RelationalValue::Null => 1,
             RelationalValue::Boolean(_) => 2,
             RelationalValue::BigInt(_) | RelationalValue::DoublePrecision(_) => 9,
+            RelationalValue::Decimal(_) => 1 + hawdb_core::Decimal::ORDERED_LEN,
             RelationalValue::Text(value) => 3usize
                 .checked_add(value.as_bytes().iter().filter(|byte| **byte == 0).count())?
                 .checked_add(value.len())?,

@@ -306,7 +306,7 @@ impl RetainedNodeView {
         let value = self.value(py)?;
         if !matches!(
             value,
-            Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_)
+            Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Decimal(_)
         ) {
             return Err(error(py, &RetainedQueryError::CopyRequired));
         }
@@ -351,6 +351,7 @@ impl RetainedNodeView {
                 Value::Bool(_) => "bool",
                 Value::Int(_) => "int",
                 Value::Float(_) => "float",
+                Value::Decimal(_) => "decimal",
                 Value::String(_) => "utf8",
                 Value::Binary(_) => "binary",
                 Value::Uuid(_) => "uuid",

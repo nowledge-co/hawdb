@@ -42,6 +42,9 @@ pub(in crate::relational) fn relational_schema_digest_with_work_context(
         if let RelationalScalarType::Vector(dimension) = column.scalar_type {
             output.update(&dimension.get().to_le_bytes())?;
         }
+        if let RelationalScalarType::Decimal(kind) = column.scalar_type {
+            output.update(&[kind.precision(), kind.scale()])?;
+        }
         output.update(&[u8::from(column.nullable)])?;
         match &column.default {
             None => output.update(&[0])?,
@@ -149,7 +152,7 @@ impl SchemaDigest<'_> {
             self.update(&[0, 0])
         } else {
             let unit = self.work.start_unit().map_err(work_error)?;
-            // These exhaustively listed scalar encodings write at most 17
+            // These exhaustively listed scalar encodings write at most 41
             // bytes through the unchanged ordinary codec. Variable encodings
             // use the bounded escaped scratch path above; no Vec can grow.
             match value {
@@ -157,7 +160,8 @@ impl SchemaDigest<'_> {
                 | RelationalValue::Boolean(_)
                 | RelationalValue::BigInt(_)
                 | RelationalValue::DoublePrecision(_)
-                | RelationalValue::Uuid(_) => {}
+                | RelationalValue::Uuid(_)
+                | RelationalValue::Decimal(_) => {}
                 RelationalValue::Vector(_) => return Err(
                     crate::relational::ordered_key::OrderedRelationalKeyError::UnsupportedVector
                         .into(),
@@ -169,20 +173,20 @@ impl SchemaDigest<'_> {
                     unreachable!("variable default uses escaped scratch")
                 }
             }
-            let memory = self.work.reserve_memory(32).map_err(work_error)?;
+            let memory = self.work.reserve_memory(48).map_err(work_error)?;
             let mut encoded = Vec::new();
-            encoded.try_reserve_exact(32).map_err(|error| {
+            encoded.try_reserve_exact(48).map_err(|error| {
                 work_error(self.work.record_failure(CheckpointWorkError::Allocation {
-                    bytes: 32,
+                    bytes: 48,
                     reason: error.to_string(),
                 }))
             })?;
-            if encoded.capacity() != 32 {
+            if encoded.capacity() != 48 {
                 return Err(work_error(self.work.record_failure(
                     CheckpointWorkError::Allocation {
-                        bytes: 32,
+                        bytes: 48,
                         reason: format!(
-                            "allocator granted {} scalar bytes beyond admitted capacity 32",
+                            "allocator granted {} scalar bytes beyond admitted capacity 48",
                             encoded.capacity()
                         ),
                     },

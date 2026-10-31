@@ -106,9 +106,26 @@ fn vector_schema_dimensions_change_both_index_digest_paths() {
 }
 
 #[test]
+fn decimal_schema_precision_and_scale_match_both_index_digest_paths() {
+    let mut previous = None;
+    for (precision, scale) in [(4, 2), (20, 2), (20, 4), (38, 4)] {
+        let kind = hawdb_core::DecimalType::new(precision, scale).unwrap();
+        let mut source = schema(RelationalValue::Decimal(
+            kind.coerce("1.23".parse().unwrap()).unwrap(),
+        ));
+        source.columns[1].scalar_type = RelationalScalarType::Decimal(kind);
+        let digest = relational_schema_digest(&source).unwrap();
+        retry_and_check_source(&source, digest);
+        assert_ne!(previous, Some(digest));
+        previous = Some(digest);
+    }
+}
+
+#[test]
 fn checkpoint_units_schema_memory_scalar_defaults_deny_before_allocating_and_fully_retry() {
     for value in [
         RelationalValue::Null,
+        RelationalValue::Decimal("-9007199254740993.0100".parse().unwrap()),
         RelationalValue::Boolean(true),
         RelationalValue::BigInt(i64::MIN),
         RelationalValue::DoublePrecision(f64::from_bits(0xfff8_0000_0000_0023)),

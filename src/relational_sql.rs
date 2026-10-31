@@ -13,7 +13,7 @@
 // limitations under the License.
 
 pub(crate) use hawdb_relational::{
-    bind_relational_value, compile_prepared_append_explain_sql, compile_prepared_append_select_sql,
+    compile_prepared_append_explain_sql, compile_prepared_append_select_sql,
     compile_prepared_append_statement_sql, compile_prepared_relational_statement_with_result,
     format_append_explain, project_append_rows, RelationalReturningProjection,
 };

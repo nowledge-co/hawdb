@@ -407,11 +407,16 @@ db.close()
 ```
 
 Parameters accept `None`, `bool`, `int`, `float`, `str`, `bytes`,
-`uuid.UUID`, lists or tuples, and string-keyed dicts, nested up to 64 levels.
+`decimal.Decimal`, `uuid.UUID`, lists or tuples, and string-keyed dicts, nested up to 64 levels.
 They are stored exactly or rejected before the statement runs. Integers,
 including NumPy integer scalars, must fit the signed 64-bit range or raise
 `OverflowError`. NumPy `float16`/`float32` scalars widen to `float` exactly
-and are accepted. Any other type, including `Decimal`, `Fraction`, or NumPy
+and are accepted. Finite `Decimal` values use the native exact representation
+with at most 38 coefficient digits and scale 0 through 38; invalid or
+out-of-range decimals raise `ValueError`. Results return `decimal.Decimal`
+without conversion through a Python float, retaining stored scale. Decimal
+does not have an experimental retained numeric buffer representation.
+Any other type, including `Fraction` or NumPy
 `longdouble`, raises `TypeError`; convert such values explicitly, for example
 with `float(x)`. Deeper nesting, including a list or dict that contains
 itself, raises `ValueError`. These errors name where the value sits in the
@@ -538,7 +543,7 @@ list, so a strict model needs `Field(strict=False)` on those fields.
 
 `params` returns `model_dump()`, whose keys become parameter names. Its
 values follow the parameter rules above and are checked when the statement
-runs, not by `params`: a `datetime`, `Decimal`, or plain `Enum` field raises
+runs, not by `params`: a `datetime` or plain `Enum` field raises
 `TypeError` there, named by its path, such as `$price` or `$rows[3].price` in
 a batch. Run statements that must all apply or none in `db.transaction()`.
 Engine errors stay `hawdb.exceptions`.

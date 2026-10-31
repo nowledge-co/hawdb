@@ -337,6 +337,8 @@ name = "hawdb-core"
 version = "0.23.0"
 dependencies = [
  "getrandom",
+ "num-bigint",
+ "num-traits",
  "regex",
  "uuid",
  "web-time",
@@ -750,6 +752,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3b335231dfd352ffb0f8017f3b6027a4917f7df785ea2143d8af2adc66980ae"
 dependencies = [
  "winapi",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-integer"
+version = "0.1.47"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]

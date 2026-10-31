@@ -710,6 +710,7 @@ fn typed_string_public_ast_and_resolved_literal_identity_use_the_six_type_profil
         let ExpressionKindSyntax::Cast {
             expression,
             data_type,
+            ..
         } = &properties[0].expression.kind
         else {
             panic!()
