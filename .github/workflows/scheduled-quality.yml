@@ -240,7 +240,17 @@ jobs:
             sudo apt-get install -y strace
           fi
 
+      - name: Check executor units for the sort-key experiment
+        if: ${{ github.ref_name == 'perf/1119-sort-key-preparation' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/sort-key-units
+          cargo test --locked -p hawdb-executor --lib --all-features -- --nocapture \
+            > artifacts/sort-key-units/unit.log 2>&1
+
       - name: Build both revisions and measure the fixed protocol
+        id: writer
         shell: bash
         env:
           WRITER_BASELINE_REVISION: ${{ inputs.writer_baseline_revision }}
@@ -270,11 +280,23 @@ jobs:
             --fixture-parent "$RUNNER_TEMP/writer-fixtures" \
             --output artifacts/strict-writer-gate
 
+      - name: Measure bounded single-column sort controls
+        if: ${{ always() && !cancelled() && github.ref_name == 'perf/1119-sort-key-preparation' && steps.writer.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/measure-sort-key-controls.py \
+            --writer-evidence artifacts/strict-writer-gate \
+            --output artifacts/sort-key-controls
+
       - name: Retain build and measurement evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: strict-writer-gate-${{ github.sha }}-${{ github.run_attempt }}
-          path: artifacts/strict-writer-gate
+          path: |
+            artifacts/strict-writer-gate
+            artifacts/sort-key-units
+            artifacts/sort-key-controls
           if-no-files-found: error
           retention-days: 30

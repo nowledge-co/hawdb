@@ -17,7 +17,7 @@
 use crate::binding::{binding_memory_bytes, value_memory_bytes, Binding, TopNBinding};
 use crate::expression::{
     binding_has_variable, binding_identity_key, binding_property, binding_value,
-    evaluate_projection_expression, insert_projected_value, KeyMemory, PreparedKey,
+    evaluate_projection_expression, insert_projected_value, KeyMemory, PreparedKey, SortKeyValues,
 };
 use crate::kernel::{ensure_operator_item_fits, OperatorMemoryTracker, SpillBudgetTracker};
 use crate::observer::ExecutionObserver;
