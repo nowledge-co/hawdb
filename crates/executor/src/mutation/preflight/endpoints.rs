@@ -96,7 +96,11 @@ pub fn resolve_relationship_merge_endpoints(
     }
     for ((label, names), matches) in &mut patterns {
         runtime_checkpoint(task)?;
-        let label_id = catalog.label_id(label);
+        let label_id = if label.is_empty() {
+            None
+        } else {
+            catalog.label_id(label)
+        };
         if !label.is_empty() && label_id.is_none() {
             continue;
         }

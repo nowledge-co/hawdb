@@ -1614,7 +1614,8 @@ all database/concurrent transaction result-budget refusals, full-batch input and
 storage refusal, NULL relationship-property refusal, large endpoint fan-out
 with pending property-subset matches, and embedded host count-guard rollback
 followed by WAL reopen. The executor preflight family (`//crates/executor:hawdb_executor_unit_tests`)
-counts one projected scan/index lookup per endpoint pattern and covers early
+counts one projected scan/index lookup per endpoint pattern, preserves
+unlabelled all-node matching even with an empty named catalog label, and covers early
 fan-out refusal before ID rewriting, empty pairs, host memory budgets and
 cancellation. Storage's existing `id_in_mutation` family in
 `//crates/storage:hawdb_storage_tests` retains the independent scan oracle and

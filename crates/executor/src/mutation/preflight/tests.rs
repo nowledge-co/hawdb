@@ -1105,3 +1105,38 @@ fn relationship_endpoints_skip_empty_pairs_and_refuse_memory_or_cancellation() {
     .is_err());
     assert!(store.writes.is_empty());
 }
+
+#[test]
+fn relationship_endpoints_keep_unlabelled_matches_distinct_from_empty_named_labels() {
+    let (mut catalog, store) = fixture(3);
+    catalog.get_or_create_label("");
+    let mut mutation = endpoint_merge(score_filter(0), score_filter(1));
+    let GraphMutation::MergeRelationshipsBetweenMatches(request) = &mut mutation else {
+        panic!()
+    };
+    request.source_label.clear();
+    request.target_label.clear();
+    let mut mutations = vec![mutation];
+    resolve_relationship_merge_endpoints(
+        &mut mutations,
+        &catalog,
+        &store,
+        MutationLimits::default(),
+        &crate::ExecutionMemoryConfig::default(),
+        None,
+    )
+    .unwrap();
+    let GraphMutation::MergeRelationshipsBetweenMatches(request) = &mutations[0] else {
+        panic!()
+    };
+    assert_eq!(
+        endpoints::resolved_ids(&request.source_filter),
+        &[Value::Int(0)]
+    );
+    assert_eq!(
+        endpoints::resolved_ids(&request.target_filter),
+        &[Value::Int(1)]
+    );
+    assert_eq!(store.projected_scans.get(), 1);
+    assert_eq!(store.projected_visits.get(), 3);
+}
