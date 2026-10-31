@@ -123,10 +123,15 @@ therefore stores an optional end position without carrying an owned syntax error
 A parser invocation owns its memo table and capture arena. Successful and
 failed named rules are cached by rule ID and token position; successful hits
 reuse capture IDs instead of cloning syntax trees. Each rule caches its greatest
-visited token directly; older positions use a bounded small vector, dense slots,
-or permanent sparse storage. These forms share the same logical entry budget
-and retain pending, successful and failed results. The direct slots are bounded
-by the compiled grammar's 256-rule cap, not the input length.
+visited token directly. History storage is allocated only when a rule visits a
+second distinct position. Its first two older records fit inside that allocation;
+further visits use a bounded small vector, dense slots or permanent sparse
+storage. The direct slot remains accessible without following the history pointer.
+These forms share the same logical entry budget and retain pending, successful
+and failed results. The direct slots are bounded by the compiled grammar's
+256-rule cap, not the input length. On the qualified 64-bit platform, each rule's
+fixed memo metadata shrinks from 96 to 48 bytes; a rule with history also owns
+its separate storage, so this is not a per-entry or universal heap reduction.
 
 A nonzero state word also encodes the matched arena node ID, leaving zero for
 empty optional slots without a separate enum discriminant. End positions and

@@ -2313,6 +2313,9 @@ identity/edges after capture rollback. Empty rules preserve zero-length source
 spans. The adaptive-cache cases also retain pending/failed/matched state,
 end positions, node identity and logical entry counts across forward/backward
 visits, replacement and density changes with compact nonzero memo records.
+These same sparse-oracle assertions cover on-demand history allocation, its two
+inline records, vector growth, dense holes and permanent sparse conversion; all
+logical entry counts, pending states, endpoints and node identities are retained.
 Continuation-local results carry only match/mismatch; fatal resource errors
 return directly from the matcher. The existing fatal-propagation cases retain
 all original assertions across this representation change.

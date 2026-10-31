@@ -13,14 +13,16 @@ pub(super) struct MemoTable<'a> {
 #[derive(Default)]
 struct RuleMemo<'a> {
     // Forward parsing and probes at the current token avoid a map lookup.
+    // Allocate backward storage only when this rule visits a second position.
     latest: Option<(usize, Memo<'a>)>,
-    older: Older<'a>,
+    older: Option<Box<Older<'a>>>,
 }
 
-#[derive(Default)]
 enum Older<'a> {
-    #[default]
-    Empty,
+    Inline {
+        entries: [Option<(usize, Memo<'a>)>; 2],
+        len: usize,
+    },
     // Small rules avoid allocating a hash table. The scan has a fixed bound.
     Small(Vec<(usize, Memo<'a>)>),
     // Dense token visits use direct indexing. At most four slots per memo.
@@ -52,7 +54,10 @@ impl<'a> MemoTable<'a> {
             Some((latest, memo)) if position == *latest => Some(memo),
             None => None,
             Some((latest, _)) if position > *latest => None,
-            Some(_) => entries.older.get(position),
+            Some(_) => entries
+                .older
+                .as_deref()
+                .and_then(|older| older.get(position)),
         }
     }
     pub fn insert(&mut self, rule: usize, position: usize, memo: Memo<'a>) {
@@ -66,18 +71,35 @@ impl<'a> MemoTable<'a> {
             Some((latest, value)) if position > *latest => {
                 let old_position = std::mem::replace(latest, position);
                 let old_value = std::mem::replace(value, memo);
-                entries.older.insert(old_position, old_value);
+                entries.insert_older(old_position, old_value);
                 self.len += 1;
             }
-            Some(_) => self.len += usize::from(entries.older.insert(position, memo)),
+            Some(_) => self.len += usize::from(entries.insert_older(position, memo)),
         }
+    }
+}
+
+impl<'a> RuleMemo<'a> {
+    fn insert_older(&mut self, position: usize, memo: Memo<'a>) -> bool {
+        self.older
+            .get_or_insert_with(|| {
+                Box::new(Older::Inline {
+                    entries: std::array::from_fn(|_| None),
+                    len: 0,
+                })
+            })
+            .insert(position, memo)
     }
 }
 
 impl<'a> Older<'a> {
     fn get(&self, position: usize) -> Option<&Memo<'a>> {
         match self {
-            Self::Empty => None,
+            Self::Inline { entries, len } => entries[..*len]
+                .iter()
+                .flatten()
+                .find(|(key, _)| *key == position)
+                .map(|(_, memo)| memo),
             Self::Small(entries) => entries
                 .iter()
                 .find(|(key, _)| *key == position)
@@ -92,8 +114,24 @@ impl<'a> Older<'a> {
     // Returns true only for a new logical memo entry, including dense holes.
     fn insert(&mut self, position: usize, memo: Memo<'a>) -> bool {
         match self {
-            Self::Empty => {
-                *self = Self::Small(vec![(position, memo)]);
+            Self::Inline { entries, len } => {
+                if let Some((_, value)) = entries[..*len]
+                    .iter_mut()
+                    .flatten()
+                    .find(|(key, _)| *key == position)
+                {
+                    *value = memo;
+                    return false;
+                }
+                if *len < entries.len() {
+                    entries[*len] = Some((position, memo));
+                    *len += 1;
+                } else {
+                    let mut values = Vec::with_capacity(4);
+                    values.extend(entries.iter_mut().map(|entry| entry.take().unwrap()));
+                    values.push((position, memo));
+                    *self = Self::Small(values);
+                }
                 true
             }
             Self::Small(entries) => {
