@@ -708,6 +708,18 @@ fn grouped_evidence_preserves_all_groups_before_top_k_and_deduplicates_ids() {
                 ("score".into(), Value::Float(score)), ("eligible".into(), Value::Bool(eligible)),
             ])).unwrap();
         }
+        // Keep this a selective TopN case: comparison-aware costing can
+        // legitimately sort the original three groups outright. Lower-scored
+        // groups must all reach aggregation before the global top-three window.
+        let extra = (0..128)
+            .map(|id| {
+                Value::Map(BTreeMap::from([
+                    ("group".into(), Value::String(format!("Z{id:03}"))),
+                    ("document".into(), Value::String(format!("z{id:03}"))),
+                ]))
+            })
+            .collect();
+        database.query_with_params("UNWIND $rows AS r CREATE (:EvidenceInput {group_id:r.group,document_id:r.document,score:1.0,eligible:true})",&BTreeMap::from([("rows".into(),Value::List(extra))])).unwrap();
         for evidence in [1, 2, 3] {
             let parameters = BTreeMap::from([
                 ("m".into(), Value::Int(evidence)),

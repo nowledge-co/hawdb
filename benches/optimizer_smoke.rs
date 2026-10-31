@@ -290,14 +290,14 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
             catalog: memory_seed_entity_mentions_catalog(),
             expected_cost: PlanCost {
                 estimated_rows: 1,
-                cost: 25,
+                cost: 27,
             },
             instance_fingerprint_contains: "IndexNodeSeek",
             decision_contains: &[
                 "choose IndexNodeSeek for Memory.id",
                 "estimate AdjacencyExpand",
                 "choose TopN for bounded sort",
-                "selected physical plan cost: estimated_rows=1 cost=25",
+                "selected physical plan cost: estimated_rows=1 cost=27",
             ],
         },
         OptimizerSmokeCase {
@@ -364,15 +364,15 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
             catalog: source_memory_label_cross_pattern_catalog(),
             expected_cost: PlanCost {
                 estimated_rows: 10,
-                cost: 2837,
+                cost: 2922,
             },
             instance_fingerprint_contains: "AdjacencyExpandExec",
             decision_contains: &[
                 "choose IndexNodeSeek for Source.id",
                 "estimate AdjacencyExpand for Source-[:SOURCED_FROM*1..1]->Memory",
                 "estimate AdjacencyExpand for Memory-[:HAS_LABEL*1..1]->Label",
-                "keep Sort + Limit for bounded sort",
-                "selected physical plan cost: estimated_rows=10 cost=2837",
+                "choose TopN for bounded sort",
+                "selected physical plan cost: estimated_rows=10 cost=2922",
             ],
         },
         OptimizerSmokeCase {
@@ -381,16 +381,16 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
             catalog: source_memory_entity_label_workload_catalog(),
             expected_cost: PlanCost {
                 estimated_rows: 25,
-                cost: 4699,
+                cost: 6163,
             },
-            instance_fingerprint_contains: "TopNExec",
+            instance_fingerprint_contains: "LimitExec(offset=0,limit=25,input=SortExec(",
             decision_contains: &[
                 "choose IndexNodeSeek for Source.id",
                 "estimate AdjacencyExpand for Source-[:SOURCED_FROM*1..1]->Memory",
                 "estimate AdjacencyExpand for Memory-[:MENTIONS*1..1]->Entity",
                 "estimate AdjacencyExpand for Memory-[:HAS_LABEL*1..1]->Label",
-                "choose TopN for bounded sort",
-                "selected physical plan cost: estimated_rows=25 cost=4699",
+                "keep Sort + Limit for bounded sort",
+                "selected physical plan cost: estimated_rows=25 cost=6163",
             ],
         },
         OptimizerSmokeCase {
@@ -399,7 +399,7 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
             catalog: source_entity_community_export_workload_catalog(),
             expected_cost: PlanCost {
                 estimated_rows: 10,
-                cost: 1269,
+                cost: 3699,
             },
             instance_fingerprint_contains: "TopNExec",
             decision_contains: &[
@@ -407,7 +407,7 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
                 "estimate AdjacencyExpand for Source-[:SOURCED_FROM*1..1]->Memory",
                 "estimate AdjacencyExpand for Memory-[:MENTIONS*1..1]->Entity",
                 "choose TopN for bounded sort",
-                "selected physical plan cost: estimated_rows=10 cost=1269",
+                "selected physical plan cost: estimated_rows=10 cost=3699",
             ],
         },
         OptimizerSmokeCase {
@@ -461,7 +461,7 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
             catalog: skill_thread_source_provenance_workload_catalog(),
             expected_cost: PlanCost {
                 estimated_rows: 2,
-                cost: 77,
+                cost: 84,
             },
             instance_fingerprint_contains: "COMPACTS_TO",
             decision_contains: &[
@@ -469,7 +469,7 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
                 "estimate AdjacencyExpand for Skill-[:SYNTHESIZED_FROM*1..1]->Memory",
                 "estimate AdjacencyExpand for Memory-[:COMPACTS_TO*1..1]->Thread",
                 "choose TopN for bounded sort",
-                "selected physical plan cost: estimated_rows=2 cost=77",
+                "selected physical plan cost: estimated_rows=2 cost=84",
             ],
         },
         OptimizerSmokeCase {
@@ -478,7 +478,7 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
             catalog: community_member_memory_evidence_workload_catalog(),
             expected_cost: PlanCost {
                 estimated_rows: 1,
-                cost: 17,
+                cost: 19,
             },
             instance_fingerprint_contains: "BELONGS_TO",
             decision_contains: &[
@@ -486,7 +486,7 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
                 "estimate AdjacencyExpand for Community-[:BELONGS_TO*1..1]->Entity",
                 "estimate AdjacencyExpand for Entity-[:MENTIONS*1..1]->Memory",
                 "choose TopN for bounded sort",
-                "selected physical plan cost: estimated_rows=1 cost=17",
+                "selected physical plan cost: estimated_rows=1 cost=19",
             ],
         },
         OptimizerSmokeCase {
@@ -495,13 +495,13 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
             catalog: entity_bridge_span_aggregate_catalog(),
             expected_cost: PlanCost {
                 estimated_rows: 10,
-                cost: 27_934,
+                cost: 38_456,
             },
             instance_fingerprint_contains: "count(distinct 2:e2.12:community_id)",
             decision_contains: &[
                 "estimate AdjacencyExpand for Entity-[:RELATES_TO*1..1]->Entity",
                 "choose TopN for bounded sort",
-                "selected physical plan cost: estimated_rows=10 cost=27934",
+                "selected physical plan cost: estimated_rows=10 cost=38456",
             ],
         },
         OptimizerSmokeCase {

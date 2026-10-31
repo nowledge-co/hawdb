@@ -6,9 +6,7 @@
 //! split in the existing postorder fold: no second metadata walk or per-node
 //! allocation. Uniform output distribution is an estimate, not a work budget.
 
-use super::{
-    estimate_local_operator_cost, OptimizerCatalog, PhysicalPlan, PlanBindings, PlanCostBreakdown,
-};
+use super::{PhysicalPlan, PlanCostBreakdown};
 use hawdb_plan_cypher::NodeProjectionAccess;
 
 #[derive(Clone, Copy)]
@@ -77,13 +75,10 @@ fn access_startup(access: &NodeProjectionAccess, total: PlanCostBreakdown) -> Pl
     }
 }
 
-pub(super) fn cost_operator(
+pub(super) fn input_costs(
     plan: &PhysicalPlan,
-    catalog: &OptimizerCatalog,
     inputs: [Option<ConsumptionCost>; 2],
-    bindings: &PlanBindings<'_>,
-    statistics: &mut Option<super::StatisticsUsage>,
-) -> ConsumptionCost {
+) -> [Option<PlanCostBreakdown>; 2] {
     let mut costs = inputs.map(|input| input.map(|input| input.total));
     if let PhysicalPlan::LimitExec {
         offset,
@@ -100,7 +95,14 @@ pub(super) fn cost_operator(
         };
         costs[0] = Some(inputs[0].expect("unary input cost").prefix(wanted));
     }
-    let total = estimate_local_operator_cost(plan, catalog, costs, bindings, statistics);
+    costs
+}
+
+pub(super) fn cost_operator(
+    plan: &PhysicalPlan,
+    inputs: [Option<ConsumptionCost>; 2],
+    total: PlanCostBreakdown,
+) -> ConsumptionCost {
     let startup = match plan {
         PhysicalPlan::SeqNodeScan { .. } => {
             PlanCostBreakdown::new(1, 0, 0, super::NODE_FULL_SCAN_STARTUP_COST, 0)

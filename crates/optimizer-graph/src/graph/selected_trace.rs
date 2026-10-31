@@ -40,22 +40,26 @@ pub(super) fn selected_plan_trace_with_diagnostics(
 ) -> (SelectedPlanTrace, Vec<String>) {
     let mut cardinality_estimates = Vec::new();
     let mut diagnostics = Vec::new();
-    let cost_breakdown =
-        collect_costed_plan(plan, catalog, &mut cardinality_estimates, &mut diagnostics).cost;
-    (
-        SelectedPlanTrace {
-            query_digest: context.query_digest().map(str::to_string),
-            explain: plan.explain(0),
-            fingerprint: plan.fingerprint(),
-            cost: cost_breakdown.as_plan_cost(),
-            cost_breakdown,
-            properties: properties::selected_plan_properties(plan, catalog),
-            cardinality_estimates,
-            operator_counts: plan_operator_counts(plan),
-            class_counts: plan_class_counts(plan),
-        },
-        diagnostics,
+    let cost_breakdown = collect_costed_plan(
+        plan,
+        catalog,
+        context,
+        &mut cardinality_estimates,
+        &mut diagnostics,
     )
+    .cost;
+    let trace = SelectedPlanTrace {
+        query_digest: context.query_digest().map(str::to_string),
+        explain: plan.explain(0),
+        fingerprint: plan.fingerprint(),
+        cost: cost_breakdown.as_plan_cost(),
+        cost_breakdown,
+        properties: properties::selected_plan_properties(plan, catalog),
+        cardinality_estimates,
+        operator_counts: plan_operator_counts(plan),
+        class_counts: plan_class_counts(plan),
+    };
+    (trace, diagnostics)
 }
 
 #[cfg(test)]
@@ -64,12 +68,20 @@ fn collect_operator_costs(
     catalog: &OptimizerCatalog,
     estimates: &mut Vec<OperatorCardinalityEstimate>,
 ) -> PlanCostBreakdown {
-    collect_costed_plan(plan, catalog, estimates, &mut Vec::new()).cost
+    collect_costed_plan(
+        plan,
+        catalog,
+        &OptimizerContext::default(),
+        estimates,
+        &mut Vec::new(),
+    )
+    .cost
 }
 
 fn collect_costed_plan<'a>(
     plan: &'a PhysicalPlan,
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
     estimates: &mut Vec<OperatorCardinalityEstimate>,
     diagnostics: &mut Vec<String>,
 ) -> costing::CostedPlan<'a> {
@@ -82,9 +94,12 @@ fn collect_costed_plan<'a>(
         estimated_rows: 0,
     });
     let inputs = costing::estimate_input_costs(plan, |input| {
-        collect_costed_plan(input, catalog, estimates, diagnostics)
+        collect_costed_plan(input, catalog, context, estimates, diagnostics)
     });
-    let costed = costing::estimate_operator_cost(plan, catalog, inputs);
+    let costed = costing::estimate_operator_cost_with_context(plan, catalog, inputs, context);
+    if let Some(diagnostic) = costed.width_diagnostic(ordinal, plan) {
+        diagnostics.push(diagnostic);
+    }
     estimates[ordinal].estimated_rows = costed.cost.estimated_rows;
     if let Some(statistics) = costed.statistics {
         diagnostics.push(format!(

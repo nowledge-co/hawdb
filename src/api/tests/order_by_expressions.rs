@@ -458,8 +458,53 @@ fn aggregating_projections_reject_expression_keys_over_unprojected_variables() {
 }
 
 #[test]
+fn tiny_order_keys_keep_costed_sort_and_exact_pages() {
+    let mut db = people();
+    let property = "MATCH (n:Person) RETURN n.name AS name ORDER BY n.age DESC, n.name LIMIT 2";
+    let explain = db.explain_query(property).unwrap();
+    let plan = &explain.trace.selected_plan;
+    assert!(plan.contains("LimitExec"), "{plan}");
+    assert!(plan.contains("SortExec"), "{plan}");
+    assert!(!plan.contains("TopNExec"), "{plan}");
+    assert!(
+        explain
+            .trace
+            .decisions
+            .iter()
+            .any(|decision| decision.starts_with("keep Sort + Limit for bounded sort:")),
+        "{:?}",
+        explain.trace.decisions
+    );
+    assert_eq!(names(&mut db, property), strings(&["carol", "alice"]));
+    assert_eq!(
+        names(
+            &mut db,
+            "MATCH (n:Person) RETURN n.name AS name ORDER BY size(n.tags) DESC, n.age % 10 LIMIT 2",
+        ),
+        strings(&["bob", "alice"])
+    );
+}
+
+#[test]
 fn limited_order_keys_keep_top_n_plans() {
     let mut db = people();
+    // Exercise the bounded path where its comparison-work savings outweigh
+    // heap initialization. Keep the original five-row control above: the
+    // width-aware model can legitimately prefer its cheaper complete sort.
+    let rows = (0..64)
+        .map(|index| {
+            Value::Map(BTreeMap::from([
+                ("name".to_string(), Value::String(format!("extra-{index}"))),
+                ("age".to_string(), Value::Int(0)),
+                ("tags".to_string(), Value::List(Vec::new())),
+            ]))
+        })
+        .collect();
+    db.query_with_params(
+        "UNWIND $rows AS row CREATE (:Person {name: row.name, age: row.age, tags: row.tags})",
+        &BTreeMap::from([("rows".to_string(), Value::List(rows))]),
+    )
+    .unwrap();
     let property = "MATCH (n:Person) RETURN n.name AS name ORDER BY n.age DESC, n.name LIMIT 2";
     let plan = selected_plan(&db, property);
     assert!(plan.contains("TopNExec"), "{plan}");

@@ -2298,3 +2298,66 @@ errors. No CI lane or fuzz target is added.
 Focused replays: `cargo test --locked -p hawdb-storage compatibility_tests`,
 `cargo test --locked -p hawdb-storage append_wal_versions`, and
 `cargo test --locked -p hawdb --test branch_project_open storage_format`.
+
+### Graph row-width and blocking-cost estimates
+
+Existing optimizer-graph ownership covers `graph::costing::width::tests`,
+`graph::costing::work::tests` and `graph::costing::tests_width`: pinned typed
+schema, bounded distinct-domain width sampling, required-only decoding,
+projection/graph ownership and alias scope, key-versus-body comparisons,
+context-sensitive choices in memo/direct lowering, selected trace refresh,
+metadata bounds and saturating row/cost arithmetic. Input estimates within the
+OFFSET+LIMIT window use an equal ordering-work proxy and prefer TopN on ties in
+both lowerings; greater-than-window controls retain comparison-aware choices.
+Projection-fused pricing is pinned around the 64-MiB unit threshold and 2-MiB
+facade threshold, where costing an unfused graph binding would invent spill.
+Combined row-goal/width controls keep complete blocking comparison/spill work,
+scale streaming decode work, and preserve the caller's memory hint for bounded
+ordered-versus-Sort/TopN competitors in both memo and direct lowering.
+Root `order_by_expressions` keeps the five-row exact-page control, including
+its cheaper property Sort+Limit choice, and retains strict property/computed-key
+TopN assertions with 64 additional low-ranked rows. Small and bulk cases share
+complete expected-page assertions.
+Asymmetric hash-join
+inputs pin right-build retention and spill; one-to-three-hop traversal controls
+keep opaque graph contributions visible in `proxy_fields`. Joint grouping and
+width costing share the incoming alias scope: correlated key counts change the
+spill estimate while an INT alias shadowing TEXT keeps its scalar width. The existing
+`//:hawdb_linux_ci_optimizer_summary_smoke_test` pins the corresponding
+comparison/decode costs for all seven affected graph workloads, retaining exact
+row/cost, decision, fingerprint and repeated-planning assertions.
+Core schema snapshot tests
+cover table-qualified descriptor iteration, deletion and old snapshot identity.
+The joint-NDV small-budget control retains all 400 source rows and the original
+40-row window (TopN), and adds a 19-row window to keep Sort+Limit transfer
+admission covered under the same 2-MiB query budget.
+Root `api::tests::width_costing` checks complete NULL/tied output, pinned reads,
+warm templates, small budgets and checkpoint/reopen in all residency modes.
+A correlated-filter regression estimates at most 19 rows but consumes all 256
+matches, returns the exact offset/tied page on cold and warm calls, and verifies
+TopN stays within its 256-KiB blocking allowance without spill or leaked admission.
+`query_observability::order_by_limit_uses_top_n_and_preserves_stable_order`
+retains a selective TopN fixture under comparison-aware costing. Executor
+`transform::tests::limit_admission` verifies selected-window transfers, skipped
+payload, exhausted offsets and exact/one-byte-deficit admission; the same narrow
+kernel regression is independently carried by the joint-NDV change. Replay:
+
+```console
+cargo test --locked -p hawdb-core --lib schema::snapshot_tests
+cargo test --locked -p hawdb-optimizer-graph --lib
+cargo test --locked -p hawdb-executor --lib transform
+cargo test --locked -p hawdb --lib -- width_costing order_by_limit_uses_top_n_and_preserves_stable_order
+```
+
+The opt-in `width_cost_planning` release benchmark is manual, with bounded CLI
+inputs, exact complete output checks, explicit row/payload budgets, cache and
+spill/admission counters. No default target, profile, resource limit or CI lane
+is changed. Read [the cost contract](QUERY_WIDTH_COSTS.md) before interpreting
+logical width/CPU/IO units as measurements.
+
+The source-bound [macOS ARM experiment](benchmarks/width_costs_macos_2026_10_31/README.md)
+contains 19 cells, 114 processes and 684 fully checked calls, including narrow,
+TEXT/STRING/vector, arrival order/native ordering, small/full K, three blocking
+budgets, width-proxy misses and persistent residency controls. It shows gains
+when TopN removes measured spill and records neutral/adverse outcomes explicitly;
+it is not a CI performance gate or a bound on actual heap allocation.

@@ -1435,6 +1435,25 @@ fn order_by_limit_uses_top_n_and_preserves_stable_order() {
         db.query(&format!("CREATE (:Memory {{id: '{id}', score: {score}}})"))
             .unwrap();
     }
+    // Keep this a TopN implementation test under comparison-aware costing;
+    // sorting only four rows is now legitimately cheaper than maintaining K=3.
+    db.query_with_params(
+        "UNWIND $rows AS r CREATE (:Memory {id:r.id, score:0})",
+        &BTreeMap::from([(
+            "rows".into(),
+            Value::List(
+                (0..256)
+                    .map(|id| {
+                        Value::Map(BTreeMap::from([(
+                            "id".into(),
+                            Value::String(format!("extra-{id}")),
+                        )]))
+                    })
+                    .collect(),
+            ),
+        )]),
+    )
+    .unwrap();
     let query = "MATCH (m:Memory) RETURN m.id AS id, m.score AS score \
                  ORDER BY m.score DESC, m.id ASC SKIP 1 LIMIT 2";
 

@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 use hawdb_cypher::ArithmeticOp;
 
