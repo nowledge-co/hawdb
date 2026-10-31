@@ -27,7 +27,7 @@ fn bag(mut rows: Vec<BTreeMap<String, Value>>) -> Vec<BTreeMap<String, Value>> {
 }
 
 #[test]
-fn row_bound_pattern_properties_preserve_multiplicity_nulls_and_cached_parameters() {
+fn row_bound_pattern_properties_preserve_multiplicity_nulls_and_parameter_changes() {
     for indexed in [false, true] {
         let db = fixture(indexed);
         let mut snapshot = db.begin_read_transaction().unwrap();
@@ -39,7 +39,7 @@ fn row_bound_pattern_properties_preserve_multiplicity_nulls_and_cached_parameter
             ] {
                 let prefix = if optional { "OPTIONAL MATCH" } else { "MATCH" };
                 let query = format!("UNWIND $ids AS candidate_id {with} {prefix} (n:Item {{id: candidate_id}}) RETURN candidate_id, n.id");
-                // Same-shaped lists exercise parameter rebinding on a cached read.
+                // Repeated same-shaped lists must read the current parameter values.
                 for ids in [
                     vec![
                         Value::String("a".into()),
