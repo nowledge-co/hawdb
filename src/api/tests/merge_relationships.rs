@@ -288,18 +288,24 @@ fn matched_unwind_relationship_merge_embedded_count_guard_rolls_back_and_reopens
             NowledgeMemEmbeddedStoreHandle::open_with_options(options.clone()).unwrap();
         handle
             .with_transaction(|transaction| {
-                transaction.query("CREATE (:Skill {id: 'skill'})")?;
                 transaction.query("CREATE (:Memory {id: 'a'})")?;
                 Ok(())
             })
             .unwrap();
         let refused = handle.with_transaction(|transaction| {
+            transaction.query("CREATE (:Skill {id: 'skill'})")?;
             let output = transaction
                 .query_with_params(EVIDENCE_MERGE, &evidence_parameters(&["a", "missing"]))?;
             assert_eq!(output.rows.len(), 1);
             Err::<(), _>(HawDBError::Execution("exact member count refused".into()))
         });
         assert!(refused.is_err());
+        assert!(handle
+            .query_with_report("MATCH (s:Skill {id: 'skill'}) RETURN s.id")
+            .unwrap()
+            .output
+            .rows
+            .is_empty());
         assert_eq!(
             handle
                 .query_with_report(EVIDENCE_COUNT)
@@ -311,6 +317,7 @@ fn matched_unwind_relationship_merge_embedded_count_guard_rolls_back_and_reopens
         );
         handle
             .with_transaction(|transaction| {
+                transaction.query("CREATE (:Skill {id: 'skill'})")?;
                 assert_eq!(
                     transaction
                         .query_with_params(EVIDENCE_MERGE, &evidence_parameters(&["a"]))?
