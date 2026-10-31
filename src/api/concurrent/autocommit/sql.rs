@@ -113,6 +113,16 @@ impl ConcurrentDatabase {
                 return Err(preparation_changed());
             }
             transaction.task_context = request.task_context.cloned();
+            if matches!(prepared.statement(), SqlStatement::Update(_)) {
+                // The syntax guard is only the first phase for indexed updates.
+                // Coordinate discovered primary rows and old/new index entries
+                // through the same pinned-view and refresh loop as explicit SQL.
+                transaction.acquire_sql_locks(
+                    &prepared,
+                    request.parameters,
+                    request.task_context,
+                )?;
+            }
             #[cfg(test)]
             self.wait_before_autocommit_mutation(AutocommitMutationPhase::BeforeExecution)?;
             execute_database_transaction_prepared_sql(

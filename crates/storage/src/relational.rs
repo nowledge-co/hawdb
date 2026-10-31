@@ -47,8 +47,8 @@ mod primary_key_range;
 pub use admitted_point::{
     RelationalAdmittedPoint, RelationalPointAllocation, RelationalPointReadRequest,
 };
-pub use primary_key_range::RelationalPrimaryKeyRange;
 use primary_key_range::{equality as mutation_equality, mutation_primary_key_range};
+pub use primary_key_range::{RelationalKeyRange, RelationalPrimaryKeyRange};
 pub(crate) mod overflow;
 mod recovery;
 mod row_page;

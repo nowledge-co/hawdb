@@ -4,15 +4,30 @@
 use super::*;
 use std::ops::Bound;
 
-/// A conservative interval of complete primary keys. Every matching row lies
-/// inside these bounds; the original predicate must still be evaluated.
+/// A conservative interval in one ordered key namespace. Short bounds are
+/// lexicographic boundaries, never wildcard keys. An equality prefix is encoded
+/// as Included(prefix)..Excluded(successor(prefix)), including every full key
+/// extending that prefix. The original predicate must still be evaluated.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelationalPrimaryKeyRange {
+pub struct RelationalKeyRange {
     pub lower: Bound<RelationalKey>,
     pub upper: Bound<RelationalKey>,
 }
 
-impl RelationalPrimaryKeyRange {
+/// Primary-row mutation access uses the same boundaries as index-range locks.
+pub type RelationalPrimaryKeyRange = RelationalKeyRange;
+
+impl RelationalKeyRange {
+    /// Derive bounds for validated values in the supplied ordered columns.
+    /// Unsupported predicates remain residuals; `None` requires a broader lock
+    /// or access path, while an empty interval proves there are no candidates.
+    pub fn from_predicate(
+        columns: &[String],
+        predicate: &RelationalPredicate,
+    ) -> Result<Option<Self>, RelationalError> {
+        key_range(columns, predicate, None)
+    }
+
     pub fn is_empty(&self) -> bool {
         match (&self.lower, &self.upper) {
             (Bound::Included(left), Bound::Included(right)) => left > right,
@@ -174,21 +189,27 @@ pub(super) fn mutation_primary_key_range(
     predicate: &RelationalPredicate,
     allocations: Option<&crate::background::CheckpointDecodeContext>,
 ) -> Result<Option<RelationalPrimaryKeyRange>, RelationalError> {
-    let prefix_len = schema
-        .primary_key
+    key_range(&schema.primary_key, predicate, allocations)
+}
+
+fn key_range(
+    columns: &[String],
+    predicate: &RelationalPredicate,
+    allocations: Option<&crate::background::CheckpointDecodeContext>,
+) -> Result<Option<RelationalKeyRange>, RelationalError> {
+    let prefix_len = columns
         .iter()
         .take_while(|column| equality(predicate, column).is_some())
         .count();
     let prefix = copy_key(
-        schema
-            .primary_key
+        columns
             .iter()
             .take(prefix_len)
             .map(|column| equality(predicate, column).expect("proven equality prefix")),
         prefix_len,
         allocations,
     )?;
-    if prefix_len == schema.primary_key.len() && prefix_len != 0 {
+    if prefix_len == columns.len() && prefix_len != 0 {
         return Ok(Some(RelationalPrimaryKeyRange {
             lower: Bound::Included(copy_key(prefix.0.iter(), prefix_len, allocations)?),
             upper: Bound::Included(prefix),
@@ -196,7 +217,7 @@ pub(super) fn mutation_primary_key_range(
     }
     let mut lower = None;
     let mut upper = None;
-    if let Some(column) = schema.primary_key.get(prefix_len) {
+    if let Some(column) = columns.get(prefix_len) {
         visit_comparisons(predicate, column, &mut |op, value| match op {
             RelationalComparisonOp::Gt | RelationalComparisonOp::Gte => {
                 let inclusive = op == RelationalComparisonOp::Gte;
