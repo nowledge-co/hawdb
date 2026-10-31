@@ -564,30 +564,42 @@ impl<'a, T> Matcher<'a, T> {
                     if self.depth >= self.limits.depth {
                         return Err(self.limit(position, "PEG nesting within the parser limit"));
                     }
-                    self.depth += 1;
-                    work.push(Frame::ExpressionDone(self.captures.len()));
-                    match expression {
+                    // Lexical atoms have no child frames or captures. Check the
+                    // same logical depth/work budget, then finish them here;
+                    // an ExpressionDone continuation would only undo the depth.
+                    let terminal = match expression {
                         Expression::Keyword(keyword) => {
-                            result = if self.token(position).is_keyword(self.input, keyword) {
+                            Some(if self.token(position).is_keyword(self.input, keyword) {
                                 Ok(position + 1)
                             } else {
                                 Err(self.mismatch(position, keyword))
-                            };
+                            })
                         }
                         Expression::Token(kind, expected) => {
-                            result = if self.token(position).kind == *kind {
+                            Some(if self.token(position).kind == *kind {
                                 Ok(position + usize::from(*kind != TokenKind::End))
                             } else {
                                 Err(self.mismatch(position, expected))
-                            };
+                            })
                         }
-                        Expression::Parameter => {
-                            result = if matches!(self.token(position).kind, TokenKind::Parameter(_))
-                            {
+                        Expression::Parameter => Some(
+                            if matches!(self.token(position).kind, TokenKind::Parameter(_)) {
                                 Ok(position + 1)
                             } else {
                                 Err(self.mismatch(position, "a positional parameter"))
-                            };
+                            },
+                        ),
+                        _ => None,
+                    };
+                    if let Some(terminal) = terminal {
+                        result = terminal;
+                        continue;
+                    }
+                    self.depth += 1;
+                    work.push(Frame::ExpressionDone(self.captures.len()));
+                    match expression {
+                        Expression::Keyword(_) | Expression::Token(..) | Expression::Parameter => {
+                            unreachable!("lexical atom finished above")
                         }
                         Expression::Rule(rule) => work.push(Frame::Rule(*rule, position)),
                         Expression::Sequence(items) => {
