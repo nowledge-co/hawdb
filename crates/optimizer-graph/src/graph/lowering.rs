@@ -478,6 +478,7 @@ impl GroupExpr {
             | LogicalPlan::TextSeed { .. }
             | LogicalPlan::GraphSeed { .. }
             | LogicalPlan::CreateNode { .. }
+            | LogicalPlan::Unwind { .. }
             | LogicalPlan::UnwindMutation { .. }
             | LogicalPlan::MergeNode { .. }
             | LogicalPlan::MergeRelationship { .. }
@@ -788,6 +789,7 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
         | LogicalPlan::TextSeed { .. }
         | LogicalPlan::GraphSeed { .. }
         | LogicalPlan::CreateNode { .. }
+        | LogicalPlan::Unwind { .. }
         | LogicalPlan::UnwindMutation { .. }
         | LogicalPlan::MergeNode { .. }
         | LogicalPlan::MergeRelationship { .. }

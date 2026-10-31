@@ -228,6 +228,10 @@ pub enum LogicalPlan {
         label: String,
         properties: BTreeMap<String, Value>,
     },
+    Unwind {
+        rows: Vec<Value>,
+        variable: String,
+    },
     UnwindMutation {
         rows: Vec<Value>,
         variable: String,

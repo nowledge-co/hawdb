@@ -186,6 +186,10 @@ pub enum PhysicalPlan {
         label: String,
         properties: BTreeMap<String, Value>,
     },
+    UnwindExec {
+        rows: Vec<Value>,
+        variable: String,
+    },
     UnwindMutation {
         rows: Vec<Value>,
         variable: String,

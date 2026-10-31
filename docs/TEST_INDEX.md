@@ -118,6 +118,17 @@ root `api::tests::aggregates`. Replay with `cargo test --locked -p
 hawdb-executor --lib aggregate` and `cargo test --locked -p hawdb --lib --
 api::tests::aggregates`. No lane, profile or deadline changes.
 
+Row-bound node-pattern properties and read-only `UNWIND` are owned by the
+existing Cypher parser and planner targets, executor batch-dispatch coverage,
+and root `api::tests::row_bound_pattern_properties` in
+`//:hawdb_unit_general_tests`. The regressions cover scalar/property bindings,
+optional predicate boundaries, duplicate matches and inputs, NULL/empty values,
+indexed and generic execution, parameter cache rebinding, dropped/unknown scope,
+and payload/result budget failures. Replay with `cargo test --locked -p hawdb
+--lib row_bound_pattern_properties`, `cargo test --locked -p hawdb-cypher
+row_bound_pattern_properties`, and `cargo test --locked -p hawdb-plan-cypher
+row_bound_pattern_properties`. No CI lane or timeout is added.
+
 General `shortestPath` / `allShortestPaths` coverage is owned by existing
 targets: executor `traversal::shortest_path_bfs::tests` (directions,
 deterministic single/all selection, parallel relationships, equal endpoints,

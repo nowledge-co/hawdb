@@ -314,6 +314,10 @@ fn estimate_local_operator_cost(
         PhysicalPlan::NodeCountExec { .. } | PhysicalPlan::RelationshipCountExec { .. } => {
             PlanCostBreakdown::new(1, 1, 0, 0, 0)
         }
+        PhysicalPlan::UnwindExec { rows, .. } => {
+            let count = rows.len() as u64;
+            PlanCostBreakdown::new(count.max(1), count, 0, 0, 0)
+        }
         PhysicalPlan::UnwindMutation { rows, .. } => {
             let row_count = rows.len().max(1) as u64;
             PlanCostBreakdown::new(row_count, row_count, 0, 0, 0)

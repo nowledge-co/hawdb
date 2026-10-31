@@ -134,3 +134,59 @@ fn public_multi_with_parser_retains_bounded_optional_admission() {
         assert!(parse(&source).is_err(), "{source}");
     }
 }
+
+#[test]
+fn row_bound_pattern_properties_preserve_value_kinds_and_spans() {
+    use crate::ValueExpressionKind;
+    for prefix in ["MATCH", "OPTIONAL MATCH"] {
+        let source = format!(
+            "UNWIND $ids AS candidate_id WITH candidate_id {prefix} \
+             (n:Item {{id: candidate_id, parent: candidate.id, fixed: $fixed, literal: 'x'}}) \
+             RETURN candidate_id, n.id"
+        );
+        let Statement::Pipeline(query) = parse(&source).unwrap() else {
+            panic!("expected a read pipeline");
+        };
+        let ClauseKind::Match {
+            patterns, optional, ..
+        } = &query.clauses[2].kind
+        else {
+            panic!("expected MATCH");
+        };
+        assert_eq!(*optional, prefix == "OPTIONAL MATCH");
+        let properties = &patterns[0].first.properties;
+        assert_eq!(
+            properties["id"].kind,
+            ValueExpressionKind::Binding("candidate_id".into())
+        );
+        assert_eq!(
+            properties["id"].span.unwrap().text(&source),
+            Some("candidate_id")
+        );
+        assert_eq!(
+            properties["parent"].kind,
+            ValueExpressionKind::BindingProperty {
+                variable: "candidate".into(),
+                property: "id".into(),
+            }
+        );
+        assert!(matches!(
+            properties["fixed"].kind,
+            ValueExpressionKind::Parameter(_)
+        ));
+        assert!(matches!(
+            properties["literal"].kind,
+            ValueExpressionKind::Literal(_)
+        ));
+    }
+    for query in [
+        "UNWIND $ids AS id MATCH (n:Item {id: id.}) RETURN n",
+        "UNWIND $ids AS id MATCH (n:Item {id: }) RETURN n",
+    ] {
+        assert!(parse(query).is_err(), "{query}");
+    }
+    assert!(matches!(
+        parse("UNWIND $rows AS row CREATE (:Item {id: row.id})").unwrap(),
+        Statement::UnwindMutation(_)
+    ));
+}

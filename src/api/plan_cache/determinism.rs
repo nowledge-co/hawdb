@@ -70,6 +70,7 @@ pub(in crate::api) fn value_is_deterministic(value: &cypher::ValueExpression) ->
         cypher::ValueExpressionKind::Timestamp(value) => value_is_deterministic(value),
         cypher::ValueExpressionKind::Literal(_)
         | cypher::ValueExpressionKind::Parameter(_)
+        | cypher::ValueExpressionKind::Binding(_)
         | cypher::ValueExpressionKind::BindingProperty { .. } => true,
     }
 }

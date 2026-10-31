@@ -63,7 +63,7 @@ impl Transformer<'_> {
                     admit_optional(&pipeline).map_err(|message| self.error(selected, message))?;
                 }
                 if name == "unwind" {
-                    Ok(Statement::UnwindMutation(Box::new(pipeline)))
+                    Ok(Box::new(pipeline).into_unwind_statement())
                 } else {
                     Ok(Statement::Pipeline(Box::new(pipeline)))
                 }
