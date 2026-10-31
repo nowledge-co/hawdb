@@ -18,7 +18,7 @@ use super::{
         estimate_node_cartesian_product_cost, estimate_physical_plan_cost,
         push_optional_relationship_count_sum_cost_decision,
     },
-    logical_rewrite::{rewrite_logical_plan, LogicalRewriteOutput},
+    logical_rewrite::{rewrite_logical_plan_with_catalog, LogicalRewriteOutput},
     properties::satisfies_ordering,
     selected_trace::selected_plan_trace,
     stages::{
@@ -158,7 +158,11 @@ impl CascadesOptimizer {
         catalog: &OptimizerCatalog,
         directive: OptimizerSearchDirective,
     ) -> Result<PhysicalPlanRoot, OptimizerSearchDirectiveError> {
-        let rewrite = rewrite_logical_plan(root.plan());
+        let rewrite = rewrite_logical_plan_with_catalog(
+            root.plan(),
+            catalog,
+            self.context.qualification_options(),
+        );
         let logical = rewrite.plan();
         let required_groups = logical_group_count(logical);
         let max_groups = self.context.optimizer_config().max_groups;
@@ -188,6 +192,7 @@ impl CascadesOptimizer {
                 OptimizationSearchReport::direct_fallback(required_groups, max_groups)
             };
             record_logical_rewrite(&mut report, &rewrite);
+            record_qualification(&mut report, &self.context);
             report.push_stage_event(
                 LOGICAL_GROUPING_STAGE.trace(StageStats::new(1, required_groups)),
             );
@@ -218,6 +223,7 @@ impl CascadesOptimizer {
         let plan = finalize_physical_plan(plan, &mut decisions, &mut stage_events);
         let mut report = OptimizationSearchReport::memo(memo.group_count());
         record_logical_rewrite(&mut report, &rewrite);
+        record_qualification(&mut report, &self.context);
         report
             .push_stage_event(LOGICAL_GROUPING_STAGE.trace(StageStats::new(1, memo.group_count())));
         let (applied_rules, skipped_rules) = stage_rule_counts(&stage_events);
@@ -235,6 +241,18 @@ impl CascadesOptimizer {
             report.push_decision("selected memo search: explicit optimizer search directive");
         }
         Ok(PhysicalPlanRoot::new(plan, report.into_trace(selected)))
+    }
+}
+
+fn record_qualification(report: &mut OptimizationSearchReport, context: &OptimizerContext) {
+    let options = context.qualification_options();
+    if options.is_active() {
+        let disabled = crate::OptionalOptimizerRule::ALL
+            .into_iter()
+            .filter(|rule| !options.rule_enabled(*rule))
+            .map(crate::OptionalOptimizerRule::as_str)
+            .collect::<Vec<_>>();
+        report.push_rule_event(RuleEvent::selected("optimizer qualification", format!("disabled={disabled:?} perturbation={:?}; legality/resource checks remain mandatory; reported costs are unperturbed", options.cost_perturbation())));
     }
 }
 
@@ -308,24 +326,35 @@ fn best_physical(
         .to_physical(memo, catalog, optimizer_context, decisions, stage_events)
 }
 
+fn ranking_cost(plan: &PhysicalPlan, cost: u64, context: &OptimizerContext) -> u64 {
+    context
+        .qualification_options()
+        .cost_perturbation()
+        .map_or(cost, |perturbation| {
+            perturbation.ranking_cost(cost, &plan.fingerprint())
+        })
+}
+
 fn ordered_alternative(
     input: PhysicalPlan,
     items: &[SortItem],
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
     decisions: &mut Vec<String>,
 ) -> PhysicalPlan {
     let Some(candidate) = ordered::candidate(&input, items, catalog) else {
         return input;
     };
     let ordered_cost = estimate_physical_plan_cost(&candidate, catalog);
-    let sort_cost = estimate_physical_plan_cost(
-        &PhysicalPlan::SortExec {
-            items: items.to_vec(),
-            input: Box::new(input.clone()),
-        },
-        catalog,
-    );
-    if satisfies_ordering(&candidate, items, catalog) && ordered_cost.cost <= sort_cost.cost {
+    let sorted = PhysicalPlan::SortExec {
+        items: items.to_vec(),
+        input: Box::new(input.clone()),
+    };
+    let sort_cost = estimate_physical_plan_cost(&sorted, catalog);
+    if satisfies_ordering(&candidate, items, catalog)
+        && ranking_cost(&candidate, ordered_cost.cost, context)
+            <= ranking_cost(&sorted, sort_cost.cost, context)
+    {
         decisions.push(format!(
             "choose composite ordered seek: ordered_cost={} sort_cost={}",
             ordered_cost.cost, sort_cost.cost
@@ -342,9 +371,10 @@ fn select_bounded_sort_plan(
     limit: usize,
     input: PhysicalPlan,
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
     decisions: &mut Vec<String>,
 ) -> PhysicalPlan {
-    let input = ordered_alternative(input, &items, catalog, decisions);
+    let input = ordered_alternative(input, &items, catalog, context, decisions);
     if satisfies_ordering(&input, &items, catalog) {
         decisions.push("elide bounded sort: access path satisfies required ordering".to_string());
         return PhysicalPlan::LimitExec {
@@ -369,7 +399,9 @@ fn select_bounded_sort_plan(
     };
     let top_n_cost = estimate_physical_plan_cost(&top_n, catalog);
     let sort_limit_cost = estimate_physical_plan_cost(&sort_limit, catalog);
-    if top_n_cost.cost < sort_limit_cost.cost {
+    if ranking_cost(&top_n, top_n_cost.cost, context)
+        < ranking_cost(&sort_limit, sort_limit_cost.cost, context)
+    {
         decisions.push(format!(
             "choose TopN for bounded sort: offset={offset} limit={limit} top_n_cost={} sort_limit_cost={}",
             top_n_cost.cost, sort_limit_cost.cost
@@ -1120,7 +1152,7 @@ fn lower_logical(
                 decisions,
                 stage_events,
             );
-            let input = ordered_alternative(input, items, catalog, decisions);
+            let input = ordered_alternative(input, items, catalog, optimizer_context, decisions);
             if satisfies_ordering(&input, items, catalog) {
                 decisions
                     .push("elide SortExec: access path satisfies required ordering".to_string());
@@ -1150,7 +1182,15 @@ fn lower_logical(
                     decisions,
                     stage_events,
                 );
-                select_bounded_sort_plan(items.clone(), *offset, *limit, input, catalog, decisions)
+                select_bounded_sort_plan(
+                    items.clone(),
+                    *offset,
+                    *limit,
+                    input,
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                )
             } else {
                 PhysicalPlan::LimitExec {
                     offset: *offset,
