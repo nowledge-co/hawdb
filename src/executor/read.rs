@@ -121,6 +121,7 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::VectorSeedScan { .. }
         | PhysicalPlan::GraphSeedScan { .. }
         | PhysicalPlan::TextSeedScan { .. }
+        | PhysicalPlan::LoadCsvExec { .. }
         | PhysicalPlan::ThreadRepairStatsExec { .. } => {
             unreachable!("batch-capable plan bypassed pipeline dispatch")
         }
@@ -141,6 +142,7 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::CreateRelationshipPropertyExistsConstraint { .. }
         | PhysicalPlan::CreateNode { .. }
         | PhysicalPlan::UnwindMutation { .. }
+        | PhysicalPlan::LoadCsvMutation { .. }
         | PhysicalPlan::MergeNode { .. }
         | PhysicalPlan::MergeRelationship { .. }
         | PhysicalPlan::MergeMatchedRelationship { .. }
@@ -157,11 +159,13 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::DeleteRelationship { .. }
         | PhysicalPlan::DeleteRelationshipTargetNodes { .. }
         | PhysicalPlan::CreateRelationship { .. } => {
-            let rows = super::mutation::execute_mutation_with_limits(
+            let rows = execute_mutation_with_store_output_limits(
                 plan,
                 catalog,
                 store,
                 MutationLimits::default(),
+                hawdb_executor::result_delivery::OutputLimits::default(),
+                context.memory,
                 context.task_context,
             )?;
             Ok(rows.into_iter().map(Binding::values).collect())

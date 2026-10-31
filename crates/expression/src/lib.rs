@@ -253,6 +253,11 @@ pub enum ProjectionExpression {
     /// A list literal whose elements are evaluated per row, in order.
     List(Vec<ProjectionExpression>),
     /// `size`, `head`, `last`, `tail`, `reverse` or `range`.
+    /// `toInteger`, `toFloat`, `toBoolean` or `toString`.
+    Conversion {
+        function: hawdb_core::ConversionFunction,
+        argument: Box<ProjectionExpression>,
+    },
     ListFunction {
         function: hawdb_core::ListFunction,
         arguments: Vec<ProjectionExpression>,
@@ -396,7 +401,11 @@ impl ProjectionExpression {
             | Self::IsNull { expression, .. }
             | Self::Lower(expression)
             | Self::Left { expression, .. }
-            | Self::JsonValue { expression, .. } => visit(expression),
+            | Self::JsonValue { expression, .. }
+            | Self::Conversion {
+                argument: expression,
+                ..
+            } => visit(expression),
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {
@@ -455,7 +464,11 @@ impl ProjectionExpression {
             | Self::IsNull { expression, .. }
             | Self::Lower(expression)
             | Self::Left { expression, .. }
-            | Self::JsonValue { expression, .. } => visit(expression)?,
+            | Self::JsonValue { expression, .. }
+            | Self::Conversion {
+                argument: expression,
+                ..
+            } => visit(expression)?,
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {
@@ -930,6 +943,10 @@ impl hawdb_core::RetainedHeapBytes for ProjectionExpression {
             Self::ListIndex { list, index } => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(list),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(index),
+            ]),
+            Self::Conversion { function, argument } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(function),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(argument),
             ]),
             Self::ListSlice { list, start, end } => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(list),

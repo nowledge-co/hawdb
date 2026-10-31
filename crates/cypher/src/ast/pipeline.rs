@@ -25,6 +25,8 @@ pub enum ClauseKind {
         source: ValueExpression,
         variable: String,
     },
+    /// `LOAD CSV [WITH HEADERS] FROM <source> AS <variable> [FIELDTERMINATOR <c>]`.
+    LoadCsv(LoadCsvClause),
     Match {
         optional: bool,
         patterns: Vec<MatchPattern>,
@@ -47,6 +49,18 @@ pub enum ClauseKind {
         detach: bool,
         variables: Vec<String>,
     },
+}
+
+/// A CSV row source. Each record binds `variable` to a list of strings, or to
+/// a map keyed by the header record when `with_headers` is set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadCsvClause {
+    pub with_headers: bool,
+    /// A string literal or `$parameter` naming a local file.
+    pub source: ValueExpression,
+    pub variable: String,
+    /// A single ASCII field separator; `,` unless `FIELDTERMINATOR` is given.
+    pub field_terminator: char,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

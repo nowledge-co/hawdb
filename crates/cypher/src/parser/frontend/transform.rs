@@ -56,10 +56,10 @@ impl Transformer<'_> {
                     statement,
                 })))
             }
-            name @ ("multi_stage" | "match" | "unwind") => {
+            name @ ("multi_stage" | "match" | "unwind" | "load") => {
                 let pipeline = self.tree.required(selected, "pipeline");
                 let pipeline = self.pipeline(pipeline, depth, &mut 0)?;
-                if name == "match" {
+                if name == "match" || name == "load" {
                     admit_optional(&pipeline).map_err(|message| self.error(selected, message))?;
                 }
                 if name == "unwind" {

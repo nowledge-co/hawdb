@@ -176,6 +176,7 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         | ProjectionExpression::LocalVariable { .. }
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::Conversion { .. }
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::Path { .. } => {}
     }

@@ -614,9 +614,15 @@ pub(super) fn bind_value(
         ValueExpressionKind::BindingProperty { variable, property } => Err(HawDBError::Semantic(
             format!("row-bound value '{variable}.{property}' is not supported in this position"),
         )),
+        ValueExpressionKind::BindingIndex { variable, index } => Err(HawDBError::Semantic(
+            format!("row-bound value '{variable}[{index}]' requires an UNWIND or LOAD CSV mutation context"),
+        )),
         ValueExpressionKind::CurrentTimestamp => Ok(current_timestamp_value()),
         ValueExpressionKind::Timestamp(value) => {
             bind_value(value, parameters).and_then(timestamp_value)
+        }
+        ValueExpressionKind::Conversion { function, argument } => {
+            function.apply(&bind_value(argument, parameters)?)
         }
     }
 }
@@ -1440,6 +1446,7 @@ pub(super) fn collect_scalar_expression_variables(
         | ScalarExpressionKind::ListFunction { .. }
         | ScalarExpressionKind::List(_)
         | ScalarExpressionKind::ListIndex { .. }
+        | ScalarExpressionKind::Conversion { .. }
         | ScalarExpressionKind::ListSlice { .. } => {
             expression.kind.all_children(|child| {
                 collect_scalar_expression_variables(child, variables);

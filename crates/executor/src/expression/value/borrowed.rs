@@ -268,6 +268,9 @@ fn evaluate_scoped<'a>(
             function,
             arguments,
         } => list::function(*function, arguments, evaluate, account, work),
+        ProjectionExpression::Conversion { function, argument } => function
+            .apply(evaluate(argument)?.as_ref())
+            .map(ProjectedValue::scalar),
         ProjectionExpression::ListComprehension(comprehension) => {
             let list = evaluate(&comprehension.list)?;
             let values = match list.as_ref() {

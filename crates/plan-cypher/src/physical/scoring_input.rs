@@ -358,6 +358,7 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         | ProjectionExpression::ListFunction { .. }
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::Conversion { .. }
         | ProjectionExpression::ListSlice { .. } => true,
         ProjectionExpression::ListComprehension(comprehension) => {
             public_name(&comprehension.variable)

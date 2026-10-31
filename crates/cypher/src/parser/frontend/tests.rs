@@ -226,3 +226,25 @@ fn token_budget_checks_the_exact_boundary_before_ast_construction() {
     assert!(error.contains("Cypher token count exceeds limit of 1000000"));
     assert!(error.contains("at byte 1000000"));
 }
+
+#[test]
+fn load_csv_matches_reference_parser() {
+    for query in [
+        "LOAD CSV FROM $f AS line RETURN line[0] AS first, size(line) AS n",
+        "LOAD CSV WITH HEADERS FROM 'file:///x.csv' AS row FIELDTERMINATOR '|' \
+         CREATE (:Person {id: toInteger(row.id), name: row.name})",
+        "LOAD CSV WITH HEADERS FROM $f AS row FIELDTERMINATOR '\\t' \
+         MATCH (a:P {id: toInteger(row.src)}), (b:P {id: toInteger(row.dst)}) \
+         CREATE (a)-[:KNOWS {since: toInteger(row.since)}]->(b)",
+        "LOAD CSV FROM $f AS line MERGE (c:City {name: line[1]}) \
+         ON CREATE SET c.code = toInteger(line[0])",
+        "LOAD CSV WITH HEADERS FROM $f AS row WITH row WITH row RETURN count(*) AS c",
+        "EXPLAIN LOAD CSV FROM $f AS line RETURN line",
+        "LOAD CSV FROM 1 AS line RETURN line",
+        "LOAD CSV FROM $f AS line FIELDTERMINATOR ',,' RETURN line",
+        "LOAD CSV FROM $f line RETURN line",
+        "LOAD CSV HEADERS FROM $f AS line RETURN line",
+    ] {
+        equivalent(query);
+    }
+}

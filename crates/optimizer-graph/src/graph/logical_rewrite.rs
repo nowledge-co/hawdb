@@ -441,6 +441,7 @@ fn collect_projection_columns(
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::Conversion { .. }
         | ProjectionExpression::ListSlice { .. } => {
             expression.all_children(|child| collect_projection_columns(child, columns))
         }
@@ -497,6 +498,7 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::Conversion { .. }
         | ProjectionExpression::ListSlice { .. } => {
             !expression.all_children(|child| !projection_expression_references_column(child))
         }

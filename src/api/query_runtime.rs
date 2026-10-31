@@ -934,37 +934,76 @@ impl Database {
                 {
                     mutation_limits.max_result_rows = mutation_limits.max_result_rows.min(limit);
                 }
+                // Resolve every LOAD CSV record or UNWIND row, and the
+                // matched-relationship endpoints they name, before taking the
+                // write guard; the staged batch then commits atomically or not
+                // at all. `&mut self` excludes other writers until the commit.
+                let staged_mutations = executor::stage_row_mutations(
+                    &optimized.physical_plan,
+                    parameters,
+                    self.config.csv_import_policy().as_ref(),
+                    mutation_limits,
+                    &self.config.execution_memory,
+                    task_context,
+                )?
+                .map(|mut staged| {
+                    let runtime = self.runtime.get()?;
+                    staged.resolve_endpoints(
+                        &runtime.catalog,
+                        &runtime.store,
+                        mutation_limits,
+                        &self.config.execution_memory,
+                        task_context,
+                    )?;
+                    Ok::<_, HawDBError>(staged)
+                })
+                .transpose()?;
                 (
                     optimized.collect_named_rows({
                         let mut branch_runtime_access = self.runtime.get_mut()?;
                         let branch_runtime = &mut *branch_runtime_access;
-                        executor::execute_mutation_with_store_output_limits(
-                            &optimized.physical_plan,
-                            &mut branch_runtime.catalog,
-                            &mut branch_runtime.store,
-                            mutation_limits,
-                            hawdb_executor::result_delivery::OutputLimits {
-                                max_rows: restrictive_query_limit(
-                                    self.config.read_result_row_limit(),
-                                    output_limits.max_rows,
-                                ),
-                                max_payload_bytes: restrictive_query_limit(
-                                    self.config.max_read_result_payload_bytes,
-                                    output_limits.max_payload_bytes,
-                                ),
-                            },
-                            &self.config.execution_memory,
-                            task_context,
-                        )
+                        let output_limits = hawdb_executor::result_delivery::OutputLimits {
+                            max_rows: restrictive_query_limit(
+                                self.config.read_result_row_limit(),
+                                output_limits.max_rows,
+                            ),
+                            max_payload_bytes: restrictive_query_limit(
+                                self.config.max_read_result_payload_bytes,
+                                output_limits.max_payload_bytes,
+                            ),
+                        };
+                        if let Some(staged) = staged_mutations {
+                            executor::commit_staged_mutations_with_output(
+                                &optimized.physical_plan,
+                                staged,
+                                &mut branch_runtime.catalog,
+                                &mut branch_runtime.store,
+                                mutation_limits,
+                                output_limits,
+                                task_context,
+                            )
+                        } else {
+                            executor::execute_mutation_with_store_output_limits(
+                                &optimized.physical_plan,
+                                &mut branch_runtime.catalog,
+                                &mut branch_runtime.store,
+                                mutation_limits,
+                                output_limits,
+                                &self.config.execution_memory,
+                                task_context,
+                            )
+                        }
                     }?)?,
                     None,
                 )
             } else {
+                let csv_import = self.config.csv_import_policy();
                 let request = executor::ExecutionRequest::new(
                     &optimized.physical_plan,
                     parameters,
                     &self.config.execution_memory,
                 )
+                .with_csv_import(csv_import.as_ref())
                 .with_output_columns(optimized.output_columns.as_deref())
                 .with_output_limits(
                     restrictive_query_limit(
@@ -1071,6 +1110,7 @@ impl Database {
                     parameters,
                     &self.config.execution_memory,
                 )
+                .with_csv_import(self.config.csv_import_policy().as_ref())
                 .with_output_columns(optimized.output_columns.as_deref())
                 .with_output_limits(
                     restrictive_query_limit(

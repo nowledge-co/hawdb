@@ -242,6 +242,7 @@ pub(super) fn scalar_expression_is_scoped(
         | ScalarExpressionKind::ListFunction { .. }
         | ScalarExpressionKind::List(_)
         | ScalarExpressionKind::ListIndex { .. }
+        | ScalarExpressionKind::Conversion { .. }
         | ScalarExpressionKind::ListSlice { .. } => expression
             .kind
             .all_children(|child| scalar_expression_is_scoped(child, scope, column_names)),

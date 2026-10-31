@@ -115,6 +115,10 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
         E::Literal(value) => value_bytes(value),
         E::Coalesce(values) => vector(values, expression_bytes),
         E::Lower(value)
+        | E::Conversion {
+            function: _,
+            argument: value,
+        }
         | E::Not(value)
         | E::IsNull {
             expression: value,

@@ -244,6 +244,7 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::Conversion { .. }
         | ProjectionExpression::ListSlice { .. } => {
             expression.all_children(|child| has_native_bindings(child, input))
         }

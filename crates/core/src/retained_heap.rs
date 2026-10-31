@@ -88,6 +88,7 @@ impl_retained_heap_for_copy!(
     crate::schema::ConstraintSubject,
     crate::VectorDimension,
     crate::ListFunction,
+    crate::ConversionFunction,
 );
 
 impl RetainedHeapBytes for String {

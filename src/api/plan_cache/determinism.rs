@@ -70,8 +70,12 @@ pub(in crate::api) fn value_is_deterministic(value: &cypher::ValueExpression) ->
     match &value.kind {
         cypher::ValueExpressionKind::CurrentTimestamp => false,
         cypher::ValueExpressionKind::List(values) => values.iter().all(value_is_deterministic),
-        cypher::ValueExpressionKind::Timestamp(value) => value_is_deterministic(value),
-        cypher::ValueExpressionKind::Literal(_)
+        cypher::ValueExpressionKind::Timestamp(value)
+        | cypher::ValueExpressionKind::Conversion {
+            argument: value, ..
+        } => value_is_deterministic(value),
+        cypher::ValueExpressionKind::BindingIndex { .. }
+        | cypher::ValueExpressionKind::Literal(_)
         | cypher::ValueExpressionKind::Parameter(_)
         | cypher::ValueExpressionKind::Binding(_)
         | cypher::ValueExpressionKind::BindingProperty { .. } => true,
@@ -123,6 +127,7 @@ fn scalar_is_deterministic(expression: &cypher::ScalarExpression) -> bool {
         | Scalar::ListComprehension { .. }
         | Scalar::List(_)
         | Scalar::ListIndex { .. }
+        | Scalar::Conversion { .. }
         | Scalar::ListSlice { .. }
         | Scalar::Path(_) => true,
     };
