@@ -2279,6 +2279,10 @@ facade threshold, where costing an unfused graph binding would invent spill.
 Combined row-goal/width controls keep complete blocking comparison/spill work,
 scale streaming decode work, and preserve the caller's memory hint for bounded
 ordered-versus-Sort/TopN competitors in both memo and direct lowering.
+Root `order_by_expressions` keeps the five-row exact-page control, including
+its cheaper property Sort+Limit choice, and retains strict property/computed-key
+TopN assertions with 64 additional low-ranked rows. Small and bulk cases share
+complete expected-page assertions.
 Asymmetric hash-join
 inputs pin right-build retention and spill; one-to-three-hop traversal controls
 keep opaque graph contributions visible in `proxy_fields`. Joint grouping and

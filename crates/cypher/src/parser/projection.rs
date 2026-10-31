@@ -159,85 +159,16 @@ impl Parser<'_> {
         false
     }
 
+    /// Parses `ORDER BY` keys. A key is any projection expression; the shapes
+    /// the planner sorts on directly keep their dedicated [`OrderExpression`]
+    /// variants so plain property and column keys plan as before.
     pub(super) fn parse_order_items(&mut self) -> Result<Vec<OrderItem>> {
         let mut items = Vec::new();
         loop {
             self.skip_ws();
-            let expression_start = self.checkpoint();
-            if self.peek_char() == Some('[') {
-                let expression = OrderExpression::Value(self.parse_scalar_expression()?);
-                items.push(self.parse_order_direction(expression, expression_start.pos));
-                self.skip_ws();
-                if !self.consume_char(',') {
-                    break;
-                }
-                continue;
-            }
-            let first = self.parse_ident()?;
-            let expression = if first.eq_ignore_ascii_case("count") && self.consume_char('(') {
-                let distinct = self.consume_keyword("DISTINCT");
-                let name = if self.consume_char('*') {
-                    if distinct {
-                        return Err(self.error("COUNT(DISTINCT *) is not supported"));
-                    }
-                    "count(*)".to_string()
-                } else {
-                    let variable = self.parse_ident()?;
-                    if self.consume_char('.') {
-                        let property = self.parse_ident()?;
-                        if distinct {
-                            format!("count(DISTINCT {variable}.{property})")
-                        } else {
-                            format!("count({variable}.{property})")
-                        }
-                    } else if distinct {
-                        format!("count(DISTINCT {variable})")
-                    } else {
-                        format!("count({variable})")
-                    }
-                };
-                self.expect_char(')')?;
-                OrderExpression::Column(name)
-            } else if first.eq_ignore_ascii_case("id") && self.consume_char('(') {
-                let variable = self.parse_ident()?;
-                self.expect_char(')')?;
-                OrderExpression::Id { variable }
-            } else if first.eq_ignore_ascii_case("case")
-                || ((matches_ignore_ascii_case(
-                    &first,
-                    &[
-                        "coalesce",
-                        "left",
-                        "lower",
-                        "json_value",
-                        "length",
-                        "nodes",
-                        "relationships",
-                    ],
-                ) || hawdb_core::ListFunction::from_function_name(&first).is_some())
-                    && self.peek_char() == Some('('))
-            {
-                self.restore(expression_start);
-                OrderExpression::Value(self.parse_scalar_expression()?)
-            } else if self.consume_char('.') {
-                let property = self.parse_ident()?;
-                self.skip_ws();
-                if self.peek_char() == Some('[') {
-                    self.restore(expression_start);
-                    OrderExpression::Value(self.parse_scalar_expression()?)
-                } else {
-                    OrderExpression::Property {
-                        variable: first,
-                        property,
-                    }
-                }
-            } else if self.peek_char() == Some('[') {
-                self.restore(expression_start);
-                OrderExpression::Value(self.parse_scalar_expression()?)
-            } else {
-                OrderExpression::Column(first)
-            };
-            items.push(self.parse_order_direction(expression, expression_start.pos));
+            let start = self.pos;
+            let expression = order_expression(self.parse_projection_expression()?);
+            items.push(self.parse_order_direction(expression, start));
             self.skip_ws();
             if !self.consume_char(',') {
                 break;
@@ -837,4 +768,26 @@ fn matches_ignore_ascii_case(value: &str, candidates: &[&str]) -> bool {
     candidates
         .iter()
         .any(|candidate| value.eq_ignore_ascii_case(candidate))
+}
+
+fn order_expression(expression: ReturnExpression) -> OrderExpression {
+    let span = expression.span;
+    match expression.kind {
+        ReturnExpressionKind::Value(value) => match value.kind {
+            ScalarExpressionKind::Variable(name) => OrderExpression::Column(name),
+            ScalarExpressionKind::Property { variable, property } => {
+                OrderExpression::Property { variable, property }
+            }
+            ScalarExpressionKind::Id(variable) => OrderExpression::Id { variable },
+            kind => OrderExpression::Value(AstNode {
+                kind,
+                span: value.span,
+            }),
+        },
+        ReturnExpressionKind::Path(path) => OrderExpression::Value(AstNode {
+            kind: ScalarExpressionKind::Path(path),
+            span,
+        }),
+        kind => OrderExpression::Projection(AstNode { kind, span }),
+    }
 }

@@ -250,35 +250,7 @@ impl Parser<'_> {
         loop {
             self.skip_ws();
             let start = self.pos;
-            let mut expression = self.parse_pipeline_arithmetic(false)?;
-            if arithmetic_depth(&expression) > MAX_CYPHER_PARSER_DEPTH {
-                return Err(self.error("arithmetic expression exceeds maximum nesting depth"));
-            }
-            if self.consume_keyword("IS") {
-                // `RETURN path IS NULL`: a postfix null test over one operand.
-                let negated = self.consume_keyword("NOT");
-                self.expect_keyword("NULL")?;
-                let operand = match expression.kind {
-                    ReturnExpressionKind::Value(operand) => operand,
-                    ReturnExpressionKind::Path(path) => AstNode {
-                        kind: ScalarExpressionKind::Path(path),
-                        span: expression.span,
-                    },
-                    _ => {
-                        return Err(
-                            self.error("IS NULL in a projection requires a non-aggregate operand")
-                        )
-                    }
-                };
-                let test = self.source_node(
-                    ScalarExpressionKind::IsNull {
-                        expression: Box::new(operand),
-                        negated,
-                    },
-                    start,
-                );
-                expression = self.source_node(ReturnExpressionKind::Value(test), start);
-            }
+            let expression = self.parse_projection_expression()?;
             let alias = if self.consume_keyword("AS") {
                 Some(self.parse_ident()?)
             } else {
@@ -290,6 +262,38 @@ impl Parser<'_> {
             }
         }
         Ok(items)
+    }
+
+    /// Parses one `RETURN`/`WITH` item or `ORDER BY` key expression.
+    pub(super) fn parse_projection_expression(&mut self) -> Result<ReturnExpression> {
+        self.skip_ws();
+        let start = self.pos;
+        let expression = self.parse_pipeline_arithmetic(false)?;
+        if arithmetic_depth(&expression) > MAX_CYPHER_PARSER_DEPTH {
+            return Err(self.error("arithmetic expression exceeds maximum nesting depth"));
+        }
+        if !self.consume_keyword("IS") {
+            return Ok(expression);
+        }
+        // `RETURN path IS NULL`: a postfix null test over one operand.
+        let negated = self.consume_keyword("NOT");
+        self.expect_keyword("NULL")?;
+        let operand = match expression.kind {
+            ReturnExpressionKind::Value(operand) => operand,
+            ReturnExpressionKind::Path(path) => AstNode {
+                kind: ScalarExpressionKind::Path(path),
+                span: expression.span,
+            },
+            _ => return Err(self.error("IS NULL in a projection requires a non-aggregate operand")),
+        };
+        let test = self.source_node(
+            ScalarExpressionKind::IsNull {
+                expression: Box::new(operand),
+                negated,
+            },
+            start,
+        );
+        Ok(self.source_node(ReturnExpressionKind::Value(test), start))
     }
 
     pub(super) fn parse_pipeline_arithmetic(&mut self, product: bool) -> Result<ReturnExpression> {

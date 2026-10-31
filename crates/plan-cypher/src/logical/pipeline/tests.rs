@@ -411,6 +411,45 @@ fn normalizes_native_expression_order_keys_without_inlining_column_order_keys() 
 }
 
 #[test]
+fn plans_composed_and_aggregate_order_keys() {
+    // Arithmetic over native bindings sorts directly, without a hidden column.
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (m:Memory) RETURN m.id AS id ORDER BY m.importance * -1, size(m.tags) DESC",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert!(text.contains("key: Expression(Binary {"), "{text}");
+    assert!(text.contains("key: Expression(ListFunction {"), "{text}");
+    assert!(!text.contains("\\0order."), "{text}");
+
+    // Aggregate keys resolve to the projected aggregate, aliased or not.
+    for query in [
+        "MATCH (m:Memory) RETURN m.kind AS kind, sum(m.importance) AS total \
+         ORDER BY sum(m.importance) DESC",
+        "MATCH (m:Memory) RETURN m.kind AS kind, sum(m.importance) \
+         ORDER BY sum(m.importance) DESC",
+    ] {
+        let text = format!(
+            "{:?}",
+            plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap()
+        );
+        assert!(
+            text.contains("key: Column(\"total\")")
+                || text.contains("key: Column(\"sum(m.importance)\")"),
+            "{text}"
+        );
+    }
+    let error = plan_normalized_pipeline_query(
+        "MATCH (m:Memory) RETURN m.kind AS kind ORDER BY count(*)",
+        &BTreeMap::new(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("must also be projected"), "{error}");
+}
+
+#[test]
 fn normalizes_native_graph_columns_in_hidden_order_expressions() {
     let plan = plan_normalized_pipeline_query(
         "MATCH (s:Source) \

@@ -33,6 +33,9 @@ pub(in crate::api) fn projection_is_deterministic(projection: &cypher::Projectio
             .iter()
             .all(|item| match &item.expression {
                 cypher::OrderExpression::Value(value) => scalar_is_deterministic(value),
+                cypher::OrderExpression::Projection(expression) => {
+                    return_is_deterministic(expression)
+                }
                 cypher::OrderExpression::Property { .. }
                 | cypher::OrderExpression::Id { .. }
                 | cypher::OrderExpression::Column(_) => true,

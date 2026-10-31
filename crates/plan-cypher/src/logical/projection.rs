@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 
 pub(super) fn plan_comparison_op(op: CypherComparisonOp) -> ComparisonOp {
@@ -65,6 +68,22 @@ pub(super) fn plan_sort_items(
                 OrderExpression::Value(expression) => SortKey::Expression(
                     plan_order_value_expression(scope, projection_names, expression, parameters)?,
                 ),
+                OrderExpression::Projection(expression) => {
+                    // `bind_projection` resolves aggregate keys before it gets
+                    // here; this guards any other caller.
+                    if super::arithmetic::contains_aggregate(expression) {
+                        return Err(HawDBError::Semantic(
+                            "aggregate ORDER BY keys require a RETURN or WITH projection"
+                                .to_string(),
+                        ));
+                    }
+                    SortKey::Expression(super::arithmetic::bind_composed_expression(
+                        scope,
+                        projection_names,
+                        expression,
+                        parameters,
+                    )?)
+                }
                 OrderExpression::Column(name) => {
                     if !projection_names.contains(name) {
                         return Err(HawDBError::Semantic(format!(
@@ -81,6 +100,53 @@ pub(super) fn plan_sort_items(
             Ok(SortItem { key, direction })
         })
         .collect()
+}
+
+/// Resolves an aggregate `ORDER BY` key to the column its projection already
+/// computes: the alias of an equal projected item, else the key's default
+/// name. Ordering never introduces an aggregate of its own.
+pub(super) fn plan_aggregate_sort_item(
+    scope: &BTreeSet<String>,
+    columns: &BTreeSet<String>,
+    projection: (&[ReturnItem], &BTreeSet<String>),
+    item: &OrderItem,
+    expression: &ReturnExpression,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<SortItem> {
+    let (items, projection_names) = projection;
+    let alias = items
+        .iter()
+        .find(|projected| &projected.expression == expression)
+        .and_then(|projected| projected.alias.clone());
+    let name = match alias {
+        Some(alias) => alias,
+        None => {
+            let returned = AstNode::synthetic(ReturnItemKind {
+                expression: expression.clone(),
+                alias: None,
+            });
+            plan_return_items_with_columns(
+                scope,
+                columns,
+                std::slice::from_ref(&returned),
+                parameters,
+            )?
+            .names()
+            .swap_remove(0)
+        }
+    };
+    if !projection_names.contains(&name) {
+        return Err(HawDBError::Semantic(format!(
+            "aggregate ORDER BY key '{name}' must also be projected by the RETURN or WITH"
+        )));
+    }
+    Ok(SortItem {
+        key: SortKey::Column(name),
+        direction: match item.direction {
+            CypherOrderDirection::Asc => SortDirection::Asc,
+            CypherOrderDirection::Desc => SortDirection::Desc,
+        },
+    })
 }
 
 pub(super) fn plan_order_value_expression(
@@ -220,6 +286,17 @@ pub(super) enum PlannedReturns {
         items: Vec<Aggregation>,
         projections: Vec<Projection>,
     },
+}
+
+impl PlannedReturns {
+    /// The grouping keys of an aggregating projection.
+    pub(super) fn group_keys(&self) -> Option<&[Projection]> {
+        match self {
+            Self::Projections(_) => None,
+            Self::Aggregations { group_keys, .. }
+            | Self::AggregateProjection { group_keys, .. } => Some(group_keys),
+        }
+    }
 }
 
 impl PlannedReturns {
