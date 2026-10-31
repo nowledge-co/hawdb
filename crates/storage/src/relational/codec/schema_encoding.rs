@@ -64,7 +64,7 @@ pub(crate) fn count(
     sink.raw(&count.to_le_bytes())
 }
 
-fn bytes(sink: &mut impl Sink, data: &[u8]) -> Result<(), RelationalError> {
+pub(super) fn bytes(sink: &mut impl Sink, data: &[u8]) -> Result<(), RelationalError> {
     let len = u64::try_from(data.len())
         .map_err(|_| RelationalError::Admission("durable byte string is too large".into()))?;
     sink.raw(&len.to_le_bytes())?;
@@ -96,6 +96,7 @@ pub(crate) fn scalar_tag(kind: RelationalScalarType) -> u8 {
         RelationalScalarType::Bytea => 5,
         RelationalScalarType::Uuid => 6,
         RelationalScalarType::Vector(_) => 7,
+        RelationalScalarType::Decimal(_) => 8,
     }
 }
 
@@ -105,6 +106,10 @@ pub(crate) fn value(sink: &mut impl Sink, item: &RelationalValue) -> Result<(), 
         RelationalValue::Boolean(value) => sink.raw(&[1, u8::from(*value)]),
         RelationalValue::BigInt(value) => {
             sink.raw(&[2])?;
+            sink.raw(&value.to_le_bytes())
+        }
+        RelationalValue::Decimal(value) => {
+            sink.raw(&[9])?;
             sink.raw(&value.to_le_bytes())
         }
         RelationalValue::DoublePrecision(value) => {
@@ -161,6 +166,9 @@ pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), Rel
         sink.raw(&[scalar_tag(column.scalar_type)])?;
         if let RelationalScalarType::Vector(dimension) = column.scalar_type {
             sink.raw(&dimension.get().to_le_bytes())?;
+        }
+        if let RelationalScalarType::Decimal(kind) = column.scalar_type {
+            sink.raw(&[kind.precision(), kind.scale()])?;
         }
         sink.raw(&[u8::from(column.nullable)])?;
         match &column.default {
@@ -262,6 +270,20 @@ pub(super) fn predicate(
     input: &RelationalPredicate,
 ) -> Result<(), RelationalError> {
     match input {
+        RelationalPredicate::NumericCompare { left, op, right } => {
+            sink.raw(&[5])?;
+            super::numeric::encode(sink, left)?;
+            sink.raw(&[comparison_tag(*op)])?;
+            super::numeric::encode(sink, right)?;
+        }
+        RelationalPredicate::NumericIsNull {
+            expression,
+            negated,
+        } => {
+            sink.raw(&[6])?;
+            super::numeric::encode(sink, expression)?;
+            sink.raw(&[u8::from(*negated)])?;
+        }
         RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
             sink.raw(&[u8::from(matches!(input, RelationalPredicate::Or(..)))])?;
             predicate(sink, left)?;
@@ -274,14 +296,7 @@ pub(super) fn predicate(
         RelationalPredicate::Compare { column, op, value } => {
             sink.raw(&[3])?;
             bytes(sink, column.as_bytes())?;
-            sink.raw(&[match op {
-                RelationalComparisonOp::Eq => 0,
-                RelationalComparisonOp::NotEq => 1,
-                RelationalComparisonOp::Lt => 2,
-                RelationalComparisonOp::Lte => 3,
-                RelationalComparisonOp::Gt => 4,
-                RelationalComparisonOp::Gte => 5,
-            }])?;
+            sink.raw(&[comparison_tag(*op)])?;
             if matches!(value, RelationalValue::Overflow(_)) {
                 return Err(RelationalError::Durability(
                     "WAL predicates and assignments must contain logical values".into(),
@@ -296,4 +311,15 @@ pub(super) fn predicate(
         }
     }
     Ok(())
+}
+
+fn comparison_tag(op: RelationalComparisonOp) -> u8 {
+    match op {
+        RelationalComparisonOp::Eq => 0,
+        RelationalComparisonOp::NotEq => 1,
+        RelationalComparisonOp::Lt => 2,
+        RelationalComparisonOp::Lte => 3,
+        RelationalComparisonOp::Gt => 4,
+        RelationalComparisonOp::Gte => 5,
+    }
 }

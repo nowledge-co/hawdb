@@ -87,6 +87,8 @@ impl_retained_heap_for_copy!(
     crate::TableKind,
     crate::schema::ConstraintSubject,
     crate::VectorDimension,
+    crate::Decimal,
+    crate::DecimalType,
     crate::ListFunction,
 );
 
@@ -211,7 +213,12 @@ impl RetainedHeapBytes for Value {
             Self::Vector(value) => value.retained_heap_bytes(),
             Self::List(value) => value.retained_heap_bytes(),
             Self::Map(value) => value.retained_heap_bytes(),
-            Self::Null | Self::Bool(_) | Self::Int(_) | Self::Float(_) | Self::Uuid(_) => Some(0),
+            Self::Null
+            | Self::Bool(_)
+            | Self::Int(_)
+            | Self::Float(_)
+            | Self::Decimal(_)
+            | Self::Uuid(_) => Some(0),
         }
     }
 }

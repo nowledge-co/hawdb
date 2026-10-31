@@ -338,6 +338,10 @@ impl<'a> RelationalLocatorBindingLayout<'a> {
                     | (RelationalScalarType::Text, RelationalValue::Text(_))
                     | (RelationalScalarType::Bytea, RelationalValue::Bytea(_))
                     | (RelationalScalarType::Uuid, RelationalValue::Uuid(_))
+                    | (
+                        RelationalScalarType::Decimal(_),
+                        RelationalValue::Decimal(_)
+                    )
             );
             if !matches {
                 return Err(HawDBError::Execution(format!(
@@ -466,6 +470,7 @@ fn relational_value_encoded_len(value: &RelationalValue) -> Result<usize> {
         RelationalValue::Bytea(value) => checked_add(5, value.len(), "bytea value"),
         RelationalValue::Vector(value) => checked_add(5, value.encoded().len(), "vector value"),
         RelationalValue::Uuid(_) => Ok(17),
+        RelationalValue::Decimal(_) => Ok(18),
         RelationalValue::Overflow(_) => Err(HawDBError::Execution(
             "typed relational locator cannot spill an overflow reference".to_string(),
         )),
@@ -495,6 +500,10 @@ fn write_relational_value(
         RelationalValue::DoublePrecision(value) => {
             output.push(3);
             output.extend_from_slice(&value.to_bits().to_le_bytes());
+        }
+        RelationalValue::Decimal(value) => {
+            output.push(8);
+            output.extend_from_slice(&value.to_le_bytes());
         }
         RelationalValue::Text(value) => {
             output.push(4);
@@ -547,6 +556,10 @@ fn read_relational_value(
         7 => RelationalValue::Vector(
             hawdb_core::Vector::from_encoded(read_bytes(input, record_bytes)?)
                 .map_err(|_| invalid_typed_record("invalid vector value"))?,
+        ),
+        8 => RelationalValue::Decimal(
+            hawdb_core::Decimal::from_le_bytes(read_array(input)?)
+                .map_err(|_| invalid_typed_record("invalid Decimal value"))?,
         ),
         _ => return Err(invalid_typed_record("invalid relational value tag")),
     })
@@ -876,6 +889,7 @@ mod tests {
             RelationalValue::Boolean(value) => ("bool", Value::Bool(*value)),
             RelationalValue::BigInt(value) => ("int", Value::Int(*value)),
             RelationalValue::DoublePrecision(value) => ("float", Value::Float(*value)),
+            RelationalValue::Decimal(value) => ("decimal", Value::Decimal(*value)),
             RelationalValue::Text(value) => ("text", Value::String(value.clone())),
             RelationalValue::Bytea(value) => ("bytea", Value::Binary(value.clone())),
             RelationalValue::Uuid(value) => ("uuid", Value::Uuid(*value)),

@@ -604,7 +604,8 @@ fn collect_expression_hydration_columns(
             kind:
                 ExprKind::And(left, right)
                 | ExprKind::Or(left, right)
-                | ExprKind::Compare { left, right, .. },
+                | ExprKind::Compare { left, right, .. }
+                | ExprKind::Arithmetic { left, right, .. },
             ..
         } => {
             collect_expression_hydration_columns(left, metadata_columns, value_columns);
@@ -613,6 +614,10 @@ fn collect_expression_hydration_columns(
         Expr {
             kind:
                 ExprKind::Not(inner)
+                | ExprKind::Negate(inner)
+                | ExprKind::Cast {
+                    expression: inner, ..
+                }
                 | ExprKind::IsNull {
                     expression: inner, ..
                 },

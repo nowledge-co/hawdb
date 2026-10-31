@@ -2279,6 +2279,7 @@ fn typed_value_json(value: &Value) -> JsonValue {
         Value::Null => json!({"type": "null"}),
         Value::Bool(value) => json!({"type": "bool", "value": value}),
         Value::Int(value) => json!({"type": "int", "value": value}),
+        Value::Decimal(value) => json!({"type": "decimal", "value": value.to_string()}),
         Value::Float(value) => json!({
             "type": "float",
             "bits": format!("{:016x}", value.to_bits()),
@@ -2391,6 +2392,23 @@ mod tests {
                 "type": "vector", "hex": "020000000000803f00000080"
             })
         );
+    }
+
+    #[test]
+    fn decimal_report_preserves_exact_digits_and_scale() {
+        let value = Value::Decimal("9007199254740993.0100".parse().unwrap());
+        assert_eq!(
+            typed_value_json(&value),
+            json!({"type": "decimal", "value": "9007199254740993.0100"})
+        );
+        let same_number = Value::Decimal("9007199254740993.01".parse().unwrap());
+        assert_eq!(value, same_number);
+        assert!(compare_rows(
+            &[row([("value", value)])],
+            &[row([("value", same_number)])],
+            ResultSemantics::Ordered
+        )
+        .is_err());
     }
 
     #[test]

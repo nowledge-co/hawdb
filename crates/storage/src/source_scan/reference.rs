@@ -38,6 +38,7 @@ pub(super) fn value(value: &Value) -> String {
         Value::Bool(value) => format!("b{}", u8::from(*value)),
         Value::Int(value) => format!("i{value}"),
         Value::Float(value) => format!("f{}", value.to_bits()),
+        Value::Decimal(value) => format!("d{value}"),
         Value::String(value) => format!("s{}", hex(value)),
         Value::Binary(value) => format!(
             "x{}",

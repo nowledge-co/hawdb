@@ -42,12 +42,15 @@ use std::sync::Arc;
 pub(crate) mod schema_encoding;
 
 #[cfg(test)]
+mod decimal_tests;
+#[cfg(test)]
 mod vector_schema_tests;
 
 #[cfg(test)]
 mod compatibility_tests;
 
 mod checkpoint;
+mod numeric;
 pub(crate) use checkpoint::{
     clone_string_with_work_context, decode_relational_checkpoint_file_with_work_context,
     decode_relational_table_schema_with_work_context, decode_row_owned, decode_schema_owned,
@@ -1284,9 +1287,14 @@ impl Encoder {
             RelationalScalarType::Bytea => 5,
             RelationalScalarType::Uuid => 6,
             RelationalScalarType::Vector(_) => 7,
+            RelationalScalarType::Decimal(_) => 8,
         });
         if let RelationalScalarType::Vector(dimension) = scalar_type {
             self.u32(dimension.get());
+        }
+        if let RelationalScalarType::Decimal(kind) = scalar_type {
+            self.u8(kind.precision());
+            self.u8(kind.scale());
         }
     }
 
@@ -1451,6 +1459,10 @@ impl Encoder {
                 for assignment in assignments {
                     self.string(&assignment.column)?;
                     match &assignment.value {
+                        RelationalUpdateValue::Numeric(expression) => {
+                            self.u8(3);
+                            numeric::encode(self, expression)?;
+                        }
                         RelationalUpdateValue::Column(column) => {
                             self.u8(0);
                             self.string(column)?;
@@ -1926,6 +1938,9 @@ impl<I: DecodeInput> Decoder<I> {
             4 => Ok(RelationalScalarType::Text),
             5 => Ok(RelationalScalarType::Bytea),
             6 => Ok(RelationalScalarType::Uuid),
+            8 => hawdb_core::DecimalType::new(self.u8()?, self.u8()?)
+                .map(RelationalScalarType::Decimal)
+                .map_err(|error| RelationalError::Corruption(error.to_string())),
             7 => hawdb_core::VectorDimension::new(self.u32()?)
                 .map(RelationalScalarType::Vector)
                 .ok_or_else(|| RelationalError::Corruption("zero VECTOR dimension".into())),
@@ -2002,6 +2017,9 @@ impl<I: DecodeInput> Decoder<I> {
                 }))
             }
             7 => Ok(RelationalValue::Uuid(Uuid::from_bytes(self.fixed()?))),
+            9 => hawdb_core::Decimal::from_le_bytes(self.fixed()?)
+                .map(RelationalValue::Decimal)
+                .map_err(|error| RelationalError::Corruption(error.to_string())),
             8 => {
                 let bytes = self.bounded_bytes(self.limits.max_value_bytes, "VECTOR value")?;
                 self.value_bytes = self.value_bytes.checked_add(bytes.len()).ok_or_else(|| {
@@ -2303,6 +2321,7 @@ impl<I: DecodeInput> Decoder<I> {
                 for _ in 0..count {
                     let column = self.string()?;
                     let value = match self.u8()? {
+                        3 => RelationalUpdateValue::Numeric(self.numeric_expression()?),
                         0 => RelationalUpdateValue::Column(self.string()?),
                         1 => RelationalUpdateValue::Value(self.logical_value()?),
                         2 => RelationalUpdateValue::BigIntArithmetic {
@@ -2384,8 +2403,31 @@ impl<I: DecodeInput> Decoder<I> {
         Ok(Box::new(predicate))
     }
 
+    fn comparison_op(&mut self) -> Result<RelationalComparisonOp, RelationalError> {
+        match self.u8()? {
+            0 => Ok(RelationalComparisonOp::Eq),
+            1 => Ok(RelationalComparisonOp::NotEq),
+            2 => Ok(RelationalComparisonOp::Lt),
+            3 => Ok(RelationalComparisonOp::Lte),
+            4 => Ok(RelationalComparisonOp::Gt),
+            5 => Ok(RelationalComparisonOp::Gte),
+            tag => Err(RelationalError::Corruption(format!(
+                "invalid comparison operator tag {tag}"
+            ))),
+        }
+    }
+
     fn predicate(&mut self) -> Result<RelationalPredicate, RelationalError> {
         match self.u8()? {
+            5 => Ok(RelationalPredicate::NumericCompare {
+                left: self.numeric_expression()?,
+                op: self.comparison_op()?,
+                right: self.numeric_expression()?,
+            }),
+            6 => Ok(RelationalPredicate::NumericIsNull {
+                expression: self.numeric_expression()?,
+                negated: self.boolean("numeric predicate negation")?,
+            }),
             0 => Ok(RelationalPredicate::And(
                 self.boxed_predicate()?,
                 self.boxed_predicate()?,
@@ -2397,19 +2439,7 @@ impl<I: DecodeInput> Decoder<I> {
             2 => Ok(RelationalPredicate::Not(self.boxed_predicate()?)),
             3 => {
                 let column = self.string()?;
-                let op = match self.u8()? {
-                    0 => RelationalComparisonOp::Eq,
-                    1 => RelationalComparisonOp::NotEq,
-                    2 => RelationalComparisonOp::Lt,
-                    3 => RelationalComparisonOp::Lte,
-                    4 => RelationalComparisonOp::Gt,
-                    5 => RelationalComparisonOp::Gte,
-                    tag => {
-                        return Err(RelationalError::Corruption(format!(
-                            "invalid comparison operator tag {tag}"
-                        )))
-                    }
-                };
+                let op = self.comparison_op()?;
                 Ok(RelationalPredicate::Compare {
                     column,
                     op,

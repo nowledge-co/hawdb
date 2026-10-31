@@ -28,6 +28,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 mod authoritative_nested_index;
 mod columnar_aggregate;
 mod cross_join;
+mod decimal;
 mod distinct_output;
 mod exact_count_planning;
 mod having;

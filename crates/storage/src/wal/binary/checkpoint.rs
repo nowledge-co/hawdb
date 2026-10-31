@@ -177,6 +177,7 @@ fn encode_value(value: &Value, out: &mut Output<'_>) -> Result<()> {
         Value::Binary(value) => out.bytes(VALUE_FIELD_BINARY, value),
         Value::Vector(value) => out.bytes(VALUE_FIELD_VECTOR, value.encoded()),
         Value::Uuid(value) => out.bytes(VALUE_FIELD_UUID, value.as_bytes()),
+        Value::Decimal(value) => out.bytes(VALUE_FIELD_DECIMAL, &value.to_le_bytes()),
         Value::List(values) => {
             if values.is_empty() {
                 out.bytes(VALUE_FIELD_ELEMENT, &[])?;

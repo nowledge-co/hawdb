@@ -220,6 +220,7 @@ pub struct SqlAssignment {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlAssignmentValue {
+    Expression(Expr),
     Value(SqlValue),
     Column(SqlColumnRef),
     Arithmetic {
@@ -302,6 +303,7 @@ pub enum SqlDataType {
     Boolean,
     BigInt,
     DoublePrecision,
+    Decimal(hawdb_core::DecimalType),
     Text,
     Bytea,
     Uuid,
@@ -314,6 +316,7 @@ impl SqlDataType {
             Self::Boolean => LogicalType::Boolean,
             Self::BigInt => LogicalType::Int64,
             Self::DoublePrecision => LogicalType::Float64,
+            Self::Decimal(_) => LogicalType::Decimal,
             Self::Text => LogicalType::Text,
             Self::Bytea => LogicalType::Binary,
             Self::Uuid => LogicalType::Uuid,

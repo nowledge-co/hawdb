@@ -202,9 +202,14 @@ fn output_payload_bytes(
 ) -> Result<usize> {
     match &expression.kind {
         ExprKind::Column(column) => Ok(resolve_column(row, column)?.estimated_payload_bytes()),
+        ExprKind::Arithmetic { .. }
+        | ExprKind::Negate(_)
+        | ExprKind::Cast { .. }
+        | ExprKind::Value(SqlValue::Expression(_)) => Ok(17),
         ExprKind::Value(value) => {
             let value = match value {
                 SqlValue::Literal(value) => Some(value),
+                SqlValue::Expression(_) => unreachable!("handled above"),
                 SqlValue::Parameter(position) => {
                     position.checked_sub(1).and_then(|i| parameters.get(i))
                 }
@@ -315,9 +320,11 @@ fn expression_bytes(
                     .estimated_payload_bytes()
                     .saturating_add(column.name.len())
             }),
+            ExprKind::Value(SqlValue::Expression(_)) => Ok(17),
             ExprKind::Value(value) => {
                 let value = match value {
                     SqlValue::Literal(value) => Some(value),
+                    SqlValue::Expression(_) => unreachable!("handled above"),
                     SqlValue::Parameter(position) => position
                         .checked_sub(1)
                         .and_then(|index| parameters.get(index)),
@@ -327,6 +334,7 @@ fn expression_bytes(
                     .ok_or_else(|| HawDBError::Semantic("missing SQL expression parameter".into()))
             }
             ExprKind::Function { name, .. } => Ok(name.len()),
+            ExprKind::Arithmetic { .. } | ExprKind::Negate(_) | ExprKind::Cast { .. } => Ok(1024),
             _ => Ok(0),
         };
         match payload {
@@ -396,6 +404,7 @@ fn text_operand<'a>(
         ExprKind::Value(value) => {
             let value = match value {
                 SqlValue::Literal(value) => Some(value),
+                SqlValue::Expression(_) => None,
                 SqlValue::Parameter(position) => position
                     .checked_sub(1)
                     .and_then(|index| parameters.get(index)),

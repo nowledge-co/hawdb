@@ -14,7 +14,7 @@
 
 //! Bound single-relation qualification with caller-owned borrowed row values.
 
-use super::compare_value_refs;
+use super::{compare_value_refs, scalar::Scalar};
 use crate::query_value::{bind_sql_value, value_to_relational};
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{ExprKind, SqlColumnRef, SqlComparisonOp, SqlLikeEscape, SqlPredicate};
@@ -40,7 +40,7 @@ impl BoundStreamingPredicate {
     }
 
     pub fn truth_with<'a>(
-        &self,
+        &'a self,
         resolve: &impl Fn(usize) -> Result<RelationalValueRef<'a>>,
     ) -> Result<Option<bool>> {
         self.root.truth(resolve)
@@ -51,19 +51,14 @@ enum StreamingPredicate {
     And(Box<Self>, Box<Self>),
     Or(Box<Self>, Box<Self>),
     Not(Box<Self>),
-    CompareValue {
-        left: usize,
+    Compare {
+        left: Scalar,
         op: SqlComparisonOp,
-        right: RelationalValue,
-    },
-    CompareColumns {
-        left: usize,
-        op: SqlComparisonOp,
-        right: usize,
+        right: Scalar,
     },
     InList {
-        left: usize,
-        values: Box<[RelationalValue]>,
+        left: Scalar,
+        values: Box<[Scalar]>,
         negated: bool,
     },
     Like {
@@ -74,7 +69,7 @@ enum StreamingPredicate {
         escape: SqlLikeEscape,
     },
     IsNull {
-        column: usize,
+        column: Scalar,
         negated: bool,
     },
 }
@@ -100,50 +95,30 @@ impl StreamingPredicate {
                 predicate, parameters, schema, table, qualifier,
             )?))),
             ExprKind::Compare { left, op, right } => {
-                let left = bind_streaming_column(left.require_column()?, schema, table, qualifier)?;
-                match &right.kind {
-                    ExprKind::Value(right) => {
-                        let right = value_to_relational(bind_sql_value(right, parameters)?)?;
-                        validate_value_type(schema, left, &right)?;
-                        Ok(Self::CompareValue {
-                            left,
-                            op: *op,
-                            right,
-                        })
-                    }
-                    ExprKind::Column(right) => {
-                        let right = bind_streaming_column(right, schema, table, qualifier)?;
-                        if schema.columns[left].scalar_type != schema.columns[right].scalar_type {
-                            return Err(HawDBError::Semantic(format!(
-                                "relational comparison between {} and {} has incompatible scalar types",
-                                schema.columns[left].name, schema.columns[right].name
-                            )));
-                        }
-                        Ok(Self::CompareColumns {
-                            left,
-                            op: *op,
-                            right,
-                        })
-                    }
-                    _ => Err(HawDBError::Semantic(
-                        "unsupported streaming comparison operand".to_owned(),
-                    )),
-                }
+                let mut left = Scalar::bind(left, parameters, schema, table, qualifier)?;
+                let mut right = Scalar::bind(right, parameters, schema, table, qualifier)?;
+                right.coerce_comparison_literal(&left)?;
+                left.coerce_comparison_literal(&right)?;
+                validate_comparison(&left, &right, schema)?;
+                Ok(Self::Compare {
+                    left,
+                    op: *op,
+                    right,
+                })
             }
             ExprKind::InList {
                 left,
                 values,
                 negated,
             } => {
-                let left = bind_streaming_column(left.require_column()?, schema, table, qualifier)?;
+                let left = Scalar::bind(left, parameters, schema, table, qualifier)?;
                 let values = values
                     .iter()
-                    .map(|value| {
-                        let value = value_to_relational(bind_sql_value(
-                            value.require_value()?,
-                            parameters,
-                        )?)?;
-                        validate_value_type(schema, left, &value)?;
+                    .map(|expression| {
+                        let mut value =
+                            Scalar::bind(expression, parameters, schema, table, qualifier)?;
+                        value.coerce_comparison_literal(&left)?;
+                        validate_comparison(&left, &value, schema)?;
                         Ok(value)
                     })
                     .collect::<Result<Box<[_]>>>()?;
@@ -181,7 +156,7 @@ impl StreamingPredicate {
                 expression: column,
                 negated,
             } => Ok(Self::IsNull {
-                column: bind_streaming_column(column.require_column()?, schema, table, qualifier)?,
+                column: Scalar::bind(column, parameters, schema, table, qualifier)?,
                 negated: *negated,
             }),
             _ => Err(HawDBError::Semantic(
@@ -191,7 +166,7 @@ impl StreamingPredicate {
     }
 
     fn truth<'a>(
-        &self,
+        &'a self,
         resolve: &impl Fn(usize) -> Result<RelationalValueRef<'a>>,
     ) -> Result<Option<bool>> {
         match self {
@@ -214,21 +189,18 @@ impl StreamingPredicate {
             Self::Not(predicate) => predicate
                 .truth(resolve)
                 .map(|truth| truth.map(|value| !value)),
-            Self::CompareValue { left, op, right } => {
-                compare_value_refs(resolve(*left)?, right.as_ref(), *op)
-            }
-            Self::CompareColumns { left, op, right } => {
-                compare_value_refs(resolve(*left)?, resolve(*right)?, *op)
+            Self::Compare { left, op, right } => {
+                compare_value_refs(left.evaluate(resolve)?, right.evaluate(resolve)?, *op)
             }
             Self::InList {
                 left,
                 values,
                 negated,
             } => {
-                let left = resolve(*left)?;
+                let left = left.evaluate(resolve)?;
                 let mut has_unknown = false;
                 for value in values {
-                    match compare_value_refs(left, value.as_ref(), SqlComparisonOp::Eq)? {
+                    match compare_value_refs(left, value.evaluate(resolve)?, SqlComparisonOp::Eq)? {
                         Some(true) => return Ok(Some(!*negated)),
                         None => has_unknown = true,
                         Some(false) => {}
@@ -257,7 +229,7 @@ impl StreamingPredicate {
                 )),
             },
             Self::IsNull { column, negated } => Ok(Some(
-                matches!(resolve(*column)?, RelationalValueRef::Null) != *negated,
+                matches!(column.evaluate(resolve)?, RelationalValueRef::Null) != *negated,
             )),
         }
     }
@@ -299,4 +271,27 @@ fn validate_value_type(
         )));
     }
     Ok(())
+}
+
+fn validate_comparison(
+    left: &Scalar,
+    right: &Scalar,
+    schema: &RelationalTableSchema,
+) -> Result<()> {
+    left.validate_comparison(right).map_err(|error| {
+        if !matches!(error, HawDBError::Semantic(_)) {
+            return error;
+        }
+        match (left, right) {
+            (Scalar::Column(left, _), Scalar::Column(right, _)) => HawDBError::Semantic(format!(
+                "relational comparison between {} and {} has incompatible scalar types",
+                schema.columns[*left].name, schema.columns[*right].name
+            )),
+            (Scalar::Column(left, _), _) => HawDBError::Semantic(format!(
+                "relational comparison on {} has an incompatible scalar type",
+                schema.columns[*left].name
+            )),
+            _ => error,
+        }
+    })
 }

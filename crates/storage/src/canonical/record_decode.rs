@@ -185,6 +185,15 @@ pub(super) fn value<D: Decoder>(
             }
         },
         2 => Value::Int(cursor.read_i64()?),
+        11 => Value::Decimal(
+            hawdb_core::Decimal::from_le_bytes(
+                cursor
+                    .read_exact(hawdb_core::Decimal::ENCODED_LEN)?
+                    .try_into()
+                    .expect("fixed Decimal length"),
+            )
+            .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))?,
+        ),
         3 => Value::Float(f64::from_bits(cursor.read_u64()?)),
         4 => {
             decoder.finish_unit(unit)?;

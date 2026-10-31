@@ -318,6 +318,10 @@ pub use hawdb_bootstrap::{
 };
 pub use hawdb_core::{time, Uuid};
 pub use hawdb_core::{
+    Decimal, DecimalError, DecimalType, LogicalType, Vector, VectorDimension, VectorDistance,
+    VectorRef,
+};
+pub use hawdb_core::{
     GraphRagCommonPathSummary, GraphRagGeneratedQuery, GraphRagLabelSummary,
     GraphRagPropertySubject, GraphRagPropertySummary, GraphRagQueryBinding, GraphRagQueryDraft,
     GraphRagQueryGenerationError, GraphRagQueryParameterCardinality, GraphRagQueryParameterError,
@@ -332,7 +336,6 @@ pub use hawdb_core::{
     DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT, DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES,
     DEFAULT_GRAPH_RAG_MAX_ROUTES, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
 };
-pub use hawdb_core::{LogicalType, Vector, VectorDimension, VectorDistance, VectorRef};
 pub use hawdb_core::{
     VectorIndexBackend, VectorIndexDescriptor, VectorIndexLsg, VectorIndexTarget,
 };

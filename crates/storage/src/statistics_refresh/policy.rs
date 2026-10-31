@@ -35,7 +35,11 @@ fn property_value_supports_optimizer_statistics(value: &Value) -> bool {
         | Value::Float(_)
         | Value::String(_)
         | Value::Uuid(_) => true,
-        Value::Binary(_) | Value::Vector(_) | Value::List(_) | Value::Map(_) => false,
+        Value::Decimal(_)
+        | Value::Binary(_)
+        | Value::Vector(_)
+        | Value::List(_)
+        | Value::Map(_) => false,
     }
 }
 

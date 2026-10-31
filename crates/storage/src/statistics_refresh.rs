@@ -499,6 +499,7 @@ fn index_statistics_value_bytes(value: &Value) -> usize {
             .saturating_add(value.encoded().len().to_string().len())
             .saturating_add(value.encoded().len().saturating_mul(2)),
         Value::Uuid(_) => 34,
+        Value::Decimal(_) => 82,
         Value::List(values) => values.iter().fold(
             2usize.saturating_add(values.len().to_string().len()),
             |bytes, value| {
@@ -529,6 +530,14 @@ fn append_index_statistics_value(encoded: &mut String, value: &Value) {
     match value {
         Value::Null => encoded.push('n'),
         Value::Bool(value) => encoded.push_str(if *value { "b1" } else { "b0" }),
+        Value::Decimal(value) => {
+            use std::fmt::Write as _;
+            encoded.push('d');
+            for byte in value.to_ordered_bytes() {
+                write!(encoded, "{byte:02x}").expect("String writing cannot fail");
+            }
+            encoded.push(';');
+        }
         Value::Int(value) => {
             encoded.push('i');
             encoded.push_str(&value.to_string());

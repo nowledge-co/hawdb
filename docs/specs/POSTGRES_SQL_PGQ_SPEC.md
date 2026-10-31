@@ -112,6 +112,51 @@ scenarios, but MUST preserve whether PostgreSQL accepts them in raw parsing or
 rejects them later during graph binding. PostgreSQL output strings and C parser
 implementation details are not part of the HawDB test contract.
 
+## Exact numeric execution
+
+Relational SQL supports native `DECIMAL(p,s)` / `NUMERIC(p,s)` with precision
+1 through 38 and scale 0 through precision. Omitted precision/scale means
+`DECIMAL(38,0)`. The Rust facade exposes `Decimal`, `DecimalType`, and
+`Value::Decimal` / `ValueRef::Decimal`. A scalar stores a signed coefficient
+of at most 38 digits and scale 0 through 38 in 17 inline bytes.
+
+Integer literals fitting BIGINT remain integers. Other numeric literals,
+including decimal points and exponents, retain their exact decimal digits;
+they no longer pass through `f64`. `+`, `-`, `*`, `/`, `%`, unary signs,
+parameters and numeric `CAST` / `::` share one kernel across projections,
+predicates, INSERT values, defaults, UPDATE assignments and aggregate inputs.
+UPDATE expressions read the original row. An expression, conversion or
+constraint failure must leave the statement's changes unpublished.
+
+BIGINT and Decimal promote exactly. Decimal addition, subtraction,
+multiplication and remainder reject unrepresentable results, including
+nonzero underflow; they never silently round. Division rounds once from the
+original rational to at most 38 coefficient digits and scale 38, with ties
+away from zero; very small quotients may round to zero. Assignment and an
+explicit Decimal cast rescale with the same tie rule and check declared
+precision after rounding. Division's result rounding and a subsequent column
+assignment are separate SQL operations. Division by zero and overflow fail.
+SUM uses these checked semantics; NULL-only and empty inputs yield NULL.
+
+Decimal/DOUBLE PRECISION arithmetic and comparisons require an explicit cast.
+Assignment to a declared DOUBLE PRECISION column permits approximate conversion;
+assignment of a floating value to Decimal requires a cast. Decimal-to-BIGINT
+casts reject fractions. Float-to-Decimal casts parse the float's shortest
+round-trip decimal spelling and apply the declared rescale; they do not recover
+precision already lost in a float. Explicit text-to-numeric casts reject invalid
+or out-of-range values. NaN and infinity are not Decimal values.
+
+Decimal equality, hashing and ordered keys compare numeric value, so `1.0` and
+`1.00` identify the same key. Index predicates and joins must not rescale their
+query boundaries to the stored column's scale. Row, WAL, checkpoint and spill
+payloads preserve the original scale. New scalar/schema/expression tags are
+additive; older readers cannot read databases containing the new values or
+expressions. Existing tags retain their meaning. Decimal graph properties use
+residual storage instead of float or dictionary coercion. This extension does
+not enable Decimal property types in the separate SQL/PGQ creation binder.
+
+Native DATE/TIMESTAMP types remain separate work under #1361.
+
 ## Property Graph Catalog
 
 A property graph is logical catalog metadata over existing table-like objects;

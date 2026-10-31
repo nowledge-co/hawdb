@@ -44,6 +44,7 @@ pub enum LogicalType {
     Boolean,
     Int64,
     Float64,
+    Decimal,
     /// A bounded application string that is eligible for value statistics.
     String,
     /// An unbounded UTF-8 payload that is excluded from value statistics.
@@ -57,7 +58,7 @@ pub enum LogicalType {
 
 impl LogicalType {
     pub const fn is_numeric(self) -> bool {
-        matches!(self, Self::Int64 | Self::Float64)
+        matches!(self, Self::Int64 | Self::Float64 | Self::Decimal)
     }
 
     pub const fn is_utf8(self) -> bool {
@@ -87,6 +88,7 @@ impl Display for LogicalType {
             Self::Boolean => "BOOLEAN",
             Self::Int64 => "BIGINT",
             Self::Float64 => "DOUBLE PRECISION",
+            Self::Decimal => "DECIMAL",
             Self::String => "STRING",
             Self::Text => "TEXT",
             Self::Binary => "BYTEA",

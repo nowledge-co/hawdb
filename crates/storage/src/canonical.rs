@@ -3868,6 +3868,10 @@ fn encode_value(
             output.extend_from_slice(&u32_len(value.encoded().len(), "vector")?.to_le_bytes());
             output.extend_from_slice(value.encoded());
         }
+        Value::Decimal(value) => {
+            output.push(11);
+            output.extend_from_slice(&value.to_le_bytes());
+        }
         Value::Uuid(value) => {
             output.push(9);
             output.extend_from_slice(value.as_bytes());
@@ -3973,6 +3977,7 @@ fn encoded_value_len_with_work(
             1 + 4 + value.encoded().len() as u64
         }
         Value::Uuid(_) => 17,
+        Value::Decimal(_) => 18,
         Value::List(values) => {
             u32_len(values.len(), "value list")?;
             // Finish collection metadata before descending. Nested values
@@ -4062,6 +4067,10 @@ fn write_value_streaming<W: Write + ?Sized>(
             out.write_all(&[10])?;
             out.write_all(&u32_len(value.encoded().len(), "vector")?.to_le_bytes())?;
             out.write_all(value.encoded())?;
+        }
+        Value::Decimal(value) => {
+            out.write_all(&[11])?;
+            out.write_all(&value.to_le_bytes())?;
         }
         Value::Uuid(value) => {
             out.write_all(&[9])?;
@@ -6141,6 +6150,7 @@ mod tests {
             (7, Value::String("列存".to_string())),
             (8, Value::Binary(vec![0, 1, 0xfe, 0xff])),
             (9, Value::Null),
+            (12, Value::Decimal("9007199254740993.0100".parse().unwrap())),
             (
                 10,
                 Value::List(vec![Value::Int(1), Value::String("x".to_string())]),
@@ -6156,6 +6166,10 @@ mod tests {
             .collect();
         let encoded = encode_residual_row_properties(&entries).unwrap();
         let decoded = decode_residual_row_properties(&encoded).unwrap();
+        let Value::Decimal(decimal) = decoded.iter().find(|(id, _)| *id == 12).unwrap().1 else {
+            panic!("native Decimal");
+        };
+        assert_eq!(decimal.to_string(), "9007199254740993.0100");
         assert_eq!(
             decoded,
             entries

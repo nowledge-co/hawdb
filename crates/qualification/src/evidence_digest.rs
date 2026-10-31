@@ -127,6 +127,10 @@ pub(crate) fn hash_value(hasher: &mut Sha256, value: &Value) {
             hasher.update([3]);
             hasher.update(value.to_bits().to_le_bytes());
         }
+        Value::Decimal(value) => {
+            hasher.update([10]);
+            hasher.update(value.to_le_bytes());
+        }
         Value::String(value) => {
             hasher.update([4]);
             hash_bytes(hasher, value.as_bytes());

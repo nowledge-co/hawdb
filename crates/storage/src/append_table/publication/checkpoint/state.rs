@@ -272,6 +272,7 @@ fn value_copy(value: &RelationalValue, work: &CheckpointDecodeContext) -> Result
         | RelationalValue::Boolean(_)
         | RelationalValue::BigInt(_)
         | RelationalValue::DoublePrecision(_)
+        | RelationalValue::Decimal(_)
         | RelationalValue::Uuid(_)
         | RelationalValue::Overflow(_)) => {
             let unit = start(work)?;

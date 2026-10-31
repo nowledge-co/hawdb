@@ -58,6 +58,10 @@ pub(crate) fn decode<D: Decoder>(input: &str, backend: &D) -> Result<Value> {
             _ => Err(HawDBError::Storage(format!("invalid bool value: {input}"))),
         },
         "i" => backend.integer(rest).map(Value::Int),
+        "d" => rest
+            .parse::<hawdb_core::Decimal>()
+            .map(Value::Decimal)
+            .map_err(|error| HawDBError::Storage(error.to_string())),
         "f" => backend.unsigned(rest).map(f64::from_bits).map(Value::Float),
         "s" => backend.string(rest).map(Value::String),
         "u" => hawdb_core::Uuid::parse_str(rest)

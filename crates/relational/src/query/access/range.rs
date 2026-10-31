@@ -38,18 +38,19 @@ pub(super) fn bind_range(
         {
             continue;
         }
-        found = true;
         let value =
             value_to_relational_as(bind_sql_value(value, planning.parameters)?, scalar_type)?;
         if value == RelationalValue::Null {
+            found = true;
             bounds.empty = true;
             continue;
         }
-        if value.scalar_type() != Some(scalar_type) {
-            return Err(HawDBError::Semantic(format!(
-                "relational comparison on {column} has an incompatible scalar type"
-            )));
+        if !scalar_type.same_value_domain(value.scalar_type()) {
+            // Coverage proofs assume that every range term entered the
+            // intersection. Leave all of them residual if one domain differs.
+            return Ok(None);
         }
+        found = true;
         let mut key = prefix.0.clone();
         key.push(value);
         let bound = RelationalIndexBound {

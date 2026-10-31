@@ -301,6 +301,19 @@ pub fn external_shadow_value_from_json(value: &serde_json::Value) -> Result<Valu
             .map(Value::List),
         serde_json::Value::Object(values) => {
             if values.len() == 1
+                && let Some(encoded) = values.get("$decimal")
+            {
+                let text = encoded.as_str().ok_or_else(|| {
+                    HawDBError::Semantic("$decimal must be a decimal string".into())
+                })?;
+                return text
+                    .parse::<hawdb_core::Decimal>()
+                    .map(Value::Decimal)
+                    .map_err(|error| {
+                        HawDBError::Semantic(format!("invalid external Decimal: {error}"))
+                    });
+            }
+            if values.len() == 1
                 && let Some(encoded) = values.get("$vector")
             {
                 let coordinates = encoded
@@ -349,6 +362,7 @@ pub fn external_shadow_json_from_value(value: Value) -> serde_json::Value {
         Value::String(value) => serde_json::Value::String(value),
         Value::Binary(value) => serde_json::json!({ "$binary": encode_binary_hex(&value) }),
         Value::Uuid(value) => serde_json::json!({ "$uuid": value.to_string() }),
+        Value::Decimal(value) => serde_json::json!({ "$decimal": value.to_string() }),
         Value::Vector(value) => {
             serde_json::json!({ "$vector": value.as_ref().coordinates().collect::<Vec<_>>() })
         }
@@ -1340,6 +1354,7 @@ fn json_from_value(value: &Value) -> serde_json::Value {
         Value::String(value) => serde_json::Value::String(value.clone()),
         Value::Binary(value) => serde_json::json!({ "$binary": encode_binary_hex(value) }),
         Value::Uuid(value) => serde_json::json!({ "$uuid": value.to_string() }),
+        Value::Decimal(value) => serde_json::json!({ "$decimal": value.to_string() }),
         Value::Vector(value) => {
             serde_json::json!({ "$vector": value.as_ref().coordinates().collect::<Vec<_>>() })
         }
@@ -1738,6 +1753,11 @@ fn value_from_json(engine_name: &str, value: &serde_json::Value) -> Result<Value
             .map(|value| value_from_json(engine_name, value))
             .collect::<Result<Vec<_>>>()
             .map(Value::List),
+        serde_json::Value::Object(values)
+            if values.len() == 1 && values.contains_key("$decimal") =>
+        {
+            external_shadow_value_from_json(value)
+        }
         serde_json::Value::Object(values) => values
             .iter()
             .map(|(key, value)| Ok((key.clone(), value_from_json(engine_name, value)?)))

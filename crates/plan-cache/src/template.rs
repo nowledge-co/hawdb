@@ -17,11 +17,88 @@ const PARAMETER_SLOT_PATH_KEY: &str = "\0skein_parameter_path";
 
 mod retained;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone)]
 enum ParameterCacheValue {
     Slot(ParameterValueShape),
     CaseSlot(ParameterValueShape),
     Exact(Value),
+}
+
+// Numeric equality intentionally ignores Decimal scale. A folded cached result
+// must also preserve its representation, including decimals inside containers.
+fn exact_value_cmp(left: &Value, right: &Value) -> std::cmp::Ordering {
+    left.cmp(right).then_with(|| match (left, right) {
+        (Value::Decimal(left), Value::Decimal(right)) => left.scale().cmp(&right.scale()),
+        (Value::List(left), Value::List(right)) => left
+            .iter()
+            .zip(right)
+            .map(|(left, right)| exact_value_cmp(left, right))
+            .find(|order| !order.is_eq())
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Map(left), Value::Map(right)) => left
+            .values()
+            .zip(right.values())
+            .map(|(left, right)| exact_value_cmp(left, right))
+            .find(|order| !order.is_eq())
+            .unwrap_or(std::cmp::Ordering::Equal),
+        _ => std::cmp::Ordering::Equal,
+    })
+}
+
+fn exact_scale_hash(value: &Value, state: &mut impl Hasher) {
+    match value {
+        Value::Decimal(value) => value.scale().hash(state),
+        Value::List(values) => values
+            .iter()
+            .for_each(|value| exact_scale_hash(value, state)),
+        Value::Map(values) => values
+            .values()
+            .for_each(|value| exact_scale_hash(value, state)),
+        _ => {}
+    }
+}
+
+impl PartialEq for ParameterCacheValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+impl Eq for ParameterCacheValue {}
+impl PartialOrd for ParameterCacheValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for ParameterCacheValue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        match (self, other) {
+            (Self::Slot(left), Self::Slot(right))
+            | (Self::CaseSlot(left), Self::CaseSlot(right)) => left.cmp(right),
+            (Self::Exact(left), Self::Exact(right)) => exact_value_cmp(left, right),
+            (Self::Slot(_), _) | (Self::CaseSlot(_), Self::Exact(_)) => Ordering::Less,
+            _ => Ordering::Greater,
+        }
+    }
+}
+impl Hash for ParameterCacheValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Slot(value) => {
+                0u8.hash(state);
+                value.hash(state);
+            }
+            Self::CaseSlot(value) => {
+                1u8.hash(state);
+                value.hash(state);
+            }
+            Self::Exact(value) => {
+                2u8.hash(state);
+                value.hash(state);
+                exact_scale_hash(value, state);
+            }
+        }
+    }
 }
 
 impl ParameterCacheValue {
@@ -55,6 +132,7 @@ enum ParameterValueShape {
     Bool,
     Int,
     Float,
+    Decimal(hawdb_core::DecimalType),
     String,
     Binary,
     Vector(hawdb_core::VectorDimension),
@@ -110,7 +188,9 @@ impl ParameterBindingTemplate {
                     ParameterCacheValue::Slot(shape) | ParameterCacheValue::CaseSlot(shape) => {
                         !shape.matches(value)
                     }
-                    ParameterCacheValue::Exact(expected) => value != expected,
+                    ParameterCacheValue::Exact(expected) => {
+                        !exact_value_cmp(value, expected).is_eq()
+                    }
                 })
             })
         {
@@ -131,6 +211,7 @@ impl ParameterValueShape {
             | (Self::Binary, Value::Binary(_))
             | (Self::Uuid, Value::Uuid(_)) => true,
             (Self::Vector(dimension), Value::Vector(value)) => *dimension == value.dimension(),
+            (Self::Decimal(kind), Value::Decimal(value)) => *kind == value.decimal_type(),
             (Self::List(shapes), Value::List(values)) => {
                 shapes.len() == values.len()
                     && shapes
@@ -171,6 +252,7 @@ pub fn parameter_binding_shape_fingerprint(parameters: &BTreeMap<String, Value>)
                 }
             }
             Value::Vector(value) => value.dimension().hash(state),
+            Value::Decimal(value) => value.decimal_type().hash(state),
             _ => {}
         }
     }
@@ -619,6 +701,7 @@ fn parameter_value_shape(value: &Value) -> ParameterValueShape {
         Value::Bool(_) => ParameterValueShape::Bool,
         Value::Int(_) => ParameterValueShape::Int,
         Value::Float(_) => ParameterValueShape::Float,
+        Value::Decimal(value) => ParameterValueShape::Decimal(value.decimal_type()),
         Value::String(_) => ParameterValueShape::String,
         Value::Binary(_) => ParameterValueShape::Binary,
         Value::Vector(value) => ParameterValueShape::Vector(value.dimension()),
@@ -1798,6 +1881,36 @@ mod tests {
     }
 
     #[test]
+    fn decimal_exact_cache_keys_keep_scale_inside_nested_values() {
+        let value = |text: &str| {
+            Value::List(vec![Value::Map(BTreeMap::from([(
+                "amount".into(),
+                Value::Decimal(text.parse().unwrap()),
+            )]))])
+        };
+        let first = value("1.0");
+        let second = value("1.00");
+        assert_eq!(first, second);
+        let keys = [
+            ParameterCacheValue::Exact(first),
+            ParameterCacheValue::Exact(second),
+        ];
+        assert_eq!(
+            keys.iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            2
+        );
+        assert_eq!(
+            keys.into_iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn folded_null_guards_keep_shape_valid_rebinding() {
         for predicate in ["$gate IS NULL", "$gate IS NOT NULL"] {
             let statement = cypher::parse(&format!(
@@ -2701,6 +2814,7 @@ impl hawdb_core::RetainedHeapBytes for ParameterValueShape {
             Self::Float => hawdb_core::checked_retained_heap_sum([]),
             Self::String => hawdb_core::checked_retained_heap_sum([]),
             Self::Binary => hawdb_core::checked_retained_heap_sum([]),
+            Self::Decimal(kind) => hawdb_core::RetainedHeapBytes::retained_heap_bytes(kind),
             Self::Vector(value0) => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
             ]),

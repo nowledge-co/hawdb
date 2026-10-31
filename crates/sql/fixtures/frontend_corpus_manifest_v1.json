@@ -10,7 +10,7 @@
   "sources": [
     {
       "path": "crates/sql/src/tests.rs",
-      "sha256": "3577a9451bc889d24f20b42e173e057746ed63bfc3b89589eea31167d024ba47",
+      "sha256": "39b8896ed120c58502f9253c8ca3f36be088a84330c9ee0724ef6b13c6b89a6e",
       "case_ids": [
         "case-0001",
         "case-0002",
@@ -1066,7 +1066,7 @@
     },
     {
       "path": "crates/sql/src/tests/having_from.rs",
-      "sha256": "731fc51e7e6e5e51a54da3b5a5e72aa5ac00772e0ed3eb8a32ceaf9dce5bda97",
+      "sha256": "d6cd870763e4030561f1e3e0e0b94093f8b04a36658eb6ccb574690f039b5fa9",
       "case_ids": [
         "case-0991",
         "case-0994",

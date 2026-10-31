@@ -110,6 +110,7 @@ pub fn encode_value(value: &Value) -> String {
         Value::Bool(false) => "b0".to_string(),
         Value::Bool(true) => "b1".to_string(),
         Value::Int(value) => format!("i{value}"),
+        Value::Decimal(value) => format!("d{value}"),
         Value::Float(value) => format!("f{}", value.to_bits()),
         Value::String(value) => format!("s{}", encode_string(value)),
         Value::Uuid(value) => format!("u{value}"),

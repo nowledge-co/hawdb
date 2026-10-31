@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Borrow existing values until projection row admission. Computed values own
 //! an independently admitted working-memory lease until the output takes them.
@@ -42,6 +42,7 @@ impl<'a> ProjectedValue<'a> {
             Cow::Owned(Value::Bool(value)) => ValueRef::Bool(value),
             Cow::Owned(Value::Int(value)) => ValueRef::Int(value),
             Cow::Owned(Value::Float(value)) => ValueRef::Float(value),
+            Cow::Owned(Value::Decimal(value)) => ValueRef::Decimal(value),
             Cow::Owned(Value::Uuid(value)) => ValueRef::Uuid(value),
             Cow::Owned(_) => unreachable!("native numeric projections never allocate payloads"),
         }

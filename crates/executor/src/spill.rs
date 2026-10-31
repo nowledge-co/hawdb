@@ -629,6 +629,15 @@ fn estimate_value_memory(
             })?;
             (bytes.len(), 0)
         }
+        10 => {
+            let mut bytes = [0_u8; 17];
+            input.read_exact(&mut bytes).map_err(|error| {
+                HawDBError::Execution(format!("truncated Decimal in spill record: {error}"))
+            })?;
+            hawdb_core::Decimal::from_le_bytes(bytes)
+                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            (0, 17)
+        }
         tag => {
             return Err(HawDBError::Execution(format!(
                 "invalid value tag in spill record: {tag}"
@@ -722,6 +731,7 @@ fn value_encoded_len(value: &Value, depth: usize) -> Result<usize> {
         Value::Binary(value) => encoded_len_add(9, value.len()),
         Value::Vector(value) => encoded_len_add(9, value.encoded().len()),
         Value::Uuid(_) => Ok(17),
+        Value::Decimal(_) => Ok(18),
         Value::List(values) => values.iter().try_fold(9usize, |bytes, value| {
             encoded_len_add(bytes, value_encoded_len(value, depth + 1)?)
         }),
@@ -846,6 +856,10 @@ fn write_value(output: &mut impl Write, value: &Value, depth: usize) -> Result<(
             write_bytes(output, &[3])?;
             write_bytes(output, &value.to_bits().to_le_bytes())?;
         }
+        Value::Decimal(value) => {
+            write_bytes(output, &[10])?;
+            write_bytes(output, &value.to_le_bytes())?;
+        }
         Value::String(value) => {
             write_bytes(output, &[4])?;
             write_string(output, value)?;
@@ -933,6 +947,16 @@ fn read_value(input: &mut Cursor<&[u8]>, depth: usize) -> Result<Value> {
                 HawDBError::Execution(format!("truncated UUID in spill record: {error}"))
             })?;
             Value::Uuid(hawdb_core::Uuid::from_bytes(bytes))
+        }
+        10 => {
+            let mut bytes = [0_u8; 17];
+            input.read_exact(&mut bytes).map_err(|error| {
+                HawDBError::Execution(format!("truncated Decimal in spill record: {error}"))
+            })?;
+            Value::Decimal(
+                hawdb_core::Decimal::from_le_bytes(bytes)
+                    .map_err(|error| HawDBError::Execution(error.to_string()))?,
+            )
         }
         tag => {
             return Err(HawDBError::Execution(format!(
@@ -1411,6 +1435,10 @@ mod tests {
                 ("null".to_string(), Value::Null),
                 ("false".to_string(), Value::Bool(false)),
                 ("negative".to_string(), Value::Int(i64::MIN)),
+                (
+                    "decimal".to_string(),
+                    Value::Decimal("9007199254740993.0100".parse().unwrap()),
+                ),
                 ("uuid".to_string(), uuid.clone()),
                 ("binary".to_string(), Value::Binary(vec![0, 1, 0xfe, 0xff])),
                 (
@@ -1487,6 +1515,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(decoded, (42, binding));
+        let Value::Decimal(value) = decoded.1.values["decimal"] else {
+            panic!("native Decimal");
+        };
+        assert_eq!(value.to_string(), "9007199254740993.0100");
         assert_eq!(tracker.used_bytes, binding_memory_bytes(&decoded.1));
         tracker.reset();
         drop(accounted_reader);
@@ -1653,6 +1685,27 @@ mod tests {
             assert_eq!(read_value(&mut cursor, 0).unwrap(), Value::Int(42));
             assert_eq!(cursor.position() as usize, encoded.len());
         }
+    }
+
+    #[test]
+    fn decimal_spill_preflight_rejects_corruption_and_preserves_alignment() {
+        let value = Value::Decimal("-9007199254740993.0100".parse().unwrap());
+        let mut encoded = Vec::new();
+        write_value(&mut encoded, &value, 0).unwrap();
+        assert_eq!(encoded.len(), 18);
+        for end in 0..encoded.len() {
+            assert!(estimate_value_memory(&mut Cursor::new(&encoded[..end]), 0, false).is_err());
+            assert!(read_value(&mut Cursor::new(&encoded[..end]), 0).is_err());
+        }
+        let mut corrupt = encoded.clone();
+        corrupt[17] = 39;
+        assert!(estimate_value_memory(&mut Cursor::new(corrupt.as_slice()), 0, false).is_err());
+        assert!(read_value(&mut Cursor::new(corrupt.as_slice()), 0).is_err());
+        write_value(&mut encoded, &Value::Int(42), 0).unwrap();
+        let mut cursor = Cursor::new(encoded.as_slice());
+        assert_eq!(estimate_value_memory(&mut cursor, 0, false).unwrap(), 17);
+        assert_eq!(read_value(&mut cursor, 0).unwrap(), Value::Int(42));
+        assert_eq!(cursor.position() as usize, encoded.len());
     }
 
     #[test]

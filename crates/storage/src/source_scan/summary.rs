@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 //! Own summary allocations through the last shared projection. Scalar values
 //! are copied once after admission; input property maps remain borrowed.
 
@@ -136,6 +139,7 @@ impl<'a> ScalarRef<'a> {
             Value::String(value) => Some(Self::String(value)),
             Value::Uuid(value) => Some(Self::Uuid(*value)),
             Value::Null
+            | Value::Decimal(_)
             | Value::Float(_)
             | Value::Binary(_)
             | Value::Vector(_)

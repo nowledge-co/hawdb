@@ -41,6 +41,10 @@ impl Checksum {
                 self.bytes(&[3]);
                 self.bytes(&value.to_bits().to_le_bytes());
             }
+            Value::Decimal(value) => {
+                self.bytes(&[10]);
+                self.bytes(&value.to_le_bytes());
+            }
             Value::String(value) => {
                 self.bytes(&[4]);
                 self.length(value.len());

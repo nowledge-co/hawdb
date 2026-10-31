@@ -1212,6 +1212,7 @@ pub(super) fn relational_value_to_query_value(
         hawdb_storage::relational::RelationalValue::Null => Ok(Value::Null),
         hawdb_storage::relational::RelationalValue::Boolean(value) => Ok(Value::Bool(*value)),
         hawdb_storage::relational::RelationalValue::BigInt(value) => Ok(Value::Int(*value)),
+        hawdb_storage::relational::RelationalValue::Decimal(value) => Ok(Value::Decimal(*value)),
         hawdb_storage::relational::RelationalValue::DoublePrecision(value) => {
             Ok(Value::Float(*value))
         }

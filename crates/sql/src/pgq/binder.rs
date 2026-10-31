@@ -675,7 +675,15 @@ impl<'a> GraphTableBinder<'a> {
             ExpressionKindSyntax::Cast {
                 expression: inner,
                 data_type,
+                type_parameters,
             } => {
+                if !type_parameters.is_empty() {
+                    return Err(PgqBindError::new(
+                        PgqBindErrorCode::UnsupportedExpression,
+                        expression.span,
+                        "parameterized scalar casts are not supported in PGQ",
+                    ));
+                }
                 let inner = self.bind_expression(inner)?;
                 let data_type_name = normalize_qualified_name(self.input, data_type);
                 let result_type = cast_result_type(&data_type_name);

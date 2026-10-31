@@ -1002,116 +1002,9 @@ impl<'a> ReadContext<'a> {
 pub(super) fn decode_relational_key(
     encoded: &[u8],
 ) -> Result<super::RelationalKey, RelationalIndexShadowError> {
-    let mut values = Vec::new();
-    let mut offset = 0usize;
-    while offset < encoded.len() {
-        let tag = encoded[offset];
-        offset += 1;
-        let value = match tag {
-            0 => super::RelationalValue::Null,
-            1 => {
-                let value = *encoded.get(offset).ok_or_else(|| {
-                    RelationalIndexShadowError::Corrupt("truncated boolean row locator".to_string())
-                })?;
-                offset += 1;
-                match value {
-                    0 => super::RelationalValue::Boolean(false),
-                    1 => super::RelationalValue::Boolean(true),
-                    _ => {
-                        return Err(RelationalIndexShadowError::Corrupt(
-                            "invalid boolean row locator".to_string(),
-                        ));
-                    }
-                }
-            }
-            2 => {
-                let ordered = read_ordered_u64(encoded, &mut offset, "bigint row locator")?;
-                super::RelationalValue::BigInt((ordered ^ (1_u64 << 63)) as i64)
-            }
-            3 => {
-                let ordered = read_ordered_u64(encoded, &mut offset, "double row locator")?;
-                let bits = if ordered >> 63 == 0 {
-                    !ordered
-                } else {
-                    ordered ^ (1_u64 << 63)
-                };
-                super::RelationalValue::DoublePrecision(f64::from_bits(bits))
-            }
-            4 => {
-                let bytes = decode_escaped_bytes(encoded, &mut offset, "text row locator")?;
-                super::RelationalValue::Text(String::from_utf8(bytes).map_err(|_| {
-                    RelationalIndexShadowError::Corrupt(
-                        "text row locator is not valid UTF-8".to_string(),
-                    )
-                })?)
-            }
-            5 => super::RelationalValue::Bytea(decode_escaped_bytes(
-                encoded,
-                &mut offset,
-                "bytea row locator",
-            )?),
-            _ => {
-                return Err(RelationalIndexShadowError::Corrupt(format!(
-                    "unknown relational row-locator tag {tag}"
-                )));
-            }
-        };
-        values.push(value);
-    }
-    if values.is_empty() {
-        return Err(RelationalIndexShadowError::Corrupt(
-            "relational row locator must contain at least one value".to_string(),
-        ));
-    }
-    Ok(super::RelationalKey(values))
-}
-
-fn read_ordered_u64(
-    encoded: &[u8],
-    offset: &mut usize,
-    context: &str,
-) -> Result<u64, RelationalIndexShadowError> {
-    let end = offset
-        .checked_add(8)
-        .ok_or_else(|| RelationalIndexShadowError::Corrupt(format!("{context} length overflow")))?;
-    let bytes = encoded
-        .get(*offset..end)
-        .ok_or_else(|| RelationalIndexShadowError::Corrupt(format!("truncated {context}")))?;
-    *offset = end;
-    Ok(u64::from_be_bytes(
-        bytes.try_into().expect("ordered u64 length was checked"),
-    ))
-}
-
-fn decode_escaped_bytes(
-    encoded: &[u8],
-    offset: &mut usize,
-    context: &str,
-) -> Result<Vec<u8>, RelationalIndexShadowError> {
-    let mut decoded = Vec::new();
-    loop {
-        let byte = *encoded.get(*offset).ok_or_else(|| {
-            RelationalIndexShadowError::Corrupt(format!("unterminated {context}"))
-        })?;
-        *offset += 1;
-        if byte != 0 {
-            decoded.push(byte);
-            continue;
-        }
-        let escape = *encoded.get(*offset).ok_or_else(|| {
-            RelationalIndexShadowError::Corrupt(format!("truncated {context} escape"))
-        })?;
-        *offset += 1;
-        match escape {
-            0 => return Ok(decoded),
-            255 => decoded.push(0),
-            _ => {
-                return Err(RelationalIndexShadowError::Corrupt(format!(
-                    "invalid {context} escape"
-                )));
-            }
-        }
-    }
+    // Row locators use exactly the ordered primary-key grammar. Keep demand
+    // reads on the shared decoder so new scalar tags cannot diverge here.
+    crate::relational::ordered_key::decode_ordered_relational_key(encoded).map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -1124,6 +1017,8 @@ mod tests {
             super::super::RelationalValue::Null,
             super::super::RelationalValue::Boolean(true),
             super::super::RelationalValue::BigInt(i64::MIN),
+            super::super::RelationalValue::Decimal("9007199254740993.0100".parse().unwrap()),
+            super::super::RelationalValue::Uuid(hawdb_core::Uuid::from_u128(7)),
             super::super::RelationalValue::DoublePrecision(-0.0),
             super::super::RelationalValue::DoublePrecision(f64::NAN),
             super::super::RelationalValue::Text("a\0b".to_string()),

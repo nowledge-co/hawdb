@@ -78,6 +78,8 @@ column order and write outcomes. Every value uses `{type, value}`:
 
 - `int64` and `float64` carry decimal strings; integers never pass through a
   JavaScript Number. Non-finite floats retain their string representation.
+- `decimal` carries exact decimal text, including its scale, without passing
+  through a JavaScript Number.
 - `null`, `bool`, and `string` retain their corresponding JSON values.
 - `binary` carries an array of byte values; `uuid` carries its canonical string.
 - `list` and `map` contain recursively tagged values, including returned graph

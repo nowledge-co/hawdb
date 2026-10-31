@@ -144,7 +144,7 @@ pub(crate) fn projected_node_binding_memory_bytes(
 
 pub fn value_memory_bytes(value: &Value) -> usize {
     std::mem::size_of::<Value>().saturating_add(match value {
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => 0,
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Decimal(_) => 0,
         Value::String(value) => value.len(),
         Value::Binary(value) => value.len(),
         Value::Vector(value) => value.encoded().len(),
@@ -350,6 +350,7 @@ pub fn value_ref_payload_bytes(value: hawdb_core::ValueRef<'_>) -> usize {
         ValueRef::Bool(_) => std::mem::size_of::<bool>(),
         ValueRef::Int(_) => std::mem::size_of::<i64>(),
         ValueRef::Float(_) => std::mem::size_of::<f64>(),
+        ValueRef::Decimal(_) => 17,
         ValueRef::String(value) => value.len(),
         ValueRef::Binary(value) => value.len(),
         ValueRef::Vector(value) => value.encoded().len(),

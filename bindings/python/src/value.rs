@@ -38,6 +38,11 @@ pub fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
         Value::Bool(item) => item.into_py_any(py),
         Value::Int(item) => item.into_py_any(py),
         Value::Float(item) => item.into_py_any(py),
+        Value::Decimal(item) => Ok(py
+            .import("decimal")?
+            .getattr("Decimal")?
+            .call1((item.to_string(),))?
+            .unbind()),
         Value::String(item) => item.as_str().into_py_any(py),
         Value::Binary(item) => Ok(PyBytes::new(py, item).unbind().into()),
         Value::Uuid(item) => item.to_string().into_py_any(py),
@@ -69,7 +74,8 @@ pub fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
 /// `int`. Integers, including objects implementing `__index__`, must fit in
 /// `i64` or raise `OverflowError`. Only `float` instances and NumPy's
 /// `float16`/`float32` scalars, which widen to `f64` exactly, become floats:
-/// `__float__` alone may round, so `Decimal`, `Fraction`, or NumPy
+/// `decimal.Decimal` binds through its exact decimal text; out-of-domain values
+/// raise `ValueError`. `__float__` alone may round, so `Fraction` and NumPy
 /// `longdouble` raise `TypeError` instead of being stored inexactly.
 /// `uuid.UUID` is accepted via its string form; everything outside the listed
 /// types raises `TypeError` rather than guessing. Lists, tuples, and dicts
@@ -97,6 +103,17 @@ fn py_to_value(object: &Bound<'_, PyAny>, path: &ParamPath<'_>, depth: usize) ->
     }
     if let Ok(item) = object.cast::<PyBytes>() {
         return Ok(Value::Binary(item.as_bytes().to_vec()));
+    }
+    if object.get_type().name()? == "Decimal"
+        && object.is_instance(&object.py().import("decimal")?.getattr("Decimal")?)?
+    {
+        let text = object.str()?.to_string();
+        return text
+            .parse::<hawdb::Decimal>()
+            .map(Value::Decimal)
+            .map_err(|error| {
+                PyValueError::new_err(format!("{path}: invalid Decimal parameter: {error}"))
+            });
     }
     if object.get_type().name()? == "UUID" {
         let text = object.str()?.to_string();

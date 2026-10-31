@@ -168,6 +168,10 @@ fn value(sink: &mut impl Sink, value: &Value, layers: u32) -> Result<()> {
         Value::Null => sink.bytes(b"n", layers),
         Value::Bool(false) => sink.bytes(b"b0", layers),
         Value::Bool(true) => sink.bytes(b"b1", layers),
+        Value::Decimal(number) => {
+            sink.bytes(b"d", layers)?;
+            scalar(sink, number, layers)
+        }
         Value::Int(number) => {
             sink.bytes(b"i", layers)?;
             scalar(sink, number, layers)

@@ -249,6 +249,7 @@ pub fn relational_index_prefix_read_key_bytes<'a>(
         match value {
             RelationalValue::Boolean(_)
             | RelationalValue::BigInt(_)
+            | RelationalValue::Decimal(_)
             | RelationalValue::Text(_)
             | RelationalValue::Bytea(_)
             | RelationalValue::Uuid(_) => {}

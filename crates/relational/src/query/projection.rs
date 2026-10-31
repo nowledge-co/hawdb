@@ -695,6 +695,7 @@ pub(super) fn relational_sort_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::Null => Ok(Value::Null),
         RelationalValue::Boolean(value) => Ok(Value::Bool(*value)),
         RelationalValue::BigInt(value) => Ok(Value::Int(*value)),
+        RelationalValue::Decimal(value) => Ok(Value::Decimal(*value)),
         RelationalValue::DoublePrecision(value) => Ok(Value::Float(*value)),
         RelationalValue::Text(value) => Ok(Value::String(value.clone())),
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),

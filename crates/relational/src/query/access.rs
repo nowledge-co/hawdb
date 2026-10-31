@@ -32,6 +32,7 @@ use super::{
     RelationalValue, Result, SqlColumnRef, SqlNullOrder, SqlOrderDirection, SqlPredicate, Value,
 };
 use hawdb_optimizer::RelationalAccessCostContext;
+use hawdb_storage::relational::RelationalScalarType;
 
 pub(super) struct RelationalBaseAccessPlanning<'a, R> {
     pub(super) cost_context: RelationalAccessCostContext,
@@ -109,11 +110,12 @@ pub(super) fn choose_base_access(
         if matches!(value, RelationalValue::Null) {
             continue;
         }
-        if value.scalar_type() != Some(schema.columns[position].scalar_type) {
-            return Err(HawDBError::Semantic(format!(
-                "relational comparison on {} has an incompatible scalar type",
-                column.name
-            )));
+        if !schema.columns[position]
+            .scalar_type
+            .same_value_domain(value.scalar_type())
+        {
+            // Different numeric domains need residual evaluation, never a rounded key.
+            continue;
         }
         match bound.entry(column.name.clone()) {
             std::collections::btree_map::Entry::Vacant(entry) => {
@@ -507,7 +509,9 @@ pub(super) fn bind_canonical_keyset_bound(
         if (schema.columns[position].nullable
             && range_column != Some(item.expression.require_column()?.name.as_str()))
             || matches!(value, RelationalValue::Null)
-            || value.scalar_type() != Some(schema.columns[position].scalar_type)
+            || !schema.columns[position]
+                .scalar_type
+                .same_value_domain(value.scalar_type())
         {
             return Ok(None);
         }
@@ -728,7 +732,7 @@ pub(super) fn bound_join_key(
 ) -> Result<Option<RelationalKey>> {
     let mut values = Vec::with_capacity(columns.len());
     for (join_column, outer_column) in columns {
-        let value = resolve_column(row, outer_column)?.clone();
+        let mut value = resolve_column(row, outer_column)?.clone();
         if matches!(value, RelationalValue::Null) {
             return Ok(None);
         }
@@ -738,7 +742,24 @@ pub(super) fn bound_join_key(
                 schema.name
             ))
         })?;
-        if value.scalar_type() != Some(schema.columns[position].scalar_type) {
+        value = match (schema.columns[position].scalar_type, value) {
+            (RelationalScalarType::Decimal(_), RelationalValue::BigInt(value)) => {
+                RelationalValue::Decimal(value.into())
+            }
+            (RelationalScalarType::BigInt, RelationalValue::Decimal(value)) => {
+                // A fractional or out-of-range Decimal cannot equal any BIGINT
+                // index key. Assignment rounding must never affect a join.
+                let Ok(value) = value.to_i64() else {
+                    return Ok(None);
+                };
+                RelationalValue::BigInt(value)
+            }
+            (_, value) => value,
+        };
+        if !schema.columns[position]
+            .scalar_type
+            .same_value_domain(value.scalar_type())
+        {
             return Err(HawDBError::Semantic(format!(
                 "relational join comparison on {join_column} has an incompatible scalar type"
             )));
