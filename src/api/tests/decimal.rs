@@ -161,6 +161,62 @@ fn native_decimal_fromless_projection_and_explicit_float_cast() {
 }
 
 #[test]
+fn native_decimal_lock_boundaries_preserve_unrounded_comparison_values() {
+    for residency in [
+        StorageResidencyMode::Materialized,
+        StorageResidencyMode::OutOfCore,
+    ] {
+        let path = unique_test_dir("native-decimal-lock-boundaries");
+        let config = DatabaseConfig {
+            storage_residency_mode: residency,
+            ..Default::default()
+        };
+        let mut setup = Database::open_with_config(&path, config.clone()).unwrap();
+        setup
+            .query_sql("CREATE TABLE prices (k DECIMAL(5,2) PRIMARY KEY)")
+            .unwrap();
+        setup.checkpoint().unwrap();
+        drop(setup);
+        let db = Database::open_with_config(&path, config)
+            .unwrap()
+            .into_concurrent();
+        let options = crate::ConcurrentTransactionOptions::pessimistic(std::time::Duration::ZERO);
+        let mut owner = db.begin_transaction(options).unwrap();
+        assert!(owner
+            .query_sql("SELECT k FROM prices WHERE k > 1.235 AND k < 1.245 FOR UPDATE")
+            .unwrap()
+            .rows
+            .is_empty());
+        let mut blocked = db.begin_transaction(options).unwrap();
+        let error = blocked
+            .query_sql("INSERT INTO prices (k) VALUES (1.24)")
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("transaction lock wait timed out"),
+            "{error}"
+        );
+        drop(blocked);
+        for key in ["1.23", "1.25"] {
+            let mut disjoint = db.begin_transaction(options).unwrap();
+            disjoint
+                .query_sql_with_params("INSERT INTO prices (k) VALUES ($1)", &[decimal(key)])
+                .unwrap();
+            disjoint.commit().unwrap();
+        }
+        owner.rollback();
+        let mut released = db.begin_transaction(options).unwrap();
+        released
+            .query_sql("INSERT INTO prices (k) VALUES (1.24)")
+            .unwrap();
+        released.commit().unwrap();
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
 fn native_decimal_graph_wal_and_checkpoint_keep_payload_representation() {
     let path = unique_test_dir("native-decimal-graph-recovery");
     let parameters = BTreeMap::from([("amount".into(), decimal("9007199254740993.0100"))]);

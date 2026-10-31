@@ -156,6 +156,10 @@ rounding, overflow, numeric identity/order and ordered-key encodings against
 integer/rational comparisons. SQL tests check both frontends, prepared parameters,
 CAST metadata and flat expression depth limits. Relational tests check exact
 index boundaries, integer/Decimal joins, SUM/HAVING and atomic failed UPDATEs.
+Native locking tests keep comparison bounds unrounded across both residency
+modes. Serializable tests retain true incompatible-type and volatile-value
+refusals while checking mixed BIGINT/DOUBLE results above 2^53, fail-closed
+cross-domain key capture, and exact integral Decimal-to-BIGINT capture.
 Storage and spill tests check raw scale, malformed/truncated payload rejection,
 page projection and subsequent-record alignment. Cache keys distinguish equal
 numeric values with different scales when cached results retain representation.

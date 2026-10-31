@@ -138,6 +138,12 @@ precision after rounding. Division's result rounding and a subsequent column
 assignment are separate SQL operations. Division by zero and overflow fail.
 SUM uses these checked semantics; NULL-only and empty inputs yield NULL.
 
+BIGINT/DOUBLE PRECISION comparisons use numeric ordering without first rounding
+the integer through `f64`. Serializable dependency capture still refuses a
+cross-domain primary-key point it cannot represent; an exactly integral Decimal
+can instead bind to a BIGINT key. Valid ordinary execution does not bypass that
+capture boundary.
+
 Decimal/DOUBLE PRECISION arithmetic and comparisons require an explicit cast.
 Assignment to a declared DOUBLE PRECISION column permits approximate conversion;
 assignment of a floating value to Decimal requires a cast. Decimal-to-BIGINT
