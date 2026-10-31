@@ -67,6 +67,10 @@ pub enum LockTarget {
     },
     RelationalRange {
         namespace: LockNamespace,
+        /// Lexicographic boundaries over complete keys. Short values delimit a
+        /// prefix only with a successor-exclusive upper bound; Included(prefix)
+        /// on both sides does not lock any longer key. Derive prefix intervals
+        /// with RelationalKeyRange instead of treating bounds as wildcards.
         lower: Bound<RelationalKey>,
         upper: Bound<RelationalKey>,
     },

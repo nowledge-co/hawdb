@@ -320,6 +320,23 @@ The existing storage CI owner runs it. Focused replay uses
 Required manual MVCC and local fuzz campaigns keep their existing owners and
 profiles; these resource assertions do not measure transaction throughput.
 
+`api::concurrent::composite_lock_tests` extends the same root concurrent owner
+with composite order-prefix mutations, exclusive/inclusive suffix boundaries,
+empty-range inserts, secondary/primary lock coordination, nullable secondary
+entries, literal/parameter rekeys, and deterministic queued refresh/deadlock
+schedules, plus later-key validation after implicit table escalation. Full-scan
+waits retain validation of unchanged/absent write intents, and contradictory
+single-key predicates remain lock free. Both
+materialized and out-of-core fixtures reopen checkpointed data
+before exercising locks. Candidate discovery uses the ordinary pinned SQL row
+and index readers, caps output at 65 rows and 1 MiB, and bounds candidate work;
+more than 64 discovered lock entries or 1 MiB of staged key values escalates to
+a table guard. The suite checks large assignment parameters before key fanout and
+that escalation cannot expose a partial lock set, including a `LIMIT 1` query.
+Focused replay: `cargo test --locked -p hawdb --lib composite_lock_tests`.
+Constraint-key changes and nonliteral index rekeys retain conservative guards;
+nullable index version validation retains its existing table dependency.
+
 `api::sql_runtime::tests` passes prepared SQL mutations through the database and
 transaction kernels with diagnostic-only text, detecting accidental parser
 fallback. DDL, INSERT/RETURNING, UPDATE, DELETE and Strict Append preserve bound
