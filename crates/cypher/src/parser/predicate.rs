@@ -599,6 +599,22 @@ impl Parser<'_> {
             });
         }
         let Some(op) = self.consume_comparison_operator() else {
+            if matches!(
+                &expression.kind,
+                ScalarExpressionKind::Value(AstNode {
+                    kind: ValueExpressionKind::Literal(
+                        hawdb_core::Value::Bool(_) | hawdb_core::Value::Null
+                    ),
+                    ..
+                })
+            ) {
+                return Ok(PropertyPredicate::ExpressionEq {
+                    expression,
+                    value: AstNode::synthetic(ScalarExpressionKind::Value(AstNode::synthetic(
+                        ValueExpressionKind::Literal(hawdb_core::Value::Bool(true)),
+                    ))),
+                });
+            }
             return Err(self.comparison_operator_error());
         };
         let value = self.parse_scalar_expression()?;

@@ -49,6 +49,15 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
             }
         }
         LogicalPlan::Project { items, input } => project(items, normalize(*input)),
+        LogicalPlan::UnwindRows {
+            expression,
+            variable,
+            input,
+        } => LogicalPlan::UnwindRows {
+            expression,
+            variable,
+            input: Box::new(normalize(*input)),
+        },
         LogicalPlan::Filter { predicate, input } => LogicalPlan::Filter {
             predicate,
             input: Box::new(normalize(*input)),
@@ -241,6 +250,7 @@ fn disjoint_native_bindings(input: &LogicalPlan, variables: &BTreeSet<&str>, dep
         // paths. No native entity binding survives from the input.
         LogicalPlan::Aggregate { .. } => true,
         LogicalPlan::Filter { input, .. }
+        | LogicalPlan::UnwindRows { input, .. }
         | LogicalPlan::Project { input, .. }
         | LogicalPlan::Sort { input, .. }
         | LogicalPlan::Limit { input, .. }

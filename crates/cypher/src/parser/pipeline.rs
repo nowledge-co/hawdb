@@ -109,9 +109,12 @@ impl Parser<'_> {
         let source = self.parse_value()?;
         if !matches!(
             source.kind,
-            ValueExpressionKind::Parameter(_) | ValueExpressionKind::List(_)
+            ValueExpressionKind::Parameter(_)
+                | ValueExpressionKind::List(_)
+                | ValueExpressionKind::Binding(_)
+                | ValueExpressionKind::BindingProperty { .. }
         ) {
-            return Err(self.error("UNWIND accepts only a parameter or list literal source"));
+            return Err(self.error("UNWIND accepts a parameter, list literal or row-bound list"));
         }
         self.expect_keyword("AS")?;
         let variable = self.parse_ident()?;
@@ -749,11 +752,38 @@ mod tests {
             } if variable == "row" && property == "name"
         ));
 
-        for query in [
-            "UNWIND range(1, 2) AS row CREATE (n:Node)",
-            "UNWIND row.id AS value CREATE (n:Node)",
+        assert!(parse_pipeline("UNWIND range(1, 2) AS row CREATE (n:Node)").is_err());
+        // Row sources are syntax; the binder validates whether their variables
+        // exist and whether the surrounding read/mutation pipeline permits them.
+        for source in ["row.id", "row", "[row.id, null, row.id]"] {
+            let query = format!("MATCH (row:Item) UNWIND {source} AS value RETURN value");
+            let parsed = parse_pipeline(&query).unwrap();
+            assert!(
+                matches!(&parsed.clauses[1].kind, ClauseKind::Unwind { source, .. }
+                if source.reads_row_binding())
+            );
+        }
+    }
+
+    #[test]
+    fn boolean_literals_compose_in_both_statement_and_pipeline_parsers() {
+        for predicate in [
+            "true",
+            "false",
+            "null",
+            "NOT null",
+            "true = false",
+            "true AND COALESCE(t.space_id, 'default') = $space_id",
+            "(false OR null) AND true",
         ] {
-            assert!(parse_pipeline(query).is_err(), "{query}");
+            let query = format!("MATCH (t:Thread) WHERE {predicate} RETURN t.id");
+            crate::parse(&query).unwrap();
+            parse_pipeline(&query).unwrap();
+        }
+        for predicate in ["42", "'string'"] {
+            let query = format!("MATCH (t:Thread) WHERE {predicate} RETURN t.id");
+            assert!(crate::parse(&query).is_err());
+            assert!(parse_pipeline(&query).is_err());
         }
     }
 

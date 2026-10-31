@@ -758,3 +758,72 @@ fn aggregate_arithmetic_projects_one_row_for_empty_global_input() {
         });
     }
 }
+
+#[test]
+fn row_unwind_stops_and_releases_memory_on_cancellation_errors_and_refusal() {
+    let expression = ProjectionExpression::Literal(Value::List(vec![Value::Int(1); 8]));
+    for cancel in [false, true] {
+        let token = RuntimeCancellationToken::new();
+        let task = RuntimeTaskContext::without_deadline(token.clone());
+        let mut source = Source::new(vec![Binding::values(BTreeMap::new()); 3], 1);
+        let mut emitted = 0;
+        let result = with_context(1, 8192, |context| {
+            stream_unwind_rows_batches(
+                &expression,
+                "item",
+                &PhysicalPlan::EmptyExec,
+                &mut source,
+                BatchExecutionContext {
+                    task_context: Some(&task),
+                    ..context
+                },
+                ExecutionLimit::unlimited(),
+                &mut |batch| {
+                    assert_eq!(batch.len(), 1);
+                    emitted += 1;
+                    if cancel {
+                        token.cancel();
+                        Ok(BatchControl::Continue)
+                    } else {
+                        Ok(BatchControl::Stop)
+                    }
+                },
+            )
+        });
+        assert_eq!(emitted, 1);
+        assert_eq!(source.calls, 1);
+        if cancel {
+            assert!(result.unwrap_err().to_string().contains("cancelled"));
+        } else {
+            assert_eq!(result.unwrap(), BatchControl::Stop);
+        }
+    }
+    for (expression, budget, expected) in [
+        (
+            ProjectionExpression::Literal(Value::String("bad".into())),
+            8192,
+            "list value",
+        ),
+        (expression.clone(), 1, "memory"),
+        (
+            ProjectionExpression::Literal(Value::List(vec![Value::String("x".repeat(8192))])),
+            16384,
+            "batch_payload_bytes",
+        ),
+    ] {
+        let mut source = Source::new(vec![Binding::values(BTreeMap::new())], 1);
+        let error = with_context(2, budget, |context| {
+            stream_unwind_rows_batches(
+                &expression,
+                "item",
+                &PhysicalPlan::EmptyExec,
+                &mut source,
+                context,
+                ExecutionLimit::unlimited(),
+                &mut |_| panic!("refused output"),
+            )
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}

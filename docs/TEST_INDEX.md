@@ -165,7 +165,16 @@ and root `api::tests::row_bound_pattern_properties` in
 `//:hawdb_unit_general_tests`. The regressions cover scalar/property bindings,
 optional predicate boundaries, duplicate matches and inputs, NULL/empty values,
 indexed and generic execution, parameter cache rebinding, dropped/unknown scope,
-and payload/result budget failures. Replay with `cargo test --locked -p hawdb
+and payload/result budget failures. The Mem Thread-reference regression keeps
+its original Boolean/COALESCE predicate and complete MATCH → row-dependent
+UNWIND → WITH/aggregate → correlated MATCH/OPTIONAL MATCH query. Per-row
+expansion also covers WITH aliases/native metadata, nested and multiple sources,
+NULL lists/items, duplicate multiplicities, early LIMIT stop and scalar alias
+reuse. Executor `transform::tests::row_unwind` owns cancellation, stop and refusal
+cleanup; plan-cache `row_unwind_parameters` owns logical/physical rebinding, and
+the existing allocation oracle covers owned row-UNWIND expressions and refuses
+a 1 MiB output before allocating a copy. Mutation source refusals remain owned
+by the planner. Replay with `cargo test --locked -p hawdb
 --lib row_bound_pattern_properties`, `cargo test --locked -p hawdb-cypher
 row_bound_pattern_properties`, and `cargo test --locked -p hawdb-plan-cypher
 row_bound_pattern_properties`. No CI lane or timeout is added.

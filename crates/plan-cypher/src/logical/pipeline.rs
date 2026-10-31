@@ -1148,7 +1148,9 @@ fn bind_read_clauses(
 ) -> Result<LogicalPlan> {
     for clause in clauses {
         match &clause.kind {
-            ClauseKind::Unwind { source, variable } if input.is_none() && scope.0.is_empty() => {
+            ClauseKind::Unwind { source, variable }
+                if input.is_none() && scope.0.is_empty() && !source.reads_row_binding() =>
+            {
                 let rows = match bind_value(source, parameters)? {
                     Value::List(rows) => rows,
                     Value::Null => Vec::new(),
@@ -1162,6 +1164,30 @@ fn bind_read_clauses(
                 input = Some(LogicalPlan::Unwind {
                     rows,
                     variable: variable.clone(),
+                });
+            }
+            ClauseKind::Unwind { source, variable } => {
+                if scope.0.contains_key(variable) {
+                    return Err(HawDBError::Semantic(format!(
+                        "UNWIND variable '{variable}' is already bound"
+                    )));
+                }
+                let mut expression = plan_scalar_expression_with_columns(
+                    &scope.graph_names(),
+                    &scope.columns(),
+                    &row_value_expression(source.clone())?,
+                    parameters,
+                )?;
+                let input_plan = input.take().ok_or_else(|| {
+                    HawDBError::Semantic("row-dependent UNWIND requires upstream rows".into())
+                })?;
+                let needed = imports::for_expression(&mut expression, &scope)?;
+                let input_plan = imports::restore(input_plan, &scope, &needed);
+                scope.0.insert(variable.clone(), BindingType::Scalar);
+                input = Some(LogicalPlan::UnwindRows {
+                    expression,
+                    variable: variable.clone(),
+                    input: Box::new(input_plan),
                 });
             }
             ClauseKind::Call { procedure, yields } => {

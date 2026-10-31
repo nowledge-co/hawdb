@@ -20,6 +20,14 @@ use std::collections::BTreeMap;
 pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
     vec![
         (
+            PhysicalPlan::UnwindRowsExec {
+                expression: ProjectionExpression::Literal(Value::List(vec![Value::Int(1)])),
+                variable: "item".into(),
+                input: Box::new(PhysicalPlan::EmptyExec),
+            },
+            true,
+        ),
+        (
             PhysicalPlan::UnwindExec {
                 rows: vec![Value::Int(1)],
                 variable: "value".into(),

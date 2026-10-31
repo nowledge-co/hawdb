@@ -950,6 +950,13 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                 stream_unwind_batches(rows, variable, context, execution_limit, emit)
             })
         }
+        PhysicalPlan::UnwindRowsExec {
+            expression,
+            variable,
+            input,
+        } => dispatch.supported(|context, execution_limit, emit| {
+            stream_unwind_rows_batches(expression, variable, input, context, execution_limit, emit)
+        }),
         PhysicalPlan::GraphMatchExec { program, input } => {
             dispatch.supported(|context, execution_limit, emit| {
                 stream_graph_match_batches(

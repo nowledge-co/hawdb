@@ -68,6 +68,15 @@ impl<'a> PlanBindings<'a> {
         }
 
         match plan {
+            PhysicalPlan::UnwindRowsExec { variable, .. } => {
+                bindings.node_labels.remove(variable.as_str());
+                bindings.node_populations.remove(variable.as_str());
+                bindings.relationship_types.remove(variable.as_str());
+                bindings
+                    .covered_properties
+                    .retain(|(name, _), _| *name != variable);
+                bindings.property_columns.remove(variable.as_str());
+            }
             PhysicalPlan::SeqNodeScan { variable, label }
             | PhysicalPlan::IndexNodeSeek {
                 variable, label, ..
