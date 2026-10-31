@@ -6,6 +6,12 @@ authoritative; this is a map of test families, not an exhaustive list of every
 Rust test function. Update it when changing a family's scope, build profile,
 execution lane, fixture size, isolation or known failure mode.
 
+The optimizer-graph joint-statistics owner also covers a residual filter above
+HashJoin when either or both marginal key NDVs are missing. Single-key and
+multi-key predicates retain the existing default selectivity; compatible
+marginals still avoid double counting an already-estimated hash key. Replay:
+`cargo test --locked -p hawdb-optimizer-graph --lib unknown_hash_key_ndv_preserves`.
+
 Joint graph statistics extend the existing
 `//crates/optimizer-graph:hawdb_optimizer_graph_tests` owner with bounded,
 unordered catalog key sets, invalid/stale/sampled/incomplete statistics,

@@ -44,7 +44,11 @@ constitute a schema proof.
   using the complete joint domains. The hash operator and residual predicate
   still pay for the single-key intermediate. Missing or sparse joint domains
   retain that intermediate instead of applying an unrelated default selectivity
-  to the already-enforced hash key.
+  to the already-enforced hash key. This marginal hash-key correction applies
+  to single-key joins too, independently of a composite index. If either marginal
+  NDV is absent or its binding is not a compatible label population, hash costing
+  retains the product and the following filter uses the ordinary default model;
+  the optimizer must not assume that key selectivity was already estimated.
 
 Statistical metadata travels with the existing cost fold. Selected-plan
 `decisions` entries beginning `cardinality statistics:` report operator ID,

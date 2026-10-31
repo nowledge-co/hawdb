@@ -299,6 +299,54 @@ fn joint_join_estimates_match_frequency_reference_without_underpricing_hash_work
 }
 
 #[test]
+fn unknown_hash_key_ndv_preserves_the_default_residual_selectivity() {
+    for known_label in [None, Some("Left"), Some("Right")] {
+        let catalog = OptimizerCatalog::new(
+            OptimizerCatalogIndexes::default(),
+            OptimizerCatalogStatistics::new(
+                [("Left".into(), 1000), ("Right".into(), 1000)],
+                [],
+                [],
+                [],
+                [],
+                known_label
+                    .into_iter()
+                    .map(|label| ((label.into(), "x".into()), 10)),
+                [],
+            ),
+        );
+        let plan = join_plan();
+        let bindings = PlanBindings::for_plan(&plan);
+        let hash_cost =
+            crate::graph::costing::estimate_physical_plan_cost_breakdown(&plan, &catalog);
+        assert_eq!(hash_cost.estimated_rows, 1_000_000);
+        let Predicate::And(parts) = join_predicate() else {
+            unreachable!()
+        };
+        for predicate in [parts[0].clone(), join_predicate()] {
+            assert_eq!(
+                join_filter_rows(
+                    &predicate,
+                    &plan,
+                    hash_cost.estimated_rows,
+                    &catalog,
+                    &bindings
+                ),
+                None,
+                "an unestimated hash key must not suppress the default filter fallback"
+            );
+            let filtered = PhysicalPlan::FilterExec {
+                predicate,
+                input: Box::new(plan.clone()),
+            };
+            let cost =
+                crate::graph::costing::estimate_physical_plan_cost_breakdown(&filtered, &catalog);
+            assert_eq!(cost.estimated_rows, 500_000);
+        }
+    }
+}
+
+#[test]
 fn sparse_joint_join_domains_fall_back_and_the_enforced_key_is_not_counted_twice() {
     let catalog = join_catalog(100, false);
     let plan = join_plan();

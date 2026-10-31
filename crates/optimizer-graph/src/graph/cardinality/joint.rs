@@ -120,6 +120,10 @@ pub(super) fn join_filter_estimate(
     if keys.get(left_key.property.as_str()).copied() != Some(right_key.property.as_str()) {
         return None;
     }
+    // Only suppress the ordinary residual fallback when hash costing applied
+    // the mandatory key. Unknown/incompatible NDV leaves the Cartesian product.
+    let left_ndv = key_ndv(left_key, catalog, bindings)?;
+    let right_ndv = key_ndv(right_key, catalog, bindings)?;
     if keys.len() == 1 {
         return Some(JointEstimate::plain(input_rows));
     }
@@ -129,8 +133,8 @@ pub(super) fn join_filter_estimate(
         Some((
             left_label,
             right_label,
-            key_ndv(left_key, catalog, bindings)?,
-            key_ndv(right_key, catalog, bindings)?,
+            left_ndv,
+            right_ndv,
             catalog.joint_statistics(left_label, &keys.keys().copied().collect::<Vec<_>>())?,
             catalog.joint_statistics(right_label, &keys.values().copied().collect::<Vec<_>>())?,
         ))
