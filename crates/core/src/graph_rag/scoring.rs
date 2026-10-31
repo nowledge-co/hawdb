@@ -63,6 +63,25 @@ pub enum ScoreFeature {
     TimestampProperty(String),
 }
 
+crate::impl_retained_heap_for_struct!(ScoringSpec { terms, decay });
+crate::impl_retained_heap_for_struct!(ScoringTerm { weight, feature });
+crate::impl_retained_heap_for_struct!(DecayTerm {
+    feature,
+    half_life,
+    min_factor
+});
+
+impl crate::RetainedHeapBytes for ScoreFeature {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::SearchScore | Self::GraphSeedScore | Self::HopDistance => Some(0),
+            Self::NodeProperty(property) | Self::TimestampProperty(property) => {
+                property.retained_heap_bytes()
+            }
+        }
+    }
+}
+
 /// Feature values the engine can supply for one candidate.
 pub trait ScoringFeatureSource {
     fn search_score(&self) -> Option<f64>;

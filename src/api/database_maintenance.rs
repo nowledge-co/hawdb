@@ -898,8 +898,11 @@ impl Database {
             return Err(error);
         }
         report.checkpoint_persisted = true;
-        *self.runtime.get()?.plan_cache.borrow_mut() =
-            PlanCache::new(self.config.max_plan_cache_entries);
+        *self.runtime.get()?.plan_cache.borrow_mut() = PlanCache::with_byte_limits(
+            self.config.max_plan_cache_entries,
+            Some(self.config.max_physical_plan_cache_bytes),
+            Some(self.config.max_physical_plan_cache_entry_bytes),
+        );
         self.runtime
             .get()?
             .optimizer_planning_cache

@@ -50,6 +50,40 @@ fn frozen_equivalent(input: &str, entry: &str) {
 fn assert_frozen(expected: &serde_json::Value) {
     use sha2::{Digest, Sha256};
     use std::fmt::Write;
+    // main #1411 intentionally admits bare row bindings and classifies read-only
+    // UNWIND as Pipeline. Keep the older oracle immutable; apply only these
+    // independently exported transitions with matching previous fingerprints.
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+    static TRANSITIONS: OnceLock<BTreeMap<(String, String), serde_json::Value>> = OnceLock::new();
+    let transitions = TRANSITIONS.get_or_init(|| {
+        include_str!("../../../fixtures/migration_main_1411_peg_baseline_v1.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .filter(|case| case.get("previous_kind").is_some())
+            .map(|case| {
+                (
+                    (
+                        case["query"].as_str().unwrap().to_owned(),
+                        case["entry"].as_str().unwrap().to_owned(),
+                    ),
+                    case,
+                )
+            })
+            .collect()
+    });
+    let expected = if let Some(current) = transitions.get(&(
+        expected["query"].as_str().unwrap().to_owned(),
+        expected["entry"].as_str().unwrap().to_owned(),
+    )) {
+        if current["ast_sha256"] != expected["ast_sha256"] || current["kind"] != expected["kind"] {
+            assert_eq!(expected["kind"], current["previous_kind"]);
+            assert_eq!(expected["ast_sha256"], current["previous_ast_sha256"]);
+        }
+        current
+    } else {
+        expected
+    };
     let input = expected["query"].as_str().unwrap();
     let result = if expected["entry"] == "statement" {
         crate::parse(input).map(|ast| format!("{ast:?}"))
@@ -510,4 +544,15 @@ fn graph_mutations_values_and_procedures_match_without_native_captures() {
             "native AST capture in {query}"
         );
     }
+}
+
+#[test]
+fn main_1411_row_bound_values_preserve_the_independent_main_ir() {
+    let mut count = 0;
+    for line in include_str!("../../../fixtures/migration_main_1411_peg_baseline_v1.jsonl").lines()
+    {
+        assert_frozen(&serde_json::from_str(line).unwrap());
+        count += 1;
+    }
+    assert_eq!(count, 140);
 }

@@ -186,6 +186,10 @@ pub enum PhysicalPlan {
         label: String,
         properties: BTreeMap<String, Value>,
     },
+    UnwindExec {
+        rows: Vec<Value>,
+        variable: String,
+    },
     UnwindMutation {
         rows: Vec<Value>,
         variable: String,
@@ -564,6 +568,7 @@ pub enum PhysicalPlan {
 }
 
 mod host_scoring;
+mod retained;
 pub use host_scoring::{HostScoringPlan, HostScoringRankPolicy};
 
 pub use domain::{
@@ -571,3 +576,9 @@ pub use domain::{
     ProcedurePhysicalPlanRef, RelationalPhysicalPlanRef, SchemaPhysicalPlanRef,
     TraversalPhysicalPlanRef,
 };
+
+// Retained query ownership: HashJoinKey.
+hawdb_core::impl_retained_heap_for_struct!(HashJoinKey { variable, property });
+
+// Retained query ownership: GraphExpansionBudget.
+hawdb_core::impl_retained_heap_for_copy!(GraphExpansionBudget);

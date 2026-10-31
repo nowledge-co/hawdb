@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 
 #[test]
@@ -782,5 +785,40 @@ fn nested_aggregate_arguments_are_rejected() {
     assert!(
         error.to_string().contains("cannot contain aggregate"),
         "{error}"
+    );
+}
+
+#[test]
+fn row_bound_pattern_properties_reuse_lookup_and_optional_predicates() {
+    let parameters = BTreeMap::from([("ids".into(), Value::List(vec![Value::Int(1)]))]);
+    for optional in [false, true] {
+        let prefix = if optional { "OPTIONAL MATCH" } else { "MATCH" };
+        let query = format!("UNWIND $ids AS candidate_id WITH candidate_id {prefix} (n:Item {{id: candidate_id}}) RETURN n.id");
+        let plan = plan_normalized_pipeline_query(&query, &parameters).unwrap();
+        let LogicalPlan::Project { input, .. } = plan else {
+            panic!("expected projection")
+        };
+        assert!(
+            matches!(*input, LogicalPlan::NodeColumnLookup { optional: actual, .. } if actual == optional)
+        );
+    }
+    let plan = plan_normalized_pipeline_query(
+        "UNWIND $ids AS candidate_id OPTIONAL MATCH (n:Item {id: candidate_id, active: true}) WHERE n.other = 1 RETURN n.id",
+        &parameters,
+    ).unwrap();
+    let LogicalPlan::Project { input, .. } = plan else {
+        panic!("expected projection")
+    };
+    let LogicalPlan::GraphMatch { program, .. } = *input else {
+        panic!("expected correlated MATCH")
+    };
+    assert!(program.optional);
+    assert!(matches!(program.predicate, Some(Predicate::And(_))));
+    let GraphMatchStep::Node(node) = &program.steps[0] else {
+        panic!("expected node step")
+    };
+    assert_eq!(
+        node.properties,
+        BTreeMap::from([("active".into(), Value::Bool(true))])
     );
 }

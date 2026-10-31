@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use super::super::{OptimizerCatalog, PhysicalPlan};
+use hawdb_core::Value;
 use hawdb_plan_cypher::NodeProjectionAccess;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[cfg(test)]
 mod tests;
@@ -25,18 +26,24 @@ mod oracle;
 #[cfg(test)]
 mod fixtures;
 
+mod lineage;
+
 #[derive(Default)]
 pub(in crate::graph) struct PlanBindings<'a> {
     node_labels: BTreeMap<&'a str, &'a str>,
     relationship_types: BTreeMap<&'a str, &'a str>,
     node_populations: BTreeMap<&'a str, NodePopulation<'a>>,
-    covered_properties: BTreeSet<(&'a str, &'a str)>,
+    covered_properties: BTreeMap<(&'a str, &'a str), Option<&'a Value>>,
+    property_columns: BTreeMap<&'a str, Option<(&'a str, &'a str)>>,
 }
 
 enum NodePopulation<'a> {
     #[cfg(test)]
     OracleCount(u64),
-    Label(&'a str),
+    Label {
+        label: &'a str,
+        joint_compatible: bool,
+    },
     Expansion {
         plan: &'a PhysicalPlan,
         source: bool,
@@ -56,7 +63,8 @@ impl<'a> PlanBindings<'a> {
             merge_left_biased(&mut bindings.node_labels, right.node_labels);
             merge_left_biased(&mut bindings.relationship_types, right.relationship_types);
             merge_left_biased(&mut bindings.node_populations, right.node_populations);
-            merge_coverage(&mut bindings.covered_properties, right.covered_properties);
+            merge_left_biased(&mut bindings.covered_properties, right.covered_properties);
+            lineage::merge_columns(&mut bindings.property_columns, right.property_columns);
         }
 
         match plan {
@@ -86,9 +94,13 @@ impl<'a> PlanBindings<'a> {
                 variable, label, ..
             } => {
                 bindings.node_labels.insert(variable, label);
-                bindings
-                    .node_populations
-                    .insert(variable, NodePopulation::Label(label));
+                bindings.node_populations.insert(
+                    variable,
+                    NodePopulation::Label {
+                        label,
+                        joint_compatible: true,
+                    },
+                );
             }
             PhysicalPlan::GraphMatchExec { program, .. } => {
                 for variable in program
@@ -98,7 +110,7 @@ impl<'a> PlanBindings<'a> {
                 {
                     bindings
                         .covered_properties
-                        .retain(|(name, _)| *name != variable);
+                        .retain(|(name, _), _| *name != variable);
                     bindings.node_labels.remove(variable.as_str());
                     bindings.node_populations.remove(variable.as_str());
                     bindings.relationship_types.remove(variable.as_str());
@@ -121,9 +133,13 @@ impl<'a> PlanBindings<'a> {
                         }
                     };
                     bindings.node_labels.insert(&node.variable, &node.label);
-                    bindings
-                        .node_populations
-                        .insert(&node.variable, NodePopulation::Label(&node.label));
+                    bindings.node_populations.insert(
+                        &node.variable,
+                        NodePopulation::Label {
+                            label: &node.label,
+                            joint_compatible: false,
+                        },
+                    );
                 }
             }
             PhysicalPlan::NodeColumnLookupExec {
@@ -134,6 +150,21 @@ impl<'a> PlanBindings<'a> {
                 bindings.node_labels.clear();
                 bindings.node_labels.insert(variable, label);
                 bindings.relationship_types.clear();
+                if let Some(NodePopulation::Label {
+                    joint_compatible, ..
+                }) = bindings.node_populations.get_mut(variable.as_str())
+                {
+                    *joint_compatible = false;
+                }
+                for ((source, _), value) in bindings
+                    .covered_properties
+                    .range_mut((variable.as_str(), "")..)
+                {
+                    if *source != variable {
+                        break;
+                    }
+                    *value = None;
+                }
             }
             PhysicalPlan::AdjacencyExpandExec {
                 source_variable,
@@ -147,6 +178,17 @@ impl<'a> PlanBindings<'a> {
                 // Source wins when both endpoints use the same variable.
                 bindings.node_labels.insert(target_variable, target_label);
                 bindings.node_labels.insert(source_variable, source_label);
+                if target_variable != source_variable {
+                    for ((source, _), value) in bindings
+                        .covered_properties
+                        .range_mut((target_variable.as_str(), "")..)
+                    {
+                        if *source != target_variable {
+                            break;
+                        }
+                        *value = None;
+                    }
+                }
                 bindings.node_populations.insert(
                     target_variable,
                     NodePopulation::Expansion {
@@ -185,7 +227,9 @@ impl<'a> PlanBindings<'a> {
                 access: NodeProjectionAccess::FullText { property, .. },
                 ..
             } => {
-                bindings.covered_properties.insert((variable, property));
+                bindings
+                    .covered_properties
+                    .insert((variable, property), None);
             }
             PhysicalPlan::IndexNodeCompositeSeek {
                 variable,
@@ -195,17 +239,17 @@ impl<'a> PlanBindings<'a> {
                 bindings.covered_properties.extend(
                     predicates
                         .iter()
-                        .map(|(property, _)| (variable.as_str(), property.as_str())),
+                        .map(|(property, _)| ((variable.as_str(), property.as_str()), None)),
                 );
             }
             PhysicalPlan::IndexNodeCompositeRangeSeek { variable, seek, .. } => {
                 bindings
                     .covered_properties
-                    .insert((variable, &seek.range_property));
+                    .insert((variable, &seek.range_property), None);
                 bindings.covered_properties.extend(
                     seek.equality_prefix
                         .iter()
-                        .map(|(property, _)| (variable.as_str(), property.as_str())),
+                        .map(|(property, _)| ((variable.as_str(), property.as_str()), None)),
                 );
             }
             PhysicalPlan::IndexNodeUnionSeek {
@@ -214,11 +258,112 @@ impl<'a> PlanBindings<'a> {
                 bindings.covered_properties.extend(
                     branches
                         .iter()
-                        .map(|branch| (variable.as_str(), branch.property.as_str())),
+                        .map(|branch| ((variable.as_str(), branch.property.as_str()), None)),
                 );
             }
             _ => {}
         }
+
+        match plan {
+            PhysicalPlan::IndexNodeSeek {
+                variable,
+                property,
+                value,
+                ..
+            } => {
+                bindings
+                    .covered_properties
+                    .insert((variable, property), Some(value));
+            }
+            PhysicalPlan::IndexNodeMultiSeek {
+                variable,
+                property,
+                values,
+                ..
+            } => {
+                if let [value] = values.as_slice() {
+                    bindings
+                        .covered_properties
+                        .insert((variable, property), Some(value));
+                }
+            }
+            PhysicalPlan::IndexNodeCompositeSeek {
+                variable,
+                predicates,
+                ..
+            } => {
+                for (property, value) in predicates {
+                    bindings
+                        .covered_properties
+                        .insert((variable, property), Some(value));
+                }
+            }
+            PhysicalPlan::IndexNodeCompositeRangeSeek { variable, seek, .. } => {
+                for (property, value) in &seek.equality_prefix {
+                    bindings
+                        .covered_properties
+                        .insert((variable, property), Some(value));
+                }
+            }
+            PhysicalPlan::NodeProjectionScanExec {
+                variable, access, ..
+            } => {
+                match access {
+                    NodeProjectionAccess::PropertyValues { property, values } => {
+                        bindings
+                            .covered_properties
+                            .insert((variable, property), None);
+                        if let [value] = values.as_slice() {
+                            bindings
+                                .covered_properties
+                                .insert((variable, property), Some(value));
+                        }
+                    }
+                    NodeProjectionAccess::CompositeEquality { predicates } => {
+                        for (property, value) in predicates {
+                            bindings
+                                .covered_properties
+                                .insert((variable, property), None);
+                            bindings
+                                .covered_properties
+                                .insert((variable, property), Some(value));
+                        }
+                    }
+                    NodeProjectionAccess::CompositeRange { seek } => {
+                        bindings
+                            .covered_properties
+                            .insert((variable, &seek.range_property), None);
+                        for (property, value) in &seek.equality_prefix {
+                            bindings
+                                .covered_properties
+                                .insert((variable, property), None);
+                            bindings
+                                .covered_properties
+                                .insert((variable, property), Some(value));
+                        }
+                    }
+                    NodeProjectionAccess::CompositeOrdered { seek } => {
+                        for (property, value) in &seek.equality_prefix {
+                            bindings
+                                .covered_properties
+                                .insert((variable, property), None);
+                            bindings
+                                .covered_properties
+                                .insert((variable, property), Some(value));
+                        }
+                    }
+                    NodeProjectionAccess::PropertyRange { property, .. } => {
+                        bindings
+                            .covered_properties
+                            .insert((variable, property), None);
+                    }
+                    // A union cannot individually prove each branch's key.
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        bindings.advance_columns(plan);
         bindings
     }
 
@@ -231,7 +376,28 @@ impl<'a> PlanBindings<'a> {
     }
 
     pub(in crate::graph) fn covers_property(&self, variable: &str, property: &str) -> bool {
-        self.covered_properties.contains(&(variable, property))
+        self.covered_properties.contains_key(&(variable, property))
+    }
+
+    pub(in crate::graph) fn fixed_access_value(
+        &self,
+        variable: &str,
+        property: &str,
+    ) -> Option<&'a Value> {
+        self.covered_properties
+            .get(&(variable, property))
+            .copied()
+            .flatten()
+    }
+
+    pub(in crate::graph) fn has_label_population(&self, variable: &str) -> bool {
+        matches!(
+            self.node_populations.get(variable),
+            Some(NodePopulation::Label {
+                joint_compatible: true,
+                ..
+            })
+        )
     }
 
     pub(in crate::graph) fn node_distinct_count(
@@ -242,7 +408,7 @@ impl<'a> PlanBindings<'a> {
         match self.node_populations.get(variable)? {
             #[cfg(test)]
             NodePopulation::OracleCount(count) => Some(*count),
-            NodePopulation::Label(label) => Some(catalog.label_count(label)),
+            NodePopulation::Label { label, .. } => Some(catalog.label_count(label)),
             NodePopulation::Expansion { plan, source } => {
                 let PhysicalPlan::AdjacencyExpandExec {
                     source_label,
@@ -309,16 +475,6 @@ fn merge_left_biased<K: Ord, V>(left: &mut BTreeMap<K, V>, mut right: BTreeMap<K
             right.insert(key, value);
         }
         *left = right;
-    }
-}
-
-fn merge_coverage<K: Ord>(left: &mut BTreeSet<K>, mut right: BTreeSet<K>) {
-    if left.len() < right.len() {
-        std::mem::swap(left, &mut right);
-    }
-    for key in right {
-        record_merge_entry();
-        left.insert(key);
     }
 }
 

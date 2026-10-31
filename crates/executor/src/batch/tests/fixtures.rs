@@ -20,6 +20,13 @@ use std::collections::BTreeMap;
 pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
     vec![
         (
+            PhysicalPlan::UnwindExec {
+                rows: vec![Value::Int(1)],
+                variable: "value".into(),
+            },
+            true,
+        ),
+        (
             PhysicalPlan::GraphMatchExec {
                 program: GraphMatchProgram {
                     imports: Vec::new(),

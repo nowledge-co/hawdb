@@ -18,3 +18,6 @@ pub enum RelationshipDirection {
     Incoming,
     Undirected,
 }
+
+// Retained query ownership: RelationshipDirection.
+crate::impl_retained_heap_for_copy!(RelationshipDirection);

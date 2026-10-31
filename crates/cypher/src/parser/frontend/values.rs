@@ -130,8 +130,7 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                     "a property binding",
                 ),
                 r("v_identifier"),
-                t(T::Dot),
-                r("v_identifier"),
+                o(s(vec![t(T::Dot), r("v_identifier")])),
             ]),
         ),
         (
@@ -172,9 +171,13 @@ impl Transformer<'_> {
             ),
             "v_property" => {
                 let names = self.ids(selected);
-                ValueExpressionKind::BindingProperty {
-                    variable: names[0].clone(),
-                    property: names[1].clone(),
+                if names.len() == 1 {
+                    ValueExpressionKind::Binding(names[0].clone())
+                } else {
+                    ValueExpressionKind::BindingProperty {
+                        variable: names[0].clone(),
+                        property: names[1].clone(),
+                    }
                 }
             }
             "v_boolean" => ValueExpressionKind::Literal(Value::Bool(

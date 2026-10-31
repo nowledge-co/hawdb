@@ -554,6 +554,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
         | PhysicalPlan::GraphSeedScan { .. }
         | PhysicalPlan::TextSeedScan { .. }
         | PhysicalPlan::UnwindMutation { .. }
+        | PhysicalPlan::UnwindExec { .. }
         | PhysicalPlan::GraphMatchExec { .. } => Ok(None),
     }
 }

@@ -972,6 +972,7 @@ impl Transformer<'_> {
 fn value_to_scalar(value: ValueExpression) -> ScalarExpression {
     let span = value.span;
     let kind = match value.kind {
+        ValueExpressionKind::Binding(variable) => ScalarExpressionKind::Variable(variable),
         ValueExpressionKind::BindingProperty { variable, property } => {
             ScalarExpressionKind::Property { variable, property }
         }

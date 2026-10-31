@@ -271,3 +271,13 @@ pipeline and anonymous-name tests remain against the public PEG entry points.
 Removing the legacy parsers establishes routing, not performance readiness.
 Parser timing and allocator/RSS qualification must still be assessed against
 independent baseline builds without weakening existing resource gates.
+
+Latest-main integration at `2ae7e88614` (#1411) adds bare row-bound values in
+node patterns and classifies read-only UNWIND as a query pipeline. The PEG
+value rule and selected-tree lowering retain both changes without restoring the
+handwritten parser. All 12,220 earlier Cypher records were independently
+re-exported from that main revision and matched the integrated candidate. The
+older fixtures stay immutable: `migration_main_1411_peg_baseline_v1.jsonl`
+records the eight intentional main transitions with their previous fingerprints,
+plus 132 independently exported row-bound/CASE/context outcomes. Existing
+#1411 parser and embedded query tests remain intact.
