@@ -36,6 +36,7 @@ mod preflight;
 pub use preflight::{
     execute_mutation_with_store, execute_mutation_with_store_output_limits,
     materialize_node_mutation, materialize_unwind_mutations, project_staged_mutation_return_rows,
+    resolve_relationship_merge_endpoints,
 };
 
 pub fn mutation_returns_rows(plan: &PhysicalPlan) -> bool {

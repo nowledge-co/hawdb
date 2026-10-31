@@ -75,8 +75,19 @@ result multiplicity while MERGE reuses the same relationship. Missing or NULL
 endpoint equalities produce no rows or invented nodes. ON CREATE changes only
 new relationships. Mutation plans remain excluded from parameter-template reuse.
 
+Endpoint keys are resolved once per `(label, property names)` pattern against
+that statement's store, including earlier writes in an explicit transaction.
+Resident scalar indexes are used when available; other patterns use one admitted
+projected scan. The lookup map and rewritten ID filters obey the host/runtime
+query memory budget. The complete pair count is checked before copying per-row
+ID lists; an empty pair retains no IDs. Storage rechecks labels and non-ID
+predicates by point lookup, without repeating label scans or ID membership
+searches for each candidate. Uniform MERGE batches index pending edges by
+source/target/type, retaining property-subset matching and input multiplicity.
+NULL relationship match properties are refused before any write.
+
 Node-only RETURN values are independent of the new edge. Autocommit preflight
-projects the same matched endpoint pairs and checks output limits before the
+reuses the resolved endpoint IDs and checks output limits before the
 atomic write. Explicit transactions project the staged result under the existing
 statement savepoint; output rejection restores that statement while retaining
 earlier statements. Ordinary rollback and WAL/reopen boundaries remain unchanged.

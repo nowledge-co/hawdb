@@ -1517,38 +1517,19 @@ impl GraphStore {
         max_ids: usize,
         limit_name: &str,
     ) -> Result<Vec<NodeId>> {
-        if let Some(PropertyFilter::IdEq { value }) = filter {
-            let Value::Int(value) = value else {
-                return Ok(Vec::new());
-            };
-            // Preserve the signed ID representation used by property_filter_matches.
-            let id = NodeId(*value as u64);
-            let matches = self.node_owned(id)?.is_some_and(|node| {
-                label_id.is_none_or(|label_id| node.labels.contains(&label_id))
-            });
-            if !matches {
-                return Ok(Vec::new());
-            }
-            if max_ids == 0 {
-                return Err(HawDBError::Execution(format!(
-                    "mutation would exceed {limit_name} {max_ids}"
-                )));
-            }
-            return Ok(vec![id]);
-        }
-        if let Some(PropertyFilter::IdIn { values }) = filter {
+        if let Some((values, recheck)) = filter.and_then(internal_id_candidates) {
             let mut ids = BTreeSet::new();
             for value in values {
-                let Value::Int(value) = value else {
-                    continue;
-                };
-                // Preserve the signed ID representation used by property_filter_matches.
+                let Value::Int(value) = value else { continue };
                 let id = NodeId(*value as u64);
                 if ids.contains(&id) {
                     continue;
                 }
                 let matches = self.node_owned(id)?.is_some_and(|node| {
-                    label_id.is_none_or(|label_id| node.labels.contains(&label_id))
+                    label_id.is_none_or(|label| node.labels.contains(&label))
+                        && recheck
+                            .iter()
+                            .all(|filter| property_filter_matches(filter, id.0, &node.properties))
                 });
                 if matches {
                     if ids.len() == max_ids {
@@ -1559,7 +1540,6 @@ impl GraphStore {
                     ids.insert(id);
                 }
             }
-            // Match scan order without retaining an unbounded copy of the input IDs.
             return Ok(ids.into_iter().collect());
         }
         let mut ids = Vec::with_capacity(max_ids.min(1024));
@@ -1609,31 +1589,28 @@ impl GraphStore {
         filter: Option<&PropertyFilter>,
         pending_nodes: &[PendingNode],
     ) -> Vec<NodeId> {
-        let match_id = |value: &Value| {
-            let Value::Int(value) = value else {
-                return None;
-            };
-            // Match the signed representation used by property_filter_matches.
-            let id = NodeId(*value as u64);
-            let index = pending_node_index(pending_nodes, id)?;
-            label_id
-                .is_none_or(|label_id| label_id == pending_nodes[index].1)
-                .then_some(id)
-        };
-        match filter {
-            Some(PropertyFilter::IdEq { value }) => {
-                return match_id(value).into_iter().collect();
-            }
-            Some(PropertyFilter::IdIn { values }) => {
-                // Retain only matching IDs and preserve the pending list's order.
-                return values
-                    .iter()
-                    .filter_map(match_id)
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect();
-            }
-            _ => {}
+        if pending_nodes.is_empty() {
+            return Vec::new();
+        }
+        if let Some((values, recheck)) = filter.and_then(internal_id_candidates) {
+            return values
+                .iter()
+                .filter_map(|value| {
+                    let Value::Int(value) = value else {
+                        return None;
+                    };
+                    let id = NodeId(*value as u64);
+                    let (_, label, properties) =
+                        &pending_nodes[pending_node_index(pending_nodes, id)?];
+                    (label_id.is_none_or(|expected| expected == *label)
+                        && recheck
+                            .iter()
+                            .all(|filter| property_filter_matches(filter, id.0, properties)))
+                    .then_some(id)
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
         }
         pending_nodes
             .iter()
@@ -1744,4 +1721,19 @@ fn collect_relational_primary_key_changes_from_wal_ops(
         work.checkpoint().map_err(HawDBError::from_storage_error)?;
     }
     Ok(())
+}
+
+// Membership is established by the candidate loop. Rechecking the leading
+// IdIn for each candidate would turn a fan-out endpoint into quadratic work.
+fn internal_id_candidates(filter: &PropertyFilter) -> Option<(&[Value], &[PropertyFilter])> {
+    match filter {
+        PropertyFilter::IdEq { value } => Some((std::slice::from_ref(value), &[])),
+        PropertyFilter::IdIn { values } => Some((values, &[])),
+        PropertyFilter::And(filters) => match filters.first()? {
+            PropertyFilter::IdEq { value } => Some((std::slice::from_ref(value), &filters[1..])),
+            PropertyFilter::IdIn { values } => Some((values, &filters[1..])),
+            _ => None,
+        },
+        _ => None,
+    }
 }

@@ -1,67 +1,10 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
+use super::endpoints::resolved_ids;
 use super::*;
 use hawdb_plan_cypher::BatchRelationshipMerge;
-use hawdb_storage::mutation::{MatchedRelationshipMerge, PropertyFilter};
-
-fn matched_ids(
-    label: &str,
-    filter: Option<&PropertyFilter>,
-    catalog: &Catalog,
-    store: &dyn GraphExecutionRead,
-    limits: MutationLimits,
-    task: Option<&RuntimeTaskContext>,
-) -> Result<Vec<NodeId>> {
-    let labels = label_ids_for_pattern(catalog, label);
-    if labels.as_ref().is_some_and(Vec::is_empty)
-        || matches!(filter, Some(PropertyFilter::Or(filters)) if filters.is_empty())
-    {
-        return Ok(Vec::new());
-    }
-    let mut ids = Vec::new();
-    let mut visited = 0usize;
-    let mut visit = |node: hawdb_storage::NodeRecord| {
-        visited += 1;
-        if visited.is_multiple_of(DEFAULT_EXECUTION_BATCH_ROWS) {
-            runtime_checkpoint(task)?;
-        }
-        if node_matches_label_pattern(&node, labels.as_deref())
-            && filter
-                .is_none_or(|filter| crate::predicate::node_matches_property_filter(&node, filter))
-        {
-            if ids.len() == limits.max_affected_rows.get() {
-                return Err(HawDBError::Execution(
-                    "relationship MERGE exceeds max_mutation_affected_rows".into(),
-                ));
-            }
-            ids.push(node.id);
-        }
-        Ok(ScanControl::Continue)
-    };
-    fn equality(filter: &PropertyFilter) -> Option<(&str, &Value)> {
-        match filter {
-            PropertyFilter::Eq { property, value } => Some((property, value)),
-            PropertyFilter::And(filters) => filters.iter().find_map(equality),
-            _ => None,
-        }
-    }
-    if let Some([label]) = labels.as_deref() {
-        if let Some((property, value)) = filter.and_then(equality) {
-            store.visit_nodes_by_property_owned(
-                *label,
-                property,
-                std::slice::from_ref(value),
-                &mut visit,
-            )?;
-        } else {
-            store.visit_nodes_owned(Some(*label), &mut visit)?;
-        }
-    } else {
-        store.visit_nodes_owned(None, &mut visit)?;
-    }
-    Ok(ids)
-}
+use hawdb_storage::mutation::MatchedRelationshipMerge;
 
 fn project_pair(
     merge: &BatchRelationshipMerge,
@@ -129,38 +72,23 @@ pub(super) fn project_before_commit(
     for mutation in mutations {
         runtime_checkpoint(task)?;
         let GraphMutation::MergeRelationshipsBetweenMatches(MatchedRelationshipMerge {
-            source_label,
             source_filter,
-            target_label,
             target_filter,
             ..
         }) = mutation
         else {
             unreachable!("bound relationship batch")
         };
-        let sources = matched_ids(
-            source_label,
-            source_filter.as_ref(),
-            catalog,
-            store,
-            limits,
-            task,
-        )?;
-        if sources.is_empty() {
-            continue;
-        }
-        let targets = matched_ids(
-            target_label,
-            target_filter.as_ref(),
-            catalog,
-            store,
-            limits,
-            task,
-        )?;
+        let sources = resolved_ids(source_filter);
+        let targets = resolved_ids(target_filter);
         for source in sources {
-            for target in &targets {
+            for target in targets {
                 runtime_checkpoint(task)?;
-                let row = project_pair(merge, source, *target, catalog, store)?;
+                let node_id = |value: &Value| match value {
+                    Value::Int(id) => NodeId(*id as u64),
+                    _ => unreachable!("resolved endpoint id"),
+                };
+                let row = project_pair(merge, node_id(source), node_id(target), catalog, store)?;
                 push_row(&mut rows, &mut bytes, row, limits, output)?;
             }
         }

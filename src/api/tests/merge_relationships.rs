@@ -91,6 +91,30 @@ fn matched_relationship_merge_returns_without_unwind() {
     assert_eq!(output.rows.schema().columns(), &["member", "skill"]);
 }
 
+#[test]
+fn matched_unwind_relationship_merge_rejects_null_match_properties_atomically() {
+    let mut db = evidence_fixture();
+    let parameters = BTreeMap::from([(
+        "rows".into(),
+        Value::List(vec![
+            Value::Map(BTreeMap::from([
+                ("id".into(), Value::String("a".into())),
+                ("key".into(), Value::Int(1)),
+            ])),
+            Value::Map(BTreeMap::from([("id".into(), Value::String("b".into()))])),
+        ]),
+    )]);
+    let query = "MATCH (s:Skill {id: 'skill'}) UNWIND $rows AS row MATCH (m:Memory {id: row.id}) MERGE (s)-[:SYNTHESIZED_FROM {key: row.key}]->(m) RETURN m.id";
+    let error = db.query_with_params(query, &parameters).unwrap_err();
+    assert!(
+        matches!(error, HawDBError::Semantic(message) if message.contains("NULL") && message.contains("key"))
+    );
+    assert_eq!(
+        db.query(EVIDENCE_COUNT).unwrap().rows[0]["total"],
+        Value::Int(0)
+    );
+}
+
 fn evidence_fixture() -> Database {
     let mut database = Database::new();
     for query in [
@@ -657,4 +681,25 @@ fn merge_relationship_existing_pattern_does_not_write_wal() {
         assert_eq!(output.rows.len(), 1);
     }
     std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn matched_unwind_relationship_merge_preserves_large_fanout_and_pending_subsets() {
+    let mut db = Database::new();
+    db.query("CREATE (:Skill {id: 'skill'})").unwrap();
+    let ids = BTreeMap::from([(
+        "ids".into(),
+        Value::List((0..4_096).map(Value::Int).collect()),
+    )]);
+    db.query_with_params(
+        "UNWIND $ids AS id CREATE (:Memory {id: id, cohort: 1})",
+        &ids,
+    )
+    .unwrap();
+    let rows = db.query("MATCH (s:Skill {id: 'skill'}) UNWIND [1, 2, 1] AS key MATCH (m:Memory {cohort: 1}) MERGE (s)-[:SYNTHESIZED_FROM {key: key}]->(m) RETURN m.id").unwrap();
+    assert_eq!(rows.rows.len(), 12_288);
+    assert_eq!(
+        db.query(EVIDENCE_COUNT).unwrap().rows[0]["total"],
+        Value::Int(8_192)
+    );
 }

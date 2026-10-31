@@ -327,16 +327,25 @@ pub(super) fn execute_graph_transaction_plan(
                     rows,
                     variable,
                     operation,
-                } => transaction.stage_mutations_with_limits(
-                    executor::materialize_unwind_mutations(
+                } => {
+                    let mut mutations = executor::materialize_unwind_mutations(
                         rows,
                         variable,
                         operation,
                         mutation_limits,
                         task_context,
-                    )?,
-                    mutation_limits,
-                )?,
+                    )?;
+                    let _endpoint_charge =
+                        hawdb_executor::mutation::resolve_relationship_merge_endpoints(
+                            &mut mutations,
+                            transaction.catalog(),
+                            transaction.store(),
+                            mutation_limits,
+                            &runtime.config.execution_memory,
+                            task_context,
+                        )?;
+                    transaction.stage_mutations_with_limits(mutations, mutation_limits)?
+                }
                 _ => {
                     let command = if is_mutation_return {
                         hawdb_executor::mutation::materialize_node_mutation(

@@ -953,6 +953,7 @@ impl Database {
                                     output_limits.max_payload_bytes,
                                 ),
                             },
+                            &self.config.execution_memory,
                             task_context,
                         )
                     }?)?,

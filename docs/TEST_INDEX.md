@@ -1611,7 +1611,14 @@ The existing root general owner (`//:hawdb_unit_general_tests`) runs
 `api::tests::merge_relationships::matched_*`: exact projected member rows,
 duplicate input multiplicity, missing/NULL/empty matches, ON CREATE retention,
 all database/concurrent transaction result-budget refusals, full-batch input and
-storage refusal, and embedded host count-guard rollback followed by WAL reopen.
+storage refusal, NULL relationship-property refusal, large endpoint fan-out
+with pending property-subset matches, and embedded host count-guard rollback
+followed by WAL reopen. The executor preflight family (`//crates/executor:hawdb_executor_unit_tests`)
+counts one projected scan/index lookup per endpoint pattern and covers early
+fan-out refusal before ID rewriting, empty pairs, host memory budgets and
+cancellation. Storage's existing `id_in_mutation` family in
+`//crates/storage:hawdb_storage_tests` retains the independent scan oracle and
+checks ID-led property/label rechecks over 4,096 candidates and pending nodes.
 The parser and plan-cypher crate owners retain the syntax and scope/refusal
 checks. No carrier, feature matrix, timeout or CI lane is added. Local replay:
 `cargo test --locked -p hawdb --lib api::tests::merge_relationships::matched_`

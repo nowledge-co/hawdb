@@ -38,7 +38,9 @@ use hawdb_storage::{
 };
 use std::collections::BTreeMap;
 
+mod endpoints;
 mod relationship;
+pub use endpoints::resolve_relationship_merge_endpoints;
 
 pub fn execute_mutation_with_store(
     plan: &PhysicalPlan,
@@ -53,6 +55,7 @@ pub fn execute_mutation_with_store(
         store,
         limits,
         OutputLimits::default(),
+        &crate::ExecutionMemoryConfig::default(),
         task_context,
     )
 }
@@ -65,6 +68,7 @@ pub fn execute_mutation_with_store_output_limits(
     store: &mut dyn GraphExecutionWrite,
     limits: MutationLimits,
     output_limits: OutputLimits,
+    memory: &crate::ExecutionMemoryConfig,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<Row>> {
     runtime_checkpoint(task_context)?;
@@ -74,12 +78,20 @@ pub fn execute_mutation_with_store_output_limits(
         operation,
     } = plan
     {
-        if let BatchMutationOperation::MergeRelationship(merge) = operation
+        let mut mutations =
+            materialize_unwind_mutations(rows, variable, operation, limits, task_context)?;
+        let _endpoint_charge = resolve_relationship_merge_endpoints(
+            &mut mutations,
+            catalog,
+            store,
+            limits,
+            memory,
+            task_context,
+        )?;
+        let output = if let BatchMutationOperation::MergeRelationship(merge) = operation
             && merge.returns.is_some()
         {
-            let mutations =
-                materialize_unwind_mutations(rows, variable, operation, limits, task_context)?;
-            let output = relationship::project_before_commit(
+            Some(relationship::project_before_commit(
                 merge,
                 &mutations,
                 catalog,
@@ -87,23 +99,18 @@ pub fn execute_mutation_with_store_output_limits(
                 limits,
                 output_limits,
                 task_context,
-            )?;
-            runtime_checkpoint(task_context)?;
-            if !mutations.is_empty() {
-                store.commit_mutations_with_limits(catalog, mutations, limits)?;
-            }
-            return Ok(output);
+            )?)
+        } else {
+            None
+        };
+        runtime_checkpoint(task_context)?;
+        if mutations.is_empty() {
+            return Ok(output.unwrap_or_default());
         }
-        return execute_unwind_mutation_with_limits(
-            rows,
-            variable,
-            operation,
-            catalog,
-            store,
-            limits,
-            task_context,
-        );
+        let summary = store.commit_mutations_with_limits(catalog, mutations, limits)?;
+        return Ok(output.unwrap_or(summary.rows));
     }
+
     if let PhysicalPlan::SetNodePropertiesReturn {
         variable,
         label,
@@ -142,24 +149,6 @@ pub fn execute_mutation_with_store_output_limits(
             }
         }
     }
-}
-
-fn execute_unwind_mutation_with_limits(
-    rows: &[Value],
-    variable: &str,
-    operation: &BatchMutationOperation,
-    catalog: &mut Catalog,
-    store: &mut dyn GraphExecutionWrite,
-    limits: MutationLimits,
-    task_context: Option<&RuntimeTaskContext>,
-) -> Result<Vec<Row>> {
-    let mutations = materialize_unwind_mutations(rows, variable, operation, limits, task_context)?;
-    if mutations.is_empty() {
-        return Ok(Vec::new());
-    }
-    store
-        .commit_mutations_with_limits(catalog, mutations, limits)
-        .map(|summary| summary.rows)
 }
 
 /// Resolves every bounded `UNWIND` row before any graph state is changed.
@@ -217,6 +206,16 @@ fn resolve_unwind_mutation(
                     crate::predicate::property_filter_from_properties(properties)
                 }
             };
+            let rel_match_properties =
+                resolve_unwind_properties(&merge.rel_match_properties, variable, row)?;
+            if let Some((property, _)) = rel_match_properties
+                .iter()
+                .find(|(_, value)| matches!(value, Value::Null))
+            {
+                return Err(HawDBError::Semantic(format!(
+                    "relationship MERGE cannot match NULL property '{property}'"
+                )));
+            }
             Ok(GraphMutation::MergeRelationshipsBetweenMatches(
                 hawdb_storage::mutation::MatchedRelationshipMerge {
                     source_label: merge.source_label.clone(),
@@ -224,11 +223,7 @@ fn resolve_unwind_mutation(
                     target_label: merge.target_label.clone(),
                     target_filter: endpoint_filter(&target),
                     rel_type: merge.rel_type.clone(),
-                    rel_match_properties: resolve_unwind_properties(
-                        &merge.rel_match_properties,
-                        variable,
-                        row,
-                    )?,
+                    rel_match_properties,
                     on_create_properties: resolve_unwind_properties(
                         &merge.on_create_properties,
                         variable,

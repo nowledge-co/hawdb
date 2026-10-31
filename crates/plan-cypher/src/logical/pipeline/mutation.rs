@@ -209,20 +209,24 @@ pub(super) fn bind_mutation_pipeline(
     query: &QueryPipeline,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
-    if query
+    let has_unwind = query
         .clauses
         .iter()
-        .any(|clause| matches!(clause.kind, ClauseKind::Unwind { .. }))
-        || (query
-            .clauses
-            .iter()
-            .any(|clause| matches!(clause.kind, ClauseKind::Merge { .. }))
-            && matches!(
+        .any(|clause| matches!(clause.kind, ClauseKind::Unwind { .. }));
+    let has_relationship_merge = query.clauses.iter().any(|clause| matches!(&clause.kind, ClauseKind::Merge { pattern, .. } if !pattern.steps.is_empty()));
+    if has_relationship_merge
+        && (has_unwind
+            || matches!(
                 query.clauses.last().map(|clause| &clause.kind),
                 Some(ClauseKind::Return(_))
             ))
     {
         return relationship_batch::bind(query, parameters);
+    }
+    if has_unwind {
+        return Err(unsupported(
+            "UNWIND mutation pipeline is unsupported for this mutation shape",
+        ));
     }
     let mut input = MutationInput::default();
     let mut clauses = query.clauses.as_slice();

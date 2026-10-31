@@ -274,6 +274,15 @@ impl GraphStore {
         let mut limit_tracker = crate::mutation::MutationCommitLimitTracker::default();
         let mut pending_nodes = PendingNodes::default();
         let mut pending_relationships = Vec::new();
+        // A uniform MERGE batch only appends pending edges, so their positions
+        // stay stable. Mixed writes may update/delete them and keep the scan.
+        let index_pending_merges = mutations
+            .iter()
+            .all(|mutation| matches!(mutation, GraphMutation::MergeRelationshipsBetweenMatches(_)));
+        let mut pending_merge_index: std::collections::HashMap<
+            (NodeId, NodeId, RelTypeId),
+            Vec<usize>,
+        > = std::collections::HashMap::new();
 
         for mutation in mutations {
             match mutation {
@@ -1317,26 +1326,44 @@ impl GraphStore {
                                 rel_type_id,
                                 &request.rel_match_properties,
                             )?;
-                            let pending = pending_relationships
-                                .iter()
-                                .find(
-                                    |(
-                                        _,
-                                        pending_source,
-                                        pending_target,
-                                        pending_type,
-                                        properties,
-                                    )| {
-                                        *pending_source == source
-                                            && *pending_target == *target
-                                            && *pending_type == rel_type_id
-                                            && properties_contain_all(
+                            let pending = if current.is_some() {
+                                None
+                            } else if index_pending_merges {
+                                pending_merge_index
+                                    .get(&(source, *target, rel_type_id))
+                                    .and_then(|indices| {
+                                        indices.iter().find_map(|index| {
+                                            let (id, _, _, _, properties) =
+                                                &pending_relationships[*index];
+                                            properties_contain_all(
                                                 properties,
                                                 &request.rel_match_properties,
                                             )
-                                    },
-                                )
-                                .map(|(id, _, _, _, _)| *id);
+                                            .then_some(*id)
+                                        })
+                                    })
+                            } else {
+                                pending_relationships
+                                    .iter()
+                                    .find(
+                                        |(
+                                            _,
+                                            pending_source,
+                                            pending_target,
+                                            pending_type,
+                                            properties,
+                                        )| {
+                                            *pending_source == source
+                                                && *pending_target == *target
+                                                && *pending_type == rel_type_id
+                                                && properties_contain_all(
+                                                    properties,
+                                                    &request.rel_match_properties,
+                                                )
+                                        },
+                                    )
+                                    .map(|(id, _, _, _, _)| *id)
+                            };
                             if let Some(relationship) = current.or(pending) {
                                 rows.push(BTreeMap::from([
                                     ("source_node_id".to_string(), Value::Int(source.0 as i64)),
@@ -1366,6 +1393,12 @@ impl GraphStore {
                                 rel_type_id,
                                 properties,
                             ));
+                            if index_pending_merges {
+                                pending_merge_index
+                                    .entry((source, *target, rel_type_id))
+                                    .or_default()
+                                    .push(pending_relationships.len() - 1);
+                            }
                             rows.push(BTreeMap::from([
                                 ("source_node_id".to_string(), Value::Int(source.0 as i64)),
                                 ("target_node_id".to_string(), Value::Int(target.0 as i64)),

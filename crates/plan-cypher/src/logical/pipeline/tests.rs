@@ -819,3 +819,20 @@ fn nested_aggregate_arguments_are_rejected() {
         "{error}"
     );
 }
+
+#[test]
+fn relationship_merge_batch_keeps_unrelated_mutation_errors_specific() {
+    for (query, expected) in [
+        (
+            "MERGE (n:A {id: 1}) RETURN n",
+            "mutation has unsupported following clauses",
+        ),
+        (
+            "UNWIND [1] AS row MATCH (n:A {id: row}) SET n.seen = true",
+            "UNWIND mutation pipeline is unsupported",
+        ),
+    ] {
+        let error = plan_pipeline_query(query, &BTreeMap::new()).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:?}");
+    }
+}
