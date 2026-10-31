@@ -42,6 +42,8 @@ impl ConsumptionCost {
 }
 
 fn zero() -> PlanCostBreakdown {
+    // Keep the estimator's one-row floor while charging no consumed work.
+    // Executable LIMIT 0 plans are lowered to EmptyExec before this fold.
     PlanCostBreakdown::new(1, 0, 0, 0, 0)
 }
 

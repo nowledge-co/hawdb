@@ -26,6 +26,9 @@ ordered alternative only if its residual is absent or consists solely of exact
 equality-prefix constraints/true constants. Otherwise that alternative retains
 full work for selection: NDV cannot prove that rejecting matches are evenly
 distributed in index order. `LIMIT 0` is safe regardless of distribution.
+The same projection-fused comparison also applies to unbounded ORDER BY. A
+prefix-only ordered path then consumes its full estimated output, reports
+`row_goal=None` and receives no limit discount.
 Existing ordering, type, uniqueness, capability and directive guards
 continue to determine which alternatives are legal.
 

@@ -345,6 +345,14 @@ fn bounded_ordered_choice_requires_a_nonrejecting_residual_or_zero_goal() {
             unreachable!()
         };
         parts.truncate(1);
+        let (unbounded, unbounded_trace) = optimizer.optimize_with_catalog(&safe, &catalog);
+        assert!(unbounded.explain(0).contains("CompositeOrdered"));
+        assert_eq!(unbounded_trace.selected_plan_cost.estimated_rows, 1_000_000);
+        assert_eq!(unbounded_trace.selected_plan_cost.cost, 4_000_002);
+        assert!(unbounded_trace
+            .decisions
+            .iter()
+            .any(|decision| decision.contains("row_goal=None")));
         let bounded = LogicalPlan::Limit {
             offset: 0,
             limit: Some(20),
