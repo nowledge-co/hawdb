@@ -76,8 +76,10 @@ entry point remain available in default builds for offline library diagnostics;
 serving reads should use the ordinary query/streaming APIs.
 
 The single catalog cache currently compares the complete environment, including
-the optional proof-schema key. Alternating proof-tracking and ordinary shapes on
-physical-cache misses can rebuild the catalog at each switch. Mixed-shape cold
+the proof-tracking fields: the optional proof-schema key and ordered composite
+capabilities. Alternating proof-tracking and ordinary shapes on physical-cache
+misses can rebuild the catalog at each switch; separating either field alone
+would still leave the other forcing a rebuild. Mixed-shape cold
 planning was not measured in the source-bound experiment, so no performance
 claim covers this case. Keeping the optional physical-plan proof identity and
 avoiding catalog rebuilds together remains a separate optimization.
