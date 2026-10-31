@@ -3155,8 +3155,20 @@ fn full_text_tokens_streaming(value: &str) -> impl Iterator<Item = String> + '_ 
         })
 }
 
+/// Values whose predicate order ([`comparable_value_ordering`]) agrees with
+/// `Value::cmp` within their kind. Temporal instants are range-indexed;
+/// durations are not ordered by Cypher comparisons and stay out.
 fn is_range_value(value: &Value) -> bool {
-    matches!(value, Value::Int(_) | Value::Float(_) | Value::String(_))
+    matches!(
+        value,
+        Value::Int(_)
+            | Value::Float(_)
+            | Value::String(_)
+            | Value::Date(_)
+            | Value::LocalTime(_)
+            | Value::LocalDateTime(_)
+            | Value::DateTime(_)
+    )
 }
 
 fn composite_key_has_arity(value: &Value, arity: usize) -> bool {

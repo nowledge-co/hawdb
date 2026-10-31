@@ -43,7 +43,16 @@ fn value_capacity(value: &Value, depth: usize) -> Option<usize> {
             |bytes, value| bytes.checked_add(value_capacity(value, depth + 1)?),
         ),
         Value::Map(values) => properties_capacity(values, depth + 1),
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Uuid(_) => Some(0),
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Uuid(_)
+        | Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_) => Some(0),
+        Value::Duration(_) => Some(std::mem::size_of::<hawdb_core::temporal::Duration>()),
     }
 }
 

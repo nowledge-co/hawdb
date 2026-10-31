@@ -740,6 +740,11 @@ fn seed_metadata_value(value: &Value) -> Option<String> {
         Value::Int(value) => Some(value.to_string()),
         Value::Float(value) if value.is_finite() => Some(value.to_string()),
         Value::Uuid(value) => Some(value.to_string()),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => Some(value.to_string()),
         Value::Null
         | Value::Float(_)
         | Value::Binary(_)
@@ -1862,7 +1867,10 @@ fn collect_projection_properties(
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
-        | ProjectionExpression::ListSlice { .. } => expression
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::MapLiteral(_) => expression
             .all_children(|child| collect_projection_properties(child, variable, required)),
         // Comprehension elements are values, never graph bindings.
         ProjectionExpression::LocalVariable { .. } => true,

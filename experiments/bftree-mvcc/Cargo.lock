@@ -288,6 +288,7 @@ version = "0.23.0"
 name = "hawdb-core"
 version = "0.23.0"
 dependencies = [
+ "chrono",
  "getrandom 0.4.3",
  "regex",
  "uuid",

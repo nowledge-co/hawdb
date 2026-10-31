@@ -201,6 +201,13 @@ pub fn bind_relational_value(value: SqlValue, parameters: &[Value]) -> Result<Re
         Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
         Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
         Value::Vector(value) => Ok(RelationalValue::Vector(value)),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => Err(HawDBError::Semantic(
+            "relational SQL does not support Cypher temporal values; SQL DATE and TIMESTAMP remain integer epochs".to_string(),
+        )),
         Value::List(_) | Value::Map(_) => Err(HawDBError::Semantic(
             "relational SQL parameters must be scalar".to_string(),
         )),
@@ -256,6 +263,13 @@ fn compile_schema_value(
         Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
         Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
         Value::Vector(value) => Ok(RelationalValue::Vector(value)),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => Err(HawDBError::Semantic(
+            "relational SQL does not support Cypher temporal values; SQL DATE and TIMESTAMP remain integer epochs".to_string(),
+        )),
         Value::List(_) | Value::Map(_) => Err(HawDBError::Semantic(
             "relational schema defaults must be scalar".to_string(),
         )),

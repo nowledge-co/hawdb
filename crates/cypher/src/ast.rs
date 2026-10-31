@@ -430,9 +430,22 @@ pub enum ValueExpressionKind {
     Parameter(String),
     List(Vec<ValueExpression>),
     Binding(String),
-    BindingProperty { variable: String, property: String },
+    BindingProperty {
+        variable: String,
+        property: String,
+    },
     CurrentTimestamp,
     Timestamp(Box<ValueExpression>),
+    /// A temporal function over statically bound arguments, such as
+    /// `date('2026-10-30')` in a CREATE property map. Evaluated when the
+    /// statement is planned; zero-argument constructors read the statement
+    /// clock.
+    Temporal {
+        function: hawdb_core::TemporalFunction,
+        arguments: Vec<ValueExpression>,
+    },
+    /// `{key: value, ...}`, accepted as a temporal function argument.
+    Map(BTreeMap<String, ValueExpression>),
 }
 
 impl ValueExpressionKind {
@@ -443,6 +456,10 @@ impl ValueExpressionKind {
             Self::Binding(_) | Self::BindingProperty { .. } => true,
             Self::List(values) => values.iter().any(|value| value.kind.reads_row_binding()),
             Self::Timestamp(value) => value.kind.reads_row_binding(),
+            Self::Temporal { arguments, .. } => arguments
+                .iter()
+                .any(|argument| argument.kind.reads_row_binding()),
+            Self::Map(entries) => entries.values().any(|value| value.kind.reads_row_binding()),
             Self::Literal(_) | Self::Parameter(_) | Self::CurrentTimestamp => false,
         }
     }
@@ -574,6 +591,20 @@ pub enum ScalarExpressionKind {
     /// `length(p)`, `nodes(p)`, `relationships(p)` or
     /// `properties(nodes(p), 'key')` over a bound path variable.
     Path(ShortestPathReturnExpression),
+    /// An openCypher temporal function: `date(...)`, `datetime(...)`,
+    /// `duration.between(a, b)`, `date.truncate(unit, value)`, ...
+    TemporalFunction {
+        function: hawdb_core::TemporalFunction,
+        arguments: Vec<ScalarExpression>,
+    },
+    /// Postfix `expression.key` over a general expression: a temporal
+    /// component (`p.birthday.month`) or a map key.
+    PropertyAccess {
+        expression: Box<ScalarExpression>,
+        key: String,
+    },
+    /// `{key: expression, ...}` in source order (keys are unique).
+    MapLiteral(Vec<(String, ScalarExpression)>),
 }
 
 /// A projection or grouping expression, with aggregation explicit in its type.
@@ -694,6 +725,16 @@ pub enum ScalarBinaryOp {
     In,
     And,
     Or,
+    /// Scalar `+` (numbers, temporal instants and durations).
+    Add,
+    /// Scalar `-`.
+    Subtract,
+    /// Scalar `*`.
+    Multiply,
+    /// Scalar `/`.
+    Divide,
+    /// Scalar `%`.
+    Remainder,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -762,13 +803,19 @@ impl ScalarExpressionKind {
             | Self::IsNull { expression, .. }
             | Self::Lower(expression)
             | Self::Left { expression, .. }
-            | Self::JsonValue { expression, .. } => visit(expression),
+            | Self::JsonValue { expression, .. }
+            | Self::PropertyAccess { expression, .. } => visit(expression),
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {
                 arguments: expressions,
                 ..
+            }
+            | Self::TemporalFunction {
+                arguments: expressions,
+                ..
             } => expressions.iter().all(visit),
+            Self::MapLiteral(entries) => entries.iter().all(|(_, value)| visit(value)),
             Self::ListComprehension {
                 list,
                 predicate,

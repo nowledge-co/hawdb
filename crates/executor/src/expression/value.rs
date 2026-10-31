@@ -254,6 +254,17 @@ fn evaluate_arithmetic(left: &Value, op: ScalarBinaryOp, right: &Value) -> Resul
     if matches!(left, Value::Null) || matches!(right, Value::Null) {
         return Ok(Value::Null);
     }
+    let temporal_op = match op {
+        ScalarBinaryOp::Add => hawdb_core::temporal::TemporalArithmeticOp::Add,
+        ScalarBinaryOp::Subtract => hawdb_core::temporal::TemporalArithmeticOp::Subtract,
+        ScalarBinaryOp::Multiply => hawdb_core::temporal::TemporalArithmeticOp::Multiply,
+        ScalarBinaryOp::Divide => hawdb_core::temporal::TemporalArithmeticOp::Divide,
+        ScalarBinaryOp::Remainder => hawdb_core::temporal::TemporalArithmeticOp::Remainder,
+        _ => unreachable!("arithmetic operators only"),
+    };
+    if let Some(result) = hawdb_core::temporal::arithmetic(left, temporal_op, right) {
+        return result.map_err(|error| HawDBError::Execution(error.to_string()));
+    }
     if let (Value::Int(left), Value::Int(right)) = (left, right) {
         if matches!(op, ScalarBinaryOp::Divide | ScalarBinaryOp::Remainder) && *right == 0 {
             return Err(HawDBError::Execution("division by zero".to_string()));

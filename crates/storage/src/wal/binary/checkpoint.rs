@@ -177,6 +177,16 @@ fn encode_value(value: &Value, out: &mut Output<'_>) -> Result<()> {
         Value::Binary(value) => out.bytes(VALUE_FIELD_BINARY, value),
         Value::Vector(value) => out.bytes(VALUE_FIELD_VECTOR, value.encoded()),
         Value::Uuid(value) => out.bytes(VALUE_FIELD_UUID, value.as_bytes()),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            let mut payload = Vec::with_capacity(28);
+            let kind = hawdb_core::temporal::codec::encode_payload(value, &mut payload)
+                .expect("temporal values have a payload");
+            out.bytes(temporal_value_field(kind), &payload)
+        }
         Value::List(values) => {
             if values.is_empty() {
                 out.bytes(VALUE_FIELD_ELEMENT, &[])?;

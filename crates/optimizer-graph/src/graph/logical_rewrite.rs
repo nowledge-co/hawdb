@@ -441,7 +441,10 @@ fn collect_projection_columns(
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
-        | ProjectionExpression::ListSlice { .. } => {
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::MapLiteral(_) => {
             expression.all_children(|child| collect_projection_columns(child, columns))
         }
         // Comprehension elements are bound by the enclosing expression.
@@ -497,7 +500,10 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
-        | ProjectionExpression::ListSlice { .. } => {
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::MapLiteral(_) => {
             !expression.all_children(|child| !projection_expression_references_column(child))
         }
         ProjectionExpression::LocalVariable { .. } => false,

@@ -58,6 +58,8 @@ pub use retained::*;
 #[cfg(test)]
 mod error_tests;
 #[cfg(test)]
+mod temporal_tests;
+#[cfg(test)]
 mod vector_tests;
 
 /// Developer profiling build only. This observation is not an admission ledger
@@ -269,6 +271,9 @@ unsafe fn read_opt_str<'a>(text: FfiStr, name: &str) -> Result<Option<&'a str>, 
 /// `Binary` becomes `{"$binary": "<base64>"}` and `Uuid` becomes
 /// `{"$uuid": "<canonical>"}` so both stay distinguishable from plain
 /// strings. `Vector` uses `{"$vector": [1.0, 0.0]}` with Float32 coordinates.
+/// Temporal values use ISO 8601 text under `$date`, `$localtime`,
+/// `$localdatetime`, `$datetime` and `$duration`, for example
+/// `{"$datetime": "2026-10-30T12:00:00+02:00"}`.
 fn value_to_json(value: &Value) -> serde_json::Value {
     match value {
         Value::Null => serde_json::Value::Null,
@@ -281,6 +286,13 @@ fn value_to_json(value: &Value) -> serde_json::Value {
         Value::Uuid(item) => json!({ "$uuid": item.to_string() }),
         Value::Vector(item) => {
             json!({ "$vector": item.as_ref().coordinates().collect::<Vec<_>>() })
+        }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            json!({ hawdb::temporal::json_tag(value).expect("temporal value"): value.to_string() })
         }
         Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Map(items) => serde_json::Value::Object(
@@ -295,9 +307,9 @@ fn value_to_json(value: &Value) -> serde_json::Value {
 /// Convert a `serde_json::Value` into a HawDB [`Value`] for parameters.
 ///
 /// This is the inverse of [`value_to_json`]: the single-key objects
-/// `{"$binary": "<base64>"}`, `{"$uuid": "<canonical>"}` and
-/// `{"$vector": [1.0, 0.0]}` decode to their typed values; other objects
-/// become maps.
+/// `{"$binary": "<base64>"}`, `{"$uuid": "<canonical>"}`,
+/// `{"$vector": [1.0, 0.0]}` and the temporal tags (`{"$date": "..."}`,
+/// ...) decode to their typed values; other objects become maps.
 fn json_to_value(value: &serde_json::Value) -> Result<Value, String> {
     Ok(match value {
         serde_json::Value::Null => Value::Null,
@@ -344,6 +356,16 @@ fn json_to_value(value: &serde_json::Value) -> Result<Value, String> {
                         .parse::<Uuid>()
                         .map(Value::Uuid)
                         .map_err(|error| format!("invalid $uuid parameter: {error}"));
+                }
+                if let Some((tag, encoded)) = items.iter().next()
+                    && hawdb::temporal::JSON_TAGS.contains(&tag.as_str())
+                {
+                    let encoded = encoded
+                        .as_str()
+                        .ok_or_else(|| format!("{tag} must be an ISO 8601 string"))?;
+                    return hawdb::temporal::from_json_tag(tag, encoded)
+                        .expect("checked temporal tag")
+                        .map_err(|error| format!("invalid {tag} parameter: {error}"));
                 }
             }
             Value::Map(

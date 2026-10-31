@@ -214,7 +214,7 @@ impl Parser<'_> {
             self.expect_char(')')?;
             return Ok(PropertyPredicate::ExpressionContains { expression, value });
         }
-        if (matches_ignore_ascii_case(
+        if ((matches_ignore_ascii_case(
             &variable,
             &[
                 "coalesce",
@@ -227,10 +227,17 @@ impl Parser<'_> {
                 "relationships",
             ],
         ) || hawdb_core::ListFunction::from_function_name(&variable).is_some())
-            && self.peek_char() == Some('(')
+            && self.peek_char() == Some('('))
+            || {
+                let after_identifier = self.checkpoint();
+                self.restore(expression_start);
+                let temporal = self.at_temporal_call();
+                self.restore(after_identifier);
+                temporal
+            }
         {
             self.restore(expression_start);
-            let expression = self.parse_scalar_expression()?;
+            let expression = self.parse_case_scalar()?;
             return self.parse_expression_predicate(expression);
         }
         if variable.eq_ignore_ascii_case("case") {
@@ -260,9 +267,13 @@ impl Parser<'_> {
         let property = self.parse_ident()?;
         let property_span = self.source_span(expression_start.pos);
         self.skip_ws();
-        if self.peek_char() == Some('[') {
+        if self.peek_char() == Some('[')
+            || self.at_property_postfix()
+            || (allow_columns && self.at_arithmetic_operator())
+        {
+            // `p.birthday.month`, `p.tags[0]` or `p.x + 1` on the left side.
             self.restore(expression_start);
-            let expression = self.parse_scalar_expression()?;
+            let expression = self.parse_case_scalar()?;
             return self.parse_expression_predicate(expression);
         }
         if self.consume_keyword("IS") {
@@ -338,6 +349,15 @@ impl Parser<'_> {
         allow_columns: bool,
     ) -> Result<PropertyPredicateRight> {
         self.skip_ws();
+        if allow_columns {
+            // A general operand: properties, functions, arithmetic and
+            // temporal calls. Plain values keep the value predicate forms.
+            let expression = self.parse_case_scalar()?;
+            return Ok(match expression.kind {
+                ScalarExpressionKind::Value(value) => PropertyPredicateRight::Value(value),
+                _ => PropertyPredicateRight::Expression(expression),
+            });
+        }
         let value_start = self.checkpoint();
         if matches!(self.peek_char(), Some(ch) if ch.is_ascii_alphabetic() || ch == '_') {
             let variable = self.parse_ident()?;
@@ -429,6 +449,7 @@ impl Parser<'_> {
         }
         ["case", "coalesce", "left", "lower"]
             .into_iter()
+            .chain(["date", "localtime", "localdatetime", "datetime", "duration"])
             .chain(
                 hawdb_core::ListFunction::ALL
                     .into_iter()
@@ -595,13 +616,13 @@ impl Parser<'_> {
         if self.consume_keyword("CONTAINS") {
             return Ok(PropertyPredicate::ExpressionContains {
                 expression,
-                value: self.parse_scalar_expression()?,
+                value: self.parse_case_scalar()?,
             });
         }
         let Some(op) = self.consume_comparison_operator() else {
             return Err(self.comparison_operator_error());
         };
-        let value = self.parse_scalar_expression()?;
+        let value = self.parse_case_scalar()?;
         self.parse_comparison_chain(expression, op, value)
     }
 
@@ -904,6 +925,8 @@ impl Parser<'_> {
                     default,
                 }
             }
+        } else if self.at_temporal_call() {
+            SetValueExpression::Value(self.parse_value()?)
         } else if self.peek_char().is_some_and(is_identifier_start) {
             let expression_variable = self.parse_ident()?;
             if self.consume_char('.') {

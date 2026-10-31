@@ -53,6 +53,11 @@ pub enum LogicalType {
     Vector(VectorDimension),
     List,
     Map,
+    Date,
+    LocalTime,
+    LocalDateTime,
+    DateTime,
+    Duration,
 }
 
 impl LogicalType {
@@ -94,6 +99,11 @@ impl Display for LogicalType {
             Self::Vector(dimension) => return write!(f, "VECTOR({})", dimension.get()),
             Self::List => "LIST",
             Self::Map => "MAP",
+            Self::Date => "DATE",
+            Self::LocalTime => "LOCAL TIME",
+            Self::LocalDateTime => "LOCAL DATETIME",
+            Self::DateTime => "ZONED DATETIME",
+            Self::Duration => "DURATION",
         })
     }
 }

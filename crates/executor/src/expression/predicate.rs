@@ -143,6 +143,23 @@ pub(super) fn predicate_comparison_truth(
     }
 }
 
+/// `<`, `<=`, `>` and `>=`: NULL for a NULL operand and for a pair without
+/// an order (two durations), otherwise HawDB's comparison. Every comparison
+/// form (property, parameter, folded literal or general expression) uses this,
+/// so `NOT` sees the same truth whether or not planning folded the operand.
+fn predicate_ordering_truth(
+    actual: Option<&Value>,
+    op: ComparisonOp,
+    expected: &Value,
+) -> PredicateTruth {
+    if actual.is_some_and(|actual| hawdb_core::temporal::ordering_is_null(actual, expected)) {
+        return PredicateTruth::Unknown;
+    }
+    predicate_comparison_truth(actual, expected, |actual, expected| {
+        compare_property_values(actual, op, expected)
+    })
+}
+
 fn predicate_in_truth(actual: Option<&Value>, values: &[Value]) -> PredicateTruth {
     let Some(actual) = actual.filter(|actual| *actual != &Value::Null) else {
         return PredicateTruth::Unknown;
@@ -240,9 +257,7 @@ fn evaluate_predicate_truth(
             value,
         } => {
             let actual = binding_id(binding, variable);
-            predicate_comparison_truth(actual.as_ref(), value, |actual, expected| {
-                compare_property_values(actual, *op, expected)
-            })
+            predicate_ordering_truth(actual.as_ref(), *op, value)
         }
         Predicate::IdIn { variable, values } => {
             let actual = binding_id(binding, variable);
@@ -271,11 +286,7 @@ fn evaluate_predicate_truth(
             property,
             op,
             value,
-        } => predicate_comparison_truth(
-            binding_property(binding, variable, property),
-            value,
-            |actual, expected| compare_property_values(actual, *op, expected),
-        ),
+        } => predicate_ordering_truth(binding_property(binding, variable, property), *op, value),
         Predicate::ExpressionEq { expression, value } => {
             let actual = evaluate(expression)?;
             let expected = evaluate(value)?;
@@ -301,11 +312,7 @@ fn evaluate_predicate_truth(
         } => {
             let actual = evaluate(expression)?;
             let expected = evaluate(value)?;
-            predicate_comparison_truth(
-                Some(actual.as_ref()),
-                expected.as_ref(),
-                |actual, expected| compare_property_values(actual, *op, expected),
-            )
+            predicate_ordering_truth(Some(actual.as_ref()), *op, expected.as_ref())
         }
         Predicate::ExpressionContains { expression, value } => {
             let actual = evaluate(expression)?;

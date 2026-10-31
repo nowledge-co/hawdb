@@ -192,6 +192,21 @@ impl Serialize for DisplayValue<'_> {
                 value.serialize_field("type", "uuid")?;
                 value.serialize_field("value", &inner.to_string())?;
             }
+            ValueRef::Date(_)
+            | ValueRef::LocalTime(_)
+            | ValueRef::LocalDateTime(_)
+            | ValueRef::DateTime(_)
+            | ValueRef::Duration(_) => {
+                let kind = match self.0 {
+                    ValueRef::Date(_) => "date",
+                    ValueRef::LocalTime(_) => "localtime",
+                    ValueRef::LocalDateTime(_) => "localdatetime",
+                    ValueRef::DateTime(_) => "datetime",
+                    _ => "duration",
+                };
+                value.serialize_field("type", kind)?;
+                value.serialize_field("value", &self.0.to_string())?;
+            }
             ValueRef::List(inner) => {
                 value.serialize_field("type", "list")?;
                 value.serialize_field("value", &DisplayList(inner))?;

@@ -1021,7 +1021,12 @@ fn value_to_external_id(value: &Value) -> String {
                 .collect::<String>()
         ),
         Value::Uuid(value) => value.to_string(),
-        Value::Vector(_) => value.to_string(),
+        Value::Vector(_)
+        | Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => value.to_string(),
         Value::List(values) => values
             .iter()
             .map(value_to_external_id)

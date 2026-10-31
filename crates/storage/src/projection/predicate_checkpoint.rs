@@ -189,6 +189,15 @@ fn value(sink: &mut impl Sink, value: &Value, layers: u32) -> Result<()> {
             sink.bytes(b"v", layers)?;
             sink.bytes(vector.encoded(), layers + 1)
         }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            // The shared text grammar: tag plus canonical ISO text.
+            let tag = crate::text::temporal_text_tag(value).expect("temporal value");
+            sink.bytes(format!("{tag}{value}").as_bytes(), layers)
+        }
         Value::List(values) => {
             sink.bytes(b"l", layers)?;
             for (index, item) in values.iter().enumerate() {

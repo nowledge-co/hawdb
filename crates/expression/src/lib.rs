@@ -282,6 +282,19 @@ pub enum ProjectionExpression {
         function: PathFunction,
         column: String,
     },
+    /// An openCypher temporal function evaluated per row. Calls that read
+    /// the statement clock are bound to literals during planning.
+    TemporalFunction {
+        function: hawdb_core::TemporalFunction,
+        arguments: Vec<ProjectionExpression>,
+    },
+    /// `expression.key`: a temporal component or a map key.
+    PropertyAccess {
+        expression: Box<ProjectionExpression>,
+        key: String,
+    },
+    /// `{key: expression, ...}`; keys are unique.
+    MapLiteral(Vec<(String, ProjectionExpression)>),
 }
 
 /// A list comprehension. `variable` is visible only to `predicate` and
@@ -396,13 +409,19 @@ impl ProjectionExpression {
             | Self::IsNull { expression, .. }
             | Self::Lower(expression)
             | Self::Left { expression, .. }
-            | Self::JsonValue { expression, .. } => visit(expression),
+            | Self::JsonValue { expression, .. }
+            | Self::PropertyAccess { expression, .. } => visit(expression),
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {
                 arguments: expressions,
                 ..
+            }
+            | Self::TemporalFunction {
+                arguments: expressions,
+                ..
             } => expressions.iter().all(visit),
+            Self::MapLiteral(entries) => entries.iter().all(|(_, value)| visit(value)),
             Self::ListComprehension(comprehension) => [
                 Some(&comprehension.list),
                 comprehension.predicate.as_ref(),
@@ -455,15 +474,25 @@ impl ProjectionExpression {
             | Self::IsNull { expression, .. }
             | Self::Lower(expression)
             | Self::Left { expression, .. }
-            | Self::JsonValue { expression, .. } => visit(expression)?,
+            | Self::JsonValue { expression, .. }
+            | Self::PropertyAccess { expression, .. } => visit(expression)?,
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {
                 arguments: expressions,
                 ..
+            }
+            | Self::TemporalFunction {
+                arguments: expressions,
+                ..
             } => {
                 for expression in expressions {
                     visit(expression)?;
+                }
+            }
+            Self::MapLiteral(entries) => {
+                for (_, value) in entries {
+                    visit(value)?;
                 }
             }
             Self::ListComprehension(comprehension) => {
@@ -760,6 +789,20 @@ impl hawdb_core::RetainedHeapBytes for ProjectionExpression {
             Self::Coalesce(value0) | Self::List(value0) => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
             ]),
+            Self::TemporalFunction {
+                function,
+                arguments,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(function),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(arguments),
+            ]),
+            Self::PropertyAccess { expression, key } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(expression),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(key),
+            ]),
+            Self::MapLiteral(entries) => {
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(entries)
+            }
             Self::VectorDistance {
                 metric,
                 left,

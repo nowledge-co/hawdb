@@ -31,6 +31,7 @@ mod predicate;
 mod procedure;
 mod projection;
 mod scalar;
+mod temporal;
 
 #[cfg(test)]
 mod tests;

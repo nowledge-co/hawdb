@@ -2648,6 +2648,11 @@ fn estimated_value_bytes(value: &Value) -> u64 {
         Value::Binary(value) => 5u64.saturating_add(value.len() as u64),
         Value::Vector(value) => 5u64.saturating_add(value.encoded().len() as u64),
         Value::Uuid(_) => 17,
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => 29,
         Value::List(values) => 5u64.saturating_add(
             values
                 .iter()

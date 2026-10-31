@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use hawdb_core::error::FileDescriptorError;
+use hawdb_core::temporal::{pinned_statement_clock, with_optional_statement_clock};
 use hawdb_core::{
     HawDBError, Result as HawDBResult, RuntimeCancellationReason, RuntimeTaskContext,
 };
@@ -171,6 +172,8 @@ impl BoundedExecutor {
                 .collect::<Vec<Option<R>>>(),
         );
 
+        // Workers observe the caller's statement clock.
+        let statement_clock = pinned_statement_clock();
         let run = || {
             rayon::scope(|scope| {
                 for _ in 0..worker_count {
@@ -179,7 +182,8 @@ impl BoundedExecutor {
                         let Some(input) = inputs.get(index) else {
                             break;
                         };
-                        let output = operation(input);
+                        let output =
+                            with_optional_statement_clock(statement_clock, || operation(input));
                         outputs
                             .lock()
                             .expect("bounded executor output lock should not be poisoned")[index] =
@@ -236,6 +240,8 @@ impl BoundedExecutor {
                 .collect::<Vec<Option<R>>>(),
         );
 
+        // Workers observe the caller's statement clock.
+        let statement_clock = pinned_statement_clock();
         let run = || {
             rayon::scope(|scope| {
                 for _ in 0..worker_count {
@@ -251,7 +257,8 @@ impl BoundedExecutor {
                         let Some(input) = inputs.get(index) else {
                             break;
                         };
-                        let output = operation(input);
+                        let output =
+                            with_optional_statement_clock(statement_clock, || operation(input));
                         outputs
                             .lock()
                             .expect("bounded executor output lock should not be poisoned")[index] =
@@ -317,6 +324,8 @@ impl BoundedExecutor {
         let mut reorder = BTreeMap::new();
         let mut report = BoundedOrderedStreamReport::default();
 
+        // Workers observe the caller's statement clock.
+        let statement_clock = pinned_statement_clock();
         let result = pool.inner.in_place_scope(|scope| {
             for _ in 0..worker_count {
                 let sender = sender.clone();
@@ -330,7 +339,7 @@ impl BoundedExecutor {
                         let _ = sender.send(OrderedWorkerMessage::Stopped(reason));
                         break;
                     }
-                    let output = catch_unwind(AssertUnwindSafe(|| operation(index)))
+                    let output = catch_unwind(AssertUnwindSafe(|| with_optional_statement_clock(statement_clock, || operation(index))))
                         .unwrap_or_else(|_| {
                             Err(HawDBError::Execution(format!(
                                 "bounded executor worker panicked at input index {index}"

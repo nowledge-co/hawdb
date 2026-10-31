@@ -938,24 +938,28 @@ impl Database {
                     optimized.collect_named_rows({
                         let mut branch_runtime_access = self.runtime.get_mut()?;
                         let branch_runtime = &mut *branch_runtime_access;
-                        executor::execute_mutation_with_store_output_limits(
-                            &optimized.physical_plan,
-                            &mut branch_runtime.catalog,
-                            &mut branch_runtime.store,
-                            mutation_limits,
-                            hawdb_executor::result_delivery::OutputLimits {
-                                max_rows: restrictive_query_limit(
-                                    self.config.read_result_row_limit(),
-                                    output_limits.max_rows,
-                                ),
-                                max_payload_bytes: restrictive_query_limit(
-                                    self.config.max_read_result_payload_bytes,
-                                    output_limits.max_payload_bytes,
-                                ),
-                            },
-                            &self.config.execution_memory,
-                            task_context,
-                        )
+                        // Row-evaluated clock reads observe the planning instant.
+                        let statement_clock = optimized.statement_clock;
+                        hawdb_core::temporal::with_statement_clock(statement_clock, || {
+                            executor::execute_mutation_with_store_output_limits(
+                                &optimized.physical_plan,
+                                &mut branch_runtime.catalog,
+                                &mut branch_runtime.store,
+                                mutation_limits,
+                                hawdb_executor::result_delivery::OutputLimits {
+                                    max_rows: restrictive_query_limit(
+                                        self.config.read_result_row_limit(),
+                                        output_limits.max_rows,
+                                    ),
+                                    max_payload_bytes: restrictive_query_limit(
+                                        self.config.max_read_result_payload_bytes,
+                                        output_limits.max_payload_bytes,
+                                    ),
+                                },
+                                &self.config.execution_memory,
+                                task_context,
+                            )
+                        })
                     }?)?,
                     None,
                 )
@@ -965,6 +969,7 @@ impl Database {
                     parameters,
                     &self.config.execution_memory,
                 )
+                .with_statement_clock(optimized.statement_clock)
                 .with_output_columns(optimized.output_columns.as_deref())
                 .with_output_limits(
                     restrictive_query_limit(
@@ -1071,6 +1076,7 @@ impl Database {
                     parameters,
                     &self.config.execution_memory,
                 )
+                .with_statement_clock(optimized.statement_clock)
                 .with_output_columns(optimized.output_columns.as_deref())
                 .with_output_limits(
                     restrictive_query_limit(

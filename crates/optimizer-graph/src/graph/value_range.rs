@@ -110,6 +110,7 @@ fn comparable_value_ordering(left: &Value, right: &Value) -> Option<std::cmp::Or
         (Value::Int(left), Value::Float(right)) => Some((*left as f64).total_cmp(right)),
         (Value::Float(left), Value::Int(right)) => Some(left.total_cmp(&(*right as f64))),
         (Value::String(left), Value::String(right)) => Some(left.cmp(right)),
-        _ => None,
+        // Same-kind temporal instants; durations and mixed kinds are NULL.
+        _ => hawdb_core::temporal::comparable_ordering(left, right),
     }
 }

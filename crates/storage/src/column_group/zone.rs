@@ -179,7 +179,14 @@ impl ChunkZoneMap {
                 }
                 Value::Binary(_) => type_bits |= HAS_BINARY,
                 Value::Uuid(_) => type_bits |= HAS_NESTED,
-                Value::Vector(_) | Value::List(_) | Value::Map(_) => type_bits |= HAS_NESTED,
+                Value::Vector(_)
+                | Value::List(_)
+                | Value::Map(_)
+                | Value::Date(_)
+                | Value::LocalTime(_)
+                | Value::LocalDateTime(_)
+                | Value::DateTime(_)
+                | Value::Duration(_) => type_bits |= HAS_NESTED,
             }
         }
         let mut summary = FieldSummary::new(row_count)
@@ -248,9 +255,15 @@ impl ChunkZoneMap {
             }
             Value::Binary(_) => self.type_bits & HAS_BINARY != 0,
             // Nested equality is never pruned by zone maps.
-            Value::Uuid(_) | Value::Vector(_) | Value::List(_) | Value::Map(_) => {
-                self.type_bits & HAS_NESTED != 0
-            }
+            Value::Uuid(_)
+            | Value::Vector(_)
+            | Value::List(_)
+            | Value::Map(_)
+            | Value::Date(_)
+            | Value::LocalTime(_)
+            | Value::LocalDateTime(_)
+            | Value::DateTime(_)
+            | Value::Duration(_) => self.type_bits & HAS_NESTED != 0,
         }
     }
 

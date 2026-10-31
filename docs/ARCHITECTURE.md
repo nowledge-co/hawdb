@@ -623,7 +623,9 @@ HawDB stores a property graph:
 - `RelId`: stable internal relationship identity
 - `LabelId`: catalog identity for node labels
 - `RelTypeId`: catalog identity for relationship types
-- `Value`: null, bool, integer, float, string, bytes, list, map, temporal values
+- `Value`: null, bool, integer, float, string, bytes, UUID, vector, list, map,
+  and the openCypher temporal types date, local time, local datetime, zoned
+  datetime (fixed offset) and duration ([Cypher temporal types](CYPHER_TEMPORAL.md))
 - `NodeRecord`: node id, label set, property map
 - `RelRecord`: relationship id, source id, target id, type id, property map
 

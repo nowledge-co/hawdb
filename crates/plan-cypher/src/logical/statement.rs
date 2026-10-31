@@ -18,7 +18,21 @@ pub fn plan(statement: &Statement) -> Result<LogicalPlan> {
     plan_with_params(statement, &BTreeMap::new())
 }
 
+/// Plans `statement` with bound parameters. Every clock-reading function in
+/// the statement (`CURRENT_TIMESTAMP()`, `date()`, `datetime()`, ...)
+/// observes one instant: the pinned statement clock, if the caller pinned
+/// one (`hawdb_core::temporal::with_statement_clock`), or the system clock
+/// read once for this planning pass.
 pub fn plan_with_params(
+    statement: &Statement,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    hawdb_core::temporal::with_stable_statement_clock(|| {
+        plan_with_params_unpinned(statement, parameters)
+    })
+}
+
+fn plan_with_params_unpinned(
     statement: &Statement,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {

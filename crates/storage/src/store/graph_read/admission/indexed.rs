@@ -78,6 +78,11 @@ impl GraphStore {
                     | Value::String(_)
                     | Value::Binary(_)
                     | Value::Uuid(_)
+                    | Value::Date(_)
+                    | Value::LocalTime(_)
+                    | Value::LocalDateTime(_)
+                    | Value::DateTime(_)
+                    | Value::Duration(_)
             ) {
                 return Ok(None);
             }

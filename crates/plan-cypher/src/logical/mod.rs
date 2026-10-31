@@ -49,6 +49,9 @@ mod case;
 mod list_tests;
 mod projection;
 mod statement;
+mod temporal;
+#[cfg(test)]
+mod temporal_tests;
 
 use binding::*;
 use case::*;

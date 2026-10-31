@@ -11,6 +11,7 @@ use hawdb_core::{MAX_LIST_EXPRESSION_WORK, MAX_UNACCOUNTED_LIST_BYTES};
 use std::borrow::Cow;
 
 mod list;
+mod temporal;
 
 pub(crate) struct ProjectedValue<'a> {
     value: Cow<'a, Value>,
@@ -332,6 +333,9 @@ fn evaluate_scoped<'a>(
                     .get(property)
                     .map(ProjectedValue::borrowed)
                     .unwrap_or_else(|| ProjectedValue::scalar(Value::Null))),
+                (Some(property), value) if hawdb_core::temporal::is_temporal(value) => {
+                    temporal::scalar_property(value, property, account).map(ProjectedValue::scalar)
+                }
                 (Some(_), value) => Err(HawDBError::Execution(format!(
                     "property access on list comprehension variable '{name}' requires a map value, got {:?}",
                     description(value, account)
@@ -342,6 +346,16 @@ fn evaluate_scoped<'a>(
             let list = evaluate(list)?;
             let index = evaluate(index)?;
             list::index(list, index.as_ref(), account)
+        }
+        ProjectionExpression::TemporalFunction {
+            function,
+            arguments,
+        } => temporal::function(*function, arguments, evaluate),
+        ProjectionExpression::PropertyAccess { expression, key } => {
+            temporal::property(evaluate(expression)?, key, account)
+        }
+        ProjectionExpression::MapLiteral(entries) => {
+            temporal::map_literal(entries, evaluate, account, work)
         }
         ProjectionExpression::ListSlice { list, start, end } => {
             let list = evaluate(list)?;
@@ -768,6 +782,9 @@ fn evaluate_scoped<'a>(
                 .map(ProjectedValue::borrowed)
                 .unwrap_or_else(|| ProjectedValue::scalar(Value::Null))),
             Value::Null => Ok(ProjectedValue::scalar(Value::Null)),
+            value if hawdb_core::temporal::is_temporal(value) => {
+                temporal::scalar_property(value, property, account).map(ProjectedValue::scalar)
+            }
             value => Err(HawDBError::Execution(format!(
                 "column property projection requires a map value, got {:?}",
                 description(value, account)
@@ -896,6 +913,13 @@ fn binary<'a>(
             | ScalarBinaryOp::Remainder
     ) {
         return evaluate_arithmetic(left.as_ref(), op, right.as_ref()).map(ProjectedValue::scalar);
+    }
+    if matches!(
+        op,
+        ScalarBinaryOp::Lt | ScalarBinaryOp::Lte | ScalarBinaryOp::Gt | ScalarBinaryOp::Gte
+    ) && hawdb_core::temporal::ordering_is_null(left.as_ref(), right.as_ref())
+    {
+        return Ok(ProjectedValue::scalar(Value::Null));
     }
     if op == ScalarBinaryOp::ListContains {
         return Ok(ProjectedValue::scalar(match left.as_ref() {

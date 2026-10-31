@@ -143,6 +143,18 @@ pub(crate) fn hash_value(hasher: &mut Sha256, value: &Value) {
             hasher.update([8]);
             hasher.update(value.as_bytes());
         }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            // Tag 10 plus the kind-distinguishing length-prefixed payload.
+            hasher.update([10]);
+            hash_bytes(
+                hasher,
+                &hawdb::temporal::codec::payload(value).expect("temporal value"),
+            );
+        }
         Value::List(values) => {
             hasher.update([5]);
             hasher.update((values.len() as u64).to_le_bytes());

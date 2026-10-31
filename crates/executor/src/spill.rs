@@ -629,6 +629,11 @@ fn estimate_value_memory(
             })?;
             (bytes.len(), 0)
         }
+        tag if spill_temporal_kind(tag).is_some() => {
+            let kind = spill_temporal_kind(tag).expect("checked tag");
+            read_spill_temporal(input, kind)?;
+            (kind.payload_len().max(kind.heap_bytes()), 0)
+        }
         tag => {
             return Err(HawDBError::Execution(format!(
                 "invalid value tag in spill record: {tag}"
@@ -722,6 +727,15 @@ fn value_encoded_len(value: &Value, depth: usize) -> Result<usize> {
         Value::Binary(value) => encoded_len_add(9, value.len()),
         Value::Vector(value) => encoded_len_add(9, value.encoded().len()),
         Value::Uuid(_) => Ok(17),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => Ok(
+            1 + hawdb_core::temporal::codec::TemporalValueKind::of(value)
+                .expect("temporal value")
+                .payload_len(),
+        ),
         Value::List(values) => values.iter().try_fold(9usize, |bytes, value| {
             encoded_len_add(bytes, value_encoded_len(value, depth + 1)?)
         }),
@@ -864,6 +878,22 @@ fn write_value(output: &mut impl Write, value: &Value, depth: usize) -> Result<(
             write_bytes(output, &[8])?;
             write_bytes(output, value.as_bytes())?;
         }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            let mut encoded = Vec::with_capacity(29);
+            encoded.push(0);
+            let kind = hawdb_core::temporal::codec::encode_payload(value, &mut encoded)
+                .expect("temporal values have a payload");
+            encoded[0] = SPILL_TEMPORAL_TAGS
+                .iter()
+                .find(|(_, candidate)| *candidate == kind)
+                .map(|(tag, _)| *tag)
+                .expect("every temporal kind has a spill tag");
+            write_bytes(output, &encoded)?;
+        }
         Value::List(values) => {
             write_bytes(output, &[5])?;
             write_len(output, values.len())?;
@@ -934,12 +964,51 @@ fn read_value(input: &mut Cursor<&[u8]>, depth: usize) -> Result<Value> {
             })?;
             Value::Uuid(hawdb_core::Uuid::from_bytes(bytes))
         }
+        tag if spill_temporal_kind(tag).is_some() => {
+            read_spill_temporal(input, spill_temporal_kind(tag).expect("checked tag"))?
+        }
         tag => {
             return Err(HawDBError::Execution(format!(
                 "invalid value tag in spill record: {tag}"
             )));
         }
     })
+}
+
+/// Spill tags 10..=14 carry temporal values as their fixed-width
+/// `hawdb_core::temporal::codec` payload.
+const SPILL_TEMPORAL_TAGS: [(u8, hawdb_core::temporal::codec::TemporalValueKind); 5] = [
+    (10, hawdb_core::temporal::codec::TemporalValueKind::Date),
+    (
+        11,
+        hawdb_core::temporal::codec::TemporalValueKind::LocalTime,
+    ),
+    (
+        12,
+        hawdb_core::temporal::codec::TemporalValueKind::LocalDateTime,
+    ),
+    (13, hawdb_core::temporal::codec::TemporalValueKind::DateTime),
+    (14, hawdb_core::temporal::codec::TemporalValueKind::Duration),
+];
+
+fn spill_temporal_kind(tag: u8) -> Option<hawdb_core::temporal::codec::TemporalValueKind> {
+    SPILL_TEMPORAL_TAGS
+        .iter()
+        .find(|(candidate, _)| *candidate == tag)
+        .map(|(_, kind)| *kind)
+}
+
+fn read_spill_temporal(
+    input: &mut Cursor<&[u8]>,
+    kind: hawdb_core::temporal::codec::TemporalValueKind,
+) -> Result<Value> {
+    let mut bytes = [0_u8; 28];
+    let bytes = &mut bytes[..kind.payload_len()];
+    input.read_exact(bytes).map_err(|error| {
+        HawDBError::Execution(format!("truncated temporal value in spill record: {error}"))
+    })?;
+    hawdb_core::temporal::codec::decode_payload(kind, bytes)
+        .map_err(|error| HawDBError::Execution(format!("spill record {error}")))
 }
 
 fn check_depth(depth: usize) -> Result<()> {
@@ -1053,6 +1122,38 @@ mod tests {
                 std::process::id()
             )),
             ..ExecutionMemoryConfig::default()
+        }
+    }
+
+    #[test]
+    fn temporal_spill_values_round_trip_with_exact_lengths_and_reject_corruption() {
+        use hawdb_core::temporal;
+        let values = vec![
+            Value::Date(temporal::parse_date("-0044-03-15").unwrap()),
+            Value::LocalTime(temporal::parse_local_time("23:59:59.999999999").unwrap()),
+            Value::LocalDateTime(temporal::parse_local_datetime("2026-10-30T12:00").unwrap()),
+            Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00-05:30").unwrap()),
+            Value::duration(temporal::parse_duration("-P1Y2M3DT4.5S").unwrap()),
+        ];
+        for value in values.iter().cloned().chain([Value::List(values.clone())]) {
+            let mut encoded = Vec::new();
+            write_value(&mut encoded, &value, 0).unwrap();
+            assert_eq!(encoded.len(), value_encoded_len(&value, 0).unwrap());
+            assert_eq!(
+                read_value(&mut Cursor::new(encoded.as_slice()), 0).unwrap(),
+                value
+            );
+            assert!(estimate_value_memory(&mut Cursor::new(encoded.as_slice()), 0, true).is_ok());
+        }
+        // Tag 10 (date) with an out-of-range day, a truncated duration, and
+        // an unknown tag all fail closed.
+        for corrupt in [
+            vec![10, 0xff, 0xff, 0xff, 0x7f],
+            vec![14, 0, 0, 0],
+            vec![15, 0, 0, 0, 0],
+        ] {
+            assert!(read_value(&mut Cursor::new(corrupt.as_slice()), 0).is_err());
+            assert!(estimate_value_memory(&mut Cursor::new(corrupt.as_slice()), 0, true).is_err());
         }
     }
 

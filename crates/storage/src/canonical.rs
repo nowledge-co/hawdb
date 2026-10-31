@@ -49,6 +49,8 @@ pub(crate) use write_preparation::Preparation as CanonicalPreparation;
 mod checkpoint_validation_memory_tests;
 #[cfg(test)]
 mod checkpoint_writer_memory_tests;
+#[cfg(test)]
+mod temporal_value_tests;
 pub(crate) use checkpoint_scan::{
     CheckpointCanonicalCursor, CheckpointCanonicalIterator, CheckpointCanonicalRecord,
 };
@@ -96,6 +98,55 @@ const MANIFEST_HEADER_V1: &str = "HAWDB_CANONICAL_MANIFEST_V1";
 const SEGMENT_HEADER: &[u8; 8] = b"SKNSEG01";
 const ARTIFACT_ID: u64 = 0x534b_4341_4e4f_4e31;
 pub(crate) const MAX_VALUE_DEPTH: usize = 32;
+/// Canonical value tags 11..=15 hold temporal values, followed by their
+/// fixed-width `hawdb_core::temporal::codec` payload. Older binaries reject
+/// these tags as unknown, so they fail closed instead of misreading data.
+const TEMPORAL_VALUE_TAGS: [(u8, hawdb_core::temporal::codec::TemporalValueKind); 5] = [
+    (11, hawdb_core::temporal::codec::TemporalValueKind::Date),
+    (
+        12,
+        hawdb_core::temporal::codec::TemporalValueKind::LocalTime,
+    ),
+    (
+        13,
+        hawdb_core::temporal::codec::TemporalValueKind::LocalDateTime,
+    ),
+    (14, hawdb_core::temporal::codec::TemporalValueKind::DateTime),
+    (15, hawdb_core::temporal::codec::TemporalValueKind::Duration),
+];
+
+fn canonical_temporal_kind(tag: u8) -> Option<hawdb_core::temporal::codec::TemporalValueKind> {
+    TEMPORAL_VALUE_TAGS
+        .iter()
+        .find(|(candidate, _)| *candidate == tag)
+        .map(|(_, kind)| *kind)
+}
+
+fn canonical_temporal_tag(kind: hawdb_core::temporal::codec::TemporalValueKind) -> u8 {
+    TEMPORAL_VALUE_TAGS
+        .iter()
+        .find(|(_, candidate)| *candidate == kind)
+        .map(|(tag, _)| *tag)
+        .expect("every temporal kind has a canonical tag")
+}
+
+/// Appends a temporal value as its canonical tag and payload.
+fn encode_temporal_value(value: &Value, output: &mut Vec<u8>) {
+    let tag_at = output.len();
+    output.push(0);
+    let kind = hawdb_core::temporal::codec::encode_payload(value, output)
+        .expect("temporal values have a payload");
+    output[tag_at] = canonical_temporal_tag(kind);
+}
+
+/// Reads and validates a temporal payload after its tag.
+fn read_temporal_value(
+    cursor: &mut SliceCursor<'_>,
+    kind: hawdb_core::temporal::codec::TemporalValueKind,
+) -> Result<Value, CanonicalSegmentError> {
+    hawdb_core::temporal::codec::decode_payload(kind, cursor.read_exact(kind.payload_len())?)
+        .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))
+}
 const BLOOM_MIN_WORDS: usize = 4;
 const BLOOM_MAX_WORDS: usize = 16 * 1024;
 const BLOOM_BITS_PER_ITEM: usize = 10;
@@ -3180,6 +3231,10 @@ fn validate_encoded_value(
                 .map(|_| ())
                 .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))
         }
+        tag if canonical_temporal_kind(tag).is_some() => {
+            read_temporal_value(cursor, canonical_temporal_kind(tag).expect("checked tag"))
+                .map(|_| ())
+        }
         tag => Err(CanonicalSegmentError::Corrupt(format!(
             "unknown canonical value tag {tag}"
         ))),
@@ -3872,6 +3927,11 @@ fn encode_value(
             output.push(9);
             output.extend_from_slice(value.as_bytes());
         }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => encode_temporal_value(value, output),
         Value::List(values) => {
             output.push(5);
             output.extend_from_slice(&u32_len(values.len(), "value list")?.to_le_bytes());
@@ -3973,6 +4033,15 @@ fn encoded_value_len_with_work(
             1 + 4 + value.encoded().len() as u64
         }
         Value::Uuid(_) => 17,
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            1 + hawdb_core::temporal::codec::TemporalValueKind::of(value)
+                .expect("temporal value")
+                .payload_len() as u64
+        }
         Value::List(values) => {
             u32_len(values.len(), "value list")?;
             // Finish collection metadata before descending. Nested values
@@ -4066,6 +4135,15 @@ fn write_value_streaming<W: Write + ?Sized>(
         Value::Uuid(value) => {
             out.write_all(&[9])?;
             out.write_all(value.as_bytes())?;
+        }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            let mut encoded = Vec::with_capacity(29);
+            encode_temporal_value(value, &mut encoded);
+            out.write_all(&encoded)?;
         }
         Value::List(values) => {
             out.write_all(&[5])?;
@@ -4348,6 +4426,11 @@ fn encoded_value_allocation_bytes(
                 hawdb_core::VectorRef::from_encoded(cursor.read_exact(length)?)
                     .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))?;
                 length
+            }
+            tag if canonical_temporal_kind(tag).is_some() => {
+                let kind = canonical_temporal_kind(tag).expect("checked tag");
+                read_temporal_value(cursor, kind)?;
+                kind.payload_len().max(kind.heap_bytes())
             }
             tag => {
                 return Err(CanonicalSegmentError::Corrupt(format!(

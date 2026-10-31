@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 
 pub(super) fn plan_comparison_op(op: CypherComparisonOp) -> ComparisonOp {
@@ -808,6 +811,18 @@ pub(super) fn plan_projection_with_columns(
             plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
             "list_slice".to_string(),
         ),
+        ScalarExpressionKind::TemporalFunction { function, .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            function.function_name(),
+        ),
+        ScalarExpressionKind::PropertyAccess { .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            property_access_name(value),
+        ),
+        ScalarExpressionKind::MapLiteral(_) => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "map".to_string(),
+        ),
     };
     Ok(Projection {
         expression,
@@ -1560,7 +1575,84 @@ pub(super) fn plan_scalar_expression_with_columns(
                 end: end.as_deref().map(bind).transpose()?,
             })
         }
+        ScalarExpressionKind::TemporalFunction {
+            function,
+            arguments,
+        } => {
+            if function.reads_clock(arguments.len()) {
+                // `date()`, `datetime()`, ...: one statement clock, bound now.
+                return hawdb_core::temporal::evaluate(
+                    *function,
+                    &[],
+                    hawdb_core::temporal::statement_now(),
+                )
+                .map(ProjectionExpression::Literal)
+                .map_err(|error| HawDBError::Semantic(error.to_string()));
+            }
+            Ok(ProjectionExpression::TemporalFunction {
+                function: *function,
+                arguments: arguments
+                    .iter()
+                    .map(|argument| {
+                        plan_scalar_expression_with_columns(
+                            scope,
+                            column_scope,
+                            argument,
+                            parameters,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            })
+        }
+        ScalarExpressionKind::PropertyAccess { expression, key } => {
+            Ok(ProjectionExpression::PropertyAccess {
+                expression: Box::new(plan_scalar_expression_with_columns(
+                    scope,
+                    column_scope,
+                    expression,
+                    parameters,
+                )?),
+                key: key.clone(),
+            })
+        }
+        ScalarExpressionKind::MapLiteral(entries) => Ok(ProjectionExpression::MapLiteral(
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    Ok((
+                        key.clone(),
+                        plan_scalar_expression_with_columns(
+                            scope,
+                            column_scope,
+                            value,
+                            parameters,
+                        )?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        )),
     }
+}
+
+/// The default column name of `a.b.c`-style access: the dotted path when
+/// the base is a variable or property, otherwise the final key.
+fn property_access_name(expression: &ScalarExpression) -> String {
+    fn path(expression: &ScalarExpression) -> Option<String> {
+        match &expression.kind {
+            ScalarExpressionKind::Variable(variable) => Some(variable.clone()),
+            ScalarExpressionKind::Property { variable, property } => {
+                Some(format!("{variable}.{property}"))
+            }
+            ScalarExpressionKind::PropertyAccess { expression, key } => {
+                Some(format!("{}.{key}", path(expression)?))
+            }
+            _ => None,
+        }
+    }
+    path(expression).unwrap_or_else(|| match &expression.kind {
+        ScalarExpressionKind::PropertyAccess { key, .. } => key.clone(),
+        _ => "property".to_string(),
+    })
 }
 
 struct ListComprehensionParts<'a> {

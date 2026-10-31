@@ -329,6 +329,14 @@ pub fn external_shadow_value_from_json(value: &serde_json::Value) -> Result<Valu
                         HawDBError::Semantic(format!("invalid external UUID: {error}"))
                     });
             }
+            if values.len() == 1
+                && let Some((tag, serde_json::Value::String(encoded))) = values.iter().next()
+                && let Some(decoded) = hawdb_core::temporal::from_json_tag(tag, encoded)
+            {
+                return decoded.map_err(|error| {
+                    HawDBError::Semantic(format!("invalid {tag} value: {error}"))
+                });
+            }
             values
                 .iter()
                 .map(|(key, value)| Ok((key.clone(), external_shadow_value_from_json(value)?)))
@@ -352,6 +360,13 @@ pub fn external_shadow_json_from_value(value: Value) -> serde_json::Value {
         Value::Vector(value) => {
             serde_json::json!({ "$vector": value.as_ref().coordinates().collect::<Vec<_>>() })
         }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => serde_json::json!({
+            hawdb_core::temporal::json_tag(&value).expect("temporal value"): value.to_string()
+        }),
         Value::List(values) => serde_json::Value::Array(
             values
                 .into_iter()
@@ -1343,6 +1358,13 @@ fn json_from_value(value: &Value) -> serde_json::Value {
         Value::Vector(value) => {
             serde_json::json!({ "$vector": value.as_ref().coordinates().collect::<Vec<_>>() })
         }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => serde_json::json!({
+            hawdb_core::temporal::json_tag(value).expect("temporal value"): value.to_string()
+        }),
         Value::List(values) => {
             serde_json::Value::Array(values.iter().map(json_from_value).collect())
         }

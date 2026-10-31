@@ -101,6 +101,16 @@ impl CheckpointText {
                 self.escaped(b"v", escapes, work)?;
                 self.escaped(value.encoded(), escapes + 1, work)?;
             }
+            Value::Date(_)
+            | Value::LocalTime(_)
+            | Value::LocalDateTime(_)
+            | Value::DateTime(_)
+            | Value::Duration(_) => {
+                // Matches `text::encode_value`: tag plus canonical ISO text. A
+                // duration can exceed the 64-byte scalar scratch buffer.
+                let tag = crate::text::temporal_text_tag(value).expect("temporal value");
+                self.escaped(format!("{tag}{value}").as_bytes(), escapes, work)?;
+            }
             Value::List(values) => {
                 self.escaped(b"l", escapes, work)?;
                 for (index, value) in values.iter().enumerate() {

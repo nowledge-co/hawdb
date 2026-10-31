@@ -357,6 +357,11 @@ impl RetainedNodeView {
                 Value::Vector(_) => "vector",
                 Value::List(_) => "list",
                 Value::Map(_) => "map",
+                Value::Date(_) => "date",
+                Value::LocalTime(_) => "localtime",
+                Value::LocalDateTime(_) => "localdatetime",
+                Value::DateTime(_) => "datetime",
+                Value::Duration(_) => "duration",
             },
         })
     }

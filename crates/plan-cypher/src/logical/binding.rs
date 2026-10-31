@@ -618,15 +618,37 @@ pub(super) fn bind_value(
         ValueExpressionKind::Timestamp(value) => {
             bind_value(value, parameters).and_then(timestamp_value)
         }
+        ValueExpressionKind::Temporal {
+            function,
+            arguments,
+        } => {
+            let arguments = arguments
+                .iter()
+                .map(|argument| bind_value(argument, parameters))
+                .collect::<Result<Vec<_>>>()?;
+            hawdb_core::temporal::evaluate(
+                *function,
+                &arguments,
+                hawdb_core::temporal::statement_now(),
+            )
+            .map_err(|error| HawDBError::Semantic(error.to_string()))
+        }
+        ValueExpressionKind::Map(entries) => entries
+            .iter()
+            .map(|(key, value)| Ok((key.clone(), bind_value(value, parameters)?)))
+            .collect::<Result<BTreeMap<_, _>>>()
+            .map(Value::Map),
     }
 }
 
+/// `CURRENT_TIMESTAMP()`: epoch nanoseconds of the statement clock, so every
+/// clock read in one statement observes the same instant.
 pub(super) fn current_timestamp_value() -> Value {
-    let nanos = hawdb_core::time::SystemTime::now()
-        .duration_since(hawdb_core::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
-        .unwrap_or(0);
-    Value::Int(nanos)
+    let now = hawdb_core::temporal::statement_now();
+    let nanos = now
+        .timestamp_nanos_opt()
+        .unwrap_or(if now.timestamp() < 0 { 0 } else { i64::MAX });
+    Value::Int(nanos.max(0))
 }
 
 pub(super) fn timestamp_value(value: Value) -> Result<Value> {
@@ -912,10 +934,10 @@ pub(super) fn plan_predicate(
             op: plan_comparison_op(*op),
             value: bind_value(value, parameters)?,
         }),
-        PropertyPredicate::ExpressionEq { expression, value } => Ok(Predicate::ExpressionEq {
-            expression: plan_scalar_expression(scope, expression, parameters)?,
-            value: plan_scalar_expression(scope, value, parameters)?,
-        }),
+        PropertyPredicate::ExpressionEq { expression, value } => Ok(temporal::eq_predicate(
+            plan_scalar_expression(scope, expression, parameters)?,
+            plan_scalar_expression(scope, value, parameters)?,
+        )),
         PropertyPredicate::ExpressionNotEq { expression, value } => {
             Ok(Predicate::ExpressionNotEq {
                 expression: plan_scalar_expression(scope, expression, parameters)?,
@@ -926,11 +948,11 @@ pub(super) fn plan_predicate(
             expression,
             op,
             value,
-        } => Ok(Predicate::ExpressionCompare {
-            expression: plan_scalar_expression(scope, expression, parameters)?,
-            op: plan_comparison_op(*op),
-            value: plan_scalar_expression(scope, value, parameters)?,
-        }),
+        } => Ok(temporal::compare_predicate(
+            plan_scalar_expression(scope, expression, parameters)?,
+            plan_comparison_op(*op),
+            plan_scalar_expression(scope, value, parameters)?,
+        )),
         PropertyPredicate::ExpressionContains { expression, value } => {
             Ok(Predicate::ExpressionContains {
                 expression: plan_scalar_expression(scope, expression, parameters)?,
@@ -1440,7 +1462,10 @@ pub(super) fn collect_scalar_expression_variables(
         | ScalarExpressionKind::ListFunction { .. }
         | ScalarExpressionKind::List(_)
         | ScalarExpressionKind::ListIndex { .. }
-        | ScalarExpressionKind::ListSlice { .. } => {
+        | ScalarExpressionKind::ListSlice { .. }
+        | ScalarExpressionKind::TemporalFunction { .. }
+        | ScalarExpressionKind::PropertyAccess { .. }
+        | ScalarExpressionKind::MapLiteral(_) => {
             expression.kind.all_children(|child| {
                 collect_scalar_expression_variables(child, variables);
                 true

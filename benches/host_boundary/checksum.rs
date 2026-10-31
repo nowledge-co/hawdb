@@ -55,6 +55,16 @@ impl Checksum {
                 self.bytes(&[6]);
                 self.bytes(value.as_bytes());
             }
+            Value::Date(_)
+            | Value::LocalTime(_)
+            | Value::LocalDateTime(_)
+            | Value::DateTime(_)
+            | Value::Duration(_) => {
+                let payload = hawdb::temporal::codec::payload(value).expect("temporal value");
+                self.bytes(&[10]);
+                self.length(payload.len());
+                self.bytes(&payload);
+            }
             Value::Vector(value) => {
                 self.bytes(&[9]);
                 self.length(value.encoded().len());

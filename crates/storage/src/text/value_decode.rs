@@ -65,6 +65,7 @@ pub(crate) fn decode<D: Decoder>(input: &str, backend: &D) -> Result<Value> {
             .map_err(|error| HawDBError::Storage(format!("invalid UUID value: {error}"))),
         "x" => backend.binary(rest).map(Value::Binary),
         "v" => backend.vector(rest).map(Value::Vector),
+        "D" | "T" | "L" | "Z" | "P" => decode_temporal(kind, rest),
         "l" => {
             let mut values = Vec::new();
             if !rest.is_empty() {
@@ -100,4 +101,37 @@ pub(crate) fn decode<D: Decoder>(input: &str, backend: &D) -> Result<Value> {
             "invalid encoded value tag or payload: {kind:?}"
         ))),
     }
+}
+
+/// The text-checkpoint tag of a temporal value: `D` date, `T` local time,
+/// `L` local datetime, `Z` zoned datetime, `P` duration.
+pub(crate) fn temporal_text_tag(value: &Value) -> Option<char> {
+    Some(match value {
+        Value::Date(_) => 'D',
+        Value::LocalTime(_) => 'T',
+        Value::LocalDateTime(_) => 'L',
+        Value::DateTime(_) => 'Z',
+        Value::Duration(_) => 'P',
+        _ => return None,
+    })
+}
+
+fn decode_temporal(kind: &str, rest: &str) -> Result<Value> {
+    use hawdb_core::temporal;
+    let decoded = match kind {
+        "D" => temporal::parse_date(rest).map(Value::Date),
+        "T" => temporal::parse_local_time(rest).map(Value::LocalTime),
+        "L" => temporal::parse_local_datetime(rest).map(Value::LocalDateTime),
+        "Z" => temporal::parse_datetime(rest).map(Value::DateTime),
+        "P" => temporal::parse_duration(rest).map(Value::duration),
+        _ => unreachable!("caller passes temporal tags"),
+    }
+    .map_err(|error| HawDBError::Storage(format!("invalid encoded temporal value: {error}")))?;
+    // Accept only the canonical rendering, so one value has one encoding.
+    if decoded.to_string() != rest {
+        return Err(HawDBError::Storage(format!(
+            "non-canonical encoded temporal value: {kind}{rest}"
+        )));
+    }
+    Ok(decoded)
 }

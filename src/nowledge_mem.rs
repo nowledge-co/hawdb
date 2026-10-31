@@ -4015,6 +4015,11 @@ fn estimate_value_payload_bytes(value: &Value) -> usize {
         Value::Binary(value) => value.len(),
         Value::Vector(value) => value.encoded().len(),
         Value::Uuid(_) => 16,
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => 28,
         Value::List(values) => values.iter().map(estimate_value_payload_bytes).sum(),
         Value::Map(values) => values
             .iter()
