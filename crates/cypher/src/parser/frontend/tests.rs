@@ -556,3 +556,17 @@ fn main_1411_row_bound_values_preserve_the_independent_main_ir() {
     }
     assert_eq!(count, 140);
 }
+
+#[test]
+fn contextual_keywords_preserve_main_case_and_mutation_admission() {
+    // Independently exported main 2ae7e88614: specialized CASE may reference
+    // keyword-named properties; scalar lists and SET retain their own guards.
+    let mut count = 0;
+    for line in
+        include_str!("../../../fixtures/migration_keyword_context_peg_baseline_v1.jsonl").lines()
+    {
+        assert_frozen(&serde_json::from_str(line).unwrap());
+        count += 1;
+    }
+    assert_eq!(count, 2380);
+}

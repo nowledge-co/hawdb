@@ -67,7 +67,13 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                 r("d_case_decrement"),
                 r("d_coalesce"),
                 r("d_property_value"),
-                r("v_value"),
+                s(vec![
+                    E::Not(
+                        Box::new(c(vec![k("CASE"), k("COALESCE")])),
+                        "a mutation value",
+                    ),
+                    r("v_value"),
+                ]),
             ]),
         ),
         (

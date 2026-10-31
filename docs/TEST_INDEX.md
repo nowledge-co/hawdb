@@ -2288,3 +2288,12 @@ older fixtures stay immutable: `migration_main_1411_peg_baseline_v1.jsonl`
 records the eight intentional main transitions with their previous fingerprints,
 plus 132 independently exported row-bound/CASE/context outcomes. Existing
 #1411 parser and embedded query tests remain intact.
+
+The independent `migration_keyword_context_peg_baseline_v1.jsonl` adds 2,380
+main `2ae7e88614` outcomes for keyword-named properties, all specialized
+CASE families, including coalesced-difference floors, combined depth limits, row-binding refusals and scalar/SET/value
+context differences. Dedicated PEG alternatives preserve specialized CASE on
+`true`, `false`, `null` and `CASE` properties; they retain constant-value and
+same-property admission. Scalar value-list lowering rejects reserved CASE row
+bindings, and SET's ordinary-value branch preserves the CASE/COALESCE prefix
+refusal. The compiled-rule cap stays 256; no resource budget is raised.

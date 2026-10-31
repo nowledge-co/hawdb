@@ -14,15 +14,15 @@ fn kw(names: &[&'static str]) -> E {
 fn tight(items: Vec<E>) -> E {
     E::Tight(Box::new(s(items)))
 }
-pub(super) fn rules() -> Vec<(&'static str, E)> {
-    let reference = || r("x_ref");
+fn special_shapes(reference_rule: &'static str, lower_keyword: Option<&'static str>) -> E {
+    let reference = || r(reference_rule);
     let value = || r("v_value");
     let is_not_null = || s(vec![reference(), k("IS"), k("NOT"), k("NULL")]);
     let lower = s(vec![
         k("WHEN"),
         is_not_null(),
         k("THEN"),
-        k("LOWER"),
+        lower_keyword.map(r).unwrap_or_else(|| k("LOWER")),
         group(reference()),
         k("ELSE"),
         value(),
@@ -85,6 +85,10 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
         value(),
         k("END"),
     ]);
+    c(vec![lower, default, rank, not_null, not_empty])
+}
+
+pub(super) fn rules() -> Vec<(&'static str, E)> {
     vec![
         ("x_scalar", s(vec![r("x_primary"), many(r("x_postfix"))])),
         (
@@ -354,16 +358,32 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                 k("CASE"),
                 c(vec![
                     r("x_floor_case"),
+                    r("x_reserved_special_case"),
                     r("x_special_case"),
                     r("x_case_body"),
                 ]),
             ]),
         ),
         (
+            "x_reserved_special_case",
+            s(vec![
+                E::Ahead(
+                    Box::new(s(vec![
+                        k("WHEN"),
+                        kw(&["true", "false", "null", "CASE"]),
+                        t(T::Dot),
+                    ])),
+                    "a specialized property reference",
+                ),
+                special_shapes("d_ref", Some("x_special_lower")),
+            ]),
+        ),
+        ("x_special_lower", k("LOWER")),
+        (
             "x_special_case",
             s(vec![
                 E::Ahead(
-                    Box::new(c(vec![lower, default, rank, not_null, not_empty])),
+                    Box::new(special_shapes("x_ref", None)),
                     "a specialized CASE shape",
                 ),
                 r("x_case_body"),
@@ -434,7 +454,7 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
             "x_difference_term",
             s(vec![
                 k("COALESCE"),
-                group(s(vec![r("x_ref"), t(T::Comma), r("v_value")])),
+                group(s(vec![r("d_ref"), t(T::Comma), r("v_value")])),
             ]),
         ),
     ]
@@ -621,7 +641,13 @@ impl Transformer<'_> {
                                 unreachable!()
                             };
                             ScalarExpressionKind::List(
-                                values.into_iter().map(value_to_scalar).collect(),
+                                values
+                                    .into_iter()
+                                    .map(value_to_scalar)
+                                    .collect::<Option<Vec<_>>>()
+                                    .ok_or_else(|| {
+                                        self.error(list, "expected a scalar list element")
+                                    })?,
                             )
                         }
                     }
@@ -866,6 +892,9 @@ impl Transformer<'_> {
         if self.tree.nodes[selected].name == Some("x_floor_case") {
             return self.floor_case(selected, depth);
         }
+        if self.tree.nodes[selected].name == Some("x_reserved_special_case") {
+            return self.reserved_special_case(selected, depth);
+        }
         let special = self.tree.nodes[selected].name == Some("x_special_case");
         let body = if special {
             self.tree.required(selected, "x_case_body")
@@ -881,6 +910,80 @@ impl Transformer<'_> {
         }
         self.generic_case(body, depth)
     }
+    fn reserved_special_case(
+        &mut self,
+        node: NodeId,
+        depth: usize,
+    ) -> Result<ScalarExpressionKind> {
+        let references = self.named_children(node, "d_ref");
+        let names = self.ids(references[0]);
+        if references
+            .iter()
+            .any(|reference| self.ids(*reference) != names)
+        {
+            return Err(self.error(node, "specialized CASE requires the same property"));
+        }
+        let mut values = Vec::new();
+        for child in self.named_children(node, "v_value") {
+            let value = self.value(child, 0)?;
+            if value.kind.reads_row_binding() {
+                return Err(self.error(child, "expected a constant CASE value"));
+            }
+            values.push(value);
+        }
+        let variable = names[0].clone();
+        let property = names[1].clone();
+        let count = values.len();
+        // The matched shapes have distinct direct reference/value counts;
+        // LOWER carries a named marker to distinguish its one-value form.
+        let kind = if self.tree.child(node, "x_special_lower").is_some() {
+            ScalarExpressionKind::CaseLowerPropertyDefault {
+                variable,
+                property,
+                default: values.remove(0),
+            }
+        } else if references.len() == 3 && count == 2 {
+            let default = values.pop().unwrap();
+            ScalarExpressionKind::DefaultIfNullOrEq {
+                variable,
+                property,
+                empty: values.remove(0),
+                default,
+            }
+        } else if references.len() == 2 && count == 1 {
+            ScalarExpressionKind::DefaultIfNull {
+                variable,
+                property,
+                default: values.remove(0),
+            }
+        } else if references.len() == 2 && count == 3 {
+            let null_or_empty = Box::new(values.pop().unwrap());
+            let non_empty = Box::new(values.pop().unwrap());
+            ScalarExpressionKind::CasePropertyNotNullOrEq {
+                variable,
+                property,
+                empty: Box::new(values.remove(0)),
+                non_empty,
+                null_or_empty,
+            }
+        } else {
+            let default = values.pop().unwrap();
+            let mut values = values.into_iter();
+            let mut branches = Vec::new();
+            while let Some(condition) = values.next() {
+                branches.push((condition, values.next().expect("matched rank branch")));
+            }
+            ScalarExpressionKind::CasePropertyEqualsRank {
+                variable,
+                property,
+                branches,
+                default,
+            }
+        };
+        self.expression_budget(node, depth + special_value_height(&kind))?;
+        Ok(kind)
+    }
+
     fn generic_case(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpressionKind> {
         let body = self.tree.children(node)[0];
         let simple = self.tree.nodes[body].name == Some("x_simple_case");
@@ -941,7 +1044,7 @@ impl Transformer<'_> {
             let mut variable = None;
             let mut terms = Vec::new();
             for term in self.named_children(difference, "x_difference_term") {
-                let names = self.ids(self.tree.required(term, "x_ref"));
+                let names = self.ids(self.tree.required(term, "d_ref"));
                 if variable.as_ref().is_some_and(|v| v != &names[0]) {
                     return Err(
                         self.error(term, "CASE floor expression supports only one variable")
@@ -969,19 +1072,32 @@ impl Transformer<'_> {
         Ok(ScalarExpressionKind::CaseCoalesceDifferenceFloorZero { variable, terms })
     }
 }
-fn value_to_scalar(value: ValueExpression) -> ScalarExpression {
+fn value_to_scalar(value: ValueExpression) -> Option<ScalarExpression> {
     let span = value.span;
     let kind = match value.kind {
-        ValueExpressionKind::Binding(variable) => ScalarExpressionKind::Variable(variable),
+        ValueExpressionKind::Binding(variable) => {
+            if variable.eq_ignore_ascii_case("CASE") {
+                return None;
+            }
+            ScalarExpressionKind::Variable(variable)
+        }
         ValueExpressionKind::BindingProperty { variable, property } => {
+            if variable.eq_ignore_ascii_case("CASE") {
+                return None;
+            }
             ScalarExpressionKind::Property { variable, property }
         }
         ValueExpressionKind::List(values) if values.iter().any(|v| v.kind.reads_row_binding()) => {
-            ScalarExpressionKind::List(values.into_iter().map(value_to_scalar).collect())
+            ScalarExpressionKind::List(
+                values
+                    .into_iter()
+                    .map(value_to_scalar)
+                    .collect::<Option<Vec<_>>>()?,
+            )
         }
         kind => ScalarExpressionKind::Value(AstNode { kind, span }),
     };
-    AstNode { kind, span }
+    Some(AstNode { kind, span })
 }
 pub(super) fn scalar_binary(
     left: ScalarExpression,
