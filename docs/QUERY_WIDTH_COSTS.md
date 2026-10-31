@@ -32,6 +32,11 @@ with an incompatible value type. Stale/missing statistics retain the existing
 source validity gates and the documented fallbacks. No statistics collection,
 persistence format or background task is introduced.
 
+Traversal steps add a conservative 4-KiB graph payload proxy. Each step is
+included in `proxy_fields`, including in downstream Sort reports; this can
+overestimate retention/spill for ID-only bindings. It is not a measured per-hop
+allocation or a runtime memory bound.
+
 Logical field/container cells follow the runtime's map-cell estimation shape.
 Reported `proxy_fields` and `sampled_values` make unavailable/type-proxy and
 sample-backed estimates visible; they do not turn the result into an allocation
@@ -63,7 +68,7 @@ A partially satisfied prefix receives no incremental-sort discount: the executor
 still performs a full sort for that shape.
 
 Sort/TopN retain bindings and prepared sort keys. Distinct owns both cloned value
-keys and representative bindings; hash join retains its build input; aggregate
+keys and representative bindings; hash join retains its right build input; aggregate
 uses estimated groups and opaque accumulator payloads. Data-dependent aggregate
 states remain approximate. When TopN's retained rows cannot fit, its spill proxy
 covers the input stream because spilling loses the heap cutoff.

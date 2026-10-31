@@ -194,10 +194,11 @@ pub(super) fn apply(
             );
         }
         PhysicalPlan::HashJoinExec { .. } => {
-            retained = inputs[0]
+            // The executor builds the right input before probing the left.
+            retained = inputs[1]
                 .expect("hash build")
                 .estimated_rows
-                .saturating_mul(input_row_bytes[0].saturating_add(64));
+                .saturating_mul(input_row_bytes[1].saturating_add(64));
         }
         _ => active = false,
     }

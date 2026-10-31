@@ -2155,7 +2155,9 @@ Existing optimizer-graph ownership covers `graph::costing::width::tests`,
 schema, bounded distinct-domain width sampling, required-only decoding,
 projection/graph ownership and alias scope, key-versus-body comparisons,
 context-sensitive choices in memo/direct lowering, selected trace refresh,
-metadata bounds and saturating row/cost arithmetic. The existing
+metadata bounds and saturating row/cost arithmetic. Asymmetric hash-join
+inputs pin right-build retention and spill; one-to-three-hop traversal controls
+keep opaque graph contributions visible in `proxy_fields`. The existing
 `//:hawdb_linux_ci_optimizer_summary_smoke_test` pins the corresponding
 comparison/decode costs for all seven affected graph workloads, retaining exact
 row/cost, decision, fingerprint and repeated-planning assertions.

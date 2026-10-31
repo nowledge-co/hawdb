@@ -306,3 +306,89 @@ fn required_graph_projection_reports_opaque_width_sources() {
     assert!(costed.shape.graph_bytes > 0);
     assert_eq!(costed.shape.column_count(), 0);
 }
+
+#[test]
+fn hash_join_retention_and_spill_follow_the_right_build_side() {
+    let mut schema = Catalog::default();
+    for (label, body_type) in [("Wide", PropertyType::Text), ("Narrow", PropertyType::Int)] {
+        let table = schema.get_or_create_table(TableKind::Node, label);
+        schema.get_or_create_property(table, "id", PropertyType::Int, false);
+        schema.get_or_create_property(table, "body", body_type, false);
+    }
+    let mut catalog = crate::graph::optimizer_catalog_from_graph_statistics(
+        &schema,
+        &hawdb_core::GraphStatistics::default(),
+    );
+    catalog.label_counts.insert("Wide".into(), 10_000);
+    catalog.label_counts.insert("Narrow".into(), 3);
+    for (left_label, right_label, spills) in [("Wide", "Narrow", false), ("Narrow", "Wide", true)] {
+        let plan = PhysicalPlan::HashJoinExec {
+            left_key: hawdb_plan_cypher::HashJoinKey {
+                variable: "l".into(),
+                property: "id".into(),
+            },
+            right_key: hawdb_plan_cypher::HashJoinKey {
+                variable: "r".into(),
+                property: "id".into(),
+            },
+            left: Box::new(PhysicalPlan::SeqNodeScan {
+                variable: "l".into(),
+                label: left_label.into(),
+            }),
+            right: Box::new(PhysicalPlan::SeqNodeScan {
+                variable: "r".into(),
+                label: right_label.into(),
+            }),
+        };
+        let PhysicalPlan::HashJoinExec { right, .. } = &plan else {
+            unreachable!()
+        };
+        let build = estimate_costed_plan(right, &catalog);
+        let expected_retention = build.cost.estimated_rows * (build.shape.retained_bytes() + 64);
+        let inputs = estimate_input_costs(&plan, |input| estimate_costed_plan(input, &catalog));
+        let costed =
+            estimate_operator_cost_internal(&plan, &catalog, inputs, None, Some(32 * 1024));
+        let report = costed.width_report.unwrap();
+        assert_eq!(report.retained_bytes, expected_retention);
+        assert_eq!(
+            report.spill_work > 0,
+            spills && !cfg!(target_arch = "wasm32")
+        );
+        assert_eq!(costed.cost.estimated_rows, 30_000);
+    }
+}
+
+#[test]
+fn traversal_opaque_width_remains_visible_in_sort_reports() {
+    let catalog = catalog(false);
+    for hops in 1..=3 {
+        let mut input = scan();
+        for hop in 0..hops {
+            input = PhysicalPlan::AdjacencyExpandExec {
+                source_variable: if hop == 0 {
+                    "n".into()
+                } else {
+                    format!("n{hop}")
+                },
+                source_label: "Item".into(),
+                rel_variable: None,
+                rel_type: "RELATED".into(),
+                rel_properties: Default::default(),
+                direction: hawdb_core::RelationshipDirection::Outgoing,
+                target_variable: format!("n{}", hop + 1),
+                target_label: "Item".into(),
+                min_hops: 1,
+                max_hops: 1,
+                optional: false,
+                graph_budget: None,
+                input: Box::new(input),
+            };
+        }
+        let plan = PhysicalPlan::SortExec {
+            items: order(),
+            input: Box::new(input),
+        };
+        let costed = estimate_costed_plan(&plan, &catalog);
+        assert_eq!(costed.width_report.unwrap().proxy_fields, hops);
+    }
+}
