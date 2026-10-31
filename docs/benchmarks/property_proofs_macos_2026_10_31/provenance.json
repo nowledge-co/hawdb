@@ -4,13 +4,13 @@
     "harness_sha256": "83273fbd681aa7171f001b8e6791ec2715ab540ecb929d0891faf4497aade1b4",
     "baseline_overlay": "identical benches/property_proofs.rs and four-line Cargo.toml bench registration; production files untouched",
     "candidate": {
-      "binary": "/private/tmp/hawdb-proof-final-binaries/candidate",
-      "sha256": "203c8783d58f9214b019db3a5077b6ccca258450b522581f28b4f5d2189fbdab",
-      "source": "bad258d8c117b6ae76ffca7880d37ee90a75a2e8",
-      "tree": "bbf44231cddef343bfabcec723a8dbabd5553c97"
+      "source": "c5e02f73848c665879d5f01683016ff4621a57a6",
+      "tree": "89e359d53689af2794e63d73a10648f58395f1d5",
+      "binary": "/private/tmp/hawdb-proof-alias-final-binaries/candidate",
+      "sha256": "1c231780528a0e82d08fc50c0e06079563b21a26fad0c4da938a45c66c3c8107"
     },
     "baseline": {
-      "binary": "/private/tmp/hawdb-proof-final-binaries/baseline",
+      "binary": "/private/tmp/hawdb-proof-alias-final-binaries/baseline",
       "sha256": "2099ce8baf7f5c4ff4953f26c513fe9654652d6a54fcd8efb91dc90a6d4ae28f",
       "source": "d4ed1267ea6c6b002c6cb2c897b045d11f6a40d6",
       "tree": "094b251b171f56dc9ed916a7728c2e31af27f074"
@@ -186,36 +186,36 @@
   "cpu": "Apple M3 Max",
   "memory_bytes": 137438953472,
   "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
-  "start": "2026-10-31T04:35:29.969780+00:00",
+  "start": "2026-10-31T05:21:20.964111+00:00",
   "processes": 192,
   "queries": 1152,
   "output_rows": 4740192,
-  "end": "2026-10-31T04:35:57.814111+00:00",
+  "end": "2026-10-31T05:21:49.513672+00:00",
   "boundary_gate": {
     "initial_idle_seconds": 20,
     "checks": 384,
     "interference_checks": 0,
     "all_checked_process_lists_empty": true,
-    "first_check": "2026-10-31T04:35:29.970006+00:00",
-    "last_check": "2026-10-31T04:35:57.778376+00:00",
+    "first_check": "2026-10-31T05:21:20.964311+00:00",
+    "last_check": "2026-10-31T05:21:49.475221+00:00",
     "load_ranges": [
       {
-        "minimum": 1.7001953125,
-        "median": 1.74609375,
-        "maximum": 2.09765625
+        "minimum": 4.5107421875,
+        "median": 4.97265625,
+        "maximum": 5.33935546875
       },
       {
-        "minimum": 14.72998046875,
-        "median": 15.3173828125,
-        "maximum": 16.02099609375
+        "minimum": 14.10986328125,
+        "median": 14.68408203125,
+        "maximum": 15.08251953125
       },
       {
-        "minimum": 45.83154296875,
-        "median": 46.58837890625,
-        "maximum": 47.38818359375
+        "minimum": 28.2080078125,
+        "median": 28.6572265625,
+        "maximum": 28.9609375
       }
     ],
-    "private_unreduced_provenance_sha256": "04dd39ddbb5d03c3ccd3672724f9fbc21f76d8fd4232ad18d44cd6e9a6d32421"
+    "private_unreduced_provenance_sha256": "a7bcef31292639e75807010641d51daa65627e3e1ba1c0e75bb4ddd8c7996db0"
   },
   "process_order": [
     "0-distinct-128-warm-baseline",
