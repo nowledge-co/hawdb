@@ -106,6 +106,7 @@ enum StatementDispatch {
     Cypher,
     Explain,
     Unwind,
+    Load,
     Merge,
     Match,
     Set,
@@ -123,6 +124,7 @@ const TOP_LEVEL_STATEMENTS: &[(&str, StatementDispatch)] = &[
     ("CYPHER", StatementDispatch::Cypher),
     ("EXPLAIN", StatementDispatch::Explain),
     ("UNWIND", StatementDispatch::Unwind),
+    ("LOAD", StatementDispatch::Load),
     ("MERGE", StatementDispatch::Merge),
     ("MATCH", StatementDispatch::Match),
     ("SET", StatementDispatch::Set),
@@ -207,6 +209,12 @@ impl<'a> Parser<'a> {
                 self.restore(statement_start);
                 Ok(Box::new(self.parse_query_pipeline()?).into_unwind_statement())
             }
+            StatementDispatch::Load => {
+                self.restore(statement_start);
+                Ok(Statement::Pipeline(Box::new(
+                    self.parse_public_query_pipeline()?,
+                )))
+            }
             StatementDispatch::Merge => self.parse_merge_statement(),
             StatementDispatch::Match => {
                 self.restore(statement_start);
@@ -285,7 +293,7 @@ impl<'a> Parser<'a> {
     fn parse_statement_dispatch(&mut self) -> Result<StatementDispatch> {
         self.parse_keyword_choice(
             TOP_LEVEL_STATEMENTS,
-            "expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, UNWIND, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK",
+            "expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, UNWIND, LOAD, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK",
         )
     }
 

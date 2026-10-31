@@ -1542,6 +1542,7 @@ impl GraphStore {
             }
             return Ok(ids.into_iter().collect());
         }
+        record_matched_node_label_scan();
         let mut ids = Vec::with_capacity(max_ids.min(1024));
         let mut exceeded = false;
         self.visit_nodes_owned(label_id, |node| {
@@ -1725,7 +1726,9 @@ fn collect_relational_primary_key_changes_from_wal_ops(
 
 // Membership is established by the candidate loop. Rechecking the leading
 // IdIn for each candidate would turn a fan-out endpoint into quadratic work.
-fn internal_id_candidates(filter: &PropertyFilter) -> Option<(&[Value], &[PropertyFilter])> {
+pub(super) fn internal_id_candidates(
+    filter: &PropertyFilter,
+) -> Option<(&[Value], &[PropertyFilter])> {
     match filter {
         PropertyFilter::IdEq { value } => Some((std::slice::from_ref(value), &[])),
         PropertyFilter::IdIn { values } => Some((values, &[])),

@@ -46,6 +46,7 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar<Value>, String> {
                     "multi_stage",
                     "match",
                     "unwind",
+                    "load",
                     "explain",
                     "cypher",
                     "create",
@@ -62,6 +63,7 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar<Value>, String> {
                 &[
                     "match",
                     "unwind",
+                    "load",
                     "explain",
                     "cypher",
                     "create",
@@ -107,6 +109,7 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar<Value>, String> {
                     "match_clause",
                     "optional_clause",
                     "unwind_clause",
+                    "load_clause",
                     "call_clause",
                     "create_clause",
                     "merge_clause",
@@ -145,6 +148,13 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar<Value>, String> {
             ]),
         ),
         (
+            "load",
+            seq(vec![
+                E::Ahead(Box::new(E::Keyword("LOAD")), "LOAD"),
+                rule("pipeline"),
+            ]),
+        ),
+        (
             "explain",
             seq(vec![
                 E::Keyword("EXPLAIN"),
@@ -178,6 +188,7 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar<Value>, String> {
         ("match_clause", "MATCH"),
         ("optional_clause", "OPTIONAL"),
         ("unwind_clause", "UNWIND"),
+        ("load_clause", "LOAD"),
         ("call_clause", "CALL"),
         ("create_clause", "CREATE"),
         ("merge_clause", "MERGE"),

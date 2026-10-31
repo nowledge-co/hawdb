@@ -27,7 +27,8 @@ before any writes on both empty and populated databases.
 
 Typed clause/procedure classification preserves plan-cache eligibility: reads
 and graph algorithms retain their prior policy; mutations, UNWIND, vector search
-and graph projection remain ineligible. Procedure capabilities are checked
+and graph projection remain ineligible. `LOAD CSV` statements also parse into
+`Statement::Pipeline`; see [LOAD CSV](CYPHER_LOAD_CSV.md). Procedure capabilities are checked
 before parameter binding, planning, cache accounting or catalog mutation.
 Statement kinds, fast-path reasons and ordering/pagination reports are derived
 from the AST and preserve existing host reports.

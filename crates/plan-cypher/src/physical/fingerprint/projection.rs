@@ -99,6 +99,12 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             write_projection_expression(output, right);
             output.push(')');
         }
+        ProjectionExpression::Conversion { function, argument } => {
+            output.push_str(function.function_name());
+            output.push('(');
+            write_projection_expression(output, argument);
+            output.push(')');
+        }
         ProjectionExpression::Not(child) => {
             output.push_str("Not(");
             write_projection_expression(output, child);

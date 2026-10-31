@@ -224,10 +224,12 @@ fn execute_profiled_output<S: ExecutionStore>(
         task_context,
         observer: &observer,
         host_scorer: request.host_scorer(),
+        csv_import: request.csv_import(),
     };
 
     if let Some(batch_plan) = batch_plan {
-        let external = BatchExternalReadAdapter::new(&mut *context.external);
+        let external = BatchExternalReadAdapter::new(&mut *context.external)
+            .with_csv_import(context.csv_import);
         let batch_context = BatchReadContext {
             catalog,
             store,

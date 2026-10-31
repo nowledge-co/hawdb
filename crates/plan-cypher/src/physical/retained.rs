@@ -237,6 +237,11 @@ impl RetainedHeapBytes for PhysicalPlan {
                 variable.retained_heap_bytes(),
                 operation.retained_heap_bytes(),
             ]),
+            Self::LoadCsvMutation { source, operation } => checked_retained_heap_sum([
+                source.retained_heap_bytes(),
+                operation.retained_heap_bytes(),
+            ]),
+            Self::LoadCsvExec { source } => source.retained_heap_bytes(),
             Self::MergeNode {
                 label,
                 match_properties,

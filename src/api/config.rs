@@ -40,6 +40,14 @@ pub struct DatabaseConfig {
     pub max_read_result_payload_bytes: Option<usize>,
     pub execution_memory: executor::ExecutionMemoryConfig,
     pub mutation_limits: hawdb_storage::mutation::MutationLimits,
+    /// Directory Cypher `LOAD CSV` may read from. `None` (the default)
+    /// refuses every `LOAD CSV` statement. When set, each source must resolve,
+    /// after `..` components and symbolic links, to a regular file inside
+    /// this directory; relative paths are resolved against it. Only local
+    /// files are supported.
+    pub csv_import_root: Option<PathBuf>,
+    /// Per-file byte, record-size and field-count limits for `LOAD CSV`.
+    pub csv_import_limits: executor::CsvImportLimits,
     /// Maximum memo groups available to graph and relational optimizer search.
     pub max_optimizer_groups: Option<usize>,
     /// Maximum memo expressions available to relational join enumeration.
@@ -158,6 +166,13 @@ impl DatabaseConfig {
         self.max_read_result_rows.filter(|rows| *rows != 0)
     }
 
+    /// The `LOAD CSV` file policy, or `None` when CSV import is disabled.
+    pub(super) fn csv_import_policy(&self) -> Option<executor::CsvImportPolicy> {
+        self.csv_import_root
+            .as_ref()
+            .map(|root| executor::CsvImportPolicy::new(root.clone(), self.csv_import_limits))
+    }
+
     pub(super) fn wal_replay_config(&self) -> WalReplayConfig {
         WalReplayConfig {
             max_open_files: self.max_open_files,
@@ -193,6 +208,8 @@ impl Default for DatabaseConfig {
             max_read_result_payload_bytes: Some(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES),
             execution_memory: executor::ExecutionMemoryConfig::default(),
             mutation_limits: hawdb_storage::mutation::MutationLimits::default(),
+            csv_import_root: None,
+            csv_import_limits: executor::CsvImportLimits::default(),
             max_optimizer_groups: None,
             max_relational_join_expressions: None,
             recovery_mode: RecoveryMode::default(),

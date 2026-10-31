@@ -115,7 +115,7 @@ fn render(input: &str, error: SyntaxError) -> HawDBError {
     if expected == "unexpected trailing input" {
         parser.error(expected)
     } else if parser.pos == 0 {
-        parser.error("expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, UNWIND, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK")
+        parser.error("expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, UNWIND, LOAD, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK")
     } else {
         parser.error(&format!("expected {expected}"))
     }

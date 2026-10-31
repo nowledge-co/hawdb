@@ -266,7 +266,8 @@ fn qualified_cypher(statement: &cypher::Statement) -> bool {
                 C::Set(sets) => qualified_sets(sets),
                 C::Unwind { source, .. } => value_is_deterministic(source),
                 C::Delete { .. } => true,
-                C::Call { .. } => false,
+                // File contents are external input with no read dependency.
+                C::Call { .. } | C::LoadCsv(_) => false,
             })
         }
         S::CreateNode(node) => node.properties.values().all(value_is_deterministic),
