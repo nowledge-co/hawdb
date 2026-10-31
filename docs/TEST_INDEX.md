@@ -156,6 +156,10 @@ rounding, overflow, numeric identity/order and ordered-key encodings against
 integer/rational comparisons. SQL tests check both frontends, prepared parameters,
 CAST metadata and flat expression depth limits. Relational tests check exact
 index boundaries, integer/Decimal joins, SUM/HAVING and atomic failed UPDATEs.
+Root BIGINT mutation regressions cover NULL propagation, NOT NULL and numeric
+type refusals, and unchanged rows after rejected assignments or overflow.
+Vector scalar projection tests require an explicit DOUBLE fallback cast for
+COALESCE and reject a mixed Decimal/DOUBLE call even on an empty table.
 Native locking tests keep comparison bounds unrounded across both residency
 modes. Serializable tests retain true incompatible-type and volatile-value
 refusals while checking mixed BIGINT/DOUBLE results above 2^53, fail-closed

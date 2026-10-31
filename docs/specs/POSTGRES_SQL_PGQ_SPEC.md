@@ -127,6 +127,8 @@ parameters and numeric `CAST` / `::` share one kernel across projections,
 predicates, INSERT values, defaults, UPDATE assignments and aggregate inputs.
 UPDATE expressions read the original row. An expression, conversion or
 constraint failure must leave the statement's changes unpublished.
+Numeric arithmetic propagates NULL after operand type validation. Assigning
+that NULL to a NOT NULL column still fails the complete statement.
 
 BIGINT and Decimal promote exactly. Decimal addition, subtraction,
 multiplication and remainder reject unrepresentable results, including
@@ -145,6 +147,8 @@ can instead bind to a BIGINT key. Valid ordinary execution does not bypass that
 capture boundary.
 
 Decimal/DOUBLE PRECISION arithmetic and comparisons require an explicit cast.
+COALESCE retains its same-domain argument rule; for example, a DOUBLE vector
+distance needs `CAST(9.0 AS DOUBLE PRECISION)` as a decimal-literal fallback.
 Assignment to a declared DOUBLE PRECISION column permits approximate conversion;
 assignment of a floating value to Decimal requires a cast. Decimal-to-BIGINT
 casts reject fractions. Float-to-Decimal casts parse the float's shortest
