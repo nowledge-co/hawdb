@@ -227,15 +227,17 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
         };
         println!("physical-cache candidates={candidates} actual={actual} charged={charged}");
     }
-    // Exercise every owned list-expression form introduced by #1360, keeping
-    // their allocation lifetime entirely inside the same independent observer.
-    {
-        let query = "MATCH (n:Memory) RETURN [x IN reverse(range(0, 128))[1..100] WHERE x > 3 | x] AS filtered, range(0, 12)[1] AS indexed, [n.id, [n.body, 'literal-owned-payload']] AS literal_list";
-        let statement = cypher::parse(query).unwrap();
+    // Observe owned list expressions and UNWIND source payloads independently
+    // of the accounting implementation, including nested retained values.
+    for query in [
+        "MATCH (n:Memory) RETURN [x IN reverse(range(0, 128))[1..100] WHERE x > 3 | x] AS filtered, range(0, 12)[1] AS indexed, [n.id, [n.body, 'literal-owned-payload']] AS literal_list".to_owned(),
+        format!("UNWIND ['{}', ['{}'], null] AS candidate RETURN candidate", "unwind".repeat(4096), "nested".repeat(2048)),
+    ] {
+        let statement = cypher::parse(&query).unwrap();
         let parameters = BTreeMap::new();
         let window = Window::new();
         let mut cache = PlanCache::with_byte_limits(Some(8), Some(16 << 20), Some(8 << 20));
-        let (key, value, charge) = cached(query, &statement, &parameters);
+        let (key, value, charge) = cached(&query, &statement, &parameters);
         cache.insert_weighted(key, value, charge);
         assert_eq!(cache.stats().entries, 1);
         assert!(window.retained() <= cache.charged_bytes().unwrap());

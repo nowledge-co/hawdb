@@ -61,7 +61,7 @@ benchmarks. The facade's `api::plan_cache::retention_allocation` oracle belongs
 to `//:hawdb_unit_general_tests`: it observes complete private cache keys,
 physical IR, traces, shared metadata, proof-schema table/property IDs and EXISTS
 strings, both scoring-key forms and table capacity
-at 20/100/512 candidates, owned row-bound/nested list and path expressions, boxed shortest-path
+at 20/100/512 candidates, owned row-bound/nested list and path expressions, UNWIND source payloads, boxed shortest-path
 descriptors with spare string capacities (Any/All selection), and byte-driven eviction. Its thread-local
 observer is enabled only in that one unit test. Replay with `cargo test --locked
 -p hawdb --lib retention_allocation -- --test-threads=1 --nocapture`.
@@ -158,6 +158,17 @@ and the overflow check through partial and buffered paths), the
 root `api::tests::aggregates`. Replay with `cargo test --locked -p
 hawdb-executor --lib aggregate` and `cargo test --locked -p hawdb --lib --
 api::tests::aggregates`. No lane, profile or deadline changes.
+
+Row-bound node-pattern properties and read-only `UNWIND` are owned by the
+existing Cypher parser and planner targets, executor batch-dispatch coverage,
+and root `api::tests::row_bound_pattern_properties` in
+`//:hawdb_unit_general_tests`. The regressions cover scalar/property bindings,
+optional predicate boundaries, duplicate matches and inputs, NULL/empty values,
+indexed and generic execution, parameter cache rebinding, dropped/unknown scope,
+and payload/result budget failures. Replay with `cargo test --locked -p hawdb
+--lib row_bound_pattern_properties`, `cargo test --locked -p hawdb-cypher
+row_bound_pattern_properties`, and `cargo test --locked -p hawdb-plan-cypher
+row_bound_pattern_properties`. No CI lane or timeout is added.
 
 General `shortestPath` / `allShortestPaths` coverage is owned by existing
 targets: executor `traversal::shortest_path_bfs::tests` (directions,

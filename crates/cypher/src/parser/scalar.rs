@@ -98,9 +98,12 @@ impl Parser<'_> {
             }
             Some(ch) if ch.is_ascii_alphabetic() || ch == '_' => {
                 let variable = self.parse_ident()?;
-                self.expect_char('.')?;
-                let property = self.parse_ident()?;
-                Ok(ValueExpressionKind::BindingProperty { variable, property })
+                if self.consume_char('.') {
+                    let property = self.parse_ident()?;
+                    Ok(ValueExpressionKind::BindingProperty { variable, property })
+                } else {
+                    Ok(ValueExpressionKind::Binding(variable))
+                }
             }
             _ => Err(self.error("expected value")),
         }

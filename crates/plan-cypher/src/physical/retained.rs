@@ -532,6 +532,10 @@ impl RetainedHeapBytes for PhysicalPlan {
                 input.retained_heap_bytes(),
             ]),
             Self::EmptyExec => checked_retained_heap_sum([]),
+            Self::UnwindExec { rows, variable } => checked_retained_heap_sum([
+                rows.retained_heap_bytes(),
+                variable.retained_heap_bytes(),
+            ]),
             Self::SeqNodeScan { variable, label } => checked_retained_heap_sum([
                 variable.retained_heap_bytes(),
                 label.retained_heap_bytes(),

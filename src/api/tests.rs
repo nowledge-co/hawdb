@@ -152,6 +152,7 @@ mod relationship_patterns;
 mod relationship_property_mutations;
 mod relationship_reads;
 mod result_column_order;
+mod row_bound_pattern_properties;
 mod row_goal_planning;
 mod runtime_capabilities;
 mod schema_indexes;

@@ -51,6 +51,7 @@ impl PhysicalPlan {
             PhysicalPlan::VectorIndexScan(_) => PhysicalPlanKind::VectorIndexScan,
             PhysicalPlan::TextSeedScan { .. } => PhysicalPlanKind::TextSeedScan,
             PhysicalPlan::CreateNode { .. } => PhysicalPlanKind::CreateNode,
+            PhysicalPlan::UnwindExec { .. } => PhysicalPlanKind::UnwindExec,
             PhysicalPlan::UnwindMutation { .. } => PhysicalPlanKind::UnwindMutationExec,
             PhysicalPlan::MergeNode { .. } => PhysicalPlanKind::MergeNode,
             PhysicalPlan::MergeRelationship { .. } => PhysicalPlanKind::MergeRelationship,
@@ -196,6 +197,7 @@ impl PhysicalPlan {
             | PhysicalPlan::DeleteRelationship { .. }
             | PhysicalPlan::DeleteRelationshipTargetNodes { .. }
             | PhysicalPlan::CreateRelationship { .. }
+            | PhysicalPlan::UnwindExec { .. }
             | PhysicalPlan::EmptyExec
             | PhysicalPlan::SeqNodeScan { .. }
             | PhysicalPlan::NodeProjectionScanExec { .. }
