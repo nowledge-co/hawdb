@@ -145,6 +145,10 @@ homepage = "https://hawdb.ai"
 name = "optimizer_smoke"
 harness = false
 
+[[bench]]
+name = "property_proofs"
+harness = false
+
 [[example]]
 name = "wasm_playground"
 path = "examples/wasm_playground.rs"

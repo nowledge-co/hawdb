@@ -362,6 +362,32 @@ impl Parser<'_> {
         })
     }
 
+    /// Parses `[element, ...]`. A list of constants and parameters stays a
+    /// value so it keeps value-list predicates and pushdown; any row-bound
+    /// element makes it a per-row [`ScalarExpressionKind::List`].
+    fn parse_list_literal(&mut self) -> Result<ScalarExpressionKind> {
+        let checkpoint = self.checkpoint();
+        if let Ok(value) = self.parse_value()
+            && !value.kind.reads_row_binding()
+        {
+            return Ok(ScalarExpressionKind::Value(value));
+        }
+        self.restore(checkpoint);
+        self.expect_char('[')?;
+        let mut elements = Vec::new();
+        loop {
+            self.skip_ws();
+            if self.consume_char(']') {
+                break;
+            }
+            elements.push(self.parse_case_or()?);
+            if self.consume_separator_or_end(',', ']')? {
+                break;
+            }
+        }
+        Ok(ScalarExpressionKind::List(elements))
+    }
+
     /// Parses the arguments of a list function after its opening parenthesis.
     fn parse_list_function_arguments(
         &mut self,
@@ -408,6 +434,9 @@ impl Parser<'_> {
         self.skip_ws();
         if self.next_is_list_comprehension() {
             return self.parse_list_comprehension();
+        }
+        if self.peek_char() == Some('[') {
+            return self.parse_list_literal();
         }
         if matches!(
             self.peek_char(),
@@ -580,6 +609,16 @@ impl Parser<'_> {
         Ok(Some(path))
     }
 
+    /// A value in a specialized CASE shape. Those shapes bind their values
+    /// at planning time, so a row-bound list falls back to the generic CASE.
+    fn parse_case_constant(&mut self) -> Result<ValueExpression> {
+        let value = self.parse_value()?;
+        if value.kind.reads_row_binding() {
+            return Err(self.error("expected a constant CASE value"));
+        }
+        Ok(value)
+    }
+
     fn parse_case_lower_property_default_expression(&mut self) -> Result<ScalarExpressionKind> {
         self.expect_keyword("WHEN")?;
         let variable = self.parse_ident()?;
@@ -602,7 +641,7 @@ impl Parser<'_> {
             return Err(self.error("CASE lower-default expression must lower the checked property"));
         }
         self.expect_keyword("ELSE")?;
-        let default = self.parse_value()?;
+        let default = self.parse_case_constant()?;
         self.expect_keyword("END")?;
         Ok(ScalarExpressionKind::CaseLowerPropertyDefault {
             variable,
@@ -626,9 +665,9 @@ impl Parser<'_> {
             return Err(self.error("CASE expression supports only one normalized property"));
         }
         self.expect_char('=')?;
-        let empty = self.parse_value()?;
+        let empty = self.parse_case_constant()?;
         self.expect_keyword("THEN")?;
-        let default = self.parse_value()?;
+        let default = self.parse_case_constant()?;
         self.expect_keyword("ELSE")?;
         let else_variable = self.parse_ident()?;
         self.expect_char('.')?;
@@ -662,7 +701,7 @@ impl Parser<'_> {
                 return Err(self.error("CASE sort expression THEN must return the same property"));
             }
             self.expect_keyword("ELSE")?;
-            let default = self.parse_value()?;
+            let default = self.parse_case_constant()?;
             self.expect_keyword("END")?;
             return Ok(ScalarExpressionKind::DefaultIfNull {
                 variable,
@@ -679,11 +718,11 @@ impl Parser<'_> {
         if !self.consume_token("<>") && !self.consume_token("!=") {
             return Err(self.error("expected CASE sort expression inequality"));
         }
-        let empty = self.parse_value()?;
+        let empty = self.parse_case_constant()?;
         self.expect_keyword("THEN")?;
-        let non_empty = self.parse_value()?;
+        let non_empty = self.parse_case_constant()?;
         self.expect_keyword("ELSE")?;
-        let null_or_empty = self.parse_value()?;
+        let null_or_empty = self.parse_case_constant()?;
         self.expect_keyword("END")?;
         Ok(ScalarExpressionKind::CasePropertyNotNullOrEq {
             variable,
@@ -700,9 +739,9 @@ impl Parser<'_> {
         self.expect_char('.')?;
         let property = self.parse_ident()?;
         self.expect_char('=')?;
-        let first_match = self.parse_value()?;
+        let first_match = self.parse_case_constant()?;
         self.expect_keyword("THEN")?;
-        let first_rank = self.parse_value()?;
+        let first_rank = self.parse_case_constant()?;
         let mut branches = vec![(first_match, first_rank)];
 
         while self.consume_keyword("WHEN") {
@@ -713,14 +752,14 @@ impl Parser<'_> {
                 return Err(self.error("CASE rank expression supports only one property"));
             }
             self.expect_char('=')?;
-            let branch_match = self.parse_value()?;
+            let branch_match = self.parse_case_constant()?;
             self.expect_keyword("THEN")?;
-            let branch_rank = self.parse_value()?;
+            let branch_rank = self.parse_case_constant()?;
             branches.push((branch_match, branch_rank));
         }
 
         self.expect_keyword("ELSE")?;
-        let default = self.parse_value()?;
+        let default = self.parse_case_constant()?;
         self.expect_keyword("END")?;
         Ok(ScalarExpressionKind::CasePropertyEqualsRank {
             variable,
@@ -739,12 +778,12 @@ impl Parser<'_> {
         if !self.consume_char('<') {
             return Err(self.error("expected CASE floor expression '<'"));
         }
-        let zero = self.parse_value()?;
+        let zero = self.parse_case_constant()?;
         if zero.kind != ValueExpressionKind::Literal(hawdb_core::Value::Int(0)) {
             return Err(self.error("CASE floor expression only supports zero lower bound"));
         }
         self.expect_keyword("THEN")?;
-        let then_zero = self.parse_value()?;
+        let then_zero = self.parse_case_constant()?;
         if then_zero.kind != ValueExpressionKind::Literal(hawdb_core::Value::Int(0)) {
             return Err(self.error("CASE floor expression THEN must be zero"));
         }
@@ -788,7 +827,7 @@ impl Parser<'_> {
         self.expect_char('.')?;
         let property = self.parse_ident()?;
         self.expect_char(',')?;
-        let default = self.parse_value()?;
+        let default = self.parse_case_constant()?;
         self.expect_char(')')?;
         Ok((variable, CoalesceDifferenceTerm { property, default }))
     }

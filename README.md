@@ -133,18 +133,27 @@ host process
 | Canonical graph | Nodes, relationships, properties, schema, and adjacency. Cypher reads and mutations. Crash recovery replays the WAL onto this state. |
 | Canonical rows | PostgreSQL-dialect tables on the same snapshot and commit boundary, including strict-append event logs. |
 | Lexical projection | Rebuildable full-text index. Published as its own generation and caught up from the graph. |
-| Vector projection | Raw embeddings stay canonical. A checksummed RaBitQ artifact (`search_rabitq.<generation>.hawdb`) supplies 1-bit or 4-bit candidates. Final ranking reads the raw vectors. |
+| Vector projection | Raw embeddings stay canonical. Default approximate queries traverse a persistent, filter-aware DiskANN (Vamana) graph; a checksummed RaBitQ artifact (`search_rabitq.<generation>.hawdb`) supplies 1-bit or 4-bit candidates. Exact queries stay exact, and final ranking reads the raw vectors. |
 | Analytics projection | Immutable CSR/CSC graphs for PageRank and Louvain, invoked with `CALL project_graph`, `CALL page_rank`, and `CALL louvain`. Rebuildable derived state. |
 
 Lexical, vector, and analytics data are projections. Identity and authorization live on the canonical snapshot, and retrieval rebinds to that snapshot before it returns rows.
 
-Vector search is native Rust. Only the portable scalar kernel is qualified. An AVX2 request fails closed. A NEON request fails closed off Arm, and on Arm it runs on the scalar kernel. Segment scans are opt-in under a caller-supplied concurrency limit and memory budget. HawDB does not start a global vector-search thread pool. The encoding, recovery, and readiness contract is [`docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md`](docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md).
+Vector search is native Rust, and the portable scalar kernel is the correctness reference. Exact raw-vector arithmetic selects AVX2 or NEON at runtime when the CPU supports it and keeps the scalar summation order, so scores are bit-identical. The RaBitQ candidate scorer selects AVX2 automatically; NEON is used only when requested explicitly, and a NEON request fails closed off Arm. Segment scans are opt-in under a caller-supplied concurrency limit and memory budget. HawDB does not start a global vector-search thread pool. The RaBitQ encoding, recovery, and readiness contract is [`docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md`](docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md). The DiskANN graph, filter semantics, and memory preflight are in [`docs/specs/FILTERED_DISKANN_SPEC.md`](docs/specs/FILTERED_DISKANN_SPEC.md).
 
 ## Query languages
 
-Application graph work is parameterized Cypher: `MATCH`, `WHERE`, `RETURN`, `ORDER BY`, `LIMIT`, `CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`, and explicit `BEGIN` / `COMMIT` / `ROLLBACK`. The same statements run through `Database`, `DatabaseTransaction`, and `DatabaseReadTransaction`.
+Application graph work is parameterized Cypher: `MATCH`, `OPTIONAL MATCH`, `WHERE`, `WITH`, `UNWIND`, `RETURN`, `ORDER BY`, `SKIP`, `LIMIT`, `CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`, and explicit `BEGIN` / `COMMIT` / `ROLLBACK`. The same statements run through `Database`, `DatabaseTransaction`, and `DatabaseReadTransaction`.
+
+Within those clauses:
+
+- Variable-length relationship patterns match as trails in every direction: a path never reuses a relationship.
+- `shortestPath(...)`, `allShortestPaths(...)`, and the `ANY SHORTEST` / `ALL SHORTEST` selectors run a bounded bidirectional search between bound endpoints. An unbounded search is capped at 256 hops and fails rather than report no path. See [`docs/SHORTEST_PATH_EXECUTION.md`](docs/SHORTEST_PATH_EXECUTION.md).
+- `count`, `sum`, `min`, `max`, `avg`, and `collect` accept a scalar-expression argument, with optional `DISTINCT`.
+- List comprehensions, `size`, `head`, `last`, `tail`, `reverse`, `range`, indexing, slicing, and three-valued `IN` are supported. [`docs/CYPHER_LIST_FUNCTIONS.md`](docs/CYPHER_LIST_FUNCTIONS.md) lists their semantics and the remaining differences from openCypher.
 
 Application relational work is PostgreSQL-dialect SQL through `query_sql` and `query_sql_with_params`. Idempotent ingestion uses `INSERT ... ON CONFLICT (...) DO NOTHING RETURNING ...`. Provisional row counts are available before commit; `commit_with_result` recomputes them at the durable boundary. The SQL/PGQ binder in `hawdb-sql` (`CREATE PROPERTY GRAPH`, `GRAPH_TABLE`) is specified in [`docs/specs/POSTGRES_SQL_PGQ_SPEC.md`](docs/specs/POSTGRES_SQL_PGQ_SPEC.md).
+
+`Database::sql_session()` runs parameterized SQL with native rows and mutation counts, and `session.transaction(|transaction| ...)` makes several statements atomic. A statement failure aborts the whole callback, even if its error is caught. See [the SQL session contract](docs/SQL_SESSION.md) for examples, result provenance, and the supported PostgreSQL subset.
 
 Both languages go through one Cascades-style optimizer. Plans are fingerprinted, cached when the statement shape allows it, and explainable. Costing, join enumeration, and predicate pushdown are separate rule families over a shared memo.
 
@@ -330,11 +339,3 @@ Source files carry the standard Apache-2.0 header. Check or repair them with [ha
 hawkeye check
 hawkeye format
 ```
-
-## In-process SQL sessions
-
-Use `Database::sql_session()` for parameterized SQL queries with native rows and
-mutation counts, and `session.transaction(|transaction| ...)` for atomic
-multi-statement writes. A statement failure aborts the entire callback even if
-its error is caught. See [the SQL session contract](docs/SQL_SESSION.md) for
-examples, result provenance and the supported PostgreSQL subset.

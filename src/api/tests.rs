@@ -57,6 +57,7 @@ mod community_cleanup;
 mod community_lifecycle;
 mod community_memberships;
 mod community_reads;
+mod comparison_chains;
 mod concurrent_transactions;
 mod crystal_reads;
 mod crystal_source;
@@ -116,6 +117,7 @@ mod knowledge_retrieval_pipeline;
 mod knowledge_retrieval_ranking;
 mod label_lifecycle;
 mod list_functions;
+mod list_literals;
 mod materialized_views;
 mod memory_lifecycle;
 mod merge_nodes;
@@ -127,6 +129,7 @@ mod nowledge_graph_adapter;
 mod optional_match;
 mod ordered_composite;
 mod ordered_range;
+mod out_of_core_labeled_expand;
 mod pagerank;
 mod predicates;
 mod projected_graph_artifacts;
@@ -2895,4 +2898,5 @@ fn community_parameters(ids: Vec<Value>) -> Result<BTreeMap<String, Value>> {
     ]))
 }
 
+mod optimizer_proofs;
 mod width_costing;

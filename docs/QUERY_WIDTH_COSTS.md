@@ -86,6 +86,8 @@ executor decisions.
 Bounded sort and ordered-access candidates are compared after the same existing
 projection fusion, and the unordered competitor includes TopN when applicable.
 This avoids charging an unfused full graph record to only one alternative.
+Offline qualification perturbs ranking only after raw width estimates; the
+Sort/TopN competitor comparison uses the same qualification controls.
 The selected plan uses the same context/cost fold as ranking. Only that fold
 formats `physical width cost:` diagnostics in existing query reports; alternative
 costing does not allocate diagnostic strings. Refreshing a cached plan replaces

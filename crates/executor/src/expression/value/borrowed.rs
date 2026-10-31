@@ -256,6 +256,14 @@ fn evaluate_scoped<'a>(
         ProjectionExpression::Binary { left, op, right } => {
             binary(left, *op, right, evaluate, account, work)
         }
+        ProjectionExpression::List(elements) => {
+            let mut output = list::ListBuilder::new(account, work, elements.len())?;
+            for element in elements {
+                work.charge(1)?;
+                output.push_projected(evaluate(element)?)?;
+            }
+            Ok(output.finish())
+        }
         ProjectionExpression::ListFunction {
             function,
             arguments,

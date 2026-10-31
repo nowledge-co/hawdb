@@ -53,6 +53,7 @@ pub(crate) use checkpoint_scan::{
     CheckpointCanonicalCursor, CheckpointCanonicalIterator, CheckpointCanonicalRecord,
 };
 mod node_label_cursor;
+pub(crate) mod point_directory;
 pub(crate) use node_label_cursor::{CanonicalLabelAction, CanonicalNodeLabelCursor};
 
 use crate::file_io::{self as fs, File};
@@ -214,6 +215,17 @@ impl CanonicalEndpointBloom {
     }
 
     fn decode_descriptor_bytes(encoded: &[u8]) -> Result<Self, CanonicalSegmentError> {
+        let hash_count = Self::validate_descriptor_bytes(encoded)?;
+        let words = encoded[8..]
+            .chunks_exact(8)
+            .map(|word| u64::from_le_bytes(word.try_into().expect("fixed bloom word")))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Ok(Self { words, hash_count })
+    }
+
+    /// Checks the encoded bloom framing and returns its hash count.
+    fn validate_descriptor_bytes(encoded: &[u8]) -> Result<u8, CanonicalSegmentError> {
         if encoded.len() < 8 || encoded[1..4] != [0u8; 3] {
             return Err(CanonicalSegmentError::Corrupt(
                 "canonical descriptor bloom has an invalid header".to_string(),
@@ -245,12 +257,7 @@ impl CanonicalEndpointBloom {
                 "canonical descriptor bloom exceeds its format bounds".to_string(),
             ));
         }
-        let words = encoded[8..]
-            .chunks_exact(8)
-            .map(|word| u64::from_le_bytes(word.try_into().expect("fixed bloom word")))
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        Ok(Self { words, hash_count })
+        Ok(hash_count)
     }
 }
 
@@ -348,6 +355,26 @@ impl CanonicalSegmentDescriptor {
         key: &[u8],
         encoded: &[u8],
     ) -> Result<Self, CanonicalSegmentError> {
+        Self::decode_descriptor_tree_entry_selected(key, encoded, true)
+    }
+
+    /// Point reads only locate one record and never consult a segment's
+    /// pruning blooms. Validating bloom framing without copying the words
+    /// keeps a descriptor seek from allocating every bloom of a large segment.
+    /// The returned blooms are empty placeholders and must not be used.
+    fn decode_descriptor_tree_entry_selected(
+        key: &[u8],
+        encoded: &[u8],
+        with_blooms: bool,
+    ) -> Result<Self, CanonicalSegmentError> {
+        let bloom = |encoded: &[u8]| {
+            if with_blooms {
+                CanonicalEndpointBloom::decode_descriptor_bytes(encoded)
+            } else {
+                CanonicalEndpointBloom::validate_descriptor_bytes(encoded)
+                    .map(|_| CanonicalEndpointBloom::default())
+            }
+        };
         if key.len() != 17
             || encoded.len() < DESCRIPTOR_VALUE_FIXED_BYTES
             || &encoded[..8] != DESCRIPTOR_VALUE_MAGIC
@@ -397,18 +424,10 @@ impl CanonicalSegmentDescriptor {
             min_record_id: read_u64_at(encoded, 48),
             max_record_id: read_u64_at(encoded, 56),
             record_count: read_u32_at(encoded, 64),
-            source_endpoint_bloom: CanonicalEndpointBloom::decode_descriptor_bytes(
-                &encoded[DESCRIPTOR_VALUE_FIXED_BYTES..source_end],
-            )?,
-            target_endpoint_bloom: CanonicalEndpointBloom::decode_descriptor_bytes(
-                &encoded[source_end..target_end],
-            )?,
-            node_property_bloom: CanonicalEndpointBloom::decode_descriptor_bytes(
-                &encoded[target_end..property_end],
-            )?,
-            node_label_bloom: CanonicalEndpointBloom::decode_descriptor_bytes(
-                &encoded[property_end..label_end],
-            )?,
+            source_endpoint_bloom: bloom(&encoded[DESCRIPTOR_VALUE_FIXED_BYTES..source_end])?,
+            target_endpoint_bloom: bloom(&encoded[source_end..target_end])?,
+            node_property_bloom: bloom(&encoded[target_end..property_end])?,
+            node_label_bloom: bloom(&encoded[property_end..label_end])?,
         };
         descriptor.validate_identity()?;
         if key != descriptor.descriptor_tree_key() {
@@ -1860,14 +1879,17 @@ impl CanonicalSegmentReader {
             report.segments_considered = 1;
             let read = self.read_segment_with_report(&segment)?;
             update_report_for_segment(&mut report, &read);
-            let node = decode_node_by_id(
-                &read.payload,
-                self.manifest.generation,
-                &segment,
-                id.0,
-                self.property_spills.as_ref(),
-                Some(self.property_keys()),
-            )?;
+            let node = self
+                .point_frame(&segment, &read.payload, id.0)?
+                .map(|frame| {
+                    decode_node_with_property_spills(
+                        frame.id,
+                        &read.payload[frame.payload_start..frame.payload_end],
+                        self.property_spills.as_ref(),
+                        Some(self.property_keys()),
+                    )
+                })
+                .transpose()?;
             report.records_decoded = u64::from(node.is_some());
             Ok((node, report))
         })();
@@ -1887,15 +1909,17 @@ impl CanonicalSegmentReader {
                 return Ok(None);
             };
             let read = self.read_segment_with_report(&segment)?;
-            decode_projected_node_by_id(
-                &read.payload,
-                self.manifest.generation,
-                &segment,
-                id.0,
-                self.property_spills.as_ref(),
-                Some(self.property_keys()),
-                required_properties,
-            )
+            self.point_frame(&segment, &read.payload, id.0)?
+                .map(|frame| {
+                    decode_projected_node_with_property_spills(
+                        frame.id,
+                        &read.payload[frame.payload_start..frame.payload_end],
+                        self.property_spills.as_ref(),
+                        Some(self.property_keys()),
+                        required_properties,
+                    )
+                })
+                .transpose()
         })();
         self.poison_on_physical_failure(&result);
         result
@@ -2026,22 +2050,9 @@ impl CanonicalSegmentReader {
                 return Ok(None);
             };
             let read = self.read_segment_with_report(&segment)?;
-            let mut found = None;
-            decode_segment_records_control(
-                &read.payload,
-                self.manifest.generation,
-                &segment,
-                |record_id, payload| {
-                    if record_id < id {
-                        return Ok(CanonicalScanControl::Continue);
-                    }
-                    if record_id == id {
-                        found = Some(consume(payload)?);
-                    }
-                    Ok(CanonicalScanControl::Stop)
-                },
-            )?;
-            Ok(found)
+            self.point_frame(&segment, &read.payload, id)?
+                .map(|frame| consume(&read.payload[frame.payload_start..frame.payload_end]))
+                .transpose()
         })();
         self.poison_on_physical_failure(&result);
         result
@@ -2084,14 +2095,17 @@ impl CanonicalSegmentReader {
             report.segments_considered = 1;
             let read = self.read_segment_with_report(&segment)?;
             update_report_for_segment(&mut report, &read);
-            let relationship = decode_relationship_by_id(
-                &read.payload,
-                self.manifest.generation,
-                &segment,
-                id.0,
-                self.property_spills.as_ref(),
-                Some(self.property_keys()),
-            )?;
+            let relationship = self
+                .point_frame(&segment, &read.payload, id.0)?
+                .map(|frame| {
+                    decode_relationship_with_property_spills(
+                        frame.id,
+                        &read.payload[frame.payload_start..frame.payload_end],
+                        self.property_spills.as_ref(),
+                        Some(self.property_keys()),
+                    )
+                })
+                .transpose()?;
             report.records_decoded = u64::from(relationship.is_some());
             Ok((relationship, report))
         })();
@@ -2565,6 +2579,8 @@ impl CanonicalSegmentReader {
         }
     }
 
+    /// The selected descriptor carries placeholder blooms; callers only use
+    /// its identity, extent and id range.
     fn find_descriptor_for_id(
         &self,
         kind: CanonicalSegmentKind,
@@ -2579,7 +2595,8 @@ impl CanonicalSegmentReader {
         let mut lower_bound = Vec::with_capacity(9);
         lower_bound.push(kind.tag());
         lower_bound.extend_from_slice(&id.to_be_bytes());
-        let (selected, report) = self.next_descriptor_from(kind, &lower_bound)?;
+        // Point reads select a segment by id range only; skip bloom copies.
+        let (selected, report) = self.next_descriptor_from_selected(kind, &lower_bound, false)?;
         let descriptor = selected.and_then(|(_, descriptor)| {
             (descriptor.min_record_id <= id && id <= descriptor.max_record_id).then_some(descriptor)
         });
@@ -2591,6 +2608,15 @@ impl CanonicalSegmentReader {
         kind: CanonicalSegmentKind,
         lower_bound: &[u8],
     ) -> CanonicalDescriptorSeekResult {
+        self.next_descriptor_from_selected(kind, lower_bound, true)
+    }
+
+    fn next_descriptor_from_selected(
+        &self,
+        kind: CanonicalSegmentKind,
+        lower_bound: &[u8],
+        with_blooms: bool,
+    ) -> CanonicalDescriptorSeekResult {
         let limits = GraphDescriptorTreeReadLimits {
             max_descriptors: NonZeroU64::new(1)
                 .expect("canonical descriptor seek emits at most one segment"),
@@ -2601,7 +2627,11 @@ impl CanonicalSegmentReader {
         let descriptor_result =
             self.descriptor_reader
                 .scan_from(lower_bound, limits, |key, value| {
-                    match CanonicalSegmentDescriptor::decode_descriptor_tree_entry(key, value) {
+                    match CanonicalSegmentDescriptor::decode_descriptor_tree_entry_selected(
+                        key,
+                        value,
+                        with_blooms,
+                    ) {
                         Ok(descriptor) => selected = Some((key.to_vec(), descriptor)),
                         Err(error) => decode_error = Some(error),
                     }
@@ -3194,89 +3224,6 @@ fn canonical_error_requires_poison(error: &CanonicalSegmentError) -> bool {
     }
 }
 
-fn decode_node_by_id(
-    bytes: &[u8],
-    generation: ManifestGeneration,
-    descriptor: &CanonicalSegmentDescriptor,
-    id: u64,
-    property_spills: Option<&PropertySpillReader>,
-    property_keys: Option<&[String]>,
-) -> Result<Option<NodeRecord>, CanonicalSegmentError> {
-    let mut found = None;
-    decode_segment_records_control(bytes, generation, descriptor, |record_id, payload| {
-        // Record ids strictly increase, so the first id at or past the target
-        // settles the question either way and the rest of the segment does not
-        // need to be walked.
-        if record_id < id {
-            return Ok(CanonicalScanControl::Continue);
-        }
-        if record_id == id {
-            found = Some(decode_node_with_property_spills(
-                record_id,
-                payload,
-                property_spills,
-                property_keys,
-            )?);
-        }
-        Ok(CanonicalScanControl::Stop)
-    })?;
-    Ok(found)
-}
-
-fn decode_projected_node_by_id(
-    bytes: &[u8],
-    generation: ManifestGeneration,
-    descriptor: &CanonicalSegmentDescriptor,
-    id: u64,
-    property_spills: Option<&PropertySpillReader>,
-    property_keys: Option<&[String]>,
-    required_properties: &BTreeSet<String>,
-) -> Result<Option<ProjectedNodeRecord>, CanonicalSegmentError> {
-    let mut found = None;
-    decode_segment_records_control(bytes, generation, descriptor, |record_id, payload| {
-        if record_id < id {
-            return Ok(CanonicalScanControl::Continue);
-        }
-        if record_id == id {
-            found = Some(decode_projected_node_with_property_spills(
-                record_id,
-                payload,
-                property_spills,
-                property_keys,
-                required_properties,
-            )?);
-        }
-        Ok(CanonicalScanControl::Stop)
-    })?;
-    Ok(found)
-}
-
-fn decode_relationship_by_id(
-    bytes: &[u8],
-    generation: ManifestGeneration,
-    descriptor: &CanonicalSegmentDescriptor,
-    id: u64,
-    property_spills: Option<&PropertySpillReader>,
-    property_keys: Option<&[String]>,
-) -> Result<Option<RelRecord>, CanonicalSegmentError> {
-    let mut found = None;
-    decode_segment_records_control(bytes, generation, descriptor, |record_id, payload| {
-        if record_id < id {
-            return Ok(CanonicalScanControl::Continue);
-        }
-        if record_id == id {
-            found = Some(decode_relationship_with_property_spills(
-                record_id,
-                payload,
-                property_spills,
-                property_keys,
-            )?);
-        }
-        Ok(CanonicalScanControl::Stop)
-    })?;
-    Ok(found)
-}
-
 fn decode_segment_records(
     bytes: &[u8],
     expected_generation: ManifestGeneration,
@@ -3295,10 +3242,11 @@ fn decode_segment_records(
 /// A consumer that runs to the end also validates the segment's framing: ids
 /// strictly increase, the last one matches the descriptor, and no bytes are
 /// left over. Stopping early necessarily skips the part of that check it never
-/// reached. Callers that answer a question — a point lookup, a scan that has
-/// filled its limit — can afford that, because the bytes arrive
-/// content-verified: `read_range` checks the segment digest on every miss and
-/// `SegmentCache::insert` checks it again before caching. The framing walk is
+/// reached. Callers that answer a question — a scan that has filled its
+/// limit, or a point read through the sparse directory — can afford that,
+/// because the bytes arrive content-verified: `read_range` checks the segment
+/// digest on every miss and `SegmentCache::insert` checks it again before
+/// caching. The framing walk is
 /// a second opinion about data already proven intact rather than the thing
 /// standing between a bit flip and a decoded record. Callers whose purpose is
 /// to validate keep using `decode_segment_records` and pay for the full walk.

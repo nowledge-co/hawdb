@@ -158,11 +158,13 @@ pub(crate) mod publication;
 pub use publication::{DatabasePublicationOwner, DatabasePublicationState};
 #[cfg(feature = "qualification")]
 pub use publication::{PublicationLockDurationSnapshot, PublicationLockMetricsSnapshot};
+mod optimizer_qualification;
 #[cfg(feature = "qualification")]
 mod query_preparation_metrics;
 mod query_request;
 mod query_runtime;
 mod read_execution;
+pub use optimizer_qualification::OptimizerQualificationOutput;
 #[cfg(feature = "qualification")]
 pub use query_preparation_metrics::{query_preparation_metrics, QueryPreparationMetricsSnapshot};
 mod sql_runtime;

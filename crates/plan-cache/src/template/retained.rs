@@ -238,6 +238,7 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
             value_bytes(non_empty),
             value_bytes(null_or_empty),
         ]),
+        E::List(elements) => vector(elements, expression_bytes),
         E::ListFunction {
             function: _,
             arguments,
