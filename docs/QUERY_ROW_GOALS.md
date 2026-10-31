@@ -23,8 +23,10 @@ It adds no metadata traversal or per-operator allocation. A bounded ordered
 composite alternative is compared with the cheaper of Sort and TopN over the
 same projection-fused competing producer. A prefix discount can select an
 ordered alternative only if its residual is absent or consists solely of exact
-equality-prefix constraints/true constants. Otherwise that alternative retains
-full work for selection: NDV cannot prove that rejecting matches are evenly
+equality-prefix constraints, true constants, or the exact strict keyset cursor
+already enforced by the native seek. Cursor bounds, ordered suffix and direction
+must match; additional rejecting residuals still require full work. Otherwise
+that alternative retains full work for selection: NDV cannot prove that rejecting matches are evenly
 distributed in index order. `LIMIT 0` is safe regardless of distribution.
 The same projection-fused comparison also applies to unbounded ORDER BY. A
 prefix-only ordered path then consumes its full estimated output, reports

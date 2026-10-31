@@ -33,7 +33,24 @@ pub(super) fn prefix_consumption_is_proven(plan: &PhysicalPlan) -> bool {
                         .iter()
                         .any(|(key, expected)| key == property && expected == value)
             }
-            _ => false,
+            _ => {
+                let Some(after) = &seek.after else {
+                    return false;
+                };
+                let Some([first, second]) = seek.index_properties.get(seek.equality_prefix.len()..)
+                else {
+                    return false;
+                };
+                let op = if seek.descending {
+                    ComparisonOp::Lt
+                } else {
+                    ComparisonOp::Gt
+                };
+                // The native seek already enforces this exact strict cursor.
+                // Other residuals must still be proved independently.
+                continuation(predicate, variable, first, second, op)
+                    .is_some_and(|values| &values == after)
+            }
         }
     }
     predicate
@@ -416,6 +433,92 @@ mod tests {
                     }),
                 }),
             }),
+        }
+    }
+
+    #[test]
+    fn bounded_ordered_keyset_proof_matches_the_exact_native_cursor() {
+        for descending in [false, true] {
+            for reversed in [false, true] {
+                let eq = |property: &str, value| Predicate::PropertyEq {
+                    variable: "n".into(),
+                    property: property.into(),
+                    value,
+                };
+                let compare = |property: &str, value| Predicate::PropertyCompare {
+                    variable: "n".into(),
+                    property: property.into(),
+                    op: if descending {
+                        ComparisonOp::Lt
+                    } else {
+                        ComparisonOp::Gt
+                    },
+                    value,
+                };
+                let mut tie = vec![
+                    eq("rank", Value::Int(12)),
+                    compare("id", Value::String("after-id".into())),
+                ];
+                if reversed {
+                    tie.reverse();
+                }
+                let mut branches = vec![compare("rank", Value::Int(12)), Predicate::And(tie)];
+                if reversed {
+                    branches.reverse();
+                }
+                let plan = PhysicalPlan::NodeProjectionScanExec {
+                    variable: "n".into(),
+                    label: "Item".into(),
+                    access: NodeProjectionAccess::CompositeOrdered {
+                        seek: CompositeOrderedSeek {
+                            index_properties: vec!["kind".into(), "rank".into(), "id".into()],
+                            equality_prefix: vec![("kind".into(), Value::String("note".into()))],
+                            after: Some(vec![Value::Int(12), Value::String("after-id".into())]),
+                            descending,
+                        },
+                    },
+                    required_properties: vec!["kind".into(), "rank".into(), "id".into()],
+                    predicate: Some(Predicate::And(vec![
+                        eq("kind", Value::String("note".into())),
+                        Predicate::Or(branches),
+                    ])),
+                    items: vec![],
+                };
+                assert!(prefix_consumption_is_proven(&plan));
+                for mismatch in 0..4 {
+                    let mut rejected = plan.clone();
+                    let PhysicalPlan::NodeProjectionScanExec {
+                        access: NodeProjectionAccess::CompositeOrdered { seek },
+                        ..
+                    } = &mut rejected
+                    else {
+                        unreachable!()
+                    };
+                    match mismatch {
+                        0 => seek.after = None,
+                        1 => {
+                            seek.after =
+                                Some(vec![Value::Int(13), Value::String("after-id".into())])
+                        }
+                        2 => {
+                            seek.after =
+                                Some(vec![Value::Int(12), Value::String("other-id".into())])
+                        }
+                        3 => seek.descending = !descending,
+                        _ => unreachable!(),
+                    }
+                    assert!(!prefix_consumption_is_proven(&rejected));
+                }
+                let mut rejecting = plan.clone();
+                let PhysicalPlan::NodeProjectionScanExec { predicate, .. } = &mut rejecting else {
+                    unreachable!()
+                };
+                *predicate = Some(Predicate::And(vec![
+                    predicate.take().unwrap(),
+                    eq("visible", Value::Bool(true)),
+                ]));
+                assert!(!prefix_consumption_is_proven(&rejecting));
+            }
         }
     }
 
