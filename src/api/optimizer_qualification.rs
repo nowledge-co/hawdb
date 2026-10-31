@@ -10,6 +10,7 @@ use crate::optimizer::{
     OptimizerRuleAssertionError,
 };
 
+/// Evidence from an offline optimizer qualification read.
 #[derive(Debug)]
 pub struct OptimizerQualificationOutput {
     pub snapshot_epoch: u64,
@@ -30,6 +31,10 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
     /// this pinned snapshot. The same parser, planner and admitted executor
     /// serve ordinary reads. Qualified plans bypass physical cache admission;
     /// no shared optimizer state, quota, capability or legality check changes.
+    ///
+    /// This qualification-only entry point is available in default builds for
+    /// offline library diagnostics. Serving reads should use the ordinary query
+    /// and streaming APIs rather than rule-disabling or ranking controls.
     pub fn qualify_optimizer_query(
         &mut self,
         request: QueryRequest<'_>,

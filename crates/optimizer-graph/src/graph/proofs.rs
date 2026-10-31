@@ -180,7 +180,20 @@ fn visit(
             let redundant =
                 facts.max_rows.is_some_and(|max| max <= 1) || keep.is_empty() || supplied;
             let changed = redundant || keep.len() != items.len();
-            let rewrite=facts.safe && total && changed && applied(OptionalOptimizerRule::RedundantOrdering,format!("constant/equivalent keys removed={} input_order_satisfies={} at_most_one={}",items.len()-keep.len(),supplied,facts.max_rows.is_some_and(|max|max<=1)),options,events);
+            let rewrite = facts.safe && total && changed && {
+                let reason = format!(
+                    "constant/equivalent keys removed={} input_order_satisfies={} at_most_one={}",
+                    items.len() - keep.len(),
+                    supplied,
+                    facts.max_rows.is_some_and(|max| max <= 1)
+                );
+                applied(
+                    OptionalOptimizerRule::RedundantOrdering,
+                    reason,
+                    options,
+                    events,
+                )
+            };
             facts.safe &= total;
             if rewrite && redundant {
                 return (input, facts);
