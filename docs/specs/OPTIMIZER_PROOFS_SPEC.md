@@ -47,7 +47,7 @@ memory admission and resource checks cannot be disabled.
 | --- | --- |
 | `transformation:proof_redundant_ordering` | Remove constant or repeated equivalent sort keys; remove sorting when supported input order or a one-row bound proves it unnecessary. Every evaluated key and the producer must remain safe. |
 | `transformation:proof_redundant_distinct` | Remove deduplication when the projected tuple contains a proved key or there can be at most one row. Nullable UNIQUE alone is insufficient. |
-| `transformation:proof_singleton_group` | Replace nonempty unique grouping plus pure non-distinct COUNT(*) with projection and count 1, only after an already values-only producer. Generic projection preserves graph bindings while grouping clears them; ordinary graph-scoped grouping is retained. Other aggregates remain unchanged. |
+| `transformation:proof_singleton_group` | Replace nonempty unique grouping plus pure non-distinct COUNT(*) with projection and count 1, only after an already values-only producer. Generic projection preserves graph bindings while grouping clears them; ordinary graph-scoped grouping is retained. Other aggregates remain unchanged. **Measured value: neutral; no query-latency gain established.** |
 
 Values-only column/literal projection transfers size their complete incoming batch from
 borrowed values before allocating output. This prevents an otherwise redundant
@@ -71,7 +71,16 @@ prepares and executes one ordinary read on the transaction's pinned snapshot.
 It uses the regular parser, planner, capability/access checks, executor,
 cancellation and output limits. Qualification bypasses physical cache admission
 and has no global or environment control plane. Mutations/write procedures and
-transaction/system controls are rejected.
+transaction/system controls are rejected. These qualification-only types and the
+entry point remain available in default builds for offline library diagnostics;
+serving reads should use the ordinary query/streaming APIs.
+
+The single catalog cache currently compares the complete environment, including
+the optional proof-schema key. Alternating proof-tracking and ordinary shapes on
+physical-cache misses can rebuild the catalog at each switch. Mixed-shape cold
+planning was not measured in the source-bound experiment, so no performance
+claim covers this case. Keeping the optional physical-plan proof identity and
+avoiding catalog rebuilds together remains a separate optimization.
 
 `OptimizerQualificationOptions` can disable the three optional rules and attach
 `OptimizerCostPerturbation::new(seed, percent)`, with percent in 0..=25. Stable

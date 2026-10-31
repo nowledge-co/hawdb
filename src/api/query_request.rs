@@ -1129,3 +1129,30 @@ mod adapter_tests;
 #[cfg(test)]
 #[path = "query_request/budget_tests.rs"]
 mod budget_tests;
+
+// Retained query ownership: ScoringPlanCacheKey.
+impl hawdb_core::RetainedHeapBytes for ScoringPlanCacheKey {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Program(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::Host {
+                plan,
+                candidate_window,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(plan),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(candidate_window),
+            ]),
+        }
+    }
+}
+
+// Retained query ownership: ScoringProgramCacheKey.
+hawdb_core::impl_retained_heap_for_struct!(ScoringProgramCacheKey {
+    program,
+    score_column,
+    limit,
+    candidate_window,
+    seed_graph_input
+});

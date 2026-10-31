@@ -100,3 +100,69 @@ impl NodeProjectionAccess {
         }
     }
 }
+
+// Retained query ownership: ExactPropertySeekBranch.
+crate::impl_retained_heap_for_struct!(ExactPropertySeekBranch { property, values });
+
+// Retained query ownership: CompositeRangeSeek.
+crate::impl_retained_heap_for_struct!(CompositeRangeSeek {
+    index_properties,
+    equality_prefix,
+    range_property,
+    lower,
+    upper
+});
+
+// Retained query ownership: CompositeOrderedSeek.
+crate::impl_retained_heap_for_struct!(CompositeOrderedSeek {
+    index_properties,
+    equality_prefix,
+    after,
+    descending
+});
+
+// Retained query ownership: NodeProjectionAccess.
+impl crate::RetainedHeapBytes for NodeProjectionAccess {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::LabelScan => crate::checked_retained_heap_sum([]),
+            Self::PropertyValues { property, values } => crate::checked_retained_heap_sum([
+                crate::RetainedHeapBytes::retained_heap_bytes(property),
+                crate::RetainedHeapBytes::retained_heap_bytes(values),
+            ]),
+            Self::PropertyUnion { branches } => {
+                crate::checked_retained_heap_sum([crate::RetainedHeapBytes::retained_heap_bytes(
+                    branches,
+                )])
+            }
+            Self::CompositeEquality { predicates } => {
+                crate::checked_retained_heap_sum([crate::RetainedHeapBytes::retained_heap_bytes(
+                    predicates,
+                )])
+            }
+            Self::CompositeRange { seek } => {
+                crate::checked_retained_heap_sum([crate::RetainedHeapBytes::retained_heap_bytes(
+                    seek,
+                )])
+            }
+            Self::CompositeOrdered { seek } => {
+                crate::checked_retained_heap_sum([crate::RetainedHeapBytes::retained_heap_bytes(
+                    seek,
+                )])
+            }
+            Self::PropertyRange {
+                property,
+                lower,
+                upper,
+            } => crate::checked_retained_heap_sum([
+                crate::RetainedHeapBytes::retained_heap_bytes(property),
+                crate::RetainedHeapBytes::retained_heap_bytes(lower),
+                crate::RetainedHeapBytes::retained_heap_bytes(upper),
+            ]),
+            Self::FullText { property, query } => crate::checked_retained_heap_sum([
+                crate::RetainedHeapBytes::retained_heap_bytes(property),
+                crate::RetainedHeapBytes::retained_heap_bytes(query),
+            ]),
+        }
+    }
+}
