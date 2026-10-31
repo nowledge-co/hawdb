@@ -217,3 +217,12 @@ entry and converts permanently to sparse storage on a large gap/backward range
 extension. Logical entry limits, failed/pending entries and cached nesting
 heights are unchanged. Lexical atoms check the same work/depth budget and finish
 without a redundant continuation frame.
+
+Baseline and candidate builds must use **different Cargo target directories**,
+including their transitive local crates. Sharing a target directory across
+worktrees can reuse another worktree's library or benchmark binary even while
+rebuilding top-level crates. Check compilation paths and binary identity before
+using measurements. All 1,608 SQL and 2,854 Cypher frozen records were re-exported
+from independently compiled main `9c355e9a46` in a new main-only target directory;
+all acceptance/error classes and complete Debug-AST hashes matched. Earlier
+shared-target timing comparisons are invalid and must not support readiness.

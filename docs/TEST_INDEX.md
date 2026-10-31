@@ -2125,7 +2125,12 @@ contract. The 102-case literal/contributing-span baseline and a new 489-case
 generated SELECT/DDL/DML baseline were exported independently from main
 `9c355e9a46`; the latter includes the generated `:=` rejection, all three comment
 prefixes, empty SELECT/VALUES/storage forms, qualified aliases, mutation
-predicates and unsupported statements. Never refresh these from the candidate.
+predicates and unsupported statements. Never refresh these from the candidate. A main-only target directory, never
+used by the candidate, independently recompiled `9c355e9a46` and re-exported all
+1,608 SQL and 2,854 Cypher records with zero differences. Baseline benchmarks
+and oracle exports must use a separate Cargo target directory from the
+candidate, including all transitive local crates; a shared target can reuse
+another worktree's artifacts. Earlier shared-target timings are invalid.
 
 The clause diagnostic campaign preserves 59 CREATE/15 INSERT condition cases,
 1,816 priority pairs and 9,216 SQL sources through parse and prepare. Priority
