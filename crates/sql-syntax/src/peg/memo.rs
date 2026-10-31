@@ -5,36 +5,36 @@ use std::collections::HashMap;
 
 use super::Memo;
 
-pub(super) struct MemoTable {
-    rules: Vec<RuleMemo>,
+pub(super) struct MemoTable<'a> {
+    rules: Vec<RuleMemo<'a>>,
     len: usize,
 }
 
 #[derive(Default)]
-struct RuleMemo {
+struct RuleMemo<'a> {
     // Forward parsing and probes at the current token avoid a map lookup.
-    latest: Option<(usize, Memo)>,
-    older: Older,
+    latest: Option<(usize, Memo<'a>)>,
+    older: Older<'a>,
 }
 
 #[derive(Default)]
-enum Older {
+enum Older<'a> {
     #[default]
     Empty,
     // Small rules avoid allocating a hash table. The scan has a fixed bound.
-    Small(Vec<(usize, Memo)>),
+    Small(Vec<(usize, Memo<'a>)>),
     // Dense token visits use direct indexing. At most four slots per memo.
     Dense {
         start: usize,
-        slots: Vec<Option<Memo>>,
+        slots: Vec<Option<Memo<'a>>>,
         count: usize,
     },
     // A sparse rule stays sparse: repeated density changes cannot cause
     // repeated linear conversions or adversarial quadratic copying.
-    Sparse(HashMap<usize, Memo>),
+    Sparse(HashMap<usize, Memo<'a>>),
 }
 
-impl MemoTable {
+impl<'a> MemoTable<'a> {
     pub fn new(rules: usize) -> Self {
         Self {
             rules: std::iter::repeat_with(RuleMemo::default)
@@ -46,7 +46,7 @@ impl MemoTable {
     pub fn len(&self) -> usize {
         self.len
     }
-    pub fn get(&self, rule: usize, position: usize) -> Option<&Memo> {
+    pub fn get(&self, rule: usize, position: usize) -> Option<&Memo<'a>> {
         let entries = &self.rules[rule];
         match &entries.latest {
             Some((latest, memo)) if position == *latest => Some(memo),
@@ -55,7 +55,7 @@ impl MemoTable {
             Some(_) => entries.older.get(position),
         }
     }
-    pub fn insert(&mut self, rule: usize, position: usize, memo: Memo) {
+    pub fn insert(&mut self, rule: usize, position: usize, memo: Memo<'a>) {
         let entries = &mut self.rules[rule];
         match &mut entries.latest {
             slot @ None => {
@@ -74,8 +74,8 @@ impl MemoTable {
     }
 }
 
-impl Older {
-    fn get(&self, position: usize) -> Option<&Memo> {
+impl<'a> Older<'a> {
+    fn get(&self, position: usize) -> Option<&Memo<'a>> {
         match self {
             Self::Empty => None,
             Self::Small(entries) => entries
@@ -90,7 +90,7 @@ impl Older {
         }
     }
     // Returns true only for a new logical memo entry, including dense holes.
-    fn insert(&mut self, position: usize, memo: Memo) -> bool {
+    fn insert(&mut self, position: usize, memo: Memo<'a>) -> bool {
         match self {
             Self::Empty => {
                 *self = Self::Small(vec![(position, memo)]);

@@ -227,18 +227,18 @@ impl ParseTree {
 
 // Token failures borrow source text by position. Caching a rendered SyntaxError
 // per rule would multiply a long invalid token by the number of alternatives.
-#[derive(Clone)]
-enum Diagnostic {
-    Token {
-        position: usize,
-        expected: &'static str,
-    },
+// Borrow the grammar's static label field through a thin pointer while matching;
+// rendered errors and parse trees remain independent of the grammar lifetime.
+#[derive(Clone, Copy)]
+struct Diagnostic<'a> {
+    position: usize,
+    expected: &'a &'static str,
 }
 
-enum Memo {
+enum Memo<'a> {
     Pending,
-    Matched(usize, NodeId, Option<Diagnostic>),
-    Failed(Option<Diagnostic>),
+    Matched(usize, NodeId, Option<Diagnostic<'a>>),
+    Failed(Option<Diagnostic<'a>>),
 }
 
 enum Failure {
@@ -256,7 +256,7 @@ enum Frame<'a> {
         rule: usize,
         position: usize,
         captures: usize,
-        outer_error: Option<Diagnostic>,
+        outer_error: Option<Diagnostic<'a>>,
     },
     Expression(&'a Expression<usize>, usize),
     ExpressionDone(usize),
@@ -268,20 +268,20 @@ enum Frame<'a> {
     },
     OptionalDone {
         position: usize,
-        saved: Option<Diagnostic>,
+        saved: Option<Diagnostic<'a>>,
     },
     Repeat(&'a Expression<usize>, usize),
     RepeatDone {
         inner: &'a Expression<usize>,
         position: usize,
-        saved: Option<Diagnostic>,
+        saved: Option<Diagnostic<'a>>,
     },
     TightDone(usize),
     LookDone {
         position: usize,
         positive: bool,
-        expected: &'static str,
-        saved: Option<Diagnostic>,
+        expected: &'a &'static str,
+        saved: Option<Diagnostic<'a>>,
         captures: usize,
     },
 }
@@ -291,7 +291,7 @@ struct Matcher<'a> {
     input: &'a str,
     tokens: &'a [Token],
     limits: Limits,
-    memo: MemoTable,
+    memo: MemoTable<'a>,
     nodes: Vec<Node>,
     edges: Vec<NodeId>,
     // Only captures roll back. Memoized nodes and edges remain append-only
@@ -300,7 +300,7 @@ struct Matcher<'a> {
     steps: usize,
     depth: usize,
     nesting_depth: [usize; 2],
-    farthest: Option<Diagnostic>,
+    farthest: Option<Diagnostic<'a>>,
     #[cfg(test)]
     memo_hits: usize,
 }
@@ -355,30 +355,26 @@ impl<'a> Matcher<'a> {
         Ok(())
     }
 
-    fn diagnostic_start(&self, diagnostic: &Diagnostic) -> usize {
-        match diagnostic {
-            Diagnostic::Token { position, .. } => self.token(*position).span.start,
-        }
+    fn diagnostic_start(&self, diagnostic: &Diagnostic<'a>) -> usize {
+        self.token(diagnostic.position).span.start
     }
 
-    fn render(&self, diagnostic: &Diagnostic) -> SyntaxError {
-        match diagnostic {
-            Diagnostic::Token { position, expected } => self.error(*position, expected),
-        }
+    fn render(&self, diagnostic: &Diagnostic<'a>) -> SyntaxError {
+        self.error(diagnostic.position, diagnostic.expected)
     }
 
-    fn remember(&mut self, error: Diagnostic) {
-        if self
-            .farthest
-            .as_ref()
-            .is_none_or(|old| self.diagnostic_start(&error) > self.diagnostic_start(old))
+    fn remember(&mut self, error: Diagnostic<'a>) {
+        if let Some(old) = self.farthest
+            && (error.position == old.position
+                || self.diagnostic_start(&error) <= self.diagnostic_start(&old))
         {
-            self.farthest = Some(error);
+            return;
         }
+        self.farthest = Some(error);
     }
 
-    fn mismatch(&mut self, position: usize, expected: &'static str) -> Failure {
-        self.remember(Diagnostic::Token { position, expected });
+    fn mismatch(&mut self, position: usize, expected: &'a &'static str) -> Failure {
+        self.remember(Diagnostic { position, expected });
         Failure::Mismatch
     }
 
@@ -448,7 +444,7 @@ impl<'a> Matcher<'a> {
                                         return Err(self.nesting_limit(position, domain));
                                     }
                                 }
-                                let (end, node, error) = (*end, *node, error.clone());
+                                let (end, node, error) = (*end, *node, *error);
                                 if let Some(error) = error {
                                     self.remember(error);
                                 }
@@ -456,7 +452,7 @@ impl<'a> Matcher<'a> {
                                 result = Ok(end);
                             }
                             Memo::Failed(error) => {
-                                let error = error.clone();
+                                let error = *error;
                                 if let Some(error) = error {
                                     self.remember(error);
                                 }
@@ -504,7 +500,7 @@ impl<'a> Matcher<'a> {
                     }
                     let local_error = self.farthest.take();
                     self.farthest = outer_error;
-                    if let Some(error) = local_error.clone() {
+                    if let Some(error) = local_error {
                         self.remember(error);
                     }
                     match result {
@@ -553,7 +549,7 @@ impl<'a> Matcher<'a> {
                             if matches!(self.token(position).kind, TokenKind::Parameter(_)) {
                                 Ok(position + 1)
                             } else {
-                                Err(self.mismatch(position, "a positional parameter"))
+                                Err(self.mismatch(position, &"a positional parameter"))
                             },
                         ),
                         _ => None,
@@ -584,7 +580,7 @@ impl<'a> Matcher<'a> {
                         Expression::Optional(inner) => {
                             work.push(Frame::OptionalDone {
                                 position,
-                                saved: self.farthest.clone(),
+                                saved: self.farthest,
                             });
                             work.push(Frame::Expression(inner, position));
                         }
@@ -645,7 +641,7 @@ impl<'a> Matcher<'a> {
                     work.push(Frame::RepeatDone {
                         inner,
                         position,
-                        saved: self.farthest.clone(),
+                        saved: self.farthest,
                     });
                     work.push(Frame::Expression(inner, position));
                 }
@@ -668,7 +664,7 @@ impl<'a> Matcher<'a> {
                             self.charge(1, position)?;
                             if self.token(position - 1).span.end != self.token(position).span.start
                             {
-                                result = Err(self.mismatch(position, "adjacent tokens"));
+                                result = Err(self.mismatch(position, &"adjacent tokens"));
                                 break;
                             }
                         }
@@ -695,7 +691,7 @@ impl<'a> Matcher<'a> {
         result.map(|end| (end, self.captures.pop().expect("successful root capture")))
     }
 
-    fn restore_absence(&mut self, position: usize, saved: Option<Diagnostic>) {
+    fn restore_absence(&mut self, position: usize, saved: Option<Diagnostic<'a>>) {
         if self
             .farthest
             .as_ref()

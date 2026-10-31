@@ -109,6 +109,25 @@ fn reports_farthest_unicode_token_and_discards_lookahead_errors() {
 }
 
 #[test]
+fn parse_results_outlive_the_grammar_input_and_tokens() {
+    let (tree, error) = {
+        let grammar = Grammar::compile(vec![("Root", K("SELECT"))]).unwrap();
+        let valid = String::from("SELECT");
+        let invalid = String::from("FROM");
+        let tree = parse(&grammar, &valid, Limits::default()).unwrap();
+        let error = parse(&grammar, &invalid, Limits::default()).err().unwrap();
+        (tree, error)
+    };
+    assert_eq!(tree.nodes[tree.root].name, Some("Root"));
+    assert_eq!(
+        (tree.nodes[tree.root].start, tree.nodes[tree.root].end),
+        (0, 1)
+    );
+    assert_eq!(error.expected, Some("SELECT"));
+    assert_eq!(error.span, Span::new(0, 4));
+}
+
+#[test]
 fn work_limit_boundary_and_all_resource_failures_are_fatal() {
     let grammar = Grammar::compile(vec![("Root", K("SELECT"))]).unwrap();
     let tree = parse(&grammar, "SELECT", Limits::default()).unwrap();

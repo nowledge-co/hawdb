@@ -11,9 +11,10 @@ cargo bench -p hawdb-cypher --bench cypher_parser
 ```
 
 The retired single-query Yacc experiment has been removed. It did not cover
-the production grammar or establish a migration decision. Cypher continues to
-use the production parser and weighted benchmark above. A future Cypher parser
-migration still requires:
+the production grammar or establish a migration decision. Cypher now uses the
+shared token PEG engine for all supported syntax, with its own grammar and AST
+transformation. Completing the source migration does not establish performance
+readiness. Qualification against the former production parser still requires:
 
 - equal AST and rejection behavior over the production query corpus;
 - differential fuzz coverage for valid and invalid inputs;
@@ -21,9 +22,13 @@ migration still requires:
 - at least 20 percent parser throughput improvement on the weighted corpus;
 - a measurable end-to-end query CPU or latency improvement.
 
-The owned SQL/PGQ frontend uses a separate [token PEG implementation](SQL_PEG_PARSER.md).
-This is a syntax-maintainability change, not evidence for a Cypher throughput
-improvement or a production relational SQL parser switch.
+SQL and Cypher share the [owned token PEG engine](SQL_PEG_PARSER.md); their
+grammars and transformations remain separate. The handwritten parsers and
+native matcher callbacks have been removed. Current measurements show a parser
+throughput regression against independently built main baselines, so the
+performance criteria above remain unmet. Track qualification in
+[#1375](https://github.com/nowledge-co/hawdb/issues/1375); source routing alone
+does not waive those criteria.
 
 The asynchronous runtime prepares each query once. It reuses the prepared AST
 and physical plan only while the optimizer schema and statistics epoch match;

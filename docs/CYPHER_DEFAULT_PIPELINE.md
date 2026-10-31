@@ -45,6 +45,34 @@ at the WITH boundary; RETURN windows remain after lookup/aggregation. See
 [WITH semantics](CYPHER_WITH_SEMANTICS.md) and
 [cache eligibility](CYPHER_PLAN_CACHE_ELIGIBILITY.md).
 
+## Row-bound node properties
+
+Read-only pipelines may start with a parameter or list-literal `UNWIND` source
+and carry values through `WITH`. Both `MATCH` and `OPTIONAL MATCH` node property
+maps accept scalar bindings such as `{id: candidate_id}` and property access
+such as `{id: candidate.id}`. These constraints remain inside their MATCH clause,
+preserving OPTIONAL MATCH null extension. Read-only UNWIND retains the existing
+plan-cache bypass policy; template-rebinding tests do not establish public-query
+cache hits for this shape.
+
+The lookup normalization has a narrow boundary: an eligible single-node MATCH
+introducing a fresh node variable, with no remaining constant properties and
+exactly one equality between that node's property and an input scalar column,
+can use `NodeColumnLookupExec`. The bare `{id: candidate_id}` form can qualify.
+
+Shapes with additional constant properties, a residual `WHERE` condition,
+property-access input values, or multiple pattern steps can fall back to
+`GraphMatchExec`. For example,
+`OPTIONAL MATCH (n:Item {id: candidate_id, space_id: $space})` scans the label for
+each input row even when an index on `Item(id)` exists. Dynamic predicates are
+evaluated after the pattern steps, so expansions can add work before rejecting a
+candidate. Work can grow with input rows times label size, plus expansion work.
+
+Inspect EXPLAIN before adopting extended shapes in a high-cardinality route and
+keep candidate batches bounded. Row/payload budgets and cancellation still
+apply, but do not make a scan use an index. Moving a predicate above OPTIONAL
+MATCH to change its plan can discard the unmatched row and change the result.
+
 ## Bounded relationship mutation input
 
 The atomic mutation binder accepts two independently bound, non-optional node

@@ -128,9 +128,12 @@ only that scratch vector; nodes and edges remain append-only because
 memoized results may reference them. The AST transformer reads child ranges
 without cloning temporary child lists.
 
-Token failures store positions and static expectations, rendering source text
-only for the final error. Cached diagnostics preserve
-the farthest failure through later reuse. Lookahead discards its own speculative diagnostic. Optional/repeated
+Token failures store positions and thin references to the grammar's static
+expectation fields, rendering source text only for the final error. This avoids
+copying a two-word string reference into every memo entry and continuation.
+These references stay inside one matching invocation; returned parse trees and
+syntax errors remain independent of the grammar, input and token lifetimes.
+Cached diagnostics preserve the farthest failure through later reuse. Lookahead discards its own speculative diagnostic. Optional/repeated
 branches discard absent-prefix mismatches while preserving deeper failures. Ordinary syntax errors select the farthest byte
 position, with the first expectation retained on ties. Expected-token sets and
 interactive completion are not exposed yet.

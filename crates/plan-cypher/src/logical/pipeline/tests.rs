@@ -833,11 +833,11 @@ fn relationship_merge_batch_keeps_unrelated_mutation_errors_specific() {
         ),
         (
             "UNWIND [1] AS row CREATE (:A {id: row})",
-            "requires a read MATCH or UNWIND mutation context",
+            "row-bound value 'row' is not supported in this position",
         ),
         (
             "UNWIND [1] AS row MERGE (:A {id: row})",
-            "requires a read MATCH or UNWIND mutation context",
+            "row-bound value 'row' is not supported in this position",
         ),
     ] {
         let error = plan_pipeline_query(query, &BTreeMap::new()).unwrap_err();
