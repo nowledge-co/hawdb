@@ -11,6 +11,7 @@ rust_library(
     name = "hawdb_sql",
     crate_name = "hawdb_sql",
     crate_root = "src/lib.rs",
+    compile_data = ["src/admission_keywords_v1.txt"],
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
@@ -25,6 +26,7 @@ rust_library(
 )
 
 _SQL_TEST_DATA = glob(["fixtures/frontend_*"]) + [
+    "src/admission_keywords_v1.txt",
     "//crates/qualification:sql_frontend_corpus_inputs",
     "//crates/sql-syntax:frontend_corpus_sources",
 ]

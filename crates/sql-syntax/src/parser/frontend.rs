@@ -17,26 +17,51 @@ use std::sync::OnceLock;
 use crate::peg::{Grammar, Limits, ParseTree};
 use crate::{tokenize, SyntaxError, Token};
 
-mod grammar;
-mod native;
+pub(crate) mod grammar;
 mod transform;
 
-use native::Value;
-
 pub(super) fn parse(input: &str, root: &'static str) -> Result<Output, SyntaxError> {
-    static GRAMMAR: OnceLock<Grammar<Value>> = OnceLock::new();
+    static GRAMMAR: OnceLock<Grammar> = OnceLock::new();
     let grammar = GRAMMAR.get_or_init(|| grammar::build().expect("valid built-in SQL/PGQ grammar"));
     let tokens = tokenize(input)?;
-    let tree = grammar.parse(input, &tokens, root, Limits::default())?;
+    let tree = grammar.parse(
+        input,
+        &tokens,
+        root,
+        Limits {
+            depth: 8192,
+            ..Limits::default()
+        },
+    )?;
+    let mut pending = vec![tree.root];
+    while let Some(id) = pending.pop() {
+        let node = &tree.nodes[id];
+        pending.extend_from_slice(tree.children(id));
+        if node.name == Some("GraphQuantifier") {
+            for child in tree.children(id) {
+                let token = tokens[tree.nodes[*child].start];
+                if token.text(input).parse::<u32>().is_err() {
+                    return Err(SyntaxError::new(
+                        crate::SyntaxErrorCode::UnexpectedToken,
+                        token.span,
+                    )
+                    .expected("a non-negative integer")
+                    .found(token.text(input)));
+                }
+            }
+        }
+    }
     Ok(Transformer {
-        tree,
+        input,
+        tree: &tree,
         tokens: &tokens,
     }
     .output(root))
 }
 
 struct Transformer<'a> {
-    tree: ParseTree<Value>,
+    input: &'a str,
+    tree: &'a ParseTree,
     tokens: &'a [Token],
 }
 
@@ -52,3 +77,17 @@ pub(super) enum Output {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn select_from_tree(
+    input: &str,
+    tokens: &[Token],
+    tree: &ParseTree,
+    node: crate::peg::NodeId,
+) -> crate::PostgresSelectSyntax {
+    Transformer {
+        input,
+        tokens,
+        tree,
+    }
+    .select(node)
+}

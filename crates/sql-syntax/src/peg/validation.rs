@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use super::{Expression, Grammar};
 use crate::TokenKind;
 
-impl<T> Grammar<T> {
+impl Grammar {
     pub(super) fn validate(&self) -> Result<(), String> {
         let mut nullable = vec![false; self.rules.len()];
         loop {
@@ -52,25 +52,22 @@ impl<T> Grammar<T> {
         Ok(())
     }
 
-    fn nullable(expression: &Expression<T, usize>, nullable: &[bool]) -> bool {
+    fn nullable(expression: &Expression<usize>, nullable: &[bool]) -> bool {
         match expression {
             Expression::Rule(rule) => nullable[*rule],
+            Expression::Tight(item) => Self::nullable(item, nullable),
             Expression::Sequence(items) => items.iter().all(|item| Self::nullable(item, nullable)),
             Expression::Choice(items) => items.iter().any(|item| Self::nullable(item, nullable)),
             Expression::Optional(_)
             | Expression::Repeat(_)
             | Expression::Ahead(_, _)
             | Expression::Not(_, _) => true,
-            Expression::Native { nullable, .. } => *nullable,
             Expression::Token(TokenKind::End, _) => true,
             _ => false,
         }
     }
 
-    fn check_repetition(
-        expression: &Expression<T, usize>,
-        nullable: &[bool],
-    ) -> Result<(), String> {
+    fn check_repetition(expression: &Expression<usize>, nullable: &[bool]) -> Result<(), String> {
         match expression {
             Expression::Repeat(item) if Self::nullable(item, nullable) => {
                 Err("nullable PEG repetition".into())
@@ -81,7 +78,8 @@ impl<T> Grammar<T> {
                 }
                 Ok(())
             }
-            Expression::Optional(item)
+            Expression::Tight(item)
+            | Expression::Optional(item)
             | Expression::Repeat(item)
             | Expression::Ahead(item, _)
             | Expression::Not(item, _) => Self::check_repetition(item, nullable),
@@ -89,7 +87,7 @@ impl<T> Grammar<T> {
         }
     }
 
-    fn leading_rules(expression: &Expression<T, usize>, nullable: &[bool], edges: &mut Vec<usize>) {
+    fn leading_rules(expression: &Expression<usize>, nullable: &[bool], edges: &mut Vec<usize>) {
         match expression {
             Expression::Rule(rule) => edges.push(*rule),
             Expression::Sequence(items) => {
@@ -105,7 +103,8 @@ impl<T> Grammar<T> {
                     Self::leading_rules(item, nullable, edges);
                 }
             }
-            Expression::Optional(item)
+            Expression::Tight(item)
+            | Expression::Optional(item)
             | Expression::Repeat(item)
             | Expression::Ahead(item, _)
             | Expression::Not(item, _) => {
@@ -134,12 +133,13 @@ fn cycle(node: usize, edges: &[Vec<usize>], visiting: &mut [bool], visited: &mut
     false
 }
 
-impl<T> Expression<T> {
+impl Expression {
     pub(super) fn resolve(
         self,
         names: &HashMap<&'static str, usize>,
-    ) -> Result<Expression<T, usize>, String> {
+    ) -> Result<Expression<usize>, String> {
         Ok(match self {
+            Self::Parameter => Expression::Parameter,
             Self::Keyword(keyword) => Expression::Keyword(keyword),
             Self::Token(kind, expected) => Expression::Token(kind, expected),
             Self::Rule(name) => Expression::Rule(
@@ -161,11 +161,11 @@ impl<T> Expression<T> {
             ),
             Self::Optional(item) => Expression::Optional(Box::new(item.resolve(names)?)),
             Self::Repeat(item) => Expression::Repeat(Box::new(item.resolve(names)?)),
+            Self::Tight(item) => Expression::Tight(Box::new(item.resolve(names)?)),
             Self::Ahead(item, expected) => {
                 Expression::Ahead(Box::new(item.resolve(names)?), expected)
             }
             Self::Not(item, expected) => Expression::Not(Box::new(item.resolve(names)?), expected),
-            Self::Native { matcher, nullable } => Expression::Native { matcher, nullable },
         })
     }
 }

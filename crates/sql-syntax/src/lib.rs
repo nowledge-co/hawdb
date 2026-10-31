@@ -16,14 +16,15 @@
 //!
 //! This crate owns tokens, byte spans, structured syntax errors, and syntax ASTs.
 //! Statement envelopes use a bounded token PEG with packrat memoization, composed
-//! SQL/PGQ rules, and transformation into the existing syntax AST. Native terminals
-//! retain the bounded Pratt expression and graph-pattern parsers.
+//! SQL/PGQ rules, and transformation into the existing syntax AST. Expressions
+//! and graph patterns are recognized by PEG rules.
 //! Semantic binding and logical-plan lowering belong to `hawdb-sql`.
 //! The internal PEG machinery is also reused by `hawdb-cypher`, with its own
-//! lexer and native terminals; SQL tokenization rules do not apply to Cypher.
+//! lexer and PEG grammar; SQL tokenization rules do not apply to Cypher.
 //!
 //! `Database::query_sql*` selects the relational PEG entry for SELECT and EXPLAIN
-//! SELECT. Relational DDL/DML still use upstream `sqlparser`. PGQ syntax acceptance
+//! SELECT. Relational DDL/DML import the same PEG expression rules and lower
+//! directly into HawDB IR. PGQ syntax acceptance
 //! alone does not qualify a statement family for production execution.
 //!
 //! The [SQL/PGQ specification] defines the compatibility contract. The
