@@ -557,7 +557,7 @@ impl OptimizerPlanningCache {
         &mut self,
         catalog: &Catalog,
         store: &R,
-        query_local_statistics: bool,
+        skip_advanced_statistics: bool,
         tracks_properties: bool,
     ) -> OptimizerEnvironmentKey {
         // A cache lookup must retain the last published statistics generation:
@@ -567,13 +567,15 @@ impl OptimizerPlanningCache {
         // cached across the existing scan/index cost boundary. Point plans use
         // snapshot-local candidate counts instead of advanced statistics, so a
         // diagnostic publication must not invalidate their warmed variants.
-        if !query_local_statistics {
+        // Fixed-cost graph-algorithm leaves also need no advanced statistics.
+        if !skip_advanced_statistics {
             self.ensure_statistics(catalog, store, false, None);
         }
         OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
             proof_schema: tracks_properties.then(|| ProofSchemaKey::from_catalog(catalog)),
-            statistics_generation: (!query_local_statistics).then_some(self.statistics_generation),
+            statistics_generation: (!skip_advanced_statistics)
+                .then_some(self.statistics_generation),
             ordered_range_indexes: ordered_range_indexes(catalog, store),
             ordered_composite_indexes: tracks_properties
                 .then(|| Arc::new(ordered_composite_indexes(catalog, store))),
@@ -787,11 +789,14 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
     } else {
         None
     };
+    let fixed_leaf_statistics = parameterized
+        .as_ref()
+        .is_some_and(|plan| matches!(plan.logical(), LogicalPlan::GraphAlgorithm { .. }));
     let environment_hint = (cache_mode == PlanCacheMode::Use).then(|| {
         context.planning_cache.borrow_mut().environment_hint(
             context.catalog,
             context.store,
-            point_statistics.is_some(),
+            point_statistics.is_some() || fixed_leaf_statistics,
             parameterized
                 .as_ref()
                 .is_some_and(|plan| tracks_property_proofs(plan.logical())),
@@ -1105,30 +1110,33 @@ fn optimizer_catalog_access_for_logical<S: crate::executor::ExecutionStore>(
         };
     }
     let shape = match logical {
-        LogicalPlan::CreateNode { .. } => "CreateNode",
+        LogicalPlan::CreateNode { .. } => "graph-independent CreateNode",
         LogicalPlan::UnwindMutation {
             operation: BatchMutationOperation::CreateNode { .. },
             ..
-        } => "UnwindCreateNode",
+        } => "graph-independent UnwindCreateNode",
+        LogicalPlan::GraphAlgorithm { .. } => "leaf GraphAlgorithm",
         _ => return optimizer_catalog_access(context, tracks_property_proofs(logical)),
     };
-    // These bound leaves have no graph input or competing access path. Keep
+    // These bound leaves have no logical input or competing access path. Keep
     // schema and maintained counts current without scanning data or publishing
     // a statistics generation that a subsequent graph read could reuse.
     let statistics = hawdb_storage::statistics::graph_statistics_from_basic(
         context.store.basic_statistics(),
         false,
     );
-    let environment = OptimizerEnvironmentKey {
-        schema: OptimizerSchemaKey::from_catalog(context.catalog),
-        proof_schema: None,
-        statistics_generation: Some(context.planning_cache.borrow().statistics_generation),
-        ordered_range_indexes: ordered_range_indexes(context.catalog, context.store),
-        ordered_composite_indexes: None,
-        // Mutation plans bypass the physical cache and have no graph input.
-        // Do not add a second basic-count clone to their planning path.
-        node_index_size_classes: Vec::new(),
-    };
+    let environment = environment_hint
+        .cloned()
+        .unwrap_or_else(|| OptimizerEnvironmentKey {
+            schema: OptimizerSchemaKey::from_catalog(context.catalog),
+            proof_schema: None,
+            statistics_generation: Some(context.planning_cache.borrow().statistics_generation),
+            ordered_range_indexes: ordered_range_indexes(context.catalog, context.store),
+            ordered_composite_indexes: None,
+            // Cached leaves reuse their lookup environment above. Uncached
+            // leaves have no graph-index access decision to retain here.
+            node_index_size_classes: Vec::new(),
+        });
     let catalog = Arc::new(
         optimizer_catalog_from_graph_statistics(context.catalog, &statistics)
             .with_ordered_range_indexes(environment.ordered_range_indexes.clone())
@@ -1138,7 +1146,7 @@ fn optimizer_catalog_access_for_logical<S: crate::executor::ExecutionStore>(
         environment,
         catalog,
         decisions: vec![format!(
-            "optimizer statistics: graph-independent {shape} uses live schema and maintained basic counts; advanced statistics not requested"
+            "optimizer statistics: {shape} uses live schema and maintained basic counts; advanced statistics not requested"
         )],
     }
 }
@@ -1165,7 +1173,20 @@ fn refresh_plan_trace<S: crate::executor::ExecutionStore>(
     match trace_mode {
         PlanTraceMode::Template => refresh_materialized_plan_trace(trace, physical_plan),
         PlanTraceMode::Bound => {
-            let catalog = optimizer_catalog_access(context, true).catalog;
+            // This leaf's lowering and cost have no statistical inputs, even
+            // when refreshing a cached plan's bound explanation.
+            let catalog = if matches!(physical_plan, PhysicalPlan::GraphAlgorithm { .. }) {
+                let statistics = hawdb_storage::statistics::graph_statistics_from_basic(
+                    context.store.basic_statistics(),
+                    false,
+                );
+                Arc::new(optimizer_catalog_from_graph_statistics(
+                    context.catalog,
+                    &statistics,
+                ))
+            } else {
+                optimizer_catalog_access(context, true).catalog
+            };
             optimizer.refresh_trace_for_physical_plan(trace, physical_plan, &catalog);
             trace.decisions.push(
                 "selected physical plan estimates refreshed for bound parameters".to_string(),
@@ -2214,6 +2235,79 @@ mod tests {
         assert_eq!(after.misses, before.misses);
         assert_eq!(output.rows.len(), 1);
         assert_eq!(output.rows[0].get("id"), Some(&Value::Int(0)));
+    }
+
+    #[cfg(feature = "graph-analytics")]
+    #[test]
+    fn graph_algorithm_leaf_does_not_publish_unrelated_statistics() {
+        let path = unique_test_dir("algorithm_leaf_statistics");
+        {
+            let mut db = crate::Database::open(&path).unwrap();
+            db.query("CREATE (:Memory {id: 1})-[:LINK]->(:Memory {id: 2})")
+                .unwrap();
+            db.query("CALL project_graph('graph', ['Memory'], ['LINK'])")
+                .unwrap();
+            db.checkpoint().unwrap();
+        }
+        let db = crate::Database::open(&path).unwrap();
+        let mut reader = db.begin_read_transaction().unwrap();
+        let epoch = reader.commit_epoch();
+        let query = "CALL page_rank('graph', maxIterations := 3) RETURN node, pagerank_score";
+        let expected = reader.query(query).unwrap().rows.into_rows();
+        assert_eq!(expected.len(), 2);
+        let before = reader.plan_cache_stats();
+        let mut rows = Vec::new();
+        let report = reader
+            .query_streaming(
+                query,
+                crate::QueryStreamOptions {
+                    max_rows: Some(4),
+                    max_payload_bytes: Some(4096),
+                },
+                |row| {
+                    rows.push(row);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(rows, expected);
+        assert_eq!(report.output_rows, 2);
+        let after = reader.plan_cache_stats();
+        assert_eq!(after.hits, before.hits + 1);
+        assert_eq!(after.misses, before.misses);
+        let explained = reader.explain_query(query).unwrap();
+        assert_eq!(reader.plan_cache_stats().hits, after.hits + 1);
+        assert!(matches!(
+            explained.physical_plan,
+            PhysicalPlan::GraphAlgorithm { .. }
+        ));
+        assert!(explained
+            .trace
+            .decisions
+            .iter()
+            .any(|decision| decision.contains("leaf GraphAlgorithm")
+                && decision.contains("advanced statistics not requested")));
+        {
+            let runtime = db.runtime.get().unwrap();
+            let cache = runtime.optimizer_planning_cache.borrow();
+            assert!(cache.statistics.is_none());
+            assert!(cache.statistics_source_graph_commit_epoch.is_none());
+            assert_eq!(cache.statistics_generation, 0);
+        }
+        let ordinary = reader
+            .query("MATCH (n:Memory) RETURN n.id AS id ORDER BY id")
+            .unwrap();
+        assert_eq!(ordinary.rows.len(), 2);
+        {
+            let runtime = db.runtime.get().unwrap();
+            let cache = runtime.optimizer_planning_cache.borrow();
+            assert!(cache.statistics.is_some());
+            assert_eq!(cache.statistics_source_graph_commit_epoch, Some(epoch));
+        }
+        assert_eq!(reader.commit_epoch(), epoch);
+        drop(reader);
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

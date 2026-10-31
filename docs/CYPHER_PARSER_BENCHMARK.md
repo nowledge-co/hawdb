@@ -33,3 +33,11 @@ does not waive those criteria.
 The asynchronous runtime prepares each query once. It reuses the prepared AST
 and physical plan only while the optimizer schema and statistics epoch match;
 otherwise it keeps the AST and replans against the execution snapshot.
+
+End-to-end memory measurements include planning and storage caches as well as
+parser buffers. Root graph-algorithm leaves have fixed lowering/cost and no
+logical input, so their cache lookup and bound trace refresh use maintained
+counts and schema without requesting unrelated property histograms. The trace
+reports this choice, physical templates remain reusable, and ordinary graph
+queries retain their full-statistics path. This does not establish parser
+throughput parity; the isolated RSS ceiling remains unchanged.
