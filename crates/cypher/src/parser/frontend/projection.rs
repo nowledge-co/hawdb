@@ -58,12 +58,27 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
         (
             "r_atom",
             c(vec![
-                r("r_paren"),
-                r("r_unary"),
-                r("r_path"),
-                r("r_collect_top"),
-                r("r_aggregate"),
-                r("r_list_function"),
+                s(vec![
+                    E::Ahead(Box::new(t(T::LeftParen)), "a Cypher value token"),
+                    r("r_paren"),
+                ]),
+                s(vec![
+                    E::Ahead(Box::new(t(T::Minus)), "a Cypher value token"),
+                    r("r_unary"),
+                ]),
+                s(vec![
+                    call_start(vec![
+                        kw(&["PROPERTIES", "LENGTH", "COLLECT_TOP"]),
+                        r("r_aggregate_name"),
+                        r("x_list_function_name"),
+                    ]),
+                    c(vec![
+                        r("r_path"),
+                        r("r_collect_top"),
+                        r("r_aggregate"),
+                        r("r_list_function"),
+                    ]),
+                ]),
                 s(vec![
                     c(vec![
                         E::Not(Box::new(t(T::Minus)), "a scalar atom"),

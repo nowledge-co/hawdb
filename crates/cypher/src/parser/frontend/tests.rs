@@ -13,6 +13,30 @@
 // limitations under the License.
 
 #[test]
+fn incomplete_function_calls_preserve_the_following_token_diagnostic() {
+    for (query, expected) in [
+        (
+            "MATCH ()-[r:MENTIONS]->() RETURN COUNT WITH x (r)",
+            "expected a Cypher value token at byte 39 line 1 column 40 near `WITH x (r)`",
+        ),
+        (
+            "MATCH (n) RETURN ID x",
+            "expected a Cypher value token at byte 20 line 1 column 21 near `x`",
+        ),
+    ] {
+        for result in [
+            crate::parse(query).map(|_| ()),
+            crate::parse_pipeline(query).map(|_| ()),
+        ] {
+            let Err(hawdb_core::HawDBError::Parse(message)) = result else {
+                panic!("expected a parse diagnostic for {query}: {result:?}");
+            };
+            assert_eq!(message, expected, "{query}");
+        }
+    }
+}
+
+#[test]
 fn corpus_matches_reference() {
     for line in include_str!("../../../fixtures/migration_corpus_v1.jsonl").lines() {
         let case: serde_json::Value = serde_json::from_str(line).unwrap();

@@ -38,6 +38,14 @@ pub(super) fn o(item: E) -> E {
 pub(super) fn many(item: E) -> E {
     E::Repeat(Box::new(item))
 }
+// Ordinary bindings skip the call alternatives. Known function heads still
+// enter them without `(` so an incomplete call retains its deeper diagnostic.
+pub(super) fn call_start(heads: Vec<E>) -> E {
+    E::Ahead(
+        Box::new(c(vec![s(vec![t(T::Word), t(T::LeftParen)]), c(heads)])),
+        "a Cypher value token",
+    )
+}
 pub(super) fn group(item: E) -> E {
     s(vec![t(T::LeftParen), item, t(T::RightParen)])
 }
