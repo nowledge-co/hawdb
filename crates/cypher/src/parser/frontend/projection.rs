@@ -379,11 +379,11 @@ impl Transformer<'_> {
                 ReturnExpressionKind::Path(path)
             }
             "r_collect_top" => {
-                let ids = self.ids(selected);
+                let (document_id, score) = self.identifier_pair(selected);
                 let limit = self.value(self.tree.required(selected, "v_value"), depth + 1)?;
                 ReturnExpressionKind::Aggregate(AggregateExpression::CollectTop {
-                    document_id: ids[0].clone(),
-                    score: ids[1].clone(),
+                    document_id,
+                    score,
                     limit,
                 })
             }
@@ -564,7 +564,7 @@ impl Transformer<'_> {
                     }
                     "*".to_owned()
                 } else if let Some(reference) = self.tree.child(selected, "x_ref") {
-                    self.ids(reference).join(".")
+                    self.joined_ids(reference, ".")
                 } else {
                     self.text(self.tree.required(selected, "v_identifier"))
                         .to_owned()
@@ -583,11 +583,8 @@ impl Transformer<'_> {
                 self.scalar(self.tree.required(selected, "x_scalar"), depth)?,
             ),
             Some("x_ref") => {
-                let ids = self.ids(selected);
-                OrderExpression::Property {
-                    variable: ids[0].clone(),
-                    property: ids[1].clone(),
-                }
+                let (variable, property) = self.identifier_pair(selected);
+                OrderExpression::Property { variable, property }
             }
             Some("x_variable") => OrderExpression::Column(
                 self.text(self.tree.required(selected, "v_identifier"))

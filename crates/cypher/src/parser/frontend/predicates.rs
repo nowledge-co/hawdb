@@ -295,11 +295,24 @@ impl Transformer<'_> {
         columns: bool,
     ) -> Result<PropertyPredicate> {
         let mut predicates = Vec::new();
-        for child in self.named_children(node, "w_and") {
-            predicates.push(self.where_and(child, depth, anonymous, columns)?)
+        let mut single = None;
+        for index in 0..self.tree.children(node).len() {
+            let child = self.tree.children(node)[index];
+            if self.tree.nodes[child].name != Some("w_and") {
+                continue;
+            }
+            let predicate = self.where_and(child, depth, anonymous, columns)?;
+            if let Some(first) = single.take() {
+                predicates.push(first);
+            }
+            if predicates.is_empty() {
+                single = Some(predicate);
+            } else {
+                predicates.push(predicate);
+            }
         }
-        Ok(if predicates.len() == 1 {
-            predicates.remove(0)
+        Ok(if predicates.is_empty() {
+            single.expect("matched boolean operand")
         } else {
             PropertyPredicate::Or(predicates)
         })
@@ -312,11 +325,24 @@ impl Transformer<'_> {
         columns: bool,
     ) -> Result<PropertyPredicate> {
         let mut predicates = Vec::new();
-        for child in self.named_children(node, "w_atom") {
-            predicates.push(self.where_atom(child, depth, anonymous, columns)?)
+        let mut single = None;
+        for index in 0..self.tree.children(node).len() {
+            let child = self.tree.children(node)[index];
+            if self.tree.nodes[child].name != Some("w_atom") {
+                continue;
+            }
+            let predicate = self.where_atom(child, depth, anonymous, columns)?;
+            if let Some(first) = single.take() {
+                predicates.push(first);
+            }
+            if predicates.is_empty() {
+                single = Some(predicate);
+            } else {
+                predicates.push(predicate);
+            }
         }
-        Ok(if predicates.len() == 1 {
-            predicates.remove(0)
+        Ok(if predicates.is_empty() {
+            single.expect("matched boolean operand")
         } else {
             PropertyPredicate::And(predicates)
         })
@@ -346,21 +372,22 @@ impl Transformer<'_> {
             ),
             "w_graph" | "w_bound" => self.existence(selected, depth, anonymous),
             "w_list_contains" => {
-                let ids = self.ids(self.tree.required(selected, "w_reference"));
+                let (variable, property) =
+                    self.identifier_pair(self.tree.required(selected, "w_reference"));
                 let value = self.value(self.tree.required(selected, "v_value"), depth)?;
                 if self
                     .text(self.tree.required(selected, "v_identifier"))
                     .eq_ignore_ascii_case("LIST_CONTAINS_LOWER")
                 {
                     Ok(PropertyPredicate::ListContainsLower {
-                        variable: ids[0].clone(),
-                        property: ids[1].clone(),
+                        variable,
+                        property,
                         value,
                     })
                 } else {
                     Ok(PropertyPredicate::ListContains {
-                        variable: ids[0].clone(),
-                        property: ids[1].clone(),
+                        variable,
+                        property,
                         value,
                     })
                 }
@@ -509,14 +536,8 @@ impl Transformer<'_> {
         }
     }
     fn predicate_reference(&self, node: NodeId) -> ScalarExpression {
-        let ids = self.ids(node);
-        self.source(
-            node,
-            ScalarExpressionKind::Property {
-                variable: ids[0].clone(),
-                property: ids[1].clone(),
-            },
-        )
+        let (variable, property) = self.identifier_pair(node);
+        self.source(node, ScalarExpressionKind::Property { variable, property })
     }
     fn where_comparisons(
         &mut self,
@@ -540,8 +561,12 @@ impl Transformer<'_> {
             self.scalar(self.tree.required(node, "x_scalar"), depth)?
         };
         let mut op = op;
-        let mut links = Vec::new();
-        for following in self.named_children(node, "w_following") {
+        let following = self.named_children(node, "w_following");
+        if following.is_empty() {
+            return Ok(comparison_predicate(left, op, right));
+        }
+        let mut links = Vec::with_capacity(following.len() + 1);
+        for following in following {
             links.push(comparison_predicate(left, op, right.clone()));
             let next = self.case_scalar(self.tree.required(following, "x_case_scalar"), depth)?;
             left = right;

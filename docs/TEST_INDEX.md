@@ -2297,3 +2297,10 @@ context differences. Dedicated PEG alternatives preserve specialized CASE on
 same-property admission. Scalar value-list lowering rejects reserved CASE row
 bindings, and SET's ordinary-value branch preserves the CASE/COALESCE prefix
 refusal. The compiled-rule cap stays 256; no resource budget is raised.
+
+CST folding constructs owned identifier pairs and joined names directly, and
+single predicates/comparisons return without allocating temporary predicate
+vectors. Existing independent Debug-AST/error fixtures cover the resulting
+ASTs, including comparison chains and nested boolean scopes. The shared VM and
+memo storage remain unchanged by this allocation cleanup; no parser budget or
+fixture is weakened. Parser peak allocation and RSS qualification remain open.

@@ -536,11 +536,8 @@ impl Transformer<'_> {
                     .to_owned(),
             ),
             "x_ref" => {
-                let ids = self.ids(node);
-                ScalarExpressionKind::Property {
-                    variable: ids[0].clone(),
-                    property: ids[1].clone(),
-                }
+                let (variable, property) = self.identifier_pair(node);
+                ScalarExpressionKind::Property { variable, property }
             }
             "x_identity" => {
                 let variable = self
@@ -588,11 +585,11 @@ impl Transformer<'_> {
                 let ValueExpressionKind::Literal(Value::String(part)) = value.kind else {
                     return Err(self.error(node, "date_part part requires a string literal"));
                 };
-                let ids = self.ids(self.tree.required(node, "x_ref"));
+                let (variable, property) = self.identifier_pair(self.tree.required(node, "x_ref"));
                 ScalarExpressionKind::DatePart {
                     part,
-                    variable: ids[0].clone(),
-                    property: ids[1].clone(),
+                    variable,
+                    property,
                 }
             }
             "x_metric" => {

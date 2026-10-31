@@ -169,7 +169,7 @@ impl Transformer<'_> {
         let label = self
             .tree
             .child(node, "p_labels")
-            .map(|id| self.ids(id).join(":"))
+            .map(|id| self.joined_ids(id, ":"))
             .unwrap_or_default();
         let properties = self
             .tree

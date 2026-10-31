@@ -285,8 +285,7 @@ impl Transformer<'_> {
         }))
     }
     fn reference(&self, node: NodeId) -> (String, String) {
-        let names = self.ids(node);
-        (names[0].clone(), names[1].clone())
+        self.identifier_pair(node)
     }
     pub(super) fn sets(&mut self, node: NodeId, depth: usize) -> Result<Vec<SetProperty>> {
         let children = self.tree.children(node).to_vec();

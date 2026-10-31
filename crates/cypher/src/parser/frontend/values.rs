@@ -153,13 +153,37 @@ impl Transformer<'_> {
         let span = self.tree.span(node, self.tokens);
         &self.input[span.start..span.end]
     }
-    pub(super) fn ids(&self, node: NodeId) -> Vec<String> {
+    fn identifiers(&self, node: NodeId) -> impl Iterator<Item = &str> {
         self.tree
             .children(node)
             .iter()
             .filter(|id| self.tree.nodes[**id].name == Some("v_identifier"))
-            .map(|id| self.text(*id).to_owned())
-            .collect()
+            .map(|id| self.text(*id))
+    }
+    pub(super) fn ids(&self, node: NodeId) -> Vec<String> {
+        self.identifiers(node).map(str::to_owned).collect()
+    }
+    pub(super) fn identifier_pair(&self, node: NodeId) -> (String, String) {
+        let mut names = self.identifiers(node);
+        (
+            names.next().expect("first identifier").to_owned(),
+            names.next().expect("second identifier").to_owned(),
+        )
+    }
+    pub(super) fn joined_ids(&self, node: NodeId, separator: &str) -> String {
+        let (count, bytes) = self
+            .identifiers(node)
+            .fold((0usize, 0usize), |(count, bytes), name| {
+                (count + 1, bytes + name.len())
+            });
+        let mut result = String::with_capacity(bytes + separator.len() * count.saturating_sub(1));
+        for (index, name) in self.identifiers(node).enumerate() {
+            if index > 0 {
+                result.push_str(separator);
+            }
+            result.push_str(name);
+        }
+        result
     }
     pub(super) fn value(&mut self, node: NodeId, depth: usize) -> Result<ValueExpression> {
         self.check_depth(node, depth, 1)?;
@@ -170,14 +194,15 @@ impl Transformer<'_> {
                     .to_owned(),
             ),
             "v_property" => {
-                let names = self.ids(selected);
-                if names.len() == 1 {
-                    ValueExpressionKind::Binding(names[0].clone())
-                } else {
+                let mut names = self.identifiers(selected);
+                let variable = names.next().expect("value binding").to_owned();
+                if let Some(property) = names.next() {
                     ValueExpressionKind::BindingProperty {
-                        variable: names[0].clone(),
-                        property: names[1].clone(),
+                        variable,
+                        property: property.to_owned(),
                     }
+                } else {
+                    ValueExpressionKind::Binding(variable)
                 }
             }
             "v_boolean" => ValueExpressionKind::Literal(Value::Bool(
