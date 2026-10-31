@@ -2147,3 +2147,33 @@ errors. No CI lane or fuzz target is added.
 Focused replays: `cargo test --locked -p hawdb-storage compatibility_tests`,
 `cargo test --locked -p hawdb-storage append_wal_versions`, and
 `cargo test --locked -p hawdb --test branch_project_open storage_format`.
+
+### Graph row-width and blocking-cost estimates
+
+Existing optimizer-graph ownership covers `graph::costing::width::tests`,
+`graph::costing::work::tests` and `graph::costing::tests_width`: pinned typed
+schema, bounded distinct-domain width sampling, required-only decoding,
+projection/graph ownership and alias scope, key-versus-body comparisons,
+context-sensitive choices in memo/direct lowering, selected trace refresh,
+metadata bounds and saturating row/cost arithmetic. Core schema snapshot tests
+cover table-qualified descriptor iteration, deletion and old snapshot identity.
+Root `api::tests::width_costing` checks complete NULL/tied output, pinned reads,
+warm templates, small budgets and checkpoint/reopen in all residency modes.
+`query_observability::order_by_limit_uses_top_n_and_preserves_stable_order`
+retains a selective TopN fixture under comparison-aware costing. Executor
+`transform::tests::limit_admission` verifies selected-window transfers, skipped
+payload, exhausted offsets and exact/one-byte-deficit admission; the same narrow
+kernel regression is independently carried by the joint-NDV change. Replay:
+
+```console
+cargo test --locked -p hawdb-core --lib schema::snapshot_tests
+cargo test --locked -p hawdb-optimizer-graph --lib
+cargo test --locked -p hawdb-executor --lib transform
+cargo test --locked -p hawdb --lib -- width_costing order_by_limit_uses_top_n_and_preserves_stable_order
+```
+
+The opt-in `width_cost_planning` release benchmark is manual, with bounded CLI
+inputs, exact complete output checks, explicit row/payload budgets, cache and
+spill/admission counters. No default target, profile, resource limit or CI lane
+is changed. Read [the cost contract](QUERY_WIDTH_COSTS.md) before interpreting
+logical width/CPU/IO units as measurements.

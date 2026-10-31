@@ -16,11 +16,12 @@ use super::{
     access_path::index_seek_from_filter,
     costing::{
         estimate_node_cartesian_product_cost, estimate_physical_plan_cost,
+        estimate_physical_plan_cost_with_context,
         push_optional_relationship_count_sum_cost_decision,
     },
     logical_rewrite::{rewrite_logical_plan, LogicalRewriteOutput},
     properties::satisfies_ordering,
-    selected_trace::selected_plan_trace,
+    selected_trace::selected_plan_trace_with_width,
     stages::{
         ACCESS_PATH_SELECTION_STAGE, DIRECT_PHYSICAL_FALLBACK_STAGE, LOGICAL_GROUPING_STAGE,
         PHYSICAL_SEARCH_STAGE, PLAN_FINALIZATION_STAGE, SELECTED_PLAN_COSTING_STAGE,
@@ -86,7 +87,12 @@ impl CascadesOptimizer {
         plan: &PhysicalPlan,
         catalog: &OptimizerCatalog,
     ) {
-        refresh_selected_plan_trace(trace, selected_plan_trace(plan, catalog, &self.context));
+        let (selected, widths) = selected_plan_trace_with_width(plan, catalog, &self.context);
+        refresh_selected_plan_trace(trace, selected);
+        trace
+            .decisions
+            .retain(|decision| !decision.starts_with("physical width cost: "));
+        trace.decisions.extend(widths);
     }
 
     pub fn optimize(&self, logical: &LogicalPlan) -> PhysicalPlan {
@@ -198,7 +204,8 @@ impl CascadesOptimizer {
                 DIRECT_PHYSICAL_FALLBACK_STAGE.trace(StageStats::new(required_groups, 1)),
             );
             report.extend_decisions(decisions);
-            let selected = selected_plan_trace(&plan, catalog, &self.context);
+            let (selected, widths) = selected_plan_trace_with_width(&plan, catalog, &self.context);
+            report.extend_decisions(widths);
             report.push_stage_event(SELECTED_PLAN_COSTING_STAGE.trace(StageStats::new(1, 1)));
             report.record_selected_plan_cost(selected.cost);
             return Ok(PhysicalPlanRoot::new(plan, report.into_trace(selected)));
@@ -228,7 +235,8 @@ impl CascadesOptimizer {
             StageStats::new(memo.group_count(), 1).with_rule_counts(applied_rules, skipped_rules),
         ));
         report.extend_decisions(decisions);
-        let selected = selected_plan_trace(&plan, catalog, &self.context);
+        let (selected, widths) = selected_plan_trace_with_width(&plan, catalog, &self.context);
+        report.extend_decisions(widths);
         report.push_stage_event(SELECTED_PLAN_COSTING_STAGE.trace(StageStats::new(1, 1)));
         report.record_selected_plan_cost(selected.cost);
         if directive == OptimizerSearchDirective::Memo {
@@ -308,23 +316,47 @@ fn best_physical(
         .to_physical(memo, catalog, optimizer_context, decisions, stage_events)
 }
 
+fn finalized_cost_input(input: &PhysicalPlan) -> Option<PhysicalPlan> {
+    if let PhysicalPlan::ProjectExec { items, input } = input {
+        select_node_projection_scan(items, input, &mut Vec::new(), &mut Vec::new())
+    } else {
+        None
+    }
+}
+
 fn ordered_alternative(
     input: PhysicalPlan,
     items: &[SortItem],
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
+    retained: Option<usize>,
     decisions: &mut Vec<String>,
 ) -> PhysicalPlan {
     let Some(candidate) = ordered::candidate(&input, items, catalog) else {
         return input;
     };
-    let ordered_cost = estimate_physical_plan_cost(&candidate, catalog);
-    let sort_cost = estimate_physical_plan_cost(
-        &PhysicalPlan::SortExec {
+    // Price both producers after the same existing projection fusion, and
+    // include the bounded alternative when the executor will retain only K rows.
+    let finalized = finalized_cost_input(&input);
+    let cost_input = finalized.as_ref().unwrap_or(&input);
+    let cost =
+        |plan: &PhysicalPlan| estimate_physical_plan_cost_with_context(plan, catalog, context);
+    let ordered_cost = cost(&candidate);
+    let mut sort_cost = cost(&PhysicalPlan::SortExec {
+        items: items.to_vec(),
+        input: Box::new(cost_input.clone()),
+    });
+    if let Some(limit) = retained {
+        let top_n_cost = cost(&PhysicalPlan::TopNExec {
             items: items.to_vec(),
-            input: Box::new(input.clone()),
-        },
-        catalog,
-    );
+            offset: 0,
+            limit,
+            input: Box::new(cost_input.clone()),
+        });
+        if top_n_cost.cost < sort_cost.cost {
+            sort_cost = top_n_cost;
+        }
+    }
     if satisfies_ordering(&candidate, items, catalog) && ordered_cost.cost <= sort_cost.cost {
         decisions.push(format!(
             "choose composite ordered seek: ordered_cost={} sort_cost={}",
@@ -342,9 +374,17 @@ fn select_bounded_sort_plan(
     limit: usize,
     input: PhysicalPlan,
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
     decisions: &mut Vec<String>,
 ) -> PhysicalPlan {
-    let input = ordered_alternative(input, &items, catalog, decisions);
+    let input = ordered_alternative(
+        input,
+        &items,
+        catalog,
+        context,
+        Some(offset.saturating_add(limit)),
+        decisions,
+    );
     if satisfies_ordering(&input, &items, catalog) {
         decisions.push("elide bounded sort: access path satisfies required ordering".to_string());
         return PhysicalPlan::LimitExec {
@@ -353,34 +393,44 @@ fn select_bounded_sort_plan(
             input: Box::new(input),
         };
     }
+    // The selected plan is finalized below. Estimate that same shape here;
+    // generic Project retains graph bindings whereas fused scans do not.
+    let finalized = finalized_cost_input(&input);
+    let cost_input = finalized.as_ref().unwrap_or(&input);
     let top_n = PhysicalPlan::TopNExec {
         items: items.clone(),
         offset,
         limit,
-        input: Box::new(input.clone()),
+        input: Box::new(cost_input.clone()),
     };
     let sort_limit = PhysicalPlan::LimitExec {
         offset,
         limit: Some(limit),
         input: Box::new(PhysicalPlan::SortExec {
-            items,
-            input: Box::new(input),
+            items: items.clone(),
+            input: Box::new(cost_input.clone()),
         }),
     };
-    let top_n_cost = estimate_physical_plan_cost(&top_n, catalog);
-    let sort_limit_cost = estimate_physical_plan_cost(&sort_limit, catalog);
+    let top_n_cost = estimate_physical_plan_cost_with_context(&top_n, catalog, context);
+    let sort_limit_cost = estimate_physical_plan_cost_with_context(&sort_limit, catalog, context);
     if top_n_cost.cost < sort_limit_cost.cost {
-        decisions.push(format!(
-            "choose TopN for bounded sort: offset={offset} limit={limit} top_n_cost={} sort_limit_cost={}",
-            top_n_cost.cost, sort_limit_cost.cost
-        ));
-        top_n
+        decisions.push(format!("choose TopN for bounded sort: offset={offset} limit={limit} top_n_cost={} sort_limit_cost={}", top_n_cost.cost, sort_limit_cost.cost));
+        PhysicalPlan::TopNExec {
+            items,
+            offset,
+            limit,
+            input: Box::new(input),
+        }
     } else {
-        decisions.push(format!(
-            "keep Sort + Limit for bounded sort: offset={offset} limit={limit} top_n_cost={} sort_limit_cost={}",
-            top_n_cost.cost, sort_limit_cost.cost
-        ));
-        sort_limit
+        decisions.push(format!("keep Sort + Limit for bounded sort: offset={offset} limit={limit} top_n_cost={} sort_limit_cost={}", top_n_cost.cost, sort_limit_cost.cost));
+        PhysicalPlan::LimitExec {
+            offset,
+            limit: Some(limit),
+            input: Box::new(PhysicalPlan::SortExec {
+                items,
+                input: Box::new(input),
+            }),
+        }
     }
 }
 
@@ -870,9 +920,20 @@ fn lower_logical(
                 decisions,
                 stage_events,
             );
-            let (left, right) =
-                order_single_row_cartesian_product_children(catalog, decisions, left, right);
-            push_cartesian_product_cost_decision(catalog, decisions, &left, &right);
+            let (left, right) = order_single_row_cartesian_product_children(
+                catalog,
+                optimizer_context,
+                decisions,
+                left,
+                right,
+            );
+            push_cartesian_product_cost_decision(
+                catalog,
+                optimizer_context,
+                decisions,
+                &left,
+                &right,
+            );
             PhysicalPlan::NodeCartesianProductExec {
                 left: Box::new(left),
                 right: Box::new(right),
@@ -1120,7 +1181,8 @@ fn lower_logical(
                 decisions,
                 stage_events,
             );
-            let input = ordered_alternative(input, items, catalog, decisions);
+            let input =
+                ordered_alternative(input, items, catalog, optimizer_context, None, decisions);
             if satisfies_ordering(&input, items, catalog) {
                 decisions
                     .push("elide SortExec: access path satisfies required ordering".to_string());
@@ -1150,7 +1212,15 @@ fn lower_logical(
                     decisions,
                     stage_events,
                 );
-                select_bounded_sort_plan(items.clone(), *offset, *limit, input, catalog, decisions)
+                select_bounded_sort_plan(
+                    items.clone(),
+                    *offset,
+                    *limit,
+                    input,
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                )
             } else {
                 PhysicalPlan::LimitExec {
                     offset: *offset,
@@ -1898,12 +1968,13 @@ fn push_expand_estimate_decision(
 
 fn order_single_row_cartesian_product_children(
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
     decisions: &mut Vec<String>,
     left: PhysicalPlan,
     right: PhysicalPlan,
 ) -> (PhysicalPlan, PhysicalPlan) {
-    let left_cost = estimate_physical_plan_cost(&left, catalog);
-    let right_cost = estimate_physical_plan_cost(&right, catalog);
+    let left_cost = estimate_physical_plan_cost_with_context(&left, catalog, context);
+    let right_cost = estimate_physical_plan_cost_with_context(&right, catalog, context);
     if !cartesian_product_leaves_are_single_row(catalog, &left)
         || !cartesian_product_leaves_are_single_row(catalog, &right)
     {
@@ -1921,7 +1992,7 @@ fn order_single_row_cartesian_product_children(
     let mut keyed_leaves = leaves
         .into_iter()
         .map(|plan| {
-            let cost = estimate_physical_plan_cost(&plan, catalog);
+            let cost = estimate_physical_plan_cost_with_context(&plan, catalog, context);
             let fingerprint = plan.instance_fingerprint();
             (cost, fingerprint, plan)
         })
@@ -2000,12 +2071,13 @@ fn rebuild_cartesian_product(plans: impl IntoIterator<Item = PhysicalPlan>) -> P
 
 fn push_cartesian_product_cost_decision(
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
     decisions: &mut Vec<String>,
     left: &PhysicalPlan,
     right: &PhysicalPlan,
 ) {
-    let left_cost = estimate_physical_plan_cost(left, catalog);
-    let right_cost = estimate_physical_plan_cost(right, catalog);
+    let left_cost = estimate_physical_plan_cost_with_context(left, catalog, context);
+    let right_cost = estimate_physical_plan_cost_with_context(right, catalog, context);
     let cost = estimate_node_cartesian_product_cost(left_cost, right_cost);
     decisions.push(format!(
         "estimate NodeCartesianProduct: left_rows={} right_rows={} output_rows={} left_cost={} right_cost={} cost={}",
