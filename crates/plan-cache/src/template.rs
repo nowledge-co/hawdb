@@ -311,7 +311,7 @@ pub fn parameterize_logical_plan(
         let marker_use = candidate.map_or(MarkerUse::Unsafe, |mut candidate| {
             let marker_use = marker_use_in_logical_plan(&candidate, name);
             if marker_use.is_safe()
-                && bind_logical_plan(&mut candidate, parameters).is_ok()
+                && bind_logical_plan(&mut candidate, BindingAction::Execute(parameters)).is_ok()
                 && candidate == actual
             {
                 marker_use
@@ -340,7 +340,7 @@ pub fn parameterize_logical_plan(
                 });
                 let mut rebound = candidate.clone();
                 all_slots_are_safe
-                    && bind_logical_plan(&mut rebound, parameters).is_ok()
+                    && bind_logical_plan(&mut rebound, BindingAction::Execute(parameters)).is_ok()
                     && rebound == actual
             });
         if let Some(candidate) = candidate {
@@ -428,7 +428,7 @@ fn parameterize_together(
         return None;
     }
     let mut rebound = logical.clone();
-    bind_logical_plan(&mut rebound, parameters).ok()?;
+    bind_logical_plan(&mut rebound, BindingAction::Execute(parameters)).ok()?;
     if &rebound != actual {
         return None;
     }
@@ -554,7 +554,7 @@ pub fn bind_physical_plan_parameters(
 ) -> Result<PhysicalPlan> {
     let mut plan = template.clone();
     if has_slots {
-        bind_physical_plan(&mut plan, parameters)?;
+        bind_physical_plan(&mut plan, BindingAction::Execute(parameters))?;
     }
     Ok(plan)
 }
@@ -1082,7 +1082,30 @@ fn marker_use_in_projection_expression(
     }
 }
 
-fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Value>) -> Result<()> {
+#[derive(Clone, Copy)]
+enum BindingAction<'a> {
+    Execute(&'a BTreeMap<String, Value>),
+    PrepareRegex,
+    RetainRegex(&'a std::cell::Cell<bool>),
+}
+
+/// Retain validated pattern sources without compiled automata in a cache owner.
+/// Returns whether execution binding must prepare regex state, even without slots.
+#[doc(hidden)]
+pub fn prepare_physical_plan_for_cache(plan: &mut PhysicalPlan) -> Result<bool> {
+    let found = std::cell::Cell::new(false);
+    bind_physical_plan(plan, BindingAction::RetainRegex(&found))?;
+    Ok(found.get())
+}
+
+/// Prepare only source-backed regex state in an execution clone. Literal values
+/// are left untouched when the template has no actual parameter slots.
+#[doc(hidden)]
+pub fn prepare_physical_regexes_for_execution(plan: &mut PhysicalPlan) -> Result<()> {
+    bind_physical_plan(plan, BindingAction::PrepareRegex)
+}
+
+fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) -> Result<()> {
     match plan {
         PhysicalPlan::VectorIndexScan(scan) => {
             bind_optional_predicate(&mut scan.node_visibility_predicate, parameters)?;
@@ -1285,7 +1308,7 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
 
 fn bind_node_projection_access(
     access: &mut hawdb_plan_cypher::NodeProjectionAccess,
-    parameters: &BTreeMap<String, Value>,
+    parameters: BindingAction<'_>,
 ) -> Result<()> {
     match access {
         hawdb_plan_cypher::NodeProjectionAccess::LabelScan => Ok(()),
@@ -1328,7 +1351,7 @@ fn bind_node_projection_access(
 
 fn bind_composite_range_seek(
     seek: &mut hawdb_plan_cypher::CompositeRangeSeek,
-    parameters: &BTreeMap<String, Value>,
+    parameters: BindingAction<'_>,
 ) -> Result<()> {
     for (_, value) in &mut seek.equality_prefix {
         bind_value(value, parameters)?;
@@ -1339,7 +1362,7 @@ fn bind_composite_range_seek(
     Ok(())
 }
 
-fn bind_logical_plan(plan: &mut LogicalPlan, parameters: &BTreeMap<String, Value>) -> Result<()> {
+fn bind_logical_plan(plan: &mut LogicalPlan, parameters: BindingAction<'_>) -> Result<()> {
     match plan {
         LogicalPlan::VectorIndexSearch(scan) => {
             bind_optional_predicate(&mut scan.node_visibility_predicate, parameters)?;
@@ -1445,7 +1468,7 @@ fn bind_logical_plan(plan: &mut LogicalPlan, parameters: &BTreeMap<String, Value
 
 fn bind_optional_predicate(
     predicate: &mut Option<Predicate>,
-    parameters: &BTreeMap<String, Value>,
+    parameters: BindingAction<'_>,
 ) -> Result<()> {
     if let Some(predicate) = predicate {
         bind_predicate(predicate, parameters)?;
@@ -1453,7 +1476,7 @@ fn bind_optional_predicate(
     Ok(())
 }
 
-fn bind_predicate(predicate: &mut Predicate, parameters: &BTreeMap<String, Value>) -> Result<()> {
+fn bind_predicate(predicate: &mut Predicate, parameters: BindingAction<'_>) -> Result<()> {
     match predicate {
         Predicate::And(predicates) | Predicate::Or(predicates) => {
             for predicate in predicates {
@@ -1461,6 +1484,15 @@ fn bind_predicate(predicate: &mut Predicate, parameters: &BTreeMap<String, Value
             }
         }
         Predicate::Not(predicate) => bind_predicate(predicate, parameters)?,
+        Predicate::PropertyRegexMatch { pattern, .. } => match parameters {
+            BindingAction::Execute(_) | BindingAction::PrepareRegex => {
+                pattern.prepare_for_execution()?
+            }
+            BindingAction::RetainRegex(found) => {
+                pattern.retain_source_only();
+                found.set(true);
+            }
+        },
         Predicate::IdEq { value, .. }
         | Predicate::IdNotEq { value, .. }
         | Predicate::IdCompare { value, .. }
@@ -1492,20 +1524,14 @@ fn bind_predicate(predicate: &mut Predicate, parameters: &BTreeMap<String, Value
     Ok(())
 }
 
-fn bind_projections(
-    projections: &mut [Projection],
-    parameters: &BTreeMap<String, Value>,
-) -> Result<()> {
+fn bind_projections(projections: &mut [Projection], parameters: BindingAction<'_>) -> Result<()> {
     for projection in projections {
         bind_projection_expression(&mut projection.expression, parameters)?;
     }
     Ok(())
 }
 
-fn bind_aggregations(
-    items: &mut [Aggregation],
-    parameters: &BTreeMap<String, Value>,
-) -> Result<()> {
+fn bind_aggregations(items: &mut [Aggregation], parameters: BindingAction<'_>) -> Result<()> {
     for item in items {
         if let AggregateTarget::Expression(expression) = &mut item.target {
             bind_projection_expression(expression, parameters)?;
@@ -1514,7 +1540,7 @@ fn bind_aggregations(
     Ok(())
 }
 
-fn bind_sort_items(items: &mut [SortItem], parameters: &BTreeMap<String, Value>) -> Result<()> {
+fn bind_sort_items(items: &mut [SortItem], parameters: BindingAction<'_>) -> Result<()> {
     for item in items {
         if let SortKey::Expression(expression) = &mut item.key {
             bind_projection_expression(expression, parameters)?;
@@ -1525,7 +1551,7 @@ fn bind_sort_items(items: &mut [SortItem], parameters: &BTreeMap<String, Value>)
 
 fn bind_projection_expression(
     expression: &mut ProjectionExpression,
-    parameters: &BTreeMap<String, Value>,
+    parameters: BindingAction<'_>,
 ) -> Result<()> {
     match expression {
         ProjectionExpression::Case { .. }
@@ -1621,7 +1647,7 @@ fn bind_projection_expression(
 
 fn bind_value_map(
     values: &mut BTreeMap<String, Value>,
-    parameters: &BTreeMap<String, Value>,
+    parameters: BindingAction<'_>,
 ) -> Result<()> {
     for value in values.values_mut() {
         bind_value(value, parameters)?;
@@ -1629,7 +1655,7 @@ fn bind_value_map(
     Ok(())
 }
 
-fn bind_values(values: &mut [Value], parameters: &BTreeMap<String, Value>) -> Result<()> {
+fn bind_values(values: &mut [Value], parameters: BindingAction<'_>) -> Result<()> {
     for value in values {
         bind_value(value, parameters)?;
     }
@@ -1659,9 +1685,12 @@ fn resolve_parameter_marker<'a>(
     Ok(bound)
 }
 
-fn bind_value(value: &mut Value, parameters: &BTreeMap<String, Value>) -> Result<()> {
+fn bind_value(value: &mut Value, parameters: BindingAction<'_>) -> Result<()> {
+    let BindingAction::Execute(values) = parameters else {
+        return Ok(());
+    };
     if let Some((name, path)) = marker_name_and_path(value) {
-        *value = resolve_parameter_marker(parameters, name, path)?.clone();
+        *value = resolve_parameter_marker(values, name, path)?.clone();
         return Ok(());
     }
     match value {
@@ -1710,7 +1739,7 @@ mod tests {
             0
         );
         let mut rebound = reused.logical().clone();
-        super::bind_logical_plan(&mut rebound, &changed).unwrap();
+        super::bind_logical_plan(&mut rebound, super::BindingAction::Execute(&changed)).unwrap();
         assert_eq!(
             rebound,
             hawdb_plan_cypher::plan_with_params(&statement, &changed).unwrap()
@@ -1749,7 +1778,8 @@ mod tests {
                 0
             );
             let mut rebound = reused.logical().clone();
-            super::bind_logical_plan(&mut rebound, &changed).unwrap();
+            super::bind_logical_plan(&mut rebound, super::BindingAction::Execute(&changed))
+                .unwrap();
             assert_eq!(
                 rebound,
                 hawdb_plan_cypher::plan_with_params(&statement, &changed).unwrap()
@@ -1794,7 +1824,8 @@ mod tests {
             altered.insert("score".into(), Value::Float(0.75));
             let reused = template.reuse(&altered).unwrap();
             let mut rebound = reused.logical().clone();
-            super::bind_logical_plan(&mut rebound, &altered).unwrap();
+            super::bind_logical_plan(&mut rebound, super::BindingAction::Execute(&altered))
+                .unwrap();
             assert_eq!(
                 rebound,
                 hawdb_plan_cypher::plan_with_params(&statement, &altered).unwrap()
@@ -1839,7 +1870,7 @@ mod tests {
             0
         );
         let mut rebound = reused.logical().clone();
-        super::bind_logical_plan(&mut rebound, &changed).unwrap();
+        super::bind_logical_plan(&mut rebound, super::BindingAction::Execute(&changed)).unwrap();
         assert_eq!(
             rebound,
             hawdb_plan_cypher::plan_with_params(&statement, &changed).unwrap()
@@ -1895,7 +1926,8 @@ mod tests {
                     .cache_key()
             );
             let mut rebound = plan.logical().clone();
-            super::bind_logical_plan(&mut rebound, &changed).unwrap();
+            super::bind_logical_plan(&mut rebound, super::BindingAction::Execute(&changed))
+                .unwrap();
             assert_eq!(
                 rebound,
                 hawdb_plan_cypher::plan_with_params(&statement, &changed).unwrap()
@@ -1922,7 +1954,7 @@ mod tests {
             assert!(plan.slot_count() > 0);
             assert_eq!(plan.has_case_parameter_slots(), case_slots, "{query}");
             let mut rebound = plan.logical().clone();
-            super::bind_logical_plan(&mut rebound, &parameters).unwrap();
+            super::bind_logical_plan(&mut rebound, super::BindingAction::Execute(&parameters)).unwrap();
             assert_eq!(rebound, hawdb_plan_cypher::plan_with_params(&statement, &parameters).unwrap());
         }
     }
@@ -2603,3 +2635,47 @@ mod tests {
         );
     }
 }
+
+// Retained query ownership: ParameterCacheValue.
+impl hawdb_core::RetainedHeapBytes for ParameterCacheValue {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Slot(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::CaseSlot(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::Exact(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+        }
+    }
+}
+
+// Retained query ownership: ParameterValueShape.
+impl hawdb_core::RetainedHeapBytes for ParameterValueShape {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Null => hawdb_core::checked_retained_heap_sum([]),
+            Self::Bool => hawdb_core::checked_retained_heap_sum([]),
+            Self::Int => hawdb_core::checked_retained_heap_sum([]),
+            Self::Float => hawdb_core::checked_retained_heap_sum([]),
+            Self::String => hawdb_core::checked_retained_heap_sum([]),
+            Self::Binary => hawdb_core::checked_retained_heap_sum([]),
+            Self::Vector(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::Uuid => hawdb_core::checked_retained_heap_sum([]),
+            Self::List(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::Map(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+        }
+    }
+}
+
+// Retained query ownership: PlanParameterCacheKey.
+hawdb_core::impl_retained_heap_for_struct!(PlanParameterCacheKey { values });

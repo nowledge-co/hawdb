@@ -46,6 +46,47 @@ network failures without credentials, uploads or real sleeps. Replay with
 `python scripts/pypi-publish.test.py` with `packaging` installed. Actual Trusted
 Publishing and public-install smoke verification remain release-workflow gates.
 
+The plan-cache retention family uses
+`//crates/plan-cache:hawdb_plan_cache_tests` for weighted LFU total/per-entry
+limits, zero budgets, overflow, replacement and spare table-capacity accounting.
+`//crates/plan-cache:hawdb_template_retention_tests` is its independent native
+requested-allocation oracle: logical and physical CASE templates at 20/100/512
+candidates, nested values, source-only regex templates and byte-driven churn must retain no more requested
+heap than their conservative charges. The observer is thread-local and runs as
+one test; requalify its standard-library layout assumptions on toolchain
+changes. Replay with `cargo test --locked -p hawdb-plan-cache --test
+template_retention -- --test-threads=1`. Requested heap excludes allocator
+rounding and caller-owned in-flight copies; these checks are not RSS or latency
+benchmarks. The facade's `api::plan_cache::retention_allocation` oracle belongs
+to `//:hawdb_unit_general_tests`: it observes complete private cache keys,
+physical IR, traces, shared metadata, proof-schema table/property IDs and EXISTS
+strings, both scoring-key forms and table capacity
+at 20/100/512 candidates, owned row-bound/nested list and path expressions, boxed shortest-path
+descriptors with spare string capacities (Any/All selection), and byte-driven eviction. Its thread-local
+observer is enabled only in that one unit test. Replay with `cargo test --locked
+-p hawdb --lib retention_allocation -- --test-threads=1 --nocapture`.
+The same existing root owner covers `simple_case_dispatch` physical cache hits,
+changed parameters, folded guards, lazy/cached errors, result budgets,
+cancellation, zero/tiny cache-budget refusals and accepted/refused admission traces;
+`query_observability` checks regex source-template hits beside a hot plan.
+`knowledge_label_regex_memory_connections` retains its original physical-hit,
+complete bounded-query result, snapshot and budget/error assertions. Core regex
+and independent allocation tests prove that execution compilation neither lives
+in nor grows the source-only cache owner.
+Its vector-procedure pipeline check preserves default-feature cache bypass
+and minimal-feature capability refusal before any cache lookup or bypass.
+Run those filters with default and `--no-default-features` configurations.
+Existing target profiles and execution lanes are unchanged.
+
+`cargo build --locked --release --bench physical_plan_cache` builds the manual
+embedded CASE cache benchmark. It covers cold/reused/fresh-handle reads at
+20/100/512 candidates, scope and body scaling, complete result parity and a
+separate qualification-feature allocation/preparation observer. It adds no
+benchmark CI lane. With no arguments it runs a small 20-candidate, 512-row,
+three-repeat smoke using the same complete-result assertions. Explicit arguments
+retain the measured experiment sizes. Procedure, source-bound measurements and the per-read-handle
+reuse limitation are in the [physical cache report](benchmarks/physical_plan_cache_macos_2026_10_31/README.md).
+
 `//:storage_tla_evidence_script_test` belongs to the required root
 `//:hawdb_unit_tests` aggregate. It validates the actual checked-in TLA model
 inventory through `scripts/check-storage-tla.sh --manifest-json` before running

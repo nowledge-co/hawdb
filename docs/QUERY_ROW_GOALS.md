@@ -35,6 +35,8 @@ Offline qualification can perturb only candidate ranking, including the
 Sort/TopN competitor choice; consumed-work reports retain their raw estimates.
 Existing ordering, type, uniqueness, capability and directive guards
 continue to determine which alternatives are legal.
+Keyset implication relies on the ordered capability's enforced homogeneous suffix
+types; arbitrary mixed-type total ordering alone does not prove a typed residual.
 
 This is costing context, not a new physical property or runtime budget. The
 graph memo stores logical expressions and does not cache a best cost by group;

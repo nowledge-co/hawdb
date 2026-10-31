@@ -2067,6 +2067,10 @@ const fn constraint_kind_name(kind: ConstraintKind) -> &'static str {
 fn plan_cache_rows(stats: &PlanCacheStats) -> Vec<Row> {
     [
         ("max_entries", option_usize_value(stats.max_entries)),
+        ("max_bytes", option_usize_value(stats.max_bytes)),
+        ("max_entry_bytes", option_usize_value(stats.max_entry_bytes)),
+        ("charged_bytes", option_usize_value(stats.charged_bytes)),
+        ("rejected_admissions", u64_value(stats.rejected_admissions)),
         ("entries", usize_value(stats.entries)),
         ("hits", u64_value(stats.hits)),
         ("misses", u64_value(stats.misses)),
@@ -2841,6 +2845,10 @@ mod tests {
         let relational_state = RelationalState::default();
         let append_state = AppendState::default();
         let stats = PlanCacheStats {
+            max_bytes: Some(16384),
+            max_entry_bytes: Some(8192),
+            charged_bytes: Some(4096),
+            rejected_admissions: 2,
             max_entries: Some(128),
             entries: 3,
             hits: 5,
@@ -2870,6 +2878,24 @@ mod tests {
             vec![BTreeMap::from([("value".to_string(), Value::Int(5))])]
         );
         let payload_bytes = output.payload_bytes();
+        for (metric, expected) in [
+            ("max_bytes", 16384),
+            ("max_entry_bytes", 8192),
+            ("charged_bytes", 4096),
+            ("rejected_admissions", 2),
+        ] {
+            let output = query_sql(
+                &format!("SELECT value FROM system.plan_cache WHERE metric = '{metric}'"),
+                Some(1),
+                Some(1024),
+                &context,
+            )
+            .unwrap();
+            assert_eq!(
+                output.rows,
+                vec![BTreeMap::from([("value".into(), Value::Int(expected))])]
+            );
+        }
         let exact = query_sql(sql, Some(1), Some(payload_bytes), &context).unwrap();
         assert_eq!(exact.rows, output.rows);
         for (rows, payload, resource, limit) in [
@@ -2897,6 +2923,10 @@ mod tests {
         let relational_state = RelationalState::default();
         let append_state = AppendState::default();
         let stats = PlanCacheStats {
+            max_bytes: None,
+            max_entry_bytes: None,
+            charged_bytes: None,
+            rejected_admissions: 0,
             max_entries: Some(128),
             entries: 3,
             hits: 5,
@@ -2949,6 +2979,10 @@ mod tests {
         let relational_state = RelationalState::default();
         let append_state = AppendState::default();
         let stats = PlanCacheStats {
+            max_bytes: None,
+            max_entry_bytes: None,
+            charged_bytes: None,
+            rejected_admissions: 0,
             max_entries: None,
             entries: 0,
             hits: 0,
@@ -3000,6 +3034,10 @@ mod tests {
         let relational_state = RelationalState::default();
         let append_state = AppendState::default();
         let stats = PlanCacheStats {
+            max_bytes: None,
+            max_entry_bytes: None,
+            charged_bytes: None,
+            rejected_admissions: 0,
             max_entries: None,
             entries: 0,
             hits: 0,
@@ -3101,6 +3139,10 @@ mod tests {
         catalog.get_or_create_property_index_with_kind(memory_label, "id", IndexKind::Equality);
         catalog.get_or_create_unique_constraint(memory_label, "id");
         let stats = PlanCacheStats {
+            max_bytes: None,
+            max_entry_bytes: None,
+            charged_bytes: None,
+            rejected_admissions: 0,
             max_entries: None,
             entries: 0,
             hits: 0,
