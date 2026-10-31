@@ -149,6 +149,7 @@ impl PhysicalPlan {
             PhysicalPlan::NodeCountExec { .. }
             | PhysicalPlan::RelationshipCountExec { .. }
             | PhysicalPlan::UnwindExec { .. }
+            | PhysicalPlan::UnwindRowsExec { .. }
             | PhysicalPlan::EmptyExec
             | PhysicalPlan::NodeCartesianProductExec { .. }
             | PhysicalPlan::HashJoinExec { .. }

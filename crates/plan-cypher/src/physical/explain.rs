@@ -180,6 +180,9 @@ impl PhysicalPlan {
             PhysicalPlan::UnwindExec { rows, variable } => {
                 format!("{pad}UnwindExec rows={} variable={variable}", rows.len())
             }
+            PhysicalPlan::UnwindRowsExec { expression, variable, .. } => {
+                format!("{pad}UnwindRowsExec expression={expression:?} variable={variable}")
+            }
             PhysicalPlan::UnwindMutation {
                 rows,
                 variable,

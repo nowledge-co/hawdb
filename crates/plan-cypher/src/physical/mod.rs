@@ -190,6 +190,11 @@ pub enum PhysicalPlan {
         rows: Vec<Value>,
         variable: String,
     },
+    UnwindRowsExec {
+        expression: crate::ProjectionExpression,
+        variable: String,
+        input: Box<PhysicalPlan>,
+    },
     UnwindMutation {
         rows: Vec<Value>,
         variable: String,

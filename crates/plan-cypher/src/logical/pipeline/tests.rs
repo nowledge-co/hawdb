@@ -46,6 +46,8 @@ fn atomic_mutations_reject_conditions_the_storage_command_cannot_represent() {
         "MATCH (a:Node), (b:Node) CREATE (a)-[:LINK* ALL SHORTEST 1..1]->(b)",
         "OPTIONAL MATCH (n:Node) SET n.id = 1",
         "MATCH (n:Node) WITH n SET n.id = 1",
+        "UNWIND row.id AS value CREATE (n:Node)",
+        "MATCH (row:Node) UNWIND row.ids AS value CREATE (n:Node {id: value})",
         "MATCH (a:Node), (b:Node) MERGE (a {id: 1})-[:LINK]->(b)",
     ] {
         assert!(

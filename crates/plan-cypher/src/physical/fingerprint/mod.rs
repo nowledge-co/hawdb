@@ -358,6 +358,18 @@ impl PhysicalPlan {
                 }
                 output.push(')');
             }
+            PhysicalPlan::UnwindRowsExec {
+                expression,
+                variable,
+                input,
+            } => {
+                output.push_str("UnwindRows(");
+                write_identifier(output, variable);
+                output.push(',');
+                write_projection_expression(output, expression);
+                input.write_instance_fingerprint(output);
+                output.push(')');
+            }
             PhysicalPlan::UnwindMutation {
                 rows,
                 variable,
