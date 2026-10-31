@@ -16,12 +16,13 @@
 
 use super::DurableStore;
 use crate::checkpoint_closure::{
-    read_closure_artifact, CheckpointArtifactFamily, CheckpointArtifactInput, CheckpointClosurePlan,
+    digest_closure_artifact, CheckpointArtifactFamily, CheckpointArtifactInput,
+    CheckpointClosurePlan,
 };
 use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
 use crate::file_io as fs;
-use crate::immutable_object::{ObjectKind, ObjectReference};
+use crate::immutable_object::ObjectKind;
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, copy_backup_file,
@@ -53,14 +54,14 @@ impl DurableStore {
             HawDBError::Storage("checkpoint closure requires a checkpoint generation".into())
         })?;
         let input = |path: PathBuf| -> Result<CheckpointArtifactInput> {
-            let bytes = read_closure_artifact(&path, "read checkpoint closure artifact")?;
+            let digest = digest_closure_artifact(
+                &path,
+                ObjectKind::CheckpointArtifact,
+                "read checkpoint closure artifact",
+            )?;
             Ok(CheckpointArtifactInput {
                 path,
-                reference: ObjectReference::for_bytes(
-                    ObjectKind::CheckpointArtifact,
-                    ObjectKind::CheckpointArtifact.current_format_version(),
-                    &bytes,
-                ),
+                reference: digest.reference,
             })
         };
         let mut manifest_inputs = manifest.manifest_artifact_inputs(&self.root_path)?;
@@ -74,13 +75,14 @@ impl DurableStore {
                 let relational_checkpoint = self
                     .root_path
                     .join(relational_checkpoint_generation_file(generation));
-                let bytes = read_closure_artifact(
+                let digest = digest_closure_artifact(
                     &relational_checkpoint,
+                    ObjectKind::CheckpointArtifact,
                     "read relational checkpoint closure artifact",
                 )?;
-                if bytes.len() as u64 != encoded_len
-                    || u64::from(hawdb_integrity::crc32c(&bytes).get()) != encoded_checksum
-                    || hawdb_integrity::sha256(&bytes) != encoded_sha256
+                if digest.byte_length != encoded_len
+                    || u64::from(digest.content.crc32c.get()) != encoded_checksum
+                    || digest.content.sha256 != encoded_sha256
                 {
                     return Err(HawDBError::Storage(format!(
                         "relational checkpoint closure artifact {} differs from its checkpoint binding",
@@ -89,11 +91,7 @@ impl DurableStore {
                 }
                 manifest_inputs.push(CheckpointArtifactInput {
                     path: relational_checkpoint,
-                    reference: ObjectReference::for_bytes(
-                        ObjectKind::CheckpointArtifact,
-                        ObjectKind::CheckpointArtifact.current_format_version(),
-                        &bytes,
-                    ),
+                    reference: digest.reference,
                 });
             }
             _ => {

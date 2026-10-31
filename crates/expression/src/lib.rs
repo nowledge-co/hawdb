@@ -247,6 +247,8 @@ pub enum ProjectionExpression {
         column: String,
         property: String,
     },
+    /// A list literal whose elements are evaluated per row, in order.
+    List(Vec<ProjectionExpression>),
     /// `size`, `head`, `last`, `tail`, `reverse` or `range`.
     ListFunction {
         function: hawdb_core::ListFunction,
@@ -271,6 +273,12 @@ pub enum ProjectionExpression {
         start: Option<Box<ProjectionExpression>>,
         end: Option<Box<ProjectionExpression>>,
     },
+    /// A path function over a path value bound by a shortest-path pattern.
+    /// A NULL path, such as an unmatched OPTIONAL MATCH, yields NULL.
+    Path {
+        function: PathFunction,
+        column: String,
+    },
 }
 
 /// A list comprehension. `variable` is visible only to `predicate` and
@@ -281,6 +289,33 @@ pub struct ListComprehensionProjection {
     pub list: ProjectionExpression,
     pub predicate: Option<ProjectionExpression>,
     pub projection: Option<ProjectionExpression>,
+}
+
+/// Functions evaluated over a path value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathFunction {
+    /// `length(p)`: the number of relationships.
+    Length,
+    /// `nodes(p)`: the ordered node values.
+    Nodes,
+    /// `relationships(p)`: the ordered relationship values.
+    Relationships,
+    /// `properties(nodes(p), 'key')`: one property of every node, in order.
+    NodeProperties(String),
+}
+
+impl PathFunction {
+    /// The Cypher spelling used for default projection names.
+    pub fn display(&self, column: &str) -> String {
+        match self {
+            Self::Length => format!("length({column})"),
+            Self::Nodes => format!("nodes({column})"),
+            Self::Relationships => format!("relationships({column})"),
+            Self::NodeProperties(property) => {
+                format!("properties(nodes({column}), '{property}')")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -360,6 +395,7 @@ impl ProjectionExpression {
             | Self::Left { expression, .. }
             | Self::JsonValue { expression, .. } => visit(expression),
             Self::Coalesce(expressions)
+            | Self::List(expressions)
             | Self::ListFunction {
                 arguments: expressions,
                 ..
@@ -418,6 +454,7 @@ impl ProjectionExpression {
             | Self::Left { expression, .. }
             | Self::JsonValue { expression, .. } => visit(expression)?,
             Self::Coalesce(expressions)
+            | Self::List(expressions)
             | Self::ListFunction {
                 arguments: expressions,
                 ..

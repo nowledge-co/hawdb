@@ -57,6 +57,7 @@ mod community_cleanup;
 mod community_lifecycle;
 mod community_memberships;
 mod community_reads;
+mod comparison_chains;
 mod concurrent_transactions;
 mod crystal_reads;
 mod crystal_source;
@@ -116,6 +117,7 @@ mod knowledge_retrieval_pipeline;
 mod knowledge_retrieval_ranking;
 mod label_lifecycle;
 mod list_functions;
+mod list_literals;
 mod materialized_views;
 mod memory_lifecycle;
 mod merge_nodes;
@@ -127,6 +129,7 @@ mod nowledge_graph_adapter;
 mod optional_match;
 mod ordered_composite;
 mod ordered_range;
+mod out_of_core_labeled_expand;
 mod pagerank;
 mod predicates;
 mod projected_graph_artifacts;
@@ -155,6 +158,7 @@ mod search_projection_delta_facade;
 mod search_projection_graph_delta;
 mod search_projection_rebuild_facade;
 mod set_mutations;
+mod shortest_paths;
 mod simple_case_dispatch;
 mod skill_lifecycle;
 mod skill_reads;
@@ -2893,3 +2897,5 @@ fn community_parameters(ids: Vec<Value>) -> Result<BTreeMap<String, Value>> {
         ("limit".into(), Value::Int(10)),
     ]))
 }
+
+mod optimizer_proofs;

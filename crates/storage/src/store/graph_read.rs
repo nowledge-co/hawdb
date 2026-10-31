@@ -146,6 +146,10 @@ fn retain_point_allocation(allocation: &mut dyn GraphReadAllocation, bytes: usiz
 mod relationship_scan_tests;
 
 #[cfg(test)]
+#[path = "graph_read/labeled_expand_point_read_tests.rs"]
+mod labeled_expand_point_read_tests;
+
+#[cfg(test)]
 #[path = "graph_read/relationship_stream_tests.rs"]
 mod relationship_stream_tests;
 
@@ -516,28 +520,62 @@ impl GraphStore {
         let Some(reader) = self.canonical_base.as_ref() else {
             return Ok(AdmittedNodeRead::Missing);
         };
-        let Some(bytes) = reader
-            .node_allocation_bytes(id, label_ids)
-            .map_err(canonical_segment_error)?
-        else {
-            return Ok(AdmittedNodeRead::Missing);
-        };
-        let Some(allocation) = admit.reserve(bytes)? else {
-            return Ok(AdmittedNodeRead::Stopped);
-        };
-        if allocation.bytes() < bytes {
-            return Err(HawDBError::Execution(
-                "full node admission returned an insufficient allocation permit".into(),
-            ));
-        }
-        reader
-            .get_node(id)
-            .map_err(canonical_segment_error)
-            .map(|node| {
-                node.map_or(AdmittedNodeRead::Missing, |node| {
-                    AdmittedNodeRead::Node(AdmittedNodeRecord::new(node, allocation))
+        // One point read checks labels from the encoded header, measures and
+        // admits ownership, and only then decodes values from the same payload.
+        let mut admission_error = None;
+        let mut stopped = false;
+        let result = reader.with_node_input(id, |input| {
+            if let Some(labels) = label_ids {
+                let mut matches = false;
+                for &label in labels {
+                    matches |= input.has_label(label)?;
+                }
+                if !matches {
+                    return Ok(None);
+                }
+            }
+            input
+                .decode_selection(None, |bytes| {
+                    let refused =
+                        || CanonicalSegmentError::Source("graph read admission refused".into());
+                    match admit.reserve(bytes) {
+                        Ok(Some(allocation)) if allocation.bytes() >= bytes => Ok(allocation),
+                        Ok(Some(_)) => {
+                            admission_error = Some(HawDBError::Execution(
+                                "full node admission returned an insufficient allocation permit"
+                                    .into(),
+                            ));
+                            Err(refused())
+                        }
+                        Ok(None) => {
+                            stopped = true;
+                            Err(refused())
+                        }
+                        Err(error) => {
+                            admission_error = Some(error);
+                            Err(refused())
+                        }
+                    }
                 })
-            })
+                .map(Some)
+        });
+        if let Some(error) = admission_error {
+            return Err(error);
+        }
+        if stopped {
+            return Ok(AdmittedNodeRead::Stopped);
+        }
+        Ok(match result.map_err(canonical_segment_error)?.flatten() {
+            Some((node, allocation)) => AdmittedNodeRead::Node(AdmittedNodeRecord::new(
+                NodeRecord {
+                    id: node.id,
+                    labels: node.labels,
+                    properties: node.properties,
+                },
+                allocation,
+            )),
+            None => AdmittedNodeRead::Missing,
+        })
     }
 
     /// Admit the selected node allocation before cloning or decoding values.

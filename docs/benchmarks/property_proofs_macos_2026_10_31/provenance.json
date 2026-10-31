@@ -1,0 +1,414 @@
+{
+  "manifest": {
+    "build_command": "cargo build --locked --release --features qualification --bench property_proofs",
+    "harness_sha256": "83273fbd681aa7171f001b8e6791ec2715ab540ecb929d0891faf4497aade1b4",
+    "baseline_overlay": "identical benches/property_proofs.rs and four-line Cargo.toml bench registration; production files untouched",
+    "candidate": {
+      "source": "c5e02f73848c665879d5f01683016ff4621a57a6",
+      "tree": "89e359d53689af2794e63d73a10648f58395f1d5",
+      "binary": "/private/tmp/hawdb-proof-alias-final-binaries/candidate",
+      "sha256": "1c231780528a0e82d08fc50c0e06079563b21a26fad0c4da938a45c66c3c8107"
+    },
+    "baseline": {
+      "binary": "/private/tmp/hawdb-proof-alias-final-binaries/baseline",
+      "sha256": "2099ce8baf7f5c4ff4953f26c513fe9654652d6a54fcd8efb91dc90a6d4ae28f",
+      "source": "d4ed1267ea6c6b002c6cb2c897b045d11f6a40d6",
+      "tree": "094b251b171f56dc9ed916a7728c2e31af27f074"
+    }
+  },
+  "cells": [
+    [
+      "distinct",
+      128,
+      "warm"
+    ],
+    [
+      "distinct",
+      128,
+      "cold"
+    ],
+    [
+      "distinct",
+      10000,
+      "warm"
+    ],
+    [
+      "distinct",
+      10000,
+      "cold"
+    ],
+    [
+      "constant",
+      128,
+      "warm"
+    ],
+    [
+      "constant",
+      128,
+      "cold"
+    ],
+    [
+      "constant",
+      10000,
+      "warm"
+    ],
+    [
+      "constant",
+      10000,
+      "cold"
+    ],
+    [
+      "constant-source",
+      128,
+      "warm"
+    ],
+    [
+      "constant-source",
+      128,
+      "cold"
+    ],
+    [
+      "constant-source",
+      10000,
+      "warm"
+    ],
+    [
+      "constant-source",
+      10000,
+      "cold"
+    ],
+    [
+      "group",
+      128,
+      "warm"
+    ],
+    [
+      "group",
+      128,
+      "cold"
+    ],
+    [
+      "group",
+      10000,
+      "warm"
+    ],
+    [
+      "group",
+      10000,
+      "cold"
+    ],
+    [
+      "nullable",
+      128,
+      "warm"
+    ],
+    [
+      "nullable",
+      128,
+      "cold"
+    ],
+    [
+      "nullable",
+      10000,
+      "warm"
+    ],
+    [
+      "nullable",
+      10000,
+      "cold"
+    ],
+    [
+      "point",
+      128,
+      "warm"
+    ],
+    [
+      "point",
+      128,
+      "cold"
+    ],
+    [
+      "point",
+      10000,
+      "warm"
+    ],
+    [
+      "point",
+      10000,
+      "cold"
+    ],
+    [
+      "computed",
+      128,
+      "warm"
+    ],
+    [
+      "computed",
+      128,
+      "cold"
+    ],
+    [
+      "computed",
+      10000,
+      "warm"
+    ],
+    [
+      "computed",
+      10000,
+      "cold"
+    ],
+    [
+      "schema",
+      128,
+      "warm"
+    ],
+    [
+      "schema",
+      128,
+      "cold"
+    ],
+    [
+      "schema",
+      10000,
+      "warm"
+    ],
+    [
+      "schema",
+      10000,
+      "cold"
+    ]
+  ],
+  "rounds": 3,
+  "excluded_first_queries_per_process": 1,
+  "timed_queries_per_process": 5,
+  "python": "3.9.6",
+  "system": "macOS-27.0.1-arm64-arm-64bit",
+  "cpu": "Apple M3 Max",
+  "memory_bytes": 137438953472,
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "start": "2026-10-31T05:21:20.964111+00:00",
+  "processes": 192,
+  "queries": 1152,
+  "output_rows": 4740192,
+  "end": "2026-10-31T05:21:49.513672+00:00",
+  "boundary_gate": {
+    "initial_idle_seconds": 20,
+    "checks": 384,
+    "interference_checks": 0,
+    "all_checked_process_lists_empty": true,
+    "first_check": "2026-10-31T05:21:20.964311+00:00",
+    "last_check": "2026-10-31T05:21:49.475221+00:00",
+    "load_ranges": [
+      {
+        "minimum": 4.5107421875,
+        "median": 4.97265625,
+        "maximum": 5.33935546875
+      },
+      {
+        "minimum": 14.10986328125,
+        "median": 14.68408203125,
+        "maximum": 15.08251953125
+      },
+      {
+        "minimum": 28.2080078125,
+        "median": 28.6572265625,
+        "maximum": 28.9609375
+      }
+    ],
+    "private_unreduced_provenance_sha256": "a7bcef31292639e75807010641d51daa65627e3e1ba1c0e75bb4ddd8c7996db0"
+  },
+  "process_order": [
+    "0-distinct-128-warm-baseline",
+    "0-distinct-128-warm-candidate",
+    "0-distinct-128-cold-candidate",
+    "0-distinct-128-cold-baseline",
+    "0-distinct-10000-warm-baseline",
+    "0-distinct-10000-warm-candidate",
+    "0-distinct-10000-cold-candidate",
+    "0-distinct-10000-cold-baseline",
+    "0-constant-128-warm-baseline",
+    "0-constant-128-warm-candidate",
+    "0-constant-128-cold-candidate",
+    "0-constant-128-cold-baseline",
+    "0-constant-10000-warm-baseline",
+    "0-constant-10000-warm-candidate",
+    "0-constant-10000-cold-candidate",
+    "0-constant-10000-cold-baseline",
+    "0-constant-source-128-warm-baseline",
+    "0-constant-source-128-warm-candidate",
+    "0-constant-source-128-cold-candidate",
+    "0-constant-source-128-cold-baseline",
+    "0-constant-source-10000-warm-baseline",
+    "0-constant-source-10000-warm-candidate",
+    "0-constant-source-10000-cold-candidate",
+    "0-constant-source-10000-cold-baseline",
+    "0-group-128-warm-baseline",
+    "0-group-128-warm-candidate",
+    "0-group-128-cold-candidate",
+    "0-group-128-cold-baseline",
+    "0-group-10000-warm-baseline",
+    "0-group-10000-warm-candidate",
+    "0-group-10000-cold-candidate",
+    "0-group-10000-cold-baseline",
+    "0-nullable-128-warm-baseline",
+    "0-nullable-128-warm-candidate",
+    "0-nullable-128-cold-candidate",
+    "0-nullable-128-cold-baseline",
+    "0-nullable-10000-warm-baseline",
+    "0-nullable-10000-warm-candidate",
+    "0-nullable-10000-cold-candidate",
+    "0-nullable-10000-cold-baseline",
+    "0-point-128-warm-baseline",
+    "0-point-128-warm-candidate",
+    "0-point-128-cold-candidate",
+    "0-point-128-cold-baseline",
+    "0-point-10000-warm-baseline",
+    "0-point-10000-warm-candidate",
+    "0-point-10000-cold-candidate",
+    "0-point-10000-cold-baseline",
+    "0-computed-128-warm-baseline",
+    "0-computed-128-warm-candidate",
+    "0-computed-128-cold-candidate",
+    "0-computed-128-cold-baseline",
+    "0-computed-10000-warm-baseline",
+    "0-computed-10000-warm-candidate",
+    "0-computed-10000-cold-candidate",
+    "0-computed-10000-cold-baseline",
+    "0-schema-128-warm-baseline",
+    "0-schema-128-warm-candidate",
+    "0-schema-128-cold-candidate",
+    "0-schema-128-cold-baseline",
+    "0-schema-10000-warm-baseline",
+    "0-schema-10000-warm-candidate",
+    "0-schema-10000-cold-candidate",
+    "0-schema-10000-cold-baseline",
+    "1-constant-128-cold-candidate",
+    "1-constant-128-cold-baseline",
+    "1-constant-10000-warm-baseline",
+    "1-constant-10000-warm-candidate",
+    "1-constant-10000-cold-candidate",
+    "1-constant-10000-cold-baseline",
+    "1-constant-source-128-warm-baseline",
+    "1-constant-source-128-warm-candidate",
+    "1-constant-source-128-cold-candidate",
+    "1-constant-source-128-cold-baseline",
+    "1-constant-source-10000-warm-baseline",
+    "1-constant-source-10000-warm-candidate",
+    "1-constant-source-10000-cold-candidate",
+    "1-constant-source-10000-cold-baseline",
+    "1-group-128-warm-baseline",
+    "1-group-128-warm-candidate",
+    "1-group-128-cold-candidate",
+    "1-group-128-cold-baseline",
+    "1-group-10000-warm-baseline",
+    "1-group-10000-warm-candidate",
+    "1-group-10000-cold-candidate",
+    "1-group-10000-cold-baseline",
+    "1-nullable-128-warm-baseline",
+    "1-nullable-128-warm-candidate",
+    "1-nullable-128-cold-candidate",
+    "1-nullable-128-cold-baseline",
+    "1-nullable-10000-warm-baseline",
+    "1-nullable-10000-warm-candidate",
+    "1-nullable-10000-cold-candidate",
+    "1-nullable-10000-cold-baseline",
+    "1-point-128-warm-baseline",
+    "1-point-128-warm-candidate",
+    "1-point-128-cold-candidate",
+    "1-point-128-cold-baseline",
+    "1-point-10000-warm-baseline",
+    "1-point-10000-warm-candidate",
+    "1-point-10000-cold-candidate",
+    "1-point-10000-cold-baseline",
+    "1-computed-128-warm-baseline",
+    "1-computed-128-warm-candidate",
+    "1-computed-128-cold-candidate",
+    "1-computed-128-cold-baseline",
+    "1-computed-10000-warm-baseline",
+    "1-computed-10000-warm-candidate",
+    "1-computed-10000-cold-candidate",
+    "1-computed-10000-cold-baseline",
+    "1-schema-128-warm-baseline",
+    "1-schema-128-warm-candidate",
+    "1-schema-128-cold-candidate",
+    "1-schema-128-cold-baseline",
+    "1-schema-10000-warm-baseline",
+    "1-schema-10000-warm-candidate",
+    "1-schema-10000-cold-candidate",
+    "1-schema-10000-cold-baseline",
+    "1-distinct-128-warm-baseline",
+    "1-distinct-128-warm-candidate",
+    "1-distinct-128-cold-candidate",
+    "1-distinct-128-cold-baseline",
+    "1-distinct-10000-warm-baseline",
+    "1-distinct-10000-warm-candidate",
+    "1-distinct-10000-cold-candidate",
+    "1-distinct-10000-cold-baseline",
+    "1-constant-128-warm-baseline",
+    "1-constant-128-warm-candidate",
+    "2-constant-source-10000-warm-baseline",
+    "2-constant-source-10000-warm-candidate",
+    "2-constant-source-10000-cold-candidate",
+    "2-constant-source-10000-cold-baseline",
+    "2-group-128-warm-baseline",
+    "2-group-128-warm-candidate",
+    "2-group-128-cold-candidate",
+    "2-group-128-cold-baseline",
+    "2-group-10000-warm-baseline",
+    "2-group-10000-warm-candidate",
+    "2-group-10000-cold-candidate",
+    "2-group-10000-cold-baseline",
+    "2-nullable-128-warm-baseline",
+    "2-nullable-128-warm-candidate",
+    "2-nullable-128-cold-candidate",
+    "2-nullable-128-cold-baseline",
+    "2-nullable-10000-warm-baseline",
+    "2-nullable-10000-warm-candidate",
+    "2-nullable-10000-cold-candidate",
+    "2-nullable-10000-cold-baseline",
+    "2-point-128-warm-baseline",
+    "2-point-128-warm-candidate",
+    "2-point-128-cold-candidate",
+    "2-point-128-cold-baseline",
+    "2-point-10000-warm-baseline",
+    "2-point-10000-warm-candidate",
+    "2-point-10000-cold-candidate",
+    "2-point-10000-cold-baseline",
+    "2-computed-128-warm-baseline",
+    "2-computed-128-warm-candidate",
+    "2-computed-128-cold-candidate",
+    "2-computed-128-cold-baseline",
+    "2-computed-10000-warm-baseline",
+    "2-computed-10000-warm-candidate",
+    "2-computed-10000-cold-candidate",
+    "2-computed-10000-cold-baseline",
+    "2-schema-128-warm-baseline",
+    "2-schema-128-warm-candidate",
+    "2-schema-128-cold-candidate",
+    "2-schema-128-cold-baseline",
+    "2-schema-10000-warm-baseline",
+    "2-schema-10000-warm-candidate",
+    "2-schema-10000-cold-candidate",
+    "2-schema-10000-cold-baseline",
+    "2-distinct-128-warm-baseline",
+    "2-distinct-128-warm-candidate",
+    "2-distinct-128-cold-candidate",
+    "2-distinct-128-cold-baseline",
+    "2-distinct-10000-warm-baseline",
+    "2-distinct-10000-warm-candidate",
+    "2-distinct-10000-cold-candidate",
+    "2-distinct-10000-cold-baseline",
+    "2-constant-128-warm-baseline",
+    "2-constant-128-warm-candidate",
+    "2-constant-128-cold-candidate",
+    "2-constant-128-cold-baseline",
+    "2-constant-10000-warm-baseline",
+    "2-constant-10000-warm-candidate",
+    "2-constant-10000-cold-candidate",
+    "2-constant-10000-cold-baseline",
+    "2-constant-source-128-warm-baseline",
+    "2-constant-source-128-warm-candidate",
+    "2-constant-source-128-cold-candidate",
+    "2-constant-source-128-cold-baseline"
+  ]
+}

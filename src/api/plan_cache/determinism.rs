@@ -117,8 +117,10 @@ fn scalar_is_deterministic(expression: &cypher::ScalarExpression) -> bool {
         | Scalar::IsNull { .. }
         | Scalar::ListFunction { .. }
         | Scalar::ListComprehension { .. }
+        | Scalar::List(_)
         | Scalar::ListIndex { .. }
-        | Scalar::ListSlice { .. } => true,
+        | Scalar::ListSlice { .. }
+        | Scalar::Path(_) => true,
     };
     values_are_deterministic && expression.kind.all_children(scalar_is_deterministic)
 }

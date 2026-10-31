@@ -63,17 +63,182 @@ fn procedure_yields_enforce_scopes_and_vector_hop_limits() {
 #[test]
 fn shortest_paths_do_not_discard_additional_predicates_or_projection_modifiers() {
     let matched = "MATCH p = (a:Node)-[:LINK* ALL SHORTEST 1..3]->(b:Node)";
-    for tail in [
-        "WHERE a.id = 1 AND b.id = 2 AND a.active = true RETURN length(p) AS hops",
-        "WHERE a.id = 1 AND a.id = 3 AND b.id = 2 RETURN length(p) AS hops",
-        "WHERE a.id = 1 AND b.id = 2 RETURN length(p) AS hops LIMIT 1",
-        "WHERE a.id = 1 AND b.id = 2 RETURN length(other) AS hops",
+    // Shapes the endpoint-id operator cannot represent use the general
+    // shortest-path step, which keeps every predicate and modifier.
+    for (tail, needle) in [
+        (
+            "WHERE a.id = 1 AND b.id = 2 AND a.active = true RETURN length(p) AS hops",
+            "active",
+        ),
+        (
+            "WHERE a.id = 1 AND a.id = 3 AND b.id = 2 RETURN length(p) AS hops",
+            "Int(3)",
+        ),
+        (
+            "WHERE a.id = 1 AND b.id = 2 RETURN length(p) AS hops LIMIT 1",
+            "Limit",
+        ),
     ] {
         let query = format!("{matched} {tail}");
+        let plan = plan_pipeline_query(&query, &BTreeMap::new()).unwrap();
+        let text = format!("{plan:?}");
+        assert!(!matches!(plan, LogicalPlan::ShortestPath { .. }), "{query}");
         assert!(
-            plan_pipeline_query(&query, &BTreeMap::new()).is_err(),
+            text.contains("ShortestPath(GraphMatchShortestPath"),
             "{query}"
         );
+        assert!(text.contains(needle), "{query}: {text}");
+    }
+    let query = format!("{matched} WHERE a.id = 1 AND b.id = 2 RETURN length(other) AS hops");
+    assert!(plan_pipeline_query(&query, &BTreeMap::new()).is_err());
+}
+
+fn shortest_steps(plan: &LogicalPlan, steps: &mut Vec<GraphMatchShortestPath>) {
+    if let LogicalPlan::GraphMatch { program, input } = plan {
+        for step in &program.steps {
+            if let GraphMatchStep::ShortestPath(step) = step {
+                steps.push((**step).clone());
+            }
+        }
+        if let Some(input) = input {
+            shortest_steps(input, steps);
+        }
+        return;
+    }
+    let text = format!("{plan:?}");
+    if !text.contains("GraphMatch") {
+        return;
+    }
+    match plan {
+        LogicalPlan::Project { input, .. }
+        | LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Distinct { input }
+        | LogicalPlan::Aggregate { input, .. } => shortest_steps(input, steps),
+        _ => {}
+    }
+}
+
+#[test]
+fn shortest_path_functions_bind_correlated_steps() {
+    let parameters = BTreeMap::from([
+        ("a".to_string(), Value::Int(1)),
+        ("b".to_string(), Value::Int(2)),
+    ]);
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}) OPTIONAL MATCH path = shortestPath((p1)-[:KNOWS*]-(p2)) RETURN CASE path IS NULL WHEN true THEN -1 ELSE length(path) END AS len",
+        &parameters,
+    )
+    .unwrap();
+    let mut steps = Vec::new();
+    shortest_steps(&plan, &mut steps);
+    assert_eq!(
+        steps,
+        vec![GraphMatchShortestPath {
+            path: "path".into(),
+            source: "p1".into(),
+            target: "p2".into(),
+            rel_type: "KNOWS".into(),
+            direction: RelationshipDirection::Undirected,
+            min_hops: 1,
+            max_hops: MAX_SHORTEST_PATH_HOPS,
+            bounded: false,
+            selection: ShortestPathSelection::Any,
+        }]
+    );
+    let text = format!("{plan:?}");
+    assert!(text.contains("optional: true"), "{text}");
+    assert!(
+        text.contains("Path { function: Length, column: \"path\" }"),
+        "{text}"
+    );
+
+    let plan = plan_pipeline_query(
+        "MATCH (a:Item), (b:Item) WHERE a.id = 1 AND b.id = 2 MATCH p = allShortestPaths((a)<-[:LINK*0..4]-(b)) RETURN properties(nodes(p), 'id') AS ids, relationships(p) AS rels",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let mut steps = Vec::new();
+    shortest_steps(&plan, &mut steps);
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].selection, ShortestPathSelection::All);
+    assert_eq!(steps[0].direction, RelationshipDirection::Incoming);
+    assert_eq!((steps[0].min_hops, steps[0].max_hops), (0, 4));
+    assert!(steps[0].bounded);
+}
+
+#[test]
+fn required_shortest_path_clauses_bind_endpoints_before_searching() {
+    let plan = plan_pipeline_query(
+        "MATCH p = shortestPath((a:Item)-[:LINK*]->(b:Item)) WHERE a.id = 1 AND b.id = 2 RETURN length(p) AS hops",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let LogicalPlan::Project { input, .. } = &plan else {
+        panic!("expected projection: {plan:?}");
+    };
+    let LogicalPlan::GraphMatch {
+        program,
+        input: Some(endpoints),
+    } = input.as_ref()
+    else {
+        panic!("expected path program: {input:?}");
+    };
+    // Endpoint conjuncts filter before the search; the search has no predicate.
+    assert_eq!(program.introduced, vec!["p".to_string()]);
+    assert!(program.predicate.is_none(), "{:?}", program.predicate);
+    let LogicalPlan::GraphMatch { program, .. } = endpoints.as_ref() else {
+        panic!("expected endpoint program: {endpoints:?}");
+    };
+    assert_eq!(program.introduced, vec!["a".to_string(), "b".to_string()]);
+    let endpoint_predicate = format!("{:?}", program.predicate);
+    assert!(
+        !endpoint_predicate.contains("Length"),
+        "{endpoint_predicate}"
+    );
+}
+
+#[test]
+fn shortest_path_binding_rejects_unsupported_shapes() {
+    for (query, message) in [
+        (
+            "MATCH p = shortestPath((a:Item)-[:LINK*]->(b:Item {id: 2})) RETURN length(p)",
+            "endpoint 'a' must be bound",
+        ),
+        (
+            "MATCH (a:Item {id: 1}), (b:Item {id: 2}) MATCH p = shortestPath((a)-[:LINK*2..3]->(b)) RETURN length(p)",
+            "minimum of 0 or 1",
+        ),
+        (
+            "MATCH (a:Item {id: 1}), (b:Item {id: 2}) MATCH p = shortestPath((a)-[:LINK*]->(b)) WHERE length(p) > 1 RETURN p",
+            "filter after the search with `WITH p WHERE ...`",
+        ),
+        (
+            "MATCH (a:Item {id: 1}), (b:Item {id: 2}) OPTIONAL MATCH p = allShortestPaths((a)-[:LINK*]-(b)) WHERE a.id = 1 AND length(p) > 1 RETURN p",
+            "shortest-path variable 'p'",
+        ),
+        (
+            "MATCH (a:Item {id: 1}), (b:Item {id: 2}) MATCH p = shortestPath((a)-[:LINK*1..257]->(b)) RETURN length(p)",
+            "exceeds the limit of 256",
+        ),
+        (
+            "MATCH (a:Item {id: 1}), (b:Item {id: 2}) MATCH p = shortestPath((a)-[:LINK* {w: 1}]->(b)) RETURN length(p)",
+            "relationship property patterns",
+        ),
+        (
+            "MATCH (a:Item {id: 1}), (b:Item {id: 2}) MATCH a = shortestPath((a)-[:LINK*]->(b)) RETURN 1",
+            "already bound",
+        ),
+        (
+            "MATCH (a:Item {id: 1})-[:LINK*1..2]->(b:Item) RETURN length(a)",
+            "path function requires a path",
+        ),
+    ] {
+        let error = plan_pipeline_query(query, &BTreeMap::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(message), "{query}: {error}");
     }
 }
 

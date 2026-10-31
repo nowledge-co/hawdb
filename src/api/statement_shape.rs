@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::cypher::{
-    AggregateExpression, ArithmeticOp, ClauseKind, PathSearch, ProcedureCallKind, QueryPipeline,
+    AggregateExpression, ArithmeticOp, ClauseKind, ProcedureCallKind, QueryPipeline,
     ReturnExpressionKind,
 };
 
@@ -99,7 +99,7 @@ pub(super) fn pipeline_statement_kind(query: &QueryPipeline) -> &'static str {
                 pattern
                     .steps
                     .iter()
-                    .any(|step| step.relationship.search == PathSearch::AllShortest)
+                    .any(|step| step.relationship.search.is_shortest())
             });
         }
     }

@@ -112,3 +112,12 @@ pub use vector::{
     AdaptiveVectorBackendPolicy, PlannedVectorSearch, VectorCompressionPreference, VectorPlanError,
     VectorPlanProperties,
 };
+
+pub use hawdb_cascades::qualification::{
+    InvalidOptimizerCostPerturbation, OptimizerCostPerturbation, OptimizerQualificationOptions,
+    OptionalOptimizerRule,
+};
+
+pub use hawdb_cascades::qualification::{
+    verify_optimizer_rule_assertions, OptimizerRuleAssertion, OptimizerRuleAssertionError,
+};

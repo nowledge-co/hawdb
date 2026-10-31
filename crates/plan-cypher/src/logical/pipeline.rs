@@ -112,6 +112,8 @@ enum BindingType {
     },
     Scalar,
     UnmaterializedPath,
+    /// A path value column bound by a shortest-path pattern.
+    Path,
 }
 
 #[derive(Clone, Default)]
@@ -134,6 +136,7 @@ impl Scope {
                 matches!(
                     kind,
                     BindingType::Scalar
+                        | BindingType::Path
                         | BindingType::Graph {
                             column: Some(_),
                             ..
@@ -231,12 +234,21 @@ fn bind_pipeline(
     ) {
         return procedure::bind_procedure_pipeline(query, parameters);
     }
+    path::reject_shortest_path_predicates(&query.clauses)?;
+    // The original endpoint-id `ALL SHORTEST` MATCH ... RETURN shape keeps its
+    // dedicated operator and results. Every other shortest-path pattern is
+    // bound as a correlated MATCH step. When neither binder accepts the query,
+    // report the original binder's error so existing refusals are unchanged.
     if query.clauses.iter().any(|clause| {
         matches!(&clause.kind,
         ClauseKind::Match { patterns, .. } if patterns.iter().any(|pattern|
             pattern.steps.iter().any(|step| step.relationship.search == PathSearch::AllShortest)))
     }) {
-        return path::bind_shortest_path_pipeline(query, parameters);
+        return match path::bind_shortest_path_pipeline(query, parameters) {
+            Ok(plan) => Ok(plan),
+            Err(legacy) => bind_read_clauses(&query.clauses, None, Scope::default(), parameters)
+                .map_err(|_| legacy),
+        };
     }
     bind_read_clauses(&query.clauses, None, Scope::default(), parameters)
 }
@@ -1141,6 +1153,22 @@ fn bind_read_clauses(
                 optional,
                 patterns,
                 predicate,
+            } if patterns.iter().any(path::is_shortest_path_pattern) => {
+                input = Some(path::bind_shortest_path_match(
+                    path::ShortestPathMatch {
+                        optional: *optional,
+                        patterns,
+                        predicate: predicate.as_ref(),
+                    },
+                    input.take(),
+                    &mut scope,
+                    parameters,
+                )?);
+            }
+            ClauseKind::Match {
+                optional,
+                patterns,
+                predicate,
             } => {
                 let imports = scope.imports();
                 let mut introduced = Vec::new();
@@ -1161,7 +1189,7 @@ fn bind_read_clauses(
                     if pattern
                         .steps
                         .iter()
-                        .any(|step| step.relationship.search == PathSearch::AllShortest)
+                        .any(|step| step.relationship.search.is_shortest())
                     {
                         return Err(HawDBError::Semantic(
                             "path binding requires shortest-path lowering".to_string(),
@@ -1301,6 +1329,7 @@ fn bind_projection(
                     kind: *kind,
                     column: Some(name.clone()),
                 },
+                Some(BindingType::Path) => BindingType::Path,
                 _ => BindingType::Scalar,
             },
             _ => BindingType::Scalar,

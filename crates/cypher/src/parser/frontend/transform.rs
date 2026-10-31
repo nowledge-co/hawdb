@@ -161,9 +161,13 @@ fn control_statement(statement: &Statement) -> bool {
 
 pub(super) fn admit_optional(pipeline: &QueryPipeline) -> std::result::Result<(), &'static str> {
     if !super::super::Parser::is_multi_stage_pipeline(pipeline)
-        && pipeline.clauses.iter().any(|clause| matches!(&clause.kind,
+        && pipeline.clauses.iter().any(|clause| {
+            matches!(&clause.kind,
             ClauseKind::Match { optional: true, patterns, .. } if patterns.iter().any(|pattern|
-                pattern.steps.iter().any(|step| step.relationship.min_hops != 1 || step.relationship.max_hops != 1)))) {
+                pattern.steps.iter().any(|step| !step.relationship.search.is_shortest()
+                    && (step.relationship.min_hops != 1 || step.relationship.max_hops != 1))))
+        })
+    {
         return Err("OPTIONAL MATCH supports only one-hop relationships");
     }
     Ok(())

@@ -383,6 +383,14 @@ fn estimate_local_operator_cost(
                 let (node, expanding) = match step {
                     hawdb_plan_cypher::GraphMatchStep::Node(node) => (node, false),
                     hawdb_plan_cypher::GraphMatchStep::Expand { target, .. } => (target, true),
+                    // A search may visit every relationship of its type for
+                    // each endpoint pair; it keeps the row count of its input.
+                    hawdb_plan_cypher::GraphMatchStep::ShortestPath(step) => {
+                        work = work.saturating_add(rows.saturating_mul(
+                            catalog.traversable_relationship_count(&step.rel_type),
+                        ));
+                        continue;
+                    }
                 };
                 let newly_bound =
                     bound.insert(&node.variable) && program.introduced.contains(&node.variable);

@@ -174,8 +174,10 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         | ProjectionExpression::ListFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::LocalVariable { .. }
+        | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
-        | ProjectionExpression::ListSlice { .. } => {}
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::Path { .. } => {}
     }
 }
 

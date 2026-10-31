@@ -225,6 +225,23 @@ pub enum ShortestPathReturnExpression {
     Length {
         path_variable: String,
     },
+    Nodes {
+        path_variable: String,
+    },
+    Relationships {
+        path_variable: String,
+    },
+}
+
+impl ShortestPathReturnExpression {
+    pub fn path_variable(&self) -> &str {
+        match self {
+            Self::NodePropertyList { path_variable, .. }
+            | Self::Length { path_variable }
+            | Self::Nodes { path_variable }
+            | Self::Relationships { path_variable } => path_variable,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -417,6 +434,20 @@ pub enum ValueExpressionKind {
     Timestamp(Box<ValueExpression>),
 }
 
+impl ValueExpressionKind {
+    /// True when the value reads a row binding (`variable.property`), which
+    /// only mutation `UNWIND` contexts can bind; scalar contexts parse such
+    /// lists as [`ScalarExpressionKind::List`] instead.
+    pub fn reads_row_binding(&self) -> bool {
+        match self {
+            Self::BindingProperty { .. } => true,
+            Self::List(values) => values.iter().any(|value| value.kind.reads_row_binding()),
+            Self::Timestamp(value) => value.kind.reads_row_binding(),
+            Self::Literal(_) | Self::Parameter(_) | Self::CurrentTimestamp => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReturnItemKind {
     pub expression: ReturnExpression,
@@ -510,6 +541,10 @@ pub enum ScalarExpressionKind {
         expression: Box<ScalarExpression>,
         negated: bool,
     },
+    /// A list literal with at least one row-bound element, such as
+    /// `[n, m.name, $p]`. Lists of constants and parameters stay
+    /// [`ScalarExpressionKind::Value`] so they keep value-list fast paths.
+    List(Vec<ScalarExpression>),
     /// `size`, `head`, `last`, `tail`, `reverse` or `range`.
     ListFunction {
         function: hawdb_core::ListFunction,
@@ -536,6 +571,9 @@ pub enum ScalarExpressionKind {
         start: Option<Box<ScalarExpression>>,
         end: Option<Box<ScalarExpression>>,
     },
+    /// `length(p)`, `nodes(p)`, `relationships(p)` or
+    /// `properties(nodes(p), 'key')` over a bound path variable.
+    Path(ShortestPathReturnExpression),
 }
 
 /// A projection or grouping expression, with aggregation explicit in its type.
@@ -721,6 +759,7 @@ impl ScalarExpressionKind {
             | Self::Left { expression, .. }
             | Self::JsonValue { expression, .. } => visit(expression),
             Self::Coalesce(expressions)
+            | Self::List(expressions)
             | Self::ListFunction {
                 arguments: expressions,
                 ..

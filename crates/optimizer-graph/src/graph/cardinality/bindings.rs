@@ -105,6 +105,8 @@ impl<'a> PlanBindings<'a> {
                 }
                 for step in &program.steps {
                     let node = match step {
+                        // Path endpoints are bound by preceding Node steps.
+                        hawdb_plan_cypher::GraphMatchStep::ShortestPath(_) => continue,
                         hawdb_plan_cypher::GraphMatchStep::Node(node) => node,
                         hawdb_plan_cypher::GraphMatchStep::Expand {
                             target,

@@ -112,7 +112,15 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
         | E::ColumnProperty {
             column: variable,
             property,
+        }
+        | E::Path {
+            function: PathFunction::NodeProperties(property),
+            column: variable,
         } => variable.capacity().checked_add(property.capacity()),
+        E::Path {
+            function: PathFunction::Length | PathFunction::Nodes | PathFunction::Relationships,
+            column,
+        } => Some(column.capacity()),
         E::Literal(value) => value_bytes(value),
         E::Coalesce(values) => vector(values, expression_bytes),
         E::Lower(value)
@@ -230,6 +238,7 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
             value_bytes(non_empty),
             value_bytes(null_or_empty),
         ]),
+        E::List(elements) => vector(elements, expression_bytes),
         E::ListFunction {
             function: _,
             arguments,

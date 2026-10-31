@@ -27,7 +27,7 @@ use hawdb_core::{
     Catalog, HawDBError, RelationshipDirection, Result, RuntimeTaskContext, Value, ValueRef,
 };
 use hawdb_plan_cypher::{
-    CoalesceDifferenceProjectionTerm, ComparisonOp, DatePart, Predicate, Projection,
+    CoalesceDifferenceProjectionTerm, ComparisonOp, DatePart, PathFunction, Predicate, Projection,
     ProjectionExpression, SortDirection, SortItem, SortKey,
 };
 use hawdb_storage::{mutation::PropertyFilter, NodeRecord, RelRecord};
