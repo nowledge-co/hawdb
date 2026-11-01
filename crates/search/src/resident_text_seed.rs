@@ -26,6 +26,9 @@ pub struct SearchResidentTextSeedOutput {
     scores: BTreeMap<String, f64>,
     pub corpus_document_count: usize,
     pub matching_document_count: usize,
+    /// Analyzed query terms not scored because the query exceeded the
+    /// scored-term cap; the most selective terms were kept.
+    pub dropped_query_term_count: usize,
     _memory: Option<QueryMemoryLease>,
 }
 
@@ -105,6 +108,7 @@ impl SearchIndex {
                 scores: BTreeMap::new(),
                 corpus_document_count: 0,
                 matching_document_count: 0,
+                dropped_query_term_count: 0,
                 _memory: None,
             });
         }
@@ -135,11 +139,8 @@ impl SearchIndex {
             if query_terms.contains_key(term.as_str()) {
                 return Ok(());
             }
-            if query_terms.len() >= self.lexical_config.max_query_terms.get() {
-                return Err(HawDBError::Storage(format!(
-                    "lexical query produced more than {} terms",
-                    self.lexical_config.max_query_terms
-                )));
+            if query_terms.len() >= self.lexical_config.analyzed_query_term_limit() {
+                return Err(self.lexical_config.analyzed_query_term_error());
             }
             term_nodes.grow(size_of::<(String, usize)>() + 128 + term.len())?;
             let index = query_terms.len();
@@ -151,6 +152,7 @@ impl SearchIndex {
                 scores: BTreeMap::new(),
                 corpus_document_count: 0,
                 matching_document_count: 0,
+                dropped_query_term_count: 0,
                 _memory: None,
             });
         }
@@ -161,10 +163,16 @@ impl SearchIndex {
                 .checked_mul(size_of::<&str>() + 128)
                 .ok_or_else(|| HawDBError::Execution("text term reference size overflow".into()))?;
             let _term_refs_memory = memory.reserve(term_ref_bytes)?;
-            let terms = query_terms
+            let mut terms = query_terms
                 .keys()
                 .map(String::as_str)
                 .collect::<BTreeSet<_>>();
+            let selection = projection.fit_query_terms(
+                &mut terms,
+                &delta,
+                self.lexical_config.max_term_bytes,
+                Some(context),
+            )?;
             let scored = projection.score_terms_with_stable_filter(
                 &terms,
                 ScoringInputs {
@@ -194,6 +202,7 @@ impl SearchIndex {
                 scores: scored.report.scores,
                 corpus_document_count: self.documents.len(),
                 matching_document_count: scored.report.matching_document_count,
+                dropped_query_term_count: selection.dropped(),
                 _memory: scored._memory,
             });
         }
@@ -229,6 +238,34 @@ impl SearchIndex {
                 }
             }
         }
+        // Unscored terms are zeroed so the BM25 loop below skips them.
+        let dropped_query_term_count = if query_terms.len()
+            > self.lexical_config.max_query_terms.get()
+        {
+            let term_ref_bytes = query_terms
+                .len()
+                .checked_mul(size_of::<&str>() + 128)
+                .ok_or_else(|| HawDBError::Execution("text term reference size overflow".into()))?;
+            let _term_refs_memory = memory.reserve(term_ref_bytes)?;
+            let mut selected = query_terms
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            let selection = crate::lexical_projection::retain_most_selective_terms(
+                &mut selected,
+                self.lexical_config.max_query_terms,
+                |term| document_frequency[query_terms[term]] as u64,
+                Some(context),
+            )?;
+            for (term, index) in &query_terms {
+                if !selected.contains(term.as_str()) {
+                    document_frequency[*index] = 0;
+                }
+            }
+            selection.dropped()
+        } else {
+            0
+        };
         let average_document_len = if corpus_document_count == 0 {
             0.0
         } else {
@@ -288,6 +325,7 @@ impl SearchIndex {
             scores,
             corpus_document_count,
             matching_document_count,
+            dropped_query_term_count,
             _memory: retained_memory,
         })
     }
@@ -745,6 +783,169 @@ mod tests {
         );
         drop(output);
         assert_eq!(measured_ledger.snapshot().used_bytes, 0);
+        drop(index);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    fn long_query_rows() -> Vec<SearchProjectionRow> {
+        // `lexeme{k}` occurs in the first k + 1 rows, ordering its frequency.
+        (0..24)
+            .map(|number| SearchProjectionRow {
+                kind: SearchProjectionKind::Memory,
+                external_id: format!("{number:02}"),
+                title: format!("note {number}"),
+                body: (number..24)
+                    .map(|k| format!("lexeme{k}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                embedding: None,
+                source_id: None,
+                metadata: BTreeMap::new(),
+            })
+            .collect()
+    }
+
+    fn long_query_text() -> String {
+        (0..24)
+            .map(|k| format!("lexeme{k}"))
+            .chain((0..40).map(|k| format!("absent{k}")))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn resident_long_text_seed_scores_its_most_selective_terms() {
+        let mut index = SearchIndex::in_memory();
+        for row in long_query_rows() {
+            index.upsert_projection_row(row).unwrap();
+        }
+        let query = long_query_text();
+        let analyzed = crate::tokenize(&query, &index.analyzer_lexicon);
+        let limit = index.lexical_config.max_query_terms.get();
+        assert!(analyzed.len() > limit, "{} analyzed terms", analyzed.len());
+        let corpus =
+            TextCorpusStats::from_documents(index.documents.values(), &index.analyzer_lexicon);
+        let mut ranked = analyzed
+            .iter()
+            .map(|term| match corpus.document_frequency.get(term).copied() {
+                None | Some(0) => (usize::MAX, term.clone()),
+                Some(frequency) => (frequency, term.clone()),
+            })
+            .collect::<Vec<_>>();
+        ranked.sort();
+        let selected = ranked
+            .into_iter()
+            .take(limit)
+            .map(|(_, term)| term)
+            .collect::<BTreeSet<_>>();
+        let expected = index
+            .documents
+            .values()
+            .map(|document| {
+                (
+                    document.id.clone(),
+                    bm25_score(&selected, document, &corpus, &index.analyzer_lexicon),
+                )
+            })
+            .filter(|(_, score)| *score > 0.0)
+            .collect::<BTreeMap<_, _>>();
+        let budget = NonZeroUsize::new(4 << 20).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let account = ledger.account(QueryMemoryClass::ExternalRead, "long text seed", budget);
+        let output = index
+            .text_seed_scores_with_context(
+                &query,
+                &BTreeMap::new(),
+                24,
+                &account,
+                &RuntimeTaskContext::default(),
+            )
+            .unwrap();
+        assert_eq!(output.dropped_query_term_count, analyzed.len() - limit);
+        assert_eq!(output.scores().len(), expected.len());
+        for (id, score) in output.scores() {
+            assert!((score - expected[id]).abs() < 1e-12, "{id}");
+        }
+        drop(output);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn persisted_resident_long_query_search_and_seed_keep_selective_terms() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = crate::test_temp_dir().join(format!(
+            "resident-long-query-{}-{nonce}",
+            std::process::id()
+        ));
+        let mut index = SearchIndex::open(&path).unwrap();
+        for row in long_query_rows() {
+            index.upsert_projection_row(row).unwrap();
+        }
+        index.checkpoint().unwrap();
+        drop(index);
+        let index = SearchIndex::open(&path).unwrap();
+        assert!(index.lexical_snapshot().is_some());
+        let query = long_query_text();
+        let analyzed = crate::tokenize(&query, &index.analyzer_lexicon).len();
+        let limit = index.lexical_config.max_query_terms.get();
+        assert!(analyzed > limit);
+        let searched = index
+            .try_search_with_options(
+                &query,
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 24,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
+        assert!(searched
+            .fallback_reason_codes
+            .contains(&SearchFallbackReasonCode::TextQueryTermsReduced));
+        assert!(searched
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason.contains(&format!("dropped {}", analyzed - limit))));
+        assert!(searched
+            .hits
+            .iter()
+            .flat_map(|hit| &hit.matched_terms)
+            .all(|term| !term.contains("absent")));
+        let expected = searched
+            .hits
+            .into_iter()
+            .map(|hit| (hit.id, hit.text_score.to_bits()))
+            .collect::<BTreeMap<_, _>>();
+        assert!(!expected.is_empty());
+        let budget = NonZeroUsize::new(4 << 20).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let account = ledger.account(QueryMemoryClass::ExternalRead, "long persisted", budget);
+        let seeded = index
+            .text_seed_scores_with_context(
+                &query,
+                &BTreeMap::new(),
+                24,
+                &account,
+                &RuntimeTaskContext::default(),
+            )
+            .unwrap();
+        assert_eq!(seeded.dropped_query_term_count, analyzed - limit);
+        let actual = seeded
+            .scores()
+            .iter()
+            .map(|(id, score)| (id.clone(), score.to_bits()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(actual, expected);
+        drop(seeded);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
         drop(index);
         std::fs::remove_dir_all(path).unwrap();
     }

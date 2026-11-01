@@ -28,6 +28,9 @@ pub struct SearchTextSeedReport {
     pub source_graph_commit_epoch: Option<u64>,
     pub corpus_document_count: usize,
     pub normalized_term_count: usize,
+    /// Analyzed terms not scored because the query exceeded the scored-term
+    /// cap; the lowest-document-frequency terms were kept.
+    pub dropped_term_count: usize,
     pub matching_document_count: usize,
     pub returned_count: usize,
     pub postings_visited: u64,
@@ -122,6 +125,7 @@ impl SearchOutOfCoreReader {
             source_graph_commit_epoch: self.manifest.source_graph_commit_epoch,
             corpus_document_count: self.manifest.document_count,
             normalized_term_count: 0,
+            dropped_term_count: 0,
             matching_document_count: 0,
             returned_count: 0,
             postings_visited: 0,
@@ -138,7 +142,7 @@ impl SearchOutOfCoreReader {
             });
         }
         let max_term_bytes = self.lexical_term_policy.max_term_bytes();
-        let terms = self
+        let mut terms = self
             .primary_segment()
             .lexical_projection
             .tokenize_accounted(query_text, &self.analyzer_lexicon, max_term_bytes, context)?;
@@ -166,6 +170,13 @@ impl SearchOutOfCoreReader {
             ));
         }
         report.bytes_read = statistics.statistics.bytes_read();
+        report.dropped_term_count = crate::lexical_projection::retain_most_selective_terms(
+            &mut terms.terms,
+            self.primary_segment().lexical_projection.max_query_terms(),
+            |term| statistics.statistics.document_frequency(term),
+            Some(context),
+        )?
+        .dropped();
         let delta = crate::LexicalMiniDelta::default();
         let mut collector = ScoreCollector::new(
             (!complete).then_some(max_candidates),

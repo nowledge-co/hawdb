@@ -6,7 +6,10 @@
 
 use super::*;
 use crate::build_memory::{checked_add, MAP_ENTRY_BYTES, SET_ENTRY_BYTES};
-use crate::lexical_projection::{AccountedCorpusStatistics, QueryContext, ScoringInputs};
+use crate::lexical_projection::{
+    retain_most_selective_terms, AccountedCorpusStatistics, QueryContext, QueryTermSelection,
+    ScoringInputs,
+};
 use hawdb_executor::QueryMemoryLease;
 use hawdb_optimizer_predicate::{SearchPredicateConstructionError, SearchPredicateSet};
 
@@ -83,6 +86,21 @@ pub(super) struct Terms {
     _memory: Option<QueryMemoryLease>,
 }
 
+enum QueryStatistics {
+    // The accounted variant keeps its query-memory charge alive with the map.
+    Accounted(AccountedCorpusStatistics),
+    Ordinary(LexicalCorpusStatistics),
+}
+
+impl QueryStatistics {
+    fn get(&self) -> &LexicalCorpusStatistics {
+        match self {
+            Self::Accounted(accounted) => &accounted.statistics,
+            Self::Ordinary(statistics) => statistics,
+        }
+    }
+}
+
 pub(super) struct TextScores {
     pub(super) values: BTreeMap<String, f64>,
     pub(super) matching_count: usize,
@@ -139,15 +157,12 @@ impl SearchOutOfCoreReader {
         Ok(terms)
     }
 
-    pub(super) fn query_text_scores(
+    /// Corpus statistics over every live segment, net of visible retractions.
+    fn query_statistics(
         &self,
         terms: &BTreeSet<String>,
-        retained_limit: Option<usize>,
-        prune: bool,
-        candidates: &CandidateSet<'_>,
-        metrics: &mut SearchOutOfCoreMetrics,
         context: Option<QueryContext<'_>>,
-    ) -> Result<TextScores> {
+    ) -> Result<QueryStatistics> {
         let mut accounted = context
             .map(|context| {
                 AccountedCorpusStatistics::aggregate(
@@ -188,6 +203,45 @@ impl SearchOutOfCoreReader {
                 statistics.retract_streamed(retractions)?;
             }
         }
+        Ok(match (accounted, ordinary) {
+            (Some(accounted), _) => QueryStatistics::Accounted(accounted),
+            (None, Some(ordinary)) => QueryStatistics::Ordinary(ordinary),
+            (None, None) => unreachable!("query statistics are always computed"),
+        })
+    }
+
+    /// Fits analyzed terms to the scored-term cap by keeping the lowest
+    /// live-corpus document frequencies, which are the terms BM25 weighs most.
+    pub(super) fn select_query_terms(
+        &self,
+        terms: &mut BTreeSet<String>,
+        context: Option<QueryContext<'_>>,
+    ) -> Result<QueryTermSelection> {
+        let limit = self.primary_segment().lexical_projection.max_query_terms();
+        if terms.len() <= limit.get() {
+            return Ok(QueryTermSelection::unchanged(terms.len(), limit));
+        }
+        let statistics = self.query_statistics(terms, context)?;
+        let statistics = statistics.get();
+        retain_most_selective_terms(
+            terms,
+            limit,
+            |term| statistics.document_frequency(term),
+            context,
+        )
+    }
+
+    pub(super) fn query_text_scores(
+        &self,
+        terms: &BTreeSet<String>,
+        retained_limit: Option<usize>,
+        prune: bool,
+        candidates: &CandidateSet<'_>,
+        metrics: &mut SearchOutOfCoreMetrics,
+        context: Option<QueryContext<'_>>,
+    ) -> Result<TextScores> {
+        let statistics = self.query_statistics(terms, context)?;
+        let statistics = statistics.get();
         let mut output = TextScores {
             values: BTreeMap::new(),
             matching_count: 0,

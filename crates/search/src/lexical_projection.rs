@@ -57,6 +57,8 @@ pub(super) use query_context::AccountedQueryReport;
 pub(super) use query_context::{QueryContext, ScoringInputs};
 mod corpus_query;
 pub(super) use corpus_query::AccountedCorpusStatistics;
+mod query_term_selection;
+pub(crate) use query_term_selection::{retain_most_selective_terms, QueryTermSelection};
 mod raw_query;
 mod spill_control;
 #[cfg(test)]
@@ -233,6 +235,11 @@ pub(super) fn documents_digest(documents: &impl crate::resident_documents::Docum
     digest.finish()
 }
 
+/// Default scored-term cap for one lexical query.
+pub(crate) const DEFAULT_MAX_QUERY_TERMS: usize = 64;
+/// Default cap on distinct analyzed terms before scored-term selection.
+pub(crate) const DEFAULT_MAX_QUERY_ANALYZED_TERMS: usize = 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct LexicalProjectionConfig {
     pub max_manifest_bytes: NonZeroU64,
@@ -245,7 +252,10 @@ pub(super) struct LexicalProjectionConfig {
     pub max_term_bytes: NonZeroU64,
     pub max_document_tokens: NonZeroUsize,
     pub max_document_source_bytes: NonZeroU64,
+    /// Scored terms per query. Longer queries keep their most selective terms.
     pub max_query_terms: NonZeroUsize,
+    /// Distinct analyzed terms admitted before selection; exceeding it fails.
+    pub max_query_analyzed_terms: NonZeroUsize,
     pub query_memory_bytes: NonZeroU64,
     pub max_query_score_entries: NonZeroUsize,
     pub mini_delta_bytes: NonZeroU64,
@@ -254,6 +264,22 @@ pub(super) struct LexicalProjectionConfig {
     /// changes `matching_document_count` (`LexicalQueryReport`), which the text
     /// route uses as its total hit count.
     pub pruning_min_postings: u64,
+}
+
+impl LexicalProjectionConfig {
+    /// Analyzed terms admitted for selection, never fewer than the scored cap.
+    pub(crate) fn analyzed_query_term_limit(&self) -> usize {
+        self.max_query_analyzed_terms
+            .get()
+            .max(self.max_query_terms.get())
+    }
+
+    pub(crate) fn analyzed_query_term_error(&self) -> HawDBError {
+        HawDBError::Storage(format!(
+            "lexical query produced more than {} analyzed terms (max_query_analyzed_terms)",
+            self.analyzed_query_term_limit()
+        ))
+    }
 }
 
 impl Default for LexicalProjectionConfig {
@@ -269,7 +295,8 @@ impl Default for LexicalProjectionConfig {
             max_term_bytes: crate::SearchLexicalTermPolicy::default().max_term_bytes(),
             max_document_tokens: NonZeroUsize::new(1_000_000).unwrap(),
             max_document_source_bytes: NonZeroU64::new(4 * 1024 * 1024).unwrap(),
-            max_query_terms: NonZeroUsize::new(32).unwrap(),
+            max_query_terms: NonZeroUsize::new(DEFAULT_MAX_QUERY_TERMS).unwrap(),
+            max_query_analyzed_terms: NonZeroUsize::new(DEFAULT_MAX_QUERY_ANALYZED_TERMS).unwrap(),
             query_memory_bytes: NonZeroU64::new(128 * 1024 * 1024).unwrap(),
             max_query_score_entries: NonZeroUsize::new(1_000_000).unwrap(),
             mini_delta_bytes: NonZeroU64::new(8 * 1024 * 1024).unwrap(),
@@ -1086,7 +1113,7 @@ impl LexicalCorpusStatistics {
         self.document_count
     }
 
-    fn document_frequency(&self, term: &str) -> u64 {
+    pub(crate) fn document_frequency(&self, term: &str) -> u64 {
         self.document_frequencies
             .get(term)
             .copied()
@@ -1425,11 +1452,8 @@ impl LexicalProjectionReader {
         visit_token_list(text, analyzer, |term, _| {
             admit_term_bytes(term.len() as u64, max_term_bytes)?;
             if !terms.contains(&term) {
-                if terms.len() >= self.config.max_query_terms.get() {
-                    return Err(HawDBError::Storage(format!(
-                        "lexical query produced more than {} terms",
-                        self.config.max_query_terms
-                    )));
+                if terms.len() >= self.config.analyzed_query_term_limit() {
+                    return Err(self.config.analyzed_query_term_error());
                 }
                 let requested = (term.len() as u64).saturating_add(32);
                 let next_bytes = retained_bytes.saturating_add(requested);
@@ -1495,12 +1519,8 @@ impl LexicalProjectionReader {
     ) -> Result<LexicalCorpusStatistics> {
         query_context::check(context)?;
         self.validate_term_limit(max_term_bytes)?;
-        if query_terms.len() > self.config.max_query_terms.get() {
-            return Err(HawDBError::Storage(format!(
-                "lexical query produced {} terms, exceeding {}",
-                query_terms.len(),
-                self.config.max_query_terms
-            )));
+        if query_terms.len() > self.config.analyzed_query_term_limit() {
+            return Err(self.config.analyzed_query_term_error());
         }
         for term in query_terms.iter().map(query_term) {
             admit_term_bytes(term.len() as u64, max_term_bytes)?;
@@ -1748,7 +1768,8 @@ impl LexicalProjectionReader {
         }
         if query_terms.len() > self.config.max_query_terms.get() {
             return Err(HawDBError::Storage(format!(
-                "lexical query produced {} terms, exceeding {}",
+                "lexical query scores {} terms, exceeding max_query_terms {}; \
+                 select the most selective terms first",
                 query_terms.len(),
                 self.config.max_query_terms
             )));

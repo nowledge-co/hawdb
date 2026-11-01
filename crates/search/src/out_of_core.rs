@@ -321,6 +321,14 @@ pub struct SearchOutOfCoreConfig {
     pub max_candidate_spill_bytes: NonZeroU64,
     pub max_candidate_block_bytes: NonZeroU64,
     pub max_score_entries: NonZeroUsize,
+    /// Scored lexical terms per query. A longer analyzed query keeps its
+    /// lowest-document-frequency (highest-IDF) terms and reports the
+    /// reduction as `text_query_terms_reduced` instead of failing.
+    pub max_lexical_query_terms: NonZeroUsize,
+    /// Distinct analyzed lexical terms admitted before that selection. It
+    /// bounds query normalization and statistics reads; exceeding it fails.
+    /// Values below `max_lexical_query_terms` are raised to it.
+    pub max_lexical_query_analyzed_terms: NonZeroUsize,
     pub max_vector_candidates: NonZeroUsize,
     pub max_vector_search_working_bytes: NonZeroUsize,
     pub max_vector_search_parallelism: NonZeroUsize,
@@ -346,6 +354,14 @@ impl Default for SearchOutOfCoreConfig {
             max_candidate_spill_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).unwrap(),
             max_candidate_block_bytes: NonZeroU64::new(16 * 1024 * 1024).unwrap(),
             max_score_entries: NonZeroUsize::new(1_000_000).unwrap(),
+            max_lexical_query_terms: NonZeroUsize::new(
+                crate::lexical_projection::DEFAULT_MAX_QUERY_TERMS,
+            )
+            .unwrap(),
+            max_lexical_query_analyzed_terms: NonZeroUsize::new(
+                crate::lexical_projection::DEFAULT_MAX_QUERY_ANALYZED_TERMS,
+            )
+            .unwrap(),
             max_vector_candidates: NonZeroUsize::new(1_024).unwrap(),
             max_vector_search_working_bytes: NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
             max_vector_search_parallelism: NonZeroUsize::MIN,
@@ -1658,6 +1674,8 @@ impl SearchOutOfCoreSegmentReader {
             max_document_tokens: lexical_source_policy.max_document_tokens(),
             max_spill_bytes: config.max_reanalysis_spill_bytes,
             max_query_score_entries: config.max_score_entries,
+            max_query_terms: config.max_lexical_query_terms,
+            max_query_analyzed_terms: config.max_lexical_query_analyzed_terms,
             ..LexicalProjectionConfig::default()
         };
         let lexical_projection = match admission {
@@ -2777,7 +2795,11 @@ impl SearchOutOfCoreReader {
         let policy_epoch = access_control
             .map(|access_control| access_control.policy_epoch)
             .or(options.policy_epoch);
-        let normalized_terms = self.query_terms(query_text, query)?;
+        let mut normalized_terms = self.query_terms(query_text, query)?;
+        let term_selection = (mode != SearchMode::Vector)
+            .then(|| self.select_query_terms(&mut normalized_terms.values, query))
+            .transpose()?
+            .filter(|selection| selection.reduced());
         let query_terms = &normalized_terms.values;
         let mut predicate_pushdown = query_memory::Predicates::new(&metadata_filters, query)?;
         predicate_pushdown.report.parse_error =
@@ -2811,7 +2833,7 @@ impl SearchOutOfCoreReader {
         };
 
         let text_available = !query_terms.is_empty();
-        let (text_fallback_reason_codes, text_fallback_reasons) =
+        let (mut text_fallback_reason_codes, mut text_fallback_reasons) =
             if !text_available && mode != SearchMode::Vector {
                 (
                     output_memory.codes(&[SearchFallbackReasonCode::TextQueryEmpty])?,
@@ -2820,6 +2842,14 @@ impl SearchOutOfCoreReader {
             } else {
                 (Vec::new(), Vec::new())
             };
+        if let Some(selection) = term_selection {
+            output_memory.push(
+                &mut text_fallback_reason_codes,
+                SearchFallbackReasonCode::TextQueryTermsReduced,
+            )?;
+            let reason = output_memory.format(format_args!("{selection}"))?;
+            output_memory.push(&mut text_fallback_reasons, reason)?;
+        }
 
         let mut vector_fallback_reason_codes = Vec::new();
         let mut vector_fallback_reasons = Vec::new();
@@ -5376,6 +5406,8 @@ mod tests {
     mod bm25_windows;
     #[cfg(feature = "full-text-search")]
     mod candidate_budget;
+    #[cfg(feature = "full-text-search")]
+    mod long_query;
     mod reader_admission;
     #[cfg(feature = "full-text-search")]
     mod span_budget;
