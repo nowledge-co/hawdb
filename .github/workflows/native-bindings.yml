@@ -76,7 +76,7 @@ on:
       - ".bazelversion"
       - ".github/workflows/native-bindings.yml"
   push:
-    branches: [main, feat/moonbit-native-sdk]
+    branches: [main]
     paths:
       - "src/**"
       - "crates/**"
@@ -165,21 +165,11 @@ jobs:
       - name: Test the retained C ABI contract
         run: bazel test --test_output=errors //bindings/ffi:hawdb_ffi_tests
 
-      # Share the Bazel-built HawDB facade with FFI and Go.
-      - name: Install MoonBit Native test toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
-          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-
-      - name: Test MoonBit Native adapter and engine conformance
-        shell: bash
-        run: |
-          set -euo pipefail
-          moon version --all
-          bazel test --test_output=errors --test_env=PATH --test_env=HOME \
-            //bindings/moonbit:hawdb_moonbit_tests
+      # Compiles the MoonBit adapter against the Bazel-built HawDB facade on
+      # every engine change. It needs no MoonBit toolchain; the executable
+      # conformance suite runs in the MoonBit Native SDK workflow.
+      - name: Test the MoonBit native adapter
+        run: bazel test --test_output=errors //bindings/moonbit/native:hawdb_moonbit_rust_tests
 
       - name: Test query observer under the repository release profile
         if: matrix.os == 'ubuntu-24.04'

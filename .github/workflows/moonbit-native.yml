@@ -1,8 +1,11 @@
 name: MoonBit Native SDK
 
 on:
+  # Engine changes are compiled against the adapter by the Native Bindings
+  # workflow on every PR. The externally installed MoonBit toolchain only
+  # gates SDK changes, plus mainline engine changes after they land.
   push:
-    branches: [main, feat/moonbit-native-sdk]
+    branches: [main]
     paths:
       - "bindings/moonbit/**"
       - "Cargo.toml"
@@ -13,10 +16,6 @@ on:
   pull_request:
     paths:
       - "bindings/moonbit/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "crates/**"
-      - "src/**"
       - ".github/workflows/moonbit-native.yml"
   workflow_dispatch:
 
@@ -28,6 +27,39 @@ permissions:
   contents: read
 
 jobs:
+  bazel-conformance:
+    name: Bazel native conformance (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    env:
+      USE_BAZEL_VERSION: "9.3.1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Bazel
+        uses: bazel-contrib/setup-bazel@0.19.1
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-${{ github.job }}
+          repository-cache: true
+          external-cache: true
+      - name: Install MoonBit
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Run real embedded HawDB conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+          moon version --all
+          bazel test --test_output=errors --test_env=PATH --test_env=HOME \
+            //bindings/moonbit:hawdb_moonbit_tests
+
   windows-conformance:
     name: Full native conformance (windows-2025)
     runs-on: windows-2025

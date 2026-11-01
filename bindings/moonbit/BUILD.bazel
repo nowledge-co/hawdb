@@ -22,6 +22,9 @@ sh_test(
     size = "large",
     timeout = "long",
     srcs = ["tools/bazel_native_test.sh"],
+    # Requires the MoonBit toolchain on PATH, so wildcard test patterns skip
+    # it; :hawdb_moonbit_tests still lists it explicitly.
+    tags = ["manual"],
     args = ["$(rootpath //bindings/moonbit/native:hawdb_moonbit_static)"],
     data = [
         ":sdk_sources",
