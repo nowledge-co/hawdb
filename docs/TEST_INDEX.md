@@ -333,6 +333,11 @@ and index readers, caps output at 65 rows and 1 MiB, and bounds candidate work;
 more than 64 discovered lock entries or 1 MiB of staged key values escalates to
 a table guard. The suite checks large assignment parameters before key fanout and
 that escalation cannot expose a partial lock set, including a `LIMIT 1` query.
+Sparse 5,000-row residual scans exercise internal work-budget escalation for
+locking reads, UPDATE and DELETE, including autocommit and both primary-key
+shapes/residencies. Typed work/output refusals distinguish internal probe caps
+from caller limits; smaller caller limits still fail without table escalation.
+Hydration retains caller limits while the streaming probe bounds visited rows.
 Focused replay: `cargo test --locked -p hawdb --lib composite_lock_tests`.
 Constraint-key changes and nonliteral index rekeys retain conservative guards;
 nullable index version validation retains its existing table dependency.

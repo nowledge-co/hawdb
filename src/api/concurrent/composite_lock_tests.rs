@@ -513,6 +513,130 @@ fn secondary_discovery_escalates_before_returning_a_partial_lock_set() {
 }
 
 #[test]
+fn sparse_discovery_work_budget_escalates_without_refusing_valid_statements() {
+    for residency in [
+        crate::StorageResidencyMode::Materialized,
+        crate::StorageResidencyMode::OutOfCore,
+    ] {
+        for composite in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "hawdb-discovery-work-{}-{residency:?}-{composite}",
+                std::process::id()
+            ));
+            let config = DatabaseConfig {
+                storage_residency_mode: residency,
+                ..Default::default()
+            };
+            let mut setup = Database::open_with_config(&path, config.clone()).unwrap();
+            let primary = if composite { "w, id" } else { "id" };
+            setup.query_sql(&format!("CREATE TABLE sparse_rows (w BIGINT, id BIGINT, status BIGINT, aux BIGINT, value BIGINT, PRIMARY KEY ({primary}))")).unwrap();
+            setup
+                .query_sql("CREATE INDEX by_aux ON sparse_rows (aux)")
+                .unwrap();
+            let values = (1..=5000)
+                .map(|id| format!("(1,{id},{},0,0)", i64::from(id == 5000)))
+                .chain(std::iter::once("(2,5001,0,0,0)".into()))
+                .collect::<Vec<_>>()
+                .join(",");
+            setup
+                .query_sql(&format!(
+                    "INSERT INTO sparse_rows (w,id,status,aux,value) VALUES {values}"
+                ))
+                .unwrap();
+            setup.checkpoint().unwrap();
+            drop(setup);
+            let database = Database::open_with_config(&path, config.clone())
+                .unwrap()
+                .into_concurrent();
+            let predicate = if composite {
+                "w = 1 AND id > 0 AND status = 1"
+            } else {
+                "id > 0 AND status = 1"
+            };
+            for sql in [
+                format!("UPDATE sparse_rows SET value = 1 WHERE {predicate}"),
+                format!("DELETE FROM sparse_rows WHERE {predicate}"),
+                "SELECT id FROM sparse_rows WHERE aux >= 0 AND status = 1 FOR UPDATE".into(),
+            ] {
+                let mut owner = transaction(&database);
+                owner.query_sql(&sql).unwrap();
+                assert!(
+                    database
+                        .inner
+                        .locks
+                        .covers_all(
+                            owner.transaction_id,
+                            &[LockRequest::relational_table(
+                                LockMode::Exclusive,
+                                "sparse_rows"
+                            )]
+                        )
+                        .unwrap(),
+                    "{sql}"
+                );
+                timeout(
+                    transaction(&database)
+                        .query_sql("UPDATE sparse_rows SET value = 9 WHERE w = 2 AND id = 5001"),
+                );
+                owner.rollback();
+            }
+            database
+                .query_sql(&format!(
+                    "UPDATE sparse_rows SET value = 7 WHERE {predicate}"
+                ))
+                .unwrap();
+            assert_eq!(
+                database
+                    .query_sql("SELECT value FROM sparse_rows WHERE w = 1 AND id = 5000")
+                    .unwrap()
+                    .rows[0]["value"],
+                Value::Int(7)
+            );
+            database
+                .query_sql(&format!("DELETE FROM sparse_rows WHERE {predicate}"))
+                .unwrap();
+            assert!(database
+                .query_sql("SELECT id FROM sparse_rows WHERE w = 1 AND id = 5000")
+                .unwrap()
+                .rows
+                .is_empty());
+            assert_eq!(
+                database
+                    .query_sql("SELECT value FROM sparse_rows WHERE w = 2 AND id = 5001")
+                    .unwrap()
+                    .rows[0]["value"],
+                Value::Int(0)
+            );
+            drop(database);
+
+            let limited = Database::open_with_config(
+                &path,
+                DatabaseConfig {
+                    max_read_result_rows: Some(128),
+                    ..config
+                },
+            )
+            .unwrap()
+            .into_concurrent();
+            let mut owner = transaction(&limited);
+            let error = owner
+                .query_sql(&format!(
+                    "UPDATE sparse_rows SET value = 8 WHERE {predicate}"
+                ))
+                .unwrap_err();
+            assert!(
+                matches!(&error, HawDBError::ResourceBudgetExceeded(cause) if cause.budget == 128),
+                "{error}"
+            );
+            assert_narrow(&owner, "sparse_rows");
+            owner.rollback();
+            drop(limited);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+}
+
+#[test]
 fn implicit_table_escalation_does_not_skip_validation_for_new_keys() {
     with_fixture("escalation-validation", |database| {
         let mut stale = transaction(database);

@@ -8,6 +8,32 @@ use hawdb_storage::transaction_locks::LockNamespace;
 const DISCOVERY_PAYLOAD_BYTES: usize = 1024 * 1024;
 const DISCOVERY_CANDIDATE_ROWS: usize = 4096;
 
+fn discovery_budget_exhausted(
+    error: &HawDBError,
+    caller: &crate::relational_sql::RelationalQueryLimits,
+) -> bool {
+    match error {
+        HawDBError::ResourceBudgetExceeded(cause)
+            if cause.resource == hawdb_core::ResourceBudgetKind::WorkUnits
+                && cause.scope == hawdb_core::ResourceBudgetScope::Query
+                && cause.owner == "relational SQL"
+                && cause.budget == DISCOVERY_CANDIDATE_ROWS as u64 =>
+        {
+            match cause.budget_option {
+                "max_candidate_work" => caller.max_candidate_work > DISCOVERY_CANDIDATE_ROWS,
+                "max_intermediate_rows" => caller.max_intermediate_rows > DISCOVERY_CANDIDATE_ROWS,
+                _ => false,
+            }
+        }
+        HawDBError::ReadBudgetExceeded(cause) => {
+            cause.resource == hawdb_core::ReadBudgetResource::PayloadBytes
+                && cause.limit == DISCOVERY_PAYLOAD_BYTES
+                && caller.max_output_payload_bytes > DISCOVERY_PAYLOAD_BYTES
+        }
+        _ => false,
+    }
+}
+
 /// Keep only necessary conjuncts. An unsupported residual can narrow the result,
 /// but an unsupported disjunct must never be dropped from a union.
 fn necessary_predicate(
@@ -383,6 +409,11 @@ impl ConcurrentDatabaseTransaction {
             }),
             parse_nanos: 0,
         };
+        let caller_limits = super::super::config::relational_query_limits_with_payload(
+            &self.runtime.config,
+            None,
+            None,
+        );
         let mut limits = super::super::config::relational_query_limits_with_payload(
             &self.runtime.config,
             Some(probe_row_limit),
@@ -390,7 +421,9 @@ impl ConcurrentDatabaseTransaction {
         );
         limits.max_candidate_work = limits.max_candidate_work.min(DISCOVERY_CANDIDATE_ROWS);
         limits.max_intermediate_rows = limits.max_intermediate_rows.min(DISCOVERY_CANDIDATE_ROWS);
-        limits.hydration.max_rows = limits.hydration.max_rows.min(DISCOVERY_CANDIDATE_ROWS);
+        // The simple streaming probe accounts each visited row before applying
+        // the residual. Its work limits bound discovery; retain the caller's
+        // hydration limits so a second, untyped cutoff cannot mask that refusal.
         let output = crate::relational_sql::execute_prepared_relational_query_with_resources(
             probe,
             parameters,
@@ -407,7 +440,14 @@ impl ConcurrentDatabaseTransaction {
                 &self.runtime.config.execution_memory,
                 task,
             ),
-        )?;
+        );
+        let output = match output {
+            Ok(output) => output,
+            Err(error) if discovery_budget_exhausted(&error, &caller_limits) => {
+                return Ok(fallback());
+            }
+            Err(error) => return Err(error),
+        };
         if output.rows.len() >= probe_row_limit {
             return Ok(fallback());
         }
