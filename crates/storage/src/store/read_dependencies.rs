@@ -31,6 +31,8 @@ use std::fmt;
 
 #[path = "read_dependencies/indexed_nodes.rs"]
 mod indexed_nodes;
+#[path = "read_dependencies/locked_ranges.rs"]
+mod locked_ranges;
 #[path = "read_dependencies/relational_indexes.rs"]
 mod relational_indexes;
 #[path = "read_dependencies/relationship_domains.rs"]

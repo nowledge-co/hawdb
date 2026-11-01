@@ -71,10 +71,35 @@ pub(in crate::api) fn value_is_deterministic(value: &cypher::ValueExpression) ->
         cypher::ValueExpressionKind::CurrentTimestamp => false,
         cypher::ValueExpressionKind::List(values) => values.iter().all(value_is_deterministic),
         cypher::ValueExpressionKind::Timestamp(value) => value_is_deterministic(value),
+        // `date()`, `datetime()`, ... read the statement clock, and so does a
+        // constructor whose map argument has only `timezone`. Both are bound
+        // while planning. (A parameter map is checked against its value
+        // before the plan cache is consulted.)
+        cypher::ValueExpressionKind::Temporal {
+            function,
+            arguments,
+        } => {
+            !function.reads_clock(arguments.len())
+                && !arguments.iter().any(value_is_clock_reading_map)
+                && arguments.iter().all(value_is_deterministic)
+        }
+        cypher::ValueExpressionKind::Map(entries) => entries.values().all(value_is_deterministic),
         cypher::ValueExpressionKind::Literal(_)
         | cypher::ValueExpressionKind::Parameter(_)
         | cypher::ValueExpressionKind::Binding(_)
         | cypher::ValueExpressionKind::BindingProperty { .. } => true,
+    }
+}
+
+fn value_is_clock_reading_map(value: &cypher::ValueExpression) -> bool {
+    match &value.kind {
+        cypher::ValueExpressionKind::Map(entries) => entries
+            .keys()
+            .all(|key| key.eq_ignore_ascii_case("timezone")),
+        cypher::ValueExpressionKind::Literal(value) => {
+            hawdb_core::temporal::is_clock_reading_map(value)
+        }
+        _ => false,
     }
 }
 
@@ -124,7 +149,21 @@ fn scalar_is_deterministic(expression: &cypher::ScalarExpression) -> bool {
         | Scalar::List(_)
         | Scalar::ListIndex { .. }
         | Scalar::ListSlice { .. }
-        | Scalar::Path(_) => true,
+        | Scalar::Path(_)
+        | Scalar::PropertyAccess { .. }
+        | Scalar::MapLiteral(_) => true,
+        // A clock read (`date()`) differs between executions; a map
+        // argument with only `timezone` reads the clock at run time.
+        Scalar::TemporalFunction {
+            function,
+            arguments,
+        } => {
+            !function.reads_clock(arguments.len())
+                && !arguments.iter().any(|argument| {
+                    matches!(&argument.kind, Scalar::MapLiteral(entries)
+                        if entries.iter().all(|(key, _)| key.eq_ignore_ascii_case("timezone")))
+                })
+        }
     };
     values_are_deterministic && expression.kind.all_children(scalar_is_deterministic)
 }

@@ -184,6 +184,11 @@ fn write_property(
         Value::Decimal(value) => write!(output, "{value}").map_err(write_error)?,
         Value::String(value) => output.write_str(value).map_err(write_error)?,
         Value::Uuid(value) => write!(output, "{value}").map_err(write_error)?,
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => write!(output, "{value}").map_err(write_error)?,
         Value::Binary(bytes) => {
             output.write_str("\\x").map_err(write_error)?;
             for byte in bytes {

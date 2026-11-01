@@ -148,7 +148,12 @@ fn scalar_payload_bytes(value: &Value) -> usize {
         | Value::Int(_)
         | Value::Float(_)
         | Value::Decimal(_)
-        | Value::Uuid(_) => 0,
+        | Value::Uuid(_)
+        | Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_) => 0,
+        Value::Duration(_) => std::mem::size_of::<hawdb_core::temporal::Duration>(),
         Value::String(text) => text.len(),
         Value::Binary(bytes) => bytes.len(),
         Value::Vector(vector) => vector.encoded().len(),

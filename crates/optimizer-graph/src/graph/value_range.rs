@@ -105,11 +105,52 @@ pub(super) fn range_bound_matches(
 
 fn comparable_value_ordering(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
     match (left, right) {
+        (Value::Decimal(_), Value::Decimal(_) | Value::Int(_))
+        | (Value::Int(_), Value::Decimal(_)) => {
+            hawdb_core::numeric::compare_numeric(left.as_ref(), right.as_ref()).ok()
+        }
         (Value::Int(left), Value::Int(right)) => Some(left.cmp(right)),
         (Value::Float(left), Value::Float(right)) => Some(left.total_cmp(right)),
         (Value::Int(left), Value::Float(right)) => Some((*left as f64).total_cmp(right)),
         (Value::Float(left), Value::Int(right)) => Some(left.total_cmp(&(*right as f64))),
         (Value::String(left), Value::String(right)) => Some(left.cmp(right)),
-        _ => None,
+        // Same-kind temporal instants; durations and mixed kinds are NULL.
+        _ => hawdb_core::temporal::comparable_ordering(left, right),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decimal_and_integer_bounds_keep_the_strongest_exact_constraint() {
+        let decimal = Value::Decimal("9007199254740993.01".parse().unwrap());
+        let integer = Value::Int(9_007_199_254_740_993);
+        for candidates in [
+            [integer.clone(), decimal.clone()],
+            [decimal.clone(), integer.clone()],
+        ] {
+            let mut lower = None;
+            let mut upper = None;
+            for candidate in candidates {
+                merge_lower_bound(&mut lower, Some((candidate.clone(), true)));
+                merge_upper_bound(&mut upper, Some((candidate, true)));
+            }
+            assert_eq!(lower, Some((decimal.clone(), true)));
+            assert_eq!(upper, Some((integer.clone(), true)));
+        }
+        let mut lower = Some((Value::Int(1), true));
+        merge_lower_bound(
+            &mut lower,
+            Some((Value::Decimal("1.000".parse().unwrap()), false)),
+        );
+        assert_eq!(lower, Some((Value::Int(1), false)));
+        assert!(!range_bound_matches(&Value::Int(1), lower.as_ref(), None));
+        assert!(range_bound_matches(&decimal, lower.as_ref(), None));
+        assert_eq!(
+            comparable_value_ordering(&decimal, &Value::Float(1.0)),
+            None
+        );
     }
 }

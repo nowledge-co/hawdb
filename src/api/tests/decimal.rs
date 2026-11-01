@@ -219,20 +219,47 @@ fn native_decimal_lock_boundaries_preserve_unrounded_comparison_values() {
 #[test]
 fn native_decimal_graph_wal_and_checkpoint_keep_payload_representation() {
     let path = unique_test_dir("native-decimal-graph-recovery");
-    let parameters = BTreeMap::from([("amount".into(), decimal("9007199254740993.0100"))]);
+    let parameters = BTreeMap::from([
+        ("amount".into(), decimal("9007199254740993.0100")),
+        (
+            "date".into(),
+            Value::Date(crate::temporal::parse_date("2026-10-30").unwrap()),
+        ),
+        (
+            "time".into(),
+            Value::LocalTime(crate::temporal::parse_local_time("12:34:56").unwrap()),
+        ),
+        (
+            "local".into(),
+            Value::LocalDateTime(
+                crate::temporal::parse_local_datetime("2026-10-30T12:34:56").unwrap(),
+            ),
+        ),
+        (
+            "zoned".into(),
+            Value::DateTime(crate::temporal::parse_datetime("2026-10-30T12:34:56+02:00").unwrap()),
+        ),
+        (
+            "duration".into(),
+            Value::duration(crate::temporal::parse_duration("P1DT2H").unwrap()),
+        ),
+    ]);
     let assert_value = |database: &mut Database| {
         let rows = database
-            .query("MATCH (n:Money) RETURN n.amount AS amount")
+            .query("MATCH (n:Money) RETURN n.amount AS amount, n.date AS date, n.time AS time, n.local AS local, n.zoned AS zoned, n.duration AS duration")
             .unwrap()
             .rows;
         let Value::Decimal(amount) = rows[0]["amount"] else {
             panic!("native Decimal");
         };
         assert_eq!(amount.to_string(), "9007199254740993.0100");
+        for name in ["date", "time", "local", "zoned", "duration"] {
+            assert_eq!(rows[0][name], parameters[name]);
+        }
     };
     let mut database = Database::open(&path).unwrap();
     database
-        .query_with_params("CREATE (:Money {amount: $amount})", &parameters)
+        .query_with_params("CREATE (:Money {amount: $amount, date: $date, time: $time, local: $local, zoned: $zoned, duration: $duration})", &parameters)
         .unwrap();
     drop(database);
     let mut database = Database::open(&path).unwrap();
@@ -243,4 +270,121 @@ fn native_decimal_graph_wal_and_checkpoint_keep_payload_representation() {
     assert_value(&mut database);
     drop(database);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn native_decimal_cypher_predicates_and_order_survive_indexed_recovery() {
+    for residency in [
+        StorageResidencyMode::Materialized,
+        StorageResidencyMode::OutOfCore,
+    ] {
+        let path = unique_test_dir("native-decimal-cypher-predicates");
+        let config = DatabaseConfig {
+            storage_residency_mode: residency,
+            ..Default::default()
+        };
+        let mut database = Database::open_with_config(&path, config.clone()).unwrap();
+        for (id, amount) in ["-2", "1.00", "1.25", "2", "9007199254740993.01"]
+            .into_iter()
+            .enumerate()
+        {
+            database
+                .query_with_params(
+                    "CREATE (:Price {id: $id, bucket: 'main', amount: $amount})",
+                    &BTreeMap::from([
+                        ("id".into(), Value::Int(id as i64)),
+                        ("amount".into(), decimal(amount)),
+                    ]),
+                )
+                .unwrap();
+        }
+        database
+            .query("CREATE (:Price {id: 5, bucket: 'main'})")
+            .unwrap();
+        for id in 6..134 {
+            database
+                .query_with_params(
+                    "CREATE (:Price {id: $id, bucket: 'padding'})",
+                    &BTreeMap::from([("id".into(), Value::Int(id))]),
+                )
+                .unwrap();
+        }
+        database
+            .query("CREATE RANGE INDEX ON :Price(amount)")
+            .unwrap();
+        database
+            .query("CREATE INDEX ON :Price(bucket, amount)")
+            .unwrap();
+        let parameters = BTreeMap::from([
+            ("lower".into(), decimal("1.0000")),
+            ("upper".into(), decimal("1.2500")),
+            ("wide".into(), Value::Int(9_007_199_254_740_993)),
+            ("float".into(), Value::Float(1.1)),
+            ("integers".into(), Value::List(vec![Value::Int(1)])),
+            (
+                "set".into(),
+                Value::List(vec![decimal("1.000"), decimal("1.250"), Value::Null]),
+            ),
+        ]);
+        for stage in 0..3 {
+            for (prefix, expected_operator) in [
+                ("", "IndexNodeRangeSeek"),
+                ("n.bucket = 'main' AND ", "IndexNodeCompositeRangeSeek"),
+            ] {
+                let plan = database
+                    .explain_query_with_params(
+                        &format!("MATCH (n:Price) WHERE {prefix}n.amount > $wide RETURN n.id"),
+                        &parameters,
+                    )
+                    .unwrap();
+                // Cold opens may choose a scan without persisted histograms;
+                // the live plan must exercise each range-index access path.
+                if stage == 0 {
+                    assert!(
+                        plan.trace.selected_plan.contains(expected_operator),
+                        "{residency:?}: {}",
+                        plan.trace.selected_plan
+                    );
+                }
+            }
+            for (predicate, expected) in [
+                ("n.amount > $lower", vec![2, 3, 4]),
+                ("n.amount <= $upper", vec![0, 1, 2]),
+                ("n.amount > 1 AND n.amount <= $upper", vec![2]),
+                ("n.amount > $lower AND n.amount <= 2", vec![2, 3]),
+                ("n.amount > $lower AND n.amount > 2", vec![4]),
+                ("n.amount > 2 AND n.amount > $lower", vec![4]),
+                ("n.amount > $wide", vec![4]),
+                ("n.amount > $float", vec![]),
+                ("n.amount > $lower AND n.amount > $float", vec![]),
+                ("n.amount > $float AND n.amount > $lower", vec![]),
+                ("n.amount IN $set", vec![1, 2]),
+                ("n.amount IN $integers", vec![]),
+                ("NOT (n.amount <= $lower)", vec![2, 3, 4]),
+                ("n.amount IS NOT NULL", vec![0, 1, 2, 3, 4]),
+            ] {
+                for prefix in ["", "n.bucket = 'main' AND "] {
+                    let query = format!(
+                        "MATCH (n:Price) WHERE {prefix}{predicate} RETURN n.id AS id ORDER BY n.amount, n.id"
+                    );
+                    let rows = database
+                        .query_with_params(&query, &parameters)
+                        .unwrap()
+                        .rows;
+                    assert_eq!(
+                        rows.iter().map(|row| row["id"].clone()).collect::<Vec<_>>(),
+                        expected.iter().copied().map(Value::Int).collect::<Vec<_>>(),
+                        "{residency:?} stage {stage}: {query}"
+                    );
+                }
+            }
+            if stage == 1 {
+                database.checkpoint().unwrap();
+            }
+            drop(database);
+            database = Database::open_with_config(&path, config.clone()).unwrap();
+        }
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }

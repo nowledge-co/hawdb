@@ -60,10 +60,11 @@ The synthetic insertion fixtures test classification independently of binding.
 
 The public explain regression calls a vector procedure with two WITH clauses
 twice: both calls bypass and leave entries, admissions, hits and misses at zero.
-The public read regression proves that ordinary two-WITH queries remain cached:
-for two parameter values it checks miss then hit and the exact executed row.
-This pipeline currently uses exact parameter variants, so changing the value
-creates a separate entry rather than asserting cross-value template reuse.
+The public read regression proves that ordinary two-WITH queries remain cached
+and return the exact executed rows for each parameter value. These statements
+are normalized like every other read (#1425), so a parameter used only as a
+node-property key is a template slot: a new value reuses the entry, and the
+multi-WITH regressions check the rows after each such hit.
 
 The pre-fix predicate admits mutations, an inserted UNWIND and the public vector
 pipeline; the corresponding regressions fail their eligibility/bypass assertions.

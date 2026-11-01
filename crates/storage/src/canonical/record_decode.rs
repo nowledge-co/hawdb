@@ -185,7 +185,7 @@ pub(super) fn value<D: Decoder>(
             }
         },
         2 => Value::Int(cursor.read_i64()?),
-        11 => Value::Decimal(
+        super::DECIMAL_VALUE_TAG => Value::Decimal(
             hawdb_core::Decimal::from_le_bytes(
                 cursor
                     .read_exact(hawdb_core::Decimal::ENCODED_LEN)?
@@ -272,6 +272,10 @@ pub(super) fn value<D: Decoder>(
                 .try_into()
                 .expect("fixed UUID length"),
         )),
+        tag if super::canonical_temporal_kind(tag).is_some() => super::read_temporal_value(
+            cursor,
+            super::canonical_temporal_kind(tag).expect("checked tag"),
+        )?,
         tag => {
             return Err(CanonicalSegmentError::Corrupt(format!(
                 "unknown canonical value tag {tag}"

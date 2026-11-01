@@ -262,15 +262,44 @@ func (db *DB) query(sql bool, text string, params any) (*Result, error) {
 // tagged object {"$uuid": "<text>"}.
 type UUID string
 
+// Temporal values for parameters and results, as canonical ISO 8601 text.
+// The FFI boundary carries them as tagged objects such as
+// {"$date": "2026-10-30"} or {"$duration": "P1M2DT3.5S"}. Text is kept
+// as-is: Go's time.Time has no local-only or month-based duration forms.
+type (
+	// Date is an openCypher DATE, such as "2026-10-30".
+	Date string
+	// LocalTime is an openCypher LOCAL TIME, such as "12:30:00".
+	LocalTime string
+	// LocalDateTime is an openCypher LOCAL DATETIME, such as "2026-10-30T12:30:00".
+	LocalDateTime string
+	// DateTime is an openCypher ZONED DATETIME with a UTC offset, such as
+	// "2026-10-30T12:00:00+02:00".
+	DateTime string
+	// Duration is an openCypher DURATION, such as "P1M2DT3.5S".
+	Duration string
+)
+
 // prepareValue rewrites parameter values so types JSON cannot express
 // reach the FFI boundary intact: []byte becomes {"$binary": "<base64>"}
-// and UUID becomes {"$uuid": "<text>"}. It recurses into lists and maps.
+// and UUID becomes {"$uuid": "<text>"}; the temporal types become their
+// tagged objects. It recurses into lists and maps.
 func prepareValue(value any) any {
 	switch v := value.(type) {
 	case []byte:
 		return map[string]any{"$binary": base64.StdEncoding.EncodeToString(v)}
 	case UUID:
 		return map[string]any{"$uuid": string(v)}
+	case Date:
+		return map[string]any{"$date": string(v)}
+	case LocalTime:
+		return map[string]any{"$localtime": string(v)}
+	case LocalDateTime:
+		return map[string]any{"$localdatetime": string(v)}
+	case DateTime:
+		return map[string]any{"$datetime": string(v)}
+	case Duration:
+		return map[string]any{"$duration": string(v)}
 	case []any:
 		out := make([]any, len(v))
 		for i, item := range v {
@@ -313,6 +342,21 @@ func normalizeValue(value any) any {
 			}
 			if encoded, ok := v["$uuid"].(string); ok {
 				return UUID(encoded)
+			}
+			if encoded, ok := v["$date"].(string); ok {
+				return Date(encoded)
+			}
+			if encoded, ok := v["$localtime"].(string); ok {
+				return LocalTime(encoded)
+			}
+			if encoded, ok := v["$localdatetime"].(string); ok {
+				return LocalDateTime(encoded)
+			}
+			if encoded, ok := v["$datetime"].(string); ok {
+				return DateTime(encoded)
+			}
+			if encoded, ok := v["$duration"].(string); ok {
+				return Duration(encoded)
 			}
 		}
 		for key, item := range v {

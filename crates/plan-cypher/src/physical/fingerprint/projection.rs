@@ -458,6 +458,37 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             write_identifier(output, column);
             output.push(')');
         }
+        ProjectionExpression::TemporalFunction {
+            function,
+            arguments,
+        } => {
+            output.push_str("temporal_function(");
+            output.push_str(&function.function_name());
+            for argument in arguments {
+                output.push(',');
+                write_projection_expression(output, argument);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::PropertyAccess { expression, key } => {
+            output.push_str("property_access(");
+            write_projection_expression(output, expression);
+            output.push('.');
+            write_identifier(output, key);
+            output.push(')');
+        }
+        ProjectionExpression::MapLiteral(entries) => {
+            output.push_str("map(");
+            for (index, (key, value)) in entries.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                write_identifier(output, key);
+                output.push(':');
+                write_projection_expression(output, value);
+            }
+            output.push(')');
+        }
     }
 }
 

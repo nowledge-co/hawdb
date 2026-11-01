@@ -53,7 +53,9 @@ impl Parser<'_> {
         })
     }
 
-    pub(super) fn parse_case_scalar(&mut self) -> Result<ScalarExpression> {
+    /// One arithmetic operand: a scalar expression, or a clock/timestamp
+    /// value call. See [`Self::parse_case_scalar`] for the operators.
+    pub(super) fn parse_case_scalar_operand(&mut self) -> Result<ScalarExpression> {
         self.skip_ws();
         let start = self.checkpoint();
         if self.next_keyword_is("CURRENT_TIMESTAMP")

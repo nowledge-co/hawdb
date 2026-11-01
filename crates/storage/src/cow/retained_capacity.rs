@@ -48,7 +48,12 @@ fn value_capacity(value: &Value, depth: usize) -> Option<usize> {
         | Value::Int(_)
         | Value::Float(_)
         | Value::Uuid(_)
-        | Value::Decimal(_) => Some(0),
+        | Value::Decimal(_)
+        | Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_) => Some(0),
+        Value::Duration(_) => Some(std::mem::size_of::<hawdb_core::temporal::Duration>()),
     }
 }
 

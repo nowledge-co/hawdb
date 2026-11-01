@@ -49,6 +49,9 @@ mod case;
 mod list_tests;
 mod projection;
 mod statement;
+mod temporal;
+#[cfg(test)]
+mod temporal_tests;
 
 use binding::*;
 use case::*;
@@ -248,6 +251,11 @@ pub enum LogicalPlan {
     Unwind {
         rows: Vec<Value>,
         variable: String,
+    },
+    UnwindRows {
+        expression: ProjectionExpression,
+        variable: String,
+        input: Box<LogicalPlan>,
     },
     UnwindMutation {
         rows: Vec<Value>,

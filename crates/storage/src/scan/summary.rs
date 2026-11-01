@@ -79,7 +79,12 @@ impl ScanScalar {
             | Value::Float(_)
             | Value::Vector(_)
             | Value::List(_)
-            | Value::Map(_) => None,
+            | Value::Map(_)
+            | Value::Date(_)
+            | Value::LocalTime(_)
+            | Value::LocalDateTime(_)
+            | Value::DateTime(_)
+            | Value::Duration(_) => None,
         }
     }
 

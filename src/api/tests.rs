@@ -124,6 +124,7 @@ mod materialized_views;
 mod memory_lifecycle;
 mod merge_nodes;
 mod merge_relationships;
+mod multi_with_normalization;
 mod mutation_guards;
 mod mutation_persistence;
 mod neighbor_reads;
@@ -182,6 +183,7 @@ mod synthesized_source_reads;
 mod system_introspection;
 mod system_schema_registry;
 mod system_variables;
+mod temporal;
 mod thread_compaction_reads;
 mod thread_distillation_reads;
 mod thread_lifecycle;
@@ -2904,3 +2906,4 @@ fn community_parameters(ids: Vec<Value>) -> Result<BTreeMap<String, Value>> {
 }
 
 mod optimizer_proofs;
+mod width_costing;

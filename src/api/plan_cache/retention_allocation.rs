@@ -17,12 +17,14 @@ thread_local! {
     static TRACK: Cell<bool> = const { Cell::new(false) };
 }
 static LIVE: AtomicUsize = AtomicUsize::new(0);
+static LARGEST: AtomicUsize = AtomicUsize::new(0);
 
 struct Allocator;
 
 fn allocated(bytes: usize) {
     if TRACK.try_with(Cell::get).unwrap_or(false) {
         LIVE.fetch_add(bytes, Ordering::Relaxed);
+        LARGEST.fetch_max(bytes, Ordering::Relaxed);
     }
 }
 
@@ -72,6 +74,7 @@ struct Window;
 impl Window {
     fn new() -> Self {
         LIVE.store(0, Ordering::Relaxed);
+        LARGEST.store(0, Ordering::Relaxed);
         TRACK.set(true);
         Self
     }
@@ -205,6 +208,7 @@ fn cached(
 
 #[test]
 fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
+    row_unwind_refuses_large_output_before_copying();
     for candidates in [20, 100, 512] {
         let (query, parameters) = fixture(candidates);
         let statement = cypher::parse(&query).unwrap();
@@ -231,6 +235,7 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
     // of the accounting implementation, including nested retained values.
     for query in [
         "MATCH (n:Memory) RETURN [x IN reverse(range(0, 128))[1..100] WHERE x > 3 | x] AS filtered, range(0, 12)[1] AS indexed, [n.id, [n.body, 'literal-owned-payload']] AS literal_list".to_owned(),
+        format!("MATCH (n:Memory) UNWIND [n.id, '{}', ['{}'], null] AS candidate RETURN candidate", "unwind".repeat(4096), "nested".repeat(2048)),
         format!("UNWIND ['{}', ['{}'], null] AS candidate RETURN candidate", "unwind".repeat(4096), "nested".repeat(2048)),
     ] {
         let statement = cypher::parse(&query).unwrap();
@@ -238,6 +243,84 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
         let window = Window::new();
         let mut cache = PlanCache::with_byte_limits(Some(8), Some(16 << 20), Some(8 << 20));
         let (key, value, charge) = cached(&query, &statement, &parameters);
+        cache.insert_weighted(key, value, charge);
+        assert_eq!(cache.stats().entries, 1);
+        assert!(window.retained() <= cache.charged_bytes().unwrap());
+        drop(cache);
+        assert_eq!(window.retained(), 0);
+    }
+    // Temporal calls, property access, map literals and a boxed duration
+    // parameter stay in the same observed cache owner.
+    {
+        let query = "MATCH (p:P) RETURN p.birthday.month AS month, duration.between(p.a, p.b).minutes AS minutes, date.truncate('month', p.on) AS start, {retained_temporal_key: p.a, took: $took} AS map, $took AS took";
+        let statement = cypher::parse(query).unwrap();
+        let parameters = BTreeMap::from([(
+            "took".into(),
+            Value::Duration(Box::new(
+                hawdb_core::TemporalDuration::from_parts(14, 3, 7_200_000_000_000).unwrap(),
+            )),
+        )]);
+        let window = Window::new();
+        let mut cache = PlanCache::with_byte_limits(Some(8), Some(16 << 20), Some(8 << 20));
+        let (key, value, charge) = cached(query, &statement, &parameters);
+        cache.insert_weighted(key, value, charge);
+        assert_eq!(cache.stats().entries, 1);
+        assert!(window.retained() <= cache.charged_bytes().unwrap());
+        drop(cache);
+        assert_eq!(window.retained(), 0);
+    }
+    // Measure the temporal IR through the real owner. Duration boxes dominate
+    // key/container slack, so omitting their heap charge cannot hide in it.
+    {
+        use hawdb_core::temporal::{self, TemporalFunction, TemporalKind};
+        use hawdb_plan_cypher::{Projection, ProjectionExpression};
+        let date = temporal::parse_date("2026-11-01").unwrap();
+        let time = temporal::parse_local_time("12:34:56").unwrap();
+        let local = temporal::parse_local_datetime("2026-11-01T12:34:56").unwrap();
+        let zoned = temporal::parse_datetime("2026-11-01T12:34:56+02:00").unwrap();
+        let duration = temporal::parse_duration("P1M2DT3S").unwrap();
+        let (query, parameters) = fixture(20);
+        let statement = cypher::parse(&query).unwrap();
+        let window = Window::new();
+        let mut cache = PlanCache::with_byte_limits(Some(8), Some(16 << 20), Some(8 << 20));
+        let (key, mut value, _) = cached(&query, &statement, &parameters);
+        let mut literals = (0..4096)
+            .map(|_| ProjectionExpression::Literal(Value::duration(duration)))
+            .collect::<Vec<_>>();
+        literals.extend([
+            ProjectionExpression::Literal(Value::Date(date)),
+            ProjectionExpression::Literal(Value::LocalTime(time)),
+            ProjectionExpression::Literal(Value::LocalDateTime(local)),
+            ProjectionExpression::Literal(Value::DateTime(zoned)),
+        ]);
+        let mut arguments = Vec::with_capacity(32);
+        arguments.push(ProjectionExpression::Literal(Value::String(
+            "2026-11-01".into(),
+        )));
+        literals.push(ProjectionExpression::TemporalFunction {
+            function: TemporalFunction::Construct(TemporalKind::Date),
+            arguments,
+        });
+        let mut field = String::with_capacity(1024);
+        field.push_str("temporal");
+        Arc::get_mut(&mut value).unwrap().physical_template = PhysicalPlan::ProjectExec {
+            items: vec![Projection {
+                name: "temporal".into(),
+                expression: ProjectionExpression::PropertyAccess {
+                    expression: Box::new(ProjectionExpression::MapLiteral(vec![(
+                        field.clone(),
+                        ProjectionExpression::List(literals),
+                    )])),
+                    key: field,
+                },
+            }],
+            input: Box::new(PhysicalPlan::EmptyExec),
+        };
+        let charge = key
+            .retained_heap_bytes()
+            .unwrap()
+            .checked_add(value.retained_heap_bytes().unwrap())
+            .unwrap();
         cache.insert_weighted(key, value, charge);
         assert_eq!(cache.stats().entries, 1);
         assert!(window.retained() <= cache.charged_bytes().unwrap());
@@ -366,4 +449,59 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
     assert!(cache.stats().evictions > 0);
     drop(cache);
     assert_eq!(window.retained(), 0);
+}
+
+fn row_unwind_refuses_large_output_before_copying() {
+    use hawdb_executor::binding::Binding;
+    use hawdb_executor::observer::NoopExecutionObserver;
+    use hawdb_executor::pipeline::{
+        BatchControl, BatchExecutionContext, BindingBatch, BindingBatchSource,
+    };
+    use hawdb_executor::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryLedger};
+    use hawdb_plan_cypher::ProjectionExpression;
+    use std::num::NonZeroUsize;
+    struct OneRow;
+    impl BindingBatchSource for OneRow {
+        fn execute(
+            &mut self,
+            _: &PhysicalPlan,
+            _: ExecutionLimit,
+            emit: &mut dyn FnMut(BindingBatch) -> hawdb_core::Result<BatchControl>,
+        ) -> hawdb_core::Result<BatchControl> {
+            emit(vec![Binding::values(BTreeMap::new())])
+        }
+    }
+    let expression =
+        ProjectionExpression::Literal(Value::List(vec![Value::String("x".repeat(1 << 20))]));
+    let catalog = Catalog::default();
+    let memory = ExecutionMemoryConfig {
+        batch_payload_bytes: NonZeroUsize::new(1024).unwrap(),
+        ..ExecutionMemoryConfig::default()
+    };
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let window = Window::new();
+    let error = hawdb_executor::transform::stream_unwind_rows_batches(
+        &expression,
+        "item",
+        &PhysicalPlan::EmptyExec,
+        &mut OneRow,
+        BatchExecutionContext {
+            catalog: &catalog,
+            memory: &memory,
+            memory_ledger: &ledger,
+            task_context: None,
+            observer: &NoopExecutionObserver,
+        },
+        ExecutionLimit::unlimited(),
+        &mut |_| panic!("over-budget output"),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("batch_payload_bytes"), "{error}");
+    assert!(
+        LARGEST.load(Ordering::Relaxed) < 1 << 20,
+        "UNWIND cloned the rejected payload"
+    );
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    drop(error);
+    drop(window);
 }

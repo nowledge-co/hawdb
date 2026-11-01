@@ -90,6 +90,8 @@ pub(super) struct OptimizedQueryPlan {
     pub(super) optimizer_environment: OptimizerEnvironmentKey,
     pub(super) configured_max_optimizer_groups: Option<usize>,
     pub(super) effective_max_optimizer_groups: usize,
+    /// The statement clock planning observed; execution pins it.
+    pub(super) statement_clock: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
 }
 
 impl OptimizedQueryPlan {
@@ -724,7 +726,42 @@ impl OptimizerPlanningCache {
     }
 }
 
+/// Plans `statement` under one stable statement clock and records that
+/// instant in the result, so execution can pin the same instant for clock
+/// reads evaluated per row.
 pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
+    cypher_text: &str,
+    statement: &cypher::Statement,
+    parameters: &BTreeMap<String, Value>,
+    cache_mode: PlanCacheMode,
+    trace_mode: PlanTraceMode,
+    context: PlanCacheContext<'_, S>,
+) -> Result<OptimizedQueryPlan> {
+    hawdb_core::temporal::with_stable_statement_clock(|| {
+        // A statement whose parameters include a map with only `timezone`
+        // may read the clock while binding (`datetime($tz)`), so its plan
+        // must not be replayed with another statement's instant.
+        let cache_mode = if cache_mode == PlanCacheMode::Use
+            && parameters
+                .values()
+                .any(hawdb_core::temporal::is_clock_reading_map)
+        {
+            PlanCacheMode::Bypass(PlanCacheBypassReason::StatementNotCacheable)
+        } else {
+            cache_mode
+        };
+        optimized_query_plan_for_pinned(
+            cypher_text,
+            statement,
+            parameters,
+            cache_mode,
+            trace_mode,
+            context,
+        )
+    })
+}
+
+fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
     cypher_text: &str,
     statement: &cypher::Statement,
     parameters: &BTreeMap<String, Value>,
@@ -859,6 +896,7 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
                 optimizer_environment: key.environment.clone(),
                 configured_max_optimizer_groups: context.config.max_optimizer_groups,
                 effective_max_optimizer_groups,
+                statement_clock: hawdb_core::temporal::statement_now(),
             });
         }
     }
@@ -1023,6 +1061,7 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
             optimizer_environment: catalog_access.environment,
             configured_max_optimizer_groups: context.config.max_optimizer_groups,
             effective_max_optimizer_groups,
+            statement_clock: hawdb_core::temporal::statement_now(),
         });
     } else if let PlanCacheMode::Bypass(reason) = physical_cache_mode {
         context.cache.borrow_mut().record_bypass();
@@ -1038,6 +1077,7 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
             optimizer_environment: catalog_access.environment,
             configured_max_optimizer_groups: context.config.max_optimizer_groups,
             effective_max_optimizer_groups,
+            statement_clock: hawdb_core::temporal::statement_now(),
         });
     }
     unreachable!("plan cache mode must be either use or bypass")

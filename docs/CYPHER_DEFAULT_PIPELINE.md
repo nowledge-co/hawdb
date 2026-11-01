@@ -38,9 +38,17 @@ the required NULL-extended row when no endpoint satisfies the properties. Runtim
 guards cover rows and counts with matching, rejected, isolated and missing sources,
 including one-WITH and existing multi-WITH paths.
 
-Newly migrated shapes use structural logical-plan normalization. Queries that
-already used the public multi-WITH pipeline retain their existing logical
-representation, EXPLAIN shape and exact-value cache behavior. WITH windows remain
+All read pipelines, including statements with two or more WITH clauses, use
+structural logical-plan normalization, so their MATCH clauses can lower to index
+seeks and native expands (issue #1425). Parameters that normalization moves into
+a seek key, expand or filter remain template slots only when rebinding the marked
+plan reproduces the actual plan; otherwise they remain exact cache guards.
+A comma pattern that continues from a node bound earlier in the same MATCH,
+such as `(a)-[:R]->(b), (b)-[:S]->(c)`, joins the same native chain when its
+relationship types are fixed and distinct and the repeated node adds no label.
+Conjuncts over variables an Expand does not bind move below it, so an anchor
+equality still reaches its index seek under a longer chain.
+Ranked evidence normalizes only its aggregate input. WITH windows remain
 at the WITH boundary; RETURN windows remain after lookup/aggregation. See
 [WITH semantics](CYPHER_WITH_SEMANTICS.md) and
 [cache eligibility](CYPHER_PLAN_CACHE_ELIGIBILITY.md).

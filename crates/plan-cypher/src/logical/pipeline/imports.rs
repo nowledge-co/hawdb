@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 //! Restore typed graph identities only for expressions that require native records.
 
 use super::*;
@@ -41,6 +44,15 @@ pub(super) fn for_returns(returns: &mut PlannedReturns, scope: &Scope) -> Result
             projections(output, scope, &mut needed)?;
         }
     }
+    Ok(needed)
+}
+
+pub(super) fn for_expression(
+    expression: &mut ProjectionExpression,
+    scope: &Scope,
+) -> Result<BTreeSet<String>> {
+    let mut needed = BTreeSet::new();
+    projection(expression, scope, &mut needed)?;
     Ok(needed)
 }
 
@@ -177,7 +189,10 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. }
-        | ProjectionExpression::Path { .. } => {}
+        | ProjectionExpression::Path { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::MapLiteral(_) => {}
     }
 }
 

@@ -1223,7 +1223,7 @@ fn sort_with_bounded_limit_lowers_to_top_n() {
 }
 
 #[test]
-fn bounded_sort_keeps_full_sort_when_limit_covers_the_input() {
+fn bounded_sort_prefers_top_n_when_estimate_fits_the_window() {
     let logical = LogicalPlan::Limit {
         offset: 0,
         limit: Some(20),
@@ -1248,19 +1248,21 @@ fn bounded_sort_keeps_full_sort_when_limit_covers_the_input() {
 
     let (plan, trace) = CascadesOptimizer::default().optimize_with_catalog(&logical, &catalog);
 
-    assert_eq!(plan.kind(), PhysicalPlanKind::LimitExec);
-    assert_eq!(trace.selected_plan_operator_counts["SortExec"], 1);
-    assert_eq!(trace.selected_plan_operator_counts["LimitExec"], 1);
-    assert!(!trace.selected_plan_operator_counts.contains_key("TopNExec"));
+    assert_eq!(plan.kind(), PhysicalPlanKind::TopNExec);
+    assert_eq!(trace.selected_plan_operator_counts["TopNExec"], 1);
+    assert!(!trace.selected_plan_operator_counts.contains_key("SortExec"));
+    assert!(!trace
+        .selected_plan_operator_counts
+        .contains_key("LimitExec"));
     assert!(trace.decisions.iter().any(|decision| {
-        decision.starts_with("keep Sort + Limit for bounded sort: offset=0 limit=20")
+        decision.starts_with("choose TopN for bounded sort: offset=0 limit=20")
     }));
 
     let (fallback_plan, fallback_trace) = CascadesOptimizer::new(OptimizerConfig { max_groups: 1 })
         .optimize_with_catalog(&logical, &catalog);
-    assert_eq!(fallback_plan.kind(), PhysicalPlanKind::LimitExec);
+    assert_eq!(fallback_plan.kind(), PhysicalPlanKind::TopNExec);
     assert!(fallback_trace.decisions.iter().any(|decision| {
-        decision.starts_with("keep Sort + Limit for bounded sort: offset=0 limit=20")
+        decision.starts_with("choose TopN for bounded sort: offset=0 limit=20")
     }));
 }
 

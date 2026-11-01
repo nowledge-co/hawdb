@@ -156,6 +156,12 @@ round-trip decimal spelling and apply the declared rescale; they do not recover
 precision already lost in a float. Explicit text-to-numeric casts reject invalid
 or out-of-range values. NaN and infinity are not Decimal values.
 
+This bounded numeric contract is not PostgreSQL numeric compatibility: division
+uses HawDB's 38-digit/scale ceiling, fractional Decimal-to-BIGINT casts fail,
+and exact multiplication fails when its nonzero result requires scale above 38.
+Decimal literals keep that type beside DOUBLE operands; callers must cast the
+literal or the operand explicitly rather than relying on contextual coercion.
+
 Decimal equality, hashing and ordered keys compare numeric value, so `1.0` and
 `1.00` identify the same key. Index predicates and joins must not rescale their
 query boundaries to the stored column's scale. Row, WAL, checkpoint and spill
@@ -165,7 +171,16 @@ expressions. Existing tags retain their meaning. Decimal graph properties use
 residual storage instead of float or dictionary coercion. This extension does
 not enable Decimal property types in the separate SQL/PGQ creation binder.
 
-Native DATE/TIMESTAMP types remain separate work under #1361.
+Cypher graph range predicates compare Decimal/Decimal and Decimal/Int exactly,
+including integer boundaries above 2^53. Decimal/Float pairs remain incomparable
+under the existing graph mixed-kind predicate rules. Equality and IN preserve
+typed identity, while Decimal values with different scales compare equal.
+ORDER BY orders Decimal values numerically and retains the existing type order
+for mixed kinds. Scalar/composite range indexes and checkpoint pruning preserve
+the same results. Decimal and native temporal values have distinct wire tags.
+
+SQL DATE/TIMESTAMP support remains separate work under #1361; existing native
+Cypher temporal values retain their behavior and persisted representation.
 
 ## Property Graph Catalog
 

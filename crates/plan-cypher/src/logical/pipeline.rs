@@ -51,10 +51,11 @@ pub fn plan_parsed_pipeline_query(
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
     let plan = bind_pipeline(query, parameters)?;
-    // Multi-WITH statements already had a public generic-plan contract before
-    // default MATCH routing. Keep their EXPLAIN shape and exact-parameter cache
-    // variants. Ranked evidence normalizes its input at the aggregate boundary;
-    // retain its outer aliases so final ORDER BY/LIMIT can select bounded TopN.
+    // Every read shape, including statements with several WITH clauses, uses
+    // the same structural normalization; parameters it moves into seeks and
+    // expands remain template slots or exact cache guards (#1425). Ranked
+    // evidence normalizes its input at the aggregate boundary; retain its outer
+    // aliases so final ORDER BY/LIMIT can select bounded TopN.
     let ranked_evidence = query.clauses.iter().any(|clause| match &clause.kind {
         ClauseKind::With(projection) | ClauseKind::Return(projection) => projection
             .items
@@ -62,14 +63,7 @@ pub fn plan_parsed_pipeline_query(
             .any(|item| contains_ranked_evidence(&item.expression)),
         _ => false,
     });
-    if ranked_evidence
-        || query
-            .clauses
-            .iter()
-            .filter(|clause| matches!(clause.kind, ClauseKind::With(_)))
-            .nth(1)
-            .is_some()
-    {
+    if ranked_evidence {
         Ok(plan)
     } else {
         Ok(normalize::normalize(plan))
@@ -1148,7 +1142,9 @@ fn bind_read_clauses(
 ) -> Result<LogicalPlan> {
     for clause in clauses {
         match &clause.kind {
-            ClauseKind::Unwind { source, variable } if input.is_none() && scope.0.is_empty() => {
+            ClauseKind::Unwind { source, variable }
+                if input.is_none() && scope.0.is_empty() && !source.reads_row_binding() =>
+            {
                 let rows = match bind_value(source, parameters)? {
                     Value::List(rows) => rows,
                     Value::Null => Vec::new(),
@@ -1162,6 +1158,30 @@ fn bind_read_clauses(
                 input = Some(LogicalPlan::Unwind {
                     rows,
                     variable: variable.clone(),
+                });
+            }
+            ClauseKind::Unwind { source, variable } => {
+                if scope.0.contains_key(variable) {
+                    return Err(HawDBError::Semantic(format!(
+                        "UNWIND variable '{variable}' is already bound"
+                    )));
+                }
+                let mut expression = plan_scalar_expression_with_columns(
+                    &scope.graph_names(),
+                    &scope.columns(),
+                    &row_value_expression(source.clone())?,
+                    parameters,
+                )?;
+                let input_plan = input.take().ok_or_else(|| {
+                    HawDBError::Semantic("row-dependent UNWIND requires upstream rows".into())
+                })?;
+                let needed = imports::for_expression(&mut expression, &scope)?;
+                let input_plan = imports::restore(input_plan, &scope, &needed);
+                scope.0.insert(variable.clone(), BindingType::Scalar);
+                input = Some(LogicalPlan::UnwindRows {
+                    expression,
+                    variable: variable.clone(),
+                    input: Box::new(input_plan),
                 });
             }
             ClauseKind::Call { procedure, yields } => {
@@ -1639,10 +1659,9 @@ fn bind_predicate(
         PropertyPredicate::Not(child) => {
             Predicate::Not(Box::new(bind_predicate(child, scope, parameters)?))
         }
-        PropertyPredicate::ExpressionEq { expression, value } => Predicate::ExpressionEq {
-            expression: bind(expression)?,
-            value: bind(value)?,
-        },
+        PropertyPredicate::ExpressionEq { expression, value } => {
+            super::temporal::eq_predicate(bind(expression)?, bind(value)?)
+        }
         PropertyPredicate::ExpressionNotEq { expression, value } => Predicate::ExpressionNotEq {
             expression: bind(expression)?,
             value: bind(value)?,
@@ -1651,11 +1670,11 @@ fn bind_predicate(
             expression,
             op,
             value,
-        } => Predicate::ExpressionCompare {
-            expression: bind(expression)?,
-            op: plan_comparison_op(*op),
-            value: bind(value)?,
-        },
+        } => super::temporal::compare_predicate(
+            bind(expression)?,
+            plan_comparison_op(*op),
+            bind(value)?,
+        ),
         PropertyPredicate::ExpressionContains { expression, value } => {
             Predicate::ExpressionContains {
                 expression: bind(expression)?,

@@ -21,11 +21,14 @@ use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
 use hawdb_plan_cypher::{
     CompositeRangeSeek, ExactPropertySeekBranch, NodeProjectionAccess, PlanChildren,
-    RelationshipCountLeg,
+    ProjectionExpression, RelationshipCountLeg,
 };
 use std::collections::BTreeMap;
 
 mod row_goal;
+mod shape;
+mod width;
+mod work;
 
 pub(super) const NODE_INDEX_EQ_STARTUP_COST: u64 = 1;
 pub(super) const NODE_INDEX_RANGE_STARTUP_COST: u64 = 2;
@@ -217,6 +220,27 @@ pub(super) fn estimate_physical_plan_cost(
     estimate_physical_plan_cost_breakdown(plan, catalog).as_plan_cost()
 }
 
+pub(super) fn estimate_physical_plan_cost_with_context(
+    plan: &PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    context: &crate::OptimizerContext,
+) -> PlanCost {
+    estimate_costed_plan_with_context(plan, catalog, context)
+        .cost
+        .as_plan_cost()
+}
+
+fn estimate_costed_plan_with_context<'a>(
+    plan: &'a PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    context: &crate::OptimizerContext,
+) -> CostedPlan<'a> {
+    let inputs = estimate_input_costs(plan, |input| {
+        estimate_costed_plan_with_context(input, catalog, context)
+    });
+    estimate_operator_cost_with_context(plan, catalog, inputs, context)
+}
+
 pub(super) fn estimate_physical_plan_cost_breakdown(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
@@ -227,9 +251,10 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
 pub(super) fn estimate_physical_plan_cost_with_row_goal(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
+    context: &crate::OptimizerContext,
     rows: u64,
 ) -> PlanCost {
-    let costed = estimate_costed_plan(plan, catalog);
+    let costed = estimate_costed_plan_with_context(plan, catalog, context);
     row_goal::ConsumptionCost {
         total: costed.cost,
         startup: costed.startup,
@@ -241,8 +266,21 @@ pub(super) fn estimate_physical_plan_cost_with_row_goal(
 pub(super) struct CostedPlan<'a> {
     pub(super) cost: PlanCostBreakdown,
     startup: PlanCostBreakdown,
+    shape: shape::RowShape<'a>,
+    width_report: Option<work::WidthReport>,
     pub(super) statistics: Option<StatisticsUsage>,
     bindings: PlanBindings<'a>,
+}
+
+impl CostedPlan<'_> {
+    pub(super) fn width_diagnostic(&self, ordinal: usize, plan: &PhysicalPlan) -> Option<String> {
+        self.width_report.map(|width| format!(
+            "physical width cost: operator={} ordinal={ordinal} row_bytes={} retained_bytes={} comparison_work={} spill_work={} memory_hint={:?} proxy_fields={} sampled_values={} units=logical_estimates",
+            plan.kind().as_str(), width.row_bytes, width.retained_bytes,
+            width.comparison_work, width.spill_work, width.memory_hint,
+            width.proxy_fields, width.sampled_values,
+        ))
+    }
 }
 
 fn estimate_costed_plan<'a>(plan: &'a PhysicalPlan, catalog: &OptimizerCatalog) -> CostedPlan<'a> {
@@ -262,16 +300,11 @@ pub(super) fn estimate_cost_with_test_bindings<'a>(
         plan: &'a PhysicalPlan,
         catalog: &OptimizerCatalog,
         bindings: &impl Fn(&'a PhysicalPlan) -> PlanBindings<'a>,
-    ) -> row_goal::ConsumptionCost {
+    ) -> CostedPlan<'a> {
         let inputs = estimate_input_costs(plan, |input| visit(input, catalog, bindings));
-        let source = if let PhysicalPlan::AggregateExec { input, .. } = plan {
-            input.as_ref()
-        } else {
-            plan
-        };
-        row_goal::cost_operator(plan, catalog, inputs, &bindings(source), &mut None)
+        estimate_operator_cost_internal(plan, catalog, inputs, Some(bindings(plan)), None)
     }
-    visit(plan, catalog, bindings).total
+    visit(plan, catalog, bindings).cost
 }
 
 // Finish the child traversal before entering the large operator-cost match, so
@@ -292,16 +325,41 @@ pub(super) fn estimate_operator_cost<'a>(
     catalog: &OptimizerCatalog,
     inputs: [Option<CostedPlan<'a>>; 2],
 ) -> CostedPlan<'a> {
-    let costs = inputs.each_ref().map(|input| {
+    estimate_operator_cost_internal(plan, catalog, inputs, None, None)
+}
+
+pub(super) fn estimate_operator_cost_with_context<'a>(
+    plan: &'a PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    inputs: [Option<CostedPlan<'a>>; 2],
+    context: &crate::OptimizerContext,
+) -> CostedPlan<'a> {
+    estimate_operator_cost_internal(
+        plan,
+        catalog,
+        inputs,
+        None,
+        context.resource_hints().max_memory_bytes,
+    )
+}
+
+fn estimate_operator_cost_internal<'a>(
+    plan: &'a PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    mut inputs: [Option<CostedPlan<'a>>; 2],
+    bindings_override: Option<PlanBindings<'a>>,
+    memory: Option<u64>,
+) -> CostedPlan<'a> {
+    let consumption_inputs = inputs.each_ref().map(|input| {
         input.as_ref().map(|input| row_goal::ConsumptionCost {
             total: input.cost,
             startup: input.startup,
         })
     });
+    let costs = row_goal::input_costs(plan, consumption_inputs);
     let mut statistics = None;
-    // Resolve grouping keys before replacing incoming bindings with output aliases.
     let aggregate_cost = if matches!(plan, PhysicalPlan::AggregateExec { .. }) {
-        Some(row_goal::cost_operator(
+        Some(estimate_local_operator_cost(
             plan,
             catalog,
             costs,
@@ -311,14 +369,46 @@ pub(super) fn estimate_operator_cost<'a>(
     } else {
         None
     };
-    let bindings =
-        PlanBindings::for_operator(plan, inputs.map(|input| input.map(|input| input.bindings)));
-    let cost = aggregate_cost.unwrap_or_else(|| {
-        row_goal::cost_operator(plan, catalog, costs, &bindings, &mut statistics)
+    let input_row_bytes = inputs.each_ref().map(|input| {
+        input
+            .as_ref()
+            .map_or(0, |input| input.shape.retained_bytes())
     });
+    let shapes = inputs
+        .each_mut()
+        .map(|input| input.as_mut().map(|input| std::mem::take(&mut input.shape)));
+    let shape = shape::RowShape::for_operator(
+        plan,
+        catalog,
+        shapes,
+        inputs[0].as_ref().map(|input| &input.bindings),
+    );
+    let bindings = bindings_override.unwrap_or_else(|| {
+        PlanBindings::for_operator(plan, inputs.map(|input| input.map(|input| input.bindings)))
+    });
+    let cost = aggregate_cost.unwrap_or_else(|| {
+        estimate_local_operator_cost(plan, catalog, costs, &bindings, &mut statistics)
+    });
+    let (cost, width_report) = work::apply(
+        plan,
+        catalog,
+        work::Inputs {
+            costs,
+            row_bytes: input_row_bytes,
+        },
+        &shape,
+        &bindings,
+        cost,
+        memory,
+    );
+    // Width/decode/spill work participates in startup as well as total work.
+    // In particular, a LIMIT must never discount a blocking operator's spill.
+    let consumption = row_goal::cost_operator(plan, consumption_inputs, cost);
     CostedPlan {
-        cost: cost.total,
-        startup: cost.startup,
+        cost: consumption.total,
+        startup: consumption.startup,
+        shape,
+        width_report,
         statistics,
         bindings,
     }
@@ -341,6 +431,17 @@ fn estimate_local_operator_cost(
         PhysicalPlan::UnwindExec { rows, .. } => {
             let count = rows.len() as u64;
             PlanCostBreakdown::new(count.max(1), count, 0, 0, 0)
+        }
+        PhysicalPlan::UnwindRowsExec { expression, .. } => {
+            let input = inputs[0].expect("unary input cost");
+            let width = match expression {
+                ProjectionExpression::List(values) => values.len() as u64,
+                ProjectionExpression::Literal(Value::List(values)) => values.len() as u64,
+                ProjectionExpression::Literal(Value::Null) => 0,
+                _ => 10,
+            };
+            let rows = input.estimated_rows.saturating_mul(width);
+            input.with_cpu(input.estimated_rows.saturating_add(rows), rows, 0)
         }
         PhysicalPlan::UnwindMutation { rows, .. } => {
             let row_count = rows.len().max(1) as u64;
@@ -873,3 +974,6 @@ fn estimate_relationship_count_leg_rows(
     };
     seed_rows.saturating_mul(per_seed).max(1)
 }
+
+#[cfg(test)]
+mod tests_width;

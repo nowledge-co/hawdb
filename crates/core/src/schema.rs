@@ -637,6 +637,20 @@ impl Catalog {
             .filter(|property| !property.name.is_empty())
     }
 
+    /// Borrows one table's live descriptors in property-name order.
+    ///
+    /// The existing key map bounds the visit to this table; callers can apply
+    /// a small inspection limit without scanning unrelated schema objects.
+    pub fn table_property_descriptors(
+        &self,
+        table_id: TableId,
+    ) -> impl Iterator<Item = &PropertyDescriptor> {
+        self.properties_by_key
+            .range((table_id, String::new())..)
+            .take_while(move |((candidate, _), _)| *candidate == table_id)
+            .filter_map(|(_, id)| self.property_descriptor(*id))
+    }
+
     pub fn property_descriptor(&self, id: PropertyId) -> Option<&PropertyDescriptor> {
         self.properties
             .get(id.0 as usize)

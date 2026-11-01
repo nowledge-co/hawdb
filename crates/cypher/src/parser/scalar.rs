@@ -97,6 +97,9 @@ impl Parser<'_> {
                 Ok(ValueExpressionKind::Timestamp(Box::new(value)))
             }
             Some(ch) if ch.is_ascii_alphabetic() || ch == '_' => {
+                if let Some(call) = self.parse_value_temporal_call()? {
+                    return Ok(call);
+                }
                 let variable = self.parse_ident()?;
                 if self.consume_char('.') {
                     let property = self.parse_ident()?;

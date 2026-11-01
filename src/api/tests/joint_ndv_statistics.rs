@@ -246,18 +246,26 @@ fn joint_group_sort_choice_fits_the_actual_small_query_memory_budget() {
     );
     db.query("CREATE INDEX ON :Item(a, b)").unwrap();
     let query =
-        "MATCH (n:Item) RETURN n.a AS a, n.b AS b, count(n) AS total ORDER BY a, b LIMIT 40";
-    let plan = db.explain_query(query).unwrap().physical_plan.explain(0);
-    assert!(
-        plan.contains("SortExec") && plan.contains("LimitExec"),
-        "{plan}"
-    );
-    let output = db.query(query).unwrap();
-    assert_eq!(output.rows.len(), 20);
-    for (id, row) in output.rows.iter().enumerate() {
-        assert_eq!(row["a"], Value::Int(id as i64));
-        assert_eq!(row["b"], Value::Int(id as i64));
-        assert_eq!(row["total"], Value::Int(20));
+        "MATCH (n:Item) RETURN n.a AS a, n.b AS b, count(n) AS total ORDER BY a, b LIMIT $limit";
+    // Retain the complete 40-row window and the Sort + Limit admission
+    // regression: 20 estimated groups fit in 40, but exceed the 19-row window.
+    for (limit, top_n) in [(40_i64, true), (19, false)] {
+        let params = BTreeMap::from([("limit".into(), Value::Int(limit))]);
+        let plan = db
+            .explain_query_with_params(query, &params)
+            .unwrap()
+            .physical_plan
+            .explain(0);
+        assert_eq!(plan.contains("TopNExec"), top_n, "{plan}");
+        assert_eq!(plan.contains("SortExec"), !top_n, "{plan}");
+        assert_eq!(plan.contains("LimitExec"), !top_n, "{plan}");
+        let output = db.query_with_params(query, &params).unwrap();
+        assert_eq!(output.rows.len(), 20.min(limit as usize));
+        for (id, row) in output.rows.iter().enumerate() {
+            assert_eq!(row["a"], Value::Int(id as i64));
+            assert_eq!(row["b"], Value::Int(id as i64));
+            assert_eq!(row["total"], Value::Int(20));
+        }
     }
 }
 

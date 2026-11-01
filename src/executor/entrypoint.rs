@@ -145,7 +145,25 @@ enum OutputTarget<'a> {
     ),
 }
 
+/// Executes under one statement clock: the instant planning observed when the
+/// request carries it, else the caller's pin, else the system clock read once.
+/// Clock reads evaluated per row therefore all observe one instant.
 fn execute_profiled_output<S: ExecutionStore>(
+    request: ExecutionRequest<'_>,
+    resources: ExecutionResources<'_, S>,
+    target: OutputTarget<'_>,
+) -> Result<(ProfiledQueryStream, Option<QueryRows>)> {
+    match request.statement_clock() {
+        Some(instant) => hawdb_core::temporal::with_statement_clock(instant, || {
+            execute_profiled_output_pinned(request, resources, target)
+        }),
+        None => hawdb_core::temporal::with_stable_statement_clock(|| {
+            execute_profiled_output_pinned(request, resources, target)
+        }),
+    }
+}
+
+fn execute_profiled_output_pinned<S: ExecutionStore>(
     request: ExecutionRequest<'_>,
     resources: ExecutionResources<'_, S>,
     target: OutputTarget<'_>,

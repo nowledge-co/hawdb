@@ -46,6 +46,8 @@ fn atomic_mutations_reject_conditions_the_storage_command_cannot_represent() {
         "MATCH (a:Node), (b:Node) CREATE (a)-[:LINK* ALL SHORTEST 1..1]->(b)",
         "OPTIONAL MATCH (n:Node) SET n.id = 1",
         "MATCH (n:Node) WITH n SET n.id = 1",
+        "UNWIND row.id AS value CREATE (n:Node)",
+        "MATCH (row:Node) UNWIND row.ids AS value CREATE (n:Node {id: value})",
         "MATCH (a:Node), (b:Node) MERGE (a {id: 1})-[:LINK]->(b)",
     ] {
         assert!(
@@ -232,6 +234,82 @@ fn required_shortest_path_clauses_bind_endpoints_before_searching() {
         !endpoint_predicate.contains("Length"),
         "{endpoint_predicate}"
     );
+}
+
+#[test]
+fn shortest_path_endpoints_named_in_the_same_clause_bind_once() {
+    let parameters = BTreeMap::from([
+        ("a".to_string(), Value::Int(1)),
+        ("b".to_string(), Value::Int(2)),
+    ]);
+    for query in [
+        "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}), path = shortestPath((p1)-[:KNOWS*]-(p2)) RETURN length(path) AS len",
+        "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}), path = allShortestPaths((p1)-[:KNOWS*]-(p2)) RETURN length(path) AS len",
+    ] {
+        let plan = plan_pipeline_query(query, &parameters).unwrap();
+        let LogicalPlan::Project { input, .. } = &plan else {
+            panic!("expected projection: {plan:?}");
+        };
+        let LogicalPlan::GraphMatch {
+            input: Some(endpoints),
+            ..
+        } = input.as_ref()
+        else {
+            panic!("expected path program: {input:?}");
+        };
+        let LogicalPlan::GraphMatch { program, .. } = endpoints.as_ref() else {
+            panic!("expected endpoint program: {endpoints:?}");
+        };
+        // One constrained step per endpoint, not a bare re-check per endpoint.
+        let nodes = program
+            .steps
+            .iter()
+            .map(|step| match step {
+                GraphMatchStep::Node(node) => node.clone(),
+                step => panic!("unexpected endpoint step {step:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            nodes,
+            vec![
+                GraphMatchNode {
+                    variable: "p1".into(),
+                    label: "Person".into(),
+                    properties: BTreeMap::from([("id".into(), Value::Int(1))]),
+                },
+                GraphMatchNode {
+                    variable: "p2".into(),
+                    label: "Person".into(),
+                    properties: BTreeMap::from([("id".into(), Value::Int(2))]),
+                },
+            ],
+            "{query}"
+        );
+        // Independent endpoints normalize to node access, not a generic match.
+        let plan = plan_normalized_pipeline_query(query, &parameters).unwrap();
+        let LogicalPlan::Project { input, .. } = &plan else {
+            panic!("expected projection: {plan:?}");
+        };
+        let LogicalPlan::GraphMatch {
+            input: Some(endpoints),
+            ..
+        } = input.as_ref()
+        else {
+            panic!("expected path program: {input:?}");
+        };
+        assert!(
+            matches!(endpoints.as_ref(), LogicalPlan::NodeCartesianProduct { .. }),
+            "{query}: {endpoints:?}"
+        );
+    }
+    // Constraints that do not fold without comparing values keep the re-check.
+    let plan = plan_pipeline_query(
+        "MATCH (a:Item {id: 1}), p = shortestPath((a {id: 2})-[:LINK*]->(b:Item {id: 3})) RETURN length(p) AS hops",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert_eq!(text.matches("variable: \"a\"").count(), 3, "{text}");
 }
 
 #[test]
@@ -742,17 +820,94 @@ fn bounded_match_rejects_unrepresentable_relationship_shapes_before_normalizatio
 }
 
 #[test]
-fn ranked_evidence_normalizes_its_input_without_changing_legacy_multi_with_plans() {
+fn ranked_evidence_and_multi_with_plans_normalize_their_match_input() {
     let query = "MATCH (n:Node) WHERE n.visible = true WITH n.group_id AS g, n.id AS doc, n.score AS score WITH g, collect_top(doc, score, 2) AS evidence RETURN g, evidence";
     let parsed = hawdb_cypher::parse_pipeline(query).unwrap();
     let plan = plan_parsed_pipeline_query(&parsed, &BTreeMap::new()).unwrap();
     let debug = format!("{plan:?}");
     assert!(!debug.contains("GraphMatch {"), "{debug}");
     assert!(debug.contains("Ranked {"));
-    let legacy = query.replace("collect_top(doc, score, 2)", "collect(doc)");
-    let parsed = hawdb_cypher::parse_pipeline(&legacy).unwrap();
-    let plan = plan_parsed_pipeline_query(&parsed, &BTreeMap::new()).unwrap();
-    assert!(format!("{plan:?}").contains("GraphMatch {"));
+    // Ordinary multi-WITH statements normalize their MATCH as well (#1425).
+    let ordinary = query.replace("collect_top(doc, score, 2)", "collect(doc)");
+    let parsed = hawdb_cypher::parse_pipeline(&ordinary).unwrap();
+    let debug = format!(
+        "{:?}",
+        plan_parsed_pipeline_query(&parsed, &BTreeMap::new()).unwrap()
+    );
+    assert!(!debug.contains("GraphMatch {"), "{debug}");
+    assert!(debug.contains("NodeScan {"), "{debug}");
+}
+
+#[test]
+fn multi_with_statements_normalize_every_match() {
+    // LDBC IC4 and IC3-style chains: a second WITH must not keep the leading
+    // MATCH as a generic GraphMatch (#1425).
+    let parameters = BTreeMap::from([
+        ("personId".to_string(), Value::Int(1)),
+        ("startDate".to_string(), Value::Int(100)),
+        ("endDate".to_string(), Value::Int(250)),
+    ]);
+    for query in [
+        "MATCH (person:Person {id: $personId})-[:KNOWS]-(friend:Person), (friend)<-[:HAS_CREATOR]-(post:Post)-[:HAS_TAG]->(tag) WITH DISTINCT tag, post WITH tag, CASE WHEN $endDate > post.creationDate >= $startDate THEN 1 ELSE 0 END AS valid, CASE WHEN $startDate > post.creationDate THEN 1 ELSE 0 END AS inValid WITH tag, sum(valid) AS postCount, sum(inValid) AS inValidPostCount WHERE postCount > 0 AND inValidPostCount = 0 RETURN tag.name AS tagName, postCount ORDER BY postCount DESC, tagName ASC LIMIT 10",
+        "MATCH (person:Person {id: $personId})-[:KNOWS]-(friend:Person) WITH DISTINCT friend WITH friend MATCH (friend)<-[:HAS_CREATOR]-(post:Post) RETURN count(post) AS posts",
+    ] {
+        let parsed = hawdb_cypher::parse_pipeline(query).unwrap();
+        let debug = format!(
+            "{:?}",
+            plan_parsed_pipeline_query(&parsed, &parameters).unwrap()
+        );
+        assert!(
+            debug.contains(
+                "Expand { source_variable: \"person\", source_label: \"Person\", rel_variable: None, rel_type: \"KNOWS\""
+            ),
+            "{query}\n{debug}"
+        );
+        assert!(
+            debug.contains("NodeScan { variable: \"person\", label: \"Person\" }"),
+            "{query}\n{debug}"
+        );
+    }
+    // The IC4 comma pattern is one native chain with no generic matcher left.
+    let parsed = hawdb_cypher::parse_pipeline(
+        "MATCH (person:Person {id: $personId})-[:KNOWS]-(friend:Person), (friend)<-[:HAS_CREATOR]-(post:Post)-[:HAS_TAG]->(tag) WITH DISTINCT tag, post WITH tag, post.creationDate AS date WITH tag, count(date) AS posts RETURN tag.name AS name, posts",
+    )
+    .unwrap();
+    let debug = format!(
+        "{:?}",
+        plan_parsed_pipeline_query(&parsed, &parameters).unwrap()
+    );
+    assert!(!debug.contains("GraphMatch {"), "{debug}");
+}
+
+#[test]
+fn comma_patterns_continue_native_chains_only_from_compatible_bindings() {
+    let plan = |query: &str| {
+        format!(
+            "{:?}",
+            plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap()
+        )
+    };
+    for query in [
+        "MATCH (a:A {id: 1})-[:R]->(b:B), (b)-[:S]->(c) RETURN c",
+        "MATCH (a:A {id: 1})-[:R]->(b:B), (b:B {x: 2})-[:S]->(c) RETURN c",
+        "MATCH (a:A {id: 1})-[:R]->(b:B), (a)-[:S]->(c) RETURN b, c",
+    ] {
+        let debug = plan(query);
+        assert!(!debug.contains("GraphMatch {"), "{query}\n{debug}");
+    }
+    let debug = plan("MATCH (a:A {id: 1})-[:R]->(b:B), (b:B {x: 2})-[:S]->(c) RETURN c");
+    assert!(debug.contains("property: \"x\""), "{debug}");
+    for query in [
+        // A narrower label on the repeated node is a check Expand cannot carry.
+        "MATCH (a:A)-[:R]->(b), (b:B)-[:S]->(c) RETURN c",
+        // Relationship isomorphism across comma patterns needs GraphMatch.
+        "MATCH (a:A)-[:R]->(b), (b)-[:R]->(c) RETURN c",
+        // Disconnected comma patterns are not one chain.
+        "MATCH (a:A)-[:R]->(b), (c)-[:S]->(d) RETURN d",
+    ] {
+        let debug = plan(query);
+        assert!(debug.contains("GraphMatch {"), "{query}\n{debug}");
+    }
 }
 
 fn planned_aggregations(plan: &LogicalPlan) -> &[Aggregation] {

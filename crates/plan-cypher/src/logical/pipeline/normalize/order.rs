@@ -244,7 +244,10 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
-        | ProjectionExpression::ListSlice { .. } => {
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::MapLiteral(_) => {
             expression.all_children(|child| has_native_bindings(child, input))
         }
         // A comprehension element is bound by its enclosing expression.

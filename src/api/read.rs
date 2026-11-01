@@ -452,6 +452,7 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                 parameters,
                 &self.config.execution_memory,
             )
+            .with_statement_clock(optimized.statement_clock)
             .with_output_columns(optimized.output_columns.as_deref())
             .with_output_limits(max_rows, max_payload_bytes)
             .with_optional_task_context(context.task_context)
@@ -646,6 +647,7 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                     parameters,
                     &self.config.execution_memory,
                 )
+                .with_statement_clock(optimized.statement_clock)
                 .with_output_columns(optimized.output_columns.as_deref())
                 .with_output_limits(
                     restrictive_query_limit(

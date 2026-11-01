@@ -83,6 +83,7 @@ pub(super) fn execute_bindings_with_limit(
             ]))])
         }
         PhysicalPlan::UnwindExec { .. }
+        | PhysicalPlan::UnwindRowsExec { .. }
         | PhysicalPlan::EmptyExec
         | PhysicalPlan::NodeCountExec { .. }
         | PhysicalPlan::RelationshipCountExec { .. }

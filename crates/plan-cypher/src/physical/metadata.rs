@@ -62,6 +62,7 @@ pub enum PhysicalPlanKind {
     VectorIndexScan,
     CreateNode,
     UnwindExec,
+    UnwindRowsExec,
     UnwindMutationExec,
     MergeNode,
     MergeRelationship,
@@ -169,6 +170,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::VectorIndexScan,
             PhysicalPlanKind::CreateNode,
             PhysicalPlanKind::UnwindExec,
+            PhysicalPlanKind::UnwindRowsExec,
             PhysicalPlanKind::UnwindMutationExec,
             PhysicalPlanKind::MergeNode,
             PhysicalPlanKind::MergeRelationship,
@@ -254,6 +256,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::VectorIndexScan => "VectorIndexScan",
             PhysicalPlanKind::CreateNode => "CreateNode",
             PhysicalPlanKind::UnwindExec => "UnwindExec",
+            PhysicalPlanKind::UnwindRowsExec => "UnwindRowsExec",
             PhysicalPlanKind::UnwindMutationExec => "UnwindMutationExec",
             PhysicalPlanKind::MergeNode => "MergeNode",
             PhysicalPlanKind::MergeRelationship => "MergeRelationship",
@@ -372,6 +375,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::NodeCountExec
             | PhysicalPlanKind::RelationshipCountExec
             | PhysicalPlanKind::UnwindExec
+            | PhysicalPlanKind::UnwindRowsExec
             | PhysicalPlanKind::EmptyExec
             | PhysicalPlanKind::NodeCartesianProductExec
             | PhysicalPlanKind::HashJoinExec

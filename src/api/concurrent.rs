@@ -22,6 +22,8 @@ mod coordinator;
 mod graph_preparation_tests;
 #[cfg(test)]
 mod key_range_tests;
+#[cfg(test)]
+mod lock_dependency_tests;
 mod metrics;
 mod owner;
 mod publication;
@@ -176,6 +178,9 @@ pub struct ConcurrentDatabaseTransaction {
     options: ConcurrentTransactionOptions,
     runtime: DatabaseTransactionRuntime,
     state: DatabaseTransactionState,
+    // Registered from the canonical owner before any future write can omit
+    // read summaries. Retains the original epoch through incremental locking.
+    lock_dependencies: Option<crate::store::GraphReadDependencies>,
     successful_statements: usize,
     abort_reason: Option<TransactionAbortReason>,
     finished: bool,
@@ -439,6 +444,7 @@ impl ConcurrentDatabase {
     ) -> Result<ConcurrentDatabaseTransaction> {
         let database = self.inner.commits.lock()?;
         let base_commit_epoch = database.commit_epoch()?;
+        let lock_dependencies = capture_lock_dependencies(&database, options)?;
         Ok(ConcurrentDatabaseTransaction {
             inner: Arc::clone(&self.inner),
             transaction_id,
@@ -450,6 +456,7 @@ impl ConcurrentDatabase {
                 options.isolation,
                 options.read_dependency_limits,
             )?,
+            lock_dependencies,
             successful_statements: 0,
             abort_reason: None,
             finished: false,
@@ -1078,21 +1085,45 @@ impl ConcurrentDatabaseTransaction {
             && self.options.isolation == super::TransactionIsolation::SnapshotIsolation
         {
             if self.successful_statements == 0 {
+                // Construct the complete replacement before releasing the old
+                // history lease or changing any part of the transaction view.
+                let dependencies = capture_lock_dependencies(&database, self.options)?;
+                let runtime = DatabaseTransactionRuntime::from_database(&database)?;
+                let state = DatabaseTransactionState::from_database(&database)?;
                 self.base_commit_epoch = current_epoch;
-                self.runtime = DatabaseTransactionRuntime::from_database(&database)?;
-                self.state = DatabaseTransactionState::from_database(&database)?;
+                self.runtime = runtime;
+                self.state = state;
+                self.lock_dependencies = dependencies;
             } else {
-                let error = HawDBError::TransactionRetryRequired(Box::new(TransactionRetryError {
-                    transaction_id: self.transaction_id,
-                    reason: TransactionRetryReason::SnapshotChanged {
-                        read_epoch: self.base_commit_epoch,
-                        committed_epoch: current_epoch,
-                    },
-                    already_aborted: false,
-                }));
-                drop(database);
-                self.abort_after_lock_failure(&error);
-                return Err(error);
+                use crate::store::GraphReadDependencyError;
+                let validation = database
+                    .runtime
+                    .get()
+                    .map_err(GraphReadDependencyError::Unavailable)
+                    .and_then(|runtime| match &self.lock_dependencies {
+                        Some(dependencies) => runtime
+                            .store
+                            .validate_locked_snapshot(dependencies, requests),
+                        None => Err(GraphReadDependencyError::CaptureRefused),
+                    });
+                if let Err(error) = validation {
+                    let error = match error {
+                        GraphReadDependencyError::Unavailable(error) => error,
+                        _ => {
+                            HawDBError::TransactionRetryRequired(Box::new(TransactionRetryError {
+                                transaction_id: self.transaction_id,
+                                reason: TransactionRetryReason::SnapshotChanged {
+                                    read_epoch: self.base_commit_epoch,
+                                    committed_epoch: current_epoch,
+                                },
+                                already_aborted: false,
+                            }))
+                        }
+                    };
+                    drop(database);
+                    self.abort_after_lock_failure(&error);
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -1153,6 +1184,7 @@ impl ConcurrentDatabaseTransaction {
 
     fn abort_after_lock_failure(&mut self, error: &HawDBError) {
         self.state.rollback();
+        self.lock_dependencies = None;
         self.abort_reason = Some(match error {
             HawDBError::TransactionRetryRequired(error) => {
                 TransactionAbortReason::Retryable(error.clone())
@@ -1191,6 +1223,27 @@ impl ConcurrentDatabaseTransaction {
         }
         self.inner.locks.release(self.transaction_id);
         self.finished = true;
+        self.lock_dependencies = None;
+    }
+}
+
+fn capture_lock_dependencies(
+    database: &Database,
+    options: ConcurrentTransactionOptions,
+) -> Result<Option<crate::store::GraphReadDependencies>> {
+    if options.mode == ConcurrentTransactionMode::Pessimistic
+        && options.isolation == super::TransactionIsolation::SnapshotIsolation
+    {
+        // Bounds are validated on demand; only the source lease and history pin
+        // survive between statements. Serializable uses its existing collector.
+        database
+            .runtime
+            .get()?
+            .store
+            .capture_read_dependencies(0, 0)
+            .map(Some)
+    } else {
+        Ok(None)
     }
 }
 
