@@ -40,10 +40,11 @@ pub enum Expression<R = &'static str> {
 }
 
 pub struct Grammar {
-    rules: Vec<(&'static str, Expression<usize>)>,
+    rules: Vec<&'static str>,
     names: HashMap<&'static str, usize>,
     nesting_rules: Vec<u8>,
     nesting_limits: [(usize, SyntaxErrorCode); 2],
+    program: program::Program,
 }
 
 impl Grammar {
@@ -62,13 +63,15 @@ impl Grammar {
             .map(|(name, expression)| Ok((name, expression.resolve(&names)?)))
             .collect::<Result<_, String>>()?;
         let nesting_rules = vec![0; rules.len()];
+        Self::validate(&rules)?;
+        let (program, rules) = program::Program::compile(rules);
         let grammar = Self {
             rules,
             names,
             nesting_rules,
             nesting_limits: [(usize::MAX, SyntaxErrorCode::ParserLimitExceeded); 2],
+            program,
         };
-        grammar.validate()?;
         Ok(grammar)
     }
 
@@ -302,45 +305,15 @@ enum Failure {
     Fatal(SyntaxError),
 }
 
-// Fatal errors return directly from rule; only match/mismatch travels between frames.
-type MatchResult = Option<usize>;
-
-// Continuations refer only to immutable compiled grammar nodes. Pending frames
-// are bounded by the expression-depth budget; repetitions reuse their frame.
-enum Frame<'a> {
-    Rule(usize, usize),
-    RuleDone {
-        rule: usize,
-        position: usize,
-        captures: usize,
-        outer_error: Option<Diagnostic<'a>>,
-    },
-    Expression(&'a Expression<usize>, usize),
-    ExpressionDone(usize),
-    Sequence(&'a [Expression<usize>], usize),
-    Choice {
-        items: &'a [Expression<usize>],
-        next: usize,
-        position: usize,
-    },
-    OptionalDone {
-        position: usize,
-        saved: Option<Diagnostic<'a>>,
-    },
-    Repeat(&'a Expression<usize>, usize),
-    RepeatDone {
-        inner: &'a Expression<usize>,
-        position: usize,
-        saved: Option<Diagnostic<'a>>,
-    },
-    TightDone(usize),
-    LookDone {
-        position: usize,
-        positive: bool,
-        expected: &'a &'static str,
-        saved: Option<Diagnostic<'a>>,
-        captures: usize,
-    },
+// Compiled instructions determine the frame kind: CALL/RETURN use all fields;
+// ENTER/LEAVE use position, captures and outer_error. One stack preserves nested
+// lifetimes without allocating separate rule and expression stacks.
+struct ProgramFrame<'a> {
+    rule: usize,
+    position: usize,
+    captures: usize,
+    outer_error: Option<Diagnostic<'a>>,
+    pc: usize,
 }
 
 struct Matcher<'a, 'm> {
@@ -430,9 +403,8 @@ impl<'a> Matcher<'a, '_> {
         self.farthest = Some(error);
     }
 
-    fn mismatch(&mut self, position: usize, expected: &'a &'static str) -> MatchResult {
+    fn mismatch(&mut self, position: usize, expected: &'a &'static str) {
         self.remember(Diagnostic { position, expected });
-        None
     }
 
     fn push(
@@ -472,14 +444,30 @@ impl<'a> Matcher<'a, '_> {
     }
 
     fn rule(&mut self, root: usize, start: usize) -> Result<(usize, NodeId), Failure> {
-        // Grammar recursion lives on this bounded work stack, never on the host
-        // thread stack. Expression depth and language-domain admission still
-        // apply before scheduling children.
-        let mut work = vec![Frame::Rule(root, start)];
-        let mut result: MatchResult = None;
-        while let Some(frame) = work.pop() {
-            match frame {
-                Frame::Rule(rule, position) => {
+        use program::*;
+        let mut work: Vec<ProgramFrame<'a>> = Vec::new();
+        let mut pc = 0;
+        let mut position = start;
+        let mut matched = false;
+        loop {
+            let (opcode, argument) = self.grammar.program.decode(pc);
+            match opcode {
+                HALT => {
+                    return if matched {
+                        Ok((
+                            position,
+                            self.captures.pop().expect("successful root capture"),
+                        ))
+                    } else {
+                        Err(Failure::Mismatch)
+                    }
+                }
+                CALL => {
+                    let rule = if argument == ROOT_CALL {
+                        root
+                    } else {
+                        argument
+                    };
                     self.charge(1, position)?;
                     if let Some(memo) = self.memo.get(rule, position) {
                         #[cfg(test)]
@@ -497,7 +485,7 @@ impl<'a> Matcher<'a, '_> {
                                 if let Some(error) = error {
                                     self.remember(error);
                                 }
-                                result = None;
+                                matched = false;
                             }
                             state => {
                                 let node = state - Memo::NODE_OFFSET;
@@ -514,238 +502,200 @@ impl<'a> Matcher<'a, '_> {
                                     self.remember(error);
                                 }
                                 self.captures.push(node);
-                                result = Some(end);
+                                position = end;
+                                matched = true;
                             }
                         }
+                    } else {
+                        if self.memo.len() >= self.limits.memo_entries {
+                            return Err(
+                                self.limit(position, "PEG memo entries within the parser limit")
+                            );
+                        }
+                        let weight = self.grammar.nesting_rules[rule];
+                        for domain in 0..2 {
+                            if self.nesting_depth[domain]
+                                .saturating_add(usize::from(weight & (1 << domain) != 0))
+                                > self.grammar.nesting_limits[domain].0
+                            {
+                                return Err(self.nesting_limit(position, domain));
+                            }
+                        }
+                        self.memo.insert(rule, position, Memo::pending());
+                        let outer_error = self.farthest.take();
+                        for domain in 0..2 {
+                            self.nesting_depth[domain] += usize::from(weight & (1 << domain) != 0);
+                        }
+                        work.push(ProgramFrame {
+                            rule,
+                            position,
+                            captures: self.captures.len(),
+                            outer_error,
+                            pc: pc + 1,
+                        });
+                        pc = self.grammar.program.entries[rule];
                         continue;
                     }
-                    if self.memo.len() >= self.limits.memo_entries {
-                        return Err(
-                            self.limit(position, "PEG memo entries within the parser limit")
-                        );
-                    }
-                    let weight = self.grammar.nesting_rules[rule];
-                    for domain in 0..2 {
-                        if self.nesting_depth[domain]
-                            .saturating_add(usize::from(weight & (1 << domain) != 0))
-                            > self.grammar.nesting_limits[domain].0
-                        {
-                            return Err(self.nesting_limit(position, domain));
-                        }
-                    }
-                    self.memo.insert(rule, position, Memo::pending());
-                    let outer_error = self.farthest.take();
-                    for domain in 0..2 {
-                        self.nesting_depth[domain] += usize::from(weight & (1 << domain) != 0);
-                    }
-                    work.push(Frame::RuleDone {
-                        rule,
-                        position,
-                        captures: self.captures.len(),
-                        outer_error,
-                    });
-                    work.push(Frame::Expression(&self.grammar.rules[rule].1, position));
                 }
-                Frame::RuleDone {
-                    rule,
-                    position,
-                    captures,
-                    outer_error,
-                } => {
-                    let weight = self.grammar.nesting_rules[rule];
+                RETURN => {
+                    let frame = work.pop().expect("rule return");
+                    let weight = self.grammar.nesting_rules[frame.rule];
                     for domain in 0..2 {
                         self.nesting_depth[domain] -= usize::from(weight & (1 << domain) != 0);
                     }
                     let local_error = self.farthest.take();
-                    self.farthest = outer_error;
+                    self.farthest = frame.outer_error;
                     if let Some(error) = local_error {
                         self.remember(error);
                     }
-                    match result {
-                        Some(end) => {
-                            let node = self.push(
-                                Some(self.grammar.rules[rule].0),
-                                position,
-                                end,
-                                captures,
-                                weight,
-                            )?;
-                            self.memo
-                                .insert(rule, position, Memo::matched(end, node, local_error));
-                            self.captures.push(node);
-                        }
-                        None => {
-                            self.memo.insert(rule, position, Memo::failed(local_error));
-                        }
+                    if matched {
+                        let node = self.push(
+                            Some(self.grammar.rules[frame.rule]),
+                            frame.position,
+                            position,
+                            frame.captures,
+                            weight,
+                        )?;
+                        self.memo.insert(
+                            frame.rule,
+                            frame.position,
+                            Memo::matched(position, node, local_error),
+                        );
+                        self.captures.push(node);
+                    } else {
+                        self.memo
+                            .insert(frame.rule, frame.position, Memo::failed(local_error));
                     }
+                    pc = frame.pc;
+                    continue;
                 }
-                Frame::Expression(expression, position) => {
+                ENTER => {
                     self.charge(1, position)?;
                     if self.depth >= self.limits.depth {
                         return Err(self.limit(position, "PEG nesting within the parser limit"));
                     }
-                    // Lexical atoms have no child frames or captures. Check the
-                    // same logical depth/work budget, then finish them here;
-                    // an ExpressionDone continuation would only undo the depth.
-                    let terminal = match expression {
-                        Expression::Keyword(keyword) => {
-                            Some(if self.token(position).is_keyword(self.input, keyword) {
-                                Some(position + 1)
-                            } else {
-                                self.mismatch(position, keyword)
-                            })
-                        }
-                        Expression::Token(kind, expected) => {
-                            Some(if self.token(position).kind == *kind {
-                                Some(position + usize::from(*kind != TokenKind::End))
-                            } else {
-                                self.mismatch(position, expected)
-                            })
-                        }
-                        Expression::Parameter => Some(
-                            if matches!(self.token(position).kind, TokenKind::Parameter(_)) {
-                                Some(position + 1)
-                            } else {
-                                self.mismatch(position, &"a positional parameter")
-                            },
-                        ),
-                        _ => None,
-                    };
-                    if let Some(terminal) = terminal {
-                        result = terminal;
-                        continue;
-                    }
                     self.depth += 1;
-                    work.push(Frame::ExpressionDone(self.captures.len()));
-                    match expression {
-                        Expression::Keyword(_) | Expression::Token(..) | Expression::Parameter => {
-                            unreachable!("lexical atom finished above")
-                        }
-                        Expression::Rule(rule) => work.push(Frame::Rule(*rule, position)),
-                        Expression::Sequence(items) => {
-                            result = Some(position);
-                            work.push(Frame::Sequence(items, 0));
-                        }
-                        Expression::Choice(items) => {
-                            result = None;
-                            work.push(Frame::Choice {
-                                items,
-                                next: 0,
-                                position,
-                            });
-                        }
-                        Expression::Optional(inner) => {
-                            work.push(Frame::OptionalDone {
-                                position,
-                                saved: self.farthest,
-                            });
-                            work.push(Frame::Expression(inner, position));
-                        }
-                        Expression::Repeat(inner) => work.push(Frame::Repeat(inner, position)),
-                        Expression::Tight(inner) => {
-                            work.push(Frame::TightDone(position));
-                            work.push(Frame::Expression(inner, position));
-                        }
-                        Expression::Ahead(inner, expected) | Expression::Not(inner, expected) => {
-                            work.push(Frame::LookDone {
-                                position,
-                                positive: matches!(expression, Expression::Ahead(..)),
-                                expected,
-                                saved: self.farthest.take(),
-                                captures: self.captures.len(),
-                            });
-                            work.push(Frame::Expression(inner, position));
-                        }
-                    }
+                    let saved = if argument == LOOK_SCOPE {
+                        self.farthest.take()
+                    } else {
+                        self.farthest
+                    };
+                    work.push(ProgramFrame {
+                        rule: 0,
+                        position,
+                        captures: self.captures.len(),
+                        outer_error: saved,
+                        pc: 0,
+                    });
+                    matched = argument != CHOICE_SCOPE;
                 }
-                Frame::ExpressionDone(captures) => {
-                    if result.is_none() {
-                        self.captures.truncate(captures);
+                LEAVE => {
+                    let scope = work.pop().expect("expression scope");
+                    if !matched {
+                        self.captures.truncate(scope.captures);
                     }
                     self.depth -= 1;
                 }
-                Frame::Sequence(items, next) => {
-                    if let Some(position) = result
-                        && let Some(item) = items.get(next)
-                    {
-                        work.push(Frame::Sequence(items, next + 1));
-                        work.push(Frame::Expression(item, position));
+                KEYWORD | TOKEN | PARAMETER => {
+                    self.charge(1, position)?;
+                    if self.depth >= self.limits.depth {
+                        return Err(self.limit(position, "PEG nesting within the parser limit"));
+                    }
+                    let (accepts, advances, expected) = match opcode {
+                        KEYWORD => {
+                            let keyword = &self.grammar.program.keywords[argument];
+                            (
+                                self.token(position).is_keyword(self.input, keyword),
+                                true,
+                                keyword,
+                            )
+                        }
+                        TOKEN => {
+                            let (kind, expected) = &self.grammar.program.tokens[argument];
+                            (
+                                self.token(position).kind == *kind,
+                                *kind != TokenKind::End,
+                                expected,
+                            )
+                        }
+                        _ => (
+                            matches!(self.token(position).kind, TokenKind::Parameter(_)),
+                            true,
+                            &"a positional parameter",
+                        ),
+                    };
+                    matched = accepts;
+                    if accepts {
+                        position += usize::from(advances);
+                    } else {
+                        self.mismatch(position, expected);
                     }
                 }
-                Frame::Choice {
-                    items,
-                    next,
-                    position,
-                } => {
-                    if result.is_none()
-                        && let Some(item) = items.get(next)
-                    {
-                        work.push(Frame::Choice {
-                            items,
-                            next: next + 1,
-                            position,
-                        });
-                        work.push(Frame::Expression(item, position));
+                IF_FAILED => {
+                    if !matched {
+                        pc = argument;
+                        continue;
                     }
                 }
-                Frame::OptionalDone { position, saved } => {
-                    if result.is_none() {
-                        self.restore_absence(position, saved);
-                        result = Some(position);
+                CHOICE_NEXT => {
+                    if matched {
+                        pc = argument;
+                        continue;
+                    }
+                    position = work.last().expect("choice scope").position;
+                }
+                OPTIONAL_END => {
+                    if !matched {
+                        let scope = work.last().expect("optional scope");
+                        self.restore_absence(scope.position, scope.outer_error);
+                        position = scope.position;
+                        matched = true;
                     }
                 }
-                Frame::Repeat(inner, position) => {
-                    work.push(Frame::RepeatDone {
-                        inner,
-                        position,
-                        saved: self.farthest,
-                    });
-                    work.push(Frame::Expression(inner, position));
-                }
-                Frame::RepeatDone {
-                    inner,
-                    position,
-                    saved,
-                } => match result {
-                    Some(next) if next > position => work.push(Frame::Repeat(inner, next)),
-                    Some(_) => return Err(self.limit(position, "a consuming PEG repetition")),
-                    None => {
-                        self.restore_absence(position, saved);
-                        result = Some(position);
+                REPEAT_NEXT => {
+                    let scope = work.last_mut().expect("repeat scope");
+                    if matched {
+                        if position <= scope.position {
+                            return Err(self.limit(scope.position, "a consuming PEG repetition"));
+                        }
+                        scope.position = position;
+                        scope.outer_error = self.farthest;
+                        pc = argument;
+                        continue;
                     }
-                },
-                Frame::TightDone(start) => {
-                    if let Some(end) = result {
-                        for position in start.saturating_add(1)..end {
-                            self.charge(1, position)?;
-                            if self.token(position - 1).span.end != self.token(position).span.start
-                            {
-                                result = self.mismatch(position, &"adjacent tokens");
+                    self.restore_absence(scope.position, scope.outer_error);
+                    position = scope.position;
+                    matched = true;
+                }
+                TIGHT_END => {
+                    if matched {
+                        for token in
+                            work.last().expect("tight scope").position.saturating_add(1)..position
+                        {
+                            self.charge(1, token)?;
+                            if self.token(token - 1).span.end != self.token(token).span.start {
+                                self.mismatch(token, &"adjacent tokens");
+                                matched = false;
                                 break;
                             }
                         }
                     }
                 }
-                Frame::LookDone {
-                    position,
-                    positive,
-                    expected,
-                    saved,
-                    captures,
-                } => {
-                    self.captures.truncate(captures);
-                    self.farthest = saved;
-                    result = match result {
-                        Some(_) if positive => Some(position),
-                        None if !positive => Some(position),
-                        Some(_) | None => self.mismatch(position, expected),
-                    };
+                LOOK_END => {
+                    let scope = work.last().expect("lookahead scope");
+                    self.captures.truncate(scope.captures);
+                    self.farthest = scope.outer_error;
+                    position = scope.position;
+                    let (expected, positive) = &self.grammar.program.looks[argument];
+                    matched = matched == *positive;
+                    if !matched {
+                        self.mismatch(position, expected);
+                    }
                 }
+                _ => unreachable!("compiled PEG opcode"),
             }
+            pc += 1;
         }
-        result
-            .map(|end| (end, self.captures.pop().expect("successful root capture")))
-            .ok_or(Failure::Mismatch)
     }
 
     fn restore_absence(&mut self, position: usize, saved: Option<Diagnostic<'a>>) {
@@ -760,6 +710,7 @@ impl<'a> Matcher<'a, '_> {
 }
 
 mod memo;
+mod program;
 #[cfg(test)]
 mod tests;
 mod validation;

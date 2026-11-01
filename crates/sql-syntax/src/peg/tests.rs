@@ -726,3 +726,54 @@ fn tight_adjacency_validation_is_bounded_work_and_not_nullable_repetition() {
     .is_err());
     assert!(Grammar::compile(vec![("Root", Expression::Tight(Box::new(R("Root"))))]).is_err());
 }
+
+#[test]
+fn rule_aliases_and_cached_lookahead_keep_exact_logical_budgets() {
+    let grammar = Grammar::compile(vec![
+        (
+            "Root",
+            S(vec![
+                Expression::Ahead(Box::new(R("Alias")), "prefix"),
+                R("Alias"),
+                Tok(TokenKind::End, "end"),
+            ]),
+        ),
+        ("Alias", R("Pair")),
+        ("Pair", S(vec![K("SELECT"), K("FROM")])),
+    ])
+    .unwrap();
+    // Charge logical rule/expression visits, including the cached call. Scope
+    // cleanup and instruction jumps must not change this public boundary.
+    let limits = Limits {
+        steps: 13,
+        depth: 6,
+        nodes: 3,
+        memo_entries: 3,
+    };
+    let tree = parse(&grammar, "SELECT FROM", limits).unwrap();
+    assert_eq!(tree.steps, 13);
+    assert_eq!(tree.memo_entries, 3);
+    assert_eq!(tree.memo_hits, 1);
+    assert_eq!(tree.nodes.len(), 3);
+    assert_eq!(tree.edges.len(), 2);
+    let alias = tree.child(tree.root, "Alias").unwrap();
+    let pair = tree.child(alias, "Pair").unwrap();
+    for node in [tree.root, alias, pair] {
+        assert_eq!((tree.nodes[node].start, tree.nodes[node].end), (0, 2));
+    }
+    for insufficient in [
+        Limits {
+            steps: 12,
+            ..limits
+        },
+        Limits { depth: 5, ..limits },
+        Limits { nodes: 2, ..limits },
+        Limits {
+            memo_entries: 2,
+            ..limits
+        },
+    ] {
+        let error = parse(&grammar, "SELECT FROM", insufficient).err().unwrap();
+        assert_eq!(error.code, SyntaxErrorCode::ParserLimitExceeded);
+    }
+}

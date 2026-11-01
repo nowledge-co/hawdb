@@ -115,10 +115,23 @@ retains its expression or graph error code. Grammar prefixes must match before
 entering guarded content, so a rejected alternative does not consume language
 nesting admission.
 
-Only match or mismatch travels between continuation frames. Fatal work, depth,
+Grammar compilation lowers the resolved PEG expressions into a linear instruction
+stream. Parsing uses a program counter and one heap work stack shared by rule
+returns and expression scopes. Instructions retain ordered-choice commitment,
+capture rollback and isolated lookahead diagnostics; named rules retain the
+same memoized captures and language nesting heights. Validation runs before
+compilation; each resolved rule expression is released after lowering. The
+compiled grammar retains rule names, instructions and expectation pools, without
+retaining the expression tree. Temporary branch links live in jump operands
+until patching finishes, avoiding per-branch compilation allocations.
+
+Only match or mismatch travels between instructions. Fatal work, depth,
 memo, capture and repetition errors return immediately from the matcher, before
-optional, repeated or lookahead expressions can consume them. The local result
-therefore stores an optional end position without carrying an owned syntax error.
+optional, repeated or lookahead expressions can consume them. A local flag
+therefore records match or mismatch without carrying an owned syntax error.
+Work charging and depth admission still follow the original rule and expression
+entries, rather than counting implementation instructions. Jump and scope cleanup
+instructions do not alter the public resource-budget boundaries.
 
 A parser invocation owns its memo table and capture arena. Successful and
 failed named rules are cached by rule ID and token position; successful hits

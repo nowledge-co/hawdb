@@ -18,11 +18,11 @@ use super::{Expression, Grammar};
 use crate::TokenKind;
 
 impl Grammar {
-    pub(super) fn validate(&self) -> Result<(), String> {
-        let mut nullable = vec![false; self.rules.len()];
+    pub(super) fn validate(rules: &[(&'static str, Expression<usize>)]) -> Result<(), String> {
+        let mut nullable = vec![false; rules.len()];
         loop {
             let mut changed = false;
-            for (index, (_, expression)) in self.rules.iter().enumerate() {
+            for (index, (_, expression)) in rules.iter().enumerate() {
                 if !nullable[index] && Self::nullable(expression, &nullable) {
                     nullable[index] = true;
                     changed = true;
@@ -33,20 +33,17 @@ impl Grammar {
             }
         }
         let mut edges = Vec::new();
-        for (_, expression) in &self.rules {
+        for (_, expression) in rules {
             Self::check_repetition(expression, &nullable)?;
             let mut next = Vec::new();
             Self::leading_rules(expression, &nullable, &mut next);
             edges.push(next);
         }
-        let mut visiting = vec![false; self.rules.len()];
-        let mut visited = vec![false; self.rules.len()];
-        for root in 0..self.rules.len() {
+        let mut visiting = vec![false; rules.len()];
+        let mut visited = vec![false; rules.len()];
+        for (root, (name, _)) in rules.iter().enumerate() {
             if cycle(root, &edges, &mut visiting, &mut visited) {
-                return Err(format!(
-                    "left recursion in PEG rule: {}",
-                    self.rules[root].0
-                ));
+                return Err(format!("left recursion in PEG rule: {name}"));
             }
         }
         Ok(())

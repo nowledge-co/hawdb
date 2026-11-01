@@ -2325,6 +2325,9 @@ is separate from WASM compiler checks and from the standard owner test profile.
 Continuation-local results carry only match/mismatch; fatal resource errors
 return directly from the matcher. The existing fatal-propagation cases retain
 all original assertions across this representation change.
+The compiled instruction matcher also fixes exact public work/depth/node/memo
+boundaries for nested rule aliases, multi-token positive lookahead and cached
+capture reuse. The admitted tree retains both named aliases and their spans.
 SQL and Cypher share the same nongeneric CST grammar API.
 
 Latest-main integration at `2ae7e88614` (#1411) adds bare row-bound values in
