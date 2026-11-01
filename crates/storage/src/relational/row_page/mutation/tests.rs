@@ -321,6 +321,7 @@ fn publish_base(directory: &Path, config: RelationalRowPagePublicationConfig) {
             1,
             None,
             vec![RelationalRowPageTableDelta {
+                last_row_id: 0,
                 table: "documents".to_string(),
                 schema: Some(crate::relational::row_page::test_row_page_schema(
                     "documents",

@@ -692,8 +692,9 @@ production-qualified.
 
 ### Relational layout
 
-1. A relational table MUST have a primary key.
-2. Leaf row pages MUST contain complete encoded rows ordered by primary key.
+1. A relational table uses its declared primary key as its handle, or a hidden
+   table-local RowId when no primary key is declared.
+2. Leaf row pages MUST contain complete encoded rows ordered by handle.
 3. Page directories MUST support binary search without decoding every row.
 4. A point read MUST decode only the selected row and requested fields.
 5. Ordered pagination MUST stop after the admitted `LIMIT` and MUST NOT drain
@@ -1294,11 +1295,12 @@ new candidate file is created.
 One generation has both an immutable manifest
 `relational-row-delta-{base_generation}-{delta_generation}.manifest.hawdb`
 and the publish-last selector `relational-row-delta.manifest.hawdb`.
-`SKRDMF01` version 1 has a fixed 304-byte header followed by 48-byte table
+`SKRDMF01` version 2 has a fixed 304-byte header followed by 56-byte table
 descriptors plus names and 100-byte run descriptors plus lower/upper keys. It
 contains the same 56-byte recovery-source identity used by index recovery and
 rejects an empty or epoch-length-mismatched LSN range. It binds each table's
-schema identity and exact final row count from the same
+schema identity, exact final row count, and hidden RowId allocation high-water
+mark from the same
 `RelationalState` that produced the recovery changes, plus exact table and
 run-set digests, optional overflow-root identity, run artifact length and
 digest, total entries, and the complete epoch fence. A schema or table-set

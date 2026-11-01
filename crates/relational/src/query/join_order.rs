@@ -60,6 +60,128 @@ use implementations::{prepare_join_implementations, PreparedJoinImplementation};
 pub(super) use scopes::bind_from_scopes;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(super) fn promote_where_equalities(
+    select: &mut SelectStatement,
+    state: &RelationalState,
+    parameters: &[Value],
+) -> Result<()> {
+    if select.joins.is_empty()
+        || select
+            .joins
+            .iter()
+            .any(|join| join.kind != SqlJoinKind::Inner)
+    {
+        return Ok(());
+    }
+    let Some(selection) = &select.selection else {
+        return Ok(());
+    };
+    let relations = bind_relations(select, state)?;
+    let mut conjuncts = Vec::new();
+    collect_conjuncts(selection, &mut conjuncts);
+    let mut constants = BTreeMap::<
+        (
+            hawdb_storage::relational::RelationalScalarType,
+            hawdb_storage::relational::RelationalValue,
+        ),
+        Vec<SqlColumnRef>,
+    >::new();
+    for conjunct in &conjuncts {
+        let ExprKind::Compare {
+            left,
+            op: hawdb_sql::SqlComparisonOp::Eq,
+            right,
+        } = &conjunct.kind
+        else {
+            continue;
+        };
+        let (Some(column), Some(value)) = (left.as_column(), right.as_value()) else {
+            continue;
+        };
+        let Some(binding) = resolve_column_binding(column, &relations) else {
+            continue;
+        };
+        let relation = relation_by_binding(&relations, binding);
+        let scalar_type = relation.schema.columns[relation
+            .schema
+            .column_position(&column.name)
+            .expect("bound column")]
+        .scalar_type;
+        let value = crate::coerce_relational_value(
+            crate::bind_relational_value(value.clone(), parameters)?,
+            scalar_type,
+        )?;
+        if value.scalar_type() != Some(scalar_type)
+            || matches!(value, hawdb_storage::relational::RelationalValue::DoublePrecision(value) if !value.is_finite())
+        {
+            continue;
+        }
+        let column = qualify_column(column, &relations).expect("bound constant column");
+        let group = constants.entry((scalar_type, value)).or_default();
+        if !group.contains(&column) {
+            group.push(column);
+        }
+    }
+    // Equal non-null constants can supply the missing component of a composite
+    // join key (for example warehouse_id = $1 on both sides). Values are bound
+    // for this execution; no inferred equality is cached across parameter sets.
+    for group in constants.values() {
+        let Some((left, rest)) = group.split_first() else {
+            continue;
+        };
+        for right in rest {
+            if left.qualifier != right.qualifier {
+                conjuncts.push(Expr::unspanned(ExprKind::Compare {
+                    left: Box::new(Expr::column(left.clone())),
+                    op: hawdb_sql::SqlComparisonOp::Eq,
+                    right: Box::new(Expr::column(right.clone())),
+                }));
+            }
+        }
+    }
+    for conjunct in conjuncts {
+        let ExprKind::Compare {
+            left,
+            op: hawdb_sql::SqlComparisonOp::Eq,
+            right,
+        } = &conjunct.kind
+        else {
+            continue;
+        };
+        let (Some(left), Some(right)) = (left.as_column(), right.as_column()) else {
+            continue;
+        };
+        let (Some(left_binding), Some(right_binding)) = (
+            resolve_column_binding(left, &relations),
+            resolve_column_binding(right, &relations),
+        ) else {
+            continue;
+        };
+        if left_binding == right_binding {
+            continue;
+        }
+        let right_ordinal = relations
+            .iter()
+            .position(|relation| relation.binding == left_binding.max(right_binding))
+            .expect("resolved join binding");
+        let predicate =
+            qualify_predicate(&conjunct, &relations).expect("resolved equality columns");
+        let join = &mut select.joins[right_ordinal - 1];
+        // A WHERE predicate is globally scoped. Only distribute across an all-inner
+        // FROM tree; keep the residual to preserve the existing filter contract.
+        if matches!(
+            join.on.as_value(),
+            Some(hawdb_sql::SqlValue::Literal(Value::Bool(true)))
+        ) {
+            join.on = predicate;
+        } else {
+            join.on = combine_predicates([join.on.clone(), predicate]);
+        }
+        join.on_scope_start = 0;
+    }
+    Ok(())
+}
+
 pub(super) struct PlannedSelectStatement {
     pub(super) statement: SelectStatement,
     pub(super) access_plan: Option<PreparedRelationalAccessPlan>,

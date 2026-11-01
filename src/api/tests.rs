@@ -74,6 +74,7 @@ mod graph_hash_join;
 mod graph_match_reads;
 mod graph_meta;
 mod graph_rag_schema_guidance;
+mod hidden_row_id;
 mod induced_edge_reads;
 mod joint_ndv_statistics;
 mod knowledge_community_entity_visibility;

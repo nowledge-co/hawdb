@@ -1311,6 +1311,7 @@ fn deletion_requires_a_page_in_the_selected_base() {
             11,
             Some(1),
             vec![RelationalRowPageTableDelta {
+                last_row_id: 0,
                 table: "documents".to_string(),
                 schema: None,
                 schema_digest: schema_digest(),
@@ -1621,6 +1622,7 @@ fn table_delta(
         .and_then(NonZeroU64::new)
         .expect("test row-page allocator must remain representable");
     RelationalRowPageTableDelta {
+        last_row_id: 0,
         table: table.to_string(),
         schema: Some(crate::relational::row_page::test_row_page_schema(table, 2)),
         schema_digest: schema_digest(),

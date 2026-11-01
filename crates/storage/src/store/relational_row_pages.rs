@@ -183,6 +183,13 @@ impl GraphStore {
                 .or_default()
                 .push(change);
         }
+        // An insert followed by deletion can leave no row changes while still
+        // advancing the allocation fence. Publish that metadata at checkpoint.
+        for table in &base_manifest.tables {
+            if self.relational_state.last_row_id(&table.table) != table.last_row_id {
+                changes_by_table.entry(table.table.clone()).or_default();
+            }
+        }
         if changes_by_table.len() > config.max_tables.get() {
             return Err(crate::error::HawDBError::Storage(format!(
                 "relational row checkpoint changes reference {} tables, exceeding limit {}",
@@ -242,7 +249,7 @@ impl GraphStore {
                         "relational row checkpoint cannot derive schema digest for {table}"
                     ))
                 })?;
-            let plan = planner
+            let mut plan = planner
                 .plan_table(&table, schema_digest, schema.columns.len(), changes)
                 .map_err(crate::error::HawDBError::from_storage_error)?;
             planned_dirty_pages = planned_dirty_pages
@@ -267,6 +274,7 @@ impl GraphStore {
                         "relational row checkpoint dirty-byte accounting overflow".to_string(),
                     )
                 })?;
+            plan.delta.last_row_id = self.relational_state.last_row_id(&table);
             deltas.push(plan.delta);
         }
         Ok(RelationalRowPageCheckpointPlan {
@@ -960,10 +968,9 @@ impl GraphStore {
                         let manifest = delta.manifest();
                         if self.relational_state.canonical_row_metadata_only()
                             && let Err(error) = self.relational_state.adopt_recovered_row_counts(
-                                manifest
-                                    .tables()
-                                    .iter()
-                                    .map(|table| (table.table.as_str(), table.row_count)),
+                                manifest.tables().iter().map(|table| {
+                                    (table.table.as_str(), table.row_count, table.last_row_id)
+                                }),
                             )
                         {
                             self.mark_relational_row_page_recovery_unavailable(

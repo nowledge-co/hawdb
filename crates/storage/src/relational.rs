@@ -880,11 +880,13 @@ impl RelationalTableSchema {
         let mut definitions = Vec::with_capacity(
             1 + self.unique_constraints.len() + self.indexes.len() + self.foreign_keys.len(),
         );
-        definitions.push(RelationalIndexDefinition {
-            name: RELATIONAL_PRIMARY_INDEX_NAME.to_string(),
-            columns: self.primary_key.clone(),
-            role: RelationalIndexRole::Primary,
-        });
+        if !self.primary_key.is_empty() {
+            definitions.push(RelationalIndexDefinition {
+                name: RELATIONAL_PRIMARY_INDEX_NAME.to_string(),
+                columns: self.primary_key.clone(),
+                role: RelationalIndexRole::Primary,
+            });
+        }
         definitions.extend(
             self.unique_constraints
                 .iter()
@@ -918,7 +920,7 @@ impl RelationalTableSchema {
     }
 
     pub fn unique_index_definition(&self, columns: &[String]) -> Option<RelationalIndexDefinition> {
-        if columns == self.primary_key {
+        if !columns.is_empty() && columns == self.primary_key {
             return Some(RelationalIndexDefinition {
                 name: RELATIONAL_PRIMARY_INDEX_NAME.to_string(),
                 columns: self.primary_key.clone(),
@@ -1807,6 +1809,7 @@ impl RelationalRow {
 
 #[derive(Debug, Default)]
 struct RelationalTableSegment {
+    last_row_id: i64,
     rows: RelationalRowPages,
     indexes: BTreeMap<String, RelationalIndexPages>,
     _memory: crate::background::CheckpointAllocationOwner,
@@ -1815,6 +1818,7 @@ struct RelationalTableSegment {
 impl Clone for RelationalTableSegment {
     fn clone(&self) -> Self {
         Self {
+            last_row_id: self.last_row_id,
             rows: self.rows.clone(),
             indexes: self.indexes.clone(),
             _memory: Default::default(),
@@ -1823,6 +1827,27 @@ impl Clone for RelationalTableSegment {
 }
 
 impl RelationalTableSegment {
+    fn allocate_row_handle(
+        &mut self,
+        row: &RelationalRow,
+        primary_positions: &[usize],
+        allocations: Option<&crate::background::CheckpointDecodeContext>,
+    ) -> Result<RelationalKey, RelationalError> {
+        if !primary_positions.is_empty() {
+            return row_key_with_allocations(row, primary_positions, allocations);
+        }
+        let id = self
+            .last_row_id
+            .checked_add(1)
+            .ok_or_else(|| RelationalError::Admission("hidden row ID space exhausted".into()))?;
+        let key = clone_key_with_allocations(
+            &RelationalKey(vec![RelationalValue::BigInt(id)]),
+            allocations,
+        )?;
+        self.last_row_id = id;
+        Ok(key)
+    }
+
     fn checkpoint_empty(
         work: &crate::background::CheckpointWorkContext,
     ) -> Result<Arc<Self>, RelationalError> {
@@ -1851,6 +1876,7 @@ impl RelationalTableSegment {
             len: 0,
         };
         let output = Arc::new(Self {
+            last_row_id: 0,
             rows,
             indexes: BTreeMap::new(),
             _memory: context.memory.into_inner(),
@@ -1893,6 +1919,7 @@ impl RelationalTableSegment {
             .start_unit()
             .map_err(|error| RelationalError::Admission(error.to_string()))?;
         let output = Arc::new(Self {
+            last_row_id: self.last_row_id,
             rows: self.rows.clone(),
             indexes,
             _memory: context.memory.into_inner(),
@@ -1918,6 +1945,7 @@ impl RelationalTableSegment {
             .start_unit()
             .map_err(|error| RelationalError::Admission(error.to_string()))?;
         let output = Arc::new(Self {
+            last_row_id: self.last_row_id,
             rows: self.rows.clone(),
             indexes: BTreeMap::new(),
             _memory: context.memory.into_inner(),
@@ -3516,7 +3544,10 @@ impl RelationalState {
         self.detached_row_bytes = self.estimated_materialized_row_bytes();
         self.detached_row_counts = counts.into();
         for segment in self.segments.values_mut() {
-            *segment = Arc::new(RelationalTableSegment::default());
+            *segment = Arc::new(RelationalTableSegment {
+                last_row_id: segment.last_row_id,
+                ..Default::default()
+            });
         }
         self.materialized_rows_resident = false;
         self.materialized_index_postings_resident = false;
@@ -3534,6 +3565,16 @@ impl RelationalState {
         for table in &manifest.tables {
             if table.schema.materialized_view.is_some() {
                 return Err(RelationalError::Admission("materialized views require resident relational rows; authoritative out-of-core storage is unsupported".into()));
+            }
+            if table.last_row_id < 0
+                || (!table.schema.primary_key.is_empty() && table.last_row_id != 0)
+                || (table.schema.primary_key.is_empty()
+                    && table.row_count > table.last_row_id as u64)
+            {
+                return Err(RelationalError::Corruption(format!(
+                    "canonical row root table {} has an invalid hidden row ID allocator",
+                    table.table
+                )));
             }
             if table.table != table.schema.name {
                 return Err(RelationalError::Corruption(format!(
@@ -3585,7 +3626,10 @@ impl RelationalState {
             }
             segments.insert(
                 table.table.clone(),
-                Arc::new(RelationalTableSegment::default()),
+                Arc::new(RelationalTableSegment {
+                    last_row_id: table.last_row_id,
+                    ..Default::default()
+                }),
             );
             row_counts.insert(table.table.clone(), row_count);
         }
@@ -3607,7 +3651,7 @@ impl RelationalState {
     /// source-fenced recovery artifact without materializing checkpoint rows.
     pub fn adopt_recovered_row_counts<'a>(
         &mut self,
-        row_counts: impl IntoIterator<Item = (&'a str, u64)>,
+        row_counts: impl IntoIterator<Item = (&'a str, u64, i64)>,
     ) -> Result<(), RelationalError> {
         if self.materialized_rows_resident || !self.canonical_row_metadata_only {
             return Err(RelationalError::Corruption(
@@ -3617,12 +3661,22 @@ impl RelationalState {
         }
         let mut counts = BTreeMap::new();
         let mut total = 0usize;
-        for (table, row_count) in row_counts {
+        let mut allocators = BTreeMap::new();
+        for (table, row_count, last_row_id) in row_counts {
             if !self.schemas.contains_key(table) {
                 return Err(RelationalError::Corruption(format!(
                     "recovered row counts contain unknown table {table}"
                 )));
             }
+            if last_row_id < self.last_row_id(table)
+                || (!self.schemas[table].primary_key.is_empty() && last_row_id != 0)
+                || (self.schemas[table].primary_key.is_empty() && row_count > last_row_id as u64)
+            {
+                return Err(RelationalError::Corruption(
+                    "invalid recovered row ID allocator".into(),
+                ));
+            }
+            allocators.insert(table.to_string(), last_row_id);
             let row_count = usize::try_from(row_count).map_err(|_| {
                 RelationalError::Admission(format!(
                     "recovered row count {row_count} for table {table} exceeds platform capacity"
@@ -3645,6 +3699,10 @@ impl RelationalState {
             return Err(RelationalError::Corruption(
                 "recovered row counts do not cover the canonical schema set".to_string(),
             ));
+        }
+        for (table, last_row_id) in allocators {
+            Arc::make_mut(self.segments.get_mut(&table).expect("validated table")).last_row_id =
+                last_row_id;
         }
         self.detached_total_row_count = total;
         self.detached_row_counts = counts.into();
@@ -4586,6 +4644,7 @@ impl RelationalState {
                 .or_insert(eligible);
         }
         let mut append_candidates = BTreeMap::<(String, RelationalKey), Vec<RelationalKey>>::new();
+        let mut hidden_allocators = BTreeMap::<&str, i64>::new();
         for write in &transaction.writes {
             match write {
                 RelationalWrite::Insert { table, rows, .. } => {
@@ -4593,7 +4652,14 @@ impl RelationalState {
                     let primary_key = column_positions(schema, &schema.primary_key)?;
                     for row in rows {
                         validate_row(schema, row)?;
-                        let key = row_key(row, &primary_key);
+                        let key = if primary_key.is_empty() {
+                            let last = hidden_allocators
+                                .entry(table.as_str())
+                                .or_insert_with(|| self.last_row_id(table));
+                            planned_hidden_row_handle(last)
+                        } else {
+                            row_key(row, &primary_key)
+                        };
                         let has_constraint_probes = !schema.unique_constraints.is_empty()
                             || !schema.foreign_keys.is_empty();
                         if append_only_tables.get(table.as_str()) == Some(&true)
@@ -4631,9 +4697,17 @@ impl RelationalState {
                         })?;
                     for row in rows {
                         validate_row(schema, row)?;
+                        let key = if primary_key.is_empty() {
+                            let last = hidden_allocators
+                                .entry(table.as_str())
+                                .or_insert_with(|| self.last_row_id(table));
+                            planned_hidden_row_handle(last)
+                        } else {
+                            row_key(row, &primary_key)
+                        };
                         point_access.insert(RelationalReplayAccess {
                             table: table.clone(),
-                            primary_key: row_key(row, &primary_key),
+                            primary_key: key,
                         });
                         let conflict_key = row_key(row, &conflict_positions);
                         if !key_contains_null(&conflict_key) {
@@ -5036,7 +5110,13 @@ impl RelationalState {
                 None => (table.clone(), table.clone()),
             };
             schemas.insert(schema_name, schema.clone());
-            segments.insert(segment_name, Arc::new(RelationalTableSegment::default()));
+            segments.insert(
+                segment_name,
+                Arc::new(RelationalTableSegment {
+                    last_row_id: self.segments[table].last_row_id,
+                    ..Default::default()
+                }),
+            );
         }
         for hydrated in hydrated_access {
             if supplied_access
@@ -5114,10 +5194,17 @@ impl RelationalState {
                 &schema.primary_key,
                 position_allocations.as_ref(),
             )?;
-            if !primary_key_positions
-                .iter()
-                .map(|position| &row.values()[*position])
-                .eq(hydrated.primary_key.0.iter())
+            if schema.primary_key.is_empty() {
+                validate_hidden_row_handle(
+                    &hydrated.primary_key,
+                    self.segments[&hydrated.table].last_row_id,
+                )?;
+            }
+            if !schema.primary_key.is_empty()
+                && !primary_key_positions
+                    .iter()
+                    .map(|position| &row.values()[*position])
+                    .eq(hydrated.primary_key.0.iter())
             {
                 return Err(RelationalError::Corruption(format!(
                     "{context} row primary key differs from its hydrated key in table {}",
@@ -5421,6 +5508,14 @@ impl RelationalState {
         };
         let counts = &mut *metadata.detached_row_counts;
         for table in self.schemas.keys() {
+            let segment = metadata.segments.get_mut(table).expect("known table");
+            let last_row_id = after.segments[table].last_row_id;
+            if segment.last_row_id != last_row_id {
+                if let Some(work) = work {
+                    *segment = segment.checkpoint_clone(work)?;
+                }
+                Arc::make_mut(segment).last_row_id = last_row_id;
+            }
             let before_count = before
                 .segments
                 .get(table)
@@ -5470,6 +5565,13 @@ impl RelationalState {
                 .or_insert_with(|| segment.clone());
         }
         Ok(metadata)
+    }
+
+    /// Last allocated hidden handle; zero for tables addressed by an explicit primary key.
+    pub fn last_row_id(&self, table: &str) -> i64 {
+        self.segments
+            .get(table)
+            .map_or(0, |segment| segment.last_row_id)
     }
 
     pub fn table_schema(&self, table: &str) -> Option<&RelationalTableSchema> {
@@ -5606,6 +5708,7 @@ impl RelationalState {
                 }
                 let report = bootstrap.finish(&mut emit)?;
                 Ok(RelationalRowPageTableDelta {
+                    last_row_id: self.last_row_id(&schema.name),
                     table: schema.name.clone(),
                     schema: Some(schema.clone()),
                     schema_digest,
@@ -7090,6 +7193,7 @@ fn add_column_with_allocations(
         .start_unit()
         .map_err(|error| RelationalError::Admission(error.to_string()))?;
     let replacement = Arc::new(RelationalTableSegment {
+        last_row_id: state.segments[table].last_row_id,
         rows,
         indexes: BTreeMap::new(),
         _memory: segment_context.memory.into_inner(),
@@ -7493,7 +7597,8 @@ fn apply_transaction_inner(
                 })?;
                 let segment = mutable_segment_with_allocations(segment, checkpoint_allocations)?;
                 for row in prepared_rows {
-                    let key = row_key_with_allocations(&row, &primary_key, checkpoint_allocations)?;
+                    let key =
+                        segment.allocate_row_handle(&row, &primary_key, checkpoint_allocations)?;
                     if mode == RelationalInsertMode::Error && segment.rows.contains_key(&key) {
                         return Err(RelationalError::Constraint(format!(
                             "duplicate primary key in table {table}"
@@ -8081,8 +8186,11 @@ fn apply_upsert(
                 },
             )?;
             validate_row(&schema, &updated)?;
-            let updated_primary_key =
-                row_key_with_allocations(&updated, &primary_key_positions, checkpoint_allocations)?;
+            let updated_primary_key = if primary_key_positions.is_empty() {
+                clone_key_with_allocations(&existing_primary_key, checkpoint_allocations)?
+            } else {
+                row_key_with_allocations(&updated, &primary_key_positions, checkpoint_allocations)?
+            };
             let updated_conflict_key =
                 row_key_with_allocations(&updated, &conflict_positions, checkpoint_allocations)?;
             insert_changed_key_with_allocations(
@@ -8122,7 +8230,7 @@ fn apply_upsert(
             }
             affected_rows = affected_rows.saturating_add(1);
         } else {
-            let primary_key = row_key_with_allocations(
+            let primary_key = segment.allocate_row_handle(
                 &excluded,
                 &primary_key_positions,
                 checkpoint_allocations,
@@ -8492,8 +8600,11 @@ fn apply_update(
             overflow_config,
             checkpoint_allocations,
         )?;
-        let new_key =
-            row_key_with_allocations(&updated, &primary_key_positions, checkpoint_allocations)?;
+        let new_key = if primary_key_positions.is_empty() {
+            clone_key_with_allocations(old_key, checkpoint_allocations)?
+        } else {
+            row_key_with_allocations(&updated, &primary_key_positions, checkpoint_allocations)?
+        };
         let retained_old_key = match &update_context {
             Some(context) => old_key.clone_with_allocations(context)?,
             None => old_key.clone(),
@@ -8824,12 +8935,6 @@ fn validate_table_schema(schema: &RelationalTableSchema) -> Result<(), Relationa
             "table name and columns must be non-empty".to_string(),
         ));
     }
-    if schema.primary_key.is_empty() {
-        return Err(RelationalError::Schema(format!(
-            "table {} must declare a primary key",
-            schema.name
-        )));
-    }
     let mut names = BTreeSet::new();
     for column in &schema.columns {
         if column.name.is_empty() || !names.insert(column.name.clone()) {
@@ -8852,7 +8957,9 @@ fn validate_table_schema(schema: &RelationalTableSchema) -> Result<(), Relationa
             }
         }
     }
-    validate_column_list(schema, &schema.primary_key, "primary key")?;
+    if !schema.primary_key.is_empty() {
+        validate_column_list(schema, &schema.primary_key, "primary key")?;
+    }
     for column in &schema.primary_key {
         let position = schema.column_position(column).expect("validated column");
         if schema.columns[position].nullable {
@@ -9057,6 +9164,7 @@ fn rebuild_indexes_with_allocations(
         .start_unit()
         .map_err(|error| RelationalError::Admission(error.to_string()))?;
     let replacement = Arc::new(RelationalTableSegment {
+        last_row_id: source.last_row_id,
         rows: source.rows.clone(),
         indexes,
         _memory: owned_context.memory.into_inner(),
@@ -9245,7 +9353,7 @@ fn unique_index_definition_with_allocations(
     let Some(context) = allocations else {
         return Ok(schema.unique_index_definition(columns));
     };
-    let (name, role) = if columns == schema.primary_key {
+    let (name, role) = if !columns.is_empty() && columns == schema.primary_key {
         (
             clone_string_with_allocations(RELATIONAL_PRIMARY_INDEX_NAME, Some(context))?,
             RelationalIndexRole::Primary,
@@ -9313,11 +9421,13 @@ fn required_index_definitions_with_allocations(
         unit.finish();
         Ok(())
     };
-    push(
-        clone_string_with_allocations(RELATIONAL_PRIMARY_INDEX_NAME, Some(context))?,
-        &schema.primary_key,
-        RelationalIndexRole::Primary,
-    )?;
+    if !schema.primary_key.is_empty() {
+        push(
+            clone_string_with_allocations(RELATIONAL_PRIMARY_INDEX_NAME, Some(context))?,
+            &schema.primary_key,
+            RelationalIndexRole::Primary,
+        )?;
+    }
     for (ordinal, columns) in schema.unique_constraints.iter().enumerate() {
         push(
             admitted_ordinal_index_name(RELATIONAL_UNIQUE_INDEX_PREFIX, ordinal, context)?,
@@ -10294,6 +10404,27 @@ fn row_key_with_allocations(
         .checkpoint()
         .map_err(|error| RelationalError::Admission(error.to_string()))?;
     Ok(RelationalKey(values))
+}
+
+// Probe every possible allocation up to the maximum. Conflicting UPSERT rows
+// consume no ID, so later actual allocations remain inside this upper bound.
+// Saturation avoids rejecting a conflict-only UPSERT at allocator exhaustion;
+// the actual insert path still fails before publishing an exhausted allocation.
+fn planned_hidden_row_handle(last_row_id: &mut i64) -> RelationalKey {
+    *last_row_id = last_row_id.saturating_add(1);
+    RelationalKey(vec![RelationalValue::BigInt(*last_row_id)])
+}
+
+fn validate_hidden_row_handle(
+    key: &RelationalKey,
+    last_row_id: i64,
+) -> Result<(), RelationalError> {
+    if !matches!(key.0.as_slice(), [RelationalValue::BigInt(id)] if *id > 0 && *id <= last_row_id) {
+        return Err(RelationalError::Corruption(
+            "invalid hidden row handle or allocation high-water mark".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn row_key(row: &RelationalRow, positions: &[usize]) -> RelationalKey {

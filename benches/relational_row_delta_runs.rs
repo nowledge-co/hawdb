@@ -218,6 +218,7 @@ impl Fixture {
             1,
             None,
             vec![RelationalRowDeltaTableMetadata {
+                last_row_id: 0,
                 table: TABLE.to_string(),
                 schema_digest: table.schema_digest,
                 column_count: table.column_count,
@@ -241,6 +242,7 @@ impl Fixture {
             .adopt_recovered_row_counts([(
                 TABLE,
                 u64::try_from(run_count.saturating_add(2)).expect("benchmark row count fits u64"),
+                0,
             )])
             .expect("advance benchmark row count");
         let report = builder

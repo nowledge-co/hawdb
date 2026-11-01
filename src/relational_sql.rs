@@ -25,6 +25,10 @@ pub(crate) use hawdb_relational::compile_relational_statement_sql;
 #[path = "relational_sql/query.rs"]
 mod query;
 
+#[cfg(test)]
+#[path = "relational_sql/postgres_compat.rs"]
+mod postgres_compat;
+
 pub use hawdb_optimizer_relational::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
     RelationalJoinPlanningDirective, RelationalJoinPlanningFallbackClass,

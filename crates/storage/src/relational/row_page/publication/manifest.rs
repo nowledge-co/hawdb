@@ -27,7 +27,7 @@ mod checkpoint;
 pub(super) use checkpoint::{encode_manifest_with_work_context, root_set_digest_with_work_context};
 
 const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM01";
-const MANIFEST_VERSION: u16 = 1;
+const MANIFEST_VERSION: u16 = 2;
 const PHYSICAL_GENERATIONS_FLAG: u16 = 1;
 pub(super) const PHYSICAL_GENERATION_BYTES: usize = 24;
 pub(super) const OCCUPANCY_TRAILER_BYTES: usize = 12;
@@ -577,6 +577,15 @@ fn validate_manifest_inner(
                 table.table, table.column_count, config.page_limits.max_columns
             )));
         }
+        if table.last_row_id < 0
+            || (!table.schema.primary_key.is_empty() && table.last_row_id != 0)
+            || (table.schema.primary_key.is_empty() && table.row_count > table.last_row_id as u64)
+        {
+            return Err(fail(format!(
+                "table {} has an invalid hidden row ID allocator",
+                table.table
+            )));
+        }
         if table.schema.name != table.table
             || table.schema.columns.len() != table.column_count.get() as usize
         {
@@ -771,6 +780,7 @@ fn encode_tables(
         encoded.extend_from_slice(table.schema_digest.as_bytes());
         encoded.extend_from_slice(&table.column_count.get().to_le_bytes());
         encoded.extend_from_slice(&table.row_count.to_le_bytes());
+        encoded.extend_from_slice(&table.last_row_id.to_le_bytes());
         encoded.extend_from_slice(&table.next_page_id.get().to_le_bytes());
         encoded.extend_from_slice(&table.first_descriptor.to_le_bytes());
         encoded.extend_from_slice(&table.page_count.to_le_bytes());
@@ -841,6 +851,11 @@ fn decode_tables(
             )
         })?;
         let row_count = read_u64(take(payload, &mut offset, 8, "table row count")?);
+        let last_row_id = i64::from_le_bytes(
+            take(payload, &mut offset, 8, "last hidden row ID")?
+                .try_into()
+                .expect("fixed width"),
+        );
         let next_page_id = NonZeroU64::new(read_u64(take(
             payload,
             &mut offset,
@@ -871,6 +886,7 @@ fn decode_tables(
         )?;
         let unit = start_unit(work)?;
         tables.push(RelationalRowPageTableRoot {
+            last_row_id,
             table,
             schema,
             schema_digest,

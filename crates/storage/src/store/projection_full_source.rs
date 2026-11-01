@@ -150,7 +150,7 @@ impl GraphStore {
                     ProjectionFeedResource::Bytes,
                 ));
             }
-            if schema.primary_key.is_empty() || schema.primary_key.len() > 32 {
+            if schema.primary_key.len() > 32 {
                 return Err(ProjectionFeedError::Source(HawDBError::Execution(
                     "full projection source requires bounded canonical primary keys".into(),
                 )));

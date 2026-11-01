@@ -156,6 +156,7 @@ impl RelationalRowDeltaBaseBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalRowDeltaTableMetadata {
+    pub last_row_id: i64,
     pub table: String,
     pub schema_digest: Sha256Digest,
     pub column_count: NonZeroU32,

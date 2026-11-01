@@ -15,23 +15,24 @@
 use super::*;
 
 #[test]
-fn relational_ddl_requires_exactly_one_primary_key_declaration() {
+fn relational_ddl_accepts_no_primary_key_and_rejects_duplicate_declarations() {
     let missing = hawdb_sql::prepare_postgres_sql(
         "CREATE TABLE documents (id TEXT NOT NULL, payload TEXT NOT NULL)",
     )
     .expect("valid PostgreSQL syntax");
-    let error = compile_schema_statement(&missing.statement)
-        .expect_err("HawDB relational tables require a primary key");
-    assert_eq!(
-        error,
-        HawDBError::Semantic("relational table documents must declare a primary key".to_string())
-    );
+    let compiled = compile_schema_statement(&missing.statement, &RelationalState::default())
+        .expect("tables without a declared primary key use a hidden handle");
+    let RelationalWrite::CreateTable(schema) = &compiled[0] else {
+        panic!("expected table");
+    };
+    assert!(schema.primary_key.is_empty());
+    assert_eq!(schema.columns.len(), 2);
 
     let duplicate = hawdb_sql::prepare_postgres_sql(
         "CREATE TABLE documents (tenant_id TEXT PRIMARY KEY, id TEXT PRIMARY KEY)",
     )
     .expect("parser preserves duplicate declarations for semantic validation");
-    let error = compile_schema_statement(&duplicate.statement)
+    let error = compile_schema_statement(&duplicate.statement, &RelationalState::default())
         .expect_err("multiple primary-key declarations must be rejected");
     assert_eq!(
         error,
@@ -46,7 +47,8 @@ fn table_level_composite_primary_key_is_not_nullable() {
          PRIMARY KEY (tenant_id, id))",
     )
     .expect("valid composite primary key");
-    let writes = compile_schema_statement(&prepared.statement).expect("compiled schema");
+    let writes = compile_schema_statement(&prepared.statement, &RelationalState::default())
+        .expect("compiled schema");
     let [RelationalWrite::CreateTable(schema)] = writes.as_slice() else {
         panic!("expected one CREATE TABLE write");
     };
@@ -152,7 +154,6 @@ fn invalid_schema_and_mutation_shapes_keep_the_existing_errors() {
         ("DELETE FROM items WHERE other.id = 1", vec![], "unknown qualifier"),
         ("UPDATE items SET missing = 1 WHERE id = 1", vec![], "has no column missing"),
         ("CREATE TABLE IF NOT EXISTS t (id BIGINT PRIMARY KEY)", vec![], "must not hide drift"),
-        ("CREATE TABLE t (id BIGINT)", vec![], "must declare a primary key"),
         ("INSERT INTO items (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET counter = 1 RETURNING id", vec![], "RETURNING with ON CONFLICT DO UPDATE"),
     ] {
         let error = compile_relational_statement_sql(sql, &parameters, &state).unwrap_err();

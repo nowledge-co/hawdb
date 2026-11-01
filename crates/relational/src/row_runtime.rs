@@ -477,7 +477,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 index_columns.len()
             )));
         }
-        if primary_key.0.len() != schema.primary_key.len() {
+        if primary_key.0.len() != schema.primary_key.len().max(1) {
             return Err(HawDBError::StorageIntegrity(format!(
                 "relational primary-key locator for table {table} has {} values but the schema has {} primary-key columns",
                 primary_key.0.len(),
