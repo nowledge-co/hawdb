@@ -57,7 +57,13 @@ fn long_and_suffix_heavy_queries_are_scored_in_every_mode() {
     let reader = SearchOutOfCoreReader::open(&path).unwrap();
     let embedding = [1.0, 0.5];
     for query in [long_query().as_str(), SENTENCE] {
-        for (mode, window) in [(SearchMode::Text, None), (SearchMode::Hybrid, Some(16))] {
+        let modes: &[(SearchMode, Option<usize>)] = &[
+            (SearchMode::Text, None),
+            // Hybrid needs the vector capability; text-only lanes score text.
+            #[cfg(feature = "vector-search")]
+            (SearchMode::Hybrid, Some(16)),
+        ];
+        for &(mode, window) in modes {
             let output = reader
                 .search_with_options(query, Some(&embedding), mode, options(10, window))
                 .unwrap_or_else(|error| panic!("{mode:?} {query:?}: {error}"));
@@ -279,7 +285,12 @@ fn lexical_query_term_caps_are_configurable_and_analyzed_overflow_fails_closed()
     let reader =
         SearchOutOfCoreReader::open_with_config_and_analyzer(&path, config, Default::default())
             .unwrap();
-    for mode in [SearchMode::Text, SearchMode::Hybrid] {
+    let modes: &[SearchMode] = &[
+        SearchMode::Text,
+        #[cfg(feature = "vector-search")]
+        SearchMode::Hybrid,
+    ];
+    for &mode in modes {
         let error = reader
             .search_with_options(&query, Some(&[1.0, 0.5]), mode, options(10, Some(16)))
             .unwrap_err()

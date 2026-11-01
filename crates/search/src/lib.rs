@@ -4040,6 +4040,20 @@ impl SearchIndex {
                 text_fallback_reasons.push(selection.to_string());
             }
         }
+        // Without a projection, resident BM25 applies the same caps and the
+        // same selection as the resident text seed over the filtered corpus.
+        if text_available && mode != SearchMode::Vector && lexical_snapshot.is_none() {
+            let selection = resident_bm25::select_query_terms(
+                &mut query_terms,
+                filtered_documents.iter().copied(),
+                &self.analyzer_lexicon,
+                &self.lexical_config,
+            )?;
+            if selection.reduced() {
+                text_fallback_reason_codes.push(SearchFallbackReasonCode::TextQueryTermsReduced);
+                text_fallback_reasons.push(selection.to_string());
+            }
+        }
         let mut text_corpus =
             if text_available && mode != SearchMode::Vector && lexical_snapshot.is_none() {
                 Some(resident_bm25::Scorer::from_documents(

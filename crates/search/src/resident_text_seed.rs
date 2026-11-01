@@ -866,8 +866,133 @@ mod tests {
         for (id, score) in output.scores() {
             assert!((score - expected[id]).abs() < 1e-12, "{id}");
         }
+        // Snapshot-free resident search selects the same terms and ranks
+        // exactly as the seed, in both text and hybrid modes.
+        let seeded = output
+            .scores()
+            .iter()
+            .map(|(id, score)| (id.clone(), score.to_bits()))
+            .collect::<BTreeMap<_, _>>();
         drop(output);
         assert_eq!(ledger.snapshot().used_bytes, 0);
+        assert!(index.lexical_snapshot().is_none());
+        let modes: &[SearchMode] = &[
+            SearchMode::Text,
+            #[cfg(feature = "vector-search")]
+            SearchMode::Hybrid,
+        ];
+        for &mode in modes {
+            let searched = index
+                .try_search_with_options(
+                    &query,
+                    None,
+                    mode,
+                    SearchQueryOptions {
+                        limit: 24,
+                        offset: 0,
+                        rank_window: Some(24),
+                        fusion_weights: SearchFusionWeights::default(),
+                        metadata_filters: BTreeMap::new(),
+                        policy_epoch: None,
+                    },
+                )
+                .unwrap();
+            assert!(searched
+                .fallback_reason_codes
+                .contains(&SearchFallbackReasonCode::TextQueryTermsReduced));
+            assert!(searched
+                .fallback_reasons
+                .iter()
+                .any(|reason| { reason.contains(&format!("dropped {}", analyzed.len() - limit)) }));
+            assert!(searched
+                .hits
+                .iter()
+                .flat_map(|hit| &hit.matched_terms)
+                .all(|term| selected.contains(term)));
+            let actual = searched
+                .hits
+                .into_iter()
+                .map(|hit| (hit.id, hit.text_score.to_bits()))
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(actual, seeded, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn resident_search_and_seed_refuse_analyzed_term_overflow() {
+        let mut index = SearchIndex::in_memory();
+        for row in long_query_rows() {
+            index.upsert_projection_row(row).unwrap();
+        }
+        index.lexical_config.max_query_terms = NonZeroUsize::new(4).unwrap();
+        index.lexical_config.max_query_analyzed_terms = NonZeroUsize::new(8).unwrap();
+        let query = long_query_text();
+        let modes: &[SearchMode] = &[
+            SearchMode::Text,
+            #[cfg(feature = "vector-search")]
+            SearchMode::Hybrid,
+        ];
+        for &mode in modes {
+            let error = index
+                .try_search_with_options(
+                    &query,
+                    None,
+                    mode,
+                    SearchQueryOptions {
+                        limit: 5,
+                        offset: 0,
+                        rank_window: Some(5),
+                        fusion_weights: SearchFusionWeights::default(),
+                        metadata_filters: BTreeMap::new(),
+                        policy_epoch: None,
+                    },
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("more than 8 analyzed terms (max_query_analyzed_terms)"),
+                "{mode:?}: {error}"
+            );
+        }
+        let budget = NonZeroUsize::new(4 << 20).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let account = ledger.account(QueryMemoryClass::ExternalRead, "analyzed cap", budget);
+        let error = index
+            .text_seed_scores_with_context(
+                &query,
+                &BTreeMap::new(),
+                5,
+                &account,
+                &RuntimeTaskContext::default(),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("more than 8 analyzed terms"), "{error}");
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        // Within the analyzed cap, the scored cap of 4 is applied.
+        let short = "lexeme0 lexeme1 lexeme22";
+        let analyzed = crate::tokenize(short, &index.analyzer_lexicon).len();
+        assert!(analyzed > 4, "{analyzed}");
+        index.lexical_config.max_query_analyzed_terms = NonZeroUsize::new(analyzed).unwrap();
+        let searched = index
+            .try_search_with_options(
+                short,
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 24,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
+        assert!(searched
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason.contains("scored the 4 most selective")));
     }
 
     #[test]
