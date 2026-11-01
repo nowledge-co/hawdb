@@ -263,6 +263,10 @@ pub(super) fn value<D: Decoder>(
                 .try_into()
                 .expect("fixed UUID length"),
         )),
+        tag if super::canonical_temporal_kind(tag).is_some() => super::read_temporal_value(
+            cursor,
+            super::canonical_temporal_kind(tag).expect("checked tag"),
+        )?,
         tag => {
             return Err(CanonicalSegmentError::Corrupt(format!(
                 "unknown canonical value tag {tag}"

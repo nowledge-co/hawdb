@@ -98,6 +98,8 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                     E::Ahead(Box::new(t(T::LeftBracket)), "a Cypher value token"),
                     r("x_list"),
                 ]),
+                r("x_temporal"),
+                r("x_map"),
                 r("x_value"),
                 s(vec![
                     call_start(vec![
@@ -161,14 +163,13 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
             "x_list_function",
             s(vec![
                 r("x_list_function_name"),
-                group(r("x_list_arguments")),
+                group(o(list("x_case_scalar"))),
             ]),
         ),
         (
             "x_list_function_name",
             kw(&["SIZE", "HEAD", "LAST", "TAIL", "REVERSE", "RANGE"]),
         ),
-        ("x_list_arguments", o(list("x_case_scalar"))),
         (
             "x_metric",
             s(vec![
@@ -179,9 +180,8 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
         ("x_metric_name", kw(&["COSINE_DISTANCE", "L2_DISTANCE"])),
         (
             "x_coalesce",
-            s(vec![k("COALESCE"), group(r("x_scalar_arguments"))]),
+            s(vec![k("COALESCE"), group(list("x_scalar"))]),
         ),
-        ("x_scalar_arguments", list("x_scalar")),
         (
             "x_json",
             s(vec![
@@ -271,26 +271,25 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
         ),
         (
             "x_postfix",
-            s(vec![
-                t(T::LeftBracket),
-                r("x_postfix_contents"),
-                t(T::RightBracket),
+            c(vec![
+                tight(vec![t(T::Dot), r("v_identifier")]),
+                s(vec![
+                    t(T::LeftBracket),
+                    r("x_postfix_contents"),
+                    t(T::RightBracket),
+                ]),
             ]),
         ),
         (
             "x_postfix_contents",
             c(vec![
-                s(vec![r("x_dots"), o(r("x_slice_end"))]),
+                s(vec![r("x_dots"), o(r("x_case_scalar"))]),
                 s(vec![r("x_case_scalar"), o(r("x_slice_tail"))]),
             ]),
         ),
         ("x_dots", tight(vec![t(T::Dot), t(T::Dot)])),
-        ("x_slice_tail", s(vec![r("x_dots"), o(r("x_slice_end"))])),
-        ("x_slice_end", r("x_case_scalar")),
-        (
-            "x_case_scalar",
-            c(vec![r("x_timestamp_value"), r("x_scalar")]),
-        ),
+        ("x_slice_tail", s(vec![r("x_dots"), o(r("x_case_scalar"))])),
+        ("x_case_scalar", r("x_sum")),
         (
             "x_timestamp_value",
             s(vec![
@@ -494,11 +493,27 @@ impl Transformer<'_> {
         depth: usize,
     ) -> Result<ScalarExpression> {
         for (index, postfix) in self.iter_named_children(node, "x_postfix").enumerate() {
+            if let Some(key) = self.tree.child(postfix, "v_identifier") {
+                self.expression_budget(postfix, depth.max(2) + index)?;
+                let kind = ScalarExpressionKind::PropertyAccess {
+                    expression: Box::new(expression),
+                    key: self.text(key).to_owned(),
+                };
+                expression = AstNode::from_source(
+                    kind,
+                    SourceSpan {
+                        start: self.tree.span(node, self.tokens).start,
+                        end: self.tree.span(postfix, self.tokens).end,
+                    },
+                );
+                continue;
+            }
             self.expression_budget(postfix, depth + index + 1)?;
             let contents = self.tree.required(postfix, "x_postfix_contents");
             let first = self
                 .tree
                 .child(contents, "x_case_scalar")
+                .filter(|_| self.tree.child(contents, "x_dots").is_none())
                 .map(|id| self.case_scalar(id, depth + index + 1).map(Box::new))
                 .transpose()?;
             let tail = self.tree.child(contents, "x_slice_tail");
@@ -506,11 +521,8 @@ impl Transformer<'_> {
             let kind = if slice {
                 let end = self
                     .tree
-                    .child(tail.unwrap_or(contents), "x_slice_end")
-                    .map(|id| {
-                        self.case_scalar(self.tree.required(id, "x_case_scalar"), depth + index + 1)
-                            .map(Box::new)
-                    })
+                    .child(tail.unwrap_or(contents), "x_case_scalar")
+                    .map(|id| self.case_scalar(id, depth + index + 1).map(Box::new))
                     .transpose()?;
                 ScalarExpressionKind::ListSlice {
                     list: Box::new(expression),
@@ -532,16 +544,14 @@ impl Transformer<'_> {
         Ok(expression)
     }
     pub(super) fn case_scalar(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpression> {
-        if let Some(timestamp) = self.tree.child(node, "x_timestamp_value") {
-            let value = self.value(self.tree.required(timestamp, "v_value"), depth)?;
-            Ok(self.source(node, ScalarExpressionKind::Value(value)))
-        } else {
-            self.scalar(self.tree.required(node, "x_scalar"), depth)
-        }
+        self.scalar_arithmetic(self.tree.required(node, "x_sum"), depth)
     }
+
     fn scalar_primary(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpressionKind> {
         Ok(match self.tree.nodes[node].name.expect("scalar atom") {
             "x_value" => ScalarExpressionKind::Value(self.value(node, depth)?),
+            "x_temporal" => self.temporal_scalar(node, depth)?,
+            "x_map" => ScalarExpressionKind::MapLiteral(self.scalar_map(node, depth)?),
             "x_variable" => ScalarExpressionKind::Variable(
                 self.text(self.tree.required(node, "v_identifier"))
                     .to_owned(),
@@ -565,9 +575,7 @@ impl Transformer<'_> {
             }
             "x_coalesce" => {
                 let mut args = Vec::new();
-                for child in
-                    self.named_children(self.tree.required(node, "x_scalar_arguments"), "x_scalar")
-                {
+                for child in self.named_children(node, "x_scalar") {
                     args.push(self.scalar(child, depth)?);
                 }
                 ScalarExpressionKind::Coalesce(args)
@@ -626,9 +634,10 @@ impl Transformer<'_> {
                 let mut arguments = Vec::new();
                 for arg in self
                     .tree
-                    .children(self.tree.required(node, "x_list_arguments"))
+                    .children(node)
                     .iter()
                     .copied()
+                    .filter(|id| self.tree.nodes[*id].name == Some("x_case_scalar"))
                 {
                     arguments.push(self.case_scalar(arg, depth)?);
                 }
@@ -646,18 +655,8 @@ impl Transformer<'_> {
                         if !value.kind.reads_row_binding() {
                             ScalarExpressionKind::Value(value)
                         } else {
-                            let ValueExpressionKind::List(values) = value.kind else {
-                                unreachable!()
-                            };
-                            ScalarExpressionKind::List(
-                                values
-                                    .into_iter()
-                                    .map(value_to_scalar)
-                                    .collect::<Option<Vec<_>>>()
-                                    .ok_or_else(|| {
-                                        self.error(list, "expected a scalar list element")
-                                    })?,
-                            )
+                            self.captured_value_scalar(list, depth.saturating_sub(1))?
+                                .kind
                         }
                     }
                     Some("x_expression_list") => {
@@ -913,7 +912,7 @@ impl Transformer<'_> {
         };
         if special {
             let generic = self.generic_case(body, 0)?;
-            if let Some(kind) = normalize_case(&generic) {
+            if let Some(kind) = normalize_case(&generic, self.input) {
                 self.expression_budget(node, depth + special_value_height(&kind))?;
                 return Ok(kind);
             }
@@ -931,13 +930,13 @@ impl Transformer<'_> {
             .iter()
             .any(|reference| self.ids(*reference) != names)
         {
-            return Err(self.error(node, "specialized CASE requires the same property"));
+            return self.reserved_generic_case(node, depth);
         }
         let mut values = Vec::new();
         for child in self.iter_named_children(node, "v_value") {
             let value = self.value(child, 0)?;
             if value.kind.reads_row_binding() {
-                return Err(self.error(child, "expected a constant CASE value"));
+                return self.reserved_generic_case(node, depth);
             }
             values.push(value);
         }
@@ -1046,7 +1045,7 @@ impl Transformer<'_> {
         for id in values {
             let value = self.value(id, depth)?;
             if value.kind != ValueExpressionKind::Literal(Value::Int(0)) {
-                return Err(self.error(node, "CASE floor expression requires zero bounds"));
+                return self.floor_generic_case(node, depth);
             }
         }
         let mut differences = Vec::new();
@@ -1056,14 +1055,12 @@ impl Transformer<'_> {
             for term in self.iter_named_children(difference, "x_difference_term") {
                 let names = self.ids(self.tree.required(term, "d_ref"));
                 if variable.as_ref().is_some_and(|v| v != &names[0]) {
-                    return Err(
-                        self.error(term, "CASE floor expression supports only one variable")
-                    );
+                    return self.floor_generic_case(node, depth);
                 }
                 variable = Some(names[0].clone());
                 let default = self.value(self.tree.required(term, "v_value"), depth)?;
                 if default.kind.reads_row_binding() {
-                    return Err(self.error(term, "expected a constant CASE value"));
+                    return self.floor_generic_case(node, depth);
                 }
                 terms.push(CoalesceDifferenceTerm {
                     property: names[1].clone(),
@@ -1073,16 +1070,13 @@ impl Transformer<'_> {
             differences.push((variable.expect("difference variable"), terms));
         }
         if differences[0] != differences[1] {
-            return Err(self.error(
-                node,
-                "CASE floor expression ELSE must repeat the difference",
-            ));
+            return self.floor_generic_case(node, depth);
         }
         let (variable, terms) = differences.remove(0);
         Ok(ScalarExpressionKind::CaseCoalesceDifferenceFloorZero { variable, terms })
     }
 }
-fn value_to_scalar(value: ValueExpression) -> Option<ScalarExpression> {
+pub(super) fn value_to_scalar(value: ValueExpression) -> Option<ScalarExpression> {
     let span = value.span;
     let kind = match value.kind {
         ValueExpressionKind::Binding(variable) => {
@@ -1135,43 +1129,83 @@ fn join_boolean(mut terms: Vec<ScalarExpression>, op: ScalarBinaryOp) -> ScalarE
     expression
 }
 fn constant(expression: &ScalarExpression) -> Option<ValueExpression> {
-    if let ScalarExpressionKind::Value(value) = &expression.kind
-        && !value.kind.reads_row_binding()
-    {
-        return Some(value.clone());
-    }
-    None
+    let kind = match &expression.kind {
+        ScalarExpressionKind::Value(value) if !value.kind.reads_row_binding() => {
+            return Some(value.clone())
+        }
+        ScalarExpressionKind::TemporalFunction {
+            function,
+            arguments,
+        } => ValueExpressionKind::Temporal {
+            function: *function,
+            arguments: arguments.iter().map(constant).collect::<Option<Vec<_>>>()?,
+        },
+        ScalarExpressionKind::MapLiteral(entries) => ValueExpressionKind::Map(
+            entries
+                .iter()
+                .map(|(key, value)| Some((key.clone(), constant(value)?)))
+                .collect::<Option<std::collections::BTreeMap<_, _>>>()?,
+        ),
+        _ => return None,
+    };
+    Some(AstNode {
+        kind,
+        span: expression.span,
+    })
 }
-fn property(expression: &ScalarExpression) -> Option<(String, String)> {
+
+fn property(expression: &ScalarExpression, input: &str) -> Option<(String, String)> {
     if let ScalarExpressionKind::Property { variable, property } = &expression.kind {
         Some((variable.clone(), property.clone()))
+    } else if let ScalarExpressionKind::PropertyAccess { expression, key } = &expression.kind {
+        if let ScalarExpressionKind::Value(value) = &expression.kind
+            && matches!(
+                value.kind,
+                ValueExpressionKind::Literal(Value::Bool(_) | Value::Null)
+            )
+        {
+            let span = expression.span?;
+            let name = &input[span.start..span.end];
+            if ["true", "false", "null"]
+                .iter()
+                .any(|keyword| name.eq_ignore_ascii_case(keyword))
+            {
+                return Some((name.to_owned(), key.clone()));
+            }
+        }
+        None
     } else {
         None
     }
 }
-fn is_null_property(expression: &ScalarExpression, negated: bool) -> Option<(String, String)> {
+fn is_null_property(
+    expression: &ScalarExpression,
+    negated: bool,
+    input: &str,
+) -> Option<(String, String)> {
     if let ScalarExpressionKind::IsNull {
         expression,
         negated: n,
     } = &expression.kind
         && *n == negated
     {
-        return property(expression);
+        return property(expression, input);
     }
     None
 }
 fn property_compare(
     expression: &ScalarExpression,
     op: ScalarBinaryOp,
+    input: &str,
 ) -> Option<((String, String), ValueExpression)> {
     if let ScalarExpressionKind::Binary { left, op: o, right } = &expression.kind
         && *o == op
     {
-        return Some((property(left)?, constant(right)?));
+        return Some((property(left, input)?, constant(right)?));
     }
     None
 }
-fn normalize_case(kind: &ScalarExpressionKind) -> Option<ScalarExpressionKind> {
+fn normalize_case(kind: &ScalarExpressionKind, input: &str) -> Option<ScalarExpressionKind> {
     let ScalarExpressionKind::Case {
         operand: None,
         branches,
@@ -1182,9 +1216,9 @@ fn normalize_case(kind: &ScalarExpressionKind) -> Option<ScalarExpressionKind> {
     };
     if branches.len() == 1 {
         let (condition, result) = &branches[0];
-        if let Some((variable, property)) = is_null_property(condition, true) {
+        if let Some((variable, property)) = is_null_property(condition, true, input) {
             if let ScalarExpressionKind::Lower(inner) = &result.kind
-                && self::property(inner) == Some((variable.clone(), property.clone()))
+                && self::property(inner, input) == Some((variable.clone(), property.clone()))
             {
                 return Some(ScalarExpressionKind::CaseLowerPropertyDefault {
                     variable,
@@ -1192,7 +1226,7 @@ fn normalize_case(kind: &ScalarExpressionKind) -> Option<ScalarExpressionKind> {
                     default: constant(otherwise)?,
                 });
             }
-            if self::property(result) == Some((variable.clone(), property.clone())) {
+            if self::property(result, input) == Some((variable.clone(), property.clone())) {
                 return Some(ScalarExpressionKind::DefaultIfNull {
                     variable,
                     property,
@@ -1206,10 +1240,10 @@ fn normalize_case(kind: &ScalarExpressionKind) -> Option<ScalarExpressionKind> {
             right,
         } = &condition.kind
         {
-            let (variable, property) = is_null_property(left, false)?;
-            let (other, empty) = property_compare(right, ScalarBinaryOp::Eq)?;
+            let (variable, property) = is_null_property(left, false, input)?;
+            let (other, empty) = property_compare(right, ScalarBinaryOp::Eq, input)?;
             if other == (variable.clone(), property.clone())
-                && self::property(otherwise) == Some(other)
+                && self::property(otherwise, input) == Some(other)
             {
                 return Some(ScalarExpressionKind::DefaultIfNullOrEq {
                     variable,
@@ -1225,8 +1259,8 @@ fn normalize_case(kind: &ScalarExpressionKind) -> Option<ScalarExpressionKind> {
             right,
         } = &condition.kind
         {
-            let (variable, property) = is_null_property(left, true)?;
-            let (other, empty) = property_compare(right, ScalarBinaryOp::NotEq)?;
+            let (variable, property) = is_null_property(left, true, input)?;
+            let (other, empty) = property_compare(right, ScalarBinaryOp::NotEq, input)?;
             if other == (variable.clone(), property.clone()) {
                 return Some(ScalarExpressionKind::CasePropertyNotNullOrEq {
                     variable,
@@ -1241,7 +1275,7 @@ fn normalize_case(kind: &ScalarExpressionKind) -> Option<ScalarExpressionKind> {
     let mut normalized = Vec::new();
     let mut binding = None;
     for (condition, result) in branches {
-        let (names, value) = property_compare(condition, ScalarBinaryOp::Eq)?;
+        let (names, value) = property_compare(condition, ScalarBinaryOp::Eq, input)?;
         if binding.as_ref().is_some_and(|b| b != &names) {
             return None;
         }
@@ -1260,6 +1294,12 @@ fn value_height(value: &ValueExpression) -> usize {
     match &value.kind {
         ValueExpressionKind::List(v) => 1 + v.iter().map(value_height).max().unwrap_or(0),
         ValueExpressionKind::Timestamp(v) => 1 + value_height(v),
+        ValueExpressionKind::Temporal { arguments, .. } => {
+            1 + arguments.iter().map(value_height).max().unwrap_or(0)
+        }
+        ValueExpressionKind::Map(entries) => {
+            1 + entries.values().map(value_height).max().unwrap_or(0)
+        }
         _ => 1,
     }
 }

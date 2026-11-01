@@ -387,9 +387,16 @@ impl InferredType {
             Value::Bool(_) => Self::Bool,
             Value::String(_) => Self::Str,
             Value::Binary(_) => Self::Binary,
-            Value::Null | Value::Uuid(_) | Value::Vector(_) | Value::List(_) | Value::Map(_) => {
-                Self::Residual
-            }
+            Value::Null
+            | Value::Uuid(_)
+            | Value::Vector(_)
+            | Value::List(_)
+            | Value::Map(_)
+            | Value::Date(_)
+            | Value::LocalTime(_)
+            | Value::LocalDateTime(_)
+            | Value::DateTime(_)
+            | Value::Duration(_) => Self::Residual,
         }
     }
 

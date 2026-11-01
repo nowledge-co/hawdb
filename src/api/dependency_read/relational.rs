@@ -262,7 +262,16 @@ fn scalar_bytes(value: &Value) -> Result<usize> {
         Value::String(value) => Ok(value.len()),
         Value::Binary(value) => Ok(value.len()),
         Value::Vector(value) => Ok(value.encoded().len()),
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Uuid(_) => Ok(16),
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Uuid(_)
+        | Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => Ok(16),
         Value::List(_) | Value::Map(_) => Err(refusal("compound SQL parameter values")),
     }
 }

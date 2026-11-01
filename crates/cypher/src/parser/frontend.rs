@@ -23,6 +23,7 @@ mod predicates;
 mod procedures;
 mod projection;
 mod schema;
+mod temporal;
 #[cfg(test)]
 mod tests;
 mod transform;

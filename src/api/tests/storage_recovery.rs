@@ -16,6 +16,7 @@ use super::*;
 use crate::store::set_wal_apply_failpoint;
 use crate::{HawDBError, StorageResidencyMode};
 
+mod composite_mutations;
 #[path = "storage_recovery/wal_tail.rs"]
 mod wal_tail;
 

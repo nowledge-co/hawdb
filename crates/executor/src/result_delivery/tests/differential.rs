@@ -65,6 +65,18 @@ fn value_sizes(value: &Value) -> (usize, usize) {
         Value::Binary(value) => (value.len(), value.len()),
         Value::Vector(value) => (value.encoded().len(), value.encoded().len()),
         Value::Uuid(_) => (16, 16),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => (
+            hawdb_core::temporal::codec::TemporalValueKind::of(value)
+                .unwrap()
+                .payload_len(),
+            hawdb_core::temporal::codec::TemporalValueKind::of(value)
+                .unwrap()
+                .heap_bytes(),
+        ),
         Value::List(values) => {
             let sizes: Vec<_> = values.iter().map(value_sizes).collect();
             (

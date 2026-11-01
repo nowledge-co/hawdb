@@ -1195,6 +1195,15 @@ impl LockManager {
             .covers_all(transaction_id, requests))
     }
 
+    #[cfg(test)]
+    pub(super) fn is_waiting(&self, transaction_id: u64) -> bool {
+        self.lock_state()
+            .unwrap()
+            .waiters
+            .blockers(u64::MAX, &LockRequest::database(super::LockMode::Exclusive))
+            .contains(&transaction_id)
+    }
+
     pub(super) fn acquire(
         &self,
         transaction_id: u64,

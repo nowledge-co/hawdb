@@ -31,6 +31,7 @@ use hawdb_core::RuntimeTaskContext;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod composite_key_mutations;
 mod primary_key_mutations;
 
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -98,6 +99,10 @@ impl Fixture {
                 RelationalOverflowConfig::default(),
             )
             .expect("create materialized reference state");
+        Self::from_materialized(materialized)
+    }
+
+    fn from_materialized(materialized: RelationalState) -> Self {
         let directory = TestDirectory::new();
         let overflow_config = RelationalOverflowPublicationConfig::default();
         RelationalOverflowPublisher::new(overflow_config)

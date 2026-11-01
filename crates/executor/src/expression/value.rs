@@ -1,3 +1,17 @@
+// Copyright 2026 Nowledge
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use super::predicate::{predicate_comparison_truth, PredicateTruth};
 use super::*;
 use hawdb_plan_cypher::ScalarBinaryOp;
@@ -253,6 +267,17 @@ fn truth_value(truth: PredicateTruth) -> Value {
 fn evaluate_arithmetic(left: &Value, op: ScalarBinaryOp, right: &Value) -> Result<Value> {
     if matches!(left, Value::Null) || matches!(right, Value::Null) {
         return Ok(Value::Null);
+    }
+    let temporal_op = match op {
+        ScalarBinaryOp::Add => hawdb_core::temporal::TemporalArithmeticOp::Add,
+        ScalarBinaryOp::Subtract => hawdb_core::temporal::TemporalArithmeticOp::Subtract,
+        ScalarBinaryOp::Multiply => hawdb_core::temporal::TemporalArithmeticOp::Multiply,
+        ScalarBinaryOp::Divide => hawdb_core::temporal::TemporalArithmeticOp::Divide,
+        ScalarBinaryOp::Remainder => hawdb_core::temporal::TemporalArithmeticOp::Remainder,
+        _ => unreachable!("arithmetic operators only"),
+    };
+    if let Some(result) = hawdb_core::temporal::arithmetic(left, temporal_op, right) {
+        return result.map_err(|error| HawDBError::Execution(error.to_string()));
     }
     if let (Value::Int(left), Value::Int(right)) = (left, right) {
         if matches!(op, ScalarBinaryOp::Divide | ScalarBinaryOp::Remainder) && *right == 0 {

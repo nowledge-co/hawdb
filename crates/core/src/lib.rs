@@ -27,6 +27,7 @@ pub mod regex;
 mod retained_heap;
 pub mod schema;
 mod shared_allocation;
+pub mod temporal;
 pub mod time;
 pub mod uuidv7;
 pub mod value;
@@ -72,6 +73,7 @@ pub use schema::{
     PropertyId, PropertyType, RelType, RelTypeId, SchemaObjectState, TableDescriptor, TableId,
     TableKind,
 };
+pub use temporal::{Duration as TemporalDuration, TemporalFunction, TemporalKind};
 pub use uuid::Uuid;
 pub use uuidv7::generate_uuidv7;
 pub use value::{Value, ValueRef};

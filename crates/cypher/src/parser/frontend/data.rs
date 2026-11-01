@@ -66,6 +66,13 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                 r("d_case_preserve"),
                 r("d_case_decrement"),
                 r("d_coalesce"),
+                s(vec![
+                    E::Ahead(
+                        Box::new(s(vec![r("x_temporal_name"), t(T::LeftParen)])),
+                        "a temporal call",
+                    ),
+                    r("v_value"),
+                ]),
                 r("d_property_value"),
                 s(vec![
                     E::Not(

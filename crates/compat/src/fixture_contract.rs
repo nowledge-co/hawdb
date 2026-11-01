@@ -246,6 +246,13 @@ fn value_json(value: &Value) -> serde_json::Value {
         Value::Vector(value) => {
             serde_json::json!({ "$vector": value.as_ref().coordinates().collect::<Vec<_>>() })
         }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => serde_json::json!({
+            hawdb_core::temporal::json_tag(value).expect("temporal value"): value.to_string()
+        }),
         Value::List(values) => {
             serde_json::Value::Array(values.iter().map(value_json).collect::<Vec<_>>())
         }

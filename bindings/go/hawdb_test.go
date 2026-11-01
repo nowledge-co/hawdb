@@ -1,16 +1,18 @@
-// Copyright 2026 Nowledge
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright 2026 Nowledge
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 package hawdb
 
@@ -134,6 +136,45 @@ func TestSmoke(t *testing.T) {
 	}
 	if uid, ok := dicts[0]["uid"].(UUID); !ok || uid != "550e8400-e29b-41d4-a716-446655440000" {
 		t.Fatalf("uuid round-trip failed: %v", dicts[0]["uid"])
+	}
+}
+
+func TestTemporalValuesRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "temporal"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	want := map[string]any{
+		"d":   Date("2026-10-30"),
+		"t":   LocalTime("12:30:00.000000001"),
+		"ldt": LocalDateTime("2026-10-30T12:30:00"),
+		"dt":  DateTime("2026-10-30T12:00:00+02:00"),
+		"dur": Duration("P1M2DT3.5S"),
+	}
+	if _, err := db.Query("CREATE (:E {d: $d, t: $t, ldt: $ldt, dt: $dt, dur: $dur})", want); err != nil {
+		t.Fatalf("CREATE: %v", err)
+	}
+	res, err := db.Query(
+		"MATCH (e:E) RETURN e.d AS d, e.t AS t, e.ldt AS ldt, e.dt AS dt, e.dur AS dur, e.d.year AS year",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("MATCH: %v", err)
+	}
+	row := res.Dicts()[0]
+	for key, value := range want {
+		if row[key] != value {
+			t.Fatalf("%s: got %#v, want %#v", key, row[key], value)
+		}
+	}
+	if row["year"] != int64(2026) {
+		t.Fatalf("year: got %#v", row["year"])
+	}
+	if _, err := db.Query("CREATE (:E {d: $d})", map[string]any{"d": Date("2026-02-30")}); err == nil {
+		t.Fatalf("invalid date was accepted")
 	}
 }
 

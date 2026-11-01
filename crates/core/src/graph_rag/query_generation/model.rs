@@ -271,6 +271,11 @@ fn value_type_name(value: &Value) -> &'static str {
         Value::Uuid(_) => "uuid",
         Value::List(_) => "list",
         Value::Map(_) => "map",
+        Value::Date(_) => "date",
+        Value::LocalTime(_) => "localtime",
+        Value::LocalDateTime(_) => "localdatetime",
+        Value::DateTime(_) => "datetime",
+        Value::Duration(_) => "duration",
     }
 }
 

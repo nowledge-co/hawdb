@@ -141,12 +141,8 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
         ),
         (
             "r_list_call",
-            s(vec![
-                r("x_list_function_name"),
-                group(r("r_list_arguments")),
-            ]),
+            s(vec![r("x_list_function_name"), group(o(list("r_sum")))]),
         ),
-        ("r_list_arguments", o(list("r_sum"))),
         (
             "r_order",
             s(vec![k("ORDER"), k("BY"), list("r_order_item")]),
@@ -362,9 +358,10 @@ impl Transformer<'_> {
                 let mut arguments = Vec::new();
                 for argument in self
                     .tree
-                    .children(self.tree.required(call, "r_list_arguments"))
+                    .children(call)
                     .iter()
                     .copied()
+                    .filter(|id| self.tree.nodes[*id].name == Some("r_sum"))
                 {
                     arguments.push(self.return_expression(argument, depth + 1)?)
                 }
@@ -387,31 +384,7 @@ impl Transformer<'_> {
                 } else {
                     let mut scalars = Vec::new();
                     for argument in arguments {
-                        let span = argument.span.expect("source argument");
-                        if self.tokens[self
-                            .tokens
-                            .partition_point(|token| token.span.start < span.start)]
-                        .kind
-                            == T::LeftParen
-                        {
-                            return Err(self.error(
-                                selected,
-                                "scalar list arguments do not support parentheses",
-                            ));
-                        }
-                        scalars.push(match argument.kind {
-                            ReturnExpressionKind::Value(value) => value,
-                            ReturnExpressionKind::Path(path) => AstNode {
-                                kind: ScalarExpressionKind::Path(path),
-                                span: argument.span,
-                            },
-                            _ => {
-                                return Err(self.error(
-                                    selected,
-                                    "list scalar arguments do not support arithmetic",
-                                ))
-                            }
-                        });
+                        scalars.push(self.scalar_return_argument(argument, selected, depth + 1)?);
                     }
                     let scalar = self.source(
                         call,

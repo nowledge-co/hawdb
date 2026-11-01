@@ -71,6 +71,7 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                 r("v_current_timestamp"),
                 r("v_timestamp"),
                 r("v_cast"),
+                r("v_temporal"),
                 r("v_property"),
             ]),
         ),
@@ -246,6 +247,7 @@ impl Transformer<'_> {
                         .collect::<Result<_>>()?,
                 )
             }
+            "v_temporal" => self.temporal_value(selected, depth)?,
             "v_current_timestamp" => ValueExpressionKind::CurrentTimestamp,
             "v_timestamp" | "v_cast" => ValueExpressionKind::Timestamp(Box::new(
                 self.value(

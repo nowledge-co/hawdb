@@ -244,6 +244,84 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
         drop(cache);
         assert_eq!(window.retained(), 0);
     }
+    // Temporal calls, property access, map literals and a boxed duration
+    // parameter stay in the same observed cache owner.
+    {
+        let query = "MATCH (p:P) RETURN p.birthday.month AS month, duration.between(p.a, p.b).minutes AS minutes, date.truncate('month', p.on) AS start, {retained_temporal_key: p.a, took: $took} AS map, $took AS took";
+        let statement = cypher::parse(query).unwrap();
+        let parameters = BTreeMap::from([(
+            "took".into(),
+            Value::Duration(Box::new(
+                hawdb_core::TemporalDuration::from_parts(14, 3, 7_200_000_000_000).unwrap(),
+            )),
+        )]);
+        let window = Window::new();
+        let mut cache = PlanCache::with_byte_limits(Some(8), Some(16 << 20), Some(8 << 20));
+        let (key, value, charge) = cached(query, &statement, &parameters);
+        cache.insert_weighted(key, value, charge);
+        assert_eq!(cache.stats().entries, 1);
+        assert!(window.retained() <= cache.charged_bytes().unwrap());
+        drop(cache);
+        assert_eq!(window.retained(), 0);
+    }
+    // Measure the temporal IR through the real owner. Duration boxes dominate
+    // key/container slack, so omitting their heap charge cannot hide in it.
+    {
+        use hawdb_core::temporal::{self, TemporalFunction, TemporalKind};
+        use hawdb_plan_cypher::{Projection, ProjectionExpression};
+        let date = temporal::parse_date("2026-11-01").unwrap();
+        let time = temporal::parse_local_time("12:34:56").unwrap();
+        let local = temporal::parse_local_datetime("2026-11-01T12:34:56").unwrap();
+        let zoned = temporal::parse_datetime("2026-11-01T12:34:56+02:00").unwrap();
+        let duration = temporal::parse_duration("P1M2DT3S").unwrap();
+        let (query, parameters) = fixture(20);
+        let statement = cypher::parse(&query).unwrap();
+        let window = Window::new();
+        let mut cache = PlanCache::with_byte_limits(Some(8), Some(16 << 20), Some(8 << 20));
+        let (key, mut value, _) = cached(&query, &statement, &parameters);
+        let mut literals = (0..4096)
+            .map(|_| ProjectionExpression::Literal(Value::duration(duration)))
+            .collect::<Vec<_>>();
+        literals.extend([
+            ProjectionExpression::Literal(Value::Date(date)),
+            ProjectionExpression::Literal(Value::LocalTime(time)),
+            ProjectionExpression::Literal(Value::LocalDateTime(local)),
+            ProjectionExpression::Literal(Value::DateTime(zoned)),
+        ]);
+        let mut arguments = Vec::with_capacity(32);
+        arguments.push(ProjectionExpression::Literal(Value::String(
+            "2026-11-01".into(),
+        )));
+        literals.push(ProjectionExpression::TemporalFunction {
+            function: TemporalFunction::Construct(TemporalKind::Date),
+            arguments,
+        });
+        let mut field = String::with_capacity(1024);
+        field.push_str("temporal");
+        Arc::get_mut(&mut value).unwrap().physical_template = PhysicalPlan::ProjectExec {
+            items: vec![Projection {
+                name: "temporal".into(),
+                expression: ProjectionExpression::PropertyAccess {
+                    expression: Box::new(ProjectionExpression::MapLiteral(vec![(
+                        field.clone(),
+                        ProjectionExpression::List(literals),
+                    )])),
+                    key: field,
+                },
+            }],
+            input: Box::new(PhysicalPlan::EmptyExec),
+        };
+        let charge = key
+            .retained_heap_bytes()
+            .unwrap()
+            .checked_add(value.retained_heap_bytes().unwrap())
+            .unwrap();
+        cache.insert_weighted(key, value, charge);
+        assert_eq!(cache.stats().entries, 1);
+        assert!(window.retained() <= cache.charged_bytes().unwrap());
+        drop(cache);
+        assert_eq!(window.retained(), 0);
+    }
     // Keep newly added path IR in the actual cache owner under this same
     // independent allocator. Spare string capacities and the boxed traversal
     // descriptor must be charged even when their visible names are short.

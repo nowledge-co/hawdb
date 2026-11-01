@@ -88,6 +88,12 @@ impl_retained_heap_for_copy!(
     crate::schema::ConstraintSubject,
     crate::VectorDimension,
     crate::ListFunction,
+    crate::temporal::NaiveDate,
+    crate::temporal::NaiveTime,
+    crate::temporal::NaiveDateTime,
+    crate::temporal::DateTime<crate::temporal::FixedOffset>,
+    crate::temporal::Duration,
+    crate::temporal::TemporalFunction,
 );
 
 impl RetainedHeapBytes for String {
@@ -211,6 +217,11 @@ impl RetainedHeapBytes for Value {
             Self::Vector(value) => value.retained_heap_bytes(),
             Self::List(value) => value.retained_heap_bytes(),
             Self::Map(value) => value.retained_heap_bytes(),
+            Self::Date(value) => value.retained_heap_bytes(),
+            Self::LocalTime(value) => value.retained_heap_bytes(),
+            Self::LocalDateTime(value) => value.retained_heap_bytes(),
+            Self::DateTime(value) => value.retained_heap_bytes(),
+            Self::Duration(value) => value.retained_heap_bytes(),
             Self::Null | Self::Bool(_) | Self::Int(_) | Self::Float(_) | Self::Uuid(_) => Some(0),
         }
     }

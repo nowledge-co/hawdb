@@ -799,6 +799,9 @@ expression evaluator; broader predicate function composition remains separate
 follow-up work. openCypher list functions (`size`, `head`, `last`, `tail`,
 `reverse`, `range`), list comprehensions, list indexing/slicing and generic
 `IN` are described in [Cypher list functions](CYPHER_LIST_FUNCTIONS.md).
+openCypher temporal types, constructors, component access, arithmetic,
+`duration.between` and truncation, with native persistence, are described in
+[Cypher temporal types](CYPHER_TEMPORAL.md).
 Parenthesized predicate groups preserve explicit `AND`/`OR` precedence. String
 literals support escaped quotes, backslashes, and common control escapes. Graph algorithm procedure options such
 as `dampingFactor`, `maxIterations`, and `maxLevels` accept bound parameters and

@@ -149,6 +149,10 @@ pub fn value_memory_bytes(value: &Value) -> usize {
         Value::Binary(value) => value.len(),
         Value::Vector(value) => value.encoded().len(),
         Value::Uuid(_) => 16,
+        // Temporal values are stored inline in the `Value` slot, except
+        // durations, which are boxed to keep `Value` at 32 bytes.
+        Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_) | Value::DateTime(_) => 0,
+        Value::Duration(_) => std::mem::size_of::<hawdb_core::temporal::Duration>(),
         Value::List(values) => values
             .iter()
             .fold(std::mem::size_of::<Vec<Value>>(), |total, value| {
@@ -354,6 +358,11 @@ pub fn value_ref_payload_bytes(value: hawdb_core::ValueRef<'_>) -> usize {
         ValueRef::Binary(value) => value.len(),
         ValueRef::Vector(value) => value.encoded().len(),
         ValueRef::Uuid(_) => 16,
+        ValueRef::Date(_) => 4,
+        ValueRef::LocalTime(_) => 8,
+        ValueRef::LocalDateTime(_) => 12,
+        ValueRef::DateTime(_) => 16,
+        ValueRef::Duration(_) => 28,
         ValueRef::List(values) => values.iter().fold(0usize, |total, value| {
             total.saturating_add(value_payload_bytes(value))
         }),

@@ -298,3 +298,77 @@ fn recovery_text_differential_smoke() {
 fn recovery_text_differential_campaign() {
     campaign(1024);
 }
+
+#[test]
+fn temporal_text_values_use_canonical_iso_payloads() {
+    use hawdb_core::temporal;
+    let golden = [
+        (
+            Value::Date(temporal::parse_date("2026-10-30").unwrap()),
+            "D2026-10-30",
+        ),
+        (
+            Value::Date(temporal::parse_date("-0044-03-15").unwrap()),
+            "D-0044-03-15",
+        ),
+        (
+            Value::LocalTime(temporal::parse_local_time("08:15:00.000000001").unwrap()),
+            "T08:15:00.000000001",
+        ),
+        (
+            Value::LocalDateTime(temporal::parse_local_datetime("2026-10-30T12:00").unwrap()),
+            "L2026-10-30T12:00:00",
+        ),
+        (
+            Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00+02:00").unwrap()),
+            "Z2026-10-30T12:00:00+02:00",
+        ),
+        (
+            Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00Z").unwrap()),
+            "Z2026-10-30T12:00:00Z",
+        ),
+        (
+            Value::duration(temporal::parse_duration("P14M3DT-0.5S").unwrap()),
+            "PP1Y2M3DT-0.5S",
+        ),
+    ];
+    let work =
+        crate::background::CheckpointWorkContext::new(hawdb_qos::RuntimeTaskContext::default());
+    for (value, encoded) in golden {
+        assert_eq!(encode_value(&value), encoded, "{value:?}");
+        assert_eq!(decode_value(encoded).unwrap(), value, "{encoded}");
+        let list = Value::List(vec![value.clone(), Value::Int(1)]);
+        assert_eq!(decode_value(&encode_value(&list)).unwrap(), list);
+        // The admitted background writer emits the same grammar.
+        let properties = BTreeMap::from([
+            ("t".to_string(), value.clone()),
+            ("l".to_string(), list.clone()),
+            (
+                "m".to_string(),
+                Value::Map(BTreeMap::from([("k".to_string(), value)])),
+            ),
+        ]);
+        let mut text = crate::background::CheckpointText::new();
+        text.properties(&properties, &work).unwrap();
+        assert_eq!(text.text, encode_properties(&properties));
+        assert_eq!(decode_properties(&text.text).unwrap(), properties);
+    }
+    // One value has one encoding: alternative ISO forms, junk and wrong
+    // kinds are refused rather than normalized.
+    for invalid in [
+        "D20261030",
+        "D2026-10-30T00:00",
+        "T8:15",
+        "T08:15",
+        "L2026-10-30",
+        "Z2026-10-30T12:00:00+00:00",
+        "Z2026-10-30T12:00:00[Europe/Stockholm]",
+        "PP14M",
+        "PPT0.50S",
+        "P",
+        "D",
+        "Q2026-10-30",
+    ] {
+        assert!(decode_value(invalid).is_err(), "{invalid}");
+    }
+}

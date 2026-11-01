@@ -188,6 +188,11 @@ fn value_payload_bytes(value: &Value) -> u64 {
         Value::Binary(value) => value.len() as u64,
         Value::Vector(value) => value.encoded().len() as u64,
         Value::Uuid(_) => 16,
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => 28,
         Value::List(values) => values_payload_bytes(values),
         Value::Map(values) => values.iter().fold(0u64, |total, (key, value)| {
             total

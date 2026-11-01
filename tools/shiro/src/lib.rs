@@ -2285,6 +2285,14 @@ fn typed_value_json(value: &Value) -> JsonValue {
         }),
         Value::String(value) => json!({"type": "string", "value": value}),
         Value::Uuid(value) => json!({"type": "uuid", "value": value.to_string()}),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => json!({
+            "type": &hawdb::temporal::json_tag(value).expect("temporal value")[1..],
+            "value": value.to_string(),
+        }),
         Value::Vector(value) => json!({
             "type": "vector",
             "hex": value.encoded().iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
@@ -2390,6 +2398,17 @@ mod tests {
             json!({
                 "type": "vector", "hex": "020000000000803f00000080"
             })
+        );
+    }
+
+    #[test]
+    fn typed_value_json_preserves_temporal_values() {
+        let value = Value::DateTime(
+            hawdb::temporal::parse_datetime("2026-10-30T12:00:00+02:00").expect("datetime"),
+        );
+        assert_eq!(
+            typed_value_json(&value),
+            json!({"type": "datetime", "value": "2026-10-30T12:00:00+02:00"})
         );
     }
 

@@ -66,7 +66,12 @@ fn shape_bytes(shape: &ParameterValueShape) -> Option<usize> {
         | ParameterValueShape::String
         | ParameterValueShape::Binary
         | ParameterValueShape::Vector(_)
-        | ParameterValueShape::Uuid => Some(0),
+        | ParameterValueShape::Uuid
+        | ParameterValueShape::Date
+        | ParameterValueShape::LocalTime
+        | ParameterValueShape::LocalDateTime
+        | ParameterValueShape::DateTime
+        | ParameterValueShape::Duration => Some(0),
     }
 }
 
@@ -263,6 +268,17 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
             end.as_ref()
                 .map_or(Some(0), |value| boxed(value.as_ref(), expression_bytes)),
         ]),
+        E::TemporalFunction {
+            function: _,
+            arguments,
+        } => vector(arguments, expression_bytes),
+        E::PropertyAccess { expression, key } => sum([
+            boxed(expression.as_ref(), expression_bytes),
+            Some(key.capacity()),
+        ]),
+        E::MapLiteral(entries) => vector(entries, |(key, value)| {
+            key.capacity().checked_add(expression_bytes(value)?)
+        }),
         // Opaque/specialized expressions are deliberately not admitted yet.
         E::CaseEntitySearchRank(_) | E::CaseColumnSearchRank(_) => None,
     }

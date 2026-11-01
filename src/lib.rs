@@ -316,7 +316,7 @@ pub use hawdb_bootstrap::{
     verify_hawdb_lightning_staging_catalog, write_bootstrap_atomic_file,
     HawDBLightningPublishOptions, HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
-pub use hawdb_core::{time, Uuid};
+pub use hawdb_core::{temporal, time, TemporalDuration, Uuid};
 pub use hawdb_core::{
     GraphRagCommonPathSummary, GraphRagGeneratedQuery, GraphRagLabelSummary,
     GraphRagPropertySubject, GraphRagPropertySummary, GraphRagQueryBinding, GraphRagQueryDraft,

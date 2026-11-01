@@ -59,6 +59,11 @@ enum ParameterValueShape {
     Binary,
     Vector(hawdb_core::VectorDimension),
     Uuid,
+    Date,
+    LocalTime,
+    LocalDateTime,
+    DateTime,
+    Duration,
     List(Vec<ParameterValueShape>),
     Map(BTreeMap<String, ParameterValueShape>),
 }
@@ -129,7 +134,12 @@ impl ParameterValueShape {
             | (Self::Float, Value::Float(_))
             | (Self::String, Value::String(_))
             | (Self::Binary, Value::Binary(_))
-            | (Self::Uuid, Value::Uuid(_)) => true,
+            | (Self::Uuid, Value::Uuid(_))
+            | (Self::Date, Value::Date(_))
+            | (Self::LocalTime, Value::LocalTime(_))
+            | (Self::LocalDateTime, Value::LocalDateTime(_))
+            | (Self::DateTime, Value::DateTime(_))
+            | (Self::Duration, Value::Duration(_)) => true,
             (Self::Vector(dimension), Value::Vector(value)) => *dimension == value.dimension(),
             (Self::List(shapes), Value::List(values)) => {
                 shapes.len() == values.len()
@@ -454,6 +464,18 @@ fn folded_predicate_parameters(statement: &cypher::Statement) -> BTreeSet<String
                 }
             }
             cypher::ValueExpressionKind::Timestamp(inner) => collect_value(inner, exact),
+            // Temporal calls are evaluated while binding: like `timestamp()`,
+            // their inputs are folded and must be exact cache keys.
+            cypher::ValueExpressionKind::Temporal { arguments, .. } => {
+                for argument in arguments {
+                    collect_value(argument, exact);
+                }
+            }
+            cypher::ValueExpressionKind::Map(entries) => {
+                for value in entries.values() {
+                    collect_value(value, exact);
+                }
+            }
             cypher::ValueExpressionKind::Literal(_)
             | cypher::ValueExpressionKind::Binding(_)
             | cypher::ValueExpressionKind::BindingProperty { .. }
@@ -623,6 +645,11 @@ fn parameter_value_shape(value: &Value) -> ParameterValueShape {
         Value::Binary(_) => ParameterValueShape::Binary,
         Value::Vector(value) => ParameterValueShape::Vector(value.dimension()),
         Value::Uuid(_) => ParameterValueShape::Uuid,
+        Value::Date(_) => ParameterValueShape::Date,
+        Value::LocalTime(_) => ParameterValueShape::LocalTime,
+        Value::LocalDateTime(_) => ParameterValueShape::LocalDateTime,
+        Value::DateTime(_) => ParameterValueShape::DateTime,
+        Value::Duration(_) => ParameterValueShape::Duration,
         Value::List(values) => {
             ParameterValueShape::List(values.iter().map(parameter_value_shape).collect())
         }
@@ -999,7 +1026,10 @@ fn marker_use_in_projection_expression(
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
-        | ProjectionExpression::ListSlice { .. } => {
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::MapLiteral(_) => {
             let mut result = MarkerUse::None;
             expression.all_children(|child| {
                 result = result.combine(marker_use_in_projection_expression(child, name, safe));
@@ -1567,7 +1597,10 @@ fn bind_projection_expression(
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
-        | ProjectionExpression::ListSlice { .. } => expression
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::MapLiteral(_) => expression
             .try_for_each_child_mut(|child| bind_projection_expression(child, parameters))?,
 
         ProjectionExpression::Literal(value) => bind_value(value, parameters)?,
@@ -2705,6 +2738,11 @@ impl hawdb_core::RetainedHeapBytes for ParameterValueShape {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
             ]),
             Self::Uuid => hawdb_core::checked_retained_heap_sum([]),
+            Self::Date
+            | Self::LocalTime
+            | Self::LocalDateTime
+            | Self::DateTime
+            | Self::Duration => hawdb_core::checked_retained_heap_sum([]),
             Self::List(value0) => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
             ]),

@@ -202,12 +202,12 @@ def test_params_batch_loads_in_one_statement(db):
 @pytest.mark.parametrize(
     ("value", "path", "kind"),
     [
-        (datetime.date(2026, 1, 2), "$value", "date"),
+        (complex(1, 2), "$value", "complex"),
         (decimal.Decimal("1.10"), "$value", "Decimal"),
         (Color.RED, "$value", "Color"),
-        ([1, {"at": datetime.date(2026, 1, 2)}], "$value[1].at", "date"),
+        ([1, {"at": decimal.Decimal("1.10")}], "$value[1].at", "Decimal"),
     ],
-    ids=["date", "Decimal", "Enum", "nested-date"],
+    ids=["complex", "Decimal", "Enum", "nested-Decimal"],
 )
 def test_execute_rejects_unsupported_values_by_path(db, value, path, kind):
     dumped = hawdb.pydantic.params(Listing(code="603122", value=value))
@@ -216,6 +216,16 @@ def test_execute_rejects_unsupported_values_by_path(db, value, path, kind):
         db.execute("CREATE (:Listing {code: $code, value: $value})", dumped)
     assert str(raised.value) == f"{path}: unsupported parameter type: {kind}"
     assert db.execute("MATCH (l:Listing) RETURN count(l) AS n").fetchall() == [{"n": 0}]
+
+
+# Temporal values in a dump are bound as native temporal parameters.
+def test_execute_binds_dumped_dates(db):
+    at = datetime.date(2026, 1, 2)
+    dumped = hawdb.pydantic.params(Listing(code="603122", value=at))
+    db.execute("CREATE (:Listing {code: $code, value: $value})", dumped)
+    assert db.execute("MATCH (l:Listing) RETURN l.value AS value").fetchall() == [
+        {"value": {"$date": "2026-01-02"}}
+    ]
 
 
 @pytest.mark.parametrize("value", [2**63, -(2**63) - 1])

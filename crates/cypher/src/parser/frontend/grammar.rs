@@ -174,6 +174,7 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar, String> {
     ));
     rules.extend(super::predicates::rules());
     rules.extend(super::expressions::rules());
+    rules.extend(super::temporal::rules());
     rules.extend(super::projection::rules());
     rules.extend(super::procedures::rules());
     rules.push((
@@ -198,6 +199,8 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar, String> {
     Grammar::compile_bounded(
         rules,
         &[
+            "v_temporal",
+            "v_map",
             "v_list_contents",
             "v_call_contents",
             "u_map_contents",

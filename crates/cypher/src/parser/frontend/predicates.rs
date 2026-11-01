@@ -63,17 +63,16 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                     ])),
                     "a relationship existence pattern",
                 ),
-                r("w_pattern"),
+                r("p_chain"),
             ]),
         ),
-        ("w_pattern", r("p_chain")),
         (
             "w_bound",
             s(vec![
                 k("EXISTS"),
                 t(T::LeftBrace),
                 k("MATCH"),
-                r("w_pattern"),
+                r("p_chain"),
                 t(T::RightBrace),
             ]),
         ),
@@ -183,6 +182,17 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                         E::Ahead(
                             Box::new(c(vec![
                                 k("CASE"),
+                                s(vec![r("x_temporal_name"), t(T::LeftParen)]),
+                                s(vec![
+                                    r("w_reference"),
+                                    c(vec![
+                                        t(T::Dot),
+                                        t(T::LeftParen),
+                                        t(T::LeftBracket),
+                                        r("r_sum_op"),
+                                        r("r_product_op"),
+                                    ]),
+                                ]),
                                 tight(vec![
                                     kw(&[
                                         "COALESCE",
@@ -206,7 +216,7 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                             ])),
                             "a scalar operand",
                         ),
-                        r("x_scalar"),
+                        r("x_case_scalar"),
                     ]),
                 ]),
                 r("w_expression_tail"),
@@ -259,7 +269,7 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
             "w_expression_comparisons",
             s(vec![
                 r("x_comparison_op"),
-                r("x_scalar"),
+                r("x_case_scalar"),
                 many(r("w_following")),
             ]),
         ),
@@ -267,7 +277,29 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
             "w_following",
             s(vec![r("x_comparison_op"), r("x_case_scalar")]),
         ),
-        ("w_right", c(vec![r("w_reference"), r("x_case_scalar")])),
+        (
+            "w_right",
+            c(vec![
+                s(vec![
+                    E::Not(
+                        Box::new(kw(&["CASE", "TRUE", "FALSE", "NULL"])),
+                        "a property reference",
+                    ),
+                    r("w_reference"),
+                    E::Not(
+                        Box::new(c(vec![
+                            t(T::Dot),
+                            t(T::LeftParen),
+                            t(T::LeftBracket),
+                            r("r_sum_op"),
+                            r("r_product_op"),
+                        ])),
+                        "the end of a property reference",
+                    ),
+                ]),
+                r("x_case_scalar"),
+            ]),
+        ),
         ("w_in", s(vec![k("IN"), r("x_case_scalar")])),
     ]
 }
@@ -558,7 +590,7 @@ impl Transformer<'_> {
                 result
             }
         } else {
-            self.scalar(self.tree.required(node, "x_scalar"), depth)?
+            self.case_scalar(self.tree.required(node, "x_case_scalar"), depth)?
         };
         let mut op = op;
         let following = self.named_children(node, "w_following");
@@ -668,7 +700,7 @@ impl Transformer<'_> {
         depth: usize,
         anonymous: &mut usize,
     ) -> Result<PropertyPredicate> {
-        let wrapper = self.tree.required(node, "w_pattern");
+        let wrapper = node;
         let pattern = self.pattern(wrapper, depth, anonymous)?;
         let [step] = pattern.steps.as_slice() else {
             return Err(self.error(

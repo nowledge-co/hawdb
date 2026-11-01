@@ -186,6 +186,58 @@ fn charges_cover_actual_template_and_churn_allocations() {
         assert_eq!(window.retained(), 0);
     }
 
+    // Temporal projections retain their calls, access keys, map keys and the
+    // boxed duration payload of temporal parameters.
+    {
+        let statement = hawdb_cypher::parse(
+            "MATCH (p:P) RETURN p.birthday.month AS month, \
+             duration.between(p.a, p.b).minutes AS minutes, \
+             date.truncate('month', p.on) AS start, \
+             {retained_temporal_key: p.a, took: $took} AS map, $took AS took",
+        )
+        .unwrap();
+        let parameters = BTreeMap::from([(
+            "took".into(),
+            Value::Duration(Box::new(
+                hawdb_core::TemporalDuration::from_parts(14, 3, 7_200_000_000_000).unwrap(),
+            )),
+        )]);
+        let (retained, charged) = {
+            let window = Window::new();
+            let plan = parameterize_logical_plan(&statement, &parameters).unwrap();
+            let template = Arc::new(ParameterBindingTemplate::new(&plan, &parameters).unwrap());
+            drop(plan);
+            let retained = window.retained();
+            let charged = template.retained_heap_bytes().unwrap();
+            assert!(
+                retained <= charged,
+                "temporal template: {retained} > {charged}"
+            );
+            drop(template);
+            assert_eq!(window.retained(), 0);
+            (retained, charged)
+        };
+        println!("temporal retained={retained} charged={charged}");
+        let (retained, charged) = {
+            let window = Window::new();
+            let logical = parameterize_logical_plan(&statement, &parameters).unwrap();
+            let physical = Arc::new(
+                hawdb_optimizer_graph::CascadesOptimizer::default().optimize(logical.logical()),
+            );
+            drop(logical);
+            let retained = window.retained();
+            let charged = physical.retained_heap_bytes().unwrap();
+            assert!(
+                retained <= charged,
+                "temporal physical: {retained} > {charged}"
+            );
+            drop(physical);
+            assert_eq!(window.retained(), 0);
+            (retained, charged)
+        };
+        println!("temporal physical retained={retained} charged={charged}");
+    }
+
     // General projection parameters retain exact guards. Include a large
     // nested map/list and vector, independently of the slot-marker fixtures.
     let properties = (0..512)
