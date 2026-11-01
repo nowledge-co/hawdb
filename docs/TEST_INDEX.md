@@ -2481,3 +2481,32 @@ TEXT/STRING/vector, arrival order/native ordering, small/full K, three blocking
 budgets, width-proxy misses and persistent residency controls. It shows gains
 when TopN removes measured spill and records neutral/adverse outcomes explicitly;
 it is not a CI performance gate or a bound on actual heap allocation.
+
+
+## Endpoint-resolution oracle isolation (#1462)
+
+`//crates/executor:hawdb_executor_unit_tests` retains the ordinary executor
+unit executable and runs the complementary inventory with a native full-name
+`--skip`. `//crates/executor:hawdb_endpoint_resolution_tests` reuses that same
+executable to run the complete
+`mutation::staged::tests::resolved_endpoints_create_exactly_what_per_row_scans_create`
+case with one libtest thread and Bazel `exclusive`, after competing actions.
+Both remain required through executor/crate presubmits; Cargo discovery and
+Windows native identity selections are unchanged. The isolated owner keeps the
+original 300-second deadline and repository-wide checked profile. Its fixture
+retains 3,000 ordinary nodes, 3,005 input rows, duplicates/misses/type boundaries,
+two index modes, four endpoint patterns and all equality/work/index assertions.
+
+The required `//crates/executor:endpoint_resolution_script_test` checks complete,
+disjoint ownership, nonempty discovery, ambiguous/duplicate names, argument
+forwarding and native discovery/execution error propagation. Replay both real
+owners with `bazel test //crates/executor:hawdb_executor_unit_tests
+//crates/executor:hawdb_endpoint_resolution_tests`.
+
+At #1434 head `772122419380`, the crates lane passed 104/105 targets while this
+case reached the 300.1-second executor deadline during concurrent compilation
+and tests (CheckRun `124827865291`); the same case also timed out at the earlier
+`3be1d46ff0e3` head. An unmodified isolated local ARM diagnostic passed in
+13.75 seconds. These are source/environment-specific observations, not proof
+of the remote cause or a CI speedup. Final-head CI must qualify the isolated
+owner. Compilation logs and complete BEP stay outside Git.
