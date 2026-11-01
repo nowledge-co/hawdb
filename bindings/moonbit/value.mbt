@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 ///|
 /// The MoonBit-native representation of a HawDB database value.
 /// Null, absent columns, binary and typed vector values remain distinct.
@@ -9,10 +12,34 @@ pub(all) enum Value {
   Text(String)
   Binary(Bytes)
   Uuid(String)
+  // A native temporal value: the kind (see temporal_kinds) and its
+  // ISO 8601 text, for example Temporal("date", "2026-10-30").
+  Temporal(String, String)
   Vector(Array[Double])
   List(Array[Value])
   Map(Map[String, Value])
 } derive(Debug)
+
+///|
+/// Temporal kinds, tagged in JSON as {"$<kind>": "<ISO 8601>"} exactly as in
+/// the C ABI binding.
+fn temporal_kinds() -> Array[String] {
+  ["date", "localtime", "localdatetime", "datetime", "duration"]
+}
+
+///|
+/// Singleton map keys that the native transport reads as typed values.
+fn is_reserved_tag(key : String) -> Bool {
+  if key == "$binary" || key == "$uuid" || key == "$vector" || key == "$map" {
+    return true
+  }
+  for kind in temporal_kinds() {
+    if key == "$" + kind {
+      return true
+    }
+  }
+  false
+}
 
 ///|
 /// Structured engine failures and transport/decoding failures.
@@ -84,6 +111,14 @@ fn value_to_json_depth(value : Value, depth : Int) -> Result[Json, HawdbError] {
       Ok(Json::object({ "$binary": Json::string(@base64.encode(v[:])) }))
     Value::Uuid(v) =>
       Ok(Json::object({ "$uuid": Json::string(v) }))
+    Value::Temporal(kind, text) => {
+      if !temporal_kinds().contains(kind) {
+        return Err(HawdbError::Codec("unknown temporal kind: " + kind))
+      }
+      let tagged : Map[String, Json] = Map([])
+      tagged["$" + kind] = Json::string(text)
+      Ok(Json::object(tagged))
+    }
     Value::Vector(values) => {
       if values.length() == 0 {
         return Err(HawdbError::Codec("vector must contain at least one coordinate"))
@@ -116,10 +151,10 @@ fn value_to_json_depth(value : Value, depth : Int) -> Result[Json, HawdbError] {
         }
       }
       // A singleton map with a reserved tag name would otherwise be
-      // confused with a native binary/UUID/vector envelope.
+      // confused with a native binary/UUID/temporal/vector envelope.
       if encoded.length() == 1 {
         for key, item in encoded {
-          if key == "$binary" || key == "$uuid" || key == "$vector" || key == "$map" {
+          if is_reserved_tag(key) {
             return Ok(Json::object({
               "$map": Json::array([Json::array([Json::string(key), item])]),
             }))
@@ -222,6 +257,14 @@ fn json_to_value_depth(json : Json, depth : Int) -> Result[Value, HawdbError] {
           Some(Json::String(s)) => return Ok(Value::Uuid(s))
           Some(_) => return Err(HawdbError::Codec("$uuid must be a string"))
           None => ()
+        }
+        for kind in temporal_kinds() {
+          match values.get("$" + kind) {
+            Some(Json::String(s)) => return Ok(Value::Temporal(kind, s))
+            Some(_) =>
+              return Err(HawdbError::Codec("$" + kind + " must be an ISO 8601 string"))
+            None => ()
+          }
         }
         match values.get("$vector") {
           Some(Json::Array(items)) => {

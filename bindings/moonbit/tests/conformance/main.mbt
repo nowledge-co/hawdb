@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 ///|
 /// Real end-to-end MoonBit -> HawDB business contract checks.
 /// An error suppresses the final success marker.
@@ -499,6 +502,57 @@ fn typed_vector_roundtrip() -> Bool {
             failed("typed.vector_roundtrip", "vector coordinates or distance differ")
           }
         _ => failed("typed.vector_roundtrip", "wrong result ADT")
+      }
+  }
+  db.close()
+  ok
+}
+
+///|
+/// Native temporal values keep their kind and ISO 8601 text, and a plain
+/// map whose only key is a temporal tag stays a map.
+fn typed_temporal_roundtrip() -> Bool {
+  let db = match @hawdb.open_in_memory() {
+    Ok(db) => db
+    Err(err) => return failed("typed.temporal.open", err.describe())
+  }
+  let p : Map[String, @hawdb.Value] = {
+    "id": @hawdb.Value::Text("temporal-roundtrip"),
+    "day": @hawdb.Value::Temporal("date", "2026-10-30"),
+    "span": @hawdb.Value::Temporal("duration", "P1M2DT3.5S"),
+    "plain": @hawdb.Value::Map({ "$date": @hawdb.Value::Text("not-a-date") }),
+  }
+  match db.query("CREATE (:TemporalRoundtrip {id: $id, day: $day, span: $span})", p) {
+    Err(err) => {
+      db.close()
+      return failed("typed.temporal.create", err.describe())
+    }
+    Ok(_) => ()
+  }
+  let data = db.query(
+    "MATCH (n:TemporalRoundtrip {id: $id}) RETURN n.day AS day, n.span AS span, $plain AS plain",
+    p,
+  )
+  let ok = match data {
+    Err(err) => failed("typed.temporal.read", err.describe())
+    Ok(result) =>
+      match (result.get(0, "day"), result.get(0, "span"), result.get(0, "plain")) {
+        (
+          Some(@hawdb.Value::Temporal(day_kind, day)),
+          Some(@hawdb.Value::Temporal(span_kind, span)),
+          Some(@hawdb.Value::Map(plain)),
+        ) =>
+          if day_kind == "date" &&
+            day == "2026-10-30" &&
+            span_kind == "duration" &&
+            span == "P1M2DT3.5S" &&
+            plain.length() == 1 {
+            println("CASE_PASS typed.temporal_roundtrip")
+            true
+          } else {
+            failed("typed.temporal_roundtrip", "temporal kind or text differs")
+          }
+        _ => failed("typed.temporal_roundtrip", "wrong result ADT")
       }
   }
   db.close()
@@ -1129,6 +1183,7 @@ fn main {
   if !api_error_contract_case() { return }
   if !typed_value_roundtrip() { return }
   if !typed_vector_roundtrip() { return }
+  if !typed_temporal_roundtrip() { return }
   if !typed_marker_map_case() { return }
   if !typed_vector_range_case() { return }
   if !typed_rejections() { return }

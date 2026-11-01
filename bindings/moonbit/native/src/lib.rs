@@ -1,6 +1,6 @@
-// Copyright 2026 Nowledge contributors
+// Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
-//
+
 // First-class MoonBit native adapter. Exports the C calling convention
 // directly from Rust and depends only on the HawDB engine crate.
 // MoonBit allocations use the native runtime contract in moonbit.h.
@@ -19,7 +19,7 @@ use std::sync::{
 use base64::Engine;
 use hawdb::{
     DatabaseReadTransaction, EmbeddedQueryError, HawDBEmbedded, HawDBEmbeddedOpenOptions,
-    HawDBError, QueryOutput, RecoveryMode, Uuid, Value,
+    HawDBError, QueryOutput, RecoveryMode, SqlQueryRequest, Uuid, Value,
 };
 use serde_json::{json, Value as Json};
 
@@ -282,6 +282,19 @@ fn decode_value(value: &Json) -> Result<Value, Failure> {
                         .map(Value::Uuid)
                         .map_err(|e| fail("invalid_argument", e.to_string()));
                 }
+                if let Some((tag, v)) = values.iter().next()
+                    && hawdb::temporal::JSON_TAGS.contains(&tag.as_str())
+                {
+                    let text = v.as_str().ok_or_else(|| {
+                        fail(
+                            "invalid_argument",
+                            format!("{tag} must be an ISO 8601 string"),
+                        )
+                    })?;
+                    return hawdb::temporal::from_json_tag(tag, text)
+                        .expect("checked temporal tag")
+                        .map_err(|e| fail("invalid_argument", format!("invalid {tag}: {e}")));
+                }
             }
             Value::Map(
                 values
@@ -304,11 +317,19 @@ fn encode_value(value: &Value) -> Json {
         Value::Binary(v) => json!({"$binary":base64::engine::general_purpose::STANDARD.encode(v)}),
         Value::Uuid(v) => json!({"$uuid":v.to_string()}),
         Value::Vector(v) => json!({"$vector":v.as_ref().coordinates().collect::<Vec<_>>()}),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            json!({ hawdb::temporal::json_tag(value).expect("temporal value"): value.to_string() })
+        }
         Value::List(v) => Json::Array(v.iter().map(encode_value).collect()),
         Value::Map(v) => {
             let reserved = v.len() == 1
                 && v.keys().next().is_some_and(|key| {
                     matches!(key.as_str(), "$binary" | "$uuid" | "$vector" | "$map")
+                        || hawdb::temporal::JSON_TAGS.contains(&key.as_str())
                 });
             if reserved {
                 let pairs: Vec<Json> = v
@@ -368,8 +389,16 @@ fn open_options(path: PathBuf, read_only: bool) -> HawDBEmbeddedOpenOptions {
     options
 }
 
+/// # Safety
+///
+/// `path` must be readable for `len` bytes. MoonBit borrows it for the
+/// duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn moonbit_hawdb_open(path: *const u8, len: i32, read_only: i32) -> *mut Handle {
+pub unsafe extern "C" fn moonbit_hawdb_open(
+    path: *const u8,
+    len: i32,
+    read_only: i32,
+) -> *mut Handle {
     let handle = allocate_handle();
     if handle.is_null() {
         return handle;
@@ -413,18 +442,50 @@ pub extern "C" fn moonbit_hawdb_open_in_memory() -> *mut Handle {
     handle
 }
 
+/// # Safety
+///
+/// `handle` must be null or a live database handle from this adapter.
+/// MoonBit borrows it for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn moonbit_hawdb_is_open(handle: *mut Handle) -> i32 {
+pub unsafe extern "C" fn moonbit_hawdb_is_open(handle: *mut Handle) -> i32 {
     i32::from(clone_database(handle).is_some_and(|db| !db.closed.load(Ordering::Acquire)))
 }
 
+/// # Safety
+///
+/// `handle` must be null or a live database handle from this adapter.
+/// MoonBit borrows it for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn moonbit_hawdb_close(handle: *mut Handle) {
+pub unsafe extern "C" fn moonbit_hawdb_close(handle: *mut Handle) {
     let _ = catch_unwind(AssertUnwindSafe(|| close_db(handle)));
 }
 
+/// Runs one autocommit statement through the admitted facade. Both languages
+/// refuse to run beside an open user transaction; the raw database's SQL
+/// entry point would instead autocommit outside it.
+fn execute_statement(
+    engine: &mut HawDBEmbedded,
+    statement: &str,
+    params: &str,
+    sql: bool,
+) -> Result<String, Failure> {
+    let answer = if sql {
+        let args = sql_params(params)?;
+        engine.query_sql_request_admitted(SqlQueryRequest::new(statement).with_params(&args))
+    } else {
+        engine.query_with_params_admitted(statement, &named_params(params)?)
+    }
+    .map_err(|e| query_error(&e))?;
+    Ok(encode_result(&answer))
+}
+
+/// # Safety
+///
+/// `handle` must be null or a live database handle from this adapter, and
+/// each byte pointer must be readable for its length. MoonBit borrows all
+/// arguments for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn moonbit_hawdb_execute(
+pub unsafe extern "C" fn moonbit_hawdb_execute(
     handle: *mut Handle,
     text: *const u8,
     text_len: i32,
@@ -446,20 +507,7 @@ pub extern "C" fn moonbit_hawdb_execute(
         if db.closed.load(Ordering::Acquire) {
             return Err(fail("closed", "database is closed"));
         }
-        if sql != 0 {
-            let args = sql_params(params)?;
-            let answer = locked
-                .database_mut()
-                .query_sql_with_params(statement, &args)
-                .map_err(|e| engine_error(&e))?;
-            Ok::<_, Failure>(encode_result(&answer))
-        } else {
-            let args = named_params(params)?;
-            let answer = locked
-                .query_with_params_admitted(statement, &args)
-                .map_err(|e| query_error(&e))?;
-            Ok::<_, Failure>(encode_result(&answer))
-        }
+        execute_statement(&mut locked, statement, params, sql != 0)
     }));
     match result {
         Ok(Ok(text)) => to_moonbit_bytes(text.as_bytes()),
@@ -474,8 +522,12 @@ pub extern "C" fn moonbit_hawdb_execute(
     }
 }
 
+/// # Safety
+///
+/// `handle` must be null or a live database handle from this adapter.
+/// MoonBit borrows it for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn moonbit_hawdb_error(handle: *mut Handle) -> *mut u8 {
+pub unsafe extern "C" fn moonbit_hawdb_error(handle: *mut Handle) -> *mut u8 {
     let message = if handle.is_null() {
         error_json(fail("closed", "HawDB handle is closed"))
     } else {
@@ -524,17 +576,18 @@ fn tx_abandon_state(state: &mut TransactionState) -> Result<(), Failure> {
     state.active = false;
     state.read.take();
     let db = state.db.take();
-    if active && !state.read_only {
-        if let Some(shared) = db {
-            let mut engine = shared
-                .engine
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if engine.transaction_active() {
-                engine
-                    .rollback_transaction()
-                    .map_err(|e| engine_error(&e))?;
-            }
+    if active
+        && !state.read_only
+        && let Some(shared) = db
+    {
+        let mut engine = shared
+            .engine
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if engine.transaction_active() {
+            engine
+                .rollback_transaction()
+                .map_err(|e| engine_error(&e))?;
         }
     }
     Ok(())
@@ -591,8 +644,12 @@ fn tx_alloc(read_only: bool) -> *mut TransactionHandle {
     tx
 }
 
+/// # Safety
+///
+/// `parent` must be null or a live database handle from this adapter.
+/// MoonBit borrows it for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn moonbit_hawdb_tx_begin(
+pub unsafe extern "C" fn moonbit_hawdb_tx_begin(
     parent: *mut Handle,
     read_only: i32,
 ) -> *mut TransactionHandle {
@@ -635,8 +692,12 @@ pub extern "C" fn moonbit_hawdb_tx_begin(
     tx
 }
 
+/// # Safety
+///
+/// `tx` must be null or a live transaction handle from this adapter.
+/// MoonBit borrows it for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn moonbit_hawdb_tx_is_open(tx: *mut TransactionHandle) -> i32 {
+pub unsafe extern "C" fn moonbit_hawdb_tx_is_open(tx: *mut TransactionHandle) -> i32 {
     if tx.is_null() {
         return 0;
     }
@@ -652,8 +713,12 @@ pub extern "C" fn moonbit_hawdb_tx_is_open(tx: *mut TransactionHandle) -> i32 {
     )
 }
 
+/// # Safety
+///
+/// `tx` must be null or a live transaction handle from this adapter.
+/// MoonBit borrows it for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn moonbit_hawdb_tx_error(tx: *mut TransactionHandle) -> *mut u8 {
+pub unsafe extern "C" fn moonbit_hawdb_tx_error(tx: *mut TransactionHandle) -> *mut u8 {
     let message = if tx.is_null() {
         error_json(fail("closed", "transaction is closed"))
     } else {
@@ -669,8 +734,13 @@ pub extern "C" fn moonbit_hawdb_tx_error(tx: *mut TransactionHandle) -> *mut u8 
     to_moonbit_bytes(message.as_bytes())
 }
 
+/// # Safety
+///
+/// `tx` must be null or a live transaction handle from this adapter, and
+/// each byte pointer must be readable for its length. MoonBit borrows all
+/// arguments for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn moonbit_hawdb_tx_query(
+pub unsafe extern "C" fn moonbit_hawdb_tx_query(
     tx: *mut TransactionHandle,
     statement: *const u8,
     statement_len: i32,
@@ -741,8 +811,15 @@ pub extern "C" fn moonbit_hawdb_tx_query(
     }
 }
 
+/// # Safety
+///
+/// `tx` must be null or a live transaction handle from this adapter.
+/// MoonBit borrows it for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn moonbit_hawdb_tx_finish(tx: *mut TransactionHandle, commit: i32) -> *mut u8 {
+pub unsafe extern "C" fn moonbit_hawdb_tx_finish(
+    tx: *mut TransactionHandle,
+    commit: i32,
+) -> *mut u8 {
     if tx.is_null() {
         return to_moonbit_bytes(&[]);
     }
@@ -800,8 +877,12 @@ pub extern "C" fn moonbit_hawdb_tx_finish(tx: *mut TransactionHandle, commit: i3
     }
 }
 
+/// # Safety
+///
+/// `tx` must be null or a live transaction handle from this adapter.
+/// MoonBit borrows it for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn moonbit_hawdb_tx_close(tx: *mut TransactionHandle) {
+pub unsafe extern "C" fn moonbit_hawdb_tx_close(tx: *mut TransactionHandle) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if let Err(err) = tx_abandon(tx) {
             tx_set_error(tx, err);
@@ -895,5 +976,58 @@ mod lifecycle_tests {
         assert!(!state.active);
         assert!(state.db.is_none());
         assert!(!shared.engine.lock().unwrap().transaction_active());
+    }
+
+    #[test]
+    fn autocommit_statements_refuse_to_run_beside_an_open_transaction() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+        execute_statement(
+            &mut engine,
+            "CREATE TABLE items (id BIGINT PRIMARY KEY)",
+            "[]",
+            true,
+        )
+        .unwrap();
+        engine.begin_transaction().unwrap();
+        for (statement, params, sql) in [
+            ("INSERT INTO items VALUES ($1)", "[1]", true),
+            ("CREATE (:Item {id: $id})", r#"{"id":1}"#, false),
+        ] {
+            let (_, message) = execute_statement(&mut engine, statement, params, sql).unwrap_err();
+            assert!(message.contains("transaction is open"), "{message}");
+        }
+        engine.rollback_transaction().unwrap();
+        let rows = execute_statement(&mut engine, "SELECT id FROM items", "[]", true).unwrap();
+        assert_eq!(rows, r#"{"columns":["id"],"rows":[]}"#);
+    }
+
+    #[test]
+    fn temporal_values_use_the_shared_tagged_json() {
+        for (tagged, text) in [
+            ("$date", "2026-10-30"),
+            ("$localtime", "12:30:00.500"),
+            ("$localdatetime", "2026-10-30T12:30:00"),
+            ("$datetime", "2026-10-30T12:00:00+02:00"),
+            ("$duration", "P1M2DT3.5S"),
+        ] {
+            let json = json!({ tagged: text });
+            let value = decode_value(&json).unwrap();
+            assert_eq!(hawdb::temporal::json_tag(&value), Some(tagged));
+            assert_eq!(encode_value(&value), json);
+            // A plain map with a temporal key must not turn into a value.
+            let map = Value::Map(BTreeMap::from([(
+                tagged.to_owned(),
+                Value::String(text.to_owned()),
+            )]));
+            assert_eq!(decode_value(&encode_value(&map)).unwrap(), map);
+        }
+        for invalid in [
+            json!({"$date": "2026-02-30"}),
+            json!({"$datetime": 7}),
+            json!({"$duration": "P"}),
+        ] {
+            let (kind, _) = decode_value(&invalid).unwrap_err();
+            assert_eq!(kind, "invalid_argument", "{invalid}");
+        }
     }
 }
