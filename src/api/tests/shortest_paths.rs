@@ -414,3 +414,147 @@ fn untyped_shortest_path_patterns_search_every_relationship_type() {
         Err(error) => assert!(error.to_string().contains("type"), "{error}"),
     }
 }
+
+/// The issue #1426 shape: endpoints and the search share one MATCH clause.
+const SAME_CLAUSE: &str = "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}), path = shortestPath((p1)-[:KNOWS*]-(p2)) RETURN length(path) AS len, properties(nodes(path), 'id') AS ids";
+/// The equivalent form that binds the endpoints in their own clause first.
+const SPLIT_CLAUSE: &str = "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}) WITH p1, p2 MATCH path = shortestPath((p1)-[:KNOWS*]-(p2)) RETURN length(path) AS len, properties(nodes(path), 'id') AS ids";
+
+/// Unconnected nodes that make an equality index seek cheaper than a label
+/// scan, so indexed runs exercise the seek rather than the cost fallback.
+fn index_worthy(db: &mut Database, label: &str) {
+    db.query(&format!("CREATE INDEX ON :{label}(id)")).unwrap();
+    for id in 100..140 {
+        db.query_with_params(
+            &format!("CREATE (:{label} {{id: $id}})"),
+            &params(&[("id", int(id))]),
+        )
+        .unwrap();
+    }
+}
+
+fn endpoint_plan(db: &Database, query: &str) -> String {
+    db.explain_query_with_params(query, &params(&[("a", int(1)), ("b", int(4))]))
+        .unwrap()
+        .physical_plan
+        .explain(0)
+}
+
+#[test]
+fn same_clause_endpoints_seek_the_property_index() {
+    let mut db = Database::new();
+    social(&mut db);
+    // Without an index each endpoint is one filtered label scan, combined as a
+    // product, rather than a generic match that rescans per bound row.
+    let plan = endpoint_plan(&db, SAME_CLAUSE);
+    assert!(!plan.contains("IndexNodeSeek"), "{plan}");
+    assert_eq!(plan.matches("GraphMatchExec").count(), 1, "{plan}");
+    index_worthy(&mut db, "Person");
+    for query in [
+        SAME_CLAUSE,
+        SPLIT_CLAUSE,
+        "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}), path = allShortestPaths((p1)-[:KNOWS*]-(p2)) RETURN length(path) AS len",
+    ] {
+        let plan = endpoint_plan(&db, query);
+        assert_eq!(plan.matches("IndexNodeSeek").count(), 2, "{query}\n{plan}");
+        assert_eq!(plan.matches("GraphMatchExec").count(), 1, "{query}\n{plan}");
+    }
+}
+
+#[test]
+fn same_clause_endpoints_return_the_split_clause_rows() {
+    for indexed in [false, true] {
+        let mut db = Database::new();
+        social(&mut db);
+        if indexed {
+            index_worthy(&mut db, "Person");
+            assert!(endpoint_plan(&db, SAME_CLAUSE).contains("IndexNodeSeek"));
+        }
+        // Found, reversed, longer, missing on either side, identical endpoints
+        // (no positive-length path to itself), and unreachable endpoints.
+        for (a, b, expected) in [
+            (1, 4, Some(2)),
+            (4, 1, Some(2)),
+            (1, 7, Some(3)),
+            (1, 99, None),
+            (99, 1, None),
+            (3, 3, None),
+            (1, 6, None),
+        ] {
+            let parameters = params(&[("a", int(a)), ("b", int(b))]);
+            let same = db.query_with_params(SAME_CLAUSE, &parameters).unwrap();
+            let split = db.query_with_params(SPLIT_CLAUSE, &parameters).unwrap();
+            assert_eq!(same.rows, split.rows, "indexed={indexed} {a} -> {b}");
+            assert_eq!(
+                column(&same, "len"),
+                expected.map(int).into_iter().collect::<Vec<_>>(),
+                "indexed={indexed} {a} -> {b}"
+            );
+        }
+        // The same variable on both sides of a zero-length search.
+        let same = db
+            .query("MATCH (a:Person {id: 3}), p = shortestPath((a)-[:KNOWS*0..]-(a)) RETURN length(p) AS hops, properties(nodes(p), 'id') AS ids")
+            .unwrap();
+        let split = db
+            .query("MATCH (a:Person {id: 3}) WITH a MATCH p = shortestPath((a)-[:KNOWS*0..]-(a)) RETURN length(p) AS hops, properties(nodes(p), 'id') AS ids")
+            .unwrap();
+        assert_eq!(same.rows, split.rows, "indexed={indexed}");
+        assert_eq!(column(&same, "hops"), vec![int(0)]);
+        // WHERE filters and constraints written on the search endpoints still
+        // apply after the endpoint steps fold together.
+        for (same, split, expected) in [
+            (
+                "MATCH (a:Person {id: 1}), (b:Person), p = shortestPath((a)-[:KNOWS*]->(b)) WHERE b.name = 'p7' RETURN length(p) AS hops",
+                "MATCH (a:Person {id: 1}), (b:Person) WHERE b.name = 'p7' WITH a, b MATCH p = shortestPath((a)-[:KNOWS*]->(b)) RETURN length(p) AS hops",
+                vec![int(3)],
+            ),
+            (
+                "MATCH (a {id: 1}), (b), p = shortestPath((a:Person)-[:KNOWS*]->(b:Person {id: 7})) RETURN length(p) AS hops",
+                "MATCH (a:Person {id: 1}), (b:Person {id: 7}) WITH a, b MATCH p = shortestPath((a)-[:KNOWS*]->(b)) RETURN length(p) AS hops",
+                vec![int(3)],
+            ),
+            (
+                "MATCH (a:Person {id: 1}), (b:Person {id: 7}), p = shortestPath((a)-[:KNOWS*]->(b {id: 4})) RETURN length(p) AS hops",
+                "MATCH (a:Person {id: 1}), (b:Person {id: 7}) WHERE b.id = 4 WITH a, b MATCH p = shortestPath((a)-[:KNOWS*]->(b)) RETURN length(p) AS hops",
+                Vec::new(),
+            ),
+        ] {
+            let same = db.query(same).unwrap();
+            assert_eq!(same.rows, db.query(split).unwrap().rows, "indexed={indexed}");
+            assert_eq!(column(&same, "hops"), expected, "indexed={indexed}");
+        }
+    }
+}
+
+#[test]
+fn same_clause_all_shortest_paths_return_the_split_clause_rows() {
+    for indexed in [false, true] {
+        let mut db = Database::new();
+        diamond(&mut db);
+        if indexed {
+            index_worthy(&mut db, "Item");
+        }
+        for (a, b) in [(1, 4), (4, 1), (1, 99), (2, 3), (1, 1)] {
+            let parameters = params(&[("a", int(a)), ("b", int(b))]);
+            let same = db
+                .query_with_params(
+                    "MATCH (a:Item {id: $a}), (b:Item {id: $b}), p = allShortestPaths((a)-[:LINK*]->(b)) RETURN properties(nodes(p), 'id') AS ids ORDER BY ids",
+                    &parameters,
+                )
+                .unwrap();
+            let split = db
+                .query_with_params(
+                    "MATCH (a:Item {id: $a}), (b:Item {id: $b}) WITH a, b MATCH p = allShortestPaths((a)-[:LINK*]->(b)) RETURN properties(nodes(p), 'id') AS ids ORDER BY ids",
+                    &parameters,
+                )
+                .unwrap();
+            assert_eq!(same.rows, split.rows, "indexed={indexed} {a} -> {b}");
+            if (a, b) == (1, 4) {
+                assert_eq!(
+                    column(&same, "ids"),
+                    vec![ints(&[1, 2, 4]), ints(&[1, 3, 4])]
+                );
+            }
+        }
+    }
+}

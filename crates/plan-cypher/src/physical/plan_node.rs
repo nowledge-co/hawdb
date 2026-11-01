@@ -52,6 +52,7 @@ impl PhysicalPlan {
             PhysicalPlan::TextSeedScan { .. } => PhysicalPlanKind::TextSeedScan,
             PhysicalPlan::CreateNode { .. } => PhysicalPlanKind::CreateNode,
             PhysicalPlan::UnwindExec { .. } => PhysicalPlanKind::UnwindExec,
+            PhysicalPlan::UnwindRowsExec { .. } => PhysicalPlanKind::UnwindRowsExec,
             PhysicalPlan::UnwindMutation { .. } => PhysicalPlanKind::UnwindMutationExec,
             PhysicalPlan::MergeNode { .. } => PhysicalPlanKind::MergeNode,
             PhysicalPlan::MergeRelationship { .. } => PhysicalPlanKind::MergeRelationship,
@@ -145,6 +146,7 @@ impl PhysicalPlan {
             PhysicalPlan::NodeCartesianProductExec { left, right }
             | PhysicalPlan::HashJoinExec { left, right, .. } => PlanChildren::Binary(left, right),
             PhysicalPlan::NodeColumnLookupExec { input, .. }
+            | PhysicalPlan::UnwindRowsExec { input, .. }
             | PhysicalPlan::AdjacencyExpandExec { input, .. }
             | PhysicalPlan::AdjacencyExistsExec { input, .. }
             | PhysicalPlan::OptionalDegreeExec { input, .. }

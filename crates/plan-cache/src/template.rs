@@ -751,6 +751,10 @@ fn values_marker_use<'a>(values: impl IntoIterator<Item = &'a Value>, name: &str
 fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
     match plan {
         LogicalPlan::Unwind { rows, .. } => values_marker_use(rows, name),
+        LogicalPlan::UnwindRows {
+            expression, input, ..
+        } => marker_use_in_projection_expression(expression, name, true)
+            .combine(marker_use_in_logical_plan(input, name)),
         LogicalPlan::NodeScan { .. } | LogicalPlan::ThreadRepairStats { .. } => MarkerUse::None,
         LogicalPlan::NodeCartesianProduct { left, right } => {
             marker_use_in_logical_plan(left, name).combine(marker_use_in_logical_plan(right, name))
@@ -1163,6 +1167,12 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) ->
             bind_predicate(predicate, parameters)?;
             bind_physical_plan(input, parameters)?;
         }
+        PhysicalPlan::UnwindRowsExec {
+            expression, input, ..
+        } => {
+            bind_projection_expression(expression, parameters)?;
+            bind_physical_plan(input, parameters)?;
+        }
         PhysicalPlan::NodeProjectionScanExec {
             access,
             predicate,
@@ -1398,6 +1408,12 @@ fn bind_composite_range_seek(
 fn bind_logical_plan(plan: &mut LogicalPlan, parameters: BindingAction<'_>) -> Result<()> {
     match plan {
         LogicalPlan::Unwind { rows, .. } => bind_values(rows, parameters)?,
+        LogicalPlan::UnwindRows {
+            expression, input, ..
+        } => {
+            bind_projection_expression(expression, parameters)?;
+            bind_logical_plan(input, parameters)?;
+        }
         LogicalPlan::VectorIndexSearch(scan) => {
             bind_optional_predicate(&mut scan.node_visibility_predicate, parameters)?;
             if let Some(input) = &mut scan.input {
@@ -1782,6 +1798,31 @@ mod tests {
         hawdb_plan_cypher::visit_plan(&physical, &mut |node| {
             if let PhysicalPlan::UnwindExec { rows, .. } = node {
                 assert_eq!(rows, &[Value::Int(2), Value::Int(3), Value::Null]);
+                sources += 1;
+            }
+        });
+        assert_eq!(sources, 1);
+    }
+
+    #[test]
+    fn row_unwind_parameters_rebind_in_logical_and_physical_templates() {
+        let statement =
+            cypher::parse("MATCH (n:Item) UNWIND [$candidate, n.id, null] AS item RETURN item")
+                .unwrap();
+        let parameters = BTreeMap::from([("candidate".into(), Value::String("first".into()))]);
+        let changed = BTreeMap::from([("candidate".into(), Value::String("second".into()))]);
+        let template = parameterize_logical_plan(&statement, &parameters).unwrap();
+        assert_eq!(template.slot_count(), 1);
+        let mut rebound = template.logical().clone();
+        super::bind_logical_plan(&mut rebound, super::BindingAction::Execute(&changed)).unwrap();
+        let expected = hawdb_plan_cypher::plan_with_params(&statement, &changed).unwrap();
+        assert_eq!(rebound, expected);
+        let physical = CascadesOptimizer::default().optimize(template.logical());
+        let bound = bind_physical_plan_parameters(&physical, &changed, true).unwrap();
+        assert_eq!(bound, CascadesOptimizer::default().optimize(&expected));
+        let mut sources = 0;
+        hawdb_plan_cypher::visit_plan(&bound, &mut |node| {
+            if let PhysicalPlan::UnwindRowsExec { .. } = node {
                 sources += 1;
             }
         });

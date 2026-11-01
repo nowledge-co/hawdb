@@ -167,7 +167,16 @@ and root `api::tests::row_bound_pattern_properties` in
 `//:hawdb_unit_general_tests`. The regressions cover scalar/property bindings,
 optional predicate boundaries, duplicate matches and inputs, NULL/empty values,
 indexed and generic execution, parameter cache rebinding, dropped/unknown scope,
-and payload/result budget failures. Replay with `cargo test --locked -p hawdb
+and payload/result budget failures. The Mem Thread-reference regression keeps
+its original Boolean/COALESCE predicate and complete MATCH → row-dependent
+UNWIND → WITH/aggregate → correlated MATCH/OPTIONAL MATCH query. Per-row
+expansion also covers WITH aliases/native metadata, nested and multiple sources,
+NULL lists/items, duplicate multiplicities, early LIMIT stop and scalar alias
+reuse. Executor `transform::tests::row_unwind` owns cancellation, stop and refusal
+cleanup; plan-cache `row_unwind_parameters` owns logical/physical rebinding, and
+the existing allocation oracle covers owned row-UNWIND expressions and refuses
+a 1 MiB output before allocating a copy. Mutation source refusals remain owned
+by the planner. Replay with `cargo test --locked -p hawdb
 --lib row_bound_pattern_properties`, `cargo test --locked -p hawdb-cypher
 row_bound_pattern_properties`, and `cargo test --locked -p hawdb-plan-cypher
 row_bound_pattern_properties`. No CI lane or timeout is added.
@@ -2488,3 +2497,18 @@ bounded recursion. Map keys remain unique, scalar-map entries retain source orde
 value maps remain ordered by key, and named-call/property adjacency follows main.
 Native embedded temporal tests cover construction, parameters, arithmetic,
 components, cached clocks, persistence, index seeks and out-of-core reopen.
+
+### Boolean predicates and row-dependent UNWIND on PEG (#1428)
+
+The Cypher owner retains main's boolean-composition and bounded UNWIND parser
+regressions through the PEG driver. The immutable
+`migration_main_1428_boolean_unwind_peg_baseline_v1.jsonl` adds 856 statement and
+pipeline outcomes exported from independently built main `bb30c40fe2`. Together
+with the temporal cohort, all 18,744 complete AST/span/rejection outcomes match.
+Earlier fixtures remain unchanged. Bare boolean/null scalar predicates lower to
+an equality against synthetic true; numeric/string/function operands still
+require a predicate operator. Row-bound UNWIND sources remain syntax, with scope,
+list types, multiplicity and payload admission checked by binding/execution.
+No handwritten parser, extra named rule or increased grammar/resource cap is
+introduced. Embedded row-bound, multi-WITH and shortest-path tests from main
+remain under their existing root test owners.

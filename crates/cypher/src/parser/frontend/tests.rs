@@ -75,11 +75,12 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
     use std::collections::BTreeMap;
     use std::sync::OnceLock;
     type TransitionMap = BTreeMap<(String, String), serde_json::Value>;
-    static TRANSITIONS: OnceLock<[TransitionMap; 3]> = OnceLock::new();
+    static TRANSITIONS: OnceLock<[TransitionMap; 4]> = OnceLock::new();
     // Keep each earlier oracle immutable. Main #1411 changes row bindings and
     // read-only UNWIND; #1403 expands ORDER BY and changes aggregate sort ASTs.
     // #1382 adds temporal syntax and generic scalar/postfix behavior. Every
     // transition was exported from an independently compiled main.
+    // #1428 admits boolean predicates and row-bound UNWIND sources.
     let transitions = TRANSITIONS.get_or_init(|| {
         [
             include_str!("../../../fixtures/migration_main_1411_peg_baseline_v1.jsonl"),
@@ -87,6 +88,9 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
                 "../../../fixtures/migration_main_1403_order_expressions_peg_baseline_v1.jsonl"
             ),
             include_str!("../../../fixtures/migration_main_1382_temporal_peg_baseline_v1.jsonl"),
+            include_str!(
+                "../../../fixtures/migration_main_1428_boolean_unwind_peg_baseline_v1.jsonl"
+            ),
         ]
         .map(|fixture| {
             fixture
@@ -618,4 +622,17 @@ fn main_1382_temporal_preserves_independent_main_ir_and_admission() {
         count += 1;
     }
     assert_eq!(count, 5749);
+}
+
+#[test]
+fn frozen_main_1428_boolean_predicates_and_row_bound_unwind() {
+    let mut count = 0;
+    for line in
+        include_str!("../../../fixtures/migration_main_1428_boolean_unwind_peg_baseline_v1.jsonl")
+            .lines()
+    {
+        assert_frozen(&serde_json::from_str(line).unwrap());
+        count += 1;
+    }
+    assert_eq!(count, 856);
 }

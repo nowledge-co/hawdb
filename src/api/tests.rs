@@ -123,6 +123,7 @@ mod materialized_views;
 mod memory_lifecycle;
 mod merge_nodes;
 mod merge_relationships;
+mod multi_with_normalization;
 mod mutation_guards;
 mod mutation_persistence;
 mod neighbor_reads;

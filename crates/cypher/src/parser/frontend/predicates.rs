@@ -219,7 +219,7 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                         r("x_case_scalar"),
                     ]),
                 ]),
-                r("w_expression_tail"),
+                o(r("w_expression_tail")),
             ]),
         ),
         (
@@ -538,7 +538,22 @@ impl Transformer<'_> {
                         ),
                     )
                 };
-                let tail = self.tree.required(selected, "w_expression_tail");
+                let Some(tail) = self.tree.child(selected, "w_expression_tail") else {
+                    return if matches!(
+                        left.kind,
+                        ScalarExpressionKind::Value(AstNode {
+                            kind: ValueExpressionKind::Literal(Value::Bool(_) | Value::Null),
+                            ..
+                        })
+                    ) {
+                        Ok(PropertyPredicate::ExpressionEq {
+                            expression: left,
+                            value: true_scalar(),
+                        })
+                    } else {
+                        Err(self.error(selected, "expected '='"))
+                    };
+                };
                 if let Some(null) = self.tree.child(tail, "x_is_null") {
                     let span = left.span;
                     let expression = AstNode {

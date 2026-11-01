@@ -17,12 +17,14 @@ thread_local! {
     static TRACK: Cell<bool> = const { Cell::new(false) };
 }
 static LIVE: AtomicUsize = AtomicUsize::new(0);
+static LARGEST: AtomicUsize = AtomicUsize::new(0);
 
 struct Allocator;
 
 fn allocated(bytes: usize) {
     if TRACK.try_with(Cell::get).unwrap_or(false) {
         LIVE.fetch_add(bytes, Ordering::Relaxed);
+        LARGEST.fetch_max(bytes, Ordering::Relaxed);
     }
 }
 
@@ -72,6 +74,7 @@ struct Window;
 impl Window {
     fn new() -> Self {
         LIVE.store(0, Ordering::Relaxed);
+        LARGEST.store(0, Ordering::Relaxed);
         TRACK.set(true);
         Self
     }
@@ -205,6 +208,7 @@ fn cached(
 
 #[test]
 fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
+    row_unwind_refuses_large_output_before_copying();
     for candidates in [20, 100, 512] {
         let (query, parameters) = fixture(candidates);
         let statement = cypher::parse(&query).unwrap();
@@ -231,6 +235,7 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
     // of the accounting implementation, including nested retained values.
     for query in [
         "MATCH (n:Memory) RETURN [x IN reverse(range(0, 128))[1..100] WHERE x > 3 | x] AS filtered, range(0, 12)[1] AS indexed, [n.id, [n.body, 'literal-owned-payload']] AS literal_list".to_owned(),
+        format!("MATCH (n:Memory) UNWIND [n.id, '{}', ['{}'], null] AS candidate RETURN candidate", "unwind".repeat(4096), "nested".repeat(2048)),
         format!("UNWIND ['{}', ['{}'], null] AS candidate RETURN candidate", "unwind".repeat(4096), "nested".repeat(2048)),
     ] {
         let statement = cypher::parse(&query).unwrap();
@@ -444,4 +449,59 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
     assert!(cache.stats().evictions > 0);
     drop(cache);
     assert_eq!(window.retained(), 0);
+}
+
+fn row_unwind_refuses_large_output_before_copying() {
+    use hawdb_executor::binding::Binding;
+    use hawdb_executor::observer::NoopExecutionObserver;
+    use hawdb_executor::pipeline::{
+        BatchControl, BatchExecutionContext, BindingBatch, BindingBatchSource,
+    };
+    use hawdb_executor::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryLedger};
+    use hawdb_plan_cypher::ProjectionExpression;
+    use std::num::NonZeroUsize;
+    struct OneRow;
+    impl BindingBatchSource for OneRow {
+        fn execute(
+            &mut self,
+            _: &PhysicalPlan,
+            _: ExecutionLimit,
+            emit: &mut dyn FnMut(BindingBatch) -> hawdb_core::Result<BatchControl>,
+        ) -> hawdb_core::Result<BatchControl> {
+            emit(vec![Binding::values(BTreeMap::new())])
+        }
+    }
+    let expression =
+        ProjectionExpression::Literal(Value::List(vec![Value::String("x".repeat(1 << 20))]));
+    let catalog = Catalog::default();
+    let memory = ExecutionMemoryConfig {
+        batch_payload_bytes: NonZeroUsize::new(1024).unwrap(),
+        ..ExecutionMemoryConfig::default()
+    };
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let window = Window::new();
+    let error = hawdb_executor::transform::stream_unwind_rows_batches(
+        &expression,
+        "item",
+        &PhysicalPlan::EmptyExec,
+        &mut OneRow,
+        BatchExecutionContext {
+            catalog: &catalog,
+            memory: &memory,
+            memory_ledger: &ledger,
+            task_context: None,
+            observer: &NoopExecutionObserver,
+        },
+        ExecutionLimit::unlimited(),
+        &mut |_| panic!("over-budget output"),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("batch_payload_bytes"), "{error}");
+    assert!(
+        LARGEST.load(Ordering::Relaxed) < 1 << 20,
+        "UNWIND cloned the rejected payload"
+    );
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    drop(error);
+    drop(window);
 }

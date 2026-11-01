@@ -252,6 +252,11 @@ pub enum LogicalPlan {
         rows: Vec<Value>,
         variable: String,
     },
+    UnwindRows {
+        expression: ProjectionExpression,
+        variable: String,
+        input: Box<LogicalPlan>,
+    },
     UnwindMutation {
         rows: Vec<Value>,
         variable: String,

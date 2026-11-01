@@ -50,7 +50,7 @@ pub(super) fn lower(query: &QueryPipeline) -> Result<QueryPipeline> {
                             variable: node.variable.clone(),
                             property,
                         }),
-                        value: scalar(value)?,
+                        value: row_value_expression(value)?,
                     });
                 }
             }
@@ -68,24 +68,4 @@ pub(super) fn lower(query: &QueryPipeline) -> Result<QueryPipeline> {
         *predicate = Some(AstNode::synthetic(combined));
     }
     Ok(query)
-}
-
-fn scalar(value: ValueExpression) -> Result<ScalarExpression> {
-    let span = value.span;
-    let kind = match value.kind {
-        ValueExpressionKind::Binding(variable) => ScalarExpressionKind::Variable(variable),
-        ValueExpressionKind::BindingProperty { variable, property } => {
-            ScalarExpressionKind::Property { variable, property }
-        }
-        ValueExpressionKind::List(values) => {
-            ScalarExpressionKind::List(values.into_iter().map(scalar).collect::<Result<_>>()?)
-        }
-        ValueExpressionKind::Timestamp(ref inner) if inner.reads_row_binding() => {
-            return Err(HawDBError::Semantic(
-                "row-bound timestamp conversion in pattern properties is not supported".into(),
-            ));
-        }
-        _ => ScalarExpressionKind::Value(value),
-    };
-    Ok(AstNode { kind, span })
 }

@@ -2311,10 +2311,12 @@ fn pipeline_plan_cache_reuses_reads_with_fresh_parameters() {
         crate::cypher::parse(query).unwrap(),
         crate::cypher::Statement::Pipeline(_)
     ));
-    for id in [1, 2] {
+    // Two-WITH reads are normalized like other reads (#1425): `$id` is a
+    // template slot, so a fresh value reuses the entry and binds its own key.
+    for (id, first_lookup) in [(1, PlanCacheLookup::Miss), (2, PlanCacheLookup::Hit)] {
         let params = BTreeMap::from([("id".to_string(), Value::Int(id))]);
         let explain = db.explain_query_with_params(query, &params).unwrap();
-        assert_eq!(explain.plan_cache_lookup, PlanCacheLookup::Miss);
+        assert_eq!(explain.plan_cache_lookup, first_lookup);
         let reused = db.explain_query_with_params(query, &params).unwrap();
         assert_eq!(reused.plan_cache_lookup, PlanCacheLookup::Hit);
         let output = db.query_with_params(query, &params).unwrap();
@@ -2323,5 +2325,5 @@ fn pipeline_plan_cache_reuses_reads_with_fresh_parameters() {
             vec![BTreeMap::from([("id".to_string(), Value::Int(id))])]
         );
     }
-    assert_eq!(db.plan_cache_stats().unwrap().entries, 2);
+    assert_eq!(db.plan_cache_stats().unwrap().entries, 1);
 }

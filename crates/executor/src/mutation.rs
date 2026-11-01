@@ -563,6 +563,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
         | PhysicalPlan::TextSeedScan { .. }
         | PhysicalPlan::UnwindMutation { .. }
         | PhysicalPlan::UnwindExec { .. }
+        | PhysicalPlan::UnwindRowsExec { .. }
         | PhysicalPlan::GraphMatchExec { .. } => Ok(None),
     }
 }

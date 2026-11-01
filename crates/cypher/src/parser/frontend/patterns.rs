@@ -363,11 +363,14 @@ impl Transformer<'_> {
                 let source = self.value(self.tree.required(node, "v_value"), depth)?;
                 if !matches!(
                     source.kind,
-                    ValueExpressionKind::Parameter(_) | ValueExpressionKind::List(_)
+                    ValueExpressionKind::Parameter(_)
+                        | ValueExpressionKind::List(_)
+                        | ValueExpressionKind::Binding(_)
+                        | ValueExpressionKind::BindingProperty { .. }
                 ) {
                     return Err(self.error(
                         node,
-                        "UNWIND accepts only a parameter or list literal source",
+                        "UNWIND accepts a parameter, list literal or row-bound list",
                     ));
                 }
                 ClauseKind::Unwind {

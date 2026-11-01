@@ -591,6 +591,7 @@ impl GroupExpr {
                 }
             }
             LogicalPlan::Expand { input, .. }
+            | LogicalPlan::UnwindRows { input, .. }
             | LogicalPlan::NodeColumnLookup { input, .. }
             | LogicalPlan::OptionalDegree { input, .. }
             | LogicalPlan::Filter { input, .. }
@@ -824,6 +825,7 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
             1 + logical_group_count(input)
         }
         LogicalPlan::Expand { input, .. }
+        | LogicalPlan::UnwindRows { input, .. }
         | LogicalPlan::NodeColumnLookup { input, .. }
         | LogicalPlan::OptionalDegree { input, .. }
         | LogicalPlan::Filter { input, .. }
@@ -1186,6 +1188,22 @@ fn lower_logical(
                 }
             }
         }
+        LogicalPlan::UnwindRows {
+            expression,
+            variable,
+            input,
+        } => PhysicalPlan::UnwindRowsExec {
+            expression: expression.clone(),
+            variable: variable.clone(),
+            input: Box::new(children.lower(
+                input,
+                0,
+                catalog,
+                optimizer_context,
+                decisions,
+                stage_events,
+            )),
+        },
         LogicalPlan::Project { items, input } => PhysicalPlan::ProjectExec {
             items: items.clone(),
             input: Box::new(children.lower(

@@ -593,6 +593,29 @@ pub(super) fn try_pushdown_relationship_property_eq(
     }
 }
 
+pub(super) fn row_value_expression(value: ValueExpression) -> Result<ScalarExpression> {
+    let span = value.span;
+    let kind = match value.kind {
+        ValueExpressionKind::Binding(variable) => ScalarExpressionKind::Variable(variable),
+        ValueExpressionKind::BindingProperty { variable, property } => {
+            ScalarExpressionKind::Property { variable, property }
+        }
+        ValueExpressionKind::List(values) => ScalarExpressionKind::List(
+            values
+                .into_iter()
+                .map(row_value_expression)
+                .collect::<Result<_>>()?,
+        ),
+        ValueExpressionKind::Timestamp(ref inner) if inner.reads_row_binding() => {
+            return Err(HawDBError::Semantic(
+                "row-bound timestamp conversion in value expressions is not supported".into(),
+            ));
+        }
+        _ => ScalarExpressionKind::Value(value),
+    };
+    Ok(AstNode { kind, span })
+}
+
 pub(super) fn bind_value(
     expression: &ValueExpression,
     parameters: &BTreeMap<String, Value>,

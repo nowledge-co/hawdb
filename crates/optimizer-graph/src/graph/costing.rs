@@ -21,7 +21,7 @@ use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
 use hawdb_plan_cypher::{
     CompositeRangeSeek, ExactPropertySeekBranch, NodeProjectionAccess, PlanChildren,
-    RelationshipCountLeg,
+    ProjectionExpression, RelationshipCountLeg,
 };
 use std::collections::BTreeMap;
 
@@ -431,6 +431,17 @@ fn estimate_local_operator_cost(
         PhysicalPlan::UnwindExec { rows, .. } => {
             let count = rows.len() as u64;
             PlanCostBreakdown::new(count.max(1), count, 0, 0, 0)
+        }
+        PhysicalPlan::UnwindRowsExec { expression, .. } => {
+            let input = inputs[0].expect("unary input cost");
+            let width = match expression {
+                ProjectionExpression::List(values) => values.len() as u64,
+                ProjectionExpression::Literal(Value::List(values)) => values.len() as u64,
+                ProjectionExpression::Literal(Value::Null) => 0,
+                _ => 10,
+            };
+            let rows = input.estimated_rows.saturating_mul(width);
+            input.with_cpu(input.estimated_rows.saturating_add(rows), rows, 0)
         }
         PhysicalPlan::UnwindMutation { rows, .. } => {
             let row_count = rows.len().max(1) as u64;

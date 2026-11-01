@@ -37,6 +37,8 @@ mod scoring;
 pub use scoring::{stream_scoring_program_batches, stream_scoring_rerank_batches};
 mod host_scoring;
 pub use host_scoring::{stream_host_scoring_batches, HostScoringOptions};
+mod unwind;
+pub use unwind::stream_unwind_rows_batches;
 
 pub fn stream_filter_batches(
     input: &PhysicalPlan,
