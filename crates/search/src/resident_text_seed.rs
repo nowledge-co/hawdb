@@ -1074,4 +1074,64 @@ mod tests {
         drop(index);
         std::fs::remove_dir_all(path).unwrap();
     }
+
+    #[test]
+    fn resident_query_refusal_stops_analysis_at_the_analyzed_cap() {
+        let mut index = SearchIndex::in_memory();
+        for row in long_query_rows() {
+            index.upsert_projection_row(row).unwrap();
+        }
+        let limit = index.lexical_config.analyzed_query_term_limit();
+        // Every distinct word adds at least one new term, so the cap is
+        // passed within `limit + 1` words of this 50,000-word query.
+        let words = 50_000;
+        let query = (0..words)
+            .map(|word| format!("word{word}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let visits = || crate::analyzer_stream::IDENTIFIER_VISITS.with(std::cell::Cell::get);
+        let budget = NonZeroUsize::new(16 << 20).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let account = ledger.account(QueryMemoryClass::ExternalRead, "bounded refusal", budget);
+        for seed in [false, true] {
+            let before = visits();
+            let error = if seed {
+                index
+                    .text_seed_scores_with_context(
+                        &query,
+                        &BTreeMap::new(),
+                        5,
+                        &account,
+                        &RuntimeTaskContext::default(),
+                    )
+                    .unwrap_err()
+            } else {
+                index
+                    .try_search_with_options(
+                        &query,
+                        None,
+                        SearchMode::Text,
+                        SearchQueryOptions {
+                            limit: 5,
+                            offset: 0,
+                            rank_window: None,
+                            fusion_weights: SearchFusionWeights::default(),
+                            metadata_filters: BTreeMap::new(),
+                            policy_epoch: None,
+                        },
+                    )
+                    .unwrap_err()
+            }
+            .to_string();
+            let visited = visits() - before;
+            assert!(error.contains("max_query_analyzed_terms"), "{error}");
+            assert!(
+                visited <= limit + 1,
+                "seed={seed}: analyzed {visited} of {words} words before refusing"
+            );
+        }
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        // The explicit host-side count still analyzes the whole input.
+        assert!(index.analyzer_lexicon.analyzed_query_term_count(&query) > words);
+    }
 }

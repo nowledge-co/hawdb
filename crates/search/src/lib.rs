@@ -1346,6 +1346,15 @@ pub struct SearchAnalyzerLexicon {
 }
 
 impl SearchAnalyzerLexicon {
+    /// Distinct analyzed terms `text` produces as a lexical query.
+    ///
+    /// Hosts can compare this with the analyzed-term cap (default 1024) before
+    /// submitting a query. Unlike query admission, it analyzes all of `text`
+    /// without that cap, so its cost grows with the input.
+    pub fn analyzed_query_term_count(&self, text: &str) -> usize {
+        tokenize(text, self).len()
+    }
+
     pub fn empty() -> Self {
         Self {
             alias_rules: Vec::new(),
@@ -3777,7 +3786,12 @@ impl SearchIndex {
             self.vector_metric(),
             vector_execution_options,
         )?;
-        let mut query_terms = tokenize(query_text, &self.analyzer_lexicon);
+        // Text-scoring modes stop analyzing once the analyzed-term cap is passed.
+        let mut query_terms = if mode == SearchMode::Vector {
+            tokenize(query_text, &self.analyzer_lexicon)
+        } else {
+            tokenize_query_bounded(query_text, &self.analyzer_lexicon, &self.lexical_config)?
+        };
         let mut vector_fallback_reason_codes = Vec::new();
         let mut vector_fallback_reasons = Vec::new();
         if let Some(reason) = vector_backend_fallback_reason {
@@ -7627,6 +7641,28 @@ fn token_frequencies(tokens: impl Iterator<Item = String>) -> BTreeMap<String, u
 
 fn tokenize(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> BTreeSet<String> {
     tokenize_list(text, analyzer_lexicon).into_iter().collect()
+}
+
+/// Distinct query terms, refusing as soon as they would exceed the analyzed
+/// cap. Like the out-of-core normalizer, refusal costs O(cap) analysis rather
+/// than tokenizing the remainder of an oversized query.
+fn tokenize_query_bounded(
+    text: &str,
+    analyzer_lexicon: &SearchAnalyzerLexicon,
+    config: &LexicalProjectionConfig,
+) -> Result<BTreeSet<String>> {
+    let limit = config.analyzed_query_term_limit();
+    let mut terms = BTreeSet::new();
+    analyzer_stream::visit_token_list(text, analyzer_lexicon, |term, _| {
+        if !terms.contains(&term) {
+            if terms.len() >= limit {
+                return Err(config.analyzed_query_term_error());
+            }
+            terms.insert(term);
+        }
+        Ok(())
+    })?;
+    Ok(terms)
 }
 
 fn tokenize_list(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec<String> {
