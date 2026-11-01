@@ -777,3 +777,100 @@ fn rule_aliases_and_cached_lookahead_keep_exact_logical_budgets() {
         assert_eq!(error.code, SyntaxErrorCode::ParserLimitExceeded);
     }
 }
+
+#[test]
+fn keyword_choices_keep_attempt_charges_depth_and_memo_diagnostics() {
+    let grammar = Grammar::compile(vec![
+        (
+            "Root",
+            S(vec![
+                Expression::Ahead(Box::new(R("Word")), "word"),
+                R("Word"),
+                Tok(TokenKind::End, "end"),
+            ]),
+        ),
+        (
+            "Word",
+            Expression::Choice(vec![K("SELECT"), K("FROM"), K("WHERE")]),
+        ),
+    ])
+    .unwrap();
+    let limits = Limits {
+        steps: 11,
+        depth: 5,
+        nodes: 2,
+        memo_entries: 2,
+    };
+    let tree = parse(&grammar, "FROM", limits).unwrap();
+    assert_eq!(tree.steps, 11);
+    assert_eq!(tree.memo_hits, 1);
+    assert_eq!(tree.memo_entries, 2);
+    assert_eq!(tree.nodes.len(), 2);
+    assert_eq!(tree.edges.len(), 1);
+    let word = tree.child(tree.root, "Word").unwrap();
+    assert_eq!((tree.nodes[word].start, tree.nodes[word].end), (0, 1));
+    for insufficient in [
+        Limits {
+            steps: 10,
+            ..limits
+        },
+        Limits { depth: 4, ..limits },
+        Limits { nodes: 1, ..limits },
+        Limits {
+            memo_entries: 1,
+            ..limits
+        },
+    ] {
+        assert_eq!(
+            parse(&grammar, "FROM", insufficient).err().unwrap().code,
+            SyntaxErrorCode::ParserLimitExceeded
+        );
+    }
+    let failed = parse(
+        &grammar,
+        "OTHER",
+        Limits {
+            steps: 100,
+            depth: 16,
+            nodes: 16,
+            memo_entries: 16,
+        },
+    )
+    .err()
+    .unwrap();
+    // Positive lookahead exposes its own diagnostic; the failed rule's
+    // first-keyword diagnostic must still survive in the memo table.
+    assert_eq!(failed.expected, Some("word"));
+    let cached_failure = Grammar::compile(vec![
+        (
+            "Root",
+            S(vec![
+                Expression::Ahead(
+                    Box::new(Expression::Optional(Box::new(R("Word")))),
+                    "optional word",
+                ),
+                R("Word"),
+            ]),
+        ),
+        (
+            "Word",
+            Expression::Choice(vec![K("SELECT"), K("FROM"), K("WHERE")]),
+        ),
+    ])
+    .unwrap();
+    let failed = parse(
+        &cached_failure,
+        "OTHER",
+        Limits {
+            steps: 100,
+            depth: 16,
+            nodes: 16,
+            memo_entries: 16,
+        },
+    )
+    .err()
+    .unwrap();
+    assert_eq!(failed.expected, Some("SELECT"));
+    assert_eq!(failed.found.as_deref(), Some("OTHER"));
+    assert_eq!(failed.span, crate::Span { start: 0, end: 5 });
+}

@@ -13,8 +13,9 @@ pub(super) struct MemoTable<'a> {
 #[derive(Default)]
 struct RuleMemo<'a> {
     // Forward parsing and probes at the current token avoid a map lookup.
-    // Allocate backward storage only when this rule visits a second position.
+    // Keep one historical position inline; allocate history only on a third visit.
     latest: Option<(usize, Memo<'a>)>,
+    first_older: Option<(usize, Memo<'a>)>,
     older: Option<Box<Older<'a>>>,
 }
 
@@ -43,6 +44,7 @@ impl<'a> MemoTable<'a> {
             rules: [const {
                 RuleMemo {
                     latest: None,
+                    first_older: None,
                     older: None,
                 }
             }; MAX_RULES],
@@ -60,9 +62,16 @@ impl<'a> MemoTable<'a> {
             None => None,
             Some((latest, _)) if position > *latest => None,
             Some(_) => entries
-                .older
-                .as_deref()
-                .and_then(|older| older.get(position)),
+                .first_older
+                .as_ref()
+                .filter(|(key, _)| *key == position)
+                .map(|(_, memo)| memo)
+                .or_else(|| {
+                    entries
+                        .older
+                        .as_deref()
+                        .and_then(|older| older.get(position))
+                }),
         }
     }
     pub fn insert(&mut self, rule: usize, position: usize, memo: Memo<'a>) {
@@ -86,14 +95,27 @@ impl<'a> MemoTable<'a> {
 
 impl<'a> RuleMemo<'a> {
     fn insert_older(&mut self, position: usize, memo: Memo<'a>) -> bool {
-        self.older
-            .get_or_insert_with(|| {
-                Box::new(Older::Inline {
-                    entries: std::array::from_fn(|_| None),
-                    len: 0,
-                })
-            })
-            .insert(position, memo)
+        if let Some(older) = self.older.as_deref_mut() {
+            return older.insert(position, memo);
+        }
+        match &mut self.first_older {
+            slot @ None => {
+                *slot = Some((position, memo));
+                true
+            }
+            Some((key, value)) if *key == position => {
+                *value = memo;
+                false
+            }
+            Some(_) => {
+                let first = self.first_older.take().expect("first older memo");
+                self.older = Some(Box::new(Older::Inline {
+                    entries: [Some(first), Some((position, memo))],
+                    len: 2,
+                }));
+                true
+            }
+        }
     }
 }
 

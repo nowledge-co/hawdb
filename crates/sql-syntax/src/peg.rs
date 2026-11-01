@@ -462,7 +462,15 @@ impl<'a> Matcher<'a, '_> {
                         Err(Failure::Mismatch)
                     }
                 }
-                CALL => {
+                CALL | CALL_EXPRESSION => {
+                    let expression = opcode == CALL_EXPRESSION;
+                    if expression {
+                        self.charge(1, position)?;
+                        if self.depth >= self.limits.depth {
+                            return Err(self.limit(position, "PEG nesting within the parser limit"));
+                        }
+                        self.depth += 1;
+                    }
                     let rule = if argument == ROOT_CALL {
                         root
                     } else {
@@ -527,7 +535,7 @@ impl<'a> Matcher<'a, '_> {
                             self.nesting_depth[domain] += usize::from(weight & (1 << domain) != 0);
                         }
                         work.push(ProgramFrame {
-                            rule,
+                            rule: rule + usize::from(expression) * MAX_RULES,
                             position,
                             captures: self.captures.len(),
                             outer_error,
@@ -536,10 +544,13 @@ impl<'a> Matcher<'a, '_> {
                         pc = self.grammar.program.entries[rule];
                         continue;
                     }
+                    self.depth -= usize::from(expression);
                 }
                 RETURN => {
                     let frame = work.pop().expect("rule return");
-                    let weight = self.grammar.nesting_rules[frame.rule];
+                    let rule = frame.rule % MAX_RULES;
+                    let expression = frame.rule >= MAX_RULES;
+                    let weight = self.grammar.nesting_rules[rule];
                     for domain in 0..2 {
                         self.nesting_depth[domain] -= usize::from(weight & (1 << domain) != 0);
                     }
@@ -550,22 +561,23 @@ impl<'a> Matcher<'a, '_> {
                     }
                     if matched {
                         let node = self.push(
-                            Some(self.grammar.rules[frame.rule]),
+                            Some(self.grammar.rules[rule]),
                             frame.position,
                             position,
                             frame.captures,
                             weight,
                         )?;
                         self.memo.insert(
-                            frame.rule,
+                            rule,
                             frame.position,
                             Memo::matched(position, node, local_error),
                         );
                         self.captures.push(node);
                     } else {
                         self.memo
-                            .insert(frame.rule, frame.position, Memo::failed(local_error));
+                            .insert(rule, frame.position, Memo::failed(local_error));
                     }
+                    self.depth -= usize::from(expression);
                     pc = frame.pc;
                     continue;
                 }
@@ -595,6 +607,35 @@ impl<'a> Matcher<'a, '_> {
                         self.captures.truncate(scope.captures);
                     }
                     self.depth -= 1;
+                }
+                KEYWORD_CHOICE => {
+                    self.charge(1, position)?;
+                    if self.depth >= self.limits.depth {
+                        return Err(self.limit(position, "PEG nesting within the parser limit"));
+                    }
+                    // Charge the first keyword before checking its depth, as
+                    // the unfused choice does. Only inspect the admitted prefix.
+                    self.charge(1, position)?;
+                    if self.depth.saturating_add(1) >= self.limits.depth {
+                        return Err(self.limit(position, "PEG nesting within the parser limit"));
+                    }
+                    let range = self.grammar.program.keyword_choices[argument].clone();
+                    let admitted = self
+                        .limits
+                        .steps
+                        .saturating_sub(self.steps)
+                        .saturating_add(1);
+                    let token = self.token(position);
+                    let selected = range.clone().take(admitted).find(|index| {
+                        token.is_keyword(self.input, self.grammar.program.keywords[*index])
+                    });
+                    let attempts = selected.map_or(range.len(), |index| index - range.start + 1);
+                    self.charge(attempts - 1, position)?;
+                    matched = selected.is_some();
+                    if selected != Some(range.start) {
+                        self.mismatch(position, &self.grammar.program.keywords[range.start]);
+                    }
+                    position += usize::from(matched);
                 }
                 KEYWORD | TOKEN | PARAMETER => {
                     self.charge(1, position)?;

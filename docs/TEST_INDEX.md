@@ -2353,18 +2353,19 @@ expressions and combined depth boundaries. Nine independently captured legacy
 algorithm diagnostics remain exact-string assertions. The earlier 2,854 corpus
 and 420 value/pattern/procedure records remain unchanged.
 
-The shared engine has no native matcher API or AST value arena. Its existing
-33 unit tests retain fatal budget propagation through alternatives, optional,
+The shared engine has no native matcher API or AST value arena. Its
+35 unit tests retain fatal budget propagation through alternatives, optional,
 repeat and lookahead using real bounded PEG rules, and retain memoized subtree
 identity/edges after capture rollback. Empty rules preserve zero-length source
 spans. The adaptive-cache cases also retain pending/failed/matched state,
 end positions, node identity and logical entry counts across forward/backward
 visits, replacement and density changes with compact nonzero memo records.
-These same sparse-oracle assertions cover on-demand history allocation, its two
-inline records, vector growth, dense holes and permanent sparse conversion; all
+These same sparse-oracle assertions cover one historical position in the local
+rule slot, allocation on the third distinct position, the allocated history's
+two inline records, vector growth, dense holes and permanent sparse conversion; all
 logical entry counts, pending states, endpoints and node identities are retained.
 The same assertions retain the original entry accounting when the direct slots
-use the compiled grammar's existing 256-rule cap in a local array. Manual native
+use the compiled grammar's existing 256-rule cap in a local array. Earlier native
 qualification compares all 12,669 corpus records in cold/warmed worker threads
 against the preceding heap-backed table: release passes at 128/256/512 KiB and
 development passes at 256/512 KiB, with matching smaller-stack failures. This
@@ -2376,6 +2377,15 @@ The compiled instruction matcher also fixes exact public work/depth/node/memo
 boundaries for nested rule aliases, multi-token positive lookahead and cached
 capture reuse. The admitted tree retains both named aliases and their spans.
 SQL and Cypher share the same nongeneric CST grammar API.
+Keyword-choice regression coverage fixes exact attempt charges, depth admission,
+memo entry and capture counts, and diagnostic isolation across successful and
+failed lookahead reuse. Named-rule call fusion keeps the alias and cached-capture
+budget assertions unchanged. Manual comparison against the preceding PEG engine
+retains 53,104 complete budget/CST/error records and 18,744 complete rendered
+Cypher outcomes. An optimization-level-1 worker linked with ThinLTO against the
+release library passes the latter corpus in cold/warmed native threads at
+256/512 KiB; both versions abort at 128 KiB. This does not qualify WASM runtime
+stack requirements or waive parser throughput and allocation gates.
 
 Latest-main integration at `2ae7e88614` (#1411) adds bare row-bound values in
 node patterns and classifies read-only UNWIND as a query pipeline. The PEG

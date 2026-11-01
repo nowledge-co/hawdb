@@ -33,6 +33,8 @@ pub(super) const OPTIONAL_END: u8 = 10;
 pub(super) const REPEAT_NEXT: u8 = 11;
 pub(super) const TIGHT_END: u8 = 12;
 pub(super) const LOOK_END: u8 = 13;
+pub(super) const CALL_EXPRESSION: u8 = 14;
+pub(super) const KEYWORD_CHOICE: u8 = 15;
 pub(super) const ROOT_CALL: usize = super::MAX_RULES;
 pub(super) const CHOICE_SCOPE: usize = 1;
 pub(super) const LOOK_SCOPE: usize = 2;
@@ -43,6 +45,7 @@ pub(super) struct Program {
     pub instructions: Vec<u64>,
     pub entries: Vec<usize>,
     pub keywords: Vec<&'static str>,
+    pub keyword_choices: Vec<std::ops::Range<usize>>,
     pub tokens: Vec<(TokenKind, &'static str)>,
     pub looks: Vec<(&'static str, bool)>,
 }
@@ -53,6 +56,7 @@ impl Program {
             instructions: Vec::new(),
             entries: Vec::with_capacity(rules.len()),
             keywords: Vec::new(),
+            keyword_choices: Vec::new(),
             tokens: Vec::new(),
             looks: Vec::new(),
         };
@@ -67,6 +71,7 @@ impl Program {
         }
         program.instructions.shrink_to_fit();
         program.keywords.shrink_to_fit();
+        program.keyword_choices.shrink_to_fit();
         program.tokens.shrink_to_fit();
         program.looks.shrink_to_fit();
         (program, names)
@@ -134,9 +139,7 @@ impl Program {
                 self.emit(PARAMETER, 0);
             }
             Expression::Rule(rule) => {
-                self.emit(ENTER, 0);
-                self.emit(CALL, *rule);
-                self.emit(LEAVE, 0);
+                self.emit(CALL_EXPRESSION, *rule);
             }
             Expression::Sequence(items) => {
                 self.emit(ENTER, 0);
@@ -149,6 +152,23 @@ impl Program {
                 }
                 let exit = self.emit(LEAVE, 0);
                 self.patch_jumps(jumps, exit);
+            }
+            Expression::Choice(items)
+                if !items.is_empty()
+                    && items
+                        .iter()
+                        .all(|item| matches!(item, Expression::Keyword(_))) =>
+            {
+                let start = self.keywords.len();
+                self.keywords.extend(items.iter().map(|item| {
+                    let Expression::Keyword(keyword) = item else {
+                        unreachable!()
+                    };
+                    *keyword
+                }));
+                let id = self.keyword_choices.len();
+                self.keyword_choices.push(start..self.keywords.len());
+                self.emit(KEYWORD_CHOICE, id);
             }
             Expression::Choice(items) => {
                 self.emit(ENTER, CHOICE_SCOPE);

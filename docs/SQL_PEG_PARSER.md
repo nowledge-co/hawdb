@@ -133,11 +133,19 @@ Work charging and depth admission still follow the original rule and expression
 entries, rather than counting implementation instructions. Jump and scope cleanup
 instructions do not alter the public resource-budget boundaries.
 
+Named-rule calls fuse expression entry and cleanup into the call/return pair.
+Keyword-only choices test the original ordered keyword range without allocating
+an expression continuation. Both retain the original logical charges and depth
+checks, including exhaustion partway through a choice and the first alternative's
+diagnostic when a later alternative matches. Lookahead still isolates diagnostics,
+and failed memo entries retain them for later ordinary calls.
+
 A parser invocation owns its memo table and capture arena. Successful and
 failed named rules are cached by rule ID and token position; successful hits
 reuse capture IDs instead of cloning syntax trees. Each rule caches its greatest
-visited token directly. History storage is allocated only when a rule visits a
-second distinct position. Its first two older records fit inside that allocation;
+visited token directly and keeps one older position inline. History storage is
+allocated only when a rule visits a third distinct position. Its first two older
+records fit inside that allocation;
 further visits use a bounded small vector, dense slots or permanent sparse
 storage. The direct slot remains accessible without following the history pointer.
 These forms share the same logical entry budget and retain pending, successful
@@ -145,17 +153,18 @@ and failed results. The direct slots are bounded by the compiled grammar's
 256-rule cap, not the input length. The direct slots occupy one local array,
 owned by the parse invocation and borrowed by the matcher. Constant initialization
 and borrowing avoid copying the whole table into the matcher. Compilation resolves
-all rule IDs within the same existing cap. The array contains 12,288 bytes of fixed
+all rule IDs within the same existing cap. The array contains 22,528 bytes of fixed
 metadata on the qualified 64-bit platform; histories still allocate separately and
 retain the same logical entry budget.
 
-This trades the fixed table's heap allocation for stack storage. Native ARM64
-release code reserves about 12.5 KiB for `Grammar::parse`, including its other
-locals. Against the previous heap-backed table, all 12,669 corpus records retain
-outcomes and diagnostics in cold and warmed worker threads: the qualified release
-probe passes at 128, 256 and 512 KiB; the development probe passes at 256 and
-512 KiB. Smaller tested stacks fail in both versions. These measurements cover
-the pinned compiler and those probe configurations.
+This trades heap allocations for stack storage. The additional inline history
+increases the fixed table from 12,288 to 22,528 bytes on the qualified native
+64-bit platform. An ARM64 worker compiled with optimization level 1 and ThinLTO
+against the release library preserves all 18,744 corpus outcomes and complete
+rendered diagnostics in cold and warmed threads at 256 and 512 KiB. At 128 KiB
+both this implementation and the preceding PEG implementation abort. These are
+results for the pinned compiler and probe configuration, not a general minimum
+stack guarantee or a browser runtime measurement.
 
 A nonzero state word also encodes the matched arena node ID, leaving zero for
 empty optional slots without a separate enum discriminant. End positions and
