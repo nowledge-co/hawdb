@@ -343,6 +343,8 @@ Python `test_read_controls.py` pin the public work-refusal contract: Rust
 `ResourceBudgetExceeded` / Python `ResourceBudgetError`, with query-scoped
 work units and the originating budget option. Existing cancellation, output
 and memory refusal controls remain distinct in their current owners.
+DB-API pickle regressions separately retain generic execution-error attributes
+and typed work-budget attributes with their respective PEP 249 classifications.
 Focused replay: `cargo test --locked -p hawdb --lib composite_lock_tests`.
 Constraint-key changes and nonliteral index rekeys retain conservative guards;
 nullable index version validation retains its existing table dependency.
