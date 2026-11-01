@@ -1,6 +1,5 @@
 load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
-load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -32,37 +31,17 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
-_ENDPOINT_RESOLUTION_CASE = "mutation::staged::tests::resolved_endpoints_create_exactly_what_per_row_scans_create"
-
 rust_test(
     name = "hawdb_executor_unit_tests",
-    args = ["--skip", _ENDPOINT_RESOLUTION_CASE],
+    # Keep the complete endpoint scan oracle within its existing 300s limit
+    # after competing compilation/test actions. Preserve the ordinary binary
+    # and complete native unit inventory (#1462).
+    tags = ["exclusive"],
     crate = ":hawdb_executor",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
-)
-
-# The full per-row scan oracle keeps its 300-second deadline and ordinary
-# executable, but runs after competing compilation/test actions (#1462).
-sh_test(
-    name = "hawdb_endpoint_resolution_tests",
-    timeout = "moderate",
-    tags = ["exclusive"],
-    srcs = ["tests/run-endpoint-resolution.sh"],
-    args = [
-        "$(location :hawdb_executor_unit_tests)",
-        _ENDPOINT_RESOLUTION_CASE,
-    ],
-    data = [":hawdb_executor_unit_tests"],
-)
-
-sh_test(
-    name = "endpoint_resolution_script_test",
-    size = "small",
-    srcs = ["tests/run-endpoint-resolution.test.sh"],
-    data = ["tests/run-endpoint-resolution.sh"],
 )
 
 rust_test(
@@ -109,8 +88,6 @@ test_suite(
     name = "hawdb_executor_tests",
     tests = [
         ":hawdb_executor_unit_tests",
-        ":hawdb_endpoint_resolution_tests",
-        ":endpoint_resolution_script_test",
         ":hawdb_morsel_oracle_tests",
         ":hawdb_projection_allocation_tests",
         ":hawdb_query_observer_release_tests",
