@@ -395,3 +395,20 @@ fn expand_cost_uses_relationship_property_distinct_counts() {
         }
     );
 }
+
+#[test]
+fn untyped_traversals_are_costed_over_every_relationship() {
+    let catalog = OptimizerCatalog::new(
+        OptimizerCatalogIndexes::new([], [], [], []),
+        OptimizerCatalogStatistics {
+            rel_type_counts: std::collections::BTreeMap::from([
+                ("KNOWS".into(), 30),
+                ("FOLLOWS".into(), 12),
+            ]),
+            ..OptimizerCatalogStatistics::default()
+        },
+    );
+    assert_eq!(catalog.traversable_relationship_count("KNOWS"), 30);
+    assert_eq!(catalog.traversable_relationship_count(""), 42);
+    assert_eq!(catalog.relationship_count("MISSING"), 1);
+}

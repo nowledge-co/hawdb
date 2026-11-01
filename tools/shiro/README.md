@@ -3,6 +3,12 @@
 `shiro` is a development-only correctness harness over HawDB's public embedded API. The
 production `hawdb` crate does not depend on it.
 
+Opt-in optimizer qualification compares one identical statement/parameter set
+on a pinned snapshot with optional rule disabling, Applied-event assertions and
+bounded seeded ranking changes. It records the actual executed trace, preserves
+errors and distinguishes different-plan agreement from same-plan agreement.
+See the [API, rule scope and replay command](../../docs/specs/OPTIMIZER_PROOFS_SPEC.md).
+
 The local process-memory state-machine campaign exercises 32 seeds with 512
 sample/reserve/release/resource-refresh steps each through two shared governors.
 An independent interval-debt model checks admission, hysteresis, missing and

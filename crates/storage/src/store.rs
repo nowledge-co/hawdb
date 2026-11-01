@@ -108,7 +108,7 @@ mod graph_checkpoint_projection;
 #[doc(hidden)]
 pub use graph_checkpoint_candidate::{
     CheckpointCandidate, CheckpointDebtSnapshot, CheckpointReclamationContext,
-    CheckpointSourceIdentity,
+    CheckpointSourceIdentity, RelationalLiveOverlayDebt,
 };
 use graph_checkpoint_projection::checkpoint_projected_graph_from_definition;
 #[path = "store/graph_columnar_shadow.rs"]
@@ -119,12 +119,14 @@ mod graph_commit;
 mod graph_indexes;
 #[path = "store/graph_mutation.rs"]
 mod graph_mutation;
+#[doc(hidden)]
+pub use graph_read::{record_reads_for_test, RecordReadsForTest};
 #[path = "store/graph_read.rs"]
 mod graph_read;
 #[doc(hidden)]
 pub use graph_read::{
-    MaterializedNodePointRead, MaterializedNodePointSource, MaterializedNodeReadSource,
-    MaterializedReadHealth,
+    adjacency_visits_for_test, MaterializedNodePointRead, MaterializedNodePointSource,
+    MaterializedNodeReadSource, MaterializedReadHealth,
 };
 #[path = "store/read_dependencies.rs"]
 mod read_dependencies;
@@ -499,6 +501,22 @@ pub fn set_checkpoint_failpoint(stage: Option<CheckpointPublishStage>) {
     CHECKPOINT_FAILPOINT.with(|failpoint| failpoint.set(stage));
 }
 
+thread_local! {
+    static MATCHED_NODE_LABEL_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts label scans by matched-node mutation filters without an internal-id
+/// fast path on this thread. Diagnostic for tests; always compiled so test
+/// builds that do not enable `test-support` (for example Bazel) still link.
+#[doc(hidden)]
+pub fn matched_node_label_scans_for_test() -> u64 {
+    MATCHED_NODE_LABEL_SCANS.with(std::cell::Cell::get)
+}
+
+fn record_matched_node_label_scan() {
+    MATCHED_NODE_LABEL_SCANS.with(|scans| scans.set(scans.get().saturating_add(1)));
+}
+
 #[cfg(test)]
 thread_local! {
     static GENERATION_RECLAMATION_REMOVE_FAILPOINT: std::cell::RefCell<Option<String>> =
@@ -560,6 +578,22 @@ fn wal_apply_failpoint() -> Result<()> {
         }
     }
     Ok(())
+}
+
+thread_local! {
+    static NODE_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts node scans (`visit_nodes_with_allocation`) started on this thread.
+/// Diagnostic for tests; always compiled so test builds without the
+/// `test-support` feature still link.
+#[doc(hidden)]
+pub fn node_scans_for_test() -> u64 {
+    NODE_SCANS.with(std::cell::Cell::get)
+}
+
+fn record_node_scan() {
+    NODE_SCANS.with(|scans| scans.set(scans.get().saturating_add(1)));
 }
 
 /// Test support: renders binary WAL records as deterministic text lines.

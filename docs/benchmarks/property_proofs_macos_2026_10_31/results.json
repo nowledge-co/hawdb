@@ -1,0 +1,4221 @@
+{
+  "protocol": "hawdb-property-proof-experiment-v1",
+  "cells": [
+    {
+      "kind": "distinct",
+      "rows": 128,
+      "cache": "warm",
+      "elapsed_change_percent": -26.3192348565356,
+      "baseline": {
+        "elapsed_median_ns": 117625,
+        "plan_median_ns": 17333,
+        "query_peak_bytes": 82994,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "DistinctExec",
+            "peak_bytes": 70450,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 20736,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 453500,
+            "elapsed_min_ns": 386083,
+            "elapsed_max_ns": 559125,
+            "plan_median_ns": 52833,
+            "first_query_ns": 1423916,
+            "setup_ns": 7138166,
+            "explain_ns": 849375,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 117625,
+            "elapsed_min_ns": 112916,
+            "elapsed_max_ns": 131208,
+            "plan_median_ns": 15959,
+            "first_query_ns": 202917,
+            "setup_ns": 877541,
+            "explain_ns": 169000,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 117375,
+            "elapsed_min_ns": 115750,
+            "elapsed_max_ns": 131083,
+            "plan_median_ns": 17333,
+            "first_query_ns": 202500,
+            "setup_ns": 897625,
+            "explain_ns": 165000,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 86667,
+        "plan_median_ns": 18792,
+        "query_peak_bytes": 41472,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "apply transformation:proof_redundant_distinct: projected tuple contains a proved key or at most one row",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=516",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 20736,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 304125,
+            "elapsed_min_ns": 295708,
+            "elapsed_max_ns": 330333,
+            "plan_median_ns": 55917,
+            "first_query_ns": 871334,
+            "setup_ns": 7233917,
+            "explain_ns": 1157792,
+            "query_peak_bytes": 41472,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 86667,
+            "elapsed_min_ns": 82666,
+            "elapsed_max_ns": 106083,
+            "plan_median_ns": 16292,
+            "first_query_ns": 154875,
+            "setup_ns": 945250,
+            "explain_ns": 185500,
+            "query_peak_bytes": 41472,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 83750,
+            "elapsed_min_ns": 82291,
+            "elapsed_max_ns": 101458,
+            "plan_median_ns": 18792,
+            "first_query_ns": 154167,
+            "setup_ns": 919250,
+            "explain_ns": 188625,
+            "query_peak_bytes": 41472,
+            "output_rows": 768
+          }
+        ]
+      }
+    },
+    {
+      "kind": "distinct",
+      "rows": 128,
+      "cache": "cold",
+      "elapsed_change_percent": -26.419186756750022,
+      "baseline": {
+        "elapsed_median_ns": 120333,
+        "plan_median_ns": 19417,
+        "query_peak_bytes": 82994,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "DistinctExec",
+            "peak_bytes": 70450,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 20736,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 125917,
+            "elapsed_min_ns": 114458,
+            "elapsed_max_ns": 135625,
+            "plan_median_ns": 19417,
+            "first_query_ns": 211209,
+            "setup_ns": 907250,
+            "explain_ns": 152708,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 119333,
+            "elapsed_min_ns": 114666,
+            "elapsed_max_ns": 130542,
+            "plan_median_ns": 17791,
+            "first_query_ns": 227042,
+            "setup_ns": 929208,
+            "explain_ns": 148208,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 120333,
+            "elapsed_min_ns": 115792,
+            "elapsed_max_ns": 134959,
+            "plan_median_ns": 20709,
+            "first_query_ns": 204292,
+            "setup_ns": 883417,
+            "explain_ns": 139875,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 88542,
+        "plan_median_ns": 18709,
+        "query_peak_bytes": 41472,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "apply transformation:proof_redundant_distinct: projected tuple contains a proved key or at most one row",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=516",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 20736,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 84459,
+            "elapsed_min_ns": 80750,
+            "elapsed_max_ns": 93917,
+            "plan_median_ns": 18125,
+            "first_query_ns": 151250,
+            "setup_ns": 849250,
+            "explain_ns": 151333,
+            "query_peak_bytes": 41472,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 92333,
+            "elapsed_min_ns": 88167,
+            "elapsed_max_ns": 98375,
+            "plan_median_ns": 22208,
+            "first_query_ns": 150792,
+            "setup_ns": 892834,
+            "explain_ns": 155625,
+            "query_peak_bytes": 41472,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 88542,
+            "elapsed_min_ns": 84625,
+            "elapsed_max_ns": 101708,
+            "plan_median_ns": 18709,
+            "first_query_ns": 154583,
+            "setup_ns": 892041,
+            "explain_ns": 153584,
+            "query_peak_bytes": 41472,
+            "output_rows": 768
+          }
+        ]
+      }
+    },
+    {
+      "kind": "distinct",
+      "rows": 10000,
+      "cache": "warm",
+      "elapsed_change_percent": -35.8172609767633,
+      "baseline": {
+        "elapsed_median_ns": 6905542,
+        "plan_median_ns": 26500,
+        "query_peak_bytes": 5647410,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "DistinctExec",
+            "peak_bytes": 5500050,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 1620000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 6918167,
+            "elapsed_min_ns": 6773667,
+            "elapsed_max_ns": 7116500,
+            "plan_median_ns": 26916,
+            "first_query_ns": 7795792,
+            "setup_ns": 37962417,
+            "explain_ns": 3740209,
+            "query_peak_bytes": 5647410,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 6905542,
+            "elapsed_min_ns": 6734792,
+            "elapsed_max_ns": 6977875,
+            "plan_median_ns": 24750,
+            "first_query_ns": 7786333,
+            "setup_ns": 37140250,
+            "explain_ns": 3711125,
+            "query_peak_bytes": 5647410,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 6762375,
+            "elapsed_min_ns": 6626500,
+            "elapsed_max_ns": 6891166,
+            "plan_median_ns": 26500,
+            "first_query_ns": 7587209,
+            "setup_ns": 37252209,
+            "explain_ns": 3750959,
+            "query_peak_bytes": 5647410,
+            "output_rows": 60000
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 4432166,
+        "plan_median_ns": 26500,
+        "query_peak_bytes": 2284064,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "apply transformation:proof_redundant_distinct: projected tuple contains a proved key or at most one row",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=40004",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 1620000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 4340584,
+            "elapsed_min_ns": 4235125,
+            "elapsed_max_ns": 4447292,
+            "plan_median_ns": 26500,
+            "first_query_ns": 4937250,
+            "setup_ns": 38955542,
+            "explain_ns": 3761625,
+            "query_peak_bytes": 2284064,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 5006834,
+            "elapsed_min_ns": 4723250,
+            "elapsed_max_ns": 5128667,
+            "plan_median_ns": 27667,
+            "first_query_ns": 5466917,
+            "setup_ns": 38411375,
+            "explain_ns": 4069709,
+            "query_peak_bytes": 2284064,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 4432166,
+            "elapsed_min_ns": 4232166,
+            "elapsed_max_ns": 4713084,
+            "plan_median_ns": 25875,
+            "first_query_ns": 5063417,
+            "setup_ns": 36774042,
+            "explain_ns": 3752917,
+            "query_peak_bytes": 2284064,
+            "output_rows": 60000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "distinct",
+      "rows": 10000,
+      "cache": "cold",
+      "elapsed_change_percent": -41.85549104677199,
+      "baseline": {
+        "elapsed_median_ns": 7544709,
+        "plan_median_ns": 33083,
+        "query_peak_bytes": 5647410,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "DistinctExec",
+            "peak_bytes": 5500050,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 1620000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 7395625,
+            "elapsed_min_ns": 7266833,
+            "elapsed_max_ns": 7527041,
+            "plan_median_ns": 31042,
+            "first_query_ns": 8546958,
+            "setup_ns": 39642416,
+            "explain_ns": 4402916,
+            "query_peak_bytes": 5647410,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 7779167,
+            "elapsed_min_ns": 7600959,
+            "elapsed_max_ns": 8279125,
+            "plan_median_ns": 33083,
+            "first_query_ns": 8681792,
+            "setup_ns": 38578833,
+            "explain_ns": 4126375,
+            "query_peak_bytes": 5647410,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 7544709,
+            "elapsed_min_ns": 6839459,
+            "elapsed_max_ns": 7637583,
+            "plan_median_ns": 34625,
+            "first_query_ns": 7863917,
+            "setup_ns": 37591917,
+            "explain_ns": 3643292,
+            "query_peak_bytes": 5647410,
+            "output_rows": 60000
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 4386834,
+        "plan_median_ns": 31792,
+        "query_peak_bytes": 2284064,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "apply transformation:proof_redundant_distinct: projected tuple contains a proved key or at most one row",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=40004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 1620000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 5201250,
+            "elapsed_min_ns": 4846333,
+            "elapsed_max_ns": 5307083,
+            "plan_median_ns": 31792,
+            "first_query_ns": 5601709,
+            "setup_ns": 38983417,
+            "explain_ns": 3890792,
+            "query_peak_bytes": 2284064,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 4386834,
+            "elapsed_min_ns": 4209708,
+            "elapsed_max_ns": 4468291,
+            "plan_median_ns": 34541,
+            "first_query_ns": 5017334,
+            "setup_ns": 36937500,
+            "explain_ns": 3786250,
+            "query_peak_bytes": 2284064,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 4373750,
+            "elapsed_min_ns": 4234959,
+            "elapsed_max_ns": 4406250,
+            "plan_median_ns": 28458,
+            "first_query_ns": 4904292,
+            "setup_ns": 36917083,
+            "explain_ns": 3790417,
+            "query_peak_bytes": 2284064,
+            "output_rows": 60000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "constant",
+      "rows": 128,
+      "cache": "warm",
+      "elapsed_change_percent": 3.546244695854228,
+      "baseline": {
+        "elapsed_median_ns": 160959,
+        "plan_median_ns": 24333,
+        "query_peak_bytes": 75264,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"space\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\", \"space\"] predicate=Some(PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }) output=projected_values columns=[id, space]",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 2 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=516",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=1 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 28288,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 165667,
+            "elapsed_min_ns": 155709,
+            "elapsed_max_ns": 208667,
+            "plan_median_ns": 24583,
+            "first_query_ns": 303916,
+            "setup_ns": 842333,
+            "explain_ns": 239875,
+            "query_peak_bytes": 75264,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 160959,
+            "elapsed_min_ns": 153084,
+            "elapsed_max_ns": 166667,
+            "plan_median_ns": 22875,
+            "first_query_ns": 245917,
+            "setup_ns": 899375,
+            "explain_ns": 200250,
+            "query_peak_bytes": 75264,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 159875,
+            "elapsed_min_ns": 152500,
+            "elapsed_max_ns": 169250,
+            "plan_median_ns": 24333,
+            "first_query_ns": 243042,
+            "setup_ns": 902625,
+            "explain_ns": 213917,
+            "query_peak_bytes": 75264,
+            "output_rows": 768
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 166667,
+        "plan_median_ns": 23709,
+        "query_peak_bytes": 75264,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"space\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\", \"space\"] predicate=Some(PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }) output=projected_values columns=[id, space]",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 2 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=516",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=1 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 28288,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 159208,
+            "elapsed_min_ns": 153292,
+            "elapsed_max_ns": 169459,
+            "plan_median_ns": 23417,
+            "first_query_ns": 273167,
+            "setup_ns": 907250,
+            "explain_ns": 268500,
+            "query_peak_bytes": 75264,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 166667,
+            "elapsed_min_ns": 152625,
+            "elapsed_max_ns": 169917,
+            "plan_median_ns": 23709,
+            "first_query_ns": 244875,
+            "setup_ns": 898167,
+            "explain_ns": 218834,
+            "query_peak_bytes": 75264,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 166959,
+            "elapsed_min_ns": 158000,
+            "elapsed_max_ns": 168916,
+            "plan_median_ns": 24292,
+            "first_query_ns": 230542,
+            "setup_ns": 886584,
+            "explain_ns": 212625,
+            "query_peak_bytes": 75264,
+            "output_rows": 768
+          }
+        ]
+      }
+    },
+    {
+      "kind": "constant",
+      "rows": 128,
+      "cache": "cold",
+      "elapsed_change_percent": -19.75535691373337,
+      "baseline": {
+        "elapsed_median_ns": 163667,
+        "plan_median_ns": 22250,
+        "query_peak_bytes": 75264,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"space\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\", \"space\"] predicate=Some(PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }) output=projected_values columns=[id, space]",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 2 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=516",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 28288,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 169000,
+            "elapsed_min_ns": 154541,
+            "elapsed_max_ns": 183042,
+            "plan_median_ns": 22250,
+            "first_query_ns": 244792,
+            "setup_ns": 883042,
+            "explain_ns": 167667,
+            "query_peak_bytes": 75264,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 162375,
+            "elapsed_min_ns": 161875,
+            "elapsed_max_ns": 174458,
+            "plan_median_ns": 21917,
+            "first_query_ns": 243792,
+            "setup_ns": 886208,
+            "explain_ns": 165334,
+            "query_peak_bytes": 75264,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 163667,
+            "elapsed_min_ns": 156417,
+            "elapsed_max_ns": 173208,
+            "plan_median_ns": 23208,
+            "first_query_ns": 250083,
+            "setup_ns": 894791,
+            "explain_ns": 164833,
+            "query_peak_bytes": 75264,
+            "output_rows": 768
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 131334,
+        "plan_median_ns": 25667,
+        "query_peak_bytes": 75264,
+        "selected_plan": "NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\", \"space\"] predicate=Some(PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }) output=projected_values columns=[id, space]",
+        "decisions": [
+          "apply transformation:proof_redundant_ordering: constant/equivalent keys removed=1 input_order_satisfies=true at_most_one=false",
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 2 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=260",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 133833,
+            "elapsed_min_ns": 123542,
+            "elapsed_max_ns": 179000,
+            "plan_median_ns": 27125,
+            "first_query_ns": 215417,
+            "setup_ns": 880583,
+            "explain_ns": 186875,
+            "query_peak_bytes": 75264,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 128458,
+            "elapsed_min_ns": 125459,
+            "elapsed_max_ns": 140875,
+            "plan_median_ns": 24125,
+            "first_query_ns": 198583,
+            "setup_ns": 885500,
+            "explain_ns": 174917,
+            "query_peak_bytes": 75264,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 131334,
+            "elapsed_min_ns": 126291,
+            "elapsed_max_ns": 139333,
+            "plan_median_ns": 25667,
+            "first_query_ns": 199125,
+            "setup_ns": 941833,
+            "explain_ns": 169250,
+            "query_peak_bytes": 75264,
+            "output_rows": 768
+          }
+        ]
+      }
+    },
+    {
+      "kind": "constant",
+      "rows": 10000,
+      "cache": "warm",
+      "elapsed_change_percent": -0.44749193378114116,
+      "baseline": {
+        "elapsed_median_ns": 9292458,
+        "plan_median_ns": 47458,
+        "query_peak_bytes": 4376016,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"space\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\", \"space\"] predicate=Some(PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }) output=projected_values columns=[id, space]",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 2 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=40004",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=1 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 2210000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 9752250,
+            "elapsed_min_ns": 9263416,
+            "elapsed_max_ns": 10356917,
+            "plan_median_ns": 50125,
+            "first_query_ns": 9968583,
+            "setup_ns": 37705959,
+            "explain_ns": 3764083,
+            "query_peak_bytes": 4376016,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 9292458,
+            "elapsed_min_ns": 9095167,
+            "elapsed_max_ns": 9623000,
+            "plan_median_ns": 42917,
+            "first_query_ns": 9844625,
+            "setup_ns": 39146166,
+            "explain_ns": 4421791,
+            "query_peak_bytes": 4376016,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 8948083,
+            "elapsed_min_ns": 8768834,
+            "elapsed_max_ns": 9097500,
+            "plan_median_ns": 47458,
+            "first_query_ns": 9811292,
+            "setup_ns": 37535583,
+            "explain_ns": 3749667,
+            "query_peak_bytes": 4376016,
+            "output_rows": 60000
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 9250875,
+        "plan_median_ns": 43000,
+        "query_peak_bytes": 4376016,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"space\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\", \"space\"] predicate=Some(PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }) output=projected_values columns=[id, space]",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 2 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=40004",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=1 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 2210000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 9617333,
+            "elapsed_min_ns": 9225958,
+            "elapsed_max_ns": 9881833,
+            "plan_median_ns": 46625,
+            "first_query_ns": 10471000,
+            "setup_ns": 38275625,
+            "explain_ns": 4556625,
+            "query_peak_bytes": 4376016,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 9250875,
+            "elapsed_min_ns": 8986875,
+            "elapsed_max_ns": 9689042,
+            "plan_median_ns": 41834,
+            "first_query_ns": 9631541,
+            "setup_ns": 38724500,
+            "explain_ns": 4049709,
+            "query_peak_bytes": 4376016,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 9127375,
+            "elapsed_min_ns": 8978167,
+            "elapsed_max_ns": 9411792,
+            "plan_median_ns": 43000,
+            "first_query_ns": 9883875,
+            "setup_ns": 38192750,
+            "explain_ns": 4277959,
+            "query_peak_bytes": 4376016,
+            "output_rows": 60000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "constant",
+      "rows": 10000,
+      "cache": "cold",
+      "elapsed_change_percent": -26.070347077669187,
+      "baseline": {
+        "elapsed_median_ns": 9021583,
+        "plan_median_ns": 43958,
+        "query_peak_bytes": 4376016,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"space\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\", \"space\"] predicate=Some(PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }) output=projected_values columns=[id, space]",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 2 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=40004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 2210000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 9100583,
+            "elapsed_min_ns": 8903541,
+            "elapsed_max_ns": 9262250,
+            "plan_median_ns": 43958,
+            "first_query_ns": 9705291,
+            "setup_ns": 37716208,
+            "explain_ns": 3692208,
+            "query_peak_bytes": 4376016,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 9021583,
+            "elapsed_min_ns": 8792959,
+            "elapsed_max_ns": 9575208,
+            "plan_median_ns": 45959,
+            "first_query_ns": 9853542,
+            "setup_ns": 38059208,
+            "explain_ns": 3761667,
+            "query_peak_bytes": 4376016,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 8919958,
+            "elapsed_min_ns": 8842583,
+            "elapsed_max_ns": 9153083,
+            "plan_median_ns": 41375,
+            "first_query_ns": 9654333,
+            "setup_ns": 37350750,
+            "explain_ns": 3719583,
+            "query_peak_bytes": 4376016,
+            "output_rows": 60000
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 6669625,
+        "plan_median_ns": 51250,
+        "query_peak_bytes": 4504229,
+        "selected_plan": "NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\", \"space\"] predicate=Some(PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }) output=projected_values columns=[id, space]",
+        "decisions": [
+          "apply transformation:proof_redundant_ordering: constant/equivalent keys removed=1 input_order_satisfies=true at_most_one=false",
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 2 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=20004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 6735334,
+            "elapsed_min_ns": 6618375,
+            "elapsed_max_ns": 7708084,
+            "plan_median_ns": 51250,
+            "first_query_ns": 7528208,
+            "setup_ns": 39078750,
+            "explain_ns": 4227792,
+            "query_peak_bytes": 4504229,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 6669625,
+            "elapsed_min_ns": 6489042,
+            "elapsed_max_ns": 7118500,
+            "plan_median_ns": 57334,
+            "first_query_ns": 7287000,
+            "setup_ns": 37138375,
+            "explain_ns": 3746542,
+            "query_peak_bytes": 4504229,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 6478750,
+            "elapsed_min_ns": 6287709,
+            "elapsed_max_ns": 6795958,
+            "plan_median_ns": 44291,
+            "first_query_ns": 7089167,
+            "setup_ns": 37558333,
+            "explain_ns": 3708542,
+            "query_peak_bytes": 4504229,
+            "output_rows": 60000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "constant-source",
+      "rows": 128,
+      "cache": "warm",
+      "elapsed_change_percent": 1.7875949381195744,
+      "baseline": {
+        "elapsed_median_ns": 179459,
+        "plan_median_ns": 23834,
+        "query_peak_bytes": 17212150,
+        "selected_plan": "SortExec keys=[SortItem { key: Property { variable: \"n\", property: \"space\" }, direction: Asc }]\n  ProjectExec columns=[id]\n    FilterExec predicate=PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=1 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 129280,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 185375,
+            "elapsed_min_ns": 180041,
+            "elapsed_max_ns": 203875,
+            "plan_median_ns": 27875,
+            "first_query_ns": 290625,
+            "setup_ns": 861417,
+            "explain_ns": 200625,
+            "query_peak_bytes": 17212150,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 179459,
+            "elapsed_min_ns": 173458,
+            "elapsed_max_ns": 187625,
+            "plan_median_ns": 23542,
+            "first_query_ns": 271542,
+            "setup_ns": 891792,
+            "explain_ns": 198541,
+            "query_peak_bytes": 17212150,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 177916,
+            "elapsed_min_ns": 172791,
+            "elapsed_max_ns": 189084,
+            "plan_median_ns": 23834,
+            "first_query_ns": 268458,
+            "setup_ns": 897000,
+            "explain_ns": 197542,
+            "query_peak_bytes": 17212150,
+            "output_rows": 768
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 182667,
+        "plan_median_ns": 25416,
+        "query_peak_bytes": 17212150,
+        "selected_plan": "SortExec keys=[SortItem { key: Property { variable: \"n\", property: \"space\" }, direction: Asc }]\n  ProjectExec columns=[id]\n    FilterExec predicate=PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=1 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 129280,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 182667,
+            "elapsed_min_ns": 174959,
+            "elapsed_max_ns": 209792,
+            "plan_median_ns": 25500,
+            "first_query_ns": 338250,
+            "setup_ns": 889875,
+            "explain_ns": 215417,
+            "query_peak_bytes": 17212150,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 189542,
+            "elapsed_min_ns": 174000,
+            "elapsed_max_ns": 199291,
+            "plan_median_ns": 25167,
+            "first_query_ns": 286458,
+            "setup_ns": 894167,
+            "explain_ns": 214708,
+            "query_peak_bytes": 17212150,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 181541,
+            "elapsed_min_ns": 174292,
+            "elapsed_max_ns": 197000,
+            "plan_median_ns": 25416,
+            "first_query_ns": 269458,
+            "setup_ns": 886916,
+            "explain_ns": 215750,
+            "query_peak_bytes": 17212150,
+            "output_rows": 768
+          }
+        ]
+      }
+    },
+    {
+      "kind": "constant-source",
+      "rows": 128,
+      "cache": "cold",
+      "elapsed_change_percent": -0.13778565821471744,
+      "baseline": {
+        "elapsed_median_ns": 182167,
+        "plan_median_ns": 23542,
+        "query_peak_bytes": 17212150,
+        "selected_plan": "SortExec keys=[SortItem { key: Property { variable: \"n\", property: \"space\" }, direction: Asc }]\n  ProjectExec columns=[id]\n    FilterExec predicate=PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 129280,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 182167,
+            "elapsed_min_ns": 168708,
+            "elapsed_max_ns": 199958,
+            "plan_median_ns": 21875,
+            "first_query_ns": 268792,
+            "setup_ns": 855208,
+            "explain_ns": 157875,
+            "query_peak_bytes": 17212150,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 175750,
+            "elapsed_min_ns": 175000,
+            "elapsed_max_ns": 191458,
+            "plan_median_ns": 23542,
+            "first_query_ns": 268166,
+            "setup_ns": 918500,
+            "explain_ns": 162250,
+            "query_peak_bytes": 17212150,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 189292,
+            "elapsed_min_ns": 172958,
+            "elapsed_max_ns": 199666,
+            "plan_median_ns": 24791,
+            "first_query_ns": 278625,
+            "setup_ns": 888833,
+            "explain_ns": 160125,
+            "query_peak_bytes": 17212150,
+            "output_rows": 768
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 181916,
+        "plan_median_ns": 25042,
+        "query_peak_bytes": 17212150,
+        "selected_plan": "SortExec keys=[SortItem { key: Property { variable: \"n\", property: \"space\" }, direction: Asc }]\n  ProjectExec columns=[id]\n    FilterExec predicate=PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 129280,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 180333,
+            "elapsed_min_ns": 175834,
+            "elapsed_max_ns": 199292,
+            "plan_median_ns": 25250,
+            "first_query_ns": 281500,
+            "setup_ns": 829750,
+            "explain_ns": 175292,
+            "query_peak_bytes": 17212150,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 183500,
+            "elapsed_min_ns": 176959,
+            "elapsed_max_ns": 201458,
+            "plan_median_ns": 25042,
+            "first_query_ns": 279000,
+            "setup_ns": 933125,
+            "explain_ns": 173292,
+            "query_peak_bytes": 17212150,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 181916,
+            "elapsed_min_ns": 176625,
+            "elapsed_max_ns": 201916,
+            "plan_median_ns": 25042,
+            "first_query_ns": 280958,
+            "setup_ns": 877334,
+            "explain_ns": 189625,
+            "query_peak_bytes": 17212150,
+            "output_rows": 768
+          }
+        ]
+      }
+    },
+    {
+      "kind": "constant-source",
+      "rows": 10000,
+      "cache": "warm",
+      "elapsed_change_percent": -2.14660311186875,
+      "baseline": {
+        "elapsed_median_ns": 11512375,
+        "plan_median_ns": 49459,
+        "query_peak_bytes": 27602422,
+        "selected_plan": "SortExec keys=[SortItem { key: Property { variable: \"n\", property: \"space\" }, direction: Asc }]\n  ProjectExec columns=[id]\n    FilterExec predicate=PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=1 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 10100000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 11512375,
+            "elapsed_min_ns": 11079958,
+            "elapsed_max_ns": 11664500,
+            "plan_median_ns": 47666,
+            "first_query_ns": 12133833,
+            "setup_ns": 38069417,
+            "explain_ns": 3851459,
+            "query_peak_bytes": 27602422,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 11373750,
+            "elapsed_min_ns": 11076875,
+            "elapsed_max_ns": 11437209,
+            "plan_median_ns": 70042,
+            "first_query_ns": 12376875,
+            "setup_ns": 38042542,
+            "explain_ns": 3798583,
+            "query_peak_bytes": 27602422,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 12417708,
+            "elapsed_min_ns": 12008166,
+            "elapsed_max_ns": 12541250,
+            "plan_median_ns": 49459,
+            "first_query_ns": 12996917,
+            "setup_ns": 38468584,
+            "explain_ns": 4352542,
+            "query_peak_bytes": 27602422,
+            "output_rows": 60000
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 11265250,
+        "plan_median_ns": 47500,
+        "query_peak_bytes": 27602422,
+        "selected_plan": "SortExec keys=[SortItem { key: Property { variable: \"n\", property: \"space\" }, direction: Asc }]\n  ProjectExec columns=[id]\n    FilterExec predicate=PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=1 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 10100000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 11362209,
+            "elapsed_min_ns": 11180709,
+            "elapsed_max_ns": 11711292,
+            "plan_median_ns": 48167,
+            "first_query_ns": 12732292,
+            "setup_ns": 37608041,
+            "explain_ns": 3896917,
+            "query_peak_bytes": 27602422,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 11265250,
+            "elapsed_min_ns": 11099667,
+            "elapsed_max_ns": 11481042,
+            "plan_median_ns": 47500,
+            "first_query_ns": 12409709,
+            "setup_ns": 37194125,
+            "explain_ns": 3779959,
+            "query_peak_bytes": 27602422,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 11157708,
+            "elapsed_min_ns": 10897041,
+            "elapsed_max_ns": 11282333,
+            "plan_median_ns": 44709,
+            "first_query_ns": 12270875,
+            "setup_ns": 37407834,
+            "explain_ns": 3714250,
+            "query_peak_bytes": 27602422,
+            "output_rows": 60000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "constant-source",
+      "rows": 10000,
+      "cache": "cold",
+      "elapsed_change_percent": 3.0091957974119676,
+      "baseline": {
+        "elapsed_median_ns": 11380416,
+        "plan_median_ns": 47333,
+        "query_peak_bytes": 27602422,
+        "selected_plan": "SortExec keys=[SortItem { key: Property { variable: \"n\", property: \"space\" }, direction: Asc }]\n  ProjectExec columns=[id]\n    FilterExec predicate=PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 10100000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 11380416,
+            "elapsed_min_ns": 11219083,
+            "elapsed_max_ns": 11788500,
+            "plan_median_ns": 52083,
+            "first_query_ns": 12589583,
+            "setup_ns": 37757334,
+            "explain_ns": 3779250,
+            "query_peak_bytes": 27602422,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 11959459,
+            "elapsed_min_ns": 11847500,
+            "elapsed_max_ns": 12204958,
+            "plan_median_ns": 42417,
+            "first_query_ns": 13099042,
+            "setup_ns": 38855500,
+            "explain_ns": 4042167,
+            "query_peak_bytes": 27602422,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 11288791,
+            "elapsed_min_ns": 11061500,
+            "elapsed_max_ns": 11314959,
+            "plan_median_ns": 47333,
+            "first_query_ns": 11907917,
+            "setup_ns": 37487208,
+            "explain_ns": 3734750,
+            "query_peak_bytes": 27602422,
+            "output_rows": 60000
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 11722875,
+        "plan_median_ns": 51792,
+        "query_peak_bytes": 27602422,
+        "selected_plan": "SortExec keys=[SortItem { key: Property { variable: \"n\", property: \"space\" }, direction: Asc }]\n  ProjectExec columns=[id]\n    FilterExec predicate=PropertyEq { variable: \"n\", property: \"space\", value: String(\"mem\") }\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "choose SeqNodeScan for Item.space: no equality index descriptor",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 10100000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 11967792,
+            "elapsed_min_ns": 11755583,
+            "elapsed_max_ns": 12453667,
+            "plan_median_ns": 55250,
+            "first_query_ns": 13281542,
+            "setup_ns": 39594791,
+            "explain_ns": 4308000,
+            "query_peak_bytes": 27602422,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 11168709,
+            "elapsed_min_ns": 11031250,
+            "elapsed_max_ns": 11514583,
+            "plan_median_ns": 51792,
+            "first_query_ns": 12389375,
+            "setup_ns": 36724166,
+            "explain_ns": 3707416,
+            "query_peak_bytes": 27602422,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 11722875,
+            "elapsed_min_ns": 11504125,
+            "elapsed_max_ns": 11971333,
+            "plan_median_ns": 51167,
+            "first_query_ns": 12835250,
+            "setup_ns": 38169750,
+            "explain_ns": 4403958,
+            "query_peak_bytes": 27602422,
+            "output_rows": 60000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "group",
+      "rows": 128,
+      "cache": "warm",
+      "elapsed_change_percent": -1.9740250539115212,
+      "baseline": {
+        "elapsed_median_ns": 225833,
+        "plan_median_ns": 26916,
+        "query_peak_bytes": 458496,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  AggregateExec columns=[id, total]\n    AggregateExec columns=[id, original]\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "selected physical plan cost: estimated_rows=32 cost=452",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "AggregateExec",
+            "peak_bytes": 24576,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "AggregateExec",
+            "peak_bytes": 24576,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 28544,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 225625,
+            "elapsed_min_ns": 220125,
+            "elapsed_max_ns": 242709,
+            "plan_median_ns": 26708,
+            "first_query_ns": 382125,
+            "setup_ns": 949875,
+            "explain_ns": 195542,
+            "query_peak_bytes": 458496,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 225833,
+            "elapsed_min_ns": 220208,
+            "elapsed_max_ns": 238375,
+            "plan_median_ns": 26916,
+            "first_query_ns": 350750,
+            "setup_ns": 951208,
+            "explain_ns": 198208,
+            "query_peak_bytes": 458496,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 227500,
+            "elapsed_min_ns": 219000,
+            "elapsed_max_ns": 245625,
+            "plan_median_ns": 27584,
+            "first_query_ns": 345792,
+            "setup_ns": 886500,
+            "explain_ns": 189708,
+            "query_peak_bytes": 458496,
+            "output_rows": 768
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 221375,
+        "plan_median_ns": 25708,
+        "query_peak_bytes": 458496,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  ProjectExec columns=[id, total]\n    AggregateExec columns=[id, original]\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "apply transformation:proof_singleton_group: values-only unique grouping tuple with pure COUNT(*) results",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "AggregateExec",
+            "peak_bytes": 24576,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 28544,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 221375,
+            "elapsed_min_ns": 210542,
+            "elapsed_max_ns": 233917,
+            "plan_median_ns": 25708,
+            "first_query_ns": 407250,
+            "setup_ns": 916542,
+            "explain_ns": 211541,
+            "query_peak_bytes": 458496,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 218291,
+            "elapsed_min_ns": 211791,
+            "elapsed_max_ns": 228375,
+            "plan_median_ns": 26209,
+            "first_query_ns": 319583,
+            "setup_ns": 897791,
+            "explain_ns": 212375,
+            "query_peak_bytes": 458496,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 222208,
+            "elapsed_min_ns": 214792,
+            "elapsed_max_ns": 229458,
+            "plan_median_ns": 25417,
+            "first_query_ns": 325166,
+            "setup_ns": 901583,
+            "explain_ns": 211250,
+            "query_peak_bytes": 458496,
+            "output_rows": 768
+          }
+        ]
+      }
+    },
+    {
+      "kind": "group",
+      "rows": 128,
+      "cache": "cold",
+      "elapsed_change_percent": 0.11266164252594635,
+      "baseline": {
+        "elapsed_median_ns": 222791,
+        "plan_median_ns": 24958,
+        "query_peak_bytes": 458496,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  AggregateExec columns=[id, total]\n    AggregateExec columns=[id, original]\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "selected physical plan cost: estimated_rows=32 cost=452",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "AggregateExec",
+            "peak_bytes": 24576,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "AggregateExec",
+            "peak_bytes": 24576,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 28544,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 222791,
+            "elapsed_min_ns": 217834,
+            "elapsed_max_ns": 286625,
+            "plan_median_ns": 24958,
+            "first_query_ns": 433291,
+            "setup_ns": 894541,
+            "explain_ns": 194834,
+            "query_peak_bytes": 458496,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 222167,
+            "elapsed_min_ns": 218583,
+            "elapsed_max_ns": 239083,
+            "plan_median_ns": 24042,
+            "first_query_ns": 347583,
+            "setup_ns": 887417,
+            "explain_ns": 161209,
+            "query_peak_bytes": 458496,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 224417,
+            "elapsed_min_ns": 221041,
+            "elapsed_max_ns": 236708,
+            "plan_median_ns": 25125,
+            "first_query_ns": 346250,
+            "setup_ns": 922792,
+            "explain_ns": 159041,
+            "query_peak_bytes": 458496,
+            "output_rows": 768
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 223042,
+        "plan_median_ns": 26958,
+        "query_peak_bytes": 458496,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  ProjectExec columns=[id, total]\n    AggregateExec columns=[id, original]\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "apply transformation:proof_singleton_group: values-only unique grouping tuple with pure COUNT(*) results",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "AggregateExec",
+            "peak_bytes": 24576,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 28544,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 217333,
+            "elapsed_min_ns": 215292,
+            "elapsed_max_ns": 260708,
+            "plan_median_ns": 26958,
+            "first_query_ns": 355500,
+            "setup_ns": 941875,
+            "explain_ns": 195500,
+            "query_peak_bytes": 458496,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 223083,
+            "elapsed_min_ns": 213875,
+            "elapsed_max_ns": 246250,
+            "plan_median_ns": 28000,
+            "first_query_ns": 370083,
+            "setup_ns": 885500,
+            "explain_ns": 174000,
+            "query_peak_bytes": 458496,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 223042,
+            "elapsed_min_ns": 214500,
+            "elapsed_max_ns": 231375,
+            "plan_median_ns": 26292,
+            "first_query_ns": 358916,
+            "setup_ns": 938750,
+            "explain_ns": 191500,
+            "query_peak_bytes": 458496,
+            "output_rows": 768
+          }
+        ]
+      }
+    },
+    {
+      "kind": "group",
+      "rows": 10000,
+      "cache": "warm",
+      "elapsed_change_percent": 2.3469706156094228,
+      "baseline": {
+        "elapsed_median_ns": 14129917,
+        "plan_median_ns": 44292,
+        "query_peak_bytes": 4397288,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  AggregateExec columns=[id, total]\n    AggregateExec columns=[id, original]\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "selected physical plan cost: estimated_rows=2500 cost=35004",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "AggregateExec",
+            "peak_bytes": 3014760,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "AggregateExec",
+            "peak_bytes": 3014760,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 2230000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 14382458,
+            "elapsed_min_ns": 14163667,
+            "elapsed_max_ns": 14445166,
+            "plan_median_ns": 44459,
+            "first_query_ns": 15332250,
+            "setup_ns": 37862166,
+            "explain_ns": 3747250,
+            "query_peak_bytes": 4397288,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 13991458,
+            "elapsed_min_ns": 13937958,
+            "elapsed_max_ns": 14673167,
+            "plan_median_ns": 44292,
+            "first_query_ns": 14707708,
+            "setup_ns": 37948417,
+            "explain_ns": 3740209,
+            "query_peak_bytes": 4397288,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 14129917,
+            "elapsed_min_ns": 14074875,
+            "elapsed_max_ns": 14329084,
+            "plan_median_ns": 41667,
+            "first_query_ns": 14983792,
+            "setup_ns": 37833375,
+            "explain_ns": 3807917,
+            "query_peak_bytes": 4397288,
+            "output_rows": 60000
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 14461542,
+        "plan_median_ns": 46500,
+        "query_peak_bytes": 4347376,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  ProjectExec columns=[id, total]\n    AggregateExec columns=[id, original]\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "apply transformation:proof_singleton_group: values-only unique grouping tuple with pure COUNT(*) results",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "AggregateExec",
+            "peak_bytes": 3014760,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 2230000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 13774958,
+            "elapsed_min_ns": 13481292,
+            "elapsed_max_ns": 14074708,
+            "plan_median_ns": 46500,
+            "first_query_ns": 14209125,
+            "setup_ns": 37442750,
+            "explain_ns": 3833083,
+            "query_peak_bytes": 4347376,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 14788667,
+            "elapsed_min_ns": 14574958,
+            "elapsed_max_ns": 15003667,
+            "plan_median_ns": 49875,
+            "first_query_ns": 14744750,
+            "setup_ns": 38955792,
+            "explain_ns": 4384042,
+            "query_peak_bytes": 4347376,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 14461542,
+            "elapsed_min_ns": 14401375,
+            "elapsed_max_ns": 14660875,
+            "plan_median_ns": 42792,
+            "first_query_ns": 14407916,
+            "setup_ns": 38114000,
+            "explain_ns": 4308750,
+            "query_peak_bytes": 4347376,
+            "output_rows": 60000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "group",
+      "rows": 10000,
+      "cache": "cold",
+      "elapsed_change_percent": 0.609372489042892,
+      "baseline": {
+        "elapsed_median_ns": 14393167,
+        "plan_median_ns": 40083,
+        "query_peak_bytes": 4397288,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  AggregateExec columns=[id, total]\n    AggregateExec columns=[id, original]\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "selected physical plan cost: estimated_rows=2500 cost=35004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "AggregateExec",
+            "peak_bytes": 3014760,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "AggregateExec",
+            "peak_bytes": 3014760,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 2230000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 14393167,
+            "elapsed_min_ns": 14284250,
+            "elapsed_max_ns": 14766541,
+            "plan_median_ns": 42666,
+            "first_query_ns": 15347792,
+            "setup_ns": 38139208,
+            "explain_ns": 3666167,
+            "query_peak_bytes": 4397288,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 14047458,
+            "elapsed_min_ns": 13969917,
+            "elapsed_max_ns": 14611291,
+            "plan_median_ns": 36667,
+            "first_query_ns": 14943708,
+            "setup_ns": 37729125,
+            "explain_ns": 3878375,
+            "query_peak_bytes": 4397288,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 14710875,
+            "elapsed_min_ns": 14694459,
+            "elapsed_max_ns": 14903750,
+            "plan_median_ns": 40083,
+            "first_query_ns": 15232916,
+            "setup_ns": 38855416,
+            "explain_ns": 4296375,
+            "query_peak_bytes": 4397288,
+            "output_rows": 60000
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 14480875,
+        "plan_median_ns": 49875,
+        "query_peak_bytes": 4347376,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  ProjectExec columns=[id, total]\n    AggregateExec columns=[id, original]\n      SeqNodeScan variable=n label=Item",
+        "decisions": [
+          "apply transformation:proof_singleton_group: values-only unique grouping tuple with pure COUNT(*) results",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "AggregateExec",
+            "peak_bytes": 3014760,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 2230000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 15056500,
+            "elapsed_min_ns": 14940416,
+            "elapsed_max_ns": 15189166,
+            "plan_median_ns": 61208,
+            "first_query_ns": 15087709,
+            "setup_ns": 39627375,
+            "explain_ns": 4293916,
+            "query_peak_bytes": 4347376,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 13482625,
+            "elapsed_min_ns": 13231917,
+            "elapsed_max_ns": 14023584,
+            "plan_median_ns": 46417,
+            "first_query_ns": 14353875,
+            "setup_ns": 36859584,
+            "explain_ns": 3762125,
+            "query_peak_bytes": 4347376,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 14480875,
+            "elapsed_min_ns": 14173292,
+            "elapsed_max_ns": 14587125,
+            "plan_median_ns": 49875,
+            "first_query_ns": 14507333,
+            "setup_ns": 38942667,
+            "explain_ns": 4355708,
+            "query_peak_bytes": 4347376,
+            "output_rows": 60000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "nullable",
+      "rows": 128,
+      "cache": "warm",
+      "elapsed_change_percent": 1.1700763358778676,
+      "baseline": {
+        "elapsed_median_ns": 81875,
+        "plan_median_ns": 15959,
+        "query_peak_bytes": 47824,
+        "selected_plan": "DistinctExec\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"optional\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=388",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "DistinctExec",
+            "peak_bytes": 35792,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 81875,
+            "elapsed_min_ns": 77291,
+            "elapsed_max_ns": 93959,
+            "plan_median_ns": 15959,
+            "first_query_ns": 152292,
+            "setup_ns": 898667,
+            "explain_ns": 156000,
+            "query_peak_bytes": 47824,
+            "output_rows": 390
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 80875,
+            "elapsed_min_ns": 76875,
+            "elapsed_max_ns": 95709,
+            "plan_median_ns": 15750,
+            "first_query_ns": 150250,
+            "setup_ns": 901500,
+            "explain_ns": 159458,
+            "query_peak_bytes": 47824,
+            "output_rows": 390
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 82458,
+            "elapsed_min_ns": 72583,
+            "elapsed_max_ns": 106750,
+            "plan_median_ns": 16166,
+            "first_query_ns": 154750,
+            "setup_ns": 891208,
+            "explain_ns": 158500,
+            "query_peak_bytes": 47824,
+            "output_rows": 390
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 82833,
+        "plan_median_ns": 15667,
+        "query_peak_bytes": 47824,
+        "selected_plan": "DistinctExec\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"optional\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=388",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "DistinctExec",
+            "peak_bytes": 35792,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 83666,
+            "elapsed_min_ns": 74500,
+            "elapsed_max_ns": 94375,
+            "plan_median_ns": 14875,
+            "first_query_ns": 181958,
+            "setup_ns": 895083,
+            "explain_ns": 167250,
+            "query_peak_bytes": 47824,
+            "output_rows": 390
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 81041,
+            "elapsed_min_ns": 77417,
+            "elapsed_max_ns": 96833,
+            "plan_median_ns": 15667,
+            "first_query_ns": 148834,
+            "setup_ns": 888500,
+            "explain_ns": 164625,
+            "query_peak_bytes": 47824,
+            "output_rows": 390
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 82833,
+            "elapsed_min_ns": 73083,
+            "elapsed_max_ns": 93042,
+            "plan_median_ns": 16834,
+            "first_query_ns": 150083,
+            "setup_ns": 891042,
+            "explain_ns": 168959,
+            "query_peak_bytes": 47824,
+            "output_rows": 390
+          }
+        ]
+      }
+    },
+    {
+      "kind": "nullable",
+      "rows": 128,
+      "cache": "cold",
+      "elapsed_change_percent": 0.770307313292995,
+      "baseline": {
+        "elapsed_median_ns": 86459,
+        "plan_median_ns": 15625,
+        "query_peak_bytes": 47824,
+        "selected_plan": "DistinctExec\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"optional\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=388",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "DistinctExec",
+            "peak_bytes": 35792,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 90000,
+            "elapsed_min_ns": 77209,
+            "elapsed_max_ns": 93459,
+            "plan_median_ns": 15959,
+            "first_query_ns": 153792,
+            "setup_ns": 889584,
+            "explain_ns": 133250,
+            "query_peak_bytes": 47824,
+            "output_rows": 390
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 80750,
+            "elapsed_min_ns": 77542,
+            "elapsed_max_ns": 95417,
+            "plan_median_ns": 15625,
+            "first_query_ns": 151000,
+            "setup_ns": 882583,
+            "explain_ns": 132500,
+            "query_peak_bytes": 47824,
+            "output_rows": 390
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 86459,
+            "elapsed_min_ns": 77459,
+            "elapsed_max_ns": 94667,
+            "plan_median_ns": 14458,
+            "first_query_ns": 151667,
+            "setup_ns": 948250,
+            "explain_ns": 134958,
+            "query_peak_bytes": 47824,
+            "output_rows": 390
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 87125,
+        "plan_median_ns": 16125,
+        "query_peak_bytes": 47824,
+        "selected_plan": "DistinctExec\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"optional\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=388",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "DistinctExec",
+            "peak_bytes": 35792,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 87125,
+            "elapsed_min_ns": 77833,
+            "elapsed_max_ns": 93042,
+            "plan_median_ns": 17250,
+            "first_query_ns": 152584,
+            "setup_ns": 898208,
+            "explain_ns": 148875,
+            "query_peak_bytes": 47824,
+            "output_rows": 390
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 88583,
+            "elapsed_min_ns": 73084,
+            "elapsed_max_ns": 97500,
+            "plan_median_ns": 16000,
+            "first_query_ns": 152209,
+            "setup_ns": 887584,
+            "explain_ns": 141916,
+            "query_peak_bytes": 47824,
+            "output_rows": 390
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 86417,
+            "elapsed_min_ns": 72875,
+            "elapsed_max_ns": 102833,
+            "plan_median_ns": 16125,
+            "first_query_ns": 159208,
+            "setup_ns": 876833,
+            "explain_ns": 148250,
+            "query_peak_bytes": 47824,
+            "output_rows": 390
+          }
+        ]
+      }
+    },
+    {
+      "kind": "nullable",
+      "rows": 10000,
+      "cache": "warm",
+      "elapsed_change_percent": 0.012699146971462127,
+      "baseline": {
+        "elapsed_median_ns": 3614416,
+        "plan_median_ns": 15625,
+        "query_peak_bytes": 2901328,
+        "selected_plan": "DistinctExec\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"optional\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=30004",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "DistinctExec",
+            "peak_bytes": 2750592,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 3614416,
+            "elapsed_min_ns": 3544292,
+            "elapsed_max_ns": 3732625,
+            "plan_median_ns": 15625,
+            "first_query_ns": 4182125,
+            "setup_ns": 38351792,
+            "explain_ns": 3735125,
+            "query_peak_bytes": 2901328,
+            "output_rows": 30006
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 3606291,
+            "elapsed_min_ns": 3557959,
+            "elapsed_max_ns": 3711208,
+            "plan_median_ns": 14000,
+            "first_query_ns": 4173042,
+            "setup_ns": 37671750,
+            "explain_ns": 3727000,
+            "query_peak_bytes": 2901328,
+            "output_rows": 30006
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 3760125,
+            "elapsed_min_ns": 3709084,
+            "elapsed_max_ns": 4077334,
+            "plan_median_ns": 18500,
+            "first_query_ns": 4468250,
+            "setup_ns": 38426417,
+            "explain_ns": 4010250,
+            "query_peak_bytes": 2901328,
+            "output_rows": 30006
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 3614875,
+        "plan_median_ns": 16208,
+        "query_peak_bytes": 2901328,
+        "selected_plan": "DistinctExec\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"optional\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=30004",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "DistinctExec",
+            "peak_bytes": 2750592,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 3614875,
+            "elapsed_min_ns": 3493459,
+            "elapsed_max_ns": 3764708,
+            "plan_median_ns": 16208,
+            "first_query_ns": 4106083,
+            "setup_ns": 36810167,
+            "explain_ns": 3782625,
+            "query_peak_bytes": 2901328,
+            "output_rows": 30006
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 3867375,
+            "elapsed_min_ns": 3734333,
+            "elapsed_max_ns": 4035708,
+            "plan_median_ns": 19292,
+            "first_query_ns": 4069875,
+            "setup_ns": 38533708,
+            "explain_ns": 4405958,
+            "query_peak_bytes": 2901328,
+            "output_rows": 30006
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 3598666,
+            "elapsed_min_ns": 3589917,
+            "elapsed_max_ns": 3730458,
+            "plan_median_ns": 14625,
+            "first_query_ns": 4254125,
+            "setup_ns": 36265750,
+            "explain_ns": 3773791,
+            "query_peak_bytes": 2901328,
+            "output_rows": 30006
+          }
+        ]
+      }
+    },
+    {
+      "kind": "nullable",
+      "rows": 10000,
+      "cache": "cold",
+      "elapsed_change_percent": -0.08662602047558865,
+      "baseline": {
+        "elapsed_median_ns": 3654791,
+        "plan_median_ns": 14792,
+        "query_peak_bytes": 2901328,
+        "selected_plan": "DistinctExec\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"optional\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=30004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "DistinctExec",
+            "peak_bytes": 2750592,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 4054417,
+            "elapsed_min_ns": 3734083,
+            "elapsed_max_ns": 4304083,
+            "plan_median_ns": 22542,
+            "first_query_ns": 4729083,
+            "setup_ns": 39375833,
+            "explain_ns": 4142750,
+            "query_peak_bytes": 2901328,
+            "output_rows": 30006
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 3651750,
+            "elapsed_min_ns": 3568250,
+            "elapsed_max_ns": 3694916,
+            "plan_median_ns": 14792,
+            "first_query_ns": 4147916,
+            "setup_ns": 37635375,
+            "explain_ns": 3734875,
+            "query_peak_bytes": 2901328,
+            "output_rows": 30006
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 3654791,
+            "elapsed_min_ns": 3555750,
+            "elapsed_max_ns": 3848917,
+            "plan_median_ns": 14583,
+            "first_query_ns": 4094750,
+            "setup_ns": 37356208,
+            "explain_ns": 3704667,
+            "query_peak_bytes": 2901328,
+            "output_rows": 30006
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 3651625,
+        "plan_median_ns": 22792,
+        "query_peak_bytes": 2901328,
+        "selected_plan": "DistinctExec\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"optional\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=30004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "DistinctExec",
+            "peak_bytes": 2750592,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 4012167,
+            "elapsed_min_ns": 3823792,
+            "elapsed_max_ns": 4419625,
+            "plan_median_ns": 22792,
+            "first_query_ns": 4297292,
+            "setup_ns": 38948709,
+            "explain_ns": 3990833,
+            "query_peak_bytes": 2901328,
+            "output_rows": 30006
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 3611708,
+            "elapsed_min_ns": 3601625,
+            "elapsed_max_ns": 3846208,
+            "plan_median_ns": 25959,
+            "first_query_ns": 4185750,
+            "setup_ns": 37002917,
+            "explain_ns": 3834667,
+            "query_peak_bytes": 2901328,
+            "output_rows": 30006
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 3651625,
+            "elapsed_min_ns": 3588334,
+            "elapsed_max_ns": 3727166,
+            "plan_median_ns": 16791,
+            "first_query_ns": 4104250,
+            "setup_ns": 36868458,
+            "explain_ns": 3707500,
+            "query_peak_bytes": 2901328,
+            "output_rows": 30006
+          }
+        ]
+      }
+    },
+    {
+      "kind": "point",
+      "rows": 128,
+      "cache": "warm",
+      "elapsed_change_percent": -3.1811620864347745,
+      "baseline": {
+        "elapsed_median_ns": 35333,
+        "plan_median_ns": 18541,
+        "query_peak_bytes": 790,
+        "selected_plan": "NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=Some(PropertyEq { variable: \"n\", property: \"external\", value: Int(20) }) output=projected_values columns=[id]",
+        "decisions": [
+          "choose SeqNodeScan for Item.external: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=1 cost=133",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=1 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 37459,
+            "elapsed_min_ns": 31209,
+            "elapsed_max_ns": 50666,
+            "plan_median_ns": 18541,
+            "first_query_ns": 292792,
+            "setup_ns": 904667,
+            "explain_ns": 186000,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 35333,
+            "elapsed_min_ns": 29083,
+            "elapsed_max_ns": 39833,
+            "plan_median_ns": 18209,
+            "first_query_ns": 217625,
+            "setup_ns": 880375,
+            "explain_ns": 181666,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 35291,
+            "elapsed_min_ns": 31209,
+            "elapsed_max_ns": 48959,
+            "plan_median_ns": 19042,
+            "first_query_ns": 249917,
+            "setup_ns": 907250,
+            "explain_ns": 182291,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 34209,
+        "plan_median_ns": 19208,
+        "query_peak_bytes": 790,
+        "selected_plan": "NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=Some(PropertyEq { variable: \"n\", property: \"external\", value: Int(20) }) output=projected_values columns=[id]",
+        "decisions": [
+          "choose SeqNodeScan for Item.external: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=1 cost=133",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=1 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 40042,
+            "elapsed_min_ns": 30500,
+            "elapsed_max_ns": 50000,
+            "plan_median_ns": 21917,
+            "first_query_ns": 301291,
+            "setup_ns": 935833,
+            "explain_ns": 200250,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 32625,
+            "elapsed_min_ns": 27709,
+            "elapsed_max_ns": 37625,
+            "plan_median_ns": 18250,
+            "first_query_ns": 203375,
+            "setup_ns": 896125,
+            "explain_ns": 193916,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 34209,
+            "elapsed_min_ns": 32583,
+            "elapsed_max_ns": 44458,
+            "plan_median_ns": 19208,
+            "first_query_ns": 222833,
+            "setup_ns": 894292,
+            "explain_ns": 192042,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          }
+        ]
+      }
+    },
+    {
+      "kind": "point",
+      "rows": 128,
+      "cache": "cold",
+      "elapsed_change_percent": -10.513564668769714,
+      "baseline": {
+        "elapsed_median_ns": 39625,
+        "plan_median_ns": 19291,
+        "query_peak_bytes": 790,
+        "selected_plan": "NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=Some(PropertyEq { variable: \"n\", property: \"external\", value: Int(20) }) output=projected_values columns=[id]",
+        "decisions": [
+          "choose SeqNodeScan for Item.external: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=1 cost=133",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 39625,
+            "elapsed_min_ns": 35542,
+            "elapsed_max_ns": 47167,
+            "plan_median_ns": 19291,
+            "first_query_ns": 265875,
+            "setup_ns": 925750,
+            "explain_ns": 151708,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 34375,
+            "elapsed_min_ns": 28833,
+            "elapsed_max_ns": 39375,
+            "plan_median_ns": 16875,
+            "first_query_ns": 237917,
+            "setup_ns": 944333,
+            "explain_ns": 162250,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 42958,
+            "elapsed_min_ns": 32416,
+            "elapsed_max_ns": 46791,
+            "plan_median_ns": 22459,
+            "first_query_ns": 241333,
+            "setup_ns": 902958,
+            "explain_ns": 154917,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 35459,
+        "plan_median_ns": 19333,
+        "query_peak_bytes": 790,
+        "selected_plan": "NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=Some(PropertyEq { variable: \"n\", property: \"external\", value: Int(20) }) output=projected_values columns=[id]",
+        "decisions": [
+          "choose SeqNodeScan for Item.external: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=1 cost=133",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 35459,
+            "elapsed_min_ns": 33084,
+            "elapsed_max_ns": 49708,
+            "plan_median_ns": 19083,
+            "first_query_ns": 251250,
+            "setup_ns": 941250,
+            "explain_ns": 174916,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 43958,
+            "elapsed_min_ns": 35000,
+            "elapsed_max_ns": 47500,
+            "plan_median_ns": 22208,
+            "first_query_ns": 238833,
+            "setup_ns": 940625,
+            "explain_ns": 171542,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 35333,
+            "elapsed_min_ns": 34583,
+            "elapsed_max_ns": 46583,
+            "plan_median_ns": 19333,
+            "first_query_ns": 222667,
+            "setup_ns": 906292,
+            "explain_ns": 164917,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          }
+        ]
+      }
+    },
+    {
+      "kind": "point",
+      "rows": 10000,
+      "cache": "warm",
+      "elapsed_change_percent": 0.6411291252508056,
+      "baseline": {
+        "elapsed_median_ns": 130083,
+        "plan_median_ns": 18833,
+        "query_peak_bytes": 790,
+        "selected_plan": "NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=Some(PropertyEq { variable: \"n\", property: \"external\", value: Int(20) }) output=projected_values columns=[id]",
+        "decisions": [
+          "choose SeqNodeScan for Item.external: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=1 cost=10005",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=1 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 135042,
+            "elapsed_min_ns": 129416,
+            "elapsed_max_ns": 167042,
+            "plan_median_ns": 20292,
+            "first_query_ns": 569625,
+            "setup_ns": 37375292,
+            "explain_ns": 3937792,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 129917,
+            "elapsed_min_ns": 128417,
+            "elapsed_max_ns": 147417,
+            "plan_median_ns": 18833,
+            "first_query_ns": 528625,
+            "setup_ns": 37718291,
+            "explain_ns": 3782916,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 130083,
+            "elapsed_min_ns": 128041,
+            "elapsed_max_ns": 153291,
+            "plan_median_ns": 18792,
+            "first_query_ns": 648208,
+            "setup_ns": 37181291,
+            "explain_ns": 3731625,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 130917,
+        "plan_median_ns": 18917,
+        "query_peak_bytes": 790,
+        "selected_plan": "NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=Some(PropertyEq { variable: \"n\", property: \"external\", value: Int(20) }) output=projected_values columns=[id]",
+        "decisions": [
+          "choose SeqNodeScan for Item.external: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=1 cost=10005",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=1 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 130917,
+            "elapsed_min_ns": 126875,
+            "elapsed_max_ns": 149916,
+            "plan_median_ns": 20167,
+            "first_query_ns": 485500,
+            "setup_ns": 37866584,
+            "explain_ns": 3768292,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 134083,
+            "elapsed_min_ns": 132791,
+            "elapsed_max_ns": 146625,
+            "plan_median_ns": 18917,
+            "first_query_ns": 441542,
+            "setup_ns": 38648750,
+            "explain_ns": 4086750,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 127250,
+            "elapsed_min_ns": 124458,
+            "elapsed_max_ns": 142666,
+            "plan_median_ns": 18292,
+            "first_query_ns": 528625,
+            "setup_ns": 37389375,
+            "explain_ns": 4025542,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          }
+        ]
+      }
+    },
+    {
+      "kind": "point",
+      "rows": 10000,
+      "cache": "cold",
+      "elapsed_change_percent": 3.7927844588344195,
+      "baseline": {
+        "elapsed_median_ns": 135125,
+        "plan_median_ns": 17084,
+        "query_peak_bytes": 790,
+        "selected_plan": "NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=Some(PropertyEq { variable: \"n\", property: \"external\", value: Int(20) }) output=projected_values columns=[id]",
+        "decisions": [
+          "choose SeqNodeScan for Item.external: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=1 cost=10005",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 135125,
+            "elapsed_min_ns": 126583,
+            "elapsed_max_ns": 147833,
+            "plan_median_ns": 18791,
+            "first_query_ns": 523125,
+            "setup_ns": 38458000,
+            "explain_ns": 3785666,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 129459,
+            "elapsed_min_ns": 127667,
+            "elapsed_max_ns": 158500,
+            "plan_median_ns": 17084,
+            "first_query_ns": 521958,
+            "setup_ns": 37812458,
+            "explain_ns": 3711667,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 135541,
+            "elapsed_min_ns": 132625,
+            "elapsed_max_ns": 148209,
+            "plan_median_ns": 17083,
+            "first_query_ns": 522500,
+            "setup_ns": 37763792,
+            "explain_ns": 3728792,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 140250,
+        "plan_median_ns": 18125,
+        "query_peak_bytes": 790,
+        "selected_plan": "NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=Some(PropertyEq { variable: \"n\", property: \"external\", value: Int(20) }) output=projected_values columns=[id]",
+        "decisions": [
+          "choose SeqNodeScan for Item.external: no equality index descriptor",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=1 cost=10005",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 141917,
+            "elapsed_min_ns": 125250,
+            "elapsed_max_ns": 190000,
+            "plan_median_ns": 17500,
+            "first_query_ns": 760958,
+            "setup_ns": 37400125,
+            "explain_ns": 3972875,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 131541,
+            "elapsed_min_ns": 126542,
+            "elapsed_max_ns": 145250,
+            "plan_median_ns": 18125,
+            "first_query_ns": 604000,
+            "setup_ns": 37134334,
+            "explain_ns": 3745542,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 140250,
+            "elapsed_min_ns": 132125,
+            "elapsed_max_ns": 157500,
+            "plan_median_ns": 18792,
+            "first_query_ns": 539625,
+            "setup_ns": 36769750,
+            "explain_ns": 3673875,
+            "query_peak_bytes": 790,
+            "output_rows": 6
+          }
+        ]
+      }
+    },
+    {
+      "kind": "computed",
+      "rows": 128,
+      "cache": "warm",
+      "elapsed_change_percent": -0.6326347232678442,
+      "baseline": {
+        "elapsed_median_ns": 164708,
+        "plan_median_ns": 18375,
+        "query_peak_bytes": 82994,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "DistinctExec",
+            "peak_bytes": 70450,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 20736,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 169333,
+            "elapsed_min_ns": 157792,
+            "elapsed_max_ns": 173333,
+            "plan_median_ns": 19958,
+            "first_query_ns": 253541,
+            "setup_ns": 894458,
+            "explain_ns": 183250,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 164708,
+            "elapsed_min_ns": 159166,
+            "elapsed_max_ns": 177292,
+            "plan_median_ns": 18083,
+            "first_query_ns": 259208,
+            "setup_ns": 875791,
+            "explain_ns": 178542,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 161417,
+            "elapsed_min_ns": 159125,
+            "elapsed_max_ns": 174458,
+            "plan_median_ns": 18375,
+            "first_query_ns": 262500,
+            "setup_ns": 883417,
+            "explain_ns": 181333,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 163666,
+        "plan_median_ns": 18542,
+        "query_peak_bytes": 82994,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "DistinctExec",
+            "peak_bytes": 70450,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 20736,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 154000,
+            "elapsed_min_ns": 150167,
+            "elapsed_max_ns": 176000,
+            "plan_median_ns": 17250,
+            "first_query_ns": 254459,
+            "setup_ns": 960958,
+            "explain_ns": 197625,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 163666,
+            "elapsed_min_ns": 155708,
+            "elapsed_max_ns": 185666,
+            "plan_median_ns": 18542,
+            "first_query_ns": 262833,
+            "setup_ns": 939208,
+            "explain_ns": 206500,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 164541,
+            "elapsed_min_ns": 157084,
+            "elapsed_max_ns": 173084,
+            "plan_median_ns": 20583,
+            "first_query_ns": 246583,
+            "setup_ns": 890583,
+            "explain_ns": 189708,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          }
+        ]
+      }
+    },
+    {
+      "kind": "computed",
+      "rows": 128,
+      "cache": "cold",
+      "elapsed_change_percent": -2.4351985494972195,
+      "baseline": {
+        "elapsed_median_ns": 167666,
+        "plan_median_ns": 19708,
+        "query_peak_bytes": 82994,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "DistinctExec",
+            "peak_bytes": 70450,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 20736,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 165833,
+            "elapsed_min_ns": 160041,
+            "elapsed_max_ns": 198500,
+            "plan_median_ns": 19708,
+            "first_query_ns": 270708,
+            "setup_ns": 896875,
+            "explain_ns": 164833,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 170334,
+            "elapsed_min_ns": 161542,
+            "elapsed_max_ns": 179209,
+            "plan_median_ns": 19500,
+            "first_query_ns": 262667,
+            "setup_ns": 889833,
+            "explain_ns": 149875,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 167666,
+            "elapsed_min_ns": 160167,
+            "elapsed_max_ns": 180208,
+            "plan_median_ns": 20250,
+            "first_query_ns": 261709,
+            "setup_ns": 902000,
+            "explain_ns": 149500,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 163583,
+        "plan_median_ns": 20625,
+        "query_peak_bytes": 82994,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "DistinctExec",
+            "peak_bytes": 70450,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 20736,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 171250,
+            "elapsed_min_ns": 160167,
+            "elapsed_max_ns": 176292,
+            "plan_median_ns": 20625,
+            "first_query_ns": 302750,
+            "setup_ns": 1010833,
+            "explain_ns": 185208,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 160541,
+            "elapsed_min_ns": 157083,
+            "elapsed_max_ns": 178541,
+            "plan_median_ns": 20625,
+            "first_query_ns": 261500,
+            "setup_ns": 885959,
+            "explain_ns": 156416,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 163583,
+            "elapsed_min_ns": 159250,
+            "elapsed_max_ns": 175166,
+            "plan_median_ns": 21958,
+            "first_query_ns": 257750,
+            "setup_ns": 886792,
+            "explain_ns": 158542,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          }
+        ]
+      }
+    },
+    {
+      "kind": "computed",
+      "rows": 10000,
+      "cache": "warm",
+      "elapsed_change_percent": -4.658514047979667,
+      "baseline": {
+        "elapsed_median_ns": 9736667,
+        "plan_median_ns": 32541,
+        "query_peak_bytes": 5647879,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "DistinctExec",
+            "peak_bytes": 5500050,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 1620000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 9736667,
+            "elapsed_min_ns": 9478875,
+            "elapsed_max_ns": 9997667,
+            "plan_median_ns": 32541,
+            "first_query_ns": 10630291,
+            "setup_ns": 38606875,
+            "explain_ns": 3755084,
+            "query_peak_bytes": 5647879,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 9239917,
+            "elapsed_min_ns": 9234542,
+            "elapsed_max_ns": 9712459,
+            "plan_median_ns": 28708,
+            "first_query_ns": 10393417,
+            "setup_ns": 37247625,
+            "explain_ns": 3779375,
+            "query_peak_bytes": 5647879,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 9779958,
+            "elapsed_min_ns": 9619959,
+            "elapsed_max_ns": 9906959,
+            "plan_median_ns": 36167,
+            "first_query_ns": 10671125,
+            "setup_ns": 37283792,
+            "explain_ns": 3724750,
+            "query_peak_bytes": 5647879,
+            "output_rows": 60000
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 9283083,
+        "plan_median_ns": 34166,
+        "query_peak_bytes": 5647879,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "optimizer statistics cache hit: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "DistinctExec",
+            "peak_bytes": 5500050,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 1620000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 9700625,
+            "elapsed_min_ns": 9606334,
+            "elapsed_max_ns": 10301208,
+            "plan_median_ns": 34250,
+            "first_query_ns": 10418750,
+            "setup_ns": 37975917,
+            "explain_ns": 3836417,
+            "query_peak_bytes": 5647879,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 9283083,
+            "elapsed_min_ns": 9222084,
+            "elapsed_max_ns": 9818292,
+            "plan_median_ns": 32000,
+            "first_query_ns": 10339000,
+            "setup_ns": 36818750,
+            "explain_ns": 3959291,
+            "query_peak_bytes": 5647879,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 9239417,
+            "elapsed_min_ns": 9153000,
+            "elapsed_max_ns": 9535833,
+            "plan_median_ns": 34166,
+            "first_query_ns": 10395541,
+            "setup_ns": 36733083,
+            "explain_ns": 3803417,
+            "query_peak_bytes": 5647879,
+            "output_rows": 60000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "computed",
+      "rows": 10000,
+      "cache": "cold",
+      "elapsed_change_percent": 0.8759540253715725,
+      "baseline": {
+        "elapsed_median_ns": 9646625,
+        "plan_median_ns": 38500,
+        "query_peak_bytes": 5647879,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "DistinctExec",
+            "peak_bytes": 5500050,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 1620000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 9646625,
+            "elapsed_min_ns": 9411708,
+            "elapsed_max_ns": 10350917,
+            "plan_median_ns": 38500,
+            "first_query_ns": 10689458,
+            "setup_ns": 38191750,
+            "explain_ns": 3673167,
+            "query_peak_bytes": 5647879,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 9963083,
+            "elapsed_min_ns": 9942458,
+            "elapsed_max_ns": 10221000,
+            "plan_median_ns": 43541,
+            "first_query_ns": 11432083,
+            "setup_ns": 38547709,
+            "explain_ns": 4484167,
+            "query_peak_bytes": 5647879,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 9459292,
+            "elapsed_min_ns": 9366000,
+            "elapsed_max_ns": 9971292,
+            "plan_median_ns": 31583,
+            "first_query_ns": 10589458,
+            "setup_ns": 37713625,
+            "explain_ns": 3762292,
+            "query_peak_bytes": 5647879,
+            "output_rows": 60000
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 9731125,
+        "plan_median_ns": 41916,
+        "query_peak_bytes": 5647879,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=7 graph_commit_epoch=7 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=7 statistics_generation=7 graph_commit_epoch=7",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "DistinctExec",
+            "peak_bytes": 5500050,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 1620000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 9731125,
+            "elapsed_min_ns": 9520125,
+            "elapsed_max_ns": 10195458,
+            "plan_median_ns": 41916,
+            "first_query_ns": 10611833,
+            "setup_ns": 38263125,
+            "explain_ns": 3842375,
+            "query_peak_bytes": 5647879,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 10228666,
+            "elapsed_min_ns": 10124166,
+            "elapsed_max_ns": 10469042,
+            "plan_median_ns": 42792,
+            "first_query_ns": 11090709,
+            "setup_ns": 38518125,
+            "explain_ns": 4435166,
+            "query_peak_bytes": 5647879,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 9305583,
+            "elapsed_min_ns": 9194666,
+            "elapsed_max_ns": 9431084,
+            "plan_median_ns": 34709,
+            "first_query_ns": 10332250,
+            "setup_ns": 37463167,
+            "explain_ns": 3710209,
+            "query_peak_bytes": 5647879,
+            "output_rows": 60000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "schema",
+      "rows": 128,
+      "cache": "warm",
+      "elapsed_change_percent": -13.39524387349832,
+      "baseline": {
+        "elapsed_median_ns": 223333,
+        "plan_median_ns": 117042,
+        "query_peak_bytes": 82994,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "optimizer statistics cache hit: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=583 graph_commit_epoch=583 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "DistinctExec",
+            "peak_bytes": 70450,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 20736,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 223333,
+            "elapsed_min_ns": 219583,
+            "elapsed_max_ns": 232375,
+            "plan_median_ns": 117542,
+            "first_query_ns": 294875,
+            "setup_ns": 38300625,
+            "explain_ns": 354084,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 224208,
+            "elapsed_min_ns": 216000,
+            "elapsed_max_ns": 242708,
+            "plan_median_ns": 117042,
+            "first_query_ns": 300500,
+            "setup_ns": 38189083,
+            "explain_ns": 345667,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 217583,
+            "elapsed_min_ns": 212875,
+            "elapsed_max_ns": 240833,
+            "plan_median_ns": 115542,
+            "first_query_ns": 319208,
+            "setup_ns": 38646667,
+            "explain_ns": 342125,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 193417,
+        "plan_median_ns": 121667,
+        "query_peak_bytes": 41472,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "apply transformation:proof_redundant_distinct: projected tuple contains a proved key or at most one row",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=516",
+          "optimizer statistics cache hit: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=583 graph_commit_epoch=583 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 20736,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 194084,
+            "elapsed_min_ns": 190084,
+            "elapsed_max_ns": 198542,
+            "plan_median_ns": 122291,
+            "first_query_ns": 254209,
+            "setup_ns": 38670084,
+            "explain_ns": 378458,
+            "query_peak_bytes": 41472,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 189250,
+            "elapsed_min_ns": 186292,
+            "elapsed_max_ns": 199625,
+            "plan_median_ns": 119500,
+            "first_query_ns": 251083,
+            "setup_ns": 37822125,
+            "explain_ns": 372208,
+            "query_peak_bytes": 41472,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 193417,
+            "elapsed_min_ns": 190459,
+            "elapsed_max_ns": 197708,
+            "plan_median_ns": 121667,
+            "first_query_ns": 261416,
+            "setup_ns": 38417917,
+            "explain_ns": 405666,
+            "query_peak_bytes": 41472,
+            "output_rows": 768
+          }
+        ]
+      }
+    },
+    {
+      "kind": "schema",
+      "rows": 128,
+      "cache": "cold",
+      "elapsed_change_percent": -17.640455840455836,
+      "baseline": {
+        "elapsed_median_ns": 175500,
+        "plan_median_ns": 74084,
+        "query_peak_bytes": 82994,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=644",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=583 graph_commit_epoch=583 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "DistinctExec",
+            "peak_bytes": 70450,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 20736,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 183375,
+            "elapsed_min_ns": 177834,
+            "elapsed_max_ns": 198000,
+            "plan_median_ns": 75416,
+            "first_query_ns": 272667,
+            "setup_ns": 38324167,
+            "explain_ns": 210708,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 175500,
+            "elapsed_min_ns": 173000,
+            "elapsed_max_ns": 186958,
+            "plan_median_ns": 73125,
+            "first_query_ns": 259792,
+            "setup_ns": 37635250,
+            "explain_ns": 241958,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 173625,
+            "elapsed_min_ns": 171125,
+            "elapsed_max_ns": 181000,
+            "plan_median_ns": 74084,
+            "first_query_ns": 249250,
+            "setup_ns": 37362125,
+            "explain_ns": 204458,
+            "query_peak_bytes": 82994,
+            "output_rows": 768
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 144541,
+        "plan_median_ns": 74084,
+        "query_peak_bytes": 41472,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "apply transformation:proof_redundant_distinct: projected tuple contains a proved key or at most one row",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=128 cost=516",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=583 graph_commit_epoch=583 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 128,
+            "operator": "SortExec",
+            "peak_bytes": 20736,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 148750,
+            "elapsed_min_ns": 147459,
+            "elapsed_max_ns": 157000,
+            "plan_median_ns": 75875,
+            "first_query_ns": 213458,
+            "setup_ns": 38735167,
+            "explain_ns": 229959,
+            "query_peak_bytes": 41472,
+            "output_rows": 768
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 144458,
+            "elapsed_min_ns": 141083,
+            "elapsed_max_ns": 147125,
+            "plan_median_ns": 74084,
+            "first_query_ns": 204666,
+            "setup_ns": 37840750,
+            "explain_ns": 224417,
+            "query_peak_bytes": 41472,
+            "output_rows": 768
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 144541,
+            "elapsed_min_ns": 142459,
+            "elapsed_max_ns": 153834,
+            "plan_median_ns": 73833,
+            "first_query_ns": 217167,
+            "setup_ns": 37836458,
+            "explain_ns": 236917,
+            "query_peak_bytes": 41472,
+            "output_rows": 768
+          }
+        ]
+      }
+    },
+    {
+      "kind": "schema",
+      "rows": 10000,
+      "cache": "warm",
+      "elapsed_change_percent": -37.13314586301134,
+      "baseline": {
+        "elapsed_median_ns": 7074542,
+        "plan_median_ns": 133459,
+        "query_peak_bytes": 5647410,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "optimizer statistics cache hit: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=583 graph_commit_epoch=583 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "DistinctExec",
+            "peak_bytes": 5500050,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 1620000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 7074542,
+            "elapsed_min_ns": 7013416,
+            "elapsed_max_ns": 7157709,
+            "plan_median_ns": 133459,
+            "first_query_ns": 7754583,
+            "setup_ns": 247749667,
+            "explain_ns": 4177292,
+            "query_peak_bytes": 5647410,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 6728708,
+            "elapsed_min_ns": 6715875,
+            "elapsed_max_ns": 6867625,
+            "plan_median_ns": 133291,
+            "first_query_ns": 7661584,
+            "setup_ns": 245444917,
+            "explain_ns": 4254834,
+            "query_peak_bytes": 5647410,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 7405667,
+            "elapsed_min_ns": 7237917,
+            "elapsed_max_ns": 7645417,
+            "plan_median_ns": 135125,
+            "first_query_ns": 8761208,
+            "setup_ns": 247476667,
+            "explain_ns": 4421916,
+            "query_peak_bytes": 5647410,
+            "output_rows": 60000
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 4447542,
+        "plan_median_ns": 131166,
+        "query_peak_bytes": 2284064,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "apply transformation:proof_redundant_distinct: projected tuple contains a proved key or at most one row",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=40004",
+          "optimizer statistics cache hit: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=583 graph_commit_epoch=583 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583",
+          "parameterized plan template: slots=0 exact_variants=0",
+          "plan cache miss: optimized parameterized physical plan template"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 1620000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 4704584,
+            "elapsed_min_ns": 4497958,
+            "elapsed_max_ns": 5068625,
+            "plan_median_ns": 133250,
+            "first_query_ns": 5206667,
+            "setup_ns": 235600292,
+            "explain_ns": 4183541,
+            "query_peak_bytes": 2284064,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 4447542,
+            "elapsed_min_ns": 4423375,
+            "elapsed_max_ns": 4800875,
+            "plan_median_ns": 130042,
+            "first_query_ns": 6335083,
+            "setup_ns": 234790500,
+            "explain_ns": 4171041,
+            "query_peak_bytes": 2284064,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 4409541,
+            "elapsed_min_ns": 4345417,
+            "elapsed_max_ns": 4590875,
+            "plan_median_ns": 131166,
+            "first_query_ns": 5086583,
+            "setup_ns": 230148125,
+            "explain_ns": 4160583,
+            "query_peak_bytes": 2284064,
+            "output_rows": 60000
+          }
+        ]
+      }
+    },
+    {
+      "kind": "schema",
+      "rows": 10000,
+      "cache": "cold",
+      "elapsed_change_percent": -34.969631879120065,
+      "baseline": {
+        "elapsed_median_ns": 6750500,
+        "plan_median_ns": 86125,
+        "query_peak_bytes": 5647410,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  DistinctExec\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=50004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=583 graph_commit_epoch=583 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "DistinctExec",
+            "peak_bytes": 5500050,
+            "spill_bytes": 0
+          },
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 1620000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 6981417,
+            "elapsed_min_ns": 6852833,
+            "elapsed_max_ns": 7449375,
+            "plan_median_ns": 92083,
+            "first_query_ns": 7478291,
+            "setup_ns": 248115333,
+            "explain_ns": 4118292,
+            "query_peak_bytes": 5647410,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 6662000,
+            "elapsed_min_ns": 6620125,
+            "elapsed_max_ns": 6926542,
+            "plan_median_ns": 84667,
+            "first_query_ns": 7600500,
+            "setup_ns": 251269000,
+            "explain_ns": 4045208,
+            "query_peak_bytes": 5647410,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 6750500,
+            "elapsed_min_ns": 6682125,
+            "elapsed_max_ns": 6825542,
+            "plan_median_ns": 86125,
+            "first_query_ns": 7485042,
+            "setup_ns": 246235541,
+            "explain_ns": 4188333,
+            "query_peak_bytes": 5647410,
+            "output_rows": 60000
+          }
+        ]
+      },
+      "candidate": {
+        "elapsed_median_ns": 4389875,
+        "plan_median_ns": 87583,
+        "query_peak_bytes": 2284064,
+        "selected_plan": "SortExec keys=[SortItem { key: Column(\"id\"), direction: Asc }]\n  NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"external\"] predicate=None output=projected_values columns=[id]",
+        "decisions": [
+          "apply transformation:proof_redundant_distinct: projected tuple contains a proved key or at most one row",
+          "selected implementation:node_projection_scan: access=label_scan decode 1 required properties for n:Item",
+          "selected physical plan cost: estimated_rows=10000 cost=40004",
+          "selected memo search: explicit optimizer search directive",
+          "optimizer statistics cache refresh: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583 publication_changed=true",
+          "optimizer advanced statistics freshness: status=fresh statistics_epoch=583 graph_commit_epoch=583 commit_lag=0 usable=true",
+          "optimizer catalog cache refresh: statistics_epoch=583 statistics_generation=583 graph_commit_epoch=583",
+          "plan cache bypass: optimizer_directive"
+        ],
+        "blocking": [
+          {
+            "input_rows": 10000,
+            "operator": "SortExec",
+            "peak_bytes": 1620000,
+            "spill_bytes": 0
+          }
+        ],
+        "rounds": [
+          {
+            "round": 0,
+            "elapsed_median_ns": 4389875,
+            "elapsed_min_ns": 4337666,
+            "elapsed_max_ns": 4464666,
+            "plan_median_ns": 87084,
+            "first_query_ns": 5013292,
+            "setup_ns": 229483625,
+            "explain_ns": 4041792,
+            "query_peak_bytes": 2284064,
+            "output_rows": 60000
+          },
+          {
+            "round": 1,
+            "elapsed_median_ns": 4488000,
+            "elapsed_min_ns": 4377083,
+            "elapsed_max_ns": 4620250,
+            "plan_median_ns": 89709,
+            "first_query_ns": 5028458,
+            "setup_ns": 227750375,
+            "explain_ns": 4063750,
+            "query_peak_bytes": 2284064,
+            "output_rows": 60000
+          },
+          {
+            "round": 2,
+            "elapsed_median_ns": 4382708,
+            "elapsed_min_ns": 4303959,
+            "elapsed_max_ns": 4568750,
+            "plan_median_ns": 87583,
+            "first_query_ns": 5212791,
+            "setup_ns": 231816125,
+            "explain_ns": 4045708,
+            "query_peak_bytes": 2284064,
+            "output_rows": 60000
+          }
+        ]
+      }
+    }
+  ]
+}

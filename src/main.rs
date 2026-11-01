@@ -2884,6 +2884,13 @@ fn value_json(value: &Value) -> serde_json::Value {
         Value::Vector(value) => serde_json::json!({
             "$vector": value.as_ref().coordinates().collect::<Vec<_>>()
         }),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => serde_json::json!({
+            hawdb_core::temporal::json_tag(value).expect("temporal value"): value.to_string()
+        }),
         Value::List(values) => {
             serde_json::Value::Array(values.iter().map(value_json).collect::<Vec<_>>())
         }
@@ -2931,6 +2938,14 @@ fn value_from_json(value: &serde_json::Value) -> Result<Value> {
                     .map_err(|error| {
                         HawDBError::Semantic(format!("invalid $uuid value: {error}"))
                     });
+            }
+            if values.len() == 1
+                && let Some((tag, serde_json::Value::String(encoded))) = values.iter().next()
+                && let Some(decoded) = hawdb_core::temporal::from_json_tag(tag, encoded)
+            {
+                return decoded.map_err(|error| {
+                    HawDBError::Semantic(format!("invalid {tag} value: {error}"))
+                });
             }
             if values.len() == 1
                 && let Some(encoded) = values.get("$vector")
@@ -4316,6 +4331,10 @@ mod tests {
 
         let parameters = BTreeMap::from([("id".to_string(), Value::Int(42))]);
         let plan_cache_stats = PlanCacheStats {
+            max_bytes: None,
+            max_entry_bytes: None,
+            charged_bytes: None,
+            rejected_admissions: 0,
             max_entries: Some(128),
             entries: 1,
             hits: 2,

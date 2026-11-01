@@ -283,3 +283,6 @@ impl VectorIndexDescriptor {
 fn invalid(reason: &str) -> HawDBError {
     HawDBError::Semantic(format!("invalid vector index: {reason}"))
 }
+
+// Retained query ownership: VectorIndexQueryMode.
+crate::impl_retained_heap_for_copy!(VectorIndexQueryMode);

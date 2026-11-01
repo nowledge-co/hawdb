@@ -40,6 +40,14 @@ pub struct DatabaseConfig {
     pub max_read_result_payload_bytes: Option<usize>,
     pub execution_memory: executor::ExecutionMemoryConfig,
     pub mutation_limits: hawdb_storage::mutation::MutationLimits,
+    /// Directory Cypher `LOAD CSV` may read from. `None` (the default)
+    /// refuses every `LOAD CSV` statement. When set, each source must resolve,
+    /// after `..` components and symbolic links, to a regular file inside
+    /// this directory; relative paths are resolved against it. Only local
+    /// files are supported.
+    pub csv_import_root: Option<PathBuf>,
+    /// Per-file byte, record-size and field-count limits for `LOAD CSV`.
+    pub csv_import_limits: executor::CsvImportLimits,
     /// Maximum memo groups available to graph and relational optimizer search.
     pub max_optimizer_groups: Option<usize>,
     /// Maximum memo expressions available to relational join enumeration.
@@ -99,6 +107,17 @@ pub struct DatabaseConfig {
     /// admission. In-flight plans, physical-plan caches, allocator rounding and
     /// fixed cache metadata are outside this retention bound.
     pub max_parameter_binding_cache_bytes: usize,
+    /// Requested-heap retention limit for each graph physical-plan cache.
+    /// Includes keys, IR, traces, shared payloads and spare table capacity.
+    /// Defaults to 16 MiB; zero disables admission. Allocator rounding,
+    /// in-flight caller-owned plans and relational SQL templates are separate.
+    /// Applied independently to live cache instances, including private read
+    /// and transaction caches: total database/process retention grows with
+    /// their number and is not charged to `query_memory_bytes`.
+    pub max_physical_plan_cache_bytes: usize,
+    /// Maximum requested bytes for one retained physical-plan entry, including
+    /// its key/value layout. Defaults to 8 MiB; zero disables admission.
+    pub max_physical_plan_cache_entry_bytes: usize,
     /// Commit-epoch lag tolerated before the inline query path recomputes
     /// optimizer statistics. `None` or `Some(0)` refreshes on every committed
     /// data change (freshest plans). Larger values amortize statistics
@@ -147,6 +166,13 @@ impl DatabaseConfig {
         self.max_read_result_rows.filter(|rows| *rows != 0)
     }
 
+    /// The `LOAD CSV` file policy, or `None` when CSV import is disabled.
+    pub(super) fn csv_import_policy(&self) -> Option<executor::CsvImportPolicy> {
+        self.csv_import_root
+            .as_ref()
+            .map(|root| executor::CsvImportPolicy::new(root.clone(), self.csv_import_limits))
+    }
+
     pub(super) fn wal_replay_config(&self) -> WalReplayConfig {
         WalReplayConfig {
             max_open_files: self.max_open_files,
@@ -182,6 +208,8 @@ impl Default for DatabaseConfig {
             max_read_result_payload_bytes: Some(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES),
             execution_memory: executor::ExecutionMemoryConfig::default(),
             mutation_limits: hawdb_storage::mutation::MutationLimits::default(),
+            csv_import_root: None,
+            csv_import_limits: executor::CsvImportLimits::default(),
             max_optimizer_groups: None,
             max_relational_join_expressions: None,
             recovery_mode: RecoveryMode::default(),
@@ -230,6 +258,8 @@ impl Default for DatabaseConfig {
             search_projection_relational_change_limits: Default::default(),
             max_plan_cache_entries: Some(DEFAULT_PLAN_CACHE_MAX_ENTRIES),
             max_parameter_binding_cache_bytes: 16 * 1024 * 1024,
+            max_physical_plan_cache_bytes: 16 * 1024 * 1024,
+            max_physical_plan_cache_entry_bytes: 8 * 1024 * 1024,
             optimizer_statistics_inline_commit_lag: None,
             slow_query_log_capacity: system_sql::DEFAULT_SLOW_QUERY_LOG_CAPACITY,
             slow_query_log_threshold_micros: system_sql::DEFAULT_SLOW_QUERY_LOG_THRESHOLD_MICROS,

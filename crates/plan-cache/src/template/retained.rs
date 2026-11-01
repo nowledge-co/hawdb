@@ -50,16 +50,7 @@ fn arc<T>(value: &T, heap: impl Fn(&T) -> Option<usize>) -> Option<usize> {
 }
 
 fn value_bytes(value: &Value) -> Option<usize> {
-    match value {
-        Value::String(value) => Some(value.capacity()),
-        Value::Binary(value) => Some(value.capacity()),
-        Value::Vector(value) => Some(value.retained_capacity()),
-        Value::List(values) => vector(values, value_bytes),
-        Value::Map(values) => map(values, |key, value| {
-            key.capacity().checked_add(value_bytes(value)?)
-        }),
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Uuid(_) => Some(0),
-    }
+    hawdb_core::RetainedHeapBytes::retained_heap_bytes(value)
 }
 
 fn shape_bytes(shape: &ParameterValueShape) -> Option<usize> {
@@ -75,7 +66,12 @@ fn shape_bytes(shape: &ParameterValueShape) -> Option<usize> {
         | ParameterValueShape::String
         | ParameterValueShape::Binary
         | ParameterValueShape::Vector(_)
-        | ParameterValueShape::Uuid => Some(0),
+        | ParameterValueShape::Uuid
+        | ParameterValueShape::Date
+        | ParameterValueShape::LocalTime
+        | ParameterValueShape::LocalDateTime
+        | ParameterValueShape::DateTime
+        | ParameterValueShape::Duration => Some(0),
     }
 }
 
@@ -112,10 +108,22 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
         | E::ColumnProperty {
             column: variable,
             property,
+        }
+        | E::Path {
+            function: PathFunction::NodeProperties(property),
+            column: variable,
         } => variable.capacity().checked_add(property.capacity()),
+        E::Path {
+            function: PathFunction::Length | PathFunction::Nodes | PathFunction::Relationships,
+            column,
+        } => Some(column.capacity()),
         E::Literal(value) => value_bytes(value),
         E::Coalesce(values) => vector(values, expression_bytes),
         E::Lower(value)
+        | E::Conversion {
+            function: _,
+            argument: value,
+        }
         | E::Not(value)
         | E::IsNull {
             expression: value,
@@ -230,6 +238,7 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
             value_bytes(non_empty),
             value_bytes(null_or_empty),
         ]),
+        E::List(elements) => vector(elements, expression_bytes),
         E::ListFunction {
             function: _,
             arguments,
@@ -263,6 +272,17 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
             end.as_ref()
                 .map_or(Some(0), |value| boxed(value.as_ref(), expression_bytes)),
         ]),
+        E::TemporalFunction {
+            function: _,
+            arguments,
+        } => vector(arguments, expression_bytes),
+        E::PropertyAccess { expression, key } => sum([
+            boxed(expression.as_ref(), expression_bytes),
+            Some(key.capacity()),
+        ]),
+        E::MapLiteral(entries) => vector(entries, |(key, value)| {
+            key.capacity().checked_add(expression_bytes(value)?)
+        }),
         // Opaque/specialized expressions are deliberately not admitted yet.
         E::CaseEntitySearchRank(_) | E::CaseColumnSearchRank(_) => None,
     }

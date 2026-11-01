@@ -250,6 +250,15 @@ impl FileSegmentRangeReader {
         self
     }
 
+    /// The shared cache and identity used for this reader's segment reads.
+    pub(crate) fn cache_identity(
+        &self,
+    ) -> Option<(&Arc<SegmentCache>, StoreId, ManifestGeneration)> {
+        self.cache
+            .as_ref()
+            .map(|cache| (cache, self.store_id, self.manifest_generation))
+    }
+
     pub fn register(&mut self, artifact_id: u64, path: impl Into<PathBuf>) -> Option<PathBuf> {
         let path = path.into();
         // Preserve a captured snapshot identity, but retry transient failures

@@ -26,7 +26,7 @@ use hawdb_core::{LabelId, RelTypeId};
 use hawdb_plan_cypher::NodeProjectionAccess;
 use hawdb_storage::store::{GraphScanControl, GraphStore};
 use hawdb_storage::{
-    adjacency::AdjacencyDirection,
+    adjacency::{AdjacencyDirection, OrderedAdjacencyEntry},
     mutation::{GraphMutation, MutationLimits, MutationSummary, NodeSetAssignment, PropertyFilter},
     NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord,
 };
@@ -563,6 +563,23 @@ impl GraphExecutionRead for GraphStore {
             memory.budget_bytes,
             admit,
             |relationship| consumer(relationship).map(to_store_control),
+        )
+        .map(to_execution_control)
+    }
+
+    fn visit_ordered_adjacency_entries_with_allocation(
+        &self,
+        adjacency: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(OrderedAdjacencyEntry) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_ordered_adjacency_entries_with_allocation(
+            self,
+            adjacency,
+            memory.budget_bytes,
+            admit,
+            |entry| consumer(entry).map(to_store_control),
         )
         .map(to_execution_control)
     }

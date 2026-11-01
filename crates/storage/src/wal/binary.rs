@@ -159,6 +159,31 @@ const VALUE_FIELD_MAP_ENTRY: u32 = 7;
 const VALUE_FIELD_BINARY: u32 = 8;
 const VALUE_FIELD_UUID: u32 = 9;
 const VALUE_FIELD_VECTOR: u32 = 10;
+// Temporal values carry the fixed-width `hawdb_core::temporal::codec` payload.
+// Binaries without these fields skip them and then reject the value message
+// as empty, so older readers fail closed.
+const VALUE_FIELD_DATE: u32 = 11;
+const VALUE_FIELD_LOCAL_TIME: u32 = 12;
+const VALUE_FIELD_LOCAL_DATETIME: u32 = 13;
+const VALUE_FIELD_DATETIME: u32 = 14;
+const VALUE_FIELD_DURATION: u32 = 15;
+
+fn temporal_value_field(kind: hawdb_core::temporal::codec::TemporalValueKind) -> u32 {
+    use hawdb_core::temporal::codec::TemporalValueKind as Kind;
+    match kind {
+        Kind::Date => VALUE_FIELD_DATE,
+        Kind::LocalTime => VALUE_FIELD_LOCAL_TIME,
+        Kind::LocalDateTime => VALUE_FIELD_LOCAL_DATETIME,
+        Kind::DateTime => VALUE_FIELD_DATETIME,
+        Kind::Duration => VALUE_FIELD_DURATION,
+    }
+}
+
+fn temporal_value_kind(field: u32) -> Option<hawdb_core::temporal::codec::TemporalValueKind> {
+    hawdb_core::temporal::codec::TemporalValueKind::ALL
+        .into_iter()
+        .find(|kind| temporal_value_field(*kind) == field)
+}
 
 const ENTRY_FIELD_KEY: u32 = 1;
 const ENTRY_FIELD_VALUE: u32 = 2;
@@ -332,6 +357,16 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
         Value::Binary(value) => encode_len_field(VALUE_FIELD_BINARY, value, out),
         Value::Vector(value) => encode_len_field(VALUE_FIELD_VECTOR, value.encoded(), out),
         Value::Uuid(value) => encode_len_field(VALUE_FIELD_UUID, value.as_bytes(), out),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            let mut payload = Vec::with_capacity(28);
+            let kind = hawdb_core::temporal::codec::encode_payload(value, &mut payload)
+                .expect("temporal values have a payload");
+            encode_len_field(temporal_value_field(kind), &payload, out);
+        }
         Value::List(values) => {
             for value in values {
                 let mut body = Vec::new();
@@ -874,6 +909,94 @@ mod tests {
                 matches!(entry.op, WalOp::SetNodeProperty { value: actual, .. } if actual == value)
             );
         }
+    }
+
+    fn temporal_values() -> Vec<Value> {
+        use hawdb_core::temporal;
+        vec![
+            Value::Date(temporal::parse_date("2026-10-30").unwrap()),
+            Value::Date(temporal::NaiveDate::MIN),
+            Value::LocalTime(temporal::parse_local_time("23:59:59.999999999").unwrap()),
+            Value::LocalDateTime(temporal::parse_local_datetime("1969-12-31T23:59:59.5").unwrap()),
+            Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00+02:00").unwrap()),
+            Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00-00:30:15").unwrap()),
+            Value::duration(temporal::parse_duration("-P1Y2M3DT4H5M6.000000007S").unwrap()),
+        ]
+    }
+
+    #[test]
+    fn temporal_value_wire_fixtures_are_append_only_fields() {
+        // Field 11 (date, LEN 4 = 0x5a 0x04), 14 (zoned datetime, LEN 16) and
+        // 15 (duration, LEN 28) carry the shared fixed-width payload.
+        let date = Value::Date(hawdb_core::temporal::parse_date("2026-10-30").unwrap());
+        let mut encoded = Vec::new();
+        encode_value_message(&date, &mut encoded);
+        assert_eq!(encoded, vec![0x5a, 0x04, 0x4f, 0x4a, 0x0b, 0x00]);
+        let zoned = Value::DateTime(
+            hawdb_core::temporal::parse_datetime("2026-10-30T12:00:00+02:00").unwrap(),
+        );
+        let mut encoded = Vec::new();
+        encode_value_message(&zoned, &mut encoded);
+        assert_eq!(&encoded[..2], &[0x72, 0x10]);
+        let duration =
+            Value::duration(hawdb_core::temporal::parse_duration("P1M2DT-0.5S").unwrap());
+        let mut encoded = Vec::new();
+        encode_value_message(&duration, &mut encoded);
+        assert_eq!(&encoded[..2], &[0x7a, 0x1c]);
+        for field in [11u8, 12, 13, 14, 15] {
+            assert!(temporal_value_kind(u32::from(field)).is_some());
+        }
+        assert!(temporal_value_kind(16).is_none());
+
+        let values = temporal_values();
+        for value in values.iter().cloned().chain([
+            Value::List(values.clone()),
+            Value::Map(BTreeMap::from([(
+                "nested".to_string(),
+                Value::List(values.clone()),
+            )])),
+        ]) {
+            let mut encoded = Vec::new();
+            encode_value_message(&value, &mut encoded);
+            assert_eq!(decode_value_message(&encoded, 1).unwrap(), value);
+            let record = encoded_set_node_property_record(&encoded);
+            let BinaryWalRecordDecode::Entry { entry, .. } =
+                decode_binary_wal_record(&record).unwrap()
+            else {
+                panic!("temporal value record was rejected: {value:?}");
+            };
+            assert!(
+                matches!(entry.op, WalOp::SetNodeProperty { value: actual, .. } if actual == value)
+            );
+        }
+    }
+
+    #[test]
+    fn temporal_value_records_fail_closed_on_bad_payloads_and_unknown_fields() {
+        // Wrong payload lengths and out-of-range contents are corruption.
+        for value in [
+            vec![0x5a, 0x03, 0x00, 0x00, 0x00],
+            vec![0x5a, 0x04, 0xff, 0xff, 0xff, 0x7f],
+            vec![0x62, 0x08, 0x00, 0x40, 0x07, 0x2a, 0x95, 0x4e, 0x00, 0x00],
+            vec![0x7a, 0x00],
+        ] {
+            let record = encoded_set_node_property_record(&value);
+            assert!(
+                matches!(
+                    decode_binary_wal_record(&record).unwrap(),
+                    BinaryWalRecordDecode::Corrupt(reason) if reason.contains("temporal payload")
+                ),
+                "{value:02x?}"
+            );
+        }
+        // A binary that predates a value field skips it and then rejects the
+        // empty value message: unknown future kinds fail closed, as these
+        // temporal fields do in binaries older than them.
+        let record = encoded_set_node_property_record(&[0x82, 0x01, 0x04, 0, 0, 0, 0]);
+        assert!(matches!(
+            decode_binary_wal_record(&record).unwrap(),
+            BinaryWalRecordDecode::Corrupt(reason) if reason.contains("WAL value message is empty")
+        ));
     }
 
     #[test]

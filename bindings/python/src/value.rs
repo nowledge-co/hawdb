@@ -31,7 +31,12 @@ const MAX_NESTING: usize = 64;
 ///
 /// `Uuid` values arrive as canonical strings; callers that need `uuid.UUID`
 /// can wrap the string on the Python side without paying the import cost for
-/// every result set.
+/// every result set. Temporal values arrive as single-key tagged dicts with
+/// ISO 8601 text, `{"$date": "2026-10-30"}`, `{"$localtime": ...}`,
+/// `{"$localdatetime": ...}`, `{"$datetime": "...+02:00"}` and
+/// `{"$duration": "P1M2DT3.5S"}`: Python's `datetime` types hold only
+/// microseconds and `timedelta` has no calendar months, so a native mapping
+/// would lose nanoseconds and month/day structure.
 pub fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
     match value {
         Value::Null => Ok(py.None()),
@@ -44,6 +49,18 @@ pub fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
         Value::Vector(item) => {
             let dict = PyDict::new(py);
             dict.set_item("$vector", item.as_ref().coordinates().collect::<Vec<_>>())?;
+            Ok(dict.unbind().into())
+        }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            let dict = PyDict::new(py);
+            dict.set_item(
+                hawdb::temporal::json_tag(value).expect("temporal value"),
+                value.to_string(),
+            )?;
             Ok(dict.unbind().into())
         }
         Value::List(items) => {
@@ -71,8 +88,13 @@ pub fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
 /// `float16`/`float32` scalars, which widen to `f64` exactly, become floats:
 /// `__float__` alone may round, so `Decimal`, `Fraction`, or NumPy
 /// `longdouble` raise `TypeError` instead of being stored inexactly.
-/// `uuid.UUID` is accepted via its string form; everything outside the listed
-/// types raises `TypeError` rather than guessing. Lists, tuples, and dicts
+/// `uuid.UUID` is accepted via its string form. Temporal values are accepted
+/// as the tagged dicts results use, or as `datetime.date` (date),
+/// `datetime.time` without a zone (local time), naive `datetime.datetime`
+/// (local datetime), aware `datetime.datetime` (zoned datetime with its fixed
+/// UTC offset) and `datetime.timedelta` (duration of days and exact time);
+/// everything outside the listed types raises `TypeError` rather than
+/// guessing. Lists, tuples, and dicts
 /// nested deeper than [`MAX_NESTING`] raise `ValueError`. These errors start
 /// with `path`, the value's place in the parameters, such as `$rows[3].price`.
 /// A `str` that is not valid UTF-8 raises Python's `UnicodeEncodeError`.
@@ -104,6 +126,9 @@ fn py_to_value(object: &Bound<'_, PyAny>, path: &ParamPath<'_>, depth: usize) ->
             .map(Value::Uuid)
             .map_err(|_| PyTypeError::new_err(format!("{path}: invalid uuid.UUID value: {text}")));
     }
+    if let Some(value) = py_to_temporal(object, path)? {
+        return Ok(value);
+    }
     if let Ok(text) = object.cast::<PyString>() {
         return Ok(Value::String(text.to_str()?.to_owned()));
     }
@@ -126,6 +151,21 @@ fn py_to_value(object: &Bound<'_, PyAny>, path: &ParamPath<'_>, depth: usize) ->
             .map(Value::List);
     }
     if let Ok(dict) = object.cast::<PyDict>() {
+        if dict.len() == 1
+            && let Some((tag, text)) = dict.iter().next()
+            && let Ok(tag) = tag.cast::<PyString>()
+            && hawdb::temporal::JSON_TAGS.contains(&tag.to_str()?)
+        {
+            let tag = tag.to_str()?;
+            let Ok(text) = text.cast::<PyString>() else {
+                return Err(PyTypeError::new_err(format!(
+                    "{path}: {tag} must be an ISO 8601 string"
+                )));
+            };
+            return hawdb::temporal::from_json_tag(tag, text.to_str()?)
+                .expect("checked temporal tag")
+                .map_err(|error| PyValueError::new_err(format!("{path}: {error}")));
+        }
         if dict.len() == 1
             && let Some(coordinates) = dict.get_item("$vector")?
         {
@@ -157,6 +197,82 @@ fn py_to_value(object: &Bound<'_, PyAny>, path: &ParamPath<'_>, depth: usize) ->
         "{path}: unsupported parameter type: {}",
         object.get_type().name()?
     )))
+}
+
+/// Converts the standard library's `datetime` types (exact classes only).
+fn py_to_temporal(object: &Bound<'_, PyAny>, path: &ParamPath<'_>) -> PyResult<Option<Value>> {
+    use hawdb::temporal::{FixedOffset, NaiveDate, NaiveTime, TimeDelta};
+    let ty = object.get_type();
+    if !ty.module().is_ok_and(|module| module == "datetime") {
+        return Ok(None);
+    }
+    let name = ty.name()?;
+    let int = |field: &str| object.getattr(field)?.extract::<i64>();
+    let invalid = |kind: &str| PyValueError::new_err(format!("{path}: invalid {kind} value"));
+    let date = || -> PyResult<NaiveDate> {
+        NaiveDate::from_ymd_opt(
+            int("year")? as i32,
+            int("month")? as u32,
+            int("day")? as u32,
+        )
+        .ok_or_else(|| invalid("date"))
+    };
+    let time = || -> PyResult<NaiveTime> {
+        NaiveTime::from_hms_micro_opt(
+            int("hour")? as u32,
+            int("minute")? as u32,
+            int("second")? as u32,
+            int("microsecond")? as u32,
+        )
+        .ok_or_else(|| invalid("time"))
+    };
+    let offset = || -> PyResult<Option<FixedOffset>> {
+        let offset = object.call_method0("utcoffset")?;
+        if offset.is_none() {
+            return Ok(None);
+        }
+        let seconds = offset.getattr("days")?.extract::<i64>()? * 86_400
+            + offset.getattr("seconds")?.extract::<i64>()?;
+        if offset.getattr("microseconds")?.extract::<i64>()? != 0 {
+            return Err(invalid("time zone offset"));
+        }
+        i32::try_from(seconds)
+            .ok()
+            .and_then(FixedOffset::east_opt)
+            .map(Some)
+            .ok_or_else(|| invalid("time zone offset"))
+    };
+    Ok(Some(match name.to_str()? {
+        "date" => Value::Date(date()?),
+        "time" => {
+            if offset()?.is_some() {
+                return Err(PyTypeError::new_err(format!(
+                    "{path}: zoned datetime.time values are not supported; use a naive time"
+                )));
+            }
+            Value::LocalTime(time()?)
+        }
+        "datetime" => {
+            let local = date()?.and_time(time()?);
+            match offset()? {
+                None => Value::LocalDateTime(local),
+                Some(offset) => Value::DateTime(
+                    local
+                        .and_local_timezone(offset)
+                        .single()
+                        .ok_or_else(|| invalid("datetime"))?,
+                ),
+            }
+        }
+        "timedelta" => {
+            let time = TimeDelta::try_seconds(int("seconds")?)
+                .zip(Some(TimeDelta::microseconds(int("microseconds")?)))
+                .and_then(|(seconds, micros)| seconds.checked_add(&micros))
+                .ok_or_else(|| invalid("timedelta"))?;
+            Value::duration(hawdb::TemporalDuration::new(0, int("days")?, time))
+        }
+        _ => return Ok(None),
+    }))
 }
 
 /// Returns the depth for the items of a list, tuple, or dict at `depth`, or

@@ -18,6 +18,42 @@ use super::scan::stream_node_access_batches;
 use super::*;
 use hawdb_plan_cypher::NodeProjectionAccess;
 
+pub(super) fn stream_unwind_batches(
+    rows: &[Value],
+    variable: &str,
+    context: BatchReadContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let mut output = AccountedBindingBatch::with_ledger(
+        "UnwindExec",
+        context.memory.batch_rows.get(),
+        context.memory.batch_payload_bytes,
+        context.memory_ledger,
+    );
+    let empty = Binding::values(BTreeMap::new());
+    for (index, value) in rows.iter().enumerate() {
+        runtime_checkpoint(context.task_context)?;
+        if execution_limit.is_reached(index) {
+            break;
+        }
+        let bytes = crate::binding::binding_memory_bytes_with_values(
+            &empty,
+            std::iter::once((variable, value)),
+        );
+        if output.push_generated(
+            bytes,
+            || Binding::values(BTreeMap::from([(variable.to_owned(), value.clone())])),
+            emit,
+        )? == BatchControl::Stop
+            || (output.is_full() && output.emit(emit)? == BatchControl::Stop)
+        {
+            return Ok(BatchControl::Stop);
+        }
+    }
+    output.emit(emit)
+}
+
 fn admit_access_copy<'a>(
     context: BatchReadContext<'_>,
     properties: impl Iterator<Item = &'a str>,

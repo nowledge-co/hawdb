@@ -73,3 +73,12 @@ pub use stage::{
     StageRuleBatch, StageStats, StageTrace,
 };
 pub use trace::{OperatorCardinalityEstimate, OptimizerConfig, OptimizerTrace};
+
+pub use hawdb_cascades::qualification::{
+    InvalidOptimizerCostPerturbation, OptimizerCostPerturbation, OptimizerQualificationOptions,
+    OptionalOptimizerRule,
+};
+
+pub use hawdb_cascades::qualification::{
+    verify_optimizer_rule_assertions, OptimizerRuleAssertion, OptimizerRuleAssertionError,
+};

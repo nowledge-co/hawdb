@@ -75,6 +75,14 @@ pub(super) fn decode_value<D: ValueDecoder>(
                 })?;
                 value = Some(Value::Uuid(hawdb_core::Uuid::from_bytes(bytes)));
             }
+            (field, WIRE_TYPE_LEN) if temporal_value_kind(field).is_some() => {
+                let kind = temporal_value_kind(field).expect("checked temporal field");
+                let encoded = decode_len_body(bytes, &mut pos)?;
+                value = Some(
+                    hawdb_core::temporal::codec::decode_payload(kind, encoded)
+                        .map_err(|error| HawDBError::Storage(format!("WAL {error}")))?,
+                );
+            }
             (VALUE_FIELD_ELEMENT, WIRE_TYPE_LEN) => {
                 let body = decode_len_body(bytes, &mut pos)?;
                 let list = match value.take() {

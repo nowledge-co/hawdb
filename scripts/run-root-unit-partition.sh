@@ -44,7 +44,7 @@ while IFS= read -r entry; do
     *) continue ;;
   esac
   case "${case_name}" in
-    api::automatic_checkpoint::tests::headroom::*|api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen|api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints)
+    api::automatic_checkpoint::tests::headroom::*|api::automatic_checkpoint::tests::relational_live_overlay::*|api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen|api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints)
       case_owner=checkpoint_headroom ;;
     api::tests::graph_analytics::persistent_edges_stream_with_bounded_rss_in_an_isolated_process|api::tests::graph_analytics::rss_child)
       case_owner=analytics_rss ;;

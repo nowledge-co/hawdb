@@ -69,6 +69,38 @@ pub enum MemoryBudgetClass {
 }
 
 impl PhysicalProperties {
+    /// Requested owned heap. Keep the framework independent of value/core data.
+    #[doc(hidden)]
+    pub fn retained_heap_bytes(&self) -> Option<usize> {
+        let Self {
+            distribution,
+            ordering,
+            covering_fields,
+            scan_pruning,
+            vector_precision,
+            memory_budget,
+        } = self;
+        fn strings(values: &Vec<String>) -> Option<usize> {
+            values.iter().try_fold(
+                values
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<String>())?,
+                |bytes, value| bytes.checked_add(value.capacity()),
+            )
+        }
+        fn leaf<T: Copy>(_: &T) {}
+        leaf(scan_pruning);
+        leaf(vector_precision);
+        leaf(memory_budget);
+        let distribution = match distribution {
+            Distribution::Any | Distribution::Single => 0,
+            Distribution::Hash(keys) => strings(keys)?,
+        };
+        distribution
+            .checked_add(strings(ordering)?)?
+            .checked_add(strings(covering_fields)?)
+    }
+
     pub fn satisfies(&self, required: &RequiredProperties) -> bool {
         distribution_satisfies(&self.distribution, &required.distribution)
             && ordering_satisfies(&self.ordering, &required.ordering)

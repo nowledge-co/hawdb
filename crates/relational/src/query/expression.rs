@@ -555,15 +555,39 @@ pub(super) fn insert_output(output: &mut Row, name: String, value: Value) -> Res
 }
 
 pub(super) fn account_intermediate(total: &mut usize, rows: usize, limit: usize) -> Result<()> {
+    let used = *total;
     *total = total.checked_add(rows).ok_or_else(|| {
         HawDBError::Execution("relational intermediate row count overflow".to_string())
     })?;
     if *total > limit {
-        return Err(HawDBError::Execution(format!(
-            "relational SQL exceeds max_intermediate_rows {limit}"
-        )));
+        return Err(work_budget_exceeded(
+            "max_intermediate_rows",
+            used,
+            rows,
+            limit,
+        ));
     }
     Ok(())
+}
+
+pub(super) fn work_budget_exceeded(
+    option: &'static str,
+    used: usize,
+    requested: usize,
+    budget: usize,
+) -> HawDBError {
+    hawdb_core::ResourceBudgetError {
+        resource: hawdb_core::ResourceBudgetKind::WorkUnits,
+        scope: hawdb_core::ResourceBudgetScope::Query,
+        owner: "relational SQL".into(),
+        memory_class: None,
+        requested: requested as u64,
+        used: used as u64,
+        budget: budget as u64,
+        budget_option: option,
+        message: format!("relational SQL exceeds {option} {budget}"),
+    }
+    .into()
 }
 
 pub(super) fn reject_non_public_schema(schema: Option<&str>) -> Result<()> {

@@ -1719,7 +1719,7 @@ fn needs_headroom(state: &State) -> bool {
     .into_iter()
     .any(|(bytes, limit)| {
         limit.is_some_and(|limit| near_limit(bytes, limit, reserve.unwrap_or(limit)))
-    })
+    }) || live_overlay_needs_capacity(debt)
 }
 
 fn preparation_needs_capacity(state: &State) -> bool {
@@ -1736,7 +1736,19 @@ fn preparation_needs_capacity(state: &State) -> bool {
         // Keep a tenth of the configured capacity before its existing defer
         // threshold; near exhaustion, generation progress must free capacity.
         limit.is_some_and(|limit| near_limit(bytes, limit, limit / 10))
-    })
+    }) || live_overlay_needs_capacity(debt)
+}
+
+/// Relational live row/index overlays grow by whole commit captures, and only a
+/// published checkpoint folds them into a new canonical base. Their cumulative
+/// envelope rejects a commit before WAL append, so the frontend keeps the same
+/// tenth-of-capacity reserve below the defer threshold as preparation capacity:
+/// writers wait for the running drain instead of reaching that hard rejection.
+fn live_overlay_needs_capacity(debt: CheckpointDebtSnapshot) -> bool {
+    debt.relational_live
+        .pairs()
+        .into_iter()
+        .any(|(retained, limit)| limit.is_some_and(|limit| near_limit(retained, limit, limit / 10)))
 }
 
 fn near_limit(bytes: u64, limit: u64, reserve: u64) -> bool {
@@ -1756,11 +1768,15 @@ fn pressure_pending(state: &State) -> bool {
 }
 
 fn soft_pressure(debt: CheckpointDebtSnapshot) -> bool {
+    // Live-overlay occupancy schedules a drain at the shared soft ratio. A
+    // published checkpoint empties the serving overlay, so the next trigger
+    // needs another soft-ratio worth of commits (hysteresis by construction).
     [
         (debt.wal_bytes, debt.max_wal_bytes),
         (debt.delta_bytes, debt.max_delta_bytes),
     ]
     .into_iter()
+    .chain(debt.relational_live.pairs())
     .any(|(bytes, limit)| {
         limit.is_some_and(|limit| {
             u128::from(bytes) * 1_000_000
@@ -2034,6 +2050,7 @@ mod tests {
     mod read_access;
     mod read_gate;
     mod read_handoff;
+    mod relational_live_overlay;
     mod retirement_io;
 
     use super::*;

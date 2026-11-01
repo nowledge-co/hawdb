@@ -158,11 +158,13 @@ pub(crate) mod publication;
 pub use publication::{DatabasePublicationOwner, DatabasePublicationState};
 #[cfg(feature = "qualification")]
 pub use publication::{PublicationLockDurationSnapshot, PublicationLockMetricsSnapshot};
+mod optimizer_qualification;
 #[cfg(feature = "qualification")]
 mod query_preparation_metrics;
 mod query_request;
 mod query_runtime;
 mod read_execution;
+pub use optimizer_qualification::OptimizerQualificationOutput;
 #[cfg(feature = "qualification")]
 pub use query_preparation_metrics::{query_preparation_metrics, QueryPreparationMetricsSnapshot};
 mod sql_runtime;
@@ -691,8 +693,10 @@ impl DatabaseReadSnapshot {
             store: source.store.snapshot_for_read(),
             published_read_view: source.published_read_view,
             optimizer: source.optimizer.clone(),
-            plan_cache: ReadPlanCache::Private(SharedState::new(PlanCache::new(
+            plan_cache: ReadPlanCache::Private(SharedState::new(PlanCache::with_byte_limits(
                 source.config.max_plan_cache_entries,
+                Some(source.config.max_physical_plan_cache_bytes),
+                Some(source.config.max_physical_plan_cache_entry_bytes),
             ))),
             relational_plan_template_cache: Arc::clone(&source.relational_plan_template_cache),
             optimizer_planning_cache: Arc::clone(&source.optimizer_planning_cache),
@@ -774,8 +778,10 @@ impl Default for Database {
                     ),
                     store,
                     optimizer: optimizer_from_database_config(&config),
-                    plan_cache: Arc::new(SharedState::new(PlanCache::new(
+                    plan_cache: Arc::new(SharedState::new(PlanCache::with_byte_limits(
                         config.max_plan_cache_entries,
+                        Some(config.max_physical_plan_cache_bytes),
+                        Some(config.max_physical_plan_cache_entry_bytes),
                     ))),
                     relational_plan_template_cache:
                         relational_plan_template_cache_from_database_config(&config),
@@ -1015,7 +1021,12 @@ fn value_to_external_id(value: &Value) -> String {
                 .collect::<String>()
         ),
         Value::Uuid(value) => value.to_string(),
-        Value::Vector(_) => value.to_string(),
+        Value::Vector(_)
+        | Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => value.to_string(),
         Value::List(values) => values
             .iter()
             .map(value_to_external_id)

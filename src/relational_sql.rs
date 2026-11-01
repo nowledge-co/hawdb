@@ -643,6 +643,169 @@ mod tests {
     }
 
     #[test]
+    fn relational_bulk_load_with_overflow_values_keeps_constraints_and_payloads() {
+        // #1439: many insert commits into growing tables whose rows carry
+        // externalized (overflow) values, some shared by content.
+        const COMMITS: i64 = 20;
+        const ROWS: i64 = 25;
+        let body = |seed: i64| format!("{seed:08}-{}", "b".repeat(5_000));
+        let count = |database: &mut Database, table: &str| {
+            database
+                .query_sql(&format!("SELECT COUNT(*) AS n FROM {table}"))
+                .expect("count rows")
+                .rows[0]["n"]
+                .clone()
+        };
+        let body_of = |database: &mut Database, table: &str, id: i64| {
+            database
+                .query_sql_with_params(
+                    &format!("SELECT body FROM {table} WHERE id = $1"),
+                    &[Value::Int(id)],
+                )
+                .expect("read body")
+                .rows
+                .first()
+                .map(|row| row["body"].clone())
+        };
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "hawdb-relational-bulk-overflow-{nonce}-{}",
+            std::process::id()
+        ));
+        let total = COMMITS * ROWS;
+        {
+            let mut database = Database::open_with_durability(&path, DurabilityPolicy::default())
+                .expect("open durable bulk-load database");
+            database
+                .query_sql(
+                    "CREATE TABLE bulk_parents (\
+                        id BIGINT PRIMARY KEY, \
+                        code TEXT NOT NULL UNIQUE, \
+                        body TEXT NOT NULL\
+                    )",
+                )
+                .expect("create bulk parent table");
+            database
+                .query_sql(
+                    "CREATE TABLE bulk_children (\
+                        id BIGINT PRIMARY KEY, \
+                        parent_id BIGINT NOT NULL REFERENCES bulk_parents(id) ON DELETE CASCADE, \
+                        body TEXT NOT NULL\
+                    )",
+                )
+                .expect("create bulk child table");
+            database
+                .query_sql("CREATE INDEX bulk_children_parent_idx ON bulk_children (parent_id, id)")
+                .expect("create bulk child index");
+            for commit in 0..COMMITS {
+                let mut transaction = database.begin_transaction().unwrap();
+                for id in commit * ROWS..(commit + 1) * ROWS {
+                    // Parent pairs share one body; each child has its own.
+                    transaction
+                        .query_sql_with_params(
+                            "INSERT INTO bulk_parents (id, code, body) VALUES ($1, $2, $3)",
+                            &[
+                                Value::Int(id),
+                                Value::String(format!("code-{id}")),
+                                Value::String(body(id / 2)),
+                            ],
+                        )
+                        .expect("insert bulk parent");
+                    transaction
+                        .query_sql_with_params(
+                            "INSERT INTO bulk_children (id, parent_id, body) VALUES ($1, $2, $3)",
+                            &[
+                                Value::Int(id),
+                                Value::Int(id),
+                                Value::String(body(total + id)),
+                            ],
+                        )
+                        .expect("insert bulk child");
+                }
+                transaction.commit().expect("commit bulk batch");
+            }
+            assert_eq!(count(&mut database, "bulk_parents"), Value::Int(total));
+            assert_eq!(count(&mut database, "bulk_children"), Value::Int(total));
+
+            database
+                .query_sql_with_params(
+                    "INSERT INTO bulk_parents (id, code, body) VALUES ($1, 'fresh', $2)",
+                    &[Value::Int(7), Value::String(body(-1))],
+                )
+                .expect_err("duplicate primary key in a large table must reject");
+            database
+                .query_sql_with_params(
+                    "INSERT INTO bulk_parents (id, code, body) VALUES ($1, 'code-7', $2)",
+                    &[Value::Int(total), Value::String(body(-1))],
+                )
+                .expect_err("duplicate unique key in a large table must reject");
+            database
+                .query_sql_with_params(
+                    "INSERT INTO bulk_children (id, parent_id, body) VALUES ($1, $2, $3)",
+                    &[
+                        Value::Int(total),
+                        Value::Int(total),
+                        Value::String(body(-1)),
+                    ],
+                )
+                .expect_err("missing foreign key parent must reject");
+            assert_eq!(count(&mut database, "bulk_parents"), Value::Int(total));
+            assert_eq!(count(&mut database, "bulk_children"), Value::Int(total));
+
+            // Replacing one of two shared bodies keeps the other readable.
+            database
+                .query_sql_with_params(
+                    "UPDATE bulk_parents SET body = $1 WHERE id = 10",
+                    &[Value::String(body(-2))],
+                )
+                .expect("replace one shared body");
+            assert_eq!(
+                body_of(&mut database, "bulk_parents", 11),
+                Some(Value::String(body(5)))
+            );
+            // Deleting a parent cascades to its child and releases both bodies
+            // only where nothing else references them.
+            database
+                .query_sql("DELETE FROM bulk_parents WHERE id = 12")
+                .expect("delete bulk parent");
+            assert_eq!(body_of(&mut database, "bulk_children", 12), None);
+            assert_eq!(
+                body_of(&mut database, "bulk_parents", 13),
+                Some(Value::String(body(6)))
+            );
+            database
+                .checkpoint()
+                .expect("checkpoint bulk-loaded tables");
+        }
+        {
+            let mut reopened = Database::open_with_durability(&path, DurabilityPolicy::default())
+                .expect("reopen bulk-load checkpoint");
+            assert_eq!(count(&mut reopened, "bulk_parents"), Value::Int(total - 1));
+            assert_eq!(count(&mut reopened, "bulk_children"), Value::Int(total - 1));
+            assert_eq!(
+                body_of(&mut reopened, "bulk_parents", 10),
+                Some(Value::String(body(-2)))
+            );
+            assert_eq!(
+                body_of(&mut reopened, "bulk_parents", 11),
+                Some(Value::String(body(5)))
+            );
+            assert_eq!(
+                body_of(&mut reopened, "bulk_parents", 13),
+                Some(Value::String(body(6)))
+            );
+            assert_eq!(
+                body_of(&mut reopened, "bulk_children", total - 1),
+                Some(Value::String(body(2 * total - 1)))
+            );
+        }
+        std::fs::remove_dir_all(path).expect("remove bulk-load test directory");
+    }
+
+    #[test]
     fn relational_bigint_update_arithmetic_is_checked_and_transactional() {
         let mut database = Database::new();
         database

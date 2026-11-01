@@ -172,7 +172,7 @@ debt beyond the accepted SPDX form (missing and conflicting headers); do not
 interpret a staged-file pass as a clean full-tree audit or replace existing copyright notices mechanically.
 
 Use the toolchain pinned in [rust-toolchain.toml](rust-toolchain.toml), locked
-dependencies, and the default Bazel configuration. The [README](README.md#building)
+dependencies, and the default Bazel configuration. The [README](README.md#build)
 documents the build and feature surfaces. Register new tests in the appropriate
 existing Cargo/Bazel target; a source file alone does not prove test discovery.
 

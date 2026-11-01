@@ -225,6 +225,23 @@ pub enum ShortestPathReturnExpression {
     Length {
         path_variable: String,
     },
+    Nodes {
+        path_variable: String,
+    },
+    Relationships {
+        path_variable: String,
+    },
+}
+
+impl ShortestPathReturnExpression {
+    pub fn path_variable(&self) -> &str {
+        match self {
+            Self::NodePropertyList { path_variable, .. }
+            | Self::Length { path_variable }
+            | Self::Nodes { path_variable }
+            | Self::Relationships { path_variable } => path_variable,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -412,9 +429,56 @@ pub enum ValueExpressionKind {
     Literal(Value),
     Parameter(String),
     List(Vec<ValueExpression>),
-    BindingProperty { variable: String, property: String },
+    Binding(String),
+    BindingProperty {
+        variable: String,
+        property: String,
+    },
+    /// `variable[index]` over a list-valued row binding such as a
+    /// `LOAD CSV` record without headers.
+    BindingIndex {
+        variable: String,
+        index: i64,
+    },
     CurrentTimestamp,
     Timestamp(Box<ValueExpression>),
+    /// `toInteger`, `toFloat`, `toBoolean` or `toString` of a value.
+    Conversion {
+        function: hawdb_core::ConversionFunction,
+        argument: Box<ValueExpression>,
+    },
+    /// A temporal function over statically bound arguments, such as
+    /// `date('2026-10-30')` in a CREATE property map. Evaluated when the
+    /// statement is planned; zero-argument constructors read the statement
+    /// clock.
+    Temporal {
+        function: hawdb_core::TemporalFunction,
+        arguments: Vec<ValueExpression>,
+    },
+    /// `{key: value, ...}`, accepted as a temporal function argument.
+    Map(BTreeMap<String, ValueExpression>),
+}
+
+impl ValueExpressionKind {
+    /// True when the value reads a row binding (`variable`,
+    /// `variable.property` or `variable[index]`, also inside a conversion).
+    /// Scalar contexts parse such lists as [`ScalarExpressionKind::List`]
+    /// instead.
+    pub fn reads_row_binding(&self) -> bool {
+        match self {
+            Self::Binding(_) | Self::BindingProperty { .. } | Self::BindingIndex { .. } => true,
+            Self::List(values) => values.iter().any(|value| value.kind.reads_row_binding()),
+            Self::Timestamp(value)
+            | Self::Conversion {
+                argument: value, ..
+            } => value.kind.reads_row_binding(),
+            Self::Temporal { arguments, .. } => arguments
+                .iter()
+                .any(|argument| argument.kind.reads_row_binding()),
+            Self::Map(entries) => entries.values().any(|value| value.kind.reads_row_binding()),
+            Self::Literal(_) | Self::Parameter(_) | Self::CurrentTimestamp => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -510,6 +574,10 @@ pub enum ScalarExpressionKind {
         expression: Box<ScalarExpression>,
         negated: bool,
     },
+    /// A list literal with at least one row-bound element, such as
+    /// `[n, m.name, $p]`. Lists of constants and parameters stay
+    /// [`ScalarExpressionKind::Value`] so they keep value-list fast paths.
+    List(Vec<ScalarExpression>),
     /// `size`, `head`, `last`, `tail`, `reverse` or `range`.
     ListFunction {
         function: hawdb_core::ListFunction,
@@ -535,6 +603,28 @@ pub enum ScalarExpressionKind {
         list: Box<ScalarExpression>,
         start: Option<Box<ScalarExpression>>,
         end: Option<Box<ScalarExpression>>,
+    },
+    /// `length(p)`, `nodes(p)`, `relationships(p)` or
+    /// `properties(nodes(p), 'key')` over a bound path variable.
+    Path(ShortestPathReturnExpression),
+    /// An openCypher temporal function: `date(...)`, `datetime(...)`,
+    /// `duration.between(a, b)`, `date.truncate(unit, value)`, ...
+    TemporalFunction {
+        function: hawdb_core::TemporalFunction,
+        arguments: Vec<ScalarExpression>,
+    },
+    /// Postfix `expression.key` over a general expression: a temporal
+    /// component (`p.birthday.month`) or a map key.
+    PropertyAccess {
+        expression: Box<ScalarExpression>,
+        key: String,
+    },
+    /// `{key: expression, ...}` in source order (keys are unique).
+    MapLiteral(Vec<(String, ScalarExpression)>),
+    /// `toInteger`, `toFloat`, `toBoolean` or `toString`.
+    Conversion {
+        function: hawdb_core::ConversionFunction,
+        argument: Box<ScalarExpression>,
     },
 }
 
@@ -656,6 +746,16 @@ pub enum ScalarBinaryOp {
     In,
     And,
     Or,
+    /// Scalar `+` (numbers, temporal instants and durations).
+    Add,
+    /// Scalar `-`.
+    Subtract,
+    /// Scalar `*`.
+    Multiply,
+    /// Scalar `/`.
+    Divide,
+    /// Scalar `%`.
+    Remainder,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -670,12 +770,17 @@ pub struct OrderItemKind {
     pub direction: OrderDirection,
 }
 
+/// An `ORDER BY` key. `Projection` carries keys outside the scalar grammar,
+/// such as arithmetic or aggregates, planned like an unaliased projection
+/// item; an aggregate key must match an aggregate projected by the same
+/// `RETURN` or `WITH`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OrderExpression {
     Property { variable: String, property: String },
     Id { variable: String },
     Value(ScalarExpression),
     Column(String),
+    Projection(ReturnExpression),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -719,12 +824,23 @@ impl ScalarExpressionKind {
             | Self::IsNull { expression, .. }
             | Self::Lower(expression)
             | Self::Left { expression, .. }
-            | Self::JsonValue { expression, .. } => visit(expression),
+            | Self::JsonValue { expression, .. }
+            | Self::PropertyAccess { expression, .. }
+            | Self::Conversion {
+                argument: expression,
+                ..
+            } => visit(expression),
             Self::Coalesce(expressions)
+            | Self::List(expressions)
             | Self::ListFunction {
                 arguments: expressions,
                 ..
+            }
+            | Self::TemporalFunction {
+                arguments: expressions,
+                ..
             } => expressions.iter().all(visit),
+            Self::MapLiteral(entries) => entries.iter().all(|(_, value)| visit(value)),
             Self::ListComprehension {
                 list,
                 predicate,

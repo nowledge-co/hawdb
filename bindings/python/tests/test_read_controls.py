@@ -128,8 +128,15 @@ def test_sql_reads_share_the_open_time_ceiling(database_path):
     with hawdb.open(database_path, max_read_result_rows=1) as db:
         db.execute_sql("CREATE TABLE items (id BIGINT PRIMARY KEY)")
         db.execute_sql("INSERT INTO items (id) VALUES (1), (2)")
-        with pytest.raises(exceptions.ExecutionError, match="max_intermediate_rows 1"):
+        with pytest.raises(
+            exceptions.ResourceBudgetError, match="max_intermediate_rows 1"
+        ) as refusal:
             db.execute_sql("SELECT id FROM items")
+        assert refusal.value.resource == "work_units"
+        assert refusal.value.scope == "query"
+        assert refusal.value.owner == "relational SQL"
+        assert refusal.value.budget_option == "max_intermediate_rows"
+        assert refusal.value.budget == 1
         result = db.execute_sql("SELECT id FROM items WHERE id = 1")
         assert result.fetchall() == [{"id": 1}]
 

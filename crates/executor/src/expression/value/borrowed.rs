@@ -11,6 +11,7 @@ use hawdb_core::{MAX_LIST_EXPRESSION_WORK, MAX_UNACCOUNTED_LIST_BYTES};
 use std::borrow::Cow;
 
 mod list;
+mod temporal;
 
 pub(crate) struct ProjectedValue<'a> {
     value: Cow<'a, Value>,
@@ -256,10 +257,21 @@ fn evaluate_scoped<'a>(
         ProjectionExpression::Binary { left, op, right } => {
             binary(left, *op, right, evaluate, account, work)
         }
+        ProjectionExpression::List(elements) => {
+            let mut output = list::ListBuilder::new(account, work, elements.len())?;
+            for element in elements {
+                work.charge(1)?;
+                output.push_projected(evaluate(element)?)?;
+            }
+            Ok(output.finish())
+        }
         ProjectionExpression::ListFunction {
             function,
             arguments,
         } => list::function(*function, arguments, evaluate, account, work),
+        ProjectionExpression::Conversion { function, argument } => function
+            .apply(evaluate(argument)?.as_ref())
+            .map(ProjectedValue::scalar),
         ProjectionExpression::ListComprehension(comprehension) => {
             let list = evaluate(&comprehension.list)?;
             let values = match list.as_ref() {
@@ -324,6 +336,9 @@ fn evaluate_scoped<'a>(
                     .get(property)
                     .map(ProjectedValue::borrowed)
                     .unwrap_or_else(|| ProjectedValue::scalar(Value::Null))),
+                (Some(property), value) if hawdb_core::temporal::is_temporal(value) => {
+                    temporal::scalar_property(value, property, account).map(ProjectedValue::scalar)
+                }
                 (Some(_), value) => Err(HawDBError::Execution(format!(
                     "property access on list comprehension variable '{name}' requires a map value, got {:?}",
                     description(value, account)
@@ -334,6 +349,16 @@ fn evaluate_scoped<'a>(
             let list = evaluate(list)?;
             let index = evaluate(index)?;
             list::index(list, index.as_ref(), account)
+        }
+        ProjectionExpression::TemporalFunction {
+            function,
+            arguments,
+        } => temporal::function(*function, arguments, evaluate),
+        ProjectionExpression::PropertyAccess { expression, key } => {
+            temporal::property(evaluate(expression)?, key, account)
+        }
+        ProjectionExpression::MapLiteral(entries) => {
+            temporal::map_literal(entries, evaluate, account, work)
         }
         ProjectionExpression::ListSlice { list, start, end } => {
             let list = evaluate(list)?;
@@ -760,11 +785,77 @@ fn evaluate_scoped<'a>(
                 .map(ProjectedValue::borrowed)
                 .unwrap_or_else(|| ProjectedValue::scalar(Value::Null))),
             Value::Null => Ok(ProjectedValue::scalar(Value::Null)),
+            value if hawdb_core::temporal::is_temporal(value) => {
+                temporal::scalar_property(value, property, account).map(ProjectedValue::scalar)
+            }
             value => Err(HawDBError::Execution(format!(
                 "column property projection requires a map value, got {:?}",
                 description(value, account)
             ))),
         },
+        ProjectionExpression::Path {
+            function,
+            column: name,
+        } => path_function(function, column(binding, name)?, account),
+    }
+}
+
+fn path_function<'a>(
+    function: &PathFunction,
+    path: &'a Value,
+    account: Option<&QueryMemoryAccount>,
+) -> Result<ProjectedValue<'a>> {
+    let part = |key: &str| match path {
+        Value::Map(path) => path.get(key).ok_or(()),
+        _ => Err(()),
+    };
+    let invalid = || {
+        HawDBError::Execution(format!(
+            "{} requires a path, got {:?}",
+            function.display("_"),
+            description(path, account)
+        ))
+    };
+    if *path == Value::Null {
+        return Ok(ProjectedValue::scalar(Value::Null));
+    }
+    match function {
+        PathFunction::Length => part(PATH_LENGTH_KEY)
+            .map(ProjectedValue::borrowed)
+            .map_err(|_| invalid()),
+        PathFunction::Nodes => part(PATH_NODES_KEY)
+            .map(ProjectedValue::borrowed)
+            .map_err(|_| invalid()),
+        PathFunction::Relationships => part(PATH_RELATIONSHIPS_KEY)
+            .map(ProjectedValue::borrowed)
+            .map_err(|_| invalid()),
+        PathFunction::NodeProperties(property) => {
+            let Ok(Value::List(nodes)) = part(PATH_NODES_KEY) else {
+                return Err(invalid());
+            };
+            let property_value = |node: &'a Value| match node {
+                Value::Map(node) => node.get(property),
+                _ => None,
+            };
+            let bytes = nodes.iter().fold(
+                std::mem::size_of::<Value>()
+                    .saturating_add(nodes.len().saturating_mul(std::mem::size_of::<Value>())),
+                |total, node| {
+                    total.saturating_add(property_value(node).map_or(0, |value| {
+                        crate::binding::value_memory_bytes(value)
+                            .saturating_sub(std::mem::size_of::<Value>())
+                    }))
+                },
+            );
+            allocated(bytes, account, || {
+                Value::List(
+                    nodes
+                        .iter()
+                        .map(|node| property_value(node).cloned().unwrap_or(Value::Null))
+                        .collect(),
+                )
+            })
+        }
     }
 }
 
@@ -825,6 +916,13 @@ fn binary<'a>(
             | ScalarBinaryOp::Remainder
     ) {
         return evaluate_arithmetic(left.as_ref(), op, right.as_ref()).map(ProjectedValue::scalar);
+    }
+    if matches!(
+        op,
+        ScalarBinaryOp::Lt | ScalarBinaryOp::Lte | ScalarBinaryOp::Gt | ScalarBinaryOp::Gte
+    ) && hawdb_core::temporal::ordering_is_null(left.as_ref(), right.as_ref())
+    {
+        return Ok(ProjectedValue::scalar(Value::Null));
     }
     if op == ScalarBinaryOp::ListContains {
         return Ok(ProjectedValue::scalar(match left.as_ref() {

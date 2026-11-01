@@ -31,6 +31,7 @@ mod predicate;
 mod procedure;
 mod projection;
 mod scalar;
+mod temporal;
 
 #[cfg(test)]
 mod tests;
@@ -106,6 +107,7 @@ enum StatementDispatch {
     Cypher,
     Explain,
     Unwind,
+    Load,
     Merge,
     Match,
     Set,
@@ -123,6 +125,7 @@ const TOP_LEVEL_STATEMENTS: &[(&str, StatementDispatch)] = &[
     ("CYPHER", StatementDispatch::Cypher),
     ("EXPLAIN", StatementDispatch::Explain),
     ("UNWIND", StatementDispatch::Unwind),
+    ("LOAD", StatementDispatch::Load),
     ("MERGE", StatementDispatch::Merge),
     ("MATCH", StatementDispatch::Match),
     ("SET", StatementDispatch::Set),
@@ -205,8 +208,12 @@ impl<'a> Parser<'a> {
             StatementDispatch::Explain => self.parse_explain_statement(),
             StatementDispatch::Unwind => {
                 self.restore(statement_start);
-                Ok(Statement::UnwindMutation(Box::new(
-                    self.parse_query_pipeline()?,
+                Ok(Box::new(self.parse_query_pipeline()?).into_unwind_statement())
+            }
+            StatementDispatch::Load => {
+                self.restore(statement_start);
+                Ok(Statement::Pipeline(Box::new(
+                    self.parse_public_query_pipeline()?,
                 )))
             }
             StatementDispatch::Merge => self.parse_merge_statement(),
@@ -235,7 +242,8 @@ impl<'a> Parser<'a> {
                 matches!(&clause.kind,
             super::ast::ClauseKind::Match { optional: true, patterns, .. }
             if patterns.iter().any(|pattern| pattern.steps.iter().any(|step|
-                step.relationship.min_hops != 1 || step.relationship.max_hops != 1)))
+                !step.relationship.search.is_shortest()
+                    && (step.relationship.min_hops != 1 || step.relationship.max_hops != 1))))
             })
         {
             return Err(self.error("OPTIONAL MATCH supports only one-hop relationships"));
@@ -286,7 +294,7 @@ impl<'a> Parser<'a> {
     fn parse_statement_dispatch(&mut self) -> Result<StatementDispatch> {
         self.parse_keyword_choice(
             TOP_LEVEL_STATEMENTS,
-            "expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, UNWIND, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK",
+            "expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, UNWIND, LOAD, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK",
         )
     }
 

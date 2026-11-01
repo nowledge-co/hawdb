@@ -1,4 +1,39 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
+
+#[test]
+fn relationship_merge_batch_preserves_scope_and_refuses_unrepresented_clauses() {
+    let parameters = BTreeMap::from([("ids".into(), Value::List(vec![Value::Int(1)]))]);
+    let prefix = "MATCH (s:Skill {id: 1}) UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[r:EVIDENCE]->(m)";
+    let plan = plan_pipeline_query(
+        &format!("{prefix} ON CREATE SET r.weight = 1.0 RETURN m.id"),
+        &parameters,
+    )
+    .unwrap();
+    assert!(matches!(
+        plan,
+        LogicalPlan::UnwindMutation {
+            operation: BatchMutationOperation::MergeRelationship(_),
+            ..
+        }
+    ));
+    for query in [
+        format!("{prefix} RETURN r.weight"),
+        format!("{prefix} RETURN DISTINCT m.id"),
+        format!("{prefix} RETURN m.id LIMIT 1"),
+        format!("{prefix} ON MATCH SET r.weight = 2 RETURN m.id"),
+        format!("{prefix} SET s.used = true RETURN m.id"),
+        "MATCH (s:Skill), (m:Memory) MERGE (s)-[s:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill {id: key}) UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) WHERE s.id = key UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) WHERE m.id = 1 UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) UNWIND $ids AS s MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) UNWIND $ids AS key UNWIND $ids AS other MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+        "MATCH (s:Skill) OPTIONAL MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+    ] { assert!(plan_pipeline_query(&query, &parameters).is_err(), "{query}"); }
+}
 
 #[test]
 fn atomic_mutations_reject_conditions_the_storage_command_cannot_represent() {
@@ -11,6 +46,8 @@ fn atomic_mutations_reject_conditions_the_storage_command_cannot_represent() {
         "MATCH (a:Node), (b:Node) CREATE (a)-[:LINK* ALL SHORTEST 1..1]->(b)",
         "OPTIONAL MATCH (n:Node) SET n.id = 1",
         "MATCH (n:Node) WITH n SET n.id = 1",
+        "UNWIND row.id AS value CREATE (n:Node)",
+        "MATCH (row:Node) UNWIND row.ids AS value CREATE (n:Node {id: value})",
         "MATCH (a:Node), (b:Node) MERGE (a {id: 1})-[:LINK]->(b)",
     ] {
         assert!(
@@ -63,17 +100,258 @@ fn procedure_yields_enforce_scopes_and_vector_hop_limits() {
 #[test]
 fn shortest_paths_do_not_discard_additional_predicates_or_projection_modifiers() {
     let matched = "MATCH p = (a:Node)-[:LINK* ALL SHORTEST 1..3]->(b:Node)";
-    for tail in [
-        "WHERE a.id = 1 AND b.id = 2 AND a.active = true RETURN length(p) AS hops",
-        "WHERE a.id = 1 AND a.id = 3 AND b.id = 2 RETURN length(p) AS hops",
-        "WHERE a.id = 1 AND b.id = 2 RETURN length(p) AS hops LIMIT 1",
-        "WHERE a.id = 1 AND b.id = 2 RETURN length(other) AS hops",
+    // Shapes the endpoint-id operator cannot represent use the general
+    // shortest-path step, which keeps every predicate and modifier.
+    for (tail, needle) in [
+        (
+            "WHERE a.id = 1 AND b.id = 2 AND a.active = true RETURN length(p) AS hops",
+            "active",
+        ),
+        (
+            "WHERE a.id = 1 AND a.id = 3 AND b.id = 2 RETURN length(p) AS hops",
+            "Int(3)",
+        ),
+        (
+            "WHERE a.id = 1 AND b.id = 2 RETURN length(p) AS hops LIMIT 1",
+            "Limit",
+        ),
     ] {
         let query = format!("{matched} {tail}");
+        let plan = plan_pipeline_query(&query, &BTreeMap::new()).unwrap();
+        let text = format!("{plan:?}");
+        assert!(!matches!(plan, LogicalPlan::ShortestPath { .. }), "{query}");
         assert!(
-            plan_pipeline_query(&query, &BTreeMap::new()).is_err(),
+            text.contains("ShortestPath(GraphMatchShortestPath"),
             "{query}"
         );
+        assert!(text.contains(needle), "{query}: {text}");
+    }
+    let query = format!("{matched} WHERE a.id = 1 AND b.id = 2 RETURN length(other) AS hops");
+    assert!(plan_pipeline_query(&query, &BTreeMap::new()).is_err());
+}
+
+fn shortest_steps(plan: &LogicalPlan, steps: &mut Vec<GraphMatchShortestPath>) {
+    if let LogicalPlan::GraphMatch { program, input } = plan {
+        for step in &program.steps {
+            if let GraphMatchStep::ShortestPath(step) = step {
+                steps.push((**step).clone());
+            }
+        }
+        if let Some(input) = input {
+            shortest_steps(input, steps);
+        }
+        return;
+    }
+    let text = format!("{plan:?}");
+    if !text.contains("GraphMatch") {
+        return;
+    }
+    match plan {
+        LogicalPlan::Project { input, .. }
+        | LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Distinct { input }
+        | LogicalPlan::Aggregate { input, .. } => shortest_steps(input, steps),
+        _ => {}
+    }
+}
+
+#[test]
+fn shortest_path_functions_bind_correlated_steps() {
+    let parameters = BTreeMap::from([
+        ("a".to_string(), Value::Int(1)),
+        ("b".to_string(), Value::Int(2)),
+    ]);
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}) OPTIONAL MATCH path = shortestPath((p1)-[:KNOWS*]-(p2)) RETURN CASE path IS NULL WHEN true THEN -1 ELSE length(path) END AS len",
+        &parameters,
+    )
+    .unwrap();
+    let mut steps = Vec::new();
+    shortest_steps(&plan, &mut steps);
+    assert_eq!(
+        steps,
+        vec![GraphMatchShortestPath {
+            path: "path".into(),
+            source: "p1".into(),
+            target: "p2".into(),
+            rel_type: "KNOWS".into(),
+            direction: RelationshipDirection::Undirected,
+            min_hops: 1,
+            max_hops: MAX_SHORTEST_PATH_HOPS,
+            bounded: false,
+            selection: ShortestPathSelection::Any,
+        }]
+    );
+    let text = format!("{plan:?}");
+    assert!(text.contains("optional: true"), "{text}");
+    assert!(
+        text.contains("Path { function: Length, column: \"path\" }"),
+        "{text}"
+    );
+
+    let plan = plan_pipeline_query(
+        "MATCH (a:Item), (b:Item) WHERE a.id = 1 AND b.id = 2 MATCH p = allShortestPaths((a)<-[:LINK*0..4]-(b)) RETURN properties(nodes(p), 'id') AS ids, relationships(p) AS rels",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let mut steps = Vec::new();
+    shortest_steps(&plan, &mut steps);
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].selection, ShortestPathSelection::All);
+    assert_eq!(steps[0].direction, RelationshipDirection::Incoming);
+    assert_eq!((steps[0].min_hops, steps[0].max_hops), (0, 4));
+    assert!(steps[0].bounded);
+}
+
+#[test]
+fn required_shortest_path_clauses_bind_endpoints_before_searching() {
+    let plan = plan_pipeline_query(
+        "MATCH p = shortestPath((a:Item)-[:LINK*]->(b:Item)) WHERE a.id = 1 AND b.id = 2 RETURN length(p) AS hops",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let LogicalPlan::Project { input, .. } = &plan else {
+        panic!("expected projection: {plan:?}");
+    };
+    let LogicalPlan::GraphMatch {
+        program,
+        input: Some(endpoints),
+    } = input.as_ref()
+    else {
+        panic!("expected path program: {input:?}");
+    };
+    // Endpoint conjuncts filter before the search; the search has no predicate.
+    assert_eq!(program.introduced, vec!["p".to_string()]);
+    assert!(program.predicate.is_none(), "{:?}", program.predicate);
+    let LogicalPlan::GraphMatch { program, .. } = endpoints.as_ref() else {
+        panic!("expected endpoint program: {endpoints:?}");
+    };
+    assert_eq!(program.introduced, vec!["a".to_string(), "b".to_string()]);
+    let endpoint_predicate = format!("{:?}", program.predicate);
+    assert!(
+        !endpoint_predicate.contains("Length"),
+        "{endpoint_predicate}"
+    );
+}
+
+#[test]
+fn shortest_path_endpoints_named_in_the_same_clause_bind_once() {
+    let parameters = BTreeMap::from([
+        ("a".to_string(), Value::Int(1)),
+        ("b".to_string(), Value::Int(2)),
+    ]);
+    for query in [
+        "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}), path = shortestPath((p1)-[:KNOWS*]-(p2)) RETURN length(path) AS len",
+        "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}), path = allShortestPaths((p1)-[:KNOWS*]-(p2)) RETURN length(path) AS len",
+    ] {
+        let plan = plan_pipeline_query(query, &parameters).unwrap();
+        let LogicalPlan::Project { input, .. } = &plan else {
+            panic!("expected projection: {plan:?}");
+        };
+        let LogicalPlan::GraphMatch {
+            input: Some(endpoints),
+            ..
+        } = input.as_ref()
+        else {
+            panic!("expected path program: {input:?}");
+        };
+        let LogicalPlan::GraphMatch { program, .. } = endpoints.as_ref() else {
+            panic!("expected endpoint program: {endpoints:?}");
+        };
+        // One constrained step per endpoint, not a bare re-check per endpoint.
+        let nodes = program
+            .steps
+            .iter()
+            .map(|step| match step {
+                GraphMatchStep::Node(node) => node.clone(),
+                step => panic!("unexpected endpoint step {step:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            nodes,
+            vec![
+                GraphMatchNode {
+                    variable: "p1".into(),
+                    label: "Person".into(),
+                    properties: BTreeMap::from([("id".into(), Value::Int(1))]),
+                },
+                GraphMatchNode {
+                    variable: "p2".into(),
+                    label: "Person".into(),
+                    properties: BTreeMap::from([("id".into(), Value::Int(2))]),
+                },
+            ],
+            "{query}"
+        );
+        // Independent endpoints normalize to node access, not a generic match.
+        let plan = plan_normalized_pipeline_query(query, &parameters).unwrap();
+        let LogicalPlan::Project { input, .. } = &plan else {
+            panic!("expected projection: {plan:?}");
+        };
+        let LogicalPlan::GraphMatch {
+            input: Some(endpoints),
+            ..
+        } = input.as_ref()
+        else {
+            panic!("expected path program: {input:?}");
+        };
+        assert!(
+            matches!(endpoints.as_ref(), LogicalPlan::NodeCartesianProduct { .. }),
+            "{query}: {endpoints:?}"
+        );
+    }
+    // Constraints that do not fold without comparing values keep the re-check.
+    let plan = plan_pipeline_query(
+        "MATCH (a:Item {id: 1}), p = shortestPath((a {id: 2})-[:LINK*]->(b:Item {id: 3})) RETURN length(p) AS hops",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert_eq!(text.matches("variable: \"a\"").count(), 3, "{text}");
+}
+
+#[test]
+fn shortest_path_binding_rejects_unsupported_shapes() {
+    for (query, message) in [
+        (
+            "MATCH p = shortestPath((a:Item)-[:LINK*]->(b:Item {id: 2})) RETURN length(p)",
+            "endpoint 'a' must be bound",
+        ),
+        (
+            "MATCH (a:Item {id: 1}), (b:Item {id: 2}) MATCH p = shortestPath((a)-[:LINK*2..3]->(b)) RETURN length(p)",
+            "minimum of 0 or 1",
+        ),
+        (
+            "MATCH (a:Item {id: 1}), (b:Item {id: 2}) MATCH p = shortestPath((a)-[:LINK*]->(b)) WHERE length(p) > 1 RETURN p",
+            "filter after the search with `WITH p WHERE ...`",
+        ),
+        (
+            "MATCH (a:Item {id: 1}), (b:Item {id: 2}) OPTIONAL MATCH p = allShortestPaths((a)-[:LINK*]-(b)) WHERE a.id = 1 AND length(p) > 1 RETURN p",
+            "shortest-path variable 'p'",
+        ),
+        (
+            "MATCH (a:Item {id: 1}), (b:Item {id: 2}) MATCH p = shortestPath((a)-[:LINK*1..257]->(b)) RETURN length(p)",
+            "exceeds the limit of 256",
+        ),
+        (
+            "MATCH (a:Item {id: 1}), (b:Item {id: 2}) MATCH p = shortestPath((a)-[:LINK* {w: 1}]->(b)) RETURN length(p)",
+            "relationship property patterns",
+        ),
+        (
+            "MATCH (a:Item {id: 1}), (b:Item {id: 2}) MATCH a = shortestPath((a)-[:LINK*]->(b)) RETURN 1",
+            "already bound",
+        ),
+        (
+            "MATCH (a:Item {id: 1})-[:LINK*1..2]->(b:Item) RETURN length(a)",
+            "path function requires a path",
+        ),
+    ] {
+        let error = plan_pipeline_query(query, &BTreeMap::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(message), "{query}: {error}");
     }
 }
 
@@ -208,6 +486,45 @@ fn normalizes_native_expression_order_keys_without_inlining_column_order_keys() 
     )
     .unwrap();
     assert!(format!("{plan:?}").contains("\\0order."));
+}
+
+#[test]
+fn plans_composed_and_aggregate_order_keys() {
+    // Arithmetic over native bindings sorts directly, without a hidden column.
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (m:Memory) RETURN m.id AS id ORDER BY m.importance * -1, size(m.tags) DESC",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert!(text.contains("key: Expression(Binary {"), "{text}");
+    assert!(text.contains("key: Expression(ListFunction {"), "{text}");
+    assert!(!text.contains("\\0order."), "{text}");
+
+    // Aggregate keys resolve to the projected aggregate, aliased or not.
+    for query in [
+        "MATCH (m:Memory) RETURN m.kind AS kind, sum(m.importance) AS total \
+         ORDER BY sum(m.importance) DESC",
+        "MATCH (m:Memory) RETURN m.kind AS kind, sum(m.importance) \
+         ORDER BY sum(m.importance) DESC",
+    ] {
+        let text = format!(
+            "{:?}",
+            plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap()
+        );
+        assert!(
+            text.contains("key: Column(\"total\")")
+                || text.contains("key: Column(\"sum(m.importance)\")"),
+            "{text}"
+        );
+    }
+    let error = plan_normalized_pipeline_query(
+        "MATCH (m:Memory) RETURN m.kind AS kind ORDER BY count(*)",
+        &BTreeMap::new(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("must also be projected"), "{error}");
 }
 
 #[test]
@@ -503,17 +820,94 @@ fn bounded_match_rejects_unrepresentable_relationship_shapes_before_normalizatio
 }
 
 #[test]
-fn ranked_evidence_normalizes_its_input_without_changing_legacy_multi_with_plans() {
+fn ranked_evidence_and_multi_with_plans_normalize_their_match_input() {
     let query = "MATCH (n:Node) WHERE n.visible = true WITH n.group_id AS g, n.id AS doc, n.score AS score WITH g, collect_top(doc, score, 2) AS evidence RETURN g, evidence";
     let parsed = hawdb_cypher::parse_pipeline(query).unwrap();
     let plan = plan_parsed_pipeline_query(&parsed, &BTreeMap::new()).unwrap();
     let debug = format!("{plan:?}");
     assert!(!debug.contains("GraphMatch {"), "{debug}");
     assert!(debug.contains("Ranked {"));
-    let legacy = query.replace("collect_top(doc, score, 2)", "collect(doc)");
-    let parsed = hawdb_cypher::parse_pipeline(&legacy).unwrap();
-    let plan = plan_parsed_pipeline_query(&parsed, &BTreeMap::new()).unwrap();
-    assert!(format!("{plan:?}").contains("GraphMatch {"));
+    // Ordinary multi-WITH statements normalize their MATCH as well (#1425).
+    let ordinary = query.replace("collect_top(doc, score, 2)", "collect(doc)");
+    let parsed = hawdb_cypher::parse_pipeline(&ordinary).unwrap();
+    let debug = format!(
+        "{:?}",
+        plan_parsed_pipeline_query(&parsed, &BTreeMap::new()).unwrap()
+    );
+    assert!(!debug.contains("GraphMatch {"), "{debug}");
+    assert!(debug.contains("NodeScan {"), "{debug}");
+}
+
+#[test]
+fn multi_with_statements_normalize_every_match() {
+    // LDBC IC4 and IC3-style chains: a second WITH must not keep the leading
+    // MATCH as a generic GraphMatch (#1425).
+    let parameters = BTreeMap::from([
+        ("personId".to_string(), Value::Int(1)),
+        ("startDate".to_string(), Value::Int(100)),
+        ("endDate".to_string(), Value::Int(250)),
+    ]);
+    for query in [
+        "MATCH (person:Person {id: $personId})-[:KNOWS]-(friend:Person), (friend)<-[:HAS_CREATOR]-(post:Post)-[:HAS_TAG]->(tag) WITH DISTINCT tag, post WITH tag, CASE WHEN $endDate > post.creationDate >= $startDate THEN 1 ELSE 0 END AS valid, CASE WHEN $startDate > post.creationDate THEN 1 ELSE 0 END AS inValid WITH tag, sum(valid) AS postCount, sum(inValid) AS inValidPostCount WHERE postCount > 0 AND inValidPostCount = 0 RETURN tag.name AS tagName, postCount ORDER BY postCount DESC, tagName ASC LIMIT 10",
+        "MATCH (person:Person {id: $personId})-[:KNOWS]-(friend:Person) WITH DISTINCT friend WITH friend MATCH (friend)<-[:HAS_CREATOR]-(post:Post) RETURN count(post) AS posts",
+    ] {
+        let parsed = hawdb_cypher::parse_pipeline(query).unwrap();
+        let debug = format!(
+            "{:?}",
+            plan_parsed_pipeline_query(&parsed, &parameters).unwrap()
+        );
+        assert!(
+            debug.contains(
+                "Expand { source_variable: \"person\", source_label: \"Person\", rel_variable: None, rel_type: \"KNOWS\""
+            ),
+            "{query}\n{debug}"
+        );
+        assert!(
+            debug.contains("NodeScan { variable: \"person\", label: \"Person\" }"),
+            "{query}\n{debug}"
+        );
+    }
+    // The IC4 comma pattern is one native chain with no generic matcher left.
+    let parsed = hawdb_cypher::parse_pipeline(
+        "MATCH (person:Person {id: $personId})-[:KNOWS]-(friend:Person), (friend)<-[:HAS_CREATOR]-(post:Post)-[:HAS_TAG]->(tag) WITH DISTINCT tag, post WITH tag, post.creationDate AS date WITH tag, count(date) AS posts RETURN tag.name AS name, posts",
+    )
+    .unwrap();
+    let debug = format!(
+        "{:?}",
+        plan_parsed_pipeline_query(&parsed, &parameters).unwrap()
+    );
+    assert!(!debug.contains("GraphMatch {"), "{debug}");
+}
+
+#[test]
+fn comma_patterns_continue_native_chains_only_from_compatible_bindings() {
+    let plan = |query: &str| {
+        format!(
+            "{:?}",
+            plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap()
+        )
+    };
+    for query in [
+        "MATCH (a:A {id: 1})-[:R]->(b:B), (b)-[:S]->(c) RETURN c",
+        "MATCH (a:A {id: 1})-[:R]->(b:B), (b:B {x: 2})-[:S]->(c) RETURN c",
+        "MATCH (a:A {id: 1})-[:R]->(b:B), (a)-[:S]->(c) RETURN b, c",
+    ] {
+        let debug = plan(query);
+        assert!(!debug.contains("GraphMatch {"), "{query}\n{debug}");
+    }
+    let debug = plan("MATCH (a:A {id: 1})-[:R]->(b:B), (b:B {x: 2})-[:S]->(c) RETURN c");
+    assert!(debug.contains("property: \"x\""), "{debug}");
+    for query in [
+        // A narrower label on the repeated node is a check Expand cannot carry.
+        "MATCH (a:A)-[:R]->(b), (b:B)-[:S]->(c) RETURN c",
+        // Relationship isomorphism across comma patterns needs GraphMatch.
+        "MATCH (a:A)-[:R]->(b), (b)-[:R]->(c) RETURN c",
+        // Disconnected comma patterns are not one chain.
+        "MATCH (a:A)-[:R]->(b), (c)-[:S]->(d) RETURN d",
+    ] {
+        let debug = plan(query);
+        assert!(debug.contains("GraphMatch {"), "{query}\n{debug}");
+    }
 }
 
 fn planned_aggregations(plan: &LogicalPlan) -> &[Aggregation] {
@@ -617,5 +1011,100 @@ fn nested_aggregate_arguments_are_rejected() {
     assert!(
         error.to_string().contains("cannot contain aggregate"),
         "{error}"
+    );
+}
+
+#[test]
+fn relationship_merge_batch_keeps_unrelated_mutation_errors_specific() {
+    for (query, expected) in [
+        (
+            "MERGE (n:A {id: 1}) RETURN n",
+            "mutation has unsupported following clauses",
+        ),
+        (
+            "UNWIND [1] AS row MATCH (n:A {id: row}) SET n.seen = true",
+            "UNWIND mutation pipeline is unsupported",
+        ),
+        (
+            "UNWIND [1] AS row CREATE (:A {id: row})",
+            "row-bound value 'row' is not supported in this position",
+        ),
+        (
+            "UNWIND [1] AS row MERGE (:A {id: row})",
+            "row-bound value 'row' is not supported in this position",
+        ),
+    ] {
+        let error = plan_pipeline_query(query, &BTreeMap::new()).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:?}");
+    }
+}
+
+#[test]
+fn relationship_merge_batch_retains_box_payload_and_projection_capacity() {
+    use hawdb_core::RetainedHeapBytes;
+    let parameters = BTreeMap::from([("ids".into(), Value::List(vec![Value::Int(1)]))]);
+    let plan = plan_pipeline_query("MATCH (s:Skill {id: 1}) UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[r:EVIDENCE]->(m) RETURN m.id", &parameters).unwrap();
+    let LogicalPlan::UnwindMutation { mut operation, .. } = plan else {
+        panic!("expected row mutation")
+    };
+    assert_eq!(BatchMutationValue::Row.retained_heap_bytes(), Some(0));
+    let baseline = operation.retained_heap_bytes().unwrap();
+    let payload_bytes = 64 * 1024;
+    {
+        let BatchMutationOperation::MergeRelationship(merge) = &mut operation else {
+            panic!("expected relationship mutation")
+        };
+        assert!(baseline >= std::mem::size_of_val(merge.as_ref()));
+        merge.on_create_properties.insert(
+            "payload".into(),
+            BatchMutationValue::Static(Value::String("x".repeat(payload_bytes))),
+        );
+    }
+    let with_payload = operation.retained_heap_bytes().unwrap();
+    assert!(with_payload >= baseline + payload_bytes);
+    {
+        let BatchMutationOperation::MergeRelationship(merge) = &mut operation else {
+            panic!("expected relationship mutation")
+        };
+        let projection = &mut merge.returns.as_mut().unwrap()[0];
+        projection
+            .name
+            .reserve_exact(payload_bytes + projection.name.capacity());
+    }
+    assert!(operation.retained_heap_bytes().unwrap() >= with_payload + payload_bytes);
+}
+
+#[test]
+fn row_bound_pattern_properties_reuse_lookup_and_optional_predicates() {
+    let parameters = BTreeMap::from([("ids".into(), Value::List(vec![Value::Int(1)]))]);
+    for optional in [false, true] {
+        let prefix = if optional { "OPTIONAL MATCH" } else { "MATCH" };
+        let query = format!("UNWIND $ids AS candidate_id WITH candidate_id {prefix} (n:Item {{id: candidate_id}}) RETURN n.id");
+        let plan = plan_normalized_pipeline_query(&query, &parameters).unwrap();
+        let LogicalPlan::Project { input, .. } = plan else {
+            panic!("expected projection")
+        };
+        assert!(
+            matches!(*input, LogicalPlan::NodeColumnLookup { optional: actual, .. } if actual == optional)
+        );
+    }
+    let plan = plan_normalized_pipeline_query(
+        "UNWIND $ids AS candidate_id OPTIONAL MATCH (n:Item {id: candidate_id, active: true}) WHERE n.other = 1 RETURN n.id",
+        &parameters,
+    ).unwrap();
+    let LogicalPlan::Project { input, .. } = plan else {
+        panic!("expected projection")
+    };
+    let LogicalPlan::GraphMatch { program, .. } = *input else {
+        panic!("expected correlated MATCH")
+    };
+    assert!(program.optional);
+    assert!(matches!(program.predicate, Some(Predicate::And(_))));
+    let GraphMatchStep::Node(node) = &program.steps[0] else {
+        panic!("expected node step")
+    };
+    assert_eq!(
+        node.properties,
+        BTreeMap::from([("active".into(), Value::Bool(true))])
     );
 }

@@ -1,0 +1,836 @@
+{
+  "baseline": "0f611b6decbebd8354f2a30889e03c48287d18d2",
+  "candidate": "93661914cc37e4ad988dc8bb6db9e5c46e5acfec",
+  "pull_request": "https://github.com/nowledge-co/hawdb/pull/1378",
+  "issue": "https://github.com/nowledge-co/hawdb/issues/1362",
+  "host": {
+    "cpu": "Apple M3 Max",
+    "logical_cpus": 16,
+    "memory_bytes": 137438953472,
+    "os": "Darwin 27.0.0",
+    "architecture": "aarch64-apple-darwin"
+  },
+  "rust": {
+    "version": "1.97.1",
+    "commit": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+    "llvm": "22.1.6"
+  },
+  "source_digests": {
+    "rust-toolchain.toml": "8e390d6a0838315f972690f46ef8bae8b7ecc9ee6c1ed70140ef852869c2482e",
+    ".cargo/config.toml": "06c7ca26d39223bd90a6412acd8609c380ce2d1650a72b70c90171656ca89819",
+    "Cargo.lock": "43f41d43c4ec27a66634602a1ec8e6e495586618e3118fd7a1961da68d8b6bd7",
+    "benches/physical_plan_cache.rs": "3cd43e3f114164a04ad9c4ee681968fc3c09870c2e914549cab0c6a822ef8119"
+  },
+  "builds": {
+    "baseline": [
+      {
+        "label": "baseline",
+        "variant": "plain",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "--release",
+          "--bench",
+          "physical_plan_cache",
+          "--message-format=json"
+        ],
+        "source_commit": "0f611b6decbebd8354f2a30889e03c48287d18d2",
+        "harness_sha256": "3cd43e3f114164a04ad9c4ee681968fc3c09870c2e914549cab0c6a822ef8119",
+        "binary_sha256": "4cfba431c613faed24a24043041b6782830bf28a1f8d1ec2c1b0bf0c462a01f2",
+        "features": [
+          "background-maintenance",
+          "default",
+          "full-text-search",
+          "graph-analytics",
+          "tokio-runtime",
+          "vector-search"
+        ],
+        "profile": {
+          "opt_level": "3",
+          "debuginfo": 0,
+          "debug_assertions": false,
+          "overflow_checks": false,
+          "test": true
+        },
+        "build_seconds": 110.518968958
+      },
+      {
+        "label": "baseline",
+        "variant": "instrumented",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "--release",
+          "--bench",
+          "physical_plan_cache",
+          "--message-format=json",
+          "--features",
+          "qualification"
+        ],
+        "source_commit": "0f611b6decbebd8354f2a30889e03c48287d18d2",
+        "harness_sha256": "3cd43e3f114164a04ad9c4ee681968fc3c09870c2e914549cab0c6a822ef8119",
+        "binary_sha256": "96fc81a5514527b48a766d7389f0c3ef17898ae1ef3c03142a21d74079a7a239",
+        "features": [
+          "background-maintenance",
+          "default",
+          "full-text-search",
+          "graph-analytics",
+          "qualification",
+          "tokio-runtime",
+          "vector-search"
+        ],
+        "profile": {
+          "opt_level": "3",
+          "debuginfo": 0,
+          "debug_assertions": false,
+          "overflow_checks": false,
+          "test": true
+        },
+        "build_seconds": 85.3010635
+      }
+    ],
+    "candidate": [
+      {
+        "label": "candidate",
+        "variant": "plain",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "--release",
+          "--bench",
+          "physical_plan_cache",
+          "--message-format=json"
+        ],
+        "source_commit": "93661914cc37e4ad988dc8bb6db9e5c46e5acfec",
+        "harness_sha256": "3cd43e3f114164a04ad9c4ee681968fc3c09870c2e914549cab0c6a822ef8119",
+        "binary_sha256": "f5c7b39245253c8f8b12ae5c1c2eb75c4d8e3f84c4fdc87f97f1f7137a8874df",
+        "features": [
+          "background-maintenance",
+          "default",
+          "full-text-search",
+          "graph-analytics",
+          "tokio-runtime",
+          "vector-search"
+        ],
+        "profile": {
+          "opt_level": "3",
+          "debuginfo": 0,
+          "debug_assertions": false,
+          "overflow_checks": false,
+          "test": true
+        },
+        "build_seconds": 128.599832375
+      },
+      {
+        "label": "candidate",
+        "variant": "instrumented",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "--release",
+          "--bench",
+          "physical_plan_cache",
+          "--message-format=json",
+          "--features",
+          "qualification"
+        ],
+        "source_commit": "93661914cc37e4ad988dc8bb6db9e5c46e5acfec",
+        "harness_sha256": "3cd43e3f114164a04ad9c4ee681968fc3c09870c2e914549cab0c6a822ef8119",
+        "binary_sha256": "d4dcc095b20cb683f77b48c6438e08ad43cba57dccdc91f39ef4bceff7c8f664",
+        "features": [
+          "background-maintenance",
+          "default",
+          "full-text-search",
+          "graph-analytics",
+          "qualification",
+          "tokio-runtime",
+          "vector-search"
+        ],
+        "profile": {
+          "opt_level": "3",
+          "debuginfo": 0,
+          "debug_assertions": false,
+          "overflow_checks": false,
+          "test": true
+        },
+        "build_seconds": 120.90172845800001
+      }
+    ]
+  },
+  "allocation_oracle": [
+    {
+      "candidates": 20,
+      "actual_requested_bytes": 217320,
+      "charged_bytes": 247682
+    },
+    {
+      "candidates": 100,
+      "actual_requested_bytes": 1020680,
+      "charged_bytes": 1163826
+    },
+    {
+      "candidates": 512,
+      "actual_requested_bytes": 5173536,
+      "charged_bytes": 5892762
+    }
+  ],
+  "qualification": {
+    "final-policy-fuzz": {
+      "cpuTimeInMs": "28033",
+      "wallTimeInMs": "1159611",
+      "analysisPhaseTimeInMs": "654",
+      "executionPhaseTimeInMs": "1157799",
+      "actionsExecutionStartInMs": "1740",
+      "criticalPathTime": "510.133308250s",
+      "test_summaries": [
+        {
+          "target": "//crates/storage:hawdb_storage_file_lock_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.597
+        },
+        {
+          "target": "//crates/evidence:hawdb_inventory_health_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 2.7
+        },
+        {
+          "target": "//crates/evidence:hawdb_source_inventory_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.879
+        },
+        {
+          "target": "//crates/optimizer-graph:hawdb_optimizer_ddl_command_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.6
+        },
+        {
+          "target": "//crates/search:hawdb_search_hex_decoding_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.76
+        },
+        {
+          "target": "//crates/executor:hawdb_numeric_execution_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.795
+        },
+        {
+          "target": "//crates/executor:hawdb_graph_hash_join_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 6.487
+        },
+        {
+          "target": "//crates/executor:hawdb_result_delivery_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.772
+        },
+        {
+          "target": "//crates/optimizer-graph:hawdb_optimizer_candidate_fingerprint_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.795
+        },
+        {
+          "target": "//crates/executor:hawdb_query_observer_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.43
+        },
+        {
+          "target": "//crates/sql-syntax:hawdb_sql_alias_boundary_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.585
+        },
+        {
+          "target": "//crates/executor:hawdb_sort_merge_account_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 2.126
+        },
+        {
+          "target": "//crates/search:hawdb_search_term_policy_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 16.548
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_transaction_locks_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.735
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_graph_overlay_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 3.061
+        },
+        {
+          "target": "//crates/executor:hawdb_mutation_preflight_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 2.054
+        },
+        {
+          "target": "//crates/executor:hawdb_vector_seed_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.756
+        },
+        {
+          "target": "//crates/search:hawdb_search_document_frequency_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 21.992
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_durable_envelope_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 2.863
+        },
+        {
+          "target": "//crates/executor:hawdb_batch_dispatch_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.772
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_source_scan_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 8.288
+        },
+        {
+          "target": "//crates/executor:hawdb_transform_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.981
+        },
+        {
+          "target": "//crates/search:hawdb_search_spool_encoding_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.84
+        },
+        {
+          "target": "//crates/search:hawdb_search_document_analysis_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 2.176
+        },
+        {
+          "target": "//crates/route-ownership:hawdb_graph_route_ownership_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 6.983
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_graph_constraints_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.138
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_projected_artifact_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 3.156
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_set_value_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.228
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_durable_manifest_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 2.14
+        },
+        {
+          "target": "//crates/executor:hawdb_morsel_oracle_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.931
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_text_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 2.245
+        },
+        {
+          "target": "//crates/optimizer-relational:hawdb_optimizer_access_cost_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 4.055
+        },
+        {
+          "target": "//crates/search:hawdb_search_projection_evidence_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 18.407
+        },
+        {
+          "target": "//crates/executor:hawdb_execution_report_value_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.879
+        },
+        {
+          "target": "//crates/optimizer-graph:hawdb_optimizer_cardinality_metadata_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.974
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_checkpoint_wal_verbatim_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.854
+        },
+        {
+          "target": "//crates/search:hawdb_search_block_encoding_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.599
+        },
+        {
+          "target": "//crates/search:hawdb_search_manifest_encoding_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.78
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_property_projection_hex_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.121
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_positioned_read_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.697
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_relational_index_view_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 12.076
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_sharded_cache_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 5.582
+        },
+        {
+          "target": "//crates/search:hawdb_search_lexical_spill_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 3.722
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_append_reader_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 2.696
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_relational_row_workspace_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 14.963
+        },
+        {
+          "target": "//crates/search:hawdb_search_spool_decoding_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 2.288
+        },
+        {
+          "target": "//crates/search:hawdb_search_mini_delta_snapshot_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.84
+        },
+        {
+          "target": "//crates/search:hawdb_search_compression_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 3.996
+        },
+        {
+          "target": "//crates/search:hawdb_search_hydration_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.014
+        },
+        {
+          "target": "//crates/search:hawdb_search_concurrent_read_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.069
+        },
+        {
+          "target": "//crates/compat:hawdb_compat_contract_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.064
+        },
+        {
+          "target": "//crates/evidence:hawdb_resource_profile_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.072
+        },
+        {
+          "target": "//crates/search:hawdb_search_candidate_evidence_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.346
+        },
+        {
+          "target": "//crates/search:hawdb_search_manifest_budget_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 41.85
+        },
+        {
+          "target": "//crates/executor:hawdb_execution_lifecycle_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 3.592
+        },
+        {
+          "target": "//crates/executor:hawdb_graph_algorithm_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.052
+        },
+        {
+          "target": "//crates/optimizer-graph:hawdb_optimizer_full_text_cost_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.662
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_backup_hex_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.824
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_transaction_compaction_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 2.656
+        },
+        {
+          "target": "//crates/optimizer-graph:hawdb_optimizer_trace_cost_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.6
+        },
+        {
+          "target": "//crates/executor:hawdb_spill_compaction_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 23.753
+        },
+        {
+          "target": "//crates/optimizer-graph:hawdb_optimizer_cardinality_defaults_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.67
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_statistics_refresh_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.837
+        },
+        {
+          "target": "//crates/executor:hawdb_mutation_lowering_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.802
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_artifact_binding_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.127
+        },
+        {
+          "target": "//crates/storage:hawdb_storage_shadow_metadata_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.449
+        },
+        {
+          "target": "//crates/cypher:hawdb_cypher_backtracking_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 1.189
+        },
+        {
+          "target": "//crates/plan-cypher:hawdb_plan_cypher_explain_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.595
+        },
+        {
+          "target": "//crates/search:hawdb_search_bounded_file_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.655
+        },
+        {
+          "target": "//crates/plan-cache:hawdb_template_retention_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 3.646
+        },
+        {
+          "target": "//crates/plan-cache:hawdb_plan_cache_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 0.784
+        },
+        {
+          "target": "//crates/sql:hawdb_sql_clause_diagnostics_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 0.939
+        },
+        {
+          "target": "//crates/sql:hawdb_sql_create_binding_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 0.516
+        },
+        {
+          "target": "//crates/sql:hawdb_sql_frontend_corpus_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 0.554
+        },
+        {
+          "target": "//crates/readiness:hawdb_integration_bundle_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 6.971
+        },
+        {
+          "target": "//crates/relational:hawdb_relational_columnar_aggregate_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 1.458
+        },
+        {
+          "target": "//crates/relational:hawdb_relational_field_plan_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 1.024
+        },
+        {
+          "target": "//crates/relational:hawdb_relational_qualification_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 0.75
+        },
+        {
+          "target": "//crates/relational:hawdb_relational_physical_plan_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 1.277
+        },
+        {
+          "target": "//crates/relational:hawdb_relational_index_runtime_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 6.344
+        },
+        {
+          "target": "//crates/relational:hawdb_relational_explain_report_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 1.653
+        },
+        {
+          "target": "//crates/relational:hawdb_relational_row_runtime_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 3.471
+        },
+        {
+          "target": "//crates/readiness:hawdb_graph_route_readiness_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 16.811
+        },
+        {
+          "target": "//crates/relational:hawdb_relational_aggregate_state_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 2.017
+        },
+        {
+          "target": "//crates/readiness:hawdb_replacement_summary_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 23.333
+        },
+        {
+          "target": "//crates/readiness:hawdb_source_mutation_readiness_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 2.048
+        },
+        {
+          "target": "//:hawdb_acl_capability_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 6.507
+        },
+        {
+          "target": "//crates/relational:hawdb_relational_statement_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 0.64
+        },
+        {
+          "target": "//:hawdb_concurrent_key_range_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 1.191
+        },
+        {
+          "target": "//tools/shiro:shiro_append_seed_7_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 47.239
+        },
+        {
+          "target": "//tools/shiro:shiro_append_cli_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 45.101
+        },
+        {
+          "target": "//tools/shiro:shiro_relational_join_rewrite_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 1.109
+        },
+        {
+          "target": "//tools/shiro:shiro_parser_cli_tests",
+          "status": "PASSED",
+          "cached_result": true,
+          "recorded_test_duration_seconds": 0.565
+        },
+        {
+          "target": "//tools/shiro:shiro_append_replay_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 58.774
+        },
+        {
+          "target": "//tools/shiro:shiro_cli_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 0.801
+        },
+        {
+          "target": "//:hawdb_scan_callback_fuzz_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 21.926
+        },
+        {
+          "target": "//tools/shiro:shiro_storage_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 61.311
+        },
+        {
+          "target": "//tools/shiro:shiro_fast_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 429.242
+        },
+        {
+          "target": "//:hawdb_linux_ci_fuzz_smoke_test",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 478.816
+        },
+        {
+          "target": "//:hawdb_graph_projection_residency_fuzz_second_half_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 272.83
+        },
+        {
+          "target": "//:hawdb_graph_projection_residency_fuzz_first_half_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 143.88
+        }
+      ],
+      "executed_targets": 27,
+      "cached_targets": 74
+    },
+    "policy-facade": {
+      "cpuTimeInMs": "3553",
+      "wallTimeInMs": "66158",
+      "analysisPhaseTimeInMs": "46",
+      "executionPhaseTimeInMs": "65906",
+      "actionsExecutionStartInMs": "227",
+      "criticalPathTime": "65.896797416s",
+      "test_summaries": [
+        {
+          "target": "//:hawdb_unit_general_tests",
+          "status": "PASSED",
+          "cached_result": false,
+          "recorded_test_duration_seconds": 37.522
+        }
+      ],
+      "executed_targets": 1,
+      "cached_targets": 0
+    },
+    "facade_command_total_seconds": 670.973,
+    "facade_server_wait_seconds": 604.8149999999999,
+    "facade_rust_cases": 128,
+    "facade_rust_execution_seconds": 31.46,
+    "native_plan_cache_unit_cases": 47,
+    "minimal_facade_cases": 120,
+    "mvcc": {
+      "cases": 50084,
+      "execution_milliseconds": 30000
+    }
+  },
+  "measurement_isolation": {
+    "task_builds_and_tests_finished_before_measurement": true,
+    "external_rustc_processes_at_start": 0,
+    "external_rustc_processes_at_end": 0,
+    "host_is_shared": true
+  },
+  "artifact_policy": "Structured measurements, provenance, procedure and conclusions only. Raw compiler logs, BEP, process snapshots and profiler output remain outside Git."
+}

@@ -24,7 +24,11 @@ impl DatabaseTransactionRuntime {
             instance_identity: db.instance_identity()?,
             session_config,
             optimizer: runtime.optimizer.clone(),
-            plan_cache: SharedState::new(PlanCache::new(db.config.max_plan_cache_entries)),
+            plan_cache: SharedState::new(PlanCache::with_byte_limits(
+                db.config.max_plan_cache_entries,
+                Some(db.config.max_physical_plan_cache_bytes),
+                Some(db.config.max_physical_plan_cache_entry_bytes),
+            )),
             relational_plan_template_cache: Arc::clone(&runtime.relational_plan_template_cache),
             optimizer_planning_cache: SharedState::new(
                 runtime.optimizer_planning_cache.borrow().clone(),
@@ -301,10 +305,8 @@ pub(super) fn execute_graph_transaction_plan(
     }
     if executor::is_mutation_plan(&optimized.physical_plan)? {
         runtime.ensure_writable(transaction.store())?;
-        let is_mutation_return = matches!(
-            optimized.physical_plan,
-            PhysicalPlan::SetNodePropertiesReturn { .. }
-        );
+        let is_mutation_return =
+            hawdb_executor::mutation::mutation_returns_rows(&optimized.physical_plan);
         let mut mutation_limits = match &optimized.physical_plan {
             PhysicalPlan::SetNodePropertiesReturn {
                 returns: crate::planner::SetNodePropertiesReturnMode::Count { .. },
@@ -323,23 +325,32 @@ pub(super) fn execute_graph_transaction_plan(
             mutation_limits.max_result_rows = mutation_limits.max_result_rows.min(limit);
         }
         let statement_savepoint = transaction.savepoint();
-        let execution = (|| {
-            let summary = match &optimized.physical_plan {
-                PhysicalPlan::UnwindMutation {
-                    rows,
-                    variable,
-                    operation,
-                } => transaction.stage_mutations_with_limits(
-                    executor::materialize_unwind_mutations(
-                        rows,
-                        variable,
-                        operation,
+        let execute = || {
+            let staged = executor::stage_row_mutations(
+                &optimized.physical_plan,
+                parameters,
+                runtime.config.csv_import_policy().as_ref(),
+                mutation_limits,
+                &runtime.config.execution_memory,
+                task_context,
+            )?;
+            let summary = match staged {
+                Some(mut staged) => {
+                    // Endpoints resolve against this transaction's working
+                    // store, which already holds its earlier statements.
+                    // Relationship CREATE and MERGE endpoints both resolve
+                    // here.
+                    staged.resolve_endpoints(
+                        transaction.catalog(),
+                        transaction.store(),
                         mutation_limits,
+                        &runtime.config.execution_memory,
                         task_context,
-                    )?,
-                    mutation_limits,
-                )?,
-                _ => {
+                    )?;
+                    let (mutations, _charge) = staged.into_parts();
+                    transaction.stage_mutations_with_limits(mutations, mutation_limits)?
+                }
+                None => {
                     let command = if is_mutation_return {
                         hawdb_executor::mutation::materialize_node_mutation(
                             &optimized.physical_plan,
@@ -411,7 +422,10 @@ pub(super) fn execute_graph_transaction_plan(
                 output,
                 transaction.lock_footprint_since(&statement_savepoint)?,
             ))
-        })();
+        };
+        // Row-evaluated clock reads observe the instant planning observed.
+        let execution =
+            hawdb_core::temporal::with_statement_clock(optimized.statement_clock, execute);
         return match execution {
             Ok((output, lock_footprint)) => Ok(GraphTransactionStatementOutcome {
                 output,
@@ -434,6 +448,8 @@ pub(super) fn execute_graph_transaction_plan(
                 parameters,
                 &runtime.config.execution_memory,
             )
+            .with_statement_clock(optimized.statement_clock)
+            .with_csv_import(runtime.config.csv_import_policy().as_ref())
             .with_output_columns(optimized.output_columns.as_deref())
             .with_output_limits(
                 restrictive_query_limit(
@@ -560,10 +576,7 @@ impl<'a> PreparedGraphTransactionRequest<'a> {
     }
 
     pub(super) fn returns_statement_rows(&self) -> bool {
-        matches!(
-            self.optimized.physical_plan,
-            PhysicalPlan::SetNodePropertiesReturn { .. }
-        )
+        hawdb_executor::mutation::mutation_returns_rows(&self.optimized.physical_plan)
     }
 
     pub(super) fn into_trace(self, capture_trace: bool) -> QueryExecutionTrace {
@@ -676,6 +689,49 @@ pub(super) fn execute_database_transaction_sql(
             join_planning: RelationalJoinPlanningDirective::Auto,
         },
     )
+}
+
+pub(super) fn transaction_relational_read_modes<'a>(
+    runtime: &DatabaseTransactionRuntime,
+    state: &'a DatabaseTransactionState,
+) -> Result<crate::relational_sql::RelationalQueryReadModes<'a>> {
+    let index_read_mode = if runtime
+        .config
+        .relational_index_mode
+        .requires_authoritative_indexes()
+    {
+        crate::relational_sql::RelationalIndexReadMode::AuthoritativeTransaction(
+            state.authoritative_relational_index()?,
+        )
+    } else if runtime
+        .config
+        .relational_index_mode
+        .serves_demand_paged_reads()
+    {
+        crate::relational_sql::RelationalIndexReadMode::TransactionWorkspace
+    } else {
+        crate::relational_sql::RelationalIndexReadMode::Materialized
+    };
+    let row_read_mode = match &state.relational_rows {
+        Ok(Some(rows)) => crate::relational_sql::RelationalRowReadMode::Transaction {
+            store: state
+                .graph_transaction
+                .as_ref()
+                .expect("database transaction must own a graph workspace")
+                .store(),
+            rows,
+        },
+        Ok(None) => crate::relational_sql::RelationalRowReadMode::CanonicalMemory,
+        Err(error) => {
+            return Err(HawDBError::StorageIntegrity(format!(
+                "authoritative transaction row view could not be pinned: {error}"
+            )));
+        }
+    };
+    Ok(crate::relational_sql::RelationalQueryReadModes::new(
+        index_read_mode,
+        row_read_mode,
+    ))
 }
 
 pub(super) struct DatabaseTransactionSqlOptions<'a> {
@@ -866,44 +922,12 @@ pub(super) fn execute_database_transaction_prepared_sql(
         prepared.statement(),
         crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
     ) {
-        let index_read_mode = if runtime
-            .config
-            .relational_index_mode
-            .requires_authoritative_indexes()
-        {
-            crate::relational_sql::RelationalIndexReadMode::AuthoritativeTransaction(
-                state.authoritative_relational_index()?,
-            )
-        } else if runtime
-            .config
-            .relational_index_mode
-            .serves_demand_paged_reads()
-        {
-            crate::relational_sql::RelationalIndexReadMode::TransactionWorkspace
-        } else {
-            crate::relational_sql::RelationalIndexReadMode::Materialized
-        };
-        let row_read_mode = match &state.relational_rows {
-            Ok(Some(rows)) => crate::relational_sql::RelationalRowReadMode::Transaction {
-                store: state
-                    .graph_transaction
-                    .as_ref()
-                    .expect("database transaction must own a graph workspace")
-                    .store(),
-                rows,
-            },
-            Ok(None) => crate::relational_sql::RelationalRowReadMode::CanonicalMemory,
-            Err(error) => {
-                return Err(HawDBError::StorageIntegrity(format!(
-                    "authoritative transaction row view could not be pinned: {error}"
-                )));
-            }
-        };
+        let read_modes = transaction_relational_read_modes(runtime, state)?;
         let output = crate::relational_sql::execute_prepared_relational_query_with_resources(
             prepared,
             parameters,
             &state.relational_state,
-            crate::relational_sql::RelationalQueryReadModes::new(index_read_mode, row_read_mode),
+            read_modes,
             relational_query_resource_context(
                 &runtime.config,
                 max_rows,
@@ -1798,6 +1822,8 @@ impl DatabaseSession<'_> {
                     parameters,
                     &self.db.config.execution_memory,
                 )
+                .with_statement_clock(optimized.statement_clock)
+                .with_csv_import(self.db.config.csv_import_policy().as_ref())
                 .with_output_columns(optimized.output_columns.as_deref())
                 .with_output_limits(row_limit, self.db.config.max_read_result_payload_bytes),
                 executor::ExecutionResources::new(

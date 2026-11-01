@@ -17,6 +17,8 @@ use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanCoverageReport {
+    pub same_plan_agreements: usize,
+    pub different_plan_agreements: usize,
     pub unique_memo_plans: usize,
     pub unique_direct_fallback_plans: usize,
     pub unique_plan_pairs: usize,
@@ -29,6 +31,8 @@ pub struct PlanCoverageReport {
 impl PlanCoverageReport {
     pub(crate) fn json(&self) -> JsonValue {
         json!({
+            "same_plan_agreements": self.same_plan_agreements,
+            "different_plan_agreements": self.different_plan_agreements,
             "unique_memo_plans": self.unique_memo_plans,
             "unique_direct_fallback_plans": self.unique_direct_fallback_plans,
             "unique_plan_pairs": self.unique_plan_pairs,
@@ -42,6 +46,8 @@ impl PlanCoverageReport {
 
 #[derive(Debug, Default)]
 pub(crate) struct PlanCoverageTracker {
+    same_plan_agreements: usize,
+    different_plan_agreements: usize,
     memo_plans: BTreeSet<String>,
     direct_fallback_plans: BTreeSet<String>,
     plan_pairs: BTreeSet<(String, String)>,
@@ -52,6 +58,20 @@ pub(crate) struct PlanCoverageTracker {
 }
 
 impl PlanCoverageTracker {
+    pub(crate) fn observe_agreement(
+        &mut self,
+        success: bool,
+        memo: Option<&str>,
+        direct: Option<&str>,
+    ) {
+        if success && let (Some(memo), Some(direct)) = (memo, direct) {
+            if memo == direct {
+                self.same_plan_agreements += 1;
+            } else {
+                self.different_plan_agreements += 1;
+            }
+        }
+    }
     pub(crate) fn observe(&mut self, memo: Option<&str>, direct_fallback: Option<&str>) -> bool {
         let mut novel = false;
         if let Some(fingerprint) = memo {
@@ -89,6 +109,8 @@ impl PlanCoverageTracker {
     pub(crate) fn report(self) -> PlanCoverageReport {
         let optimizer_stage_names = self.optimizer_stages.iter().cloned().collect::<Vec<_>>();
         PlanCoverageReport {
+            same_plan_agreements: self.same_plan_agreements,
+            different_plan_agreements: self.different_plan_agreements,
             unique_memo_plans: self.memo_plans.len(),
             unique_direct_fallback_plans: self.direct_fallback_plans.len(),
             unique_plan_pairs: self.plan_pairs.len(),
@@ -119,6 +141,18 @@ mod tests {
         assert_eq!(report.unique_plan_pairs, 2);
         assert_eq!(report.novel_case_count, 2);
         assert_eq!(report.max_consecutive_non_novel_cases, 2);
+    }
+
+    #[test]
+    fn only_successful_known_different_fingerprints_count_as_different_plan_agreement() {
+        let mut tracker = PlanCoverageTracker::default();
+        tracker.observe_agreement(true, Some("a"), Some("a"));
+        tracker.observe_agreement(true, Some("a"), Some("b"));
+        tracker.observe_agreement(false, Some("a"), Some("b"));
+        tracker.observe_agreement(true, None, Some("b"));
+        let report = tracker.report();
+        assert_eq!(report.same_plan_agreements, 1);
+        assert_eq!(report.different_plan_agreements, 1);
     }
 
     #[test]

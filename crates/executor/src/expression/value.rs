@@ -148,7 +148,28 @@ pub fn binding_value(binding: &Binding, catalog: &Catalog, variable: &str) -> Op
         .or_else(|| (binding.values.get(variable) == Some(&Value::Null)).then_some(Value::Null))
 }
 
-fn node_value(node: &NodeRecord, catalog: &Catalog) -> Value {
+/// Map keys of the value bound to a shortest-path variable. Returning a path
+/// variable yields this map; path functions read it.
+pub(crate) const PATH_LENGTH_KEY: &str = "length";
+pub(crate) const PATH_NODES_KEY: &str = "nodes";
+pub(crate) const PATH_RELATIONSHIPS_KEY: &str = "relationships";
+
+/// Builds a path value from ordered node and relationship values.
+pub(crate) fn path_value(nodes: Vec<Value>, relationships: Vec<Value>) -> Value {
+    Value::Map(BTreeMap::from([
+        (
+            PATH_LENGTH_KEY.to_string(),
+            Value::Int(relationships.len() as i64),
+        ),
+        (PATH_NODES_KEY.to_string(), Value::List(nodes)),
+        (
+            PATH_RELATIONSHIPS_KEY.to_string(),
+            Value::List(relationships),
+        ),
+    ]))
+}
+
+pub(crate) fn node_value(node: &NodeRecord, catalog: &Catalog) -> Value {
     let mut values = node.properties.clone();
     values.insert("_id".to_string(), Value::Int(node.id.0 as i64));
     values.insert(
@@ -164,7 +185,7 @@ fn node_value(node: &NodeRecord, catalog: &Catalog) -> Value {
     Value::Map(values)
 }
 
-fn relationship_value(relationship: &RelRecord, catalog: &Catalog) -> Value {
+pub(crate) fn relationship_value(relationship: &RelRecord, catalog: &Catalog) -> Value {
     let mut values = relationship.properties.clone();
     values.insert("_id".to_string(), Value::Int(relationship.id.0 as i64));
     values.insert(
@@ -232,6 +253,17 @@ fn truth_value(truth: PredicateTruth) -> Value {
 fn evaluate_arithmetic(left: &Value, op: ScalarBinaryOp, right: &Value) -> Result<Value> {
     if matches!(left, Value::Null) || matches!(right, Value::Null) {
         return Ok(Value::Null);
+    }
+    let temporal_op = match op {
+        ScalarBinaryOp::Add => hawdb_core::temporal::TemporalArithmeticOp::Add,
+        ScalarBinaryOp::Subtract => hawdb_core::temporal::TemporalArithmeticOp::Subtract,
+        ScalarBinaryOp::Multiply => hawdb_core::temporal::TemporalArithmeticOp::Multiply,
+        ScalarBinaryOp::Divide => hawdb_core::temporal::TemporalArithmeticOp::Divide,
+        ScalarBinaryOp::Remainder => hawdb_core::temporal::TemporalArithmeticOp::Remainder,
+        _ => unreachable!("arithmetic operators only"),
+    };
+    if let Some(result) = hawdb_core::temporal::arithmetic(left, temporal_op, right) {
+        return result.map_err(|error| HawDBError::Execution(error.to_string()));
     }
     if let (Value::Int(left), Value::Int(right)) = (left, right) {
         if matches!(op, ScalarBinaryOp::Divide | ScalarBinaryOp::Remainder) && *right == 0 {

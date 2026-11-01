@@ -135,6 +135,8 @@ pub enum VersionKey {
     },
     /// Read invalidation only. Covers all rows formerly/currently matching an
     /// exact leading tuple of a declared relational index, including payloads.
+    /// An empty tuple is the index's conservative barrier when a changed key
+    /// cannot be represented by the bounded prefix-summary family.
     ReadRelationalIndexPrefix {
         table: String,
         index: String,
@@ -728,6 +730,15 @@ impl VersionIndex {
             VersionKey::ReadBarrier => self.read_barrier,
             _ => self.stamps.get(key).copied(),
         }
+    }
+
+    /// Seek a bounded validation interval without enumerating unrelated pages.
+    pub(crate) fn stamps_in_range<'a>(
+        &'a self,
+        first: &'a VersionKey,
+        last: &'a VersionKey,
+    ) -> impl Iterator<Item = (&'a VersionKey, &'a VersionStamp)> {
+        self.stamps.range(first, last)
     }
 
     /// Returns the first write-write conflict under first-committer-wins.

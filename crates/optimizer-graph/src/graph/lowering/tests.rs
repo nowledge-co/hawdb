@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::*;
+use crate::graph::selected_trace::selected_plan_trace;
 use hawdb_plan_cypher::{Aggregation, SortDirection};
 
 fn scan(variable: &str) -> LogicalPlan {

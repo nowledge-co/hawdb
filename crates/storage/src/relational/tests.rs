@@ -16,6 +16,8 @@ use super::*;
 
 #[path = "tests/checkpoint_admission.rs"]
 mod checkpoint_admission;
+#[path = "tests/overflow_pruning.rs"]
+mod overflow_pruning;
 
 #[test]
 fn relational_types_map_to_shared_logical_types() {

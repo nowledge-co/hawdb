@@ -22,6 +22,7 @@ mod imports;
 mod mutation;
 mod normalize;
 mod path;
+mod pattern_properties;
 mod procedure;
 #[cfg(test)]
 mod tests;
@@ -50,10 +51,11 @@ pub fn plan_parsed_pipeline_query(
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
     let plan = bind_pipeline(query, parameters)?;
-    // Multi-WITH statements already had a public generic-plan contract before
-    // default MATCH routing. Keep their EXPLAIN shape and exact-parameter cache
-    // variants. Ranked evidence normalizes its input at the aggregate boundary;
-    // retain its outer aliases so final ORDER BY/LIMIT can select bounded TopN.
+    // Every read shape, including statements with several WITH clauses, uses
+    // the same structural normalization; parameters it moves into seeks and
+    // expands remain template slots or exact cache guards (#1425). Ranked
+    // evidence normalizes its input at the aggregate boundary; retain its outer
+    // aliases so final ORDER BY/LIMIT can select bounded TopN.
     let ranked_evidence = query.clauses.iter().any(|clause| match &clause.kind {
         ClauseKind::With(projection) | ClauseKind::Return(projection) => projection
             .items
@@ -61,14 +63,7 @@ pub fn plan_parsed_pipeline_query(
             .any(|item| contains_ranked_evidence(&item.expression)),
         _ => false,
     });
-    if ranked_evidence
-        || query
-            .clauses
-            .iter()
-            .filter(|clause| matches!(clause.kind, ClauseKind::With(_)))
-            .nth(1)
-            .is_some()
-    {
+    if ranked_evidence {
         Ok(plan)
     } else {
         Ok(normalize::normalize(plan))
@@ -112,6 +107,8 @@ enum BindingType {
     },
     Scalar,
     UnmaterializedPath,
+    /// A path value column bound by a shortest-path pattern.
+    Path,
 }
 
 #[derive(Clone, Default)]
@@ -134,6 +131,7 @@ impl Scope {
                 matches!(
                     kind,
                     BindingType::Scalar
+                        | BindingType::Path
                         | BindingType::Graph {
                             column: Some(_),
                             ..
@@ -199,12 +197,54 @@ fn bind_pipeline(
             "query exceeds maximum clause depth".to_string(),
         ));
     }
-    if matches!(
-        query.clauses.first().map(|clause| &clause.kind),
-        Some(ClauseKind::Unwind { .. })
-    ) {
+    let has_mutation = query.clauses.iter().any(|clause| {
+        matches!(
+            clause.kind,
+            ClauseKind::Create(_)
+                | ClauseKind::Merge { .. }
+                | ClauseKind::Set(_)
+                | ClauseKind::Delete { .. }
+        )
+    });
+    if has_mutation
+        && matches!(
+            query.clauses.first().map(|clause| &clause.kind),
+            Some(ClauseKind::Unwind { .. })
+        )
+    {
         return mutation::bind_unwind_mutation_pipeline(query, parameters);
     }
+    if query
+        .clauses
+        .iter()
+        .skip(1)
+        .any(|clause| matches!(clause.kind, ClauseKind::LoadCsv(_)))
+    {
+        return Err(HawDBError::Semantic(
+            "LOAD CSV is supported only as the first clause of a query".to_string(),
+        ));
+    }
+    if matches!(
+        query.clauses.first().map(|clause| &clause.kind),
+        Some(ClauseKind::LoadCsv(_))
+    ) && query.clauses.iter().any(|clause| {
+        matches!(
+            clause.kind,
+            ClauseKind::Create(_)
+                | ClauseKind::Merge { .. }
+                | ClauseKind::Set(_)
+                | ClauseKind::Delete { .. }
+        )
+    }) {
+        return mutation::bind_load_csv_mutation_pipeline(query, parameters);
+    }
+    let lowered;
+    let query = if !has_mutation && pattern_properties::needs_lowering(query) {
+        lowered = pattern_properties::lower(query)?;
+        &lowered
+    } else {
+        query
+    };
     if let Some(plan) = bind_optional_relationship_count_sum(query, parameters) {
         return plan;
     }
@@ -214,15 +254,7 @@ fn bind_pipeline(
     if let Some(plan) = bind_optional_degree_pipeline(query, parameters) {
         return plan;
     }
-    if query.clauses.iter().any(|clause| {
-        matches!(
-            clause.kind,
-            ClauseKind::Create(_)
-                | ClauseKind::Merge { .. }
-                | ClauseKind::Set(_)
-                | ClauseKind::Delete { .. }
-        )
-    }) {
+    if has_mutation {
         return mutation::bind_mutation_pipeline(query, parameters);
     }
     if matches!(
@@ -231,12 +263,21 @@ fn bind_pipeline(
     ) {
         return procedure::bind_procedure_pipeline(query, parameters);
     }
+    path::reject_shortest_path_predicates(&query.clauses)?;
+    // The original endpoint-id `ALL SHORTEST` MATCH ... RETURN shape keeps its
+    // dedicated operator and results. Every other shortest-path pattern is
+    // bound as a correlated MATCH step. When neither binder accepts the query,
+    // report the original binder's error so existing refusals are unchanged.
     if query.clauses.iter().any(|clause| {
         matches!(&clause.kind,
         ClauseKind::Match { patterns, .. } if patterns.iter().any(|pattern|
             pattern.steps.iter().any(|step| step.relationship.search == PathSearch::AllShortest)))
     }) {
-        return path::bind_shortest_path_pipeline(query, parameters);
+        return match path::bind_shortest_path_pipeline(query, parameters) {
+            Ok(plan) => Ok(plan),
+            Err(legacy) => bind_read_clauses(&query.clauses, None, Scope::default(), parameters)
+                .map_err(|_| legacy),
+        };
     }
     bind_read_clauses(&query.clauses, None, Scope::default(), parameters)
 }
@@ -1125,6 +1166,59 @@ fn bind_read_clauses(
 ) -> Result<LogicalPlan> {
     for clause in clauses {
         match &clause.kind {
+            ClauseKind::Unwind { source, variable }
+                if input.is_none() && scope.0.is_empty() && !source.reads_row_binding() =>
+            {
+                let rows = match bind_value(source, parameters)? {
+                    Value::List(rows) => rows,
+                    Value::Null => Vec::new(),
+                    _ => {
+                        return Err(HawDBError::Semantic(
+                            "UNWIND source must resolve to a list value or NULL".into(),
+                        ))
+                    }
+                };
+                scope.0.insert(variable.clone(), BindingType::Scalar);
+                input = Some(LogicalPlan::Unwind {
+                    rows,
+                    variable: variable.clone(),
+                });
+            }
+            ClauseKind::Unwind { source, variable } => {
+                if scope.0.contains_key(variable) {
+                    return Err(HawDBError::Semantic(format!(
+                        "UNWIND variable '{variable}' is already bound"
+                    )));
+                }
+                let mut expression = plan_scalar_expression_with_columns(
+                    &scope.graph_names(),
+                    &scope.columns(),
+                    &row_value_expression(source.clone())?,
+                    parameters,
+                )?;
+                let input_plan = input.take().ok_or_else(|| {
+                    HawDBError::Semantic("row-dependent UNWIND requires upstream rows".into())
+                })?;
+                let needed = imports::for_expression(&mut expression, &scope)?;
+                let input_plan = imports::restore(input_plan, &scope, &needed);
+                scope.0.insert(variable.clone(), BindingType::Scalar);
+                input = Some(LogicalPlan::UnwindRows {
+                    expression,
+                    variable: variable.clone(),
+                    input: Box::new(input_plan),
+                });
+            }
+            ClauseKind::LoadCsv(load) => {
+                if input.is_some() || scope.0.contains_key(&load.variable) {
+                    return Err(HawDBError::Semantic(
+                        "LOAD CSV is supported only as the first clause of a query".to_string(),
+                    ));
+                }
+                scope.0.insert(load.variable.clone(), BindingType::Scalar);
+                input = Some(LogicalPlan::LoadCsv {
+                    source: mutation::bind_load_csv_source(load)?,
+                });
+            }
             ClauseKind::Call { procedure, yields } => {
                 let hawdb_cypher::ProcedureCallKind::VectorIndexSearch(search) = &procedure.kind
                 else {
@@ -1136,6 +1230,22 @@ fn bind_read_clauses(
                     procedure::bind_vector_index(search, yields, input.take(), scope, parameters)?;
                 input = Some(next);
                 scope = next_scope;
+            }
+            ClauseKind::Match {
+                optional,
+                patterns,
+                predicate,
+            } if patterns.iter().any(path::is_shortest_path_pattern) => {
+                input = Some(path::bind_shortest_path_match(
+                    path::ShortestPathMatch {
+                        optional: *optional,
+                        patterns,
+                        predicate: predicate.as_ref(),
+                    },
+                    input.take(),
+                    &mut scope,
+                    parameters,
+                )?);
             }
             ClauseKind::Match {
                 optional,
@@ -1161,7 +1271,7 @@ fn bind_read_clauses(
                     if pattern
                         .steps
                         .iter()
-                        .any(|step| step.relationship.search == PathSearch::AllShortest)
+                        .any(|step| step.relationship.search.is_shortest())
                     {
                         return Err(HawDBError::Semantic(
                             "path binding requires shortest-path lowering".to_string(),
@@ -1216,8 +1326,10 @@ fn bind_read_clauses(
                     program: GraphMatchProgram {
                         imports,
                         introduced,
+                        projected_nodes: BTreeMap::new(),
                         steps,
                         predicate,
+                        predicate_steps: Vec::new(),
                         optional: *optional,
                     },
                     input: input.map(Box::new),
@@ -1264,8 +1376,10 @@ fn restore_bindings(input: Option<LogicalPlan>, scope: &mut Scope) -> LogicalPla
         program: GraphMatchProgram {
             imports,
             introduced: Vec::new(),
+            projected_nodes: BTreeMap::new(),
             steps: Vec::new(),
             predicate: None,
+            predicate_steps: Vec::new(),
             optional: false,
         },
         input: input.map(Box::new),
@@ -1301,17 +1415,31 @@ fn bind_projection(
                     kind: *kind,
                     column: Some(name.clone()),
                 },
+                Some(BindingType::Path) => BindingType::Path,
                 _ => BindingType::Scalar,
             },
             _ => BindingType::Scalar,
         };
         output_scope.0.insert(name.clone(), kind);
     }
-    let projected_names = names.iter().cloned().collect();
+    let projected_names: BTreeSet<String> = names.iter().cloned().collect();
     let projected_graph = output_scope.graph_names();
     let mut sort_items = Vec::new();
     let mut hidden_order_keys = false;
     for (index, item) in projection.order_by.iter().enumerate() {
+        if let OrderExpression::Projection(expression) = &item.expression
+            && super::arithmetic::contains_aggregate(expression)
+        {
+            sort_items.push(plan_aggregate_sort_item(
+                &graph,
+                &columns,
+                (&projection.items, &projected_names),
+                item,
+                expression,
+                parameters,
+            )?);
+            continue;
+        }
         match plan_sort_items(
             &projected_graph,
             &projected_names,
@@ -1320,10 +1448,27 @@ fn bind_projection(
         ) {
             Ok(mut items) => sort_items.append(&mut items),
             Err(error) if projection.distinct => return Err(error),
-            Err(_) => {
+            Err(error) => {
                 let mut items =
                     plan_sort_items(&graph, &columns, std::slice::from_ref(item), parameters)?;
-                let item = items.pop().expect("one ORDER BY expression");
+                let planned_item = items.pop().expect("one ORDER BY expression");
+                // After an aggregating projection only grouped values are in
+                // scope. An expression key that reads anything else would
+                // become a hidden grouping key and silently split the
+                // groups, so it fails instead. Plain property, column and id
+                // keys keep their earlier hidden-key behaviour (#1408).
+                if let SortKey::Expression(expression) = &planned_item.key
+                    && matches!(
+                        item.expression,
+                        OrderExpression::Projection(_) | OrderExpression::Value(_)
+                    )
+                    && planned
+                        .group_keys()
+                        .is_some_and(|keys| !reads_only_group_keys(expression, keys))
+                {
+                    return Err(error);
+                }
+                let item = planned_item;
                 let expression = match item.key {
                     SortKey::Column(column) => ProjectionExpression::Column(column),
                     SortKey::Property { variable, property } => {
@@ -1424,6 +1569,90 @@ pub fn unique_projection_names(names: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// Whether `expression` reads only values an aggregating projection groups
+/// by: a grouping key itself, a grouped property or column, any property or
+/// id of a grouped variable, or expressions composed of those and literals.
+fn reads_only_group_keys(expression: &ProjectionExpression, keys: &[Projection]) -> bool {
+    let grouped_variable = |variable: &str| {
+        keys.iter().any(|key| {
+            matches!(&key.expression, ProjectionExpression::Variable { variable: grouped }
+                if grouped == variable)
+        })
+    };
+    let grouped_property = |variable: &str, property: &str| {
+        grouped_variable(variable)
+            || keys.iter().any(|key| {
+                matches!(&key.expression, ProjectionExpression::Property {
+                    variable: grouped_variable,
+                    property: grouped_property,
+                } if grouped_variable == variable && grouped_property == property)
+            })
+    };
+    let grouped_column = |column: &str| {
+        keys.iter().any(|key| match &key.expression {
+            ProjectionExpression::Column(grouped)
+            | ProjectionExpression::Variable { variable: grouped } => grouped == column,
+            _ => false,
+        })
+    };
+    if keys.iter().any(|key| &key.expression == expression) {
+        return true;
+    }
+    match expression {
+        ProjectionExpression::Literal(_) | ProjectionExpression::LocalVariable { .. } => true,
+        ProjectionExpression::Property { variable, .. }
+        | ProjectionExpression::Id { variable }
+        | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
+            grouped_variable(variable)
+        }
+        // Specialised single-property forms, such as a lowered
+        // `CASE WHEN n.p = … THEN … END`.
+        ProjectionExpression::DatePart {
+            variable, property, ..
+        }
+        | ProjectionExpression::DefaultIfNullOrEq {
+            variable, property, ..
+        }
+        | ProjectionExpression::DefaultIfNull {
+            variable, property, ..
+        }
+        | ProjectionExpression::CasePropertyNotNullOrEq {
+            variable, property, ..
+        }
+        | ProjectionExpression::CasePropertyEqualsRank {
+            variable, property, ..
+        }
+        | ProjectionExpression::CaseLowerPropertyDefault {
+            variable, property, ..
+        } => grouped_property(variable, property),
+        ProjectionExpression::Column(column)
+        | ProjectionExpression::ColumnProperty { column, .. }
+        | ProjectionExpression::ColumnDefaultIfNullOrEq { column, .. }
+        | ProjectionExpression::ColumnValueDefaultIfNull { column, .. }
+        | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { column, .. } => {
+            grouped_column(column)
+        }
+        ProjectionExpression::Case { .. }
+        | ProjectionExpression::Binary { .. }
+        | ProjectionExpression::VectorDistance { .. }
+        | ProjectionExpression::Not(_)
+        | ProjectionExpression::IsNull { .. }
+        | ProjectionExpression::Lower(_)
+        | ProjectionExpression::Left { .. }
+        | ProjectionExpression::JsonValue { .. }
+        | ProjectionExpression::Coalesce(_)
+        | ProjectionExpression::List(_)
+        | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::ListSlice { .. } => {
+            expression.all_children(|child| reads_only_group_keys(child, keys))
+        }
+        _ => false,
+    }
+}
+
 fn append_order_projection(planned: &mut PlannedReturns, projection: Projection) {
     match planned {
         PlannedReturns::Projections(items) => items.push(projection),
@@ -1469,10 +1698,9 @@ fn bind_predicate(
         PropertyPredicate::Not(child) => {
             Predicate::Not(Box::new(bind_predicate(child, scope, parameters)?))
         }
-        PropertyPredicate::ExpressionEq { expression, value } => Predicate::ExpressionEq {
-            expression: bind(expression)?,
-            value: bind(value)?,
-        },
+        PropertyPredicate::ExpressionEq { expression, value } => {
+            super::temporal::eq_predicate(bind(expression)?, bind(value)?)
+        }
         PropertyPredicate::ExpressionNotEq { expression, value } => Predicate::ExpressionNotEq {
             expression: bind(expression)?,
             value: bind(value)?,
@@ -1481,11 +1709,11 @@ fn bind_predicate(
             expression,
             op,
             value,
-        } => Predicate::ExpressionCompare {
-            expression: bind(expression)?,
-            op: plan_comparison_op(*op),
-            value: bind(value)?,
-        },
+        } => super::temporal::compare_predicate(
+            bind(expression)?,
+            plan_comparison_op(*op),
+            bind(value)?,
+        ),
         PropertyPredicate::ExpressionContains { expression, value } => {
             Predicate::ExpressionContains {
                 expression: bind(expression)?,

@@ -181,6 +181,7 @@ fn cleanup_control(phase: Phase, delta_bytes: u64) -> Arc<Control> {
             max_delta_bytes: Some(16 * 1024),
             read_only: false,
             wal_sync_group_active: false,
+            relational_live: Default::default(),
         });
     }
     control

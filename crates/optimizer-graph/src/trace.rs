@@ -49,3 +49,52 @@ pub struct OperatorCardinalityEstimate {
     pub operator: PhysicalPlanKind,
     pub estimated_rows: u64,
 }
+
+impl hawdb_core::RetainedHeapBytes for OptimizerTrace {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        let Self {
+            groups,
+            search_mode,
+            query_digest,
+            selected_plan,
+            selected_plan_fingerprint,
+            selected_plan_cost,
+            selected_plan_cost_breakdown,
+            selected_plan_properties,
+            selected_plan_cardinality_estimates,
+            selected_plan_operator_counts,
+            selected_plan_class_counts,
+            warnings,
+            decisions,
+            rule_events,
+            stage_events,
+        } = self;
+        fn leaf<T: Copy>(_: &T) {}
+        leaf(groups);
+        leaf(search_mode);
+        leaf(selected_plan_cost);
+        leaf(selected_plan_cost_breakdown);
+        fn vector<T>(values: &Vec<T>, heap: impl Fn(&T) -> Option<usize>) -> Option<usize> {
+            values.iter().try_fold(
+                values.capacity().checked_mul(std::mem::size_of::<T>())?,
+                |bytes, value| bytes.checked_add(heap(value)?),
+            )
+        }
+        hawdb_core::checked_retained_heap_sum([
+            query_digest.retained_heap_bytes(),
+            selected_plan.retained_heap_bytes(),
+            selected_plan_fingerprint.retained_heap_bytes(),
+            selected_plan_properties.retained_heap_bytes(),
+            vector(selected_plan_cardinality_estimates, |estimate| {
+                leaf(estimate);
+                Some(0)
+            }),
+            selected_plan_operator_counts.retained_heap_bytes(),
+            selected_plan_class_counts.retained_heap_bytes(),
+            warnings.retained_heap_bytes(),
+            decisions.retained_heap_bytes(),
+            vector(rule_events, RuleEvent::retained_heap_bytes),
+            vector(stage_events, StageTrace::retained_heap_bytes),
+        ])
+    }
+}

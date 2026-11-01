@@ -6,6 +6,36 @@ authoritative; this is a map of test families, not an exhaustive list of every
 Rust test function. Update it when changing a family's scope, build profile,
 execution lane, fixture size, isolation or known failure mode.
 
+The optimizer-graph joint-statistics owner also covers a residual filter above
+HashJoin when either or both marginal key NDVs are missing. Single-key and
+multi-key predicates retain the existing default selectivity; compatible
+marginals still avoid double counting an already-estimated hash key. Replay:
+`cargo test --locked -p hawdb-optimizer-graph --lib unknown_hash_key_ndv_preserves`.
+
+Joint graph statistics extend the existing
+`//crates/optimizer-graph:hawdb_optimizer_graph_tests` owner with bounded,
+unordered catalog key sets, invalid/stale/sampled/incomplete statistics,
+correlated/independent reference populations, conditional access coverage,
+duplicate bindings, NULL-bearing grouping, alias scope, optional rebindings,
+single-key hash intermediates and selected-trace provenance. Replay with
+`cargo test --locked -p hawdb-optimizer-graph --lib`. Root
+`api::tests::joint_ndv_statistics` covers exact rows in auto/memo/direct modes,
+pinned readers, warm cache reuse, correlated/independent/skewed keys, NULLs,
+duplicate join pairs, optional unmatched rows and deterministic tied sort windows.
+It belongs to `//:hawdb_unit_general_tests`; the supported minimal replay is
+`cargo test --locked -p hawdb --no-default-features --lib --
+api::tests::joint_ndv_statistics:: api::tests::aggregates::
+api::tests::statistics:: --test-threads=1`. The default-feature replay omits
+`--no-default-features`. Executor `transform::tests::limit_admission` is owned by
+`//crates/executor:hawdb_executor_unit_tests`; it checks selected-window payload
+admission, skipped wide rows, exhausted offsets and one-byte-deficit refusal.
+Replay the complete unchanged transform family with `cargo test --locked -p
+hawdb-executor --lib transform::tests`. The root integration keeps a changed
+Sort plus LIMIT choice within a 2-MiB query budget. Existing batch/payload and
+query ceilings remain enforced. See [the estimation contract](QUERY_JOINT_STATISTICS.md).
+The manual `joint_ndv_planning` benchmark is local-only; no test lane, feature
+matrix, timeout or compilation profile changes.
+
 `//:pypi_publish_script_test` belongs to the required root
 `//:hawdb_unit_tests` aggregate. It executes the publisher workflow's Python
 preflight and registry verification with temporary distributions and mocked
@@ -15,6 +45,49 @@ network failures without credentials, uploads or real sleeps. Replay with
 `bazel test //:pypi_publish_script_test`, or
 `python scripts/pypi-publish.test.py` with `packaging` installed. Actual Trusted
 Publishing and public-install smoke verification remain release-workflow gates.
+
+The plan-cache retention family uses
+`//crates/plan-cache:hawdb_plan_cache_tests` for weighted LFU total/per-entry
+limits, zero budgets, overflow, replacement and spare table-capacity accounting.
+`//crates/plan-cache:hawdb_template_retention_tests` is its independent native
+requested-allocation oracle: logical and physical CASE templates at 20/100/512
+candidates, nested values, source-only regex templates, temporal projections with a boxed duration parameter and byte-driven churn must retain no more requested
+heap than their conservative charges. The observer is thread-local and runs as
+one test; requalify its standard-library layout assumptions on toolchain
+changes. Replay with `cargo test --locked -p hawdb-plan-cache --test
+template_retention -- --test-threads=1`. Requested heap excludes allocator
+rounding and caller-owned in-flight copies; these checks are not RSS or latency
+benchmarks. The facade's `api::plan_cache::retention_allocation` oracle belongs
+to `//:hawdb_unit_general_tests`: it observes complete private cache keys,
+physical IR, traces, shared metadata, proof-schema table/property IDs and EXISTS
+strings, both scoring-key forms and table capacity
+at 20/100/512 candidates, owned row-bound/nested list and path expressions, UNWIND source payloads, boxed shortest-path
+descriptors with spare string capacities (Any/All selection), temporal literals,
+thousands of boxed durations, temporal-function arguments, map literals and boxed
+property access, and byte-driven eviction. Its thread-local
+observer is enabled only in that one unit test. Replay with `cargo test --locked
+-p hawdb --lib retention_allocation -- --test-threads=1 --nocapture`.
+The same existing root owner covers `simple_case_dispatch` physical cache hits,
+changed parameters, folded guards, lazy/cached errors, result budgets,
+cancellation, zero/tiny cache-budget refusals and accepted/refused admission traces;
+`query_observability` checks regex source-template hits beside a hot plan.
+`knowledge_label_regex_memory_connections` retains its original physical-hit,
+complete bounded-query result, snapshot and budget/error assertions. Core regex
+and independent allocation tests prove that execution compilation neither lives
+in nor grows the source-only cache owner.
+Its vector-procedure pipeline check preserves default-feature cache bypass
+and minimal-feature capability refusal before any cache lookup or bypass.
+Run those filters with default and `--no-default-features` configurations.
+Existing target profiles and execution lanes are unchanged.
+
+`cargo build --locked --release --bench physical_plan_cache` builds the manual
+embedded CASE cache benchmark. It covers cold/reused/fresh-handle reads at
+20/100/512 candidates, scope and body scaling, complete result parity and a
+separate qualification-feature allocation/preparation observer. It adds no
+benchmark CI lane. With no arguments it runs a small 20-candidate, 512-row,
+three-repeat smoke using the same complete-result assertions. Explicit arguments
+retain the measured experiment sizes. Procedure, source-bound measurements and the per-read-handle
+reuse limitation are in the [physical cache report](benchmarks/physical_plan_cache_macos_2026_10_31/README.md).
 
 `//:storage_tla_evidence_script_test` belongs to the required root
 `//:hawdb_unit_tests` aggregate. It validates the actual checked-in TLA model
@@ -78,6 +151,41 @@ adaptive buffers below an observed peak while preserving hard root refusal,
 as well as the tie-order and wide-row controls. Test lanes, profiles and deadlines stay
 unchanged; allocation microprobes do not establish end-to-end RSS or latency.
 
+Cypher `LOAD CSV` and the type-conversion functions are owned by existing
+targets: `hawdb-core` `conversion_function::tests` (Neo4j conversion rules),
+`hawdb-cypher` `tests::load_csv` and the PEG/reference differential
+`parser::frontend::tests::load_csv_matches_reference_parser`, `hawdb-plan-cypher`
+`logical::load_csv_tests` (row-source binding and refusals), `hawdb-optimizer-graph`
+`graph::tests::load_csv` (lowering/EXPLAIN), `hawdb-plan-cache`
+`template::tests::load_csv_plans_keep_parameter_sources_unbound_and_reusable`,
+`hawdb-executor` `load_csv::tests` (RFC 4180 reader, path policy and its
+`Semantic`/`Execution` error classes, record/file limits and per-row mutation
+resolution, using temporary directories), `hawdb-executor`
+`mutation::staged::tests` (statement-level matched-relationship endpoint
+resolution: result equivalence with per-row scans for duplicates, misses,
+composite keys, missing labels and indexed/unindexed labels; one pass per
+endpoint pattern; cancellation; ledger refusal of staged mutations and endpoint
+maps; fan-out endpoints refused with the commit's own affected-row errors before
+their ids are copied; charged id copies on `UNWIND` batches; the host's
+configured execution memory on the store entrypoint), `hawdb-storage`
+`store::tests::id_in_mutation` (id-led conjunction fast path against a
+single-element `Or` scan oracle, including pending nodes, and a 5,000-source
+fan-out whose recheck excludes the leading id list), and
+root `api::tests::load_csv` (end-to-end LDBC-style loads, refusal without an
+import root, path escapes, remote URLs, parameter rebinding, mutation/WAL/read
+and query-memory budgets, explicit transactions including nodes staged earlier
+in the transaction, zero per-row label scans under the write guard for
+`LOAD CSV` and `UNWIND` relationship loads at 3,000 nodes and rows via the
+hidden storage scan counter, `UNWIND` relationship CREATE and MERGE batches
+resolving their endpoints on the autocommit and explicit-transaction paths,
+fan-out loads beyond `max_affected_rows` refused
+with no writes, CSV fields read through temporal constructors and `toString`
+over temporal values, missing-file error classes and, on Unix, a FIFO source refused
+without blocking). Replay with `cargo test --locked -p hawdb-executor
+--lib load_csv`, `cargo test --locked -p hawdb-executor --lib mutation::staged`
+and `cargo test --locked -p hawdb --lib api::tests::load_csv`. No lane, profile
+or deadline changes; see [LOAD CSV](CYPHER_LOAD_CSV.md).
+
 Cypher `sum()` and expression-argument aggregates are owned by existing
 targets: `blocking::aggregate::tests` (Sum numeric/NULL/empty/overflow/
 non-numeric/DISTINCT accumulator and partial-merge rules),
@@ -87,6 +195,78 @@ and the overflow check through partial and buffered paths), the
 root `api::tests::aggregates`. Replay with `cargo test --locked -p
 hawdb-executor --lib aggregate` and `cargo test --locked -p hawdb --lib --
 api::tests::aggregates`. No lane, profile or deadline changes.
+
+Row-bound node-pattern properties and read-only `UNWIND` are owned by the
+existing Cypher parser and planner targets, executor batch-dispatch coverage,
+and root `api::tests::row_bound_pattern_properties` in
+`//:hawdb_unit_general_tests`. The regressions cover scalar/property bindings,
+optional predicate boundaries, duplicate matches and inputs, NULL/empty values,
+indexed and generic execution, parameter cache rebinding, dropped/unknown scope,
+and payload/result budget failures. The Mem Thread-reference regression keeps
+its original Boolean/COALESCE predicate and complete MATCH → row-dependent
+UNWIND → WITH/aggregate → correlated MATCH/OPTIONAL MATCH query. Per-row
+expansion also covers WITH aliases/native metadata, nested and multiple sources,
+NULL lists/items, duplicate multiplicities, early LIMIT stop and scalar alias
+reuse. Executor `transform::tests::row_unwind` owns cancellation, stop and refusal
+cleanup; plan-cache `row_unwind_parameters` owns logical/physical rebinding, and
+the existing allocation oracle covers owned row-UNWIND expressions and refuses
+a 1 MiB output before allocating a copy. Mutation source refusals remain owned
+by the planner. Replay with `cargo test --locked -p hawdb
+--lib row_bound_pattern_properties`, `cargo test --locked -p hawdb-cypher
+row_bound_pattern_properties`, and `cargo test --locked -p hawdb-plan-cypher
+row_bound_pattern_properties`. No CI lane or timeout is added.
+
+General `shortestPath` / `allShortestPaths` coverage is owned by existing
+targets: executor `traversal::shortest_path_bfs::tests` (directions,
+deterministic single/all selection, parallel relationships, equal endpoints,
+bounded and capped hops, excluded relationships, operator-budget refusal,
+cancellation during discovery and enumeration), `hawdb-cypher` parser tests,
+`logical::pipeline::tests` binder/normalization tests and root
+`api::tests::shortest_paths` (IC13 OPTIONAL MATCH, WITH/ORDER BY/LIMIT,
+exact-parameter plan caching, hop cap and blocking-budget failures). Replay with
+`cargo test --locked -p hawdb-executor --lib shortest_path_bfs` and
+`cargo test --locked -p hawdb --lib api::tests::shortest_paths`. No lane,
+profile or deadline changes. See [contract](SHORTEST_PATH_EXECUTION.md).
+
+Anchored `GraphMatchExec` (#1423) is owned by optimizer
+`graph::lowering::match_order::tests` and root `api::tests::anchored_match`
+in the existing general unit lane. The embedded family checks exact rows,
+step order, full-scan counts against an equivalent bound-first query, and
+NULL anchors with required matches and OPTIONAL padding. A projected input
+scan may contribute zero to the full-node scan counter; the regression checks
+that anchoring adds no per-row scan rather than assuming the input scan kind.
+Replay with `cargo test --locked -p hawdb --lib api::tests::anchored_match`.
+No lane, fixture, feature matrix or deadline changes.
+
+Early `GraphMatchExec` WHERE placement (#1424) is owned by optimizer
+`graph::lowering::match_predicates::tests` and root `api::tests::early_match_predicates`.
+The optimizer cases include dependencies nested in scalar conversions, temporal functions,
+component access and map literals, and prove that moving conjuncts changes
+intermediate work without changing the complete predicate's output cardinality.
+The embedded combined regression anchors an OPTIONAL MATCH before placing its
+conjuncts and final property projection. It checks exact rows, NULL padding,
+the reordered step indices, and retention of a property used only by WHERE.
+The executor evaluates placed conjuncts before undoing in-place candidate bindings.
+Replay with `cargo test --locked -p hawdb-optimizer-graph match_predicates`.
+Existing fixtures and assertions remain; CI lanes, feature profiles and deadlines
+are unchanged.
+
+`GraphMatchExec` record projection (#1427) is owned by optimizer
+`graph::match_reads::tests` (which node properties later projections,
+aggregates, filters, sort keys, nested conversion/temporal/component/map expressions
+and later MATCH clauses read; whole-node
+escapes, same-name columns and unknown operators keep full reads) and root
+`api::tests::graph_match_reads` in `//:hawdb_unit_general_tests`. The root
+family checks exact rows on a resident and a checkpointed out-of-core store
+for anonymous and named relationships, relationship property patterns,
+whole-node returns, `collect`, node equality, node lists, WHERE-only and
+ORDER BY properties, variable-length trails, multi-label targets, bound
+targets, undirected self-loops, OPTIONAL MATCH padding and cached-plan
+rebinding. Persistent fixtures use process/sequence-qualified directories so
+parallel cases do not depend on clock uniqueness. Its structural assertions use the always-compiled storage
+`record_reads_for_test` point-read counters. Replay with `cargo test --locked
+-p hawdb-optimizer-graph match_reads` and `cargo test --locked -p hawdb --lib
+api::tests::graph_match_reads`. No lane, profile or deadline changes.
 
 The adaptive execution family extends those existing executor owners with
 encoded non-expression key selection, complete-record validation, 64-KiB nested
@@ -209,6 +389,51 @@ Standalone staging/baseline fixtures explicitly reserve results too; a zero
 reservation remains a refusal. Request parity also checks explicit zero SQL
 payload limits. CI owns these regressions; the weekly native runtime lane
 explicitly selects the prepared-source reservation/cancellation case.
+
+`api::concurrent::lock_dependency_tests` covers incremental pessimistic SQL
+locking after disjoint commits, unchanged snapshot reads and read-your-own-writes,
+overlapping/ABA changes, empty-range inserts, deterministic queued-wait commit
+and rollback, schema barriers, first-statement refresh, and both residency modes
+through pinned checkpoint and WAL/checkpoint reopen. It belongs to the
+existing root concurrent CI owner. Storage's
+`store::read_dependencies::locked_ranges::tests` checks interval boundaries
+against the standard-library range oracle, payload/rekey/tombstone summaries,
+oversized-key barriers, source/history refusal, metadata admission and a
+65,537-stamp fixture with constant point-seek work and bounded broad validation.
+The existing storage CI owner runs it. Focused replay uses
+`cargo test --locked -p hawdb --lib lock_dependency_tests` and
+`cargo test --locked -p hawdb-storage --all-features --lib locked_ranges`.
+Required manual MVCC and local fuzz campaigns keep their existing owners and
+profiles; these resource assertions do not measure transaction throughput.
+
+`api::concurrent::composite_lock_tests` extends the same root concurrent owner
+with composite order-prefix mutations, exclusive/inclusive suffix boundaries,
+empty-range inserts, secondary/primary lock coordination, nullable secondary
+entries, literal/parameter rekeys, and deterministic queued refresh/deadlock
+schedules, plus later-key validation after implicit table escalation. Full-scan
+waits retain validation of unchanged/absent write intents, and contradictory
+single-key predicates remain lock free. Both
+materialized and out-of-core fixtures reopen checkpointed data
+before exercising locks. Candidate discovery uses the ordinary pinned SQL row
+and index readers, caps output at 65 rows and 1 MiB, and bounds candidate work;
+more than 64 discovered lock entries or 1 MiB of staged key values escalates to
+a table guard. The suite checks large assignment parameters before key fanout and
+that escalation cannot expose a partial lock set, including a `LIMIT 1` query.
+Sparse 5,000-row residual scans exercise internal work-budget escalation for
+locking reads, UPDATE and DELETE, including autocommit and both primary-key
+shapes/residencies. Typed work/output refusals distinguish internal probe caps
+from caller limits; smaller caller limits still fail without table escalation.
+Hydration retains caller limits while the streaming probe bounds visited rows.
+Relational aggregate unit tests, `tests/execution_request_contract.rs` and
+Python `test_read_controls.py` pin the public work-refusal contract: Rust
+`ResourceBudgetExceeded` / Python `ResourceBudgetError`, with query-scoped
+work units and the originating budget option. Existing cancellation, output
+and memory refusal controls remain distinct in their current owners.
+DB-API pickle regressions separately retain generic execution-error attributes
+and typed work-budget attributes with their respective PEP 249 classifications.
+Focused replay: `cargo test --locked -p hawdb --lib composite_lock_tests`.
+Constraint-key changes and nonliteral index rekeys retain conservative guards;
+nullable index version validation retains its existing table dependency.
 
 `api::sql_runtime::tests` passes prepared SQL mutations through the database and
 transaction kernels with diagnostic-only text, detecting accidental parser
@@ -545,6 +770,23 @@ feature matrix remains unchanged.
 This change does not establish a remote speedup or fix every #1116 stall;
 joined-read sharding is owned by PR #1217.
 
+### Relational live-overlay checkpoint pressure
+
+`api::automatic_checkpoint::tests::relational_live_overlay` joins the sustained
+WAL/delta pressure cases in the isolated `//:hawdb_unit_checkpoint_headroom_tests`
+lane (`background-maintenance` required) and uses default storage limits and a one-hour checkpoint age, so only live-overlay pressure can
+schedule work ([#1438](https://github.com/nowledge-co/hawdb/issues/1438)).
+Four hundred whole-table update rounds on one handle (512 rows of 1 KiB) exceed
+the 64 MiB live envelope several times; base `bb30c40` rejects round 97 before
+WAL append. Cases assert every commit, peak occupancy within the envelope, at
+least two pressure-triggered generations, values before and after reopen, exact
+debt/residency accounting folded by checkpoint, the shared 70%/80% boundaries
+for all four row/index pairs, a reader pinned across two drains, and a
+subprocess stop at `during_checkpoint_publication` and
+`after_manifest_publication` of the pressure-triggered drain that recovers every
+acknowledged round whole before continuing. Replay with `cargo test --locked
+-p hawdb --lib api::automatic_checkpoint::tests::relational_live_overlay`.
+
 ## Component regression owners
 
 The manual `concurrent_writers` benchmark accepts
@@ -560,13 +802,17 @@ workload does not change default or CI benchmark selection.
 | Manual work-admission benchmark | `HAWDB_EXECUTOR_BENCH_MODE=work-admission bazel run //:hawdb_bench_executor_vectorization` compares complete one-hop property hydration at degrees 32/1,024 and an 8,192-row predicate scan, with a deadline and no work cap. Three warmups, 11 raw samples of eight iterations, checksum/row-count and final-zero ledger assertions. Explicit opt-in only; default `full` and CI coverage are unchanged. Compare identical harness/profile/source identities; local timings are not remote CI speedups. |
 | Core, expression, SQL/SQL-syntax, Cypher and DDL | Typed values, expression semantics, parsing/binding and schema constraints. |
 | Ordinary relational projection admission | Existing `//crates/relational:hawdb_relational_tests` / Prow crates owner. Borrowed previews admit repeated projection values, locator sort keys and DISTINCT ordering keys before copying. Ordinary, ordered, borrowed and FROM-less paths retain their existing result contracts. A test-only, thread-local System allocation probe compares cumulative large-payload allocation traffic with the same-source narrow control; it does not measure peak RSS. Guards cover canonical memory and persisted row snapshots, expression aliases, refusal/refund/retry, empty and LIMIT 0 input, duplicate/NULL values and exact result-payload boundaries. Replay: `cargo test --locked -p hawdb-relational --all-features --lib projection_admission`. No feature, deadline, profile or lane change. See [projection admission](RELATIONAL_PROJECTION_ADMISSION.md). |
+| Cypher temporal types | Core `temporal::` tests cover ISO parsing/rendering, constructors, components, arithmetic, `duration.between`, truncation, comparable order versus `Value` order/hash and the shared binary payload (golden bytes, corruption). Storage tests pin WAL fields 11–15, canonical tags 11–15 and text `D/T/L/Z/P` encodings with golden bytes, unknown-tag/field fail-closed decoding and background-writer parity; executor spill tags 10–14 round-trip. Parser (`tests::temporal`) and planner (`logical::temporal_tests`) cover syntax, depth limits, constant folding to `PropertyCompare` and the pinned statement clock. Root `api::tests::temporal` covers the embedded API: constructors, components, CREATE/SET/MERGE, WAL replay, checkpoint reopen in materialized and out-of-core modes, range-index seeks, CASE-based ORDER BY keys containing temporal component arithmetic with changing parameters and warm cache hits, and the LDBC IC3/IC4, IC7 and IC10 shapes. FFI, Python and Go binding tests cover tagged JSON. Existing CI lanes apply. Replay: `cargo test --locked -p hawdb-core temporal`, `-p hawdb-storage temporal`, `-p hawdb --lib temporal`. See [contract](CYPHER_TEMPORAL.md). |
 | Shared SQL/Cypher vectors | Core/SQL targets cover dimensions, encoding and exact distance; storage covers value/schema codecs, fingerprints and cooperative cancellation; root `hawdb_unit_general_tests` covers exact filtered ranking versus candidate post-filtering, traversal, rollback and WAL/checkpoint/read-only reopen. Executor allocation tests and native FFI/Python/Go targets cover payload accounting and ownership. Shiro reports retain vector dimensions and coordinate bits. Existing CI lanes apply. Focused replay: `--test_arg=shared_vector --test_arg=vector_schema --test_arg=vector_encoding --test_arg=vector_distance`; include `checkpoint_units` for storage cancellation and `owned_record_bounds` for the allocation oracle. See [contract](specs/VECTOR_COLUMN_SCHEMA_SPEC.md). |
 | Schema-bound vector indexes | Core tests cover resolved descriptors and canonical metadata; Search tests cover binding persistence, backend identity and typed budget diagnostics. Root tests exercise complete SQL/node source capture, empty/NULL inputs, composite keys, source/schema read-domain fencing, full rebuild after updates/deletes/NULL transitions, retained old domains and reopen, signed distances, cancellation and admission retry. Existing Search feature-matrix and root general CI lanes own these cases. Focused replay: `--test_arg=vector_index`; include `--test_arg=projection_fallback_requires_a_typed_resource_error` and `--test_arg=search_projection_consumer::tests` when changing shared Consumer publication. Eligible-domain cases cover SQL/Cypher parity after an ineligible nearest prefix, typed read-domain identity, source-work refusal even with no surviving candidate, bounded canonical fallback, duplicate paths and upstream LIMIT, ordered range/LIMIT with rebound parameters, and shared-ledger eligible/output memory handoff. The existing ACL capability runner also selects the traversal visibility test, which exercises exact and filtered-ANN modes and refuses a missing test name; its fixture covers hidden intermediate nodes. Storage adjacency tests independently meter rejected edges before emission. Core scoped-work tests cover shared clones, parent limits and cancellation. Storage projection admission borrows work ownership separately from payload admission and preserves typed exhaustion without allocator probes. Core guards distinguish unbounded work no-ops from explicit cancellation checkpoints. Executor point-read guards use a shared ledger sized for exactly one payload plus fixed callback overhead, covering resident and canonical nodes/relationships, repeated reads, missing/label-rejected reads and complete refund. Storage point guards meter missing/tombstoned/rejected reads and preserve sticky work refusal; existing adjacency guards cover rejected edges. Language cases cover missing/duplicate/unknown parser options, rejected SQL shapes and Cypher YIELD bindings, SQL/Cypher foreign-governor refusal, SQL single/early/final callback cancellation, consumer-error precedence and fresh-task read-domain reuse, typed parameters, signed distances, SQL composite-key hydration, post-window filtering, Cypher canonical traversal, and exact canonical identities across old/current/reopened generations. A smaller-than-input ANN window asserts actual rerank counts. Filtered-ANN guards assert zero collection scoring, eligibility before candidate generation, smaller-than-domain bounded reranking, validated empty eligibility, same-scope native mapping work refusal/retry and preserved default post-filtering. Native mapping units reject missing, duplicate-visible and NULL-ordinal mappings, exercise typed memory refusal at initial reserve and per-key growth, retry after pressure is released and refund their admitted memory on every exit. Root empty-index mapping tests preserve errors and same-permit retry; captured candidate-spill and Stage cleanup guards independently cover native resource owners; empty-domain queries still enforce binding/mode/candidate caps and perform no spill or vector scan. Rebuild/update/delete/NULL and old-pin cases exercise all three modes. Allocation-owner tests cover canonical SQL point reads, wide-row/repeated-projection/empty-literal refusal before copying, LIKE/ILIKE layout admission with Unicode/escape controls, covered-catch-up refusal before mapping/allocation, foreign-governor refusal before skipped execution, retry, producer workspace refusal and cancellable I/O-wave admission, same-database branch mismatch and uncertain selection recovery with old pins. Minimal consumer and portable facade cases refuse schema-bound index construction before filesystem work when the native backend is absent. See [contract](specs/VECTOR_INDEX_BINDING_SPEC.md). |
 | SQL result column order | `//crates/executor:hawdb_executor_unit_tests` covers named rows ordered by a declared schema, empty results and rejected column drift. Root `//:hawdb_unit_general_tests` (`relational_sql::tests`) pins each shape's EXPLAIN plan and runs it with and without matching rows: borrowed scans, key and index lookups, inner and LEFT joins, scalar functions, index-ordered, top-N (on projected and non-projected columns, also over inner and LEFT joins), DISTINCT and alias-ordered projection, wildcards over top-N, DISTINCT and LEFT joins, LIMIT 0, and columnar, row-at-a-time and grouped aggregates, including HAVING and joins. A cost-reordered wildcard join and strict-append SELECT also run with and without rows; FROM-less SELECT and COUNT DISTINCT always return one row. Repeated output names and the reserved `__hawdb_relational_sort_` prefix fail during preparation, including EXPLAIN. `crates/qualification` `evidence_digest::tests` keeps result digests independent of column order, matching name-keyed reference rows. The Python binding reports these schemas unchanged as `QueryResult.columns`; `tests/pg-regress` sorts column names and does not cover order. Existing CI lanes apply. Replay: `cargo test --locked -p hawdb-executor --lib named_rows_follow_the_declared_schema` and `cargo test --locked -p hawdb --lib -- relational_sql::tests::database_sql_ relational_sql::tests::unordered_and_wildcard_joins`. Catalog and SQL EXPLAIN coverage is listed below. Cypher RETURN and the vector-index SQL streaming callback, which receives name-keyed maps, remain outside this family. |
 | Catalog and SQL EXPLAIN column order | Root `api::tests::result_column_order` covers explicit and aliased catalog projections across Database, snapshot and transaction reads, empty results, declared wildcard order, mixed wildcard/explicit projections, duplicate output rejection and unchanged row/payload refusal. `api::tests::relational_explain_output` pins relational SQL EXPLAIN/ANALYZE column order; its `strict_append` module covers all three entrypoints. Owned by existing `//:hawdb_unit_general_tests` CI; focused replay: `cargo test --locked -p hawdb --lib -- result_column_order relational_explain_output`. Python DB-API regression coverage runs in its existing CI family. Cypher coverage is listed below. |
 | Cypher result column order | Root `api::tests::result_column_order` covers declared RETURN ordinals, empty matches and LIMIT 0, cache reuse with rebound parameters, DISTINCT, hidden sort keys, WITH, interleaved aggregate/group outputs, numeric projections, SET RETURN and structured EXPLAIN/ANALYZE across database, snapshot and transaction entrypoints. Repeated output names retain the existing collision suffixes. Planner coverage in `plan_cache::output_schema::tests` pins RETURN and LIMIT 0 schemas for vector/text seeds, graph seeds, vector-index search and legacy graph algorithms. Executor result-delivery tests cover named and borrowed value reordering across segments and changing source orders, schema drift, empty-schema memory admission and reservation release after refusal. Owned-result tests bound repeated permutation validation to linear name visits and verify cache admission/release. Existing root/executor CI lanes own these tests; Python `test_smoke.py` checks declaration order and empty schemas on both backends; `test_notebook.py` retains empty-result HTML headers. Focused replay: `cargo test --locked -p hawdb --lib result_column_order` and `cargo test --locked -p hawdb-executor --lib result_delivery`. |
 | Optimizer, optimizer-{graph,relational,predicate,vector}, plan-{core,cache,cypher}, explain | Rewrite legality, plan construction, cache/publication concurrency and observable plans. |
+| Graph row-goal costing | Existing optimizer-graph unit and root general owners cover consumed work through filters, projections, lookup/probes and expansion fanout; startup, nested/zero/saturated windows, missing statistics, conservative blocking/retrieval boundaries, one postorder costing visit, small/large ordered-alternative choices, exact ASC/DESC native keyset implication (mismatched bounds/direction and extra residuals remain conservative), unbounded prefix-only ordered access with full work in both memo and direct lowering, joint-filter selectivity reaching row goals with selected provenance intact, skewed full-result parity, NULL/type rebinding, deterministic ties, explicit search directives, cancellation and row/payload budgets. Replay: `cargo test --locked -p hawdb-optimizer-graph --lib row_goals` and `cargo test --locked -p hawdb --lib row_goal_planning`; repeat facade coverage with `--no-default-features`. The existing `//:hawdb_linux_ci_optimizer_summary_smoke_test` retains exact costs, decisions, fingerprints and repeated-planning assertions, including the filter-above-aggregate consumed-work cost. Existing lanes, profiles, budgets and timeouts apply. Manual Cargo-only `row_goal_planning` benchmark records source-bound release query/preparation timing and admitted memory/work with full result checks; no fuzz/benchmark CI job is added. See [costing contract](QUERY_ROW_GOALS.md) and [Apple Silicon measurements](benchmarks/row_goal_costing_macos_2026_10_31/README.md). |
+| Bounded graph property proofs and qualification | `//crates/cascades:hawdb_cascades_tests` and `//crates/optimizer-graph:hawdb_optimizer_graph_tests` own bounded controls, Applied-only assertions, nullable keys, equality/order, aliases, fanout, evaluator and budget fences. Executor `transform` tests own exact column/literal batch sizing, duplicate-alias suffix preservation, bounded alias inventories and computed/graph-column fallback; root proves singleton-group replacement under the unchanged 2-MiB budget. Root `//:hawdb_unit_general_tests` owns `api::tests::optimizer_proofs`: same-statement pinned execution, errors, strict output limits, parameter rebinding, lifecycle/EXISTS cache identity, actual distinct plans and unchanged raw costs across ranking seeds. Replay with `cargo test --locked -p hawdb --lib optimizer_proofs`. Existing local-only `//tools/shiro:shiro_tests` / `shiro_cli_tests` own opt-in variants, replay, coverage separation and negative oracles; independent Cargo replay filter `optimizer_qualification`, plus `--bin shiro` for CLI controls. The manual `cargo bench --locked --features qualification --bench property_proofs -- distinct 10000 warm 5` reports complete parity and admitted memory. Existing uniform profiles, complete suites, assertions and timeouts remain. See [contract and scope](specs/OPTIMIZER_PROOFS_SPEC.md). |
 | Sparse composite prefix ranges | `//crates/optimizer-graph:hawdb_optimizer_graph_tests`, `//crates/storage:hawdb_storage_tests` and root `//:hawdb_unit_general_tests` cover [#1183](https://github.com/nowledge-co/hawdb/issues/1183): missing/NULL suffix values, one or multiple leading equalities, strict/inclusive bounds, checkpoint/delta/reopen and retained views. Storage differentials force owned/admitted access independently of planner selection, preserve Stop and admission refusal, and check native index work for complete keys. Unconstrained wider suffixes use a complete fallback; full-key ranges retain their existing path. The contiguous-prefix projection fixture uses a complete `(prefix, range)` key; candidate guards separately reject an unconstrained suffix. Existing profiles and lanes apply; fixtures stay small. Focused Cargo replay: `cargo test --locked -p hawdb-storage sparse_composite`, `cargo test --locked -p hawdb sparse_composite`, or optimizer-graph package filter `composite_range_candidates`. |
+| Relational overflow pruning per commit ([#1439](https://github.com/nowledge-co/hawdb/issues/1439)) | Existing `//crates/storage:hawdb_storage_tests` / Prow crates owner (`relational::tests::overflow_pruning`) and root `//:hawdb_unit_general_tests` (`relational_sql::tests::relational_bulk_load_with_overflow_values_keeps_constraints_and_payloads`). A thread-local `#[doc(hidden)]` counter of rows examined for overflow reachability bounds each insert commit by its own rows (40 commits of 50 always-overflowed rows), independently of table size; an update that keeps its value examines its two row images. Exactness covers content-shared segments, release and reuse within one transaction, values of rows an upsert did not store, whole-table column rewrites and checkpoint encode/decode, which rejects unreachable segments. Checked builds also compare every incremental result with the full reachability pass. The SQL case loads parent/child tables with shared overflow bodies across 20 commits, then checks primary-key, unique and foreign-key rejection, cascade delete, value replacement and checkpoint reopen. Replay: `cargo test --locked -p hawdb-storage --lib overflow_pruning` and `cargo test --locked -p hawdb --lib relational_bulk_load_with_overflow`. No new lane, profile or timeout. |
 | SQL composite index intervals | Root `//:hawdb_unit_general_tests` (`api::tests::relational_range`), relational unit and storage unit / existing Prow crates lanes. Compare indexed SQL with an unindexed database across open/closed, one-sided, NULL/contradictory bounds, duplicates, aliases, parameters, residuals, uniform ASC/DESC, OFFSET/LIMIT and first-column ranges. Cover nullable unique suffixes, checkpoint/live/pinned/private/recovery views in Shadow/DemandPaged/Authoritative modes. A 5,000-row prefix must deliver a late LIMIT 3 under a four-row index budget with three observed index rows and early Stop. Tiny-page and scalar/encoded-bound differentials cover trailing-key ties and extrema. Replay: `cargo test --locked -p hawdb --lib api::tests::relational_range`, storage filters `encoded_partial_bounds` / `relational_index_shadow_range_seek`, and the relational index-runtime suite. See [contract](specs/POSTGRES_RELATIONAL_CONTENT_STORE_SPEC.md). No new grammar, persisted format, lane or profile. |
 | Executor and query/query-policy | Operator execution, result delivery, cancellation and budget/refusal behavior. Small borrowed-projection units in the existing executor unit / Prow crates lane compare 1–8 simple columns with the general path, preserve duplicate-alias and computed/wide fallback, exact wide-row refusal and workspace refunds, and release preparation before a byte-boundary Stop without repeated evaluation. Replay: `cargo test --locked -p hawdb-executor --lib expression::projection::tests`. No new lane, feature, fixture deadline or profile. Text-seed result-owner unit cases cover prepaid window storage and the internal capacity-growth path, including simultaneous replacement admission, exact row limits, sticky refusal and parent-allowance retention. Allocation probes use the repository profile; compare measurements only within the same profile. |
 | Complete lexical and grouped evidence | Existing Cypher/Plan-Cypher, executor, Search, readiness and root general lanes cover opt-in complete providers, exhaustion/skipped reports, candidate ceilings before canonical filtering, lazy capacity growth, scalar MAX and bounded per-group evidence. Root differentials cover mixed supported keys, signed zero, ID maxima, permutations, graph eligibility and retained reads across raw/resident/layered disk sources with replacement and deletion. Executor allocation probes cover ID admission, one owned copy of repeated wide scalar keys, retained callback ownership and cancellation/error precedence. Search regressions compare canonical field phrase-alias occurrences and full-corpus scores, including raw window/complete parity and actual allocation peaks. Sparse overlapping-layer regressions cover metadata predicates, external identities and exact live-corpus scores in window/complete modes. The `grouped_evidence` and `grouped_evidence_native` release benches manually qualify scalar and native lexical/graph paths; neither is a CI performance gate. See [measured results](benchmarks/GROUPED_RETRIEVAL_RESULTS.md). See [contract](specs/GROUPED_RETRIEVAL_SPEC.md). |
@@ -722,6 +968,22 @@ budget, compares residual UPDATE/DELETE captures with the legacy scan oracle,
 and recovers both access shapes with transient rows and primary-key changes.
 Surplus access entries must fail exact replay validation. Storage's existing
 checkpoint-admission cases also exercise controlled point-key allocation.
+
+Composite-key mutation coverage uses the same Storage owner, with no new lane
+or profile. `relational_row_workspace::tests::composite_key_mutations` compares
+prefix and interval UPDATE/DELETE with the legacy full-scan oracle, keeping a
+fixed eight-entry budget while unrelated orders grow from 3 to 1,000. It checks
+candidate decode/workspace counts, residuals and empty/open/closed intervals,
+transient/rekeyed rows, exact legacy and new WAL replay, admission refusal, and
+pinned old views. `relational::primary_key_range::tests` checks all supported
+ordered scalar domains, including signed zero, NaN payloads, embedded NUL and
+maximal keys, against predicate truth and encoded ordering. Root
+`storage_recovery::composite_mutations` in the existing general unit lane checks
+parameterized SQL, multi-statement rollback/commit, warehouse isolation, old
+reads, WAL reopen and checkpoint reopen under both residency modes. Focused
+replay: `cargo test --locked -p hawdb-storage --all-features --lib composite_mutation`,
+`cargo test --locked -p hawdb-storage --all-features --lib primary_key_range::tests`,
+and `cargo test --locked -p hawdb --lib composite_mutations`.
 
 The existing root vector API family additionally owns explicit source-capture
 capacity refusal/success, single-background-slot and held-catalog admission with
@@ -1208,7 +1470,10 @@ versus cache hits, cold build cost and required target inventory.
 - MVCC: `make mvcc-fuzz` defaults to 30 seconds of local transaction histories.
   `MVCC_FUZZ_ARGS="--mode pessimistic"` instead runs two pessimistic
   transactions on worker threads and also checks lock waits, deadlock victims,
-  snapshot refresh and serialization aborts for SQL and Cypher writes.
+  snapshot refresh and serialization aborts for SQL and Cypher writes. Its
+  twelve families include incremental disjoint SQL locks; an independent
+  logical-key version map distinguishes overlapping changes from unrelated
+  epochs while checking original snapshot reads and committed results.
   Generate editable cases, replay failures and shrink them before introducing a
   focused deterministic regression. See [tools/mvcc-fuzz](../tools/mvcc-fuzz/README.md).
 - Local deterministic fuzz verification:
@@ -1592,6 +1857,38 @@ scoped nonmatches, duplicate input, missing IDs, projected-idless protection,
 read-only refusal, incident-edge removal, unchanged unrelated nodes and one-batch
 recovery. They no longer use generic entity-delete response DTOs or business
 read helpers for their postconditions. Native CI retains the existing owners.
+
+### Matched UNWIND relationship MERGE
+
+The existing plan-cypher relationship-batch family also checks retained heap
+ownership of the boxed command, nested mutation values and projection spare
+capacity. The allocation-free scalar row marker adds no reachable heap. These
+cases protect integration with the shared retained-plan admission contract.
+Scalar row references use the same AST binding as read-only node-pattern
+properties; both planner families and the root read/mutation regressions
+protect their independent scope and lowering paths. Bare scalar row mutation
+values remain limited to relationship MERGE; node CREATE/MERGE retain their
+existing row-property-only binding and refuse unsupported scalar row values.
+
+The existing root general owner (`//:hawdb_unit_general_tests`) runs
+`api::tests::merge_relationships::matched_*`: exact projected member rows,
+duplicate input multiplicity, missing/NULL/empty matches, ON CREATE retention,
+all database/concurrent transaction result-budget refusals, full-batch input and
+storage refusal, NULL relationship-property refusal, large endpoint fan-out
+with pending property-subset matches, and embedded host count-guard rollback
+followed by WAL reopen. The executor preflight family (`//crates/executor:hawdb_executor_unit_tests`)
+counts one projected scan/index lookup per endpoint pattern, preserves
+unlabelled all-node matching even with an empty named catalog label, and covers early
+fan-out refusal before ID rewriting, empty pairs, host memory budgets and
+cancellation. Storage's existing `id_in_mutation` family in
+`//crates/storage:hawdb_storage_tests` retains the independent scan oracle and
+checks ID-led property/label rechecks over 4,096 candidates and pending nodes.
+The parser and plan-cypher crate owners retain the syntax and scope/refusal
+checks. No carrier, feature matrix, timeout or CI lane is added. Local replay:
+`cargo test --locked -p hawdb --lib api::tests::merge_relationships::matched_`
+and `cargo test --locked -p hawdb-plan-cypher --lib relationship_merge_batch`.
+See [the supported pipeline contract](CYPHER_DEFAULT_PIPELINE.md#bounded-relationship-mutation-input)
+and [#1397](https://github.com/nowledge-co/hawdb/issues/1397).
 
 ### Property mutation query fixtures
 
@@ -2136,3 +2433,66 @@ errors. No CI lane or fuzz target is added.
 Focused replays: `cargo test --locked -p hawdb-storage compatibility_tests`,
 `cargo test --locked -p hawdb-storage append_wal_versions`, and
 `cargo test --locked -p hawdb --test branch_project_open storage_format`.
+
+### Graph row-width and blocking-cost estimates
+
+Existing optimizer-graph ownership covers `graph::costing::width::tests`,
+`graph::costing::work::tests` and `graph::costing::tests_width`: pinned typed
+schema, bounded distinct-domain width sampling, required-only decoding,
+projection/graph ownership and alias scope, key-versus-body comparisons,
+context-sensitive choices in memo/direct lowering, selected trace refresh,
+metadata bounds and saturating row/cost arithmetic. Input estimates within the
+OFFSET+LIMIT window use an equal ordering-work proxy and prefer TopN on ties in
+both lowerings; greater-than-window controls retain comparison-aware choices.
+Projection-fused pricing is pinned around the 64-MiB unit threshold and 2-MiB
+facade threshold, where costing an unfused graph binding would invent spill.
+Combined row-goal/width controls keep complete blocking comparison/spill work,
+scale streaming decode work, and preserve the caller's memory hint for bounded
+ordered-versus-Sort/TopN competitors in both memo and direct lowering.
+Root `order_by_expressions` keeps the five-row exact-page control, including
+its cheaper property Sort+Limit choice, and retains strict property/computed-key
+TopN assertions with 64 additional low-ranked rows. Small and bulk cases share
+complete expected-page assertions.
+Asymmetric hash-join
+inputs pin right-build retention and spill; one-to-three-hop traversal controls
+keep opaque graph contributions visible in `proxy_fields`. Joint grouping and
+width costing share the incoming alias scope: correlated key counts change the
+spill estimate while an INT alias shadowing TEXT keeps its scalar width. The existing
+`//:hawdb_linux_ci_optimizer_summary_smoke_test` pins the corresponding
+comparison/decode costs for all seven affected graph workloads, retaining exact
+row/cost, decision, fingerprint and repeated-planning assertions.
+Core schema snapshot tests
+cover table-qualified descriptor iteration, deletion and old snapshot identity.
+The joint-NDV small-budget control retains all 400 source rows and the original
+40-row window (TopN), and adds a 19-row window to keep Sort+Limit transfer
+admission covered under the same 2-MiB query budget.
+Root `api::tests::width_costing` checks complete NULL/tied output, pinned reads,
+warm templates, small budgets and checkpoint/reopen in all residency modes.
+A correlated-filter regression estimates at most 19 rows but consumes all 256
+matches, returns the exact offset/tied page on cold and warm calls, and verifies
+TopN stays within its 256-KiB blocking allowance without spill or leaked admission.
+`query_observability::order_by_limit_uses_top_n_and_preserves_stable_order`
+retains a selective TopN fixture under comparison-aware costing. Executor
+`transform::tests::limit_admission` verifies selected-window transfers, skipped
+payload, exhausted offsets and exact/one-byte-deficit admission; the same narrow
+kernel regression is independently carried by the joint-NDV change. Replay:
+
+```console
+cargo test --locked -p hawdb-core --lib schema::snapshot_tests
+cargo test --locked -p hawdb-optimizer-graph --lib
+cargo test --locked -p hawdb-executor --lib transform
+cargo test --locked -p hawdb --lib -- width_costing order_by_limit_uses_top_n_and_preserves_stable_order
+```
+
+The opt-in `width_cost_planning` release benchmark is manual, with bounded CLI
+inputs, exact complete output checks, explicit row/payload budgets, cache and
+spill/admission counters. No default target, profile, resource limit or CI lane
+is changed. Read [the cost contract](QUERY_WIDTH_COSTS.md) before interpreting
+logical width/CPU/IO units as measurements.
+
+The source-bound [macOS ARM experiment](benchmarks/width_costs_macos_2026_10_31/README.md)
+contains 19 cells, 114 processes and 684 fully checked calls, including narrow,
+TEXT/STRING/vector, arrival order/native ordering, small/full K, three blocking
+budgets, width-proxy misses and persistent residency controls. It shows gains
+when TopN removes measured spill and records neutral/adverse outcomes explicitly;
+it is not a CI performance gate or a bound on actual heap allocation.

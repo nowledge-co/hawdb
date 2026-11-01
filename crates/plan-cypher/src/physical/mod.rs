@@ -186,9 +186,24 @@ pub enum PhysicalPlan {
         label: String,
         properties: BTreeMap<String, Value>,
     },
+    UnwindExec {
+        rows: Vec<Value>,
+        variable: String,
+    },
+    UnwindRowsExec {
+        expression: crate::ProjectionExpression,
+        variable: String,
+        input: Box<PhysicalPlan>,
+    },
     UnwindMutation {
         rows: Vec<Value>,
         variable: String,
+        operation: BatchMutationOperation,
+    },
+    /// One mutation per CSV record, staged as one atomic batch. The file is
+    /// opened only by a runtime that supplies a CSV import policy.
+    LoadCsvMutation {
+        source: crate::LoadCsvSource,
         operation: BatchMutationOperation,
     },
     MergeNode {
@@ -349,6 +364,10 @@ pub enum PhysicalPlan {
         input: Option<Box<PhysicalPlan>>,
     },
     EmptyExec,
+    /// Streams CSV records as rows binding `source.variable`.
+    LoadCsvExec {
+        source: crate::LoadCsvSource,
+    },
     SeqNodeScan {
         variable: String,
         label: String,
@@ -564,6 +583,7 @@ pub enum PhysicalPlan {
 }
 
 mod host_scoring;
+mod retained;
 pub use host_scoring::{HostScoringPlan, HostScoringRankPolicy};
 
 pub use domain::{
@@ -571,3 +591,9 @@ pub use domain::{
     ProcedurePhysicalPlanRef, RelationalPhysicalPlanRef, SchemaPhysicalPlanRef,
     TraversalPhysicalPlanRef,
 };
+
+// Retained query ownership: HashJoinKey.
+hawdb_core::impl_retained_heap_for_struct!(HashJoinKey { variable, property });
+
+// Retained query ownership: GraphExpansionBudget.
+hawdb_core::impl_retained_heap_for_copy!(GraphExpansionBudget);

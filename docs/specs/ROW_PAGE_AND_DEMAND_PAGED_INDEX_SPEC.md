@@ -1213,7 +1213,10 @@ persistent-chain head and reuses the prior head; it never copies earlier batch
 handles or clones the complete recovery overlay or canonical row set. An
 already-durable graph-only commit stages only the identity advance immediately
 before its global epoch becomes visible and does not add an empty batch. The
-default cumulative live envelope is 100,000 entries and 64 MiB.
+default cumulative live envelope is 100,000 entries and 64 MiB. Its occupancy is
+reported as checkpoint debt, so the automatic checkpoint owner drains it at the
+shared soft pressure ratio and fences writers near capacity; see
+[pressure-driven checkpoints](PRESSURE_DRIVEN_CHECKPOINT_SPEC.md).
 
 Only a successful durable commit installs the staged view. An epoch gap,
 unordered or undercharged capture, or cumulative admission failure rejects an

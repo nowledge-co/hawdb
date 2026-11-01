@@ -21,6 +21,8 @@ use hawdb_core::{Catalog, GraphStatistics, IndexKind, Value};
 use hawdb_plan_cypher::ComparisonOp;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod joint;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ExpandEstimate {
     pub(super) path_count: Option<u64>,
@@ -47,6 +49,9 @@ pub struct OptimizerIndexStatistics {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OptimizerCatalog {
+    // Catalog containers are COW snapshots. Keep the source identity without
+    // copying descriptor maps or collecting values from the graph at planning time.
+    pub(super) source_schema: Option<Catalog>,
     pub(super) parameter_scalar_types: BTreeMap<Value, hawdb_core::PropertyType>,
     pub(super) assume_all_indexes: bool,
     pub(super) equality_property_indexes: BTreeSet<(String, String)>,
@@ -70,6 +75,7 @@ pub struct OptimizerCatalog {
     property_equality_row_count: Option<((String, String), u64)>,
     pub(super) composite_index_statistics:
         BTreeMap<(String, Vec<String>), OptimizerIndexStatistics>,
+    joint_statistics: BTreeMap<(String, Vec<String>), Option<OptimizerIndexStatistics>>,
     pub(super) property_distinct_counts: BTreeMap<(String, String), u64>,
     pub(super) rel_property_distinct_counts: BTreeMap<(String, String), u64>,
     pub(super) property_histograms: BTreeMap<(String, String), Vec<Value>>,
@@ -375,11 +381,22 @@ pub fn optimizer_catalog_from_graph_statistics(
         .with_sampled_property_histograms(sampled_property_histograms)
         .with_sampled_relationship_property_histograms(sampled_rel_property_histograms),
     )
+    .with_source_schema(catalog)
 }
 
 impl OptimizerCatalog {
+    fn with_source_schema(mut self, schema: &Catalog) -> Self {
+        self.source_schema = Some(schema.clone());
+        self
+    }
+
     pub fn new(indexes: OptimizerCatalogIndexes, statistics: OptimizerCatalogStatistics) -> Self {
+        let joint_statistics = joint::canonical_statistics(
+            &statistics.composite_index_statistics,
+            &indexes.composite_property_indexes,
+        );
         Self {
+            source_schema: None,
             parameter_scalar_types: BTreeMap::new(),
             assume_all_indexes: false,
             equality_property_indexes: indexes.equality_property_indexes,
@@ -401,6 +418,7 @@ impl OptimizerCatalog {
             property_index_statistics: statistics.property_index_statistics,
             property_equality_row_count: None,
             composite_index_statistics: statistics.composite_index_statistics,
+            joint_statistics,
             property_distinct_counts: statistics.property_distinct_counts,
             rel_property_distinct_counts: statistics.rel_property_distinct_counts,
             property_histograms: statistics.property_histograms,
@@ -562,6 +580,19 @@ impl OptimizerCatalog {
             .copied()
             .unwrap_or(1)
             .max(1)
+    }
+
+    /// Relationships a traversal of `rel_type` may visit; an untyped pattern
+    /// (empty type) may visit every relationship.
+    pub(super) fn traversable_relationship_count(&self, rel_type: &str) -> u64 {
+        if rel_type.is_empty() {
+            self.rel_type_counts
+                .values()
+                .fold(0u64, |total, count| total.saturating_add(*count))
+                .max(1)
+        } else {
+            self.relationship_count(rel_type)
+        }
     }
 
     pub(super) fn path_source_distinct_count(

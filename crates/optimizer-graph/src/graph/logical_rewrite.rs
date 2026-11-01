@@ -49,6 +49,30 @@ pub(super) fn rewrite_logical_plan(plan: &LogicalPlan) -> LogicalRewriteOutput {
     rewrite_logical_plan_with_pass_limit(plan, MAX_FIXED_POINT_PASSES)
 }
 
+pub(super) fn rewrite_logical_plan_with_catalog(
+    plan: &LogicalPlan,
+    catalog: &super::OptimizerCatalog,
+    options: crate::OptimizerQualificationOptions,
+) -> LogicalRewriteOutput {
+    let mut output = rewrite_logical_plan(plan);
+    output.plan = super::proofs::rewrite(output.plan, catalog, options, &mut output.events);
+    let applied = output
+        .events
+        .iter()
+        .filter(|event| event.outcome() == crate::RuleOutcome::Applied)
+        .count();
+    let skipped = output
+        .events
+        .iter()
+        .filter(|event| event.outcome() == crate::RuleOutcome::Skipped)
+        .count();
+    output.trace = LOGICAL_REWRITE_STAGE.trace(
+        StageStats::new(logical_node_count(plan), logical_node_count(&output.plan))
+            .with_rule_counts(applied, skipped),
+    );
+    output
+}
+
 fn rewrite_logical_plan_with_pass_limit(
     plan: &LogicalPlan,
     max_passes: usize,
@@ -415,8 +439,13 @@ fn collect_projection_columns(
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
         | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
-        | ProjectionExpression::ListSlice { .. } => {
+        | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::MapLiteral(_) => {
             expression.all_children(|child| collect_projection_columns(child, columns))
         }
         // Comprehension elements are bound by the enclosing expression.
@@ -437,7 +466,8 @@ fn collect_projection_columns(
         ProjectionExpression::ColumnDefaultIfNullOrEq { column, .. }
         | ProjectionExpression::ColumnValueDefaultIfNull { column, .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { column, .. }
-        | ProjectionExpression::ColumnProperty { column, .. } => {
+        | ProjectionExpression::ColumnProperty { column, .. }
+        | ProjectionExpression::Path { column, .. } => {
             columns.insert(column.clone());
             true
         }
@@ -469,8 +499,13 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
         | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
-        | ProjectionExpression::ListSlice { .. } => {
+        | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::MapLiteral(_) => {
             !expression.all_children(|child| !projection_expression_references_column(child))
         }
         ProjectionExpression::LocalVariable { .. } => false,
@@ -479,6 +514,7 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         | ProjectionExpression::ColumnValueDefaultIfNull { .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { .. }
         | ProjectionExpression::ColumnProperty { .. }
+        | ProjectionExpression::Path { .. }
         | ProjectionExpression::CaseColumnSearchRank(_) => true,
         ProjectionExpression::Coalesce(expressions) => expressions
             .iter()
@@ -597,7 +633,15 @@ fn rewrite_filter_into_expand(
             embedded_relationship_predicate = true;
             continue;
         }
-        if predicate_references_only_variable(&predicate, &source_variable) {
+        // Expand binds only its target and relationship. A conjunct over
+        // other variables reads input bindings that every output row repeats,
+        // so it commutes with the expansion (including an optional one) and can
+        // keep moving toward the scan that introduced it.
+        if predicate_references_only_input_variables(
+            &predicate,
+            &target_variable,
+            rel_variable.as_deref(),
+        ) {
             source_predicates.push(predicate);
         } else {
             residual_predicates.push(predicate);
@@ -661,12 +705,20 @@ fn predicates_from_terms(predicates: Vec<Predicate>) -> Predicate {
     simplify_predicate(Predicate::And(predicates))
 }
 
-fn predicate_references_only_variable(predicate: &Predicate, variable: &str) -> bool {
+fn predicate_references_only_input_variables(
+    predicate: &Predicate,
+    target: &str,
+    relationship: Option<&str>,
+) -> bool {
     match predicate {
-        Predicate::And(predicates) | Predicate::Or(predicates) => predicates
-            .iter()
-            .all(|predicate| predicate_references_only_variable(predicate, variable)),
-        Predicate::Not(predicate) => predicate_references_only_variable(predicate, variable),
+        Predicate::And(predicates) | Predicate::Or(predicates) => {
+            predicates.iter().all(|predicate| {
+                predicate_references_only_input_variables(predicate, target, relationship)
+            })
+        }
+        Predicate::Not(predicate) => {
+            predicate_references_only_input_variables(predicate, target, relationship)
+        }
         Predicate::IdEq {
             variable: current, ..
         }
@@ -714,7 +766,7 @@ fn predicate_references_only_variable(predicate: &Predicate, variable: &str) -> 
         }
         | Predicate::PropertyIn {
             variable: current, ..
-        } => current == variable,
+        } => current != target && Some(current.as_str()) != relationship,
         Predicate::ConstantBool(_)
         | Predicate::RelationshipExists { .. }
         | Predicate::BoundRelationshipExists { .. }
@@ -1272,6 +1324,61 @@ mod tests {
             .events()
             .iter()
             .any(|event| { event.rule() == "transformation:push_source_filter_below_expand" }));
+    }
+
+    #[test]
+    fn input_filters_move_through_expansion_chains_to_their_binding() {
+        // Filter(m, e, f) over Expand(e->f, optional) over Expand(m->e) over
+        // scan(m): each conjunct lands directly above the operator binding it.
+        let property = |variable: &str| Predicate::PropertyEq {
+            variable: variable.to_string(),
+            property: "kind".to_string(),
+            value: Value::Int(1),
+        };
+        let second = |optional| LogicalPlan::Expand {
+            source_variable: "e".to_string(),
+            source_label: "Entity".to_string(),
+            rel_variable: Some("s".to_string()),
+            rel_type: "LINKS".to_string(),
+            rel_properties: BTreeMap::new(),
+            direction: RelationshipDirection::Outgoing,
+            target_variable: "f".to_string(),
+            target_label: "Entity".to_string(),
+            min_hops: 1,
+            max_hops: 1,
+            optional,
+            input: Box::new(expand(false)),
+        };
+        for optional in [false, true] {
+            let plan = LogicalPlan::Filter {
+                predicate: Predicate::And(vec![property("f"), property("e"), property("m")]),
+                input: Box::new(second(optional)),
+            };
+            let output = rewrite_logical_plan(&plan);
+            let LogicalPlan::Filter { predicate, input } = output.plan() else {
+                panic!("{:?}", output.plan());
+            };
+            assert_eq!(predicate, &property("f"));
+            let LogicalPlan::Expand { input, .. } = input.as_ref() else {
+                panic!("{input:?}");
+            };
+            let LogicalPlan::Filter { predicate, input } = input.as_ref() else {
+                panic!("{input:?}");
+            };
+            assert_eq!(predicate, &property("e"));
+            let LogicalPlan::Expand { input, .. } = input.as_ref() else {
+                panic!("{input:?}");
+            };
+            assert!(
+                matches!(
+                    input.as_ref(),
+                    LogicalPlan::Filter { predicate, input }
+                        if predicate == &property("m")
+                            && matches!(input.as_ref(), LogicalPlan::NodeScan { .. })
+                ),
+                "{input:?}"
+            );
+        }
     }
 
     #[test]

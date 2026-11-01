@@ -177,12 +177,24 @@ impl PhysicalPlan {
             PhysicalPlan::CreateNode { label, .. } => {
                 format!("{pad}CreateNode label={label}")
             }
+            PhysicalPlan::UnwindExec { rows, variable } => {
+                format!("{pad}UnwindExec rows={} variable={variable}", rows.len())
+            }
+            PhysicalPlan::UnwindRowsExec { expression, variable, .. } => {
+                format!("{pad}UnwindRowsExec expression={expression:?} variable={variable}")
+            }
             PhysicalPlan::UnwindMutation {
                 rows,
                 variable,
                 operation,
             } => {
                 format!("{pad}UnwindMutationExec rows={} variable={variable} operation={operation:?}", rows.len())
+            }
+            PhysicalPlan::LoadCsvMutation { source, operation } => {
+                format!(
+                    "{pad}LoadCsvMutationExec {} operation={operation:?}",
+                    load_csv_description(source)
+                )
             }
             PhysicalPlan::MergeNode { label, .. } => {
                 format!("{pad}MergeNode label={label}")
@@ -372,6 +384,9 @@ impl PhysicalPlan {
                 )
             }
             PhysicalPlan::EmptyExec => format!("{pad}EmptyExec"),
+            PhysicalPlan::LoadCsvExec { source } => {
+                format!("{pad}LoadCsvExec {}", load_csv_description(source))
+            }
             PhysicalPlan::SeqNodeScan { variable, label } => {
                 format!("{pad}SeqNodeScan variable={variable} label={label}")
             }
@@ -409,7 +424,17 @@ impl PhysicalPlan {
                 format!("{pad}NodeCartesianProductExec")
             }
             PhysicalPlan::GraphMatchExec { program, .. } => {
-                format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?} predicate={:?}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
+                let placement = if program.predicate_steps.is_empty() {
+                    String::new()
+                } else {
+                    format!(" predicate_after_steps={:?}", program.predicate_steps)
+                };
+                let projected = if program.projected_nodes.is_empty() {
+                    String::new()
+                } else {
+                    format!(" projected_nodes={:?}", program.projected_nodes)
+                };
+                format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?}{projected} predicate={:?}{placement}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
             }
             PhysicalPlan::NodeColumnLookupExec {
                 variable,
@@ -715,4 +740,17 @@ fn set_return_mode_summary(returns: &SetNodePropertiesReturnMode) -> String {
         SetNodePropertiesReturnMode::Project(items) => items.len().to_string(),
         SetNodePropertiesReturnMode::Count { name } => format!("count:{name}"),
     }
+}
+
+fn load_csv_description(source: &crate::LoadCsvSource) -> String {
+    let location = match &source.location {
+        crate::CsvLocation::Literal(location) => format!("{location:?}"),
+        crate::CsvLocation::Parameter(name) => format!("${name}"),
+    };
+    format!(
+        "source={location} headers={} field_terminator={:?} variable={}",
+        source.with_headers,
+        char::from(source.field_terminator),
+        source.variable
+    )
 }

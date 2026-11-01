@@ -159,77 +159,16 @@ impl Parser<'_> {
         false
     }
 
+    /// Parses `ORDER BY` keys. A key is any projection expression; the shapes
+    /// the planner sorts on directly keep their dedicated [`OrderExpression`]
+    /// variants so plain property and column keys plan as before.
     pub(super) fn parse_order_items(&mut self) -> Result<Vec<OrderItem>> {
         let mut items = Vec::new();
         loop {
             self.skip_ws();
-            let expression_start = self.checkpoint();
-            if self.peek_char() == Some('[') {
-                let expression = OrderExpression::Value(self.parse_scalar_expression()?);
-                items.push(self.parse_order_direction(expression, expression_start.pos));
-                self.skip_ws();
-                if !self.consume_char(',') {
-                    break;
-                }
-                continue;
-            }
-            let first = self.parse_ident()?;
-            let expression = if first.eq_ignore_ascii_case("count") && self.consume_char('(') {
-                let distinct = self.consume_keyword("DISTINCT");
-                let name = if self.consume_char('*') {
-                    if distinct {
-                        return Err(self.error("COUNT(DISTINCT *) is not supported"));
-                    }
-                    "count(*)".to_string()
-                } else {
-                    let variable = self.parse_ident()?;
-                    if self.consume_char('.') {
-                        let property = self.parse_ident()?;
-                        if distinct {
-                            format!("count(DISTINCT {variable}.{property})")
-                        } else {
-                            format!("count({variable}.{property})")
-                        }
-                    } else if distinct {
-                        format!("count(DISTINCT {variable})")
-                    } else {
-                        format!("count({variable})")
-                    }
-                };
-                self.expect_char(')')?;
-                OrderExpression::Column(name)
-            } else if first.eq_ignore_ascii_case("id") && self.consume_char('(') {
-                let variable = self.parse_ident()?;
-                self.expect_char(')')?;
-                OrderExpression::Id { variable }
-            } else if first.eq_ignore_ascii_case("case")
-                || ((matches_ignore_ascii_case(
-                    &first,
-                    &["coalesce", "left", "lower", "json_value"],
-                ) || hawdb_core::ListFunction::from_function_name(&first).is_some())
-                    && self.peek_char() == Some('('))
-            {
-                self.restore(expression_start);
-                OrderExpression::Value(self.parse_scalar_expression()?)
-            } else if self.consume_char('.') {
-                let property = self.parse_ident()?;
-                self.skip_ws();
-                if self.peek_char() == Some('[') {
-                    self.restore(expression_start);
-                    OrderExpression::Value(self.parse_scalar_expression()?)
-                } else {
-                    OrderExpression::Property {
-                        variable: first,
-                        property,
-                    }
-                }
-            } else if self.peek_char() == Some('[') {
-                self.restore(expression_start);
-                OrderExpression::Value(self.parse_scalar_expression()?)
-            } else {
-                OrderExpression::Column(first)
-            };
-            items.push(self.parse_order_direction(expression, expression_start.pos));
+            let start = self.pos;
+            let expression = order_expression(self.parse_projection_expression()?);
+            items.push(self.parse_order_direction(expression, start));
             self.skip_ws();
             if !self.consume_char(',') {
                 break;
@@ -259,11 +198,16 @@ impl Parser<'_> {
         let start = self.pos;
         let kind = self.with_recursion(|parser| parser.parse_scalar_expression_inner())?;
         let mut expression = self.source_node(kind, start);
-        // Postfix `[index]` and `[start..end]` bind tighter than any operator.
-        // Each one nests the AST, so it counts against the recursion budget.
+        // Postfix `[index]`, `[start..end]` and `.key` bind tighter than any
+        // operator. Each one nests the AST, so it counts against the
+        // recursion budget.
         let base_depth = self.recursion_depth;
         let result = (|| {
-            while self.consume_char('[') {
+            loop {
+                let property = self.at_property_postfix();
+                if !property && !self.consume_char('[') {
+                    break;
+                }
                 if self.recursion_depth >= super::MAX_CYPHER_PARSER_DEPTH {
                     return Err(self.error(&format!(
                         "Cypher parser nesting exceeds limit of {}",
@@ -271,7 +215,15 @@ impl Parser<'_> {
                     )));
                 }
                 self.recursion_depth += 1;
-                let kind = self.parse_list_postfix(expression)?;
+                let kind = if property {
+                    self.pos += 1;
+                    ScalarExpressionKind::PropertyAccess {
+                        expression: Box::new(expression),
+                        key: self.parse_ident()?,
+                    }
+                } else {
+                    self.parse_list_postfix(expression)?
+                };
                 expression = self.source_node(kind, start);
             }
             Ok(expression)
@@ -354,6 +306,32 @@ impl Parser<'_> {
         })
     }
 
+    /// Parses `[element, ...]`. A list of constants and parameters stays a
+    /// value so it keeps value-list predicates and pushdown; any row-bound
+    /// element makes it a per-row [`ScalarExpressionKind::List`].
+    fn parse_list_literal(&mut self) -> Result<ScalarExpressionKind> {
+        let checkpoint = self.checkpoint();
+        if let Ok(value) = self.parse_value()
+            && !value.kind.reads_row_binding()
+        {
+            return Ok(ScalarExpressionKind::Value(value));
+        }
+        self.restore(checkpoint);
+        self.expect_char('[')?;
+        let mut elements = Vec::new();
+        loop {
+            self.skip_ws();
+            if self.consume_char(']') {
+                break;
+            }
+            elements.push(self.parse_case_or()?);
+            if self.consume_separator_or_end(',', ']')? {
+                break;
+            }
+        }
+        Ok(ScalarExpressionKind::List(elements))
+    }
+
     /// Parses the arguments of a list function after its opening parenthesis.
     fn parse_list_function_arguments(
         &mut self,
@@ -401,6 +379,19 @@ impl Parser<'_> {
         if self.next_is_list_comprehension() {
             return self.parse_list_comprehension();
         }
+        if self.peek_char() == Some('[') {
+            return self.parse_list_literal();
+        }
+        if self.consume_char('(') {
+            let expression = self.parse_case_or()?;
+            self.expect_char(')')?;
+            return Ok(expression.kind);
+        }
+        if self.peek_char() == Some('{') {
+            return self
+                .parse_map_entries(|parser| parser.parse_case_scalar())
+                .map(ScalarExpressionKind::MapLiteral);
+        }
         if matches!(
             self.peek_char(),
             Some('$' | '[' | '\'' | '"' | '-' | '0'..='9')
@@ -411,6 +402,11 @@ impl Parser<'_> {
             return self.parse_value().map(ScalarExpressionKind::Value);
         }
 
+        let identifier_start = self.checkpoint();
+        let variable = self.parse_ident()?;
+        if let Some(call) = self.parse_scalar_temporal_call(&variable, identifier_start)? {
+            return Ok(call);
+        }
         let variable = self.parse_ident()?;
         if variable.eq_ignore_ascii_case("id") && self.consume_char('(') {
             let variable = self.parse_ident()?;
@@ -421,6 +417,16 @@ impl Parser<'_> {
             && self.consume_char('(')
         {
             return self.parse_list_function_arguments(function);
+        }
+        if let Some(function) = hawdb_core::ConversionFunction::from_function_name(&variable)
+            && self.consume_char('(')
+        {
+            let argument = self.parse_scalar_expression()?;
+            self.expect_char(')')?;
+            return Ok(ScalarExpressionKind::Conversion {
+                function,
+                argument: Box::new(argument),
+            });
         }
         if (variable.eq_ignore_ascii_case("label") || variable.eq_ignore_ascii_case("type"))
             && self.consume_char('(')
@@ -473,6 +479,9 @@ impl Parser<'_> {
                 expression: Box::new(expression),
                 length,
             });
+        }
+        if let Some(path) = self.parse_path_function(&variable)? {
+            return Ok(ScalarExpressionKind::Path(path));
         }
         if variable.eq_ignore_ascii_case("lower") && self.consume_char('(') {
             let expression = self.parse_scalar_expression()?;
@@ -529,6 +538,56 @@ impl Parser<'_> {
         }
     }
 
+    /// Parses the remainder of `length(p)`, `nodes(p)`, `relationships(p)` or
+    /// `properties(nodes(p), 'key')` after the function name.
+    fn parse_path_function(&mut self, name: &str) -> Result<Option<ShortestPathReturnExpression>> {
+        let checkpoint = self.checkpoint();
+        if !matches_ignore_ascii_case(name, &["length", "nodes", "relationships", "properties"])
+            || !self.consume_char('(')
+        {
+            return Ok(None);
+        }
+        let path = if name.eq_ignore_ascii_case("properties") {
+            if !self.consume_keyword("nodes") || !self.consume_char('(') {
+                // `properties(n)` over a node or relationship is not a path function.
+                self.restore(checkpoint);
+                return Ok(None);
+            }
+            let path_variable = self.parse_ident()?;
+            self.expect_char(')')?;
+            self.expect_char(',')?;
+            let property = match self.parse_value()?.kind {
+                ValueExpressionKind::Literal(hawdb_core::Value::String(property)) => property,
+                _ => return Err(self.error("node property projection requires a string key")),
+            };
+            ShortestPathReturnExpression::NodePropertyList {
+                path_variable,
+                property,
+            }
+        } else {
+            let path_variable = self.parse_ident()?;
+            if name.eq_ignore_ascii_case("length") {
+                ShortestPathReturnExpression::Length { path_variable }
+            } else if name.eq_ignore_ascii_case("nodes") {
+                ShortestPathReturnExpression::Nodes { path_variable }
+            } else {
+                ShortestPathReturnExpression::Relationships { path_variable }
+            }
+        };
+        self.expect_char(')')?;
+        Ok(Some(path))
+    }
+
+    /// A value in a specialized CASE shape. Those shapes bind their values
+    /// at planning time, so a row-bound list falls back to the generic CASE.
+    fn parse_case_constant(&mut self) -> Result<ValueExpression> {
+        let value = self.parse_value()?;
+        if value.kind.reads_row_binding() {
+            return Err(self.error("expected a constant CASE value"));
+        }
+        Ok(value)
+    }
+
     fn parse_case_lower_property_default_expression(&mut self) -> Result<ScalarExpressionKind> {
         self.expect_keyword("WHEN")?;
         let variable = self.parse_ident()?;
@@ -551,7 +610,7 @@ impl Parser<'_> {
             return Err(self.error("CASE lower-default expression must lower the checked property"));
         }
         self.expect_keyword("ELSE")?;
-        let default = self.parse_value()?;
+        let default = self.parse_case_constant()?;
         self.expect_keyword("END")?;
         Ok(ScalarExpressionKind::CaseLowerPropertyDefault {
             variable,
@@ -575,9 +634,9 @@ impl Parser<'_> {
             return Err(self.error("CASE expression supports only one normalized property"));
         }
         self.expect_char('=')?;
-        let empty = self.parse_value()?;
+        let empty = self.parse_case_constant()?;
         self.expect_keyword("THEN")?;
-        let default = self.parse_value()?;
+        let default = self.parse_case_constant()?;
         self.expect_keyword("ELSE")?;
         let else_variable = self.parse_ident()?;
         self.expect_char('.')?;
@@ -611,7 +670,7 @@ impl Parser<'_> {
                 return Err(self.error("CASE sort expression THEN must return the same property"));
             }
             self.expect_keyword("ELSE")?;
-            let default = self.parse_value()?;
+            let default = self.parse_case_constant()?;
             self.expect_keyword("END")?;
             return Ok(ScalarExpressionKind::DefaultIfNull {
                 variable,
@@ -628,11 +687,11 @@ impl Parser<'_> {
         if !self.consume_token("<>") && !self.consume_token("!=") {
             return Err(self.error("expected CASE sort expression inequality"));
         }
-        let empty = self.parse_value()?;
+        let empty = self.parse_case_constant()?;
         self.expect_keyword("THEN")?;
-        let non_empty = self.parse_value()?;
+        let non_empty = self.parse_case_constant()?;
         self.expect_keyword("ELSE")?;
-        let null_or_empty = self.parse_value()?;
+        let null_or_empty = self.parse_case_constant()?;
         self.expect_keyword("END")?;
         Ok(ScalarExpressionKind::CasePropertyNotNullOrEq {
             variable,
@@ -649,9 +708,9 @@ impl Parser<'_> {
         self.expect_char('.')?;
         let property = self.parse_ident()?;
         self.expect_char('=')?;
-        let first_match = self.parse_value()?;
+        let first_match = self.parse_case_constant()?;
         self.expect_keyword("THEN")?;
-        let first_rank = self.parse_value()?;
+        let first_rank = self.parse_case_constant()?;
         let mut branches = vec![(first_match, first_rank)];
 
         while self.consume_keyword("WHEN") {
@@ -662,14 +721,14 @@ impl Parser<'_> {
                 return Err(self.error("CASE rank expression supports only one property"));
             }
             self.expect_char('=')?;
-            let branch_match = self.parse_value()?;
+            let branch_match = self.parse_case_constant()?;
             self.expect_keyword("THEN")?;
-            let branch_rank = self.parse_value()?;
+            let branch_rank = self.parse_case_constant()?;
             branches.push((branch_match, branch_rank));
         }
 
         self.expect_keyword("ELSE")?;
-        let default = self.parse_value()?;
+        let default = self.parse_case_constant()?;
         self.expect_keyword("END")?;
         Ok(ScalarExpressionKind::CasePropertyEqualsRank {
             variable,
@@ -688,12 +747,12 @@ impl Parser<'_> {
         if !self.consume_char('<') {
             return Err(self.error("expected CASE floor expression '<'"));
         }
-        let zero = self.parse_value()?;
+        let zero = self.parse_case_constant()?;
         if zero.kind != ValueExpressionKind::Literal(hawdb_core::Value::Int(0)) {
             return Err(self.error("CASE floor expression only supports zero lower bound"));
         }
         self.expect_keyword("THEN")?;
-        let then_zero = self.parse_value()?;
+        let then_zero = self.parse_case_constant()?;
         if then_zero.kind != ValueExpressionKind::Literal(hawdb_core::Value::Int(0)) {
             return Err(self.error("CASE floor expression THEN must be zero"));
         }
@@ -737,7 +796,7 @@ impl Parser<'_> {
         self.expect_char('.')?;
         let property = self.parse_ident()?;
         self.expect_char(',')?;
-        let default = self.parse_value()?;
+        let default = self.parse_case_constant()?;
         self.expect_char(')')?;
         Ok((variable, CoalesceDifferenceTerm { property, default }))
     }
@@ -747,4 +806,26 @@ fn matches_ignore_ascii_case(value: &str, candidates: &[&str]) -> bool {
     candidates
         .iter()
         .any(|candidate| value.eq_ignore_ascii_case(candidate))
+}
+
+fn order_expression(expression: ReturnExpression) -> OrderExpression {
+    let span = expression.span;
+    match expression.kind {
+        ReturnExpressionKind::Value(value) => match value.kind {
+            ScalarExpressionKind::Variable(name) => OrderExpression::Column(name),
+            ScalarExpressionKind::Property { variable, property } => {
+                OrderExpression::Property { variable, property }
+            }
+            ScalarExpressionKind::Id(variable) => OrderExpression::Id { variable },
+            kind => OrderExpression::Value(AstNode {
+                kind,
+                span: value.span,
+            }),
+        },
+        ReturnExpressionKind::Path(path) => OrderExpression::Value(AstNode {
+            kind: ScalarExpressionKind::Path(path),
+            span,
+        }),
+        kind => OrderExpression::Projection(AstNode { kind, span }),
+    }
 }

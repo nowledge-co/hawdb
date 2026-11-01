@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 use hawdb_cypher::ArithmeticOp;
 
@@ -62,6 +65,26 @@ pub(super) fn bind_aggregate_argument(
         aggregations: Vec::new(),
     }
     .bind(argument)
+}
+
+/// Binds an aggregate-free composed expression, such as an `ORDER BY` key.
+pub(super) fn bind_composed_expression(
+    scope: &BTreeSet<String>,
+    columns: &BTreeSet<String>,
+    expression: &ReturnExpression,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<ProjectionExpression> {
+    ComposedReturnBinder {
+        scope,
+        columns,
+        parameters,
+        aggregate: false,
+        literal_names: false,
+        group_keys: Vec::new(),
+        aggregations: Vec::new(),
+    }
+    .bind(expression)
+    .map(|(expression, _)| expression)
 }
 
 fn literal_name(value: &ValueExpression) -> Option<String> {
@@ -187,9 +210,13 @@ impl ComposedReturnBinder<'_> {
                     Ok((projection.expression, name))
                 }
             }
-            ReturnExpressionKind::Path(_) => Err(HawDBError::Semantic(
-                "path projection requires a bound path".to_string(),
-            )),
+            ReturnExpressionKind::Path(path) => self.bind(&AstNode {
+                kind: ReturnExpressionKind::Value(AstNode {
+                    kind: ScalarExpressionKind::Path(path.clone()),
+                    span: expression.span,
+                }),
+                span: expression.span,
+            }),
         }
     }
 }
@@ -216,8 +243,13 @@ pub(super) fn scalar_expression_is_scoped(
         | ScalarExpressionKind::Not(_)
         | ScalarExpressionKind::IsNull { .. }
         | ScalarExpressionKind::ListFunction { .. }
+        | ScalarExpressionKind::List(_)
         | ScalarExpressionKind::ListIndex { .. }
-        | ScalarExpressionKind::ListSlice { .. } => expression
+        | ScalarExpressionKind::Conversion { .. }
+        | ScalarExpressionKind::ListSlice { .. }
+        | ScalarExpressionKind::TemporalFunction { .. }
+        | ScalarExpressionKind::PropertyAccess { .. }
+        | ScalarExpressionKind::MapLiteral(_) => expression
             .kind
             .all_children(|child| scalar_expression_is_scoped(child, scope, column_names)),
         ScalarExpressionKind::ListComprehension {
@@ -243,6 +275,7 @@ pub(super) fn scalar_expression_is_scoped(
         | ScalarExpressionKind::JsonValue { expression, .. } => {
             scalar_expression_is_scoped(expression, scope, column_names)
         }
+        ScalarExpressionKind::Path(path) => column_names.contains(path.path_variable()),
         ScalarExpressionKind::Id(_)
         | ScalarExpressionKind::RelationshipType(_)
         | ScalarExpressionKind::DatePart { .. } => false,

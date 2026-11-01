@@ -55,6 +55,8 @@ impl Parser<'_> {
     pub(super) fn parse_pipeline_clause(&mut self) -> Result<ClauseKind> {
         Ok(if self.consume_keyword("UNWIND") {
             self.parse_pipeline_unwind()?
+        } else if self.consume_keyword("LOAD") {
+            self.parse_pipeline_load_csv()?
         } else if self.consume_keyword("MATCH") {
             self.parse_pipeline_match(false)?
         } else if self.consume_keyword("OPTIONAL") {
@@ -109,13 +111,69 @@ impl Parser<'_> {
         let source = self.parse_value()?;
         if !matches!(
             source.kind,
-            ValueExpressionKind::Parameter(_) | ValueExpressionKind::List(_)
+            ValueExpressionKind::Parameter(_)
+                | ValueExpressionKind::List(_)
+                | ValueExpressionKind::Binding(_)
+                | ValueExpressionKind::BindingProperty { .. }
         ) {
-            return Err(self.error("UNWIND accepts only a parameter or list literal source"));
+            return Err(self.error("UNWIND accepts a parameter, list literal or row-bound list"));
         }
         self.expect_keyword("AS")?;
         let variable = self.parse_ident()?;
         Ok(ClauseKind::Unwind { source, variable })
+    }
+
+    /// `LOAD CSV [WITH HEADERS] FROM <source> AS <variable> [FIELDTERMINATOR <c>]`.
+    fn parse_pipeline_load_csv(&mut self) -> Result<ClauseKind> {
+        self.expect_keyword("CSV")?;
+        let with_headers = if self.consume_keyword("WITH") {
+            self.expect_keyword("HEADERS")?;
+            true
+        } else {
+            false
+        };
+        self.expect_keyword("FROM")?;
+        self.skip_ws();
+        let source_start = self.checkpoint();
+        let source = self.parse_value()?;
+        if !matches!(
+            source.kind,
+            ValueExpressionKind::Parameter(_)
+                | ValueExpressionKind::Literal(hawdb_core::Value::String(_))
+        ) {
+            self.restore(source_start);
+            return Err(
+                self.error("LOAD CSV FROM accepts only a string literal or parameter source")
+            );
+        }
+        self.expect_keyword("AS")?;
+        let variable = self.parse_ident()?;
+        let field_terminator = if self.consume_keyword("FIELDTERMINATOR") {
+            self.skip_ws();
+            let start = self.checkpoint();
+            if !matches!(self.peek_char(), Some('\'' | '"')) {
+                return Err(self.error("FIELDTERMINATOR requires a string literal"));
+            }
+            let text = self.parse_string()?;
+            let mut chars = text.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) if ch.is_ascii() && !matches!(ch, '"' | '\r' | '\n') => ch,
+                _ => {
+                    self.restore(start);
+                    return Err(self.error(
+                        "FIELDTERMINATOR must be one ASCII character other than a double quote or line break",
+                    ));
+                }
+            }
+        } else {
+            ','
+        };
+        Ok(ClauseKind::LoadCsv(LoadCsvClause {
+            with_headers,
+            source,
+            variable,
+            field_terminator,
+        }))
     }
 
     fn parse_pipeline_call(&mut self) -> Result<ClauseKind> {
@@ -250,10 +308,7 @@ impl Parser<'_> {
         loop {
             self.skip_ws();
             let start = self.pos;
-            let expression = self.parse_pipeline_arithmetic(false)?;
-            if arithmetic_depth(&expression) > MAX_CYPHER_PARSER_DEPTH {
-                return Err(self.error("arithmetic expression exceeds maximum nesting depth"));
-            }
+            let expression = self.parse_projection_expression()?;
             let alias = if self.consume_keyword("AS") {
                 Some(self.parse_ident()?)
             } else {
@@ -265,6 +320,38 @@ impl Parser<'_> {
             }
         }
         Ok(items)
+    }
+
+    /// Parses one `RETURN`/`WITH` item or `ORDER BY` key expression.
+    pub(super) fn parse_projection_expression(&mut self) -> Result<ReturnExpression> {
+        self.skip_ws();
+        let start = self.pos;
+        let expression = self.parse_pipeline_arithmetic(false)?;
+        if arithmetic_depth(&expression) > MAX_CYPHER_PARSER_DEPTH {
+            return Err(self.error("arithmetic expression exceeds maximum nesting depth"));
+        }
+        if !self.consume_keyword("IS") {
+            return Ok(expression);
+        }
+        // `RETURN path IS NULL`: a postfix null test over one operand.
+        let negated = self.consume_keyword("NOT");
+        self.expect_keyword("NULL")?;
+        let operand = match expression.kind {
+            ReturnExpressionKind::Value(operand) => operand,
+            ReturnExpressionKind::Path(path) => AstNode {
+                kind: ScalarExpressionKind::Path(path),
+                span: expression.span,
+            },
+            _ => return Err(self.error("IS NULL in a projection requires a non-aggregate operand")),
+        };
+        let test = self.source_node(
+            ScalarExpressionKind::IsNull {
+                expression: Box::new(operand),
+                negated,
+            },
+            start,
+        );
+        Ok(self.source_node(ReturnExpressionKind::Value(test), start))
     }
 
     pub(super) fn parse_pipeline_arithmetic(&mut self, product: bool) -> Result<ReturnExpression> {
@@ -409,6 +496,16 @@ impl Parser<'_> {
         }))
     }
 
+    fn consume_shortest_path_function(&mut self) -> Option<PathSearch> {
+        if self.consume_pipeline_function("shortestPath") {
+            Some(PathSearch::AnyShortest)
+        } else if self.consume_pipeline_function("allShortestPaths") {
+            Some(PathSearch::AllShortest)
+        } else {
+            None
+        }
+    }
+
     fn consume_pipeline_function(&mut self, name: &str) -> bool {
         let checkpoint = self.checkpoint();
         if self.consume_keyword(name) && self.consume_char('(') {
@@ -429,11 +526,15 @@ impl Parser<'_> {
     fn parse_pipeline_pattern(&mut self) -> Result<MatchPattern> {
         self.skip_ws();
         let start = self.pos;
-        let variable = if self.peek_char() == Some('(') {
+        // `shortestPath(...)` / `allShortestPaths(...)` select paths over the
+        // enclosed pattern; the binder validates its single-relationship shape.
+        let mut function_search = self.consume_shortest_path_function();
+        let variable = if function_search.is_some() || self.peek_char() == Some('(') {
             None
         } else {
             let variable = self.parse_ident()?;
             self.expect_char('=')?;
+            function_search = self.consume_shortest_path_function();
             Some(variable)
         };
         let first = self.parse_pipeline_node()?;
@@ -449,7 +550,15 @@ impl Parser<'_> {
                 self.expect_char('-')?;
             }
             let ((variable, rel_type, properties, min_hops, max_hops), search) =
-                self.parse_match_relationship_pattern_with_search(true)?;
+                self.parse_match_relationship_pattern_with_search(true, function_search.is_some())?;
+            let search = match (function_search, search) {
+                (Some(function), PathSearch::All) => function,
+                (Some(_), _) => {
+                    return Err(self
+                        .error("shortest-path functions do not accept a nested SHORTEST selector"))
+                }
+                (None, search) => search,
+            };
             self.expect_char('-')?;
             let direction = if incoming {
                 RelationshipDirection::Incoming
@@ -478,6 +587,12 @@ impl Parser<'_> {
                 },
                 relationship_start,
             ));
+        }
+        if function_search.is_some() {
+            if steps.is_empty() {
+                return Err(self.error("shortest-path functions require a relationship pattern"));
+            }
+            self.expect_char(')')?;
         }
         Ok(self.source_node(
             MatchPatternKind {
@@ -654,6 +769,12 @@ mod tests {
 
     #[test]
     fn unwind_is_a_bounded_row_source_clause() {
+        let scalar = parse_pipeline("MATCH (s:Skill) UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id").unwrap();
+        let ClauseKind::Match { patterns, .. } = &scalar.clauses[2].kind else {
+            panic!("MATCH")
+        };
+        assert!(matches!(&patterns[0].first.properties["id"].kind,
+            ValueExpressionKind::Binding(variable) if variable == "key"));
         let query = "UNWIND $rows AS row MERGE (entity:Entity {id: row.id}) ON CREATE SET entity.name = row.name";
         let parsed = parse_pipeline(query).unwrap();
         assert_eq!(parsed.clauses.len(), 2);
@@ -686,11 +807,38 @@ mod tests {
             } if variable == "row" && property == "name"
         ));
 
-        for query in [
-            "UNWIND range(1, 2) AS row CREATE (n:Node)",
-            "UNWIND row.id AS value CREATE (n:Node)",
+        assert!(parse_pipeline("UNWIND range(1, 2) AS row CREATE (n:Node)").is_err());
+        // Row sources are syntax; the binder validates whether their variables
+        // exist and whether the surrounding read/mutation pipeline permits them.
+        for source in ["row.id", "row", "[row.id, null, row.id]"] {
+            let query = format!("MATCH (row:Item) UNWIND {source} AS value RETURN value");
+            let parsed = parse_pipeline(&query).unwrap();
+            assert!(
+                matches!(&parsed.clauses[1].kind, ClauseKind::Unwind { source, .. }
+                if source.reads_row_binding())
+            );
+        }
+    }
+
+    #[test]
+    fn boolean_literals_compose_in_both_statement_and_pipeline_parsers() {
+        for predicate in [
+            "true",
+            "false",
+            "null",
+            "NOT null",
+            "true = false",
+            "true AND COALESCE(t.space_id, 'default') = $space_id",
+            "(false OR null) AND true",
         ] {
-            assert!(parse_pipeline(query).is_err(), "{query}");
+            let query = format!("MATCH (t:Thread) WHERE {predicate} RETURN t.id");
+            crate::parse(&query).unwrap();
+            parse_pipeline(&query).unwrap();
+        }
+        for predicate in ["42", "'string'"] {
+            let query = format!("MATCH (t:Thread) WHERE {predicate} RETURN t.id");
+            assert!(crate::parse(&query).is_err());
+            assert!(parse_pipeline(&query).is_err());
         }
     }
 
@@ -818,6 +966,105 @@ mod tests {
                 ScalarExpressionKind::Variable(name.to_string())
             );
             assert_eq!(expression.span.unwrap().text(query), Some(name));
+        }
+    }
+
+    #[test]
+    fn shortest_path_functions_parse_as_search_modes_with_optional_upper_bounds() {
+        let query = "MATCH (p1:Person {id: $a}), (p2:Person {id: $b}) OPTIONAL MATCH path = shortestPath((p1)-[:KNOWS*]-(p2)) RETURN CASE path IS NULL WHEN true THEN -1 ELSE length(path) END AS len, path IS NOT NULL AS found";
+        for parsed in [parse_pipeline(query).unwrap(), {
+            let crate::Statement::Pipeline(parsed) = crate::parse(query).unwrap() else {
+                panic!("public MATCH parses as a pipeline");
+            };
+            *parsed
+        }] {
+            let ClauseKind::Match {
+                optional: true,
+                patterns,
+                ..
+            } = &parsed.clauses[1].kind
+            else {
+                panic!("expected OPTIONAL MATCH");
+            };
+            assert_eq!(patterns[0].variable.as_deref(), Some("path"));
+            let relationship = &patterns[0].steps[0].relationship;
+            assert_eq!(relationship.search, PathSearch::AnyShortest);
+            assert_eq!(relationship.direction, RelationshipDirection::Undirected);
+            assert_eq!(
+                (relationship.min_hops, relationship.max_hops),
+                (1, UNBOUNDED_MAX_HOPS)
+            );
+            let ClauseKind::Return(projection) = &parsed.clauses[2].kind else {
+                panic!("expected RETURN");
+            };
+            let ReturnExpressionKind::Value(case) = &projection.items[0].expression.kind else {
+                panic!("expected CASE");
+            };
+            let ScalarExpressionKind::Case {
+                operand: Some(operand),
+                otherwise: Some(otherwise),
+                ..
+            } = &case.kind
+            else {
+                panic!("expected simple CASE: {case:?}");
+            };
+            assert!(matches!(
+                operand.kind,
+                ScalarExpressionKind::IsNull { negated: false, .. }
+            ));
+            assert!(matches!(
+                &otherwise.kind,
+                ScalarExpressionKind::Path(ShortestPathReturnExpression::Length { path_variable })
+                    if path_variable == "path"
+            ));
+            let ReturnExpressionKind::Value(found) = &projection.items[1].expression.kind else {
+                panic!("expected IS NOT NULL");
+            };
+            assert!(matches!(
+                found.kind,
+                ScalarExpressionKind::IsNull { negated: true, .. }
+            ));
+        }
+        for (query, search, direction, hops) in [
+            (
+                "MATCH p = allShortestPaths((a)<-[:LINK*0..4]-(b)) RETURN nodes(p), relationships(p)",
+                PathSearch::AllShortest,
+                RelationshipDirection::Incoming,
+                (0, 4),
+            ),
+            (
+                "MATCH shortestPath((a)-[*..3]->(b)) RETURN a",
+                PathSearch::AnyShortest,
+                RelationshipDirection::Outgoing,
+                (1, 3),
+            ),
+            (
+                "MATCH p = (a)-[:LINK* ANY SHORTEST 0..]->(b) RETURN length(p)",
+                PathSearch::AnyShortest,
+                RelationshipDirection::Outgoing,
+                (0, UNBOUNDED_MAX_HOPS),
+            ),
+        ] {
+            let parsed = parse_pipeline(query).unwrap();
+            let ClauseKind::Match { patterns, .. } = &parsed.clauses[0].kind else {
+                panic!("expected MATCH");
+            };
+            let relationship = &patterns[0].steps[0].relationship;
+            assert_eq!(relationship.search, search, "{query}");
+            assert_eq!(relationship.direction, direction, "{query}");
+            assert_eq!(
+                (relationship.min_hops, relationship.max_hops),
+                hops,
+                "{query}"
+            );
+        }
+        for query in [
+            "MATCH (a)-[:LINK*]->(b) RETURN a",
+            "MATCH p = shortestPath((a)-[:LINK* ALL SHORTEST]->(b)) RETURN a",
+            "MATCH p = shortestPath((a)) RETURN a",
+            "MATCH p = shortestPath((a)-[:LINK*]->(b) RETURN a",
+        ] {
+            assert!(parse_pipeline(query).is_err(), "{query}");
         }
     }
 

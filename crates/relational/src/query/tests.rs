@@ -34,6 +34,18 @@ mod having;
 mod ordinary_aggregate;
 mod projection_admission;
 
+fn assert_intermediate_work_refusal(error: &HawDBError) {
+    let HawDBError::ResourceBudgetExceeded(cause) = error else {
+        panic!("aggregate lost its typed work refusal: {error}");
+    };
+    assert_eq!(cause.resource, hawdb_core::ResourceBudgetKind::WorkUnits);
+    assert_eq!(cause.scope, hawdb_core::ResourceBudgetScope::Query);
+    assert_eq!(cause.owner, "relational SQL");
+    assert_eq!(cause.budget_option, "max_intermediate_rows");
+    assert_eq!(cause.budget, 1);
+    assert!(cause.used.saturating_add(cause.requested) > cause.budget);
+}
+
 fn assert_aggregate_memory_refusal(error: &HawDBError, owner: &str) {
     let HawDBError::ResourceBudgetExceeded(cause) = error else {
         panic!("aggregate lost its typed memory refusal: {error}");
@@ -74,6 +86,17 @@ fn candidate_work_has_an_independent_budget_and_checkpoint() {
         .account_candidate_work()
         .expect_err("second candidate exceeds its separate budget");
     assert!(error.to_string().contains("max_candidate_work 1"));
+    assert!(matches!(&error, HawDBError::ResourceBudgetExceeded(cause)
+        if cause.resource == hawdb_core::ResourceBudgetKind::WorkUnits
+            && cause.budget_option == "max_candidate_work"
+            && cause.used == 1 && cause.requested == 1 && cause.budget == 1));
+
+    let mut rows = 1;
+    let error = account_intermediate(&mut rows, 1, 1).unwrap_err();
+    assert!(matches!(&error, HawDBError::ResourceBudgetExceeded(cause)
+        if cause.resource == hawdb_core::ResourceBudgetKind::WorkUnits
+            && cause.budget_option == "max_intermediate_rows"
+            && cause.used == 1 && cause.requested == 1 && cause.budget == 1));
 
     let mut cancellable = RelationalPipelineState::new(
         Some(&task_context),

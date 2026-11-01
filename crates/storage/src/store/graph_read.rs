@@ -30,6 +30,18 @@ mod ordered_composite;
 mod resident_pruning;
 use admission::{AdmittedProjection, ProjectionAdmission, UnaccountedReadAllocation};
 
+thread_local! {
+    static ADJACENCY_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts ordered adjacency visits (one per expanded source node and
+/// direction) started on this thread. Diagnostic for tests; always compiled so
+/// test builds without the `test-support` feature still link.
+#[doc(hidden)]
+pub fn adjacency_visits_for_test() -> u64 {
+    ADJACENCY_VISITS.with(std::cell::Cell::get)
+}
+
 struct PropertyRangeBounds<'a> {
     lower: Option<&'a (Value, bool)>,
     upper: Option<&'a (Value, bool)>,
@@ -126,6 +138,55 @@ impl<A> MaterializedNodePointSource<A> {
     }
 }
 
+thread_local! {
+    static RECORD_READS: std::cell::Cell<RecordReadsForTest> =
+        const { std::cell::Cell::new(RecordReadsForTest::ZERO) };
+}
+
+/// Point reads started on this thread, by kind. Diagnostic for tests that
+/// prove a plan reads less than whole records; always compiled so test builds
+/// without the `test-support` feature still link.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RecordReadsForTest {
+    /// `node_with_allocation`: every property of one node.
+    pub full_nodes: u64,
+    /// `projected_node_owned_admitted`: identity, labels and selected properties.
+    pub projected_nodes: u64,
+    /// `relationship_with_allocation`, including ordered adjacency visits.
+    pub full_relationships: u64,
+}
+
+impl RecordReadsForTest {
+    const ZERO: Self = Self {
+        full_nodes: 0,
+        projected_nodes: 0,
+        full_relationships: 0,
+    };
+
+    /// Reads since `earlier`, a value returned on the same thread.
+    pub fn since(self, earlier: Self) -> Self {
+        Self {
+            full_nodes: self.full_nodes - earlier.full_nodes,
+            projected_nodes: self.projected_nodes - earlier.projected_nodes,
+            full_relationships: self.full_relationships - earlier.full_relationships,
+        }
+    }
+}
+
+#[doc(hidden)]
+pub fn record_reads_for_test() -> RecordReadsForTest {
+    RECORD_READS.with(std::cell::Cell::get)
+}
+
+fn record_read(update: impl FnOnce(&mut RecordReadsForTest)) {
+    RECORD_READS.with(|reads| {
+        let mut current = reads.get();
+        update(&mut current);
+        reads.set(current);
+    });
+}
+
 fn retain_point_allocation(allocation: &mut dyn GraphReadAllocation, bytes: usize) -> Result<()> {
     if allocation.bytes() < bytes {
         return Err(HawDBError::Execution(
@@ -144,6 +205,10 @@ fn retain_point_allocation(allocation: &mut dyn GraphReadAllocation, bytes: usiz
 #[cfg(test)]
 #[path = "graph_read/relationship_scan_tests.rs"]
 mod relationship_scan_tests;
+
+#[cfg(test)]
+#[path = "graph_read/labeled_expand_point_read_tests.rs"]
+mod labeled_expand_point_read_tests;
 
 #[cfg(test)]
 #[path = "graph_read/relationship_stream_tests.rs"]
@@ -496,6 +561,7 @@ impl GraphStore {
         label_ids: Option<&[LabelId]>,
         admit: &mut ControlledGraphReadAllocator<'_>,
     ) -> Result<AdmittedNodeRead> {
+        record_read(|reads| reads.full_nodes += 1);
         let work = admit.work();
         work.charge_work(1)?;
         if self.node_tombstones.contains(&id) {
@@ -516,28 +582,62 @@ impl GraphStore {
         let Some(reader) = self.canonical_base.as_ref() else {
             return Ok(AdmittedNodeRead::Missing);
         };
-        let Some(bytes) = reader
-            .node_allocation_bytes(id, label_ids)
-            .map_err(canonical_segment_error)?
-        else {
-            return Ok(AdmittedNodeRead::Missing);
-        };
-        let Some(allocation) = admit.reserve(bytes)? else {
-            return Ok(AdmittedNodeRead::Stopped);
-        };
-        if allocation.bytes() < bytes {
-            return Err(HawDBError::Execution(
-                "full node admission returned an insufficient allocation permit".into(),
-            ));
-        }
-        reader
-            .get_node(id)
-            .map_err(canonical_segment_error)
-            .map(|node| {
-                node.map_or(AdmittedNodeRead::Missing, |node| {
-                    AdmittedNodeRead::Node(AdmittedNodeRecord::new(node, allocation))
+        // One point read checks labels from the encoded header, measures and
+        // admits ownership, and only then decodes values from the same payload.
+        let mut admission_error = None;
+        let mut stopped = false;
+        let result = reader.with_node_input(id, |input| {
+            if let Some(labels) = label_ids {
+                let mut matches = false;
+                for &label in labels {
+                    matches |= input.has_label(label)?;
+                }
+                if !matches {
+                    return Ok(None);
+                }
+            }
+            input
+                .decode_selection(None, |bytes| {
+                    let refused =
+                        || CanonicalSegmentError::Source("graph read admission refused".into());
+                    match admit.reserve(bytes) {
+                        Ok(Some(allocation)) if allocation.bytes() >= bytes => Ok(allocation),
+                        Ok(Some(_)) => {
+                            admission_error = Some(HawDBError::Execution(
+                                "full node admission returned an insufficient allocation permit"
+                                    .into(),
+                            ));
+                            Err(refused())
+                        }
+                        Ok(None) => {
+                            stopped = true;
+                            Err(refused())
+                        }
+                        Err(error) => {
+                            admission_error = Some(error);
+                            Err(refused())
+                        }
+                    }
                 })
-            })
+                .map(Some)
+        });
+        if let Some(error) = admission_error {
+            return Err(error);
+        }
+        if stopped {
+            return Ok(AdmittedNodeRead::Stopped);
+        }
+        Ok(match result.map_err(canonical_segment_error)?.flatten() {
+            Some((node, allocation)) => AdmittedNodeRead::Node(AdmittedNodeRecord::new(
+                NodeRecord {
+                    id: node.id,
+                    labels: node.labels,
+                    properties: node.properties,
+                },
+                allocation,
+            )),
+            None => AdmittedNodeRead::Missing,
+        })
     }
 
     /// Admit the selected node allocation before cloning or decoding values.
@@ -548,6 +648,7 @@ impl GraphStore {
         required_properties: &BTreeSet<String>,
         admit: &mut dyn FnMut(usize) -> Result<()>,
     ) -> Result<Option<ProjectedNodeRecord>> {
+        record_read(|reads| reads.projected_nodes += 1);
         if self.node_tombstones.contains(&id) {
             return Ok(None);
         }
@@ -595,6 +696,7 @@ impl GraphStore {
         id: RelId,
         admit: &mut ControlledGraphReadAllocator<'_>,
     ) -> Result<AdmittedRelationshipRead> {
+        record_read(|reads| reads.full_relationships += 1);
         let work = admit.work();
         work.charge_work(1)?;
         if self.relationship_tombstones.contains(&id) {
@@ -3031,17 +3133,58 @@ impl GraphStore {
         admit: &mut ControlledGraphReadAllocator<'_>,
         mut consumer: impl FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
     ) -> Result<GraphScanControl> {
+        let selection = (node_id, rel_type, direction);
+        self.visit_ordered_adjacency(
+            selection,
+            memory_budget_bytes,
+            admit,
+            &mut |entry, admit| {
+                emit_admitted_relationship(self, selection, entry, admit, &mut consumer)
+            },
+        )
+    }
+
+    /// Visits the entries of
+    /// [`Self::visit_ordered_adjacent_relationships_with_allocation`] in the
+    /// same order, with the same key admission and per-entry work, but never
+    /// reads or owns a relationship record. For callers that need only the
+    /// relationship id and the neighbor, such as an anonymous pattern
+    /// relationship without property constraints.
+    pub fn visit_ordered_adjacency_entries_with_allocation(
+        &self,
+        selection: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        memory_budget_bytes: usize,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+        mut consumer: impl FnMut(OrderedAdjacencyEntry) -> Result<GraphScanControl>,
+    ) -> Result<GraphScanControl> {
+        self.visit_ordered_adjacency(
+            selection,
+            memory_budget_bytes,
+            admit,
+            &mut |entry, admit| {
+                admit.work().charge_work(1)?;
+                consumer(entry)
+            },
+        )
+    }
+
+    fn visit_ordered_adjacency(
+        &self,
+        selection: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        memory_budget_bytes: usize,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+        emit: &mut impl FnMut(
+            OrderedAdjacencyEntry,
+            &mut ControlledGraphReadAllocator<'_>,
+        ) -> Result<GraphScanControl>,
+    ) -> Result<GraphScanControl> {
+        let (node_id, rel_type, direction) = selection;
+        ADJACENCY_VISITS.with(|visits| visits.set(visits.get().saturating_add(1)));
         let work = admit.work();
         if let Some(rel_type) = rel_type
             && (self.canonical_base.is_none() || self.canonical_adjacency.is_some())
         {
-            return self.visit_typed_adjacent_relationships_with_allocation(
-                node_id,
-                rel_type,
-                direction,
-                admit,
-                &mut consumer,
-            );
+            return self.visit_typed_adjacency(node_id, rel_type, direction, admit, emit);
         }
         let Some(mut key_allocation) = admit.reserve(0)? else {
             return Ok(GraphScanControl::Stop);
@@ -3145,44 +3288,32 @@ impl GraphStore {
         entries.sort_unstable();
         entries.dedup();
         for entry in entries {
-            if emit_admitted_relationship(
-                self,
-                (node_id, rel_type, direction),
-                entry,
-                admit,
-                &mut consumer,
-            )? == GraphScanControl::Stop
-            {
+            if emit(entry, admit)? == GraphScanControl::Stop {
                 return Ok(GraphScanControl::Stop);
             }
         }
         Ok(GraphScanControl::Continue)
     }
 
-    fn visit_typed_adjacent_relationships_with_allocation(
+    fn visit_typed_adjacency(
         &self,
         node_id: NodeId,
         rel_type: RelTypeId,
         direction: AdjacencyDirection,
         admit: &mut ControlledGraphReadAllocator<'_>,
-        consumer: &mut impl FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
+        emit: &mut impl FnMut(
+            OrderedAdjacencyEntry,
+            &mut ControlledGraphReadAllocator<'_>,
+        ) -> Result<GraphScanControl>,
     ) -> Result<GraphScanControl> {
         let work = admit.work();
-        let selection = (node_id, Some(rel_type), direction);
         let mut live_entries = self
             .adjacency_relationship_ids(node_id, rel_type, direction)
             .into_iter()
             .flat_map(AdjacencyPostingList::iter_copied)
             .peekable();
         let Some(adjacency) = self.canonical_adjacency.as_ref() else {
-            return emit_admitted_live_before(
-                self,
-                selection,
-                &mut live_entries,
-                None,
-                admit,
-                consumer,
-            );
+            return emit_live_adjacency_entries_before(&mut live_entries, None, admit, emit);
         };
         let mut consumer_error = None;
         let (report, control) = adjacency
@@ -3202,20 +3333,12 @@ impl GraphStore {
                     neighbor_id: input.neighbor_id,
                     relationship_id: input.relationship_id,
                 };
-                let result = emit_admitted_live_before(
-                    self,
-                    selection,
-                    &mut live_entries,
-                    Some(entry),
-                    admit,
-                    consumer,
-                )
-                .and_then(|control| match control {
-                    GraphScanControl::Continue => {
-                        emit_admitted_relationship(self, selection, entry, admit, consumer)
-                    }
-                    GraphScanControl::Stop => Ok(GraphScanControl::Stop),
-                });
+                let result =
+                    emit_live_adjacency_entries_before(&mut live_entries, Some(entry), admit, emit)
+                        .and_then(|control| match control {
+                            GraphScanControl::Continue => emit(entry, admit),
+                            GraphScanControl::Stop => Ok(GraphScanControl::Stop),
+                        });
                 match result {
                     Ok(GraphScanControl::Continue) => Ok(CanonicalScanControl::Continue),
                     Ok(GraphScanControl::Stop) => Ok(CanonicalScanControl::Stop),
@@ -3240,7 +3363,7 @@ impl GraphStore {
         if control == CanonicalScanControl::Stop {
             return Ok(GraphScanControl::Stop);
         }
-        emit_admitted_live_before(self, selection, &mut live_entries, None, admit, consumer)
+        emit_live_adjacency_entries_before(&mut live_entries, None, admit, emit)
     }
 
     /// Filtered ordering retains projection pruning while admitting every
@@ -4832,22 +4955,21 @@ fn emit_admitted_relationship(
     consumer(AdmittedRelationshipRecord::new(record, allocation))
 }
 
-fn emit_admitted_live_before(
-    store: &GraphStore,
-    selection: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+fn emit_live_adjacency_entries_before(
     entries: &mut std::iter::Peekable<impl Iterator<Item = OrderedAdjacencyEntry>>,
     before: Option<OrderedAdjacencyEntry>,
     admit: &mut ControlledGraphReadAllocator<'_>,
-    consumer: &mut impl FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
+    emit: &mut impl FnMut(
+        OrderedAdjacencyEntry,
+        &mut ControlledGraphReadAllocator<'_>,
+    ) -> Result<GraphScanControl>,
 ) -> Result<GraphScanControl> {
     while let Some(entry) = entries.peek().copied() {
         if before.is_some_and(|before| entry >= before) {
             break;
         }
         entries.next();
-        if emit_admitted_relationship(store, selection, entry, admit, consumer)?
-            == GraphScanControl::Stop
-        {
+        if emit(entry, admit)? == GraphScanControl::Stop {
             return Ok(GraphScanControl::Stop);
         }
     }

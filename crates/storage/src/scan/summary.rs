@@ -74,9 +74,16 @@ impl ScanScalar {
             Value::String(value) => Some(Self::String(value.clone())),
             Value::Binary(value) => Some(Self::Binary(value.clone())),
             Value::Uuid(value) => Some(Self::Uuid(*value)),
-            Value::Null | Value::Float(_) | Value::Vector(_) | Value::List(_) | Value::Map(_) => {
-                None
-            }
+            Value::Null
+            | Value::Float(_)
+            | Value::Vector(_)
+            | Value::List(_)
+            | Value::Map(_)
+            | Value::Date(_)
+            | Value::LocalTime(_)
+            | Value::LocalDateTime(_)
+            | Value::DateTime(_)
+            | Value::Duration(_) => None,
         }
     }
 

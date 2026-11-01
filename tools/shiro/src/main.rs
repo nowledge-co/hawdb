@@ -25,7 +25,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+mod qualification_cli;
+
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("qualify") {
+        return qualification_cli::run(std::env::args().skip(2));
+    }
     if std::env::args().skip(1).collect::<Vec<_>>().as_slice() == ["--help"] {
         println!("{}", usage());
         return ExitCode::SUCCESS;

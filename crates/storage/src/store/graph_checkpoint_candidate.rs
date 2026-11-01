@@ -82,7 +82,7 @@ impl CheckpointSourceIdentity {
     }
 }
 
-/// Constant-time WAL/delta scheduling signals. Reading these does not enumerate
+/// Constant-time WAL/delta/live-overlay scheduling signals. Reading these does not enumerate
 /// generations, walk graph records, or probe the filesystem.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +98,37 @@ pub struct CheckpointDebtSnapshot {
     pub max_delta_bytes: Option<u64>,
     pub read_only: bool,
     pub wal_sync_group_active: bool,
+    /// Retained relational live-overlay occupancy. Only a checkpoint folds it
+    /// into a new canonical base, so it is checkpoint debt like WAL bytes.
+    pub relational_live: RelationalLiveOverlayDebt,
+}
+
+/// Current relational live row/index overlay occupancy and the cumulative
+/// envelope that rejects a later commit before its WAL append. Limits are
+/// `None` when no live view is serving, so the overlay cannot grow.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RelationalLiveOverlayDebt {
+    pub row_entries: u64,
+    pub max_row_entries: Option<u64>,
+    pub row_resident_bytes: u64,
+    pub max_row_resident_bytes: Option<u64>,
+    pub index_entries: u64,
+    pub max_index_entries: Option<u64>,
+    pub index_encoded_bytes: u64,
+    pub max_index_encoded_bytes: Option<u64>,
+}
+
+impl RelationalLiveOverlayDebt {
+    /// Every `(retained, limit)` pair checked by live-view admission.
+    pub fn pairs(&self) -> [(u64, Option<u64>); 4] {
+        [
+            (self.row_entries, self.max_row_entries),
+            (self.row_resident_bytes, self.max_row_resident_bytes),
+            (self.index_entries, self.max_index_entries),
+            (self.index_encoded_bytes, self.max_index_encoded_bytes),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,7 +301,34 @@ impl GraphStore {
             },
             read_only: durable.read_only,
             wal_sync_group_active: durable.wal_sync_group_active(),
+            relational_live: self.relational_live_overlay_debt(),
         })
+    }
+
+    fn relational_live_overlay_debt(&self) -> RelationalLiveOverlayDebt {
+        let count = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
+        let mut debt = RelationalLiveOverlayDebt::default();
+        if let Some(view) = self
+            .relational_row_pages
+            .current_read_view(self.commit_epoch)
+        {
+            let limits = self.relational_row_pages.live_limits;
+            debt.row_entries = count(view.live_entry_count());
+            debt.max_row_entries = Some(count(limits.max_entries.get()));
+            debt.row_resident_bytes = count(view.live_resident_bytes());
+            debt.max_row_resident_bytes = Some(count(limits.max_bytes.get()));
+        }
+        if let Some(view) = self
+            .relational_index_shadow
+            .current_read_view(self.commit_epoch)
+        {
+            let limits = self.relational_index_shadow.live_limits;
+            debt.index_entries = count(view.live_entry_count());
+            debt.max_index_entries = Some(count(limits.max_entries.get()));
+            debt.index_encoded_bytes = count(view.live_encoded_bytes());
+            debt.max_index_encoded_bytes = Some(count(limits.max_bytes.get()));
+        }
+        debt
     }
 
     /// Receives a runtime whose durable selector was published by the sole

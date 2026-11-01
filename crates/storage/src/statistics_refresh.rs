@@ -499,6 +499,16 @@ fn index_statistics_value_bytes(value: &Value) -> usize {
             .saturating_add(value.encoded().len().to_string().len())
             .saturating_add(value.encoded().len().saturating_mul(2)),
         Value::Uuid(_) => 34,
+        // `t`, a kind letter and the hex payload.
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            2 + 2 * hawdb_core::temporal::codec::TemporalValueKind::of(value)
+                .expect("temporal value")
+                .payload_len()
+        }
         Value::List(values) => values.iter().fold(
             2usize.saturating_add(values.len().to_string().len()),
             |bytes, value| {
@@ -567,6 +577,18 @@ fn append_index_statistics_value(encoded: &mut String, value: &Value) {
         Value::Uuid(value) => {
             encoded.push('u');
             encoded.push_str(&value.to_string());
+        }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            use std::fmt::Write as _;
+            encoded.push('t');
+            encoded.push(crate::text::temporal_text_tag(value).expect("temporal value"));
+            for byte in hawdb_core::temporal::codec::payload(value).expect("temporal value") {
+                write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
+            }
         }
         Value::List(values) => {
             encoded.push('l');

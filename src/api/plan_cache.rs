@@ -14,6 +14,8 @@
 
 pub(super) mod determinism;
 mod output_schema;
+#[cfg(test)]
+mod retention_allocation;
 
 use super::query_request::{BoundScoringRequest, ScoringPlanCacheKey};
 use super::{
@@ -30,6 +32,7 @@ use crate::planner::{self, LogicalPlan, Predicate};
 use crate::schema::{Catalog, GraphStatistics, IndexKind, LabelId, PropertyType, TableKind};
 use crate::store::GraphStore;
 use crate::value::Value;
+use hawdb_core::RetainedHeapBytes;
 use hawdb_optimizer::graph::{
     node_equality_index_seek_is_cheaper, optimizer_catalog_from_graph_statistics,
     NODE_INDEX_SMALL_LABEL_SCAN_THRESHOLD,
@@ -38,9 +41,10 @@ use hawdb_optimizer::graph::{
 use hawdb_plan_cache::ParameterBindingTemplate;
 use hawdb_plan_cache::{
     bind_physical_plan_parameters, parameter_scalar_types, parameterize_logical_plan,
-    parameterize_value_list, resolve_plan_template_value, LfuCache, OptimizerSchemaKey,
-    ParameterBindingCache, ParameterBindingCacheConfig, ParameterizedLogicalPlan,
-    PlanParameterCacheKey,
+    parameterize_value_list, prepare_physical_plan_for_cache,
+    prepare_physical_regexes_for_execution, resolve_plan_template_value, LfuCache,
+    OptimizerSchemaKey, ParameterBindingCache, ParameterBindingCacheConfig,
+    ParameterizedLogicalPlan, PlanParameterCacheKey,
 };
 pub use hawdb_plan_cache::{PlanCacheBypassReason, PlanCacheLookup, PlanCacheStats};
 use hawdb_plan_cypher::{BatchMutationOperation, ProjectionExpression};
@@ -86,6 +90,8 @@ pub(super) struct OptimizedQueryPlan {
     pub(super) optimizer_environment: OptimizerEnvironmentKey,
     pub(super) configured_max_optimizer_groups: Option<usize>,
     pub(super) effective_max_optimizer_groups: usize,
+    /// The statement clock planning observed; execution pins it.
+    pub(super) statement_clock: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
 }
 
 impl OptimizedQueryPlan {
@@ -108,6 +114,7 @@ pub(super) struct CachedPlan {
     physical_template: PhysicalPlan,
     trace: OptimizerTrace,
     has_parameter_slots: bool,
+    has_source_regexes: bool,
 }
 
 pub(super) type PlanCache = LfuCache<PlanCacheKey, Arc<CachedPlan>>;
@@ -258,9 +265,40 @@ impl From<&QueryAccessControlContext> for AccessControlPlanCacheKey {
     }
 }
 
+// Lifecycle and existence constraints affect semantic proofs, while the
+// existing statistics identity intentionally ignores lifecycle churn. Track
+// this identity only for logical shapes on which proof rewrites can run.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ProofSchemaKey {
+    public_tables: Vec<hawdb_core::TableId>,
+    public_properties: Vec<hawdb_core::PropertyId>,
+    exists: Vec<(hawdb_core::ConstraintSubject, String)>,
+}
+impl ProofSchemaKey {
+    fn from_catalog(catalog: &Catalog) -> Self {
+        Self {
+            public_tables: catalog
+                .table_descriptors()
+                .filter(|table| table.state == hawdb_core::SchemaObjectState::Public)
+                .map(|table| table.id)
+                .collect(),
+            public_properties: catalog
+                .property_descriptors()
+                .filter(|property| property.state == hawdb_core::SchemaObjectState::Public)
+                .map(|property| property.id)
+                .collect(),
+            exists: catalog
+                .node_property_exists_constraints()
+                .map(|constraint| (constraint.subject, constraint.property.clone()))
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct OptimizerEnvironmentKey {
     schema: OptimizerSchemaKey,
+    proof_schema: Option<ProofSchemaKey>,
     // Query-local point estimates do not depend on published advanced statistics.
     statistics_generation: Option<u64>,
     ordered_range_indexes: Vec<(String, String)>,
@@ -444,6 +482,10 @@ impl OptimizerEnvironmentKey {
         store: &R,
     ) -> bool {
         self.schema == OptimizerSchemaKey::from_catalog(catalog)
+            && self
+                .proof_schema
+                .as_ref()
+                .is_none_or(|proof| proof == &ProofSchemaKey::from_catalog(catalog))
             && self.ordered_range_indexes == ordered_range_indexes(catalog, store)
             && self
                 .ordered_composite_indexes
@@ -518,7 +560,7 @@ impl OptimizerPlanningCache {
         catalog: &Catalog,
         store: &R,
         query_local_statistics: bool,
-        tracks_composite_ordering: bool,
+        tracks_properties: bool,
     ) -> OptimizerEnvironmentKey {
         // A cache lookup must retain the last published statistics generation:
         // ordinary data commits do not make a physical plan illegal. A cache
@@ -532,9 +574,10 @@ impl OptimizerPlanningCache {
         }
         OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
+            proof_schema: tracks_properties.then(|| ProofSchemaKey::from_catalog(catalog)),
             statistics_generation: (!query_local_statistics).then_some(self.statistics_generation),
             ordered_range_indexes: ordered_range_indexes(catalog, store),
-            ordered_composite_indexes: tracks_composite_ordering
+            ordered_composite_indexes: tracks_properties
                 .then(|| Arc::new(ordered_composite_indexes(catalog, store))),
             node_index_size_classes: node_index_size_classes(catalog, store),
         }
@@ -588,7 +631,7 @@ impl OptimizerPlanningCache {
         catalog: &Catalog,
         store: &R,
         statistics_commit_lag: Option<u64>,
-        tracks_composite_ordering: bool,
+        tracks_properties: bool,
     ) -> OptimizerCatalogAccess {
         let mut decisions = Vec::new();
         // This path is reached only after the physical-plan cache missed or
@@ -632,9 +675,10 @@ impl OptimizerPlanningCache {
         ));
         let environment = OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
+            proof_schema: tracks_properties.then(|| ProofSchemaKey::from_catalog(catalog)),
             statistics_generation: Some(self.statistics_generation),
             ordered_range_indexes: ordered_range_indexes(catalog, store),
-            ordered_composite_indexes: tracks_composite_ordering
+            ordered_composite_indexes: tracks_properties
                 .then(|| Arc::new(ordered_composite_indexes(catalog, store))),
             node_index_size_classes: node_index_size_classes(catalog, store),
         };
@@ -682,7 +726,42 @@ impl OptimizerPlanningCache {
     }
 }
 
+/// Plans `statement` under one stable statement clock and records that
+/// instant in the result, so execution can pin the same instant for clock
+/// reads evaluated per row.
 pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
+    cypher_text: &str,
+    statement: &cypher::Statement,
+    parameters: &BTreeMap<String, Value>,
+    cache_mode: PlanCacheMode,
+    trace_mode: PlanTraceMode,
+    context: PlanCacheContext<'_, S>,
+) -> Result<OptimizedQueryPlan> {
+    hawdb_core::temporal::with_stable_statement_clock(|| {
+        // A statement whose parameters include a map with only `timezone`
+        // may read the clock while binding (`datetime($tz)`), so its plan
+        // must not be replayed with another statement's instant.
+        let cache_mode = if cache_mode == PlanCacheMode::Use
+            && parameters
+                .values()
+                .any(hawdb_core::temporal::is_clock_reading_map)
+        {
+            PlanCacheMode::Bypass(PlanCacheBypassReason::StatementNotCacheable)
+        } else {
+            cache_mode
+        };
+        optimized_query_plan_for_pinned(
+            cypher_text,
+            statement,
+            parameters,
+            cache_mode,
+            trace_mode,
+            context,
+        )
+    })
+}
+
+fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
     cypher_text: &str,
     statement: &cypher::Statement,
     parameters: &BTreeMap<String, Value>,
@@ -731,17 +810,9 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
             binding_template_hit = hit;
             plan
         });
-    // The new CASE marker trees are large. Keep physical copies request-owned
-    // until the physical cache has its own byte budget; logical reuse remains
-    // enabled under the separate bounded cache above.
-    let physical_cache_mode = if parameterized
-        .as_ref()
-        .is_some_and(ParameterizedLogicalPlan::has_case_parameter_slots)
-    {
-        PlanCacheMode::Bypass(PlanCacheBypassReason::ParameterizedCaseTemplate)
-    } else {
-        cache_mode
-    };
+    // Every retained key/plan/trace is charged before weighted admission. CASE
+    // marker trees use the same bounded policy as other immutable templates.
+    let physical_cache_mode = cache_mode;
     let point_statistics = if trace_mode == PlanTraceMode::Template {
         parameterized
             .as_ref()
@@ -760,7 +831,7 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
             point_statistics.is_some(),
             parameterized
                 .as_ref()
-                .is_some_and(|plan| ordered_query_shape(plan.logical())),
+                .is_some_and(|plan| tracks_property_proofs(plan.logical())),
         )
     });
     let mut key = parameterized
@@ -786,6 +857,9 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
                 execution_parameters.as_ref(),
                 cached.has_parameter_slots,
             )?;
+            if cached.has_source_regexes && !cached.has_parameter_slots {
+                prepare_physical_regexes_for_execution(&mut physical_plan)?;
+            }
             if let Some(scoring) = context.scoring {
                 scoring.rebind(&mut physical_plan)?;
             }
@@ -822,6 +896,7 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
                 optimizer_environment: key.environment.clone(),
                 configured_max_optimizer_groups: context.config.max_optimizer_groups,
                 effective_max_optimizer_groups,
+                statement_clock: hawdb_core::temporal::statement_now(),
             });
         }
     }
@@ -935,14 +1010,45 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
     if physical_cache_mode == PlanCacheMode::Use {
         let mut key = key.take().expect("cache key exists in use mode");
         key.environment = catalog_access.environment.clone();
-        context.cache.borrow_mut().insert(
-            key,
-            Arc::new(CachedPlan {
-                physical_template,
-                trace: cached_trace.expect("cached trace exists in physical cache use mode"),
-                has_parameter_slots,
-            }),
-        );
+        let mut cached = Arc::new(CachedPlan {
+            physical_template,
+            trace: cached_trace.expect("cached trace exists in physical cache use mode"),
+            has_parameter_slots,
+            has_source_regexes: false,
+        });
+        // Walk immutable ownership outside the host cache lock. Unknown or
+        // overflowing retained allocations refuse admission without changing
+        // the executable bound plan or weakening any query budget.
+        let mut charged = key
+            .retained_heap_bytes()
+            .and_then(|key_bytes| key_bytes.checked_add(cached.retained_heap_bytes()?));
+        if charged.is_none() {
+            // Keep the cached owner immutable and bounded. Regex programs belong
+            // only to execution clones; their validated sources remain cacheable.
+            let source_template = Arc::get_mut(&mut cached).expect("new cache owner is exclusive");
+            source_template.has_source_regexes =
+                prepare_physical_plan_for_cache(&mut source_template.physical_template)?;
+            charged = key
+                .retained_heap_bytes()
+                .and_then(|key_bytes| key_bytes.checked_add(cached.retained_heap_bytes()?));
+        }
+        if let Some(charged) = charged {
+            let admitted = context
+                .cache
+                .borrow_mut()
+                .insert_weighted(key, cached, charged);
+            trace.decisions.push(if admitted {
+                format!("physical plan cache admission accepted: requested heap charge: {charged}")
+            } else {
+                format!("physical plan cache admission refused: entry/count/total limits; requested heap charge: {charged}")
+            });
+        } else {
+            context.cache.borrow_mut().record_rejected_admission();
+            trace.decisions.push(
+                "physical plan cache admission refused: retained allocation cannot be bounded"
+                    .into(),
+            );
+        }
         trace
             .decisions
             .push("plan cache miss: optimized parameterized physical plan template".to_string());
@@ -955,6 +1061,7 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
             optimizer_environment: catalog_access.environment,
             configured_max_optimizer_groups: context.config.max_optimizer_groups,
             effective_max_optimizer_groups,
+            statement_clock: hawdb_core::temporal::statement_now(),
         });
     } else if let PlanCacheMode::Bypass(reason) = physical_cache_mode {
         context.cache.borrow_mut().record_bypass();
@@ -970,6 +1077,7 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
             optimizer_environment: catalog_access.environment,
             configured_max_optimizer_groups: context.config.max_optimizer_groups,
             effective_max_optimizer_groups,
+            statement_clock: hawdb_core::temporal::statement_now(),
         });
     }
     unreachable!("plan cache mode must be either use or bypass")
@@ -980,6 +1088,22 @@ fn ordered_query_shape(logical: &LogicalPlan) -> bool {
         LogicalPlan::Sort { .. } => true,
         LogicalPlan::Limit { input, .. } | LogicalPlan::Project { input, .. } => {
             ordered_query_shape(input)
+        }
+        _ => false,
+    }
+}
+
+fn tracks_property_proofs(logical: &LogicalPlan) -> bool {
+    match logical {
+        LogicalPlan::Sort { .. } | LogicalPlan::Distinct { .. } => true,
+        LogicalPlan::Aggregate {
+            group_keys, input, ..
+        } => !group_keys.is_empty() || tracks_property_proofs(input),
+        LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Project { input, .. }
+        | LogicalPlan::Filter { input, .. } => tracks_property_proofs(input),
+        LogicalPlan::NodeCartesianProduct { left, right } => {
+            tracks_property_proofs(left) || tracks_property_proofs(right)
         }
         _ => false,
     }
@@ -1026,7 +1150,7 @@ fn optimizer_catalog_access_for_logical<S: crate::executor::ExecutionStore>(
             operation: BatchMutationOperation::CreateNode { .. },
             ..
         } => "UnwindCreateNode",
-        _ => return optimizer_catalog_access(context, ordered_query_shape(logical)),
+        _ => return optimizer_catalog_access(context, tracks_property_proofs(logical)),
     };
     // These bound leaves have no graph input or competing access path. Keep
     // schema and maintained counts current without scanning data or publishing
@@ -1037,6 +1161,7 @@ fn optimizer_catalog_access_for_logical<S: crate::executor::ExecutionStore>(
     );
     let environment = OptimizerEnvironmentKey {
         schema: OptimizerSchemaKey::from_catalog(context.catalog),
+        proof_schema: None,
         statistics_generation: Some(context.planning_cache.borrow().statistics_generation),
         ordered_range_indexes: ordered_range_indexes(context.catalog, context.store),
         ordered_composite_indexes: None,
@@ -1060,13 +1185,13 @@ fn optimizer_catalog_access_for_logical<S: crate::executor::ExecutionStore>(
 
 fn optimizer_catalog_access<S: crate::executor::ExecutionStore>(
     context: &PlanCacheContext<'_, S>,
-    tracks_composite_ordering: bool,
+    tracks_properties: bool,
 ) -> OptimizerCatalogAccess {
     context.planning_cache.borrow_mut().optimizer_catalog(
         context.catalog,
         context.store,
         context.config.optimizer_statistics_inline_commit_lag,
-        tracks_composite_ordering,
+        tracks_properties,
     )
 }
 
@@ -1218,6 +1343,9 @@ pub(super) fn statement_uses_plan_cache(statement: &cypher::Statement) -> bool {
                         | cypher::ProcedureCallKind::GraphSeedSearch(_)
                         | cypher::ProcedureCallKind::ProjectGraph { .. } => false,
                     },
+                    // The plan keeps only the source and its parameter name;
+                    // every execution opens and reads the file again.
+                    cypher::ClauseKind::LoadCsv(_) => true,
                     cypher::ClauseKind::Unwind { .. }
                     | cypher::ClauseKind::Create(_)
                     | cypher::ClauseKind::Merge { .. }
@@ -2625,3 +2753,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
     }
 }
+
+// Retained query ownership: CachedPlan.
+hawdb_core::impl_retained_heap_for_struct!(CachedPlan {
+    physical_template,
+    trace,
+    has_parameter_slots,
+    has_source_regexes
+});
+
+// Retained query ownership: PlanCacheKey.
+hawdb_core::impl_retained_heap_for_struct!(PlanCacheKey {
+    normalized_query,
+    parameters,
+    environment,
+    max_optimizer_groups,
+    access_control,
+    scoring,
+    point_statistics
+});
+
+// Retained query ownership: PointStatisticsKey.
+hawdb_core::impl_retained_heap_for_struct!(PointStatisticsKey {
+    label,
+    property,
+    matched_rows,
+    index_seek_is_cheaper
+});
+
+// Retained query ownership: AccessControlPlanCacheKey.
+hawdb_core::impl_retained_heap_for_struct!(AccessControlPlanCacheKey {
+    policy_epoch,
+    visibility_property,
+    visibility_value_count
+});
+
+// Retained query ownership: ProofSchemaKey.
+hawdb_core::impl_retained_heap_for_struct!(ProofSchemaKey {
+    public_tables,
+    public_properties,
+    exists
+});
+
+hawdb_core::impl_retained_heap_for_struct!(OptimizerEnvironmentKey {
+    schema,
+    proof_schema,
+    statistics_generation,
+    ordered_range_indexes,
+    ordered_composite_indexes,
+    node_index_size_classes
+});

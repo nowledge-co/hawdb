@@ -103,6 +103,20 @@ pub(super) fn write_value(output: &mut String, value: &Value) {
             output.push_str("uuid:");
             output.push_str(&value.to_string());
         }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            output.push_str(match value {
+                Value::Date(_) => "date:",
+                Value::LocalTime(_) => "localtime:",
+                Value::LocalDateTime(_) => "localdatetime:",
+                Value::DateTime(_) => "datetime:",
+                _ => "duration:",
+            });
+            output.push_str(&value.to_string());
+        }
         Value::List(values) => {
             output.push_str("list:[");
             for (index, value) in values.iter().enumerate() {

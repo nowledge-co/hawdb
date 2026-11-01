@@ -343,7 +343,8 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         | ProjectionExpression::ColumnValueDefaultIfNull { column, .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { column, .. }
         | ProjectionExpression::Column(column)
-        | ProjectionExpression::ColumnProperty { column, .. } => public_name(column),
+        | ProjectionExpression::ColumnProperty { column, .. }
+        | ProjectionExpression::Path { column, .. } => public_name(column),
         ProjectionExpression::Literal(_)
         | ProjectionExpression::Coalesce(_)
         | ProjectionExpression::JsonValue { .. }
@@ -355,8 +356,13 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         | ProjectionExpression::Not(_)
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
-        | ProjectionExpression::ListSlice { .. } => true,
+        | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::MapLiteral(_) => true,
         ProjectionExpression::ListComprehension(comprehension) => {
             public_name(&comprehension.variable)
         }
@@ -709,12 +715,14 @@ mod tests {
             program: crate::GraphMatchProgram {
                 imports: vec![],
                 introduced: vec![],
+                projected_nodes: std::collections::BTreeMap::new(),
                 steps: vec![crate::GraphMatchStep::Node(crate::GraphMatchNode {
                     variable: "seed".into(),
                     label: "Memory".into(),
                     properties: Default::default(),
                 })],
                 predicate: Some(predicate),
+                predicate_steps: Vec::new(),
                 optional: false,
             },
             input: Some(Box::new(lookup(vec![known_id()]))),
@@ -752,3 +760,13 @@ mod tests {
         });
     }
 }
+
+// Retained query ownership: ScoringSeedGraphInput.
+hawdb_core::impl_retained_heap_for_struct!(ScoringSeedGraphInput {
+    kind,
+    seed_variable,
+    candidate_variable
+});
+
+// Retained query ownership: ScoringSeedKind.
+hawdb_core::impl_retained_heap_for_copy!(ScoringSeedKind);

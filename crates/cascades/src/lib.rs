@@ -18,6 +18,7 @@ pub mod context;
 pub mod cost;
 pub mod memo;
 pub mod properties;
+pub mod qualification;
 pub mod rule;
 pub mod search;
 pub mod stage;
@@ -42,4 +43,13 @@ pub use search::{
 pub use stage::{
     ApplyOrder, OptimizationPipeline, OptimizationStage, PipelineExecution, RuleStage,
     StageRuleBatch, StageStats, StageTrace,
+};
+
+pub use qualification::{
+    InvalidOptimizerCostPerturbation, OptimizerCostPerturbation, OptimizerQualificationOptions,
+    OptionalOptimizerRule,
+};
+
+pub use qualification::{
+    verify_optimizer_rule_assertions, OptimizerRuleAssertion, OptimizerRuleAssertionError,
 };

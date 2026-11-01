@@ -61,6 +61,7 @@ pub enum RepresentationKind {
     PropertyProjectionDescriptorPage,
     PropertyProjectionOrderedBlock,
     PropertySpillDescriptorPage,
+    CanonicalSegmentPointDirectory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

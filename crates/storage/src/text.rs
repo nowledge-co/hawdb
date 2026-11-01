@@ -104,6 +104,8 @@ pub fn decode_properties(input: &str) -> Result<BTreeMap<String, Value>> {
     Ok(properties)
 }
 
+pub(crate) use value_decode::temporal_text_tag;
+
 pub fn encode_value(value: &Value) -> String {
     match value {
         Value::Null => "n".to_string(),
@@ -113,6 +115,16 @@ pub fn encode_value(value: &Value) -> String {
         Value::Float(value) => format!("f{}", value.to_bits()),
         Value::String(value) => format!("s{}", encode_string(value)),
         Value::Uuid(value) => format!("u{value}"),
+        // Temporal values use their canonical ISO 8601 rendering; decoding
+        // re-renders and requires the identical text.
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => format!(
+            "{}{value}",
+            temporal_text_tag(value).expect("temporal value")
+        ),
         Value::Vector(value) => format!(
             "v{}",
             value

@@ -14,6 +14,56 @@
 
 use super::*;
 
+#[test]
+fn table_property_descriptors_preserve_qualified_identity_and_pinned_schema() {
+    let mut catalog = Catalog::default();
+    let memory = catalog.get_or_create_table(TableKind::Node, "Memory");
+    let thread = catalog.get_or_create_table(TableKind::Node, "Thread");
+    let relationship = catalog.get_or_create_table(TableKind::Relationship, "Memory");
+    catalog.get_or_create_property(thread, "id", PropertyType::Bool, false);
+    catalog.get_or_create_property(memory, "z_body", PropertyType::Text, true);
+    catalog.get_or_create_property(memory, "id", PropertyType::Int, false);
+    let removed = catalog.get_or_create_property(memory, "removed", PropertyType::Float, true);
+    catalog.get_or_create_property(relationship, "id", PropertyType::String, false);
+    let pinned = catalog.clone();
+    assert!(catalog.remove_property_descriptor(removed));
+    catalog.get_or_create_property(memory, "added", PropertyType::String, true);
+    let fields = |catalog: &Catalog, table| {
+        catalog
+            .table_property_descriptors(table)
+            .map(|property| (property.name.clone(), property.value_type))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        fields(&pinned, memory),
+        vec![
+            ("id".into(), PropertyType::Int),
+            ("removed".into(), PropertyType::Float),
+            ("z_body".into(), PropertyType::Text),
+        ]
+    );
+    assert_eq!(
+        fields(&catalog, memory),
+        vec![
+            ("added".into(), PropertyType::String),
+            ("id".into(), PropertyType::Int),
+            ("z_body".into(), PropertyType::Text),
+        ]
+    );
+    assert_eq!(
+        fields(&catalog, thread),
+        vec![("id".into(), PropertyType::Bool)]
+    );
+    assert_eq!(
+        fields(&catalog, relationship),
+        vec![("id".into(), PropertyType::String)]
+    );
+    assert!(fields(&catalog, TableId(u32::MAX)).is_empty());
+    assert!(catalog.remove_table_descriptor(memory));
+    assert!(fields(&catalog, memory).is_empty());
+    assert_eq!(fields(&pinned, memory).len(), 3);
+}
+
 fn populated() -> Catalog {
     let mut catalog = Catalog::default();
     for id in 0..1025 {

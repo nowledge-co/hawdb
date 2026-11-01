@@ -78,6 +78,7 @@ pub struct OptimizerContext {
     explain_mode: ExplainMode,
     trace_sink: TraceSink,
     optimizer_config: OptimizerConfig,
+    qualification: crate::OptimizerQualificationOptions,
 }
 
 impl Default for OptimizerContext {
@@ -91,6 +92,7 @@ impl Default for OptimizerContext {
             explain_mode: ExplainMode::None,
             trace_sink: TraceSink::Collect,
             optimizer_config: OptimizerConfig::default(),
+            qualification: crate::OptimizerQualificationOptions::default(),
         }
     }
 }
@@ -142,6 +144,18 @@ impl OptimizerContext {
     pub fn with_trace_sink(mut self, trace_sink: TraceSink) -> Self {
         self.trace_sink = trace_sink;
         self
+    }
+
+    pub fn with_qualification_options(
+        mut self,
+        options: crate::OptimizerQualificationOptions,
+    ) -> Self {
+        self.qualification = options;
+        self
+    }
+
+    pub fn qualification_options(&self) -> crate::OptimizerQualificationOptions {
+        self.qualification
     }
 
     pub fn normalized_query(&self) -> Option<&str> {

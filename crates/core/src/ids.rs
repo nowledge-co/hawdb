@@ -164,6 +164,7 @@ pub fn projected_value_allocation_bytes(value: &Value) -> usize {
         Value::Map(values) => {
             properties_allocation_bytes(values.iter().map(|(key, value)| (key.as_str(), value)))
         }
+        Value::Duration(_) => std::mem::size_of::<crate::temporal::Duration>(),
         _ => 0,
     })
 }

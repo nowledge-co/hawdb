@@ -38,7 +38,12 @@ pub(super) fn bindings<'a>(
         }
         for property in super::fixtures::PROPERTIES {
             if physical_plan_access_path_covers_property(plan, variable, property) {
-                result.covered_properties.insert((variable, property));
+                result.covered_properties.insert((variable, property), None);
+            }
+            if let Some(value) = fixed_access_value(plan, variable, property) {
+                result
+                    .covered_properties
+                    .insert((variable, property), Some(value));
             }
         }
     }
@@ -119,6 +124,29 @@ pub(super) fn physical_plan_access_path_covers_property(
     property: &str,
 ) -> bool {
     match plan {
+        PhysicalPlan::NodeProjectionScanExec {
+            variable: source,
+            access,
+            ..
+        } => {
+            source == variable
+                && match access {
+                    NodeProjectionAccess::PropertyValues { property: key, .. }
+                    | NodeProjectionAccess::PropertyRange { property: key, .. }
+                    | NodeProjectionAccess::FullText { property: key, .. } => key == property,
+                    NodeProjectionAccess::CompositeEquality { predicates } => {
+                        predicates.iter().any(|(key, _)| key == property)
+                    }
+                    NodeProjectionAccess::CompositeRange { seek } => {
+                        seek.range_property == property
+                            || seek.equality_prefix.iter().any(|(key, _)| key == property)
+                    }
+                    NodeProjectionAccess::CompositeOrdered { seek } => {
+                        seek.equality_prefix.iter().any(|(key, _)| key == property)
+                    }
+                    _ => false,
+                }
+        }
         PhysicalPlan::IndexNodeSeek {
             variable: plan_variable,
             property: plan_property,
@@ -137,15 +165,6 @@ pub(super) fn physical_plan_access_path_covers_property(
         | PhysicalPlan::IndexNodeTextSeek {
             variable: plan_variable,
             property: plan_property,
-            ..
-        }
-        | PhysicalPlan::NodeProjectionScanExec {
-            variable: plan_variable,
-            access:
-                NodeProjectionAccess::FullText {
-                    property: plan_property,
-                    ..
-                },
             ..
         } => plan_variable == variable && plan_property == property,
         PhysicalPlan::IndexNodeCompositeSeek {
@@ -194,6 +213,100 @@ pub(super) fn physical_plan_access_path_covers_property(
             physical_plan_access_path_covers_property(input, variable, property)
         }
         _ => false,
+    }
+}
+
+fn fixed_access_value<'a>(
+    plan: &'a PhysicalPlan,
+    variable: &str,
+    property: &str,
+) -> Option<&'a hawdb_core::Value> {
+    match plan {
+        PhysicalPlan::IndexNodeSeek {
+            variable: source,
+            property: key,
+            value,
+            ..
+        } => (source == variable && key == property).then_some(value),
+        PhysicalPlan::IndexNodeMultiSeek {
+            variable: source,
+            property: key,
+            values,
+            ..
+        } => {
+            if source == variable && key == property && values.len() == 1 {
+                values.first()
+            } else {
+                None
+            }
+        }
+        PhysicalPlan::IndexNodeCompositeSeek {
+            variable: source,
+            predicates,
+            ..
+        } if source == variable => predicates
+            .iter()
+            .find(|(key, _)| key == property)
+            .map(|(_, value)| value),
+        PhysicalPlan::IndexNodeCompositeRangeSeek {
+            variable: source,
+            seek,
+            ..
+        } if source == variable => seek
+            .equality_prefix
+            .iter()
+            .find(|(key, _)| key == property)
+            .map(|(_, value)| value),
+        PhysicalPlan::NodeProjectionScanExec {
+            variable: source,
+            access,
+            ..
+        } if source == variable => match access {
+            NodeProjectionAccess::PropertyValues {
+                property: key,
+                values,
+            } if key == property && values.len() == 1 => values.first(),
+            NodeProjectionAccess::CompositeEquality { predicates } => predicates
+                .iter()
+                .find(|(key, _)| key == property)
+                .map(|(_, value)| value),
+            NodeProjectionAccess::CompositeRange { seek } => seek
+                .equality_prefix
+                .iter()
+                .find(|(key, _)| key == property)
+                .map(|(_, value)| value),
+            NodeProjectionAccess::CompositeOrdered { seek } => seek
+                .equality_prefix
+                .iter()
+                .find(|(key, _)| key == property)
+                .map(|(_, value)| value),
+            _ => None,
+        },
+        PhysicalPlan::NodeColumnLookupExec {
+            variable: rebound, ..
+        } if rebound == variable => None,
+        PhysicalPlan::AdjacencyExpandExec {
+            source_variable,
+            target_variable,
+            ..
+        } if target_variable == variable && source_variable != variable => None,
+        PhysicalPlan::FilterExec { input, .. }
+        | PhysicalPlan::ProjectExec { input, .. }
+        | PhysicalPlan::NodeColumnLookupExec { input, .. }
+        | PhysicalPlan::AdjacencyExpandExec { input, .. }
+        | PhysicalPlan::AdjacencyExistsExec { input, .. }
+        | PhysicalPlan::OptionalDegreeExec { input, .. }
+        | PhysicalPlan::AggregateExec { input, .. }
+        | PhysicalPlan::DistinctExec { input }
+        | PhysicalPlan::SortExec { input, .. }
+        | PhysicalPlan::TopNExec { input, .. }
+        | PhysicalPlan::LimitExec { input, .. } => fixed_access_value(input, variable, property),
+        PhysicalPlan::NodeCartesianProductExec { left, right }
+        | PhysicalPlan::HashJoinExec { left, right, .. } => {
+            fixed_access_value(left, variable, property)
+                .or_else(|| fixed_access_value(right, variable, property))
+        }
+        _ => None,
     }
 }
 

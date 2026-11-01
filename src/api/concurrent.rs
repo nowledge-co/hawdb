@@ -17,14 +17,19 @@ use hawdb_core::{TransactionRetryError, TransactionRetryReason};
 mod autocommit;
 #[cfg(test)]
 pub(crate) use autocommit::AutocommitMutationPhase;
+#[cfg(test)]
+mod composite_lock_tests;
 mod coordinator;
 #[cfg(test)]
 mod graph_preparation_tests;
 #[cfg(test)]
 mod key_range_tests;
+#[cfg(test)]
+mod lock_dependency_tests;
 mod metrics;
 mod owner;
 mod publication;
+mod range_locks;
 
 pub use metrics::{ConcurrentDatabaseMetrics, ConcurrentPhaseMetrics};
 pub(crate) use owner::{SharedDatabaseGuard, SharedDatabaseOwner};
@@ -176,6 +181,9 @@ pub struct ConcurrentDatabaseTransaction {
     options: ConcurrentTransactionOptions,
     runtime: DatabaseTransactionRuntime,
     state: DatabaseTransactionState,
+    // Registered from the canonical owner before any future write can omit
+    // read summaries. Retains the original epoch through incremental locking.
+    lock_dependencies: Option<crate::store::GraphReadDependencies>,
     successful_statements: usize,
     abort_reason: Option<TransactionAbortReason>,
     finished: bool,
@@ -439,6 +447,7 @@ impl ConcurrentDatabase {
     ) -> Result<ConcurrentDatabaseTransaction> {
         let database = self.inner.commits.lock()?;
         let base_commit_epoch = database.commit_epoch()?;
+        let lock_dependencies = capture_lock_dependencies(&database, options)?;
         Ok(ConcurrentDatabaseTransaction {
             inner: Arc::clone(&self.inner),
             transaction_id,
@@ -450,6 +459,7 @@ impl ConcurrentDatabase {
                 options.isolation,
                 options.read_dependency_limits,
             )?,
+            lock_dependencies,
             successful_statements: 0,
             abort_reason: None,
             finished: false,
@@ -920,15 +930,7 @@ impl ConcurrentDatabaseTransaction {
             .relational_plan_template_cache
             .prepare(sql_text)?;
         if self.options.mode == ConcurrentTransactionMode::Pessimistic {
-            let requests = sql_lock_requests(
-                &prepared,
-                parameters,
-                &self.state.relational_state,
-                &self.state.append_state,
-            )?;
-            if !requests.is_empty() {
-                self.acquire_locks(&requests)?;
-            }
+            self.acquire_sql_locks(&prepared, parameters, task.as_ref())?;
         } else {
             reject_optimistic_locking_select(&prepared)?;
         }
@@ -1074,25 +1076,52 @@ impl ConcurrentDatabaseTransaction {
         };
         let current_epoch = database.commit_epoch()?;
         if current_epoch != self.base_commit_epoch
-            && !requests_already_covered
+            // A lock escalation can cover keys that were not validated when
+            // the table guard was granted. Coverage alone is not proof that a
+            // later statement's key still belongs to the original snapshot.
+            && (!requests_already_covered || self.successful_statements != 0)
             && self.options.isolation == super::TransactionIsolation::SnapshotIsolation
         {
             if self.successful_statements == 0 {
+                // Construct the complete replacement before releasing the old
+                // history lease or changing any part of the transaction view.
+                let dependencies = capture_lock_dependencies(&database, self.options)?;
+                let runtime = DatabaseTransactionRuntime::from_database(&database)?;
+                let state = DatabaseTransactionState::from_database(&database)?;
                 self.base_commit_epoch = current_epoch;
-                self.runtime = DatabaseTransactionRuntime::from_database(&database)?;
-                self.state = DatabaseTransactionState::from_database(&database)?;
+                self.runtime = runtime;
+                self.state = state;
+                self.lock_dependencies = dependencies;
             } else {
-                let error = HawDBError::TransactionRetryRequired(Box::new(TransactionRetryError {
-                    transaction_id: self.transaction_id,
-                    reason: TransactionRetryReason::SnapshotChanged {
-                        read_epoch: self.base_commit_epoch,
-                        committed_epoch: current_epoch,
-                    },
-                    already_aborted: false,
-                }));
-                drop(database);
-                self.abort_after_lock_failure(&error);
-                return Err(error);
+                use crate::store::GraphReadDependencyError;
+                let validation = database
+                    .runtime
+                    .get()
+                    .map_err(GraphReadDependencyError::Unavailable)
+                    .and_then(|runtime| match &self.lock_dependencies {
+                        Some(dependencies) => runtime
+                            .store
+                            .validate_locked_snapshot(dependencies, requests),
+                        None => Err(GraphReadDependencyError::CaptureRefused),
+                    });
+                if let Err(error) = validation {
+                    let error = match error {
+                        GraphReadDependencyError::Unavailable(error) => error,
+                        _ => {
+                            HawDBError::TransactionRetryRequired(Box::new(TransactionRetryError {
+                                transaction_id: self.transaction_id,
+                                reason: TransactionRetryReason::SnapshotChanged {
+                                    read_epoch: self.base_commit_epoch,
+                                    committed_epoch: current_epoch,
+                                },
+                                already_aborted: false,
+                            }))
+                        }
+                    };
+                    drop(database);
+                    self.abort_after_lock_failure(&error);
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -1153,6 +1182,7 @@ impl ConcurrentDatabaseTransaction {
 
     fn abort_after_lock_failure(&mut self, error: &HawDBError) {
         self.state.rollback();
+        self.lock_dependencies = None;
         self.abort_reason = Some(match error {
             HawDBError::TransactionRetryRequired(error) => {
                 TransactionAbortReason::Retryable(error.clone())
@@ -1191,6 +1221,27 @@ impl ConcurrentDatabaseTransaction {
         }
         self.inner.locks.release(self.transaction_id);
         self.finished = true;
+        self.lock_dependencies = None;
+    }
+}
+
+fn capture_lock_dependencies(
+    database: &Database,
+    options: ConcurrentTransactionOptions,
+) -> Result<Option<crate::store::GraphReadDependencies>> {
+    if options.mode == ConcurrentTransactionMode::Pessimistic
+        && options.isolation == super::TransactionIsolation::SnapshotIsolation
+    {
+        // Bounds are validated on demand; only the source lease and history pin
+        // survive between statements. Serializable uses its existing collector.
+        database
+            .runtime
+            .get()?
+            .store
+            .capture_read_dependencies(0, 0)
+            .map(Some)
+    } else {
+        Ok(None)
     }
 }
 
@@ -1457,73 +1508,23 @@ fn delete_lock_requests(
     parameters: &[Value],
     state: &RelationalState,
 ) -> Vec<LockRequest> {
-    let mut requests = mutation_target_lock_requests(
+    // Parent deletion can cascade into other tables and must coordinate with
+    // child inserts even when the referenced key is not the primary key.
+    if state.table_schemas().any(|schema| {
+        schema
+            .foreign_keys
+            .iter()
+            .any(|key| key.referenced_table == delete.table.name)
+    }) {
+        return vec![LockRequest::database(LockMode::Exclusive)];
+    }
+    mutation_target_lock_requests(
         &delete.table,
         delete.alias.as_deref(),
         delete.selection.as_ref(),
         parameters,
         state,
-    );
-    if requests.len() > DEFAULT_LOCK_ESCALATION_ENTRIES_PER_TABLE {
-        return vec![LockRequest::relational_table(
-            LockMode::Exclusive,
-            delete.table.name.clone(),
-        )];
-    }
-    let Some(schema) = state.table_schema(&delete.table.name) else {
-        return requests;
-    };
-    let point_keys = requests
-        .iter()
-        .map(lock_request_point_key)
-        .collect::<Option<Vec<_>>>();
-    let Some(point_keys) = point_keys else {
-        return vec![LockRequest::relational_table(
-            LockMode::Exclusive,
-            delete.table.name.clone(),
-        )];
-    };
-    let mut unique_columns = schema.unique_constraints.clone();
-    unique_columns.extend(
-        schema
-            .indexes
-            .iter()
-            .filter(|index| index.unique)
-            .map(|index| index.columns.clone()),
-    );
-    for primary_key in point_keys {
-        let Some(row) = state.row(&delete.table.name, &primary_key) else {
-            continue;
-        };
-        for columns in &unique_columns {
-            let Some(key) = relational_row_key(schema, row, columns) else {
-                continue;
-            };
-            if key.0.iter().any(|value| value == &RelationalValue::Null) {
-                continue;
-            }
-            push_unique_lock_request(
-                &mut requests,
-                LockRequest::relational_point(
-                    LockMode::Exclusive,
-                    delete.table.name.clone(),
-                    columns.clone(),
-                    key,
-                ),
-            );
-        }
-    }
-    requests
-}
-
-fn lock_request_point_key(request: &LockRequest) -> Option<RelationalKey> {
-    let LockTarget::RelationalRange { lower, upper, .. } = &request.target else {
-        return None;
-    };
-    match (lower, upper) {
-        (Bound::Included(lower), Bound::Included(upper)) if lower == upper => Some(lower.clone()),
-        _ => None,
-    }
+    )
 }
 
 fn select_lock_requests(
@@ -1557,42 +1558,25 @@ fn select_lock_requests(
     let Some(schema) = state.table_schema(&select.from_table().name) else {
         return vec![LockRequest::database(mode)];
     };
-    let ranges = match &select.selection {
-        None => Some(vec![(Bound::Unbounded, Bound::Unbounded)]),
-        Some(predicate) if schema.primary_key.len() == 1 => single_key_ranges(
-            predicate,
-            schema,
-            select.from_table(),
-            select.from_alias.as_deref(),
-            parameters,
-        ),
-        Some(predicate) => composite_key_point(
-            predicate,
-            schema,
-            select.from_table(),
-            select.from_alias.as_deref(),
-            parameters,
-        )
-        .map(|range| vec![range]),
-    };
-    let Some(ranges) = ranges else {
-        return vec![LockRequest::relational_table(
+    if select.selection.is_none() {
+        // The primary-key domain also validates write intents whose rows did
+        // not change. Table read summaries alone do not retain those intents.
+        return vec![LockRequest::relational_range(
             mode,
             select.from_table().name.clone(),
+            schema.primary_key.clone(),
+            Bound::Unbounded,
+            Bound::Unbounded,
         )];
-    };
-    ranges
-        .into_iter()
-        .map(|(lower, upper)| {
-            LockRequest::relational_range(
-                mode,
-                select.from_table().name.clone(),
-                schema.primary_key.clone(),
-                lower,
-                upper,
-            )
-        })
-        .collect()
+    }
+    range_locks::target_lock_requests(
+        mode,
+        select.from_table(),
+        select.from_alias.as_deref(),
+        select.selection.as_ref(),
+        parameters,
+        schema,
+    )
 }
 
 fn update_lock_requests(
@@ -1621,6 +1605,20 @@ fn update_lock_requests(
     if assignment_changes_constraint_key {
         return vec![LockRequest::database(LockMode::Exclusive)];
     }
+    // Literal/parameter rekeys can prove their new index entries during bounded
+    // discovery. Other expressions retain a guard covering both row images.
+    if update.assignments.iter().any(|assignment| {
+        schema
+            .indexes
+            .iter()
+            .any(|index| index.columns.contains(&assignment.column))
+            && !matches!(assignment.value, crate::sql::SqlAssignmentValue::Value(_))
+    }) {
+        return vec![LockRequest::relational_table(
+            LockMode::Exclusive,
+            update.table.name.clone(),
+        )];
+    }
     mutation_target_lock_requests(
         &update.table,
         update.alias.as_deref(),
@@ -1643,35 +1641,14 @@ fn mutation_target_lock_requests(
     let Some(schema) = state.table_schema(&table.name) else {
         return vec![LockRequest::database(LockMode::Exclusive)];
     };
-    let Some(selection) = selection else {
-        return vec![LockRequest::relational_table(
-            LockMode::Exclusive,
-            table.name.clone(),
-        )];
-    };
-    let ranges = if schema.primary_key.len() == 1 {
-        single_key_ranges(selection, schema, table, alias, parameters)
-    } else {
-        composite_key_point(selection, schema, table, alias, parameters).map(|range| vec![range])
-    };
-    let Some(ranges) = ranges else {
-        return vec![LockRequest::relational_table(
-            LockMode::Exclusive,
-            table.name.clone(),
-        )];
-    };
-    ranges
-        .into_iter()
-        .map(|(lower, upper)| {
-            LockRequest::relational_range(
-                LockMode::Exclusive,
-                table.name.clone(),
-                schema.primary_key.clone(),
-                lower,
-                upper,
-            )
-        })
-        .collect()
+    range_locks::target_lock_requests(
+        LockMode::Exclusive,
+        table,
+        alias,
+        selection,
+        parameters,
+        schema,
+    )
 }
 
 fn insert_lock_requests(
@@ -1695,21 +1672,12 @@ fn insert_lock_requests(
             _ => return None,
         };
         let schema = state.table_schema(table)?;
-        let mut unique_keys = vec![schema.primary_key.clone()];
-        unique_keys.extend(schema.unique_constraints.iter().cloned());
-        unique_keys.extend(
-            schema
-                .indexes
-                .iter()
-                .filter(|index| index.unique)
-                .map(|index| index.columns.clone()),
-        );
+        let mut key_columns = vec![schema.primary_key.clone()];
+        key_columns.extend(schema.unique_constraints.iter().cloned());
+        key_columns.extend(schema.indexes.iter().map(|index| index.columns.clone()));
         for row in rows {
-            for columns in &unique_keys {
+            for columns in &key_columns {
                 let key = relational_row_key(schema, row, columns)?;
-                if key.0.iter().any(|value| value == &RelationalValue::Null) {
-                    continue;
-                }
                 push_unique_lock_request(
                     &mut requests,
                     LockRequest::relational_point(
@@ -1756,11 +1724,14 @@ fn upsert_update_can_use_insert_locks(write: &RelationalWrite, state: &Relationa
     let Some(conflict_index) = schema.unique_index_definition(conflict_columns) else {
         return false;
     };
-    if conflict_index.role != RelationalIndexRole::Primary
-        && !state.materialized_index_postings_resident()
-    {
+    // Missing entries prove absence only in an authoritative resident map.
+    if match conflict_index.role {
+        RelationalIndexRole::Primary => !state.materialized_rows_resident(),
+        _ => !state.materialized_index_postings_resident(),
+    } {
         return false;
     }
+    let mut seen = std::collections::BTreeSet::new();
     rows.iter().all(|row| {
         let Some(conflict_key) = relational_row_key(schema, row, conflict_columns) else {
             return false;
@@ -1772,12 +1743,15 @@ fn upsert_update_can_use_insert_locks(write: &RelationalWrite, state: &Relationa
         {
             return true;
         }
-        match conflict_index.role {
+        let absent = match conflict_index.role {
             RelationalIndexRole::Primary => state.row(table, &conflict_key).is_none(),
             _ => state
                 .index_lookup(table, &conflict_index.name, &conflict_key)
                 .is_none_or(|postings| postings.is_empty()),
-        }
+        };
+        // A later row in the same batch could update an earlier insertion into
+        // an index key assembled from both row images, not either insert key.
+        absent && seen.insert(conflict_key)
     })
 }
 
@@ -1888,72 +1862,6 @@ fn single_key_ranges(
                     Some((Bound::Included(key.clone()), Bound::Included(key)))
                 })
                 .collect()
-        }
-        _ => None,
-    }
-}
-
-fn composite_key_point(
-    predicate: &SqlPredicate,
-    schema: &RelationalTableSchema,
-    table: &SqlTableName,
-    alias: Option<&str>,
-    parameters: &[Value],
-) -> Option<(Bound<RelationalKey>, Bound<RelationalKey>)> {
-    let mut values = BTreeMap::new();
-    collect_composite_equalities(predicate, schema, table, alias, parameters, &mut values)?;
-    let key = RelationalKey(
-        schema
-            .primary_key
-            .iter()
-            .map(|column| values.remove(column))
-            .collect::<Option<Vec<_>>>()?,
-    );
-    Some((Bound::Included(key.clone()), Bound::Included(key)))
-}
-
-fn collect_composite_equalities(
-    predicate: &SqlPredicate,
-    schema: &RelationalTableSchema,
-    table: &SqlTableName,
-    alias: Option<&str>,
-    parameters: &[Value],
-    values: &mut BTreeMap<String, RelationalValue>,
-) -> Option<()> {
-    match predicate {
-        Expr {
-            kind: ExprKind::And(left, right),
-            ..
-        } => {
-            collect_composite_equalities(left, schema, table, alias, parameters, values)?;
-            collect_composite_equalities(right, schema, table, alias, parameters, values)
-        }
-        Expr {
-            kind:
-                ExprKind::Compare {
-                    left,
-                    op: SqlComparisonOp::Eq,
-                    right,
-                },
-            ..
-        } if schema.primary_key.iter().any(|column| {
-            left.as_column()
-                .is_some_and(|left| column_matches(left, column, table, alias))
-        }) =>
-        {
-            let left = left.as_column()?;
-            if values.contains_key(&left.name) {
-                return None;
-            }
-            values.insert(
-                left.name.clone(),
-                bind_sql_lock_value(
-                    right.as_value()?,
-                    parameters,
-                    schema.columns[schema.column_position(&left.name)?].scalar_type,
-                )?,
-            );
-            Some(())
         }
         _ => None,
     }
