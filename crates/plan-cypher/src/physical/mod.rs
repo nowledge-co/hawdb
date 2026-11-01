@@ -200,6 +200,12 @@ pub enum PhysicalPlan {
         variable: String,
         operation: BatchMutationOperation,
     },
+    /// One mutation per CSV record, staged as one atomic batch. The file is
+    /// opened only by a runtime that supplies a CSV import policy.
+    LoadCsvMutation {
+        source: crate::LoadCsvSource,
+        operation: BatchMutationOperation,
+    },
     MergeNode {
         label: String,
         match_properties: BTreeMap<String, Value>,
@@ -358,6 +364,10 @@ pub enum PhysicalPlan {
         input: Option<Box<PhysicalPlan>>,
     },
     EmptyExec,
+    /// Streams CSV records as rows binding `source.variable`.
+    LoadCsvExec {
+        source: crate::LoadCsvSource,
+    },
     SeqNodeScan {
         variable: String,
         label: String,

@@ -802,6 +802,11 @@ follow-up work. openCypher list functions (`size`, `head`, `last`, `tail`,
 openCypher temporal types, constructors, component access, arithmetic,
 `duration.between` and truncation, with native persistence, are described in
 [Cypher temporal types](CYPHER_TEMPORAL.md).
+`LOAD CSV [WITH HEADERS] FROM ... AS row [FIELDTERMINATOR ...]` imports local
+files beneath `DatabaseConfig::csv_import_root` as a row source for reads and
+for node `CREATE`/`MERGE` and matched-relationship `CREATE`; the
+`toInteger`/`toFloat`/`toBoolean`/`toString` conversion functions are available
+in every scalar context. See [Cypher LOAD CSV](CYPHER_LOAD_CSV.md).
 Parenthesized predicate groups preserve explicit `AND`/`OR` precedence. String
 literals support escaped quotes, backslashes, and common control escapes. Graph algorithm procedure options such
 as `dampingFactor`, `maxIterations`, and `maxLevels` accept bound parameters and

@@ -177,6 +177,7 @@ mod comparison_chains;
 mod default_pipeline;
 mod list_functions;
 mod list_literals;
+mod load_csv;
 mod migration_corpus;
 mod order_by_expressions;
 mod source_spans;

@@ -66,6 +66,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 mod blocking;
 mod dispatch;
 mod graph_seed;
+mod load_csv;
 mod numeric;
 mod prepared;
 mod procedures;
@@ -76,6 +77,7 @@ mod vector_index;
 
 use blocking::*;
 use dispatch::{unsupported_batch_operator, BatchDispatch, BatchExecution, BatchSupport};
+use load_csv::stream_load_csv_batches;
 use numeric::*;
 pub use prepared::{PreparedExecutionMode, PreparedPhysicalPlan, PreparedStorageCapability};
 use procedures::*;
@@ -95,6 +97,8 @@ pub struct ExecutionContext<'a> {
     pub task_context: Option<&'a RuntimeTaskContext>,
     pub observer: &'a QueryExecutionObserver,
     pub host_scorer: Option<&'a dyn crate::scoring::HostScorerProvider>,
+    /// Import directory for `LOAD CSV`; `None` refuses CSV sources.
+    pub csv_import: Option<&'a crate::load_csv::CsvImportPolicy>,
 }
 
 fn stream_node_column_lookup_batches(
@@ -363,7 +367,8 @@ pub fn collect_batch_pipeline(
             memory.query_memory_bytes,
         ),
     );
-    let external = BatchExternalReadAdapter::new(&mut *execution_context.external);
+    let external = BatchExternalReadAdapter::new(&mut *execution_context.external)
+        .with_csv_import(execution_context.csv_import);
     let context = BatchReadContext {
         catalog,
         store,
@@ -526,6 +531,11 @@ fn execute_binding_batches_inner(
 fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -> D::Output {
     match plan {
         PhysicalPlan::EmptyExec => dispatch.supported(stream_empty_batches),
+        PhysicalPlan::LoadCsvExec { source } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_load_csv_batches(source, context, execution_limit, emit)
+            })
+        }
         PhysicalPlan::SeqNodeScan { variable, label } => {
             dispatch.supported(|context, execution_limit, emit| {
                 stream_node_scan_batches(variable, label, None, context, execution_limit, emit)
@@ -1112,6 +1122,7 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
         | PhysicalPlan::ProjectGraph { .. }
         | PhysicalPlan::CreateNode { .. }
         | PhysicalPlan::UnwindMutation { .. }
+        | PhysicalPlan::LoadCsvMutation { .. }
         | PhysicalPlan::MergeNode { .. }
         | PhysicalPlan::MergeRelationship { .. }
         | PhysicalPlan::MergeMatchedRelationship { .. }

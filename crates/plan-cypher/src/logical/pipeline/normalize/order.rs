@@ -258,6 +258,7 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::Conversion { .. }
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }

@@ -326,31 +326,31 @@ pub(super) fn execute_graph_transaction_plan(
         }
         let statement_savepoint = transaction.savepoint();
         let execute = || {
-            let summary = match &optimized.physical_plan {
-                PhysicalPlan::UnwindMutation {
-                    rows,
-                    variable,
-                    operation,
-                } => {
-                    let mut mutations = executor::materialize_unwind_mutations(
-                        rows,
-                        variable,
-                        operation,
+            let staged = executor::stage_row_mutations(
+                &optimized.physical_plan,
+                parameters,
+                runtime.config.csv_import_policy().as_ref(),
+                mutation_limits,
+                &runtime.config.execution_memory,
+                task_context,
+            )?;
+            let summary = match staged {
+                Some(mut staged) => {
+                    // Endpoints resolve against this transaction's working
+                    // store, which already holds its earlier statements.
+                    // Relationship CREATE and MERGE endpoints both resolve
+                    // here.
+                    staged.resolve_endpoints(
+                        transaction.catalog(),
+                        transaction.store(),
                         mutation_limits,
+                        &runtime.config.execution_memory,
                         task_context,
                     )?;
-                    let _endpoint_charge =
-                        hawdb_executor::mutation::resolve_relationship_merge_endpoints(
-                            &mut mutations,
-                            transaction.catalog(),
-                            transaction.store(),
-                            mutation_limits,
-                            &runtime.config.execution_memory,
-                            task_context,
-                        )?;
+                    let (mutations, _charge) = staged.into_parts();
                     transaction.stage_mutations_with_limits(mutations, mutation_limits)?
                 }
-                _ => {
+                None => {
                     let command = if is_mutation_return {
                         hawdb_executor::mutation::materialize_node_mutation(
                             &optimized.physical_plan,
@@ -449,6 +449,7 @@ pub(super) fn execute_graph_transaction_plan(
                 &runtime.config.execution_memory,
             )
             .with_statement_clock(optimized.statement_clock)
+            .with_csv_import(runtime.config.csv_import_policy().as_ref())
             .with_output_columns(optimized.output_columns.as_deref())
             .with_output_limits(
                 restrictive_query_limit(
@@ -1811,6 +1812,7 @@ impl DatabaseSession<'_> {
                     &self.db.config.execution_memory,
                 )
                 .with_statement_clock(optimized.statement_clock)
+                .with_csv_import(self.db.config.csv_import_policy().as_ref())
                 .with_output_columns(optimized.output_columns.as_deref())
                 .with_output_limits(row_limit, self.db.config.max_read_result_payload_bytes),
                 executor::ExecutionResources::new(

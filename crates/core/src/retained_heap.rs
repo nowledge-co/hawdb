@@ -94,6 +94,7 @@ impl_retained_heap_for_copy!(
     crate::temporal::DateTime<crate::temporal::FixedOffset>,
     crate::temporal::Duration,
     crate::temporal::TemporalFunction,
+    crate::ConversionFunction,
 );
 
 impl RetainedHeapBytes for String {

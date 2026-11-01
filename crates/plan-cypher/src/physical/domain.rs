@@ -107,6 +107,7 @@ impl PhysicalPlan {
             }
             PhysicalPlan::CreateNode { .. }
             | PhysicalPlan::UnwindMutation { .. }
+            | PhysicalPlan::LoadCsvMutation { .. }
             | PhysicalPlan::MergeNode { .. }
             | PhysicalPlan::MergeRelationship { .. }
             | PhysicalPlan::MergeMatchedRelationship { .. }
@@ -172,6 +173,7 @@ impl PhysicalPlan {
             | PhysicalPlan::GraphSeedScan { .. }
             | PhysicalPlan::VectorIndexScan(_)
             | PhysicalPlan::TextSeedScan { .. }
+            | PhysicalPlan::LoadCsvExec { .. }
             | PhysicalPlan::ThreadRepairStatsExec { .. } => {
                 PhysicalPlanDomainRef::Procedure(ProcedurePhysicalPlanRef::new(self))
             }

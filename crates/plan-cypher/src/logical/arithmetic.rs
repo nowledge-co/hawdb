@@ -245,6 +245,7 @@ pub(super) fn scalar_expression_is_scoped(
         | ScalarExpressionKind::ListFunction { .. }
         | ScalarExpressionKind::List(_)
         | ScalarExpressionKind::ListIndex { .. }
+        | ScalarExpressionKind::Conversion { .. }
         | ScalarExpressionKind::ListSlice { .. }
         | ScalarExpressionKind::TemporalFunction { .. }
         | ScalarExpressionKind::PropertyAccess { .. }

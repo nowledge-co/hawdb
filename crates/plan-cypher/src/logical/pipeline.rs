@@ -214,6 +214,30 @@ fn bind_pipeline(
     {
         return mutation::bind_unwind_mutation_pipeline(query, parameters);
     }
+    if query
+        .clauses
+        .iter()
+        .skip(1)
+        .any(|clause| matches!(clause.kind, ClauseKind::LoadCsv(_)))
+    {
+        return Err(HawDBError::Semantic(
+            "LOAD CSV is supported only as the first clause of a query".to_string(),
+        ));
+    }
+    if matches!(
+        query.clauses.first().map(|clause| &clause.kind),
+        Some(ClauseKind::LoadCsv(_))
+    ) && query.clauses.iter().any(|clause| {
+        matches!(
+            clause.kind,
+            ClauseKind::Create(_)
+                | ClauseKind::Merge { .. }
+                | ClauseKind::Set(_)
+                | ClauseKind::Delete { .. }
+        )
+    }) {
+        return mutation::bind_load_csv_mutation_pipeline(query, parameters);
+    }
     let lowered;
     let query = if !has_mutation && pattern_properties::needs_lowering(query) {
         lowered = pattern_properties::lower(query)?;
@@ -1182,6 +1206,17 @@ fn bind_read_clauses(
                     expression,
                     variable: variable.clone(),
                     input: Box::new(input_plan),
+                });
+            }
+            ClauseKind::LoadCsv(load) => {
+                if input.is_some() || scope.0.contains_key(&load.variable) {
+                    return Err(HawDBError::Semantic(
+                        "LOAD CSV is supported only as the first clause of a query".to_string(),
+                    ));
+                }
+                scope.0.insert(load.variable.clone(), BindingType::Scalar);
+                input = Some(LogicalPlan::LoadCsv {
+                    source: mutation::bind_load_csv_source(load)?,
                 });
             }
             ClauseKind::Call { procedure, yields } => {

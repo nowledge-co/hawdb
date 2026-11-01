@@ -636,3 +636,39 @@ fn frozen_main_1428_boolean_predicates_and_row_bound_unwind() {
     }
     assert_eq!(count, 856);
 }
+
+#[test]
+fn frozen_main_1377_load_csv_conversions_and_indexes() {
+    let mut count = 0;
+    for line in
+        include_str!("../../../fixtures/migration_main_1377_load_csv_peg_baseline_v1.jsonl").lines()
+    {
+        assert_frozen(&serde_json::from_str(line).unwrap());
+        count += 1;
+    }
+    assert_eq!(count, 1626);
+}
+
+#[test]
+fn csv_value_extensions_preserve_ordinary_property_diagnostics() {
+    for (query, expected) in [
+        (
+            "CREATE (n:Item {value: .5})",
+            "expected a Cypher value token at byte 23 line 1 column 24 near `.5})`",
+        ),
+        (
+            "CREATE (:Memory {id: ",
+            "expected a Cypher value token at byte 21 line 1 column 22 near ``",
+        ),
+    ] {
+        for error in [
+            crate::parse(query).unwrap_err(),
+            crate::parse_pipeline(query).unwrap_err(),
+        ] {
+            let hawdb_core::HawDBError::Parse(actual) = error else {
+                panic!("expected a parse diagnostic");
+            };
+            assert_eq!(actual, expected, "{query}");
+        }
+    }
+}

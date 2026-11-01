@@ -151,6 +151,41 @@ adaptive buffers below an observed peak while preserving hard root refusal,
 as well as the tie-order and wide-row controls. Test lanes, profiles and deadlines stay
 unchanged; allocation microprobes do not establish end-to-end RSS or latency.
 
+Cypher `LOAD CSV` and the type-conversion functions are owned by existing
+targets: `hawdb-core` `conversion_function::tests` (Neo4j conversion rules),
+`hawdb-cypher` `tests::load_csv` and the PEG/reference differential
+`parser::frontend::tests::load_csv_matches_reference_parser`, `hawdb-plan-cypher`
+`logical::load_csv_tests` (row-source binding and refusals), `hawdb-optimizer-graph`
+`graph::tests::load_csv` (lowering/EXPLAIN), `hawdb-plan-cache`
+`template::tests::load_csv_plans_keep_parameter_sources_unbound_and_reusable`,
+`hawdb-executor` `load_csv::tests` (RFC 4180 reader, path policy and its
+`Semantic`/`Execution` error classes, record/file limits and per-row mutation
+resolution, using temporary directories), `hawdb-executor`
+`mutation::staged::tests` (statement-level matched-relationship endpoint
+resolution: result equivalence with per-row scans for duplicates, misses,
+composite keys, missing labels and indexed/unindexed labels; one pass per
+endpoint pattern; cancellation; ledger refusal of staged mutations and endpoint
+maps; fan-out endpoints refused with the commit's own affected-row errors before
+their ids are copied; charged id copies on `UNWIND` batches; the host's
+configured execution memory on the store entrypoint), `hawdb-storage`
+`store::tests::id_in_mutation` (id-led conjunction fast path against a
+single-element `Or` scan oracle, including pending nodes, and a 5,000-source
+fan-out whose recheck excludes the leading id list), and
+root `api::tests::load_csv` (end-to-end LDBC-style loads, refusal without an
+import root, path escapes, remote URLs, parameter rebinding, mutation/WAL/read
+and query-memory budgets, explicit transactions including nodes staged earlier
+in the transaction, zero per-row label scans under the write guard for
+`LOAD CSV` and `UNWIND` relationship loads at 3,000 nodes and rows via the
+hidden storage scan counter, `UNWIND` relationship CREATE and MERGE batches
+resolving their endpoints on the autocommit and explicit-transaction paths,
+fan-out loads beyond `max_affected_rows` refused
+with no writes, CSV fields read through temporal constructors and `toString`
+over temporal values, missing-file error classes and, on Unix, a FIFO source refused
+without blocking). Replay with `cargo test --locked -p hawdb-executor
+--lib load_csv`, `cargo test --locked -p hawdb-executor --lib mutation::staged`
+and `cargo test --locked -p hawdb --lib api::tests::load_csv`. No lane, profile
+or deadline changes; see [LOAD CSV](CYPHER_LOAD_CSV.md).
+
 Cypher `sum()` and expression-argument aggregates are owned by existing
 targets: `blocking::aggregate::tests` (Sum numeric/NULL/empty/overflow/
 non-numeric/DISTINCT accumulator and partial-merge rules),
@@ -2396,6 +2431,26 @@ older fixtures stay immutable: `migration_main_1411_peg_baseline_v1.jsonl`
 records the eight intentional main transitions with their previous fingerprints,
 plus 132 independently exported row-bound/CASE/context outcomes. Existing
 #1411 parser and embedded query tests remain intact.
+
+Main `9adbb166bf` (#1377) adds LOAD CSV, conversion functions and list-row
+indexes. Its six parser tests remain unchanged. The new frozen
+`migration_main_1377_load_csv_peg_baseline_v1.jsonl` contains 1,626 statement/
+pipeline outcomes independently exported from that exact main revision, including
+complete accepted AST/span hashes, nesting boundaries and rejection classes.
+All 18,744 earlier outcomes are also independently re-exported and compared;
+the combined 20,370 outcomes match the PEG integration. Existing fixtures and
+their fingerprints remain unchanged. Four nonsemantic envelope/flag rules are
+inlined to fit the added syntax within the original 256-rule cap. The ordinary
+value, property-value and scalar-conversion grammars retain distinct admission
+and recursion checks. The same Cypher Cargo/Bazel owner targets execute this
+fixture; root `api::tests::load_csv` covers the embedded importer through PEG.
+The ordinary-property diagnostic regression fixes the original error text for
+invalid and missing values through both entry points. All 18,744 preceding
+rendered outcomes remain exact after the explicit main change that adds LOAD
+to the top-level dispatch keyword list. Conversion/index captures are admitted
+only for those shapes, preserving ordinary value captures and memo accounting.
+All 173 warmed allocation/refusal/wide/late-error/SQL probes retain non-increasing
+calls, total requested bytes and peak live bytes versus PEG `04eb8ea1f7`.
 
 The independent `migration_keyword_context_peg_baseline_v1.jsonl` adds 2,380
 main `2ae7e88614` outcomes for keyword-named properties, all specialized

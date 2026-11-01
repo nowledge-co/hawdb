@@ -33,11 +33,14 @@ use crate::expression::{
 use crate::predicate::property_filter_from_properties;
 
 mod preflight;
+mod staged;
 pub use preflight::{
-    execute_mutation_with_store, execute_mutation_with_store_output_limits,
+    commit_staged_mutations, commit_staged_mutations_with_output, execute_mutation_with_store,
+    execute_mutation_with_store_output_limits, materialize_load_csv_mutations,
     materialize_node_mutation, materialize_unwind_mutations, project_staged_mutation_return_rows,
-    resolve_relationship_merge_endpoints,
+    resolve_relationship_merge_endpoints, stage_row_mutations, stage_unwind_mutations,
 };
+pub use staged::{EndpointResolutionReport, StagedCharge, StagedMutations};
 
 pub fn mutation_returns_rows(plan: &PhysicalPlan) -> bool {
     matches!(plan, PhysicalPlan::SetNodePropertiesReturn { .. })
@@ -564,6 +567,8 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
         | PhysicalPlan::UnwindMutation { .. }
         | PhysicalPlan::UnwindExec { .. }
         | PhysicalPlan::UnwindRowsExec { .. }
+        | PhysicalPlan::LoadCsvMutation { .. }
+        | PhysicalPlan::LoadCsvExec { .. }
         | PhysicalPlan::GraphMatchExec { .. } => Ok(None),
     }
 }

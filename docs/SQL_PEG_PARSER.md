@@ -103,6 +103,17 @@ Alternatives are attempted from the same token position; the first success
 wins. A later sequence failure does not revisit an earlier successful choice.
 The AST transformer and grammar form one internal contract and change together.
 
+Cypher `LOAD CSV` uses the same PEG pipeline and selected-tree transformation.
+The grammar recognizes optional headers, literal/parameter sources and an
+optional literal field terminator; decoding validates the one-character ASCII
+terminator. Conversion functions are recognized in scalar expressions and
+property/SET values. List-row indexes in property values retain their distinct
+binding-index AST. Ordinary values and predicate operands keep their existing
+syntax boundaries. Four nonsemantic envelope/flag rules are inlined so these
+additions fit the original 256-rule cap. Conversion recursion participates in
+the existing language-depth budget. The CSV reader, typed import policy and
+atomic execution remain the existing embedded library implementation.
+
 ## Resources and diagnostics
 
 The matcher runs continuations on an explicit work stack rather than the host

@@ -20,6 +20,43 @@ fn optional(expression: E) -> E {
     E::Optional(Box::new(expression))
 }
 
+// These envelope expressions do not produce semantic captures. Keeping them
+// inline leaves room for new language rules within the original 256-rule cap.
+fn non_with() -> E {
+    seq(vec![
+        E::Not(
+            Box::new(E::Choice(vec![E::Keyword("WITH"), E::Keyword("RETURN")])),
+            "a non-WITH clause",
+        ),
+        choice(&[
+            "match_clause",
+            "optional_clause",
+            "unwind_clause",
+            "load_clause",
+            "call_clause",
+            "create_clause",
+            "merge_clause",
+            "set_clause",
+            "delete_clause",
+            "detach_clause",
+        ]),
+    ])
+}
+fn two_with() -> E {
+    seq(vec![
+        repeat(non_with()),
+        rule("with_clause"),
+        repeat(non_with()),
+        rule("with_clause"),
+    ])
+}
+fn non_return() -> E {
+    seq(vec![
+        E::Not(Box::new(E::Keyword("RETURN")), "a non-RETURN clause"),
+        E::Choice(vec![non_with(), rule("with_clause")]),
+    ])
+}
+
 pub(super) fn build(multi_stage: bool) -> Result<Grammar, String> {
     let mut rules = vec![
         ("root", seq(vec![rule("statement"), rule("end")])),
@@ -75,57 +112,21 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar, String> {
             "multi_stage",
             seq(vec![
                 E::Not(Box::new(E::Keyword("MATCH")), "a non-MATCH pipeline"),
-                E::Ahead(Box::new(rule("two_with")), "a multi-stage pipeline"),
+                E::Ahead(Box::new(two_with()), "a multi-stage pipeline"),
                 rule("pipeline"),
             ]),
         ),
         (
-            "two_with",
-            seq(vec![
-                repeat(rule("non_with")),
-                rule("with_clause"),
-                repeat(rule("non_with")),
-                rule("with_clause"),
-            ]),
-        ),
-        (
-            "non_with",
-            seq(vec![
-                E::Not(
-                    Box::new(E::Choice(vec![E::Keyword("WITH"), E::Keyword("RETURN")])),
-                    "a non-WITH clause",
-                ),
-                choice(&[
-                    "match_clause",
-                    "optional_clause",
-                    "unwind_clause",
-                    "call_clause",
-                    "create_clause",
-                    "merge_clause",
-                    "set_clause",
-                    "delete_clause",
-                    "detach_clause",
-                ]),
-            ]),
-        ),
-        (
-            "non_return",
-            seq(vec![
-                E::Not(Box::new(E::Keyword("RETURN")), "a non-RETURN clause"),
-                choice(&["non_with", "with_clause"]),
-            ]),
-        ),
-        (
             "pipeline",
-            seq(vec![
-                repeat(rule("non_return")),
-                optional(rule("return_clause")),
-            ]),
+            seq(vec![repeat(non_return()), optional(rule("return_clause"))]),
         ),
         (
             "match",
             seq(vec![
-                E::Ahead(Box::new(E::Keyword("MATCH")), "MATCH"),
+                E::Ahead(
+                    Box::new(E::Choice(vec![E::Keyword("MATCH"), E::Keyword("LOAD")])),
+                    "MATCH",
+                ),
                 rule("pipeline"),
             ]),
         ),
@@ -140,11 +141,10 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar, String> {
             "explain",
             seq(vec![
                 E::Keyword("EXPLAIN"),
-                optional(rule("analyze")),
+                optional(E::Keyword("ANALYZE")),
                 rule("statement"),
             ]),
         ),
-        ("analyze", E::Keyword("ANALYZE")),
         (
             "cypher",
             seq(vec![
@@ -203,6 +203,8 @@ pub(super) fn build(multi_stage: bool) -> Result<Grammar, String> {
             "v_map",
             "v_list_contents",
             "v_call_contents",
+            "v_conversion_contents",
+            "x_conversion",
             "u_map_contents",
             "x_expression_list_contents",
             "x_comprehension_contents",

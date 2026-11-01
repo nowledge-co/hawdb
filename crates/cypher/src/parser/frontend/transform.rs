@@ -16,7 +16,8 @@ impl Transformer<'_> {
             .expect("named statement rule")
         {
             "explain" => {
-                let analyze = self.tree.child(selected, "analyze").is_some();
+                let analyze = self.tokens[self.tree.nodes[selected].start + 1]
+                    .is_keyword(self.input, "ANALYZE");
                 let child = self.tree.required(selected, "statement");
                 let statement = self.statement(child, depth + 1)?;
                 let body = explain_statement_body(&statement);

@@ -254,6 +254,21 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             false,
         ),
         (
+            PhysicalPlan::LoadCsvMutation {
+                source: hawdb_plan_cypher::LoadCsvSource {
+                    location: hawdb_plan_cypher::CsvLocation::Parameter("f".to_string()),
+                    with_headers: false,
+                    field_terminator: b',',
+                    variable: "row".to_string(),
+                },
+                operation: BatchMutationOperation::CreateNode {
+                    label: String::new(),
+                    properties: BTreeMap::new(),
+                },
+            },
+            false,
+        ),
+        (
             PhysicalPlan::MergeNode {
                 label: String::new(),
                 match_properties: BTreeMap::new(),
@@ -455,6 +470,17 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             false,
         ),
         (PhysicalPlan::EmptyExec, true),
+        (
+            PhysicalPlan::LoadCsvExec {
+                source: hawdb_plan_cypher::LoadCsvSource {
+                    location: hawdb_plan_cypher::CsvLocation::Parameter("f".to_string()),
+                    with_headers: false,
+                    field_terminator: b',',
+                    variable: "row".to_string(),
+                },
+            },
+            true,
+        ),
         (
             PhysicalPlan::SeqNodeScan {
                 variable: String::new(),

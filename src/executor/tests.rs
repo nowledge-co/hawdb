@@ -2511,6 +2511,7 @@ fn source_segment_scan_uses_checkpoint_sidecar_and_keeps_filter_semantics() {
         task_context: None,
         observer: &observer,
         host_scorer: None,
+        csv_import: None,
     };
     let bindings = execute_bindings_with_limit(
         &plan,

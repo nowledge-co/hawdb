@@ -807,6 +807,10 @@ pub(super) fn plan_projection_with_columns(
             plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
             "list_index".to_string(),
         ),
+        ScalarExpressionKind::Conversion { function, .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            function.function_name().to_string(),
+        ),
         ScalarExpressionKind::ListSlice { .. } => (
             plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
             "list_slice".to_string(),
@@ -1550,6 +1554,17 @@ pub(super) fn plan_scalar_expression_with_columns(
             },
             parameters,
         ),
+        ScalarExpressionKind::Conversion { function, argument } => {
+            Ok(ProjectionExpression::Conversion {
+                function: *function,
+                argument: Box::new(plan_scalar_expression_with_columns(
+                    scope,
+                    column_scope,
+                    argument,
+                    parameters,
+                )?),
+            })
+        }
         ScalarExpressionKind::ListIndex { list, index } => Ok(ProjectionExpression::ListIndex {
             list: Box::new(plan_scalar_expression_with_columns(
                 scope,

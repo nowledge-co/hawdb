@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Graph patterns and ordered mutation clauses, matched before name allocation.
-use hawdb_core::Result;
+use hawdb_core::{Result, Value};
 use hawdb_sql_syntax::peg::{Expression as E, NodeId};
 use hawdb_sql_syntax::TokenKind as T;
 
@@ -126,6 +126,30 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
         (
             "unwind_clause",
             s(vec![k("UNWIND"), r("v_value"), k("AS"), r("v_identifier")]),
+        ),
+        (
+            "load_clause",
+            s(vec![
+                k("LOAD"),
+                k("CSV"),
+                o(s(vec![k("WITH"), k("HEADERS")])),
+                k("FROM"),
+                E::Ahead(
+                    Box::new(c(vec![t(T::Parameter(0)), t(T::String)])),
+                    "LOAD CSV FROM accepts only a string literal or parameter source",
+                ),
+                r("v_value"),
+                k("AS"),
+                r("v_identifier"),
+                o(s(vec![
+                    k("FIELDTERMINATOR"),
+                    E::Ahead(
+                        Box::new(t(T::String)),
+                        "FIELDTERMINATOR requires a string literal",
+                    ),
+                    r("v_value"),
+                ])),
+            ]),
         ),
         ("create_clause", s(vec![k("CREATE"), r("p_patterns")])),
         (
@@ -358,6 +382,43 @@ impl Transformer<'_> {
                         predicate,
                     }
                 }
+            }
+            "load_clause" => {
+                let values = self.named_children(node, "v_value");
+                let source = self.value(values[0], depth)?;
+                if !matches!(
+                    source.kind,
+                    ValueExpressionKind::Parameter(_)
+                        | ValueExpressionKind::Literal(Value::String(_))
+                ) {
+                    return Err(self.error(
+                        values[0],
+                        "LOAD CSV FROM accepts only a string literal or parameter source",
+                    ));
+                }
+                let field_terminator = if let Some(value) = values.get(1) {
+                    let value = *value;
+                    let parsed = self.value(value, depth)?;
+                    let ValueExpressionKind::Literal(Value::String(text)) = parsed.kind else {
+                        return Err(self.error(value, "FIELDTERMINATOR requires a string literal"));
+                    };
+                    let mut chars = text.chars();
+                    match (chars.next(), chars.next()) {
+                        (Some(ch), None) if ch.is_ascii() && !matches!(ch, '"' | '\r' | '\n') => ch,
+                        _ => return Err(self.error(value, "FIELDTERMINATOR must be one ASCII character other than a double quote or line break")),
+                    }
+                } else {
+                    ','
+                };
+                ClauseKind::LoadCsv(LoadCsvClause {
+                    with_headers: self.tokens[self.tree.nodes[node].start + 2]
+                        .is_keyword(self.input, "WITH"),
+                    source,
+                    variable: self
+                        .text(self.tree.required(node, "v_identifier"))
+                        .to_owned(),
+                    field_terminator,
+                })
             }
             "unwind_clause" => {
                 let source = self.value(self.tree.required(node, "v_value"), depth)?;

@@ -108,10 +108,15 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                         r("x_metric_name"),
                         kw(&["COALESCE", "JSON_VALUE", "LEFT", "PROPERTIES"]),
                         r("x_path_name"),
+                        conversion_names(),
                         kw(&["LOWER", "DATE_PART"]),
                     ]),
                     c(vec![
                         r("x_identity"),
+                        s(vec![
+                            E::Ahead(Box::new(conversion_names()), "a conversion function"),
+                            r("x_conversion"),
+                        ]),
                         r("x_list_function"),
                         r("x_metric"),
                         r("x_coalesce"),
@@ -126,6 +131,14 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                 r("x_case"),
                 r("x_ref"),
                 r("x_variable"),
+            ]),
+        ),
+        (
+            "x_conversion",
+            s(vec![
+                E::Ahead(Box::new(conversion_names()), "a conversion function"),
+                r("v_identifier"),
+                group(r("x_scalar")),
             ]),
         ),
         (
@@ -550,6 +563,13 @@ impl Transformer<'_> {
     fn scalar_primary(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpressionKind> {
         Ok(match self.tree.nodes[node].name.expect("scalar atom") {
             "x_value" => ScalarExpressionKind::Value(self.value(node, depth)?),
+            "x_conversion" => ScalarExpressionKind::Conversion {
+                function: hawdb_core::ConversionFunction::from_function_name(
+                    self.text(self.tree.required(node, "v_identifier")),
+                )
+                .expect("matched conversion function"),
+                argument: Box::new(self.scalar(self.tree.required(node, "x_scalar"), depth)?),
+            },
             "x_temporal" => self.temporal_scalar(node, depth)?,
             "x_map" => ScalarExpressionKind::MapLiteral(self.scalar_map(node, depth)?),
             "x_variable" => ScalarExpressionKind::Variable(

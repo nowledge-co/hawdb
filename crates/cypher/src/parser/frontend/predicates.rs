@@ -183,6 +183,7 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                             Box::new(c(vec![
                                 k("CASE"),
                                 s(vec![r("x_temporal_name"), t(T::LeftParen)]),
+                                s(vec![conversion_names(), t(T::LeftParen)]),
                                 s(vec![
                                     r("w_reference"),
                                     c(vec![
@@ -227,9 +228,12 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
             s(vec![
                 t(T::LeftParen),
                 E::Ahead(
-                    Box::new(kw(&[
-                        "CASE", "COALESCE", "LEFT", "LOWER", "SIZE", "HEAD", "LAST", "TAIL",
-                        "REVERSE", "RANGE",
+                    Box::new(c(vec![
+                        conversion_names(),
+                        kw(&[
+                            "CASE", "COALESCE", "LEFT", "LOWER", "SIZE", "HEAD", "LAST", "TAIL",
+                            "REVERSE", "RANGE",
+                        ]),
                     ])),
                     "a parenthesized scalar",
                 ),

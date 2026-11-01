@@ -84,7 +84,7 @@ fn id_in_lookup_scaling_probe() {
                         Vec::new()
                     };
                     let filter = id_filter(&ids);
-                    let scan = PropertyFilter::And(vec![filter.clone()]);
+                    let scan = PropertyFilter::Or(vec![filter.clone()]);
                     for sample in 0..4 {
                         for direct in if sample % 2 == 0 {
                             [false, true]
@@ -170,11 +170,11 @@ fn id_in_relationship_scaling_probe() {
                                 request.source_filter = request
                                     .source_filter
                                     .take()
-                                    .map(|filter| PropertyFilter::And(vec![filter]));
+                                    .map(|filter| PropertyFilter::Or(vec![filter]));
                                 request.target_filter = request
                                     .target_filter
                                     .take()
-                                    .map(|filter| PropertyFilter::And(vec![filter]));
+                                    .map(|filter| PropertyFilter::Or(vec![filter]));
                             }
                             mutation
                         })

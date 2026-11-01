@@ -543,6 +543,8 @@ impl GroupExpr {
             | LogicalPlan::CreateNode { .. }
             | LogicalPlan::Unwind { .. }
             | LogicalPlan::UnwindMutation { .. }
+            | LogicalPlan::LoadCsvMutation { .. }
+            | LogicalPlan::LoadCsv { .. }
             | LogicalPlan::MergeNode { .. }
             | LogicalPlan::MergeRelationship { .. }
             | LogicalPlan::MergeMatchedRelationship { .. }
@@ -861,6 +863,8 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
         | LogicalPlan::CreateNode { .. }
         | LogicalPlan::Unwind { .. }
         | LogicalPlan::UnwindMutation { .. }
+        | LogicalPlan::LoadCsvMutation { .. }
+        | LogicalPlan::LoadCsv { .. }
         | LogicalPlan::MergeNode { .. }
         | LogicalPlan::MergeRelationship { .. }
         | LogicalPlan::MergeMatchedRelationship { .. }
@@ -1913,6 +1917,7 @@ fn collect_projection_properties(
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::Conversion { .. }
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }

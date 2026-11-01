@@ -52,6 +52,29 @@ pub(super) fn group(item: E) -> E {
 pub(super) fn list(name: &'static str) -> E {
     s(vec![r(name), many(s(vec![t(T::Comma), r(name)]))])
 }
+pub(super) fn conversion_names() -> E {
+    c(hawdb_core::ConversionFunction::ALL
+        .into_iter()
+        .map(|function| k(function.function_name()))
+        .collect())
+}
+pub(super) fn property_value_rule() -> E {
+    // Ordinary values retain their existing named capture and memo entries.
+    // Only conversion calls or row indexes enter the additional value rule.
+    c(vec![
+        s(vec![
+            E::Ahead(
+                Box::new(c(vec![
+                    s(vec![conversion_names(), t(T::LeftParen)]),
+                    s(vec![t(T::Word), t(T::LeftBracket)]),
+                ])),
+                "a Cypher value token",
+            ),
+            r("v_property_value"),
+        ]),
+        r("v_value"),
+    ])
+}
 fn tight(item: E) -> E {
     E::Tight(Box::new(item))
 }
@@ -125,6 +148,23 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
         ),
         ("v_call_contents", r("v_value")),
         (
+            "v_property_value",
+            c(vec![
+                s(vec![
+                    E::Ahead(Box::new(conversion_names()), "a conversion function"),
+                    r("v_identifier"),
+                    group(r("v_conversion_contents")),
+                ]),
+                s(vec![
+                    r("v_identifier"),
+                    t(T::LeftBracket),
+                    r("v_number"),
+                    t(T::RightBracket),
+                ]),
+            ]),
+        ),
+        ("v_conversion_contents", property_value_rule()),
+        (
             "v_property",
             s(vec![
                 E::Not(
@@ -152,12 +192,38 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
         ),
         (
             "v_property_entry",
-            s(vec![r("v_identifier"), t(T::Colon), r("v_value")]),
+            s(vec![r("v_identifier"), t(T::Colon), property_value_rule()]),
         ),
     ]
 }
 
 impl Transformer<'_> {
+    pub(super) fn property_value(&mut self, node: NodeId, depth: usize) -> Result<ValueExpression> {
+        if self.tree.nodes[node].name == Some("v_value") {
+            return self.value(node, depth);
+        }
+        self.check_depth(node, depth, 1)?;
+        let variable = self.text(self.tree.required(node, "v_identifier"));
+        let kind = if let Some(contents) = self.tree.child(node, "v_conversion_contents") {
+            let function = hawdb_core::ConversionFunction::from_function_name(variable)
+                .expect("matched conversion name");
+            let argument = self.property_value(self.tree.children(contents)[0], depth + 1)?;
+            ValueExpressionKind::Conversion {
+                function,
+                argument: Box::new(argument),
+            }
+        } else {
+            let index = self.tree.required(node, "v_number");
+            ValueExpressionKind::BindingIndex {
+                variable: variable.to_owned(),
+                index: self
+                    .text(index)
+                    .parse()
+                    .map_err(|_| self.error(index, "invalid integer"))?,
+            }
+        };
+        Ok(self.source(node, kind))
+    }
     pub(super) fn text(&self, node: NodeId) -> &str {
         let span = self.tree.span(node, self.tokens);
         &self.input[span.start..span.end]
@@ -309,7 +375,11 @@ impl Transformer<'_> {
             let name = self
                 .text(self.tree.required(child, "v_identifier"))
                 .to_owned();
-            let value = self.value(self.tree.required(child, "v_value"), depth)?;
+            let value_node = self
+                .tree
+                .child(child, "v_property_value")
+                .unwrap_or_else(|| self.tree.required(child, "v_value"));
+            let value = self.property_value(value_node, depth)?;
             properties.insert(name, value);
         }
         Ok(properties)

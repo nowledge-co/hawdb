@@ -79,7 +79,7 @@ pub(super) fn rules() -> Vec<(&'static str, E)> {
                         Box::new(c(vec![k("CASE"), k("COALESCE")])),
                         "a mutation value",
                     ),
-                    r("v_value"),
+                    property_value_rule(),
                 ]),
             ]),
         ),
@@ -318,6 +318,7 @@ impl<'a> Transformer<'a> {
     fn set_value(&mut self, node: NodeId, depth: usize) -> Result<SetValueExpression> {
         match self.tree.nodes[node].name.expect("set value syntax") {
             "v_value" => Ok(SetValueExpression::Value(self.value(node, depth)?)),
+            "v_property_value" => Ok(SetValueExpression::Value(self.property_value(node, depth)?)),
             "d_property_value" | "d_coalesce" => {
                 let (variable, property) = self.reference(self.tree.required(node, "d_ref"));
                 let default = self

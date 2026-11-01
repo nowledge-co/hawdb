@@ -447,6 +447,11 @@ fn estimate_local_operator_cost(
             let row_count = rows.len().max(1) as u64;
             PlanCostBreakdown::new(row_count, row_count, 0, 0, 0)
         }
+        // File contents are unknown until execution; no plan alternative
+        // competes with the single CSV source, so its cost is nominal.
+        PhysicalPlan::LoadCsvMutation { .. } | PhysicalPlan::LoadCsvExec { .. } => {
+            PlanCostBreakdown::new(1, 1, 0, 0, 0)
+        }
         PhysicalPlan::SeqNodeScan { label, .. } => {
             let rows = catalog.label_count(label);
             node_full_scan_work(rows)

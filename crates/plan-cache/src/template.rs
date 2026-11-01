@@ -463,7 +463,10 @@ fn folded_predicate_parameters(statement: &cypher::Statement) -> BTreeSet<String
                     collect_value(item, exact);
                 }
             }
-            cypher::ValueExpressionKind::Timestamp(inner) => collect_value(inner, exact),
+            cypher::ValueExpressionKind::Timestamp(inner)
+            | cypher::ValueExpressionKind::Conversion {
+                argument: inner, ..
+            } => collect_value(inner, exact),
             // Temporal calls are evaluated while binding: like `timestamp()`,
             // their inputs are folded and must be exact cache keys.
             cypher::ValueExpressionKind::Temporal { arguments, .. } => {
@@ -479,6 +482,7 @@ fn folded_predicate_parameters(statement: &cypher::Statement) -> BTreeSet<String
             cypher::ValueExpressionKind::Literal(_)
             | cypher::ValueExpressionKind::Binding(_)
             | cypher::ValueExpressionKind::BindingProperty { .. }
+            | cypher::ValueExpressionKind::BindingIndex { .. }
             | cypher::ValueExpressionKind::CurrentTimestamp => {}
         }
     }
@@ -1030,6 +1034,7 @@ fn marker_use_in_projection_expression(
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::Conversion { .. }
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
@@ -1323,6 +1328,9 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) ->
         | PhysicalPlan::TextSeedScan { .. }
         | PhysicalPlan::CreateNode { .. }
         | PhysicalPlan::UnwindMutation { .. }
+        // LOAD CSV keeps its parameter name, resolved again at execution.
+        | PhysicalPlan::LoadCsvMutation { .. }
+        | PhysicalPlan::LoadCsvExec { .. }
         | PhysicalPlan::MergeNode { .. }
         | PhysicalPlan::MergeRelationship { .. }
         | PhysicalPlan::MergeMatchedRelationship { .. }
@@ -1613,6 +1621,7 @@ fn bind_projection_expression(
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::Conversion { .. }
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
@@ -2300,6 +2309,56 @@ mod tests {
         }
         assert!(!text.contains("hawdb_parameter_slot"), "{text}");
         assert!(!text.contains("skein_parameter_slot"), "{text}");
+    }
+
+    #[test]
+    fn load_csv_plans_keep_parameter_sources_unbound_and_reusable() {
+        let statement = cypher::parse(
+            "LOAD CSV WITH HEADERS FROM $f AS row WITH row WHERE toInteger(row.id) > $min \
+             RETURN row.name AS name",
+        )
+        .unwrap();
+        let first = BTreeMap::from([
+            ("f".to_string(), Value::String("/import/a.csv".into())),
+            ("min".to_string(), Value::Int(1)),
+        ]);
+        let second = BTreeMap::from([
+            ("f".to_string(), Value::String("/import/b.csv".into())),
+            ("min".to_string(), Value::Int(1)),
+        ]);
+        let first = parameterize_logical_plan(&statement, &first).unwrap();
+        let second = parameterize_logical_plan(&statement, &second).unwrap();
+        // The file location is never part of the plan or its cache key, so one
+        // cached plan serves every file; execution resolves `$f` again.
+        assert_eq!(first.logical, second.logical);
+        assert_eq!(first.cache_key, second.cache_key);
+        assert!(
+            !first.cache_key.values.contains_key("f"),
+            "{:?}",
+            first.cache_key
+        );
+        let text = format!("{:?}", first.logical);
+        assert!(text.contains("Parameter(\"f\")"), "{text}");
+        assert!(!text.contains("a.csv"), "{text}");
+
+        let physical = CascadesOptimizer::default().optimize(&first.logical);
+        let rebound = bind_physical_plan_parameters(
+            &physical,
+            &BTreeMap::from([("min".to_string(), Value::Int(5))]),
+            first.slot_count > 0,
+        )
+        .unwrap();
+        let mut sources = Vec::new();
+        hawdb_plan_cypher::visit_plan(&rebound, &mut |node| {
+            if let PhysicalPlan::LoadCsvExec { source } = node {
+                sources.push(source.clone());
+            }
+        });
+        assert_eq!(sources.len(), 1, "{rebound:?}");
+        assert_eq!(
+            sources[0].location,
+            hawdb_plan_cypher::CsvLocation::Parameter("f".to_string())
+        );
     }
 
     #[test]

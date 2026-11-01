@@ -522,3 +522,24 @@ fn limited_order_keys_keep_top_n_plans() {
     assert!(!plan.contains("SortExec"), "{plan}");
     assert_eq!(names(&mut db, expression), strings(&["bob", "alice"]));
 }
+
+#[test]
+fn conversion_functions_order_string_ids_numerically() {
+    // LDBC SNB IC1/IC2/IC11 sort string ids with `toInteger`.
+    let mut db = Database::new();
+    for id in ["10", "9", "100", "2"] {
+        db.query(&format!("CREATE (:Person {{id: '{id}'}})"))
+            .unwrap();
+    }
+    let output = db
+        .query("MATCH (n:Person) RETURN n.id AS id ORDER BY toInteger(n.id) ASC")
+        .unwrap();
+    assert_eq!(column(&output, "id"), strings(&["2", "9", "10", "100"]));
+    let output = db
+        .query(
+            "MATCH (n:Person) WITH n ORDER BY toFloat(n.id) DESC LIMIT 2 \
+             RETURN n.id AS id",
+        )
+        .unwrap();
+    assert_eq!(column(&output, "id"), strings(&["100", "10"]));
+}

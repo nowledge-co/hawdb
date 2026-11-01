@@ -47,6 +47,8 @@ mod binding;
 mod case;
 #[cfg(test)]
 mod list_tests;
+#[cfg(test)]
+mod load_csv_tests;
 mod projection;
 mod statement;
 mod temporal;
@@ -106,12 +108,43 @@ impl<P> VectorIndexScan<P> {
     }
 }
 
-/// A mutation property resolved from one bounded `UNWIND` row.
+/// A mutation property resolved from one bounded `UNWIND` or `LOAD CSV` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchMutationValue {
     Static(Value),
+    /// The whole row value.
     Row,
+    /// `row.key` of a map row; a missing key is `NULL`.
     RowProperty(String),
+    /// `row[index]` of a list row; negative indexes count from the end and an
+    /// index outside the list is `NULL`.
+    RowIndex(i64),
+    /// A type conversion of a row-dependent value.
+    Converted {
+        function: hawdb_core::ConversionFunction,
+        input: Box<BatchMutationValue>,
+    },
+}
+
+/// Where `LOAD CSV` reads its file.
+///
+/// A parameter is resolved for every execution, so cached plans retain only
+/// its name and never a location or any file contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CsvLocation {
+    Literal(String),
+    Parameter(String),
+}
+
+/// A `LOAD CSV` row source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadCsvSource {
+    pub location: CsvLocation,
+    pub with_headers: bool,
+    /// One ASCII byte other than `"`, CR or LF.
+    pub field_terminator: u8,
+    /// The row variable: a list of strings, or a header-keyed map.
+    pub variable: String,
 }
 
 /// Two independently matched endpoints, evaluated for every bounded input row.
@@ -142,6 +175,19 @@ pub enum BatchMutationOperation {
         match_properties: BTreeMap<String, BatchMutationValue>,
         on_create_properties: BTreeMap<String, BatchMutationValue>,
     },
+    /// `MATCH (a:L {..}), (b:M {..}) CREATE (a)-[:R {..}]->(b)` for each row.
+    /// A row whose endpoint filter contains `NULL` matches nothing.
+    CreateMatchedRelationship(Box<BatchMatchedRelationship>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchMatchedRelationship {
+    pub source_label: String,
+    pub source_properties: BTreeMap<String, BatchMutationValue>,
+    pub target_label: String,
+    pub target_properties: BTreeMap<String, BatchMutationValue>,
+    pub rel_type: String,
+    pub rel_properties: BTreeMap<String, BatchMutationValue>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -261,6 +307,15 @@ pub enum LogicalPlan {
         rows: Vec<Value>,
         variable: String,
         operation: BatchMutationOperation,
+    },
+    /// One mutation per CSV record, staged as one atomic batch.
+    LoadCsvMutation {
+        source: LoadCsvSource,
+        operation: BatchMutationOperation,
+    },
+    /// A CSV record source for read pipelines.
+    LoadCsv {
+        source: LoadCsvSource,
     },
     MergeNode {
         label: String,
@@ -791,6 +846,41 @@ impl hawdb_core::RetainedHeapBytes for BatchMutationOperation {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(match_properties),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(on_create_properties),
             ]),
+            Self::CreateMatchedRelationship(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+        }
+    }
+}
+
+// Retained query ownership: BatchMatchedRelationship.
+hawdb_core::impl_retained_heap_for_struct!(BatchMatchedRelationship {
+    source_label,
+    source_properties,
+    target_label,
+    target_properties,
+    rel_type,
+    rel_properties
+});
+
+// Retained query ownership: LoadCsvSource. The location is a literal path or
+// a parameter name; file contents are never retained by a plan.
+hawdb_core::impl_retained_heap_for_struct!(LoadCsvSource {
+    location,
+    with_headers,
+    field_terminator,
+    variable
+});
+
+// Retained query ownership: CsvLocation.
+impl hawdb_core::RetainedHeapBytes for CsvLocation {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Literal(value0) | Self::Parameter(value0) => {
+                hawdb_core::checked_retained_heap_sum([
+                    hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+                ])
+            }
         }
     }
 }
@@ -897,6 +987,13 @@ impl hawdb_core::RetainedHeapBytes for BatchMutationValue {
             ]),
             Self::RowProperty(value0) => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::RowIndex(value0) => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
+            ]),
+            Self::Converted { function, input } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(function),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(input),
             ]),
         }
     }
