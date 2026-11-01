@@ -34,6 +34,18 @@ mod having;
 mod ordinary_aggregate;
 mod projection_admission;
 
+fn assert_intermediate_work_refusal(error: &HawDBError) {
+    let HawDBError::ResourceBudgetExceeded(cause) = error else {
+        panic!("aggregate lost its typed work refusal: {error}");
+    };
+    assert_eq!(cause.resource, hawdb_core::ResourceBudgetKind::WorkUnits);
+    assert_eq!(cause.scope, hawdb_core::ResourceBudgetScope::Query);
+    assert_eq!(cause.owner, "relational SQL");
+    assert_eq!(cause.budget_option, "max_intermediate_rows");
+    assert_eq!(cause.budget, 1);
+    assert!(cause.used.saturating_add(cause.requested) > cause.budget);
+}
+
 fn assert_aggregate_memory_refusal(error: &HawDBError, owner: &str) {
     let HawDBError::ResourceBudgetExceeded(cause) = error else {
         panic!("aggregate lost its typed memory refusal: {error}");

@@ -523,6 +523,9 @@ fn sparse_discovery_work_budget_escalates_without_refusing_valid_statements() {
                 "hawdb-discovery-work-{}-{residency:?}-{composite}",
                 std::process::id()
             ));
+            if path.exists() {
+                std::fs::remove_dir_all(&path).unwrap();
+            }
             let config = DatabaseConfig {
                 storage_residency_mode: residency,
                 ..Default::default()

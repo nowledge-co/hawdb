@@ -338,6 +338,11 @@ locking reads, UPDATE and DELETE, including autocommit and both primary-key
 shapes/residencies. Typed work/output refusals distinguish internal probe caps
 from caller limits; smaller caller limits still fail without table escalation.
 Hydration retains caller limits while the streaming probe bounds visited rows.
+Relational aggregate unit tests, `tests/execution_request_contract.rs` and
+Python `test_read_controls.py` pin the public work-refusal contract: Rust
+`ResourceBudgetExceeded` / Python `ResourceBudgetError`, with query-scoped
+work units and the originating budget option. Existing cancellation, output
+and memory refusal controls remain distinct in their current owners.
 Focused replay: `cargo test --locked -p hawdb --lib composite_lock_tests`.
 Constraint-key changes and nonliteral index rekeys retain conservative guards;
 nullable index version validation retains its existing table dependency.

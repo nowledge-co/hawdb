@@ -280,6 +280,8 @@ fn having_rejection_does_not_bypass_work_memory_or_output_limits() {
             );
         } else if expected == "blocking_operator_bytes" {
             assert_aggregate_memory_refusal(&error, "RelationalAggregate");
+        } else if expected == "max_intermediate_rows" {
+            assert_intermediate_work_refusal(&error);
         } else {
             assert!(matches!(error, HawDBError::Execution(_)), "{error}");
         }
