@@ -52,6 +52,7 @@ impl Database {
             let profiled = executor::execute_with_request(
                 executor::ExecutionRequest::new(&optimized.physical_plan, &parameters, &memory)
                     .with_statement_clock(optimized.statement_clock)
+                    .with_csv_import(self.config.csv_import_policy().as_ref())
                     .with_output_limits(max_rows, None),
                 executor::ExecutionResources::new(&mut catalog, &mut store, &mut external),
             )?;
@@ -181,6 +182,7 @@ impl Database {
                     &self.config.execution_memory,
                 )
                 .with_statement_clock(optimized.statement_clock)
+                .with_csv_import(self.config.csv_import_policy().as_ref())
                 .with_output_limits(
                     self.config.read_result_row_limit(),
                     self.config.max_read_result_payload_bytes,

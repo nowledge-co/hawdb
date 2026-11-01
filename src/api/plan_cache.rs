@@ -1343,6 +1343,9 @@ pub(super) fn statement_uses_plan_cache(statement: &cypher::Statement) -> bool {
                         | cypher::ProcedureCallKind::GraphSeedSearch(_)
                         | cypher::ProcedureCallKind::ProjectGraph { .. } => false,
                     },
+                    // The plan keeps only the source and its parameter name;
+                    // every execution opens and reads the file again.
+                    cypher::ClauseKind::LoadCsv(_) => true,
                     cypher::ClauseKind::Unwind { .. }
                     | cypher::ClauseKind::Create(_)
                     | cypher::ClauseKind::Merge { .. }

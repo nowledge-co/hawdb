@@ -30,6 +30,7 @@ pub struct ExecutionRequest<'a> {
     task_context: Option<&'a RuntimeTaskContext>,
     host_scorer: Option<&'a dyn crate::scoring::HostScorerProvider>,
     statement_clock: Option<hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>>,
+    csv_import: Option<&'a crate::load_csv::CsvImportPolicy>,
 }
 
 impl<'a> ExecutionRequest<'a> {
@@ -47,7 +48,21 @@ impl<'a> ExecutionRequest<'a> {
             task_context: None,
             host_scorer: None,
             statement_clock: None,
+            csv_import: None,
         }
+    }
+
+    /// Allows `LOAD CSV` sources beneath the policy's import directory.
+    pub fn with_csv_import(
+        mut self,
+        csv_import: Option<&'a crate::load_csv::CsvImportPolicy>,
+    ) -> Self {
+        self.csv_import = csv_import;
+        self
+    }
+
+    pub fn csv_import(self) -> Option<&'a crate::load_csv::CsvImportPolicy> {
+        self.csv_import
     }
 
     /// Preserve the logical projection independently of physical rewrites.

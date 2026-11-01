@@ -37,6 +37,7 @@ pub mod graph_seed;
 #[doc(hidden)]
 pub mod kernel;
 pub mod limit;
+pub mod load_csv;
 pub mod memory;
 pub mod memory_ledger;
 pub mod morsel;

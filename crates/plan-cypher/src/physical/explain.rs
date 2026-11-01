@@ -190,6 +190,12 @@ impl PhysicalPlan {
             } => {
                 format!("{pad}UnwindMutationExec rows={} variable={variable} operation={operation:?}", rows.len())
             }
+            PhysicalPlan::LoadCsvMutation { source, operation } => {
+                format!(
+                    "{pad}LoadCsvMutationExec {} operation={operation:?}",
+                    load_csv_description(source)
+                )
+            }
             PhysicalPlan::MergeNode { label, .. } => {
                 format!("{pad}MergeNode label={label}")
             }
@@ -378,6 +384,9 @@ impl PhysicalPlan {
                 )
             }
             PhysicalPlan::EmptyExec => format!("{pad}EmptyExec"),
+            PhysicalPlan::LoadCsvExec { source } => {
+                format!("{pad}LoadCsvExec {}", load_csv_description(source))
+            }
             PhysicalPlan::SeqNodeScan { variable, label } => {
                 format!("{pad}SeqNodeScan variable={variable} label={label}")
             }
@@ -721,4 +730,17 @@ fn set_return_mode_summary(returns: &SetNodePropertiesReturnMode) -> String {
         SetNodePropertiesReturnMode::Project(items) => items.len().to_string(),
         SetNodePropertiesReturnMode::Count { name } => format!("count:{name}"),
     }
+}
+
+fn load_csv_description(source: &crate::LoadCsvSource) -> String {
+    let location = match &source.location {
+        crate::CsvLocation::Literal(location) => format!("{location:?}"),
+        crate::CsvLocation::Parameter(name) => format!("${name}"),
+    };
+    format!(
+        "source={location} headers={} field_terminator={:?} variable={}",
+        source.with_headers,
+        char::from(source.field_terminator),
+        source.variable
+    )
 }

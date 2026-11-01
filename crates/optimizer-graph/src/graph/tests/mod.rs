@@ -17,6 +17,7 @@ mod cardinality_defaults;
 mod costing;
 mod ddl;
 mod fulltext_costing;
+mod load_csv;
 mod ordering_enforcer;
 mod plan_structure;
 mod row_goals;

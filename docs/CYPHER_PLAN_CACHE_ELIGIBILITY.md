@@ -14,7 +14,11 @@ Let a pipeline be the finite clause sequence P = [c1, ..., cn]. Define A(c):
 - true for MATCH (including OPTIONAL MATCH), WITH and RETURN;
 - true for CALL GraphAlgorithm, preserving the existing PageRank/Louvain policy;
 - false for CALL VectorSearch and CALL ProjectGraph;
-- false for UNWIND, CREATE, MERGE, SET and DELETE (including DETACH DELETE).
+- false for UNWIND, CREATE, MERGE, SET and DELETE (including DETACH DELETE);
+- true for LOAD CSV. Its plan holds only the literal source or the parameter
+  name, which execution resolves and reads again; file contents never enter a
+  plan or cache key. A LOAD CSV write also contains CREATE or MERGE and is
+  therefore ineligible. See [LOAD CSV](CYPHER_LOAD_CSV.md).
 
 UNWIND is conservatively excluded to preserve the legacy UnwindMutation policy;
 this does not assert that every UNWIND query mutates data. Adding a general

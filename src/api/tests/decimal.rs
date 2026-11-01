@@ -4,6 +4,7 @@
 use super::*;
 use crate::StorageResidencyMode;
 use hawdb_executor::Row;
+use hawdb_plan_cypher::{PhysicalPlan, Projection, ProjectionExpression};
 use hawdb_storage::config::RelationalIndexMode;
 
 fn decimal(text: &str) -> Value {
@@ -327,26 +328,7 @@ fn native_decimal_cypher_predicates_and_order_survive_indexed_recovery() {
             ),
         ]);
         for stage in 0..3 {
-            for (prefix, expected_operator) in [
-                ("", "IndexNodeRangeSeek"),
-                ("n.bucket = 'main' AND ", "IndexNodeCompositeRangeSeek"),
-            ] {
-                let plan = database
-                    .explain_query_with_params(
-                        &format!("MATCH (n:Price) WHERE {prefix}n.amount > $wide RETURN n.id"),
-                        &parameters,
-                    )
-                    .unwrap();
-                // Cold opens may choose a scan without persisted histograms;
-                // the live plan must exercise each range-index access path.
-                if stage == 0 {
-                    assert!(
-                        plan.trace.selected_plan.contains(expected_operator),
-                        "{residency:?}: {}",
-                        plan.trace.selected_plan
-                    );
-                }
-            }
+            assert_decimal_range_operators(&mut database);
             for (predicate, expected) in [
                 ("n.amount > $lower", vec![2, 3, 4]),
                 ("n.amount <= $upper", vec![0, 1, 2]),
@@ -386,5 +368,66 @@ fn native_decimal_cypher_predicates_and_order_survive_indexed_recovery() {
         }
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+fn assert_decimal_range_operators(database: &mut Database) {
+    // Decimal properties currently have no histograms, so cost-based planning
+    // may prefer a scan. Execute each index operator directly in every recovery
+    // stage, independently of the ordinary query correctness checks above.
+    for (lower, upper, expected) in [
+        (
+            Some((decimal("1.0000"), false)),
+            Some((decimal("1.2500"), true)),
+            vec![Value::Int(2)],
+        ),
+        (
+            Some((Value::Int(9_007_199_254_740_993), false)),
+            None,
+            vec![Value::Int(4)],
+        ),
+        (Some((Value::Float(1.1), false)), None, vec![]),
+    ] {
+        for input in [
+            PhysicalPlan::IndexNodeRangeSeek {
+                variable: "n".into(),
+                label: "Price".into(),
+                property: "amount".into(),
+                lower: lower.clone(),
+                upper: upper.clone(),
+            },
+            PhysicalPlan::IndexNodeCompositeRangeSeek {
+                variable: "n".into(),
+                label: "Price".into(),
+                seek: hawdb_core::access::CompositeRangeSeek {
+                    index_properties: vec!["bucket".into(), "amount".into()],
+                    equality_prefix: vec![("bucket".into(), Value::String("main".into()))],
+                    range_property: "amount".into(),
+                    lower: lower.clone(),
+                    upper: upper.clone(),
+                },
+            },
+        ] {
+            let plan = PhysicalPlan::ProjectExec {
+                items: vec![Projection {
+                    expression: ProjectionExpression::Property {
+                        variable: "n".into(),
+                        property: "id".into(),
+                    },
+                    name: "id".into(),
+                }],
+                input: Box::new(input),
+            };
+            let mut access = database.runtime.get_mut().unwrap();
+            let runtime = &mut *access;
+            let rows =
+                crate::executor::execute(&plan, &mut runtime.catalog, &mut runtime.store).unwrap();
+            let mut ids = rows
+                .into_iter()
+                .map(|row| row["id"].clone())
+                .collect::<Vec<_>>();
+            ids.sort();
+            assert_eq!(ids, expected, "{}", plan.explain(0));
+        }
     }
 }

@@ -418,6 +418,16 @@ impl Parser<'_> {
         {
             return self.parse_list_function_arguments(function);
         }
+        if let Some(function) = hawdb_core::ConversionFunction::from_function_name(&variable)
+            && self.consume_char('(')
+        {
+            let argument = self.parse_scalar_expression()?;
+            self.expect_char(')')?;
+            return Ok(ScalarExpressionKind::Conversion {
+                function,
+                argument: Box::new(argument),
+            });
+        }
         if (variable.eq_ignore_ascii_case("label") || variable.eq_ignore_ascii_case("type"))
             && self.consume_char('(')
         {

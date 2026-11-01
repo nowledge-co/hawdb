@@ -16,6 +16,7 @@ pub mod access;
 pub mod access_control;
 pub mod cancellation;
 pub mod capability;
+pub mod conversion_function;
 pub mod decimal;
 pub mod error;
 pub mod graph;
@@ -44,6 +45,7 @@ pub use cancellation::{
     RuntimeMemoryTarget, RuntimeTaskContext,
 };
 pub use capability::{RuntimeCapabilities, RuntimeCapability};
+pub use conversion_function::ConversionFunction;
 pub use decimal::{Decimal, DecimalError, DecimalType};
 pub use error::{
     HawDBError, ReadBudgetError, ReadBudgetResource, ResourceBudgetError, ResourceBudgetKind,

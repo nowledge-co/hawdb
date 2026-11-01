@@ -434,8 +434,19 @@ pub enum ValueExpressionKind {
         variable: String,
         property: String,
     },
+    /// `variable[index]` over a list-valued row binding such as a
+    /// `LOAD CSV` record without headers.
+    BindingIndex {
+        variable: String,
+        index: i64,
+    },
     CurrentTimestamp,
     Timestamp(Box<ValueExpression>),
+    /// `toInteger`, `toFloat`, `toBoolean` or `toString` of a value.
+    Conversion {
+        function: hawdb_core::ConversionFunction,
+        argument: Box<ValueExpression>,
+    },
     /// A temporal function over statically bound arguments, such as
     /// `date('2026-10-30')` in a CREATE property map. Evaluated when the
     /// statement is planned; zero-argument constructors read the statement
@@ -449,13 +460,18 @@ pub enum ValueExpressionKind {
 }
 
 impl ValueExpressionKind {
-    /// True when the value reads a row binding. Scalar contexts parse such
-    /// lists as [`ScalarExpressionKind::List`] instead.
+    /// True when the value reads a row binding (`variable`,
+    /// `variable.property` or `variable[index]`, also inside a conversion).
+    /// Scalar contexts parse such lists as [`ScalarExpressionKind::List`]
+    /// instead.
     pub fn reads_row_binding(&self) -> bool {
         match self {
-            Self::Binding(_) | Self::BindingProperty { .. } => true,
+            Self::Binding(_) | Self::BindingProperty { .. } | Self::BindingIndex { .. } => true,
             Self::List(values) => values.iter().any(|value| value.kind.reads_row_binding()),
-            Self::Timestamp(value) => value.kind.reads_row_binding(),
+            Self::Timestamp(value)
+            | Self::Conversion {
+                argument: value, ..
+            } => value.kind.reads_row_binding(),
             Self::Temporal { arguments, .. } => arguments
                 .iter()
                 .any(|argument| argument.kind.reads_row_binding()),
@@ -605,6 +621,11 @@ pub enum ScalarExpressionKind {
     },
     /// `{key: expression, ...}` in source order (keys are unique).
     MapLiteral(Vec<(String, ScalarExpression)>),
+    /// `toInteger`, `toFloat`, `toBoolean` or `toString`.
+    Conversion {
+        function: hawdb_core::ConversionFunction,
+        argument: Box<ScalarExpression>,
+    },
 }
 
 /// A projection or grouping expression, with aggregation explicit in its type.
@@ -804,7 +825,11 @@ impl ScalarExpressionKind {
             | Self::Lower(expression)
             | Self::Left { expression, .. }
             | Self::JsonValue { expression, .. }
-            | Self::PropertyAccess { expression, .. } => visit(expression),
+            | Self::PropertyAccess { expression, .. }
+            | Self::Conversion {
+                argument: expression,
+                ..
+            } => visit(expression),
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {

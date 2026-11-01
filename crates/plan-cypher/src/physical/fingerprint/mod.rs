@@ -389,6 +389,13 @@ impl PhysicalPlan {
                 write_batch_mutation_operation(output, operation);
                 output.push(')');
             }
+            PhysicalPlan::LoadCsvMutation { source, operation } => {
+                output.push_str("LoadCsvMutation(");
+                write_load_csv_source(output, source);
+                output.push(',');
+                write_batch_mutation_operation(output, operation);
+                output.push(')');
+            }
             PhysicalPlan::MergeNode {
                 label,
                 match_properties,
@@ -822,6 +829,11 @@ impl PhysicalPlan {
                 output.push(')');
             }
             PhysicalPlan::EmptyExec => output.push_str("EmptyExec"),
+            PhysicalPlan::LoadCsvExec { source } => {
+                output.push_str("LoadCsvExec(");
+                write_load_csv_source(output, source);
+                output.push(')');
+            }
             PhysicalPlan::SeqNodeScan { variable, label } => {
                 output.push_str("SeqNodeScan(");
                 write_identifier(output, variable);
@@ -1471,6 +1483,21 @@ fn write_batch_mutation_operation(output: &mut String, operation: &BatchMutation
             write_batch_mutation_properties(output, on_create_properties);
             output.push(')');
         }
+        BatchMutationOperation::CreateMatchedRelationship(relationship) => {
+            output.push_str("CreateMatchedRelationship(");
+            write_identifier(output, &relationship.source_label);
+            output.push(',');
+            write_batch_mutation_properties(output, &relationship.source_properties);
+            output.push(',');
+            write_identifier(output, &relationship.rel_type);
+            output.push(',');
+            write_batch_mutation_properties(output, &relationship.rel_properties);
+            output.push(',');
+            write_identifier(output, &relationship.target_label);
+            output.push(',');
+            write_batch_mutation_properties(output, &relationship.target_properties);
+            output.push(')');
+        }
     }
 }
 
@@ -1485,16 +1512,46 @@ fn write_batch_mutation_properties(
         }
         write_identifier(output, key);
         output.push('=');
-        match value {
-            BatchMutationValue::Static(value) => write_value(output, value),
-            BatchMutationValue::Row => output.push_str("row"),
-            BatchMutationValue::RowProperty(property) => {
-                output.push_str("row.");
-                write_identifier(output, property);
-            }
-        }
+        write_batch_mutation_value(output, value);
     }
     output.push('}');
+}
+
+fn write_batch_mutation_value(output: &mut String, value: &BatchMutationValue) {
+    match value {
+        BatchMutationValue::Static(value) => write_value(output, value),
+        BatchMutationValue::Row => output.push_str("row"),
+        BatchMutationValue::RowProperty(property) => {
+            output.push_str("row.");
+            write_identifier(output, property);
+        }
+        BatchMutationValue::RowIndex(index) => output.push_str(&format!("row[{index}]")),
+        BatchMutationValue::Converted { function, input } => {
+            output.push_str(function.function_name());
+            output.push('(');
+            write_batch_mutation_value(output, input);
+            output.push(')');
+        }
+    }
+}
+
+fn write_load_csv_source(output: &mut String, source: &crate::LoadCsvSource) {
+    output.push_str("source=");
+    match &source.location {
+        crate::CsvLocation::Literal(location) => {
+            write_value(output, &hawdb_core::Value::String(location.clone()))
+        }
+        crate::CsvLocation::Parameter(name) => {
+            output.push('$');
+            write_identifier(output, name);
+        }
+    }
+    output.push_str(&format!(
+        ",headers={},terminator={}",
+        source.with_headers, source.field_terminator
+    ));
+    output.push_str(",variable=");
+    write_identifier(output, &source.variable);
 }
 
 fn write_node_projection_access(output: &mut String, access: &NodeProjectionAccess) {

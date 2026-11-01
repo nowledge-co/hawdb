@@ -70,7 +70,10 @@ pub(in crate::api) fn value_is_deterministic(value: &cypher::ValueExpression) ->
     match &value.kind {
         cypher::ValueExpressionKind::CurrentTimestamp => false,
         cypher::ValueExpressionKind::List(values) => values.iter().all(value_is_deterministic),
-        cypher::ValueExpressionKind::Timestamp(value) => value_is_deterministic(value),
+        cypher::ValueExpressionKind::Timestamp(value)
+        | cypher::ValueExpressionKind::Conversion {
+            argument: value, ..
+        } => value_is_deterministic(value),
         // `date()`, `datetime()`, ... read the statement clock, and so does a
         // constructor whose map argument has only `timezone`. Both are bound
         // while planning. (A parameter map is checked against its value
@@ -84,7 +87,8 @@ pub(in crate::api) fn value_is_deterministic(value: &cypher::ValueExpression) ->
                 && arguments.iter().all(value_is_deterministic)
         }
         cypher::ValueExpressionKind::Map(entries) => entries.values().all(value_is_deterministic),
-        cypher::ValueExpressionKind::Literal(_)
+        cypher::ValueExpressionKind::BindingIndex { .. }
+        | cypher::ValueExpressionKind::Literal(_)
         | cypher::ValueExpressionKind::Parameter(_)
         | cypher::ValueExpressionKind::Binding(_)
         | cypher::ValueExpressionKind::BindingProperty { .. } => true,
@@ -148,6 +152,7 @@ fn scalar_is_deterministic(expression: &cypher::ScalarExpression) -> bool {
         | Scalar::ListComprehension { .. }
         | Scalar::List(_)
         | Scalar::ListIndex { .. }
+        | Scalar::Conversion { .. }
         | Scalar::ListSlice { .. }
         | Scalar::Path(_)
         | Scalar::PropertyAccess { .. }

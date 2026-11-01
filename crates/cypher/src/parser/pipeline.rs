@@ -55,6 +55,8 @@ impl Parser<'_> {
     pub(super) fn parse_pipeline_clause(&mut self) -> Result<ClauseKind> {
         Ok(if self.consume_keyword("UNWIND") {
             self.parse_pipeline_unwind()?
+        } else if self.consume_keyword("LOAD") {
+            self.parse_pipeline_load_csv()?
         } else if self.consume_keyword("MATCH") {
             self.parse_pipeline_match(false)?
         } else if self.consume_keyword("OPTIONAL") {
@@ -119,6 +121,59 @@ impl Parser<'_> {
         self.expect_keyword("AS")?;
         let variable = self.parse_ident()?;
         Ok(ClauseKind::Unwind { source, variable })
+    }
+
+    /// `LOAD CSV [WITH HEADERS] FROM <source> AS <variable> [FIELDTERMINATOR <c>]`.
+    fn parse_pipeline_load_csv(&mut self) -> Result<ClauseKind> {
+        self.expect_keyword("CSV")?;
+        let with_headers = if self.consume_keyword("WITH") {
+            self.expect_keyword("HEADERS")?;
+            true
+        } else {
+            false
+        };
+        self.expect_keyword("FROM")?;
+        self.skip_ws();
+        let source_start = self.checkpoint();
+        let source = self.parse_value()?;
+        if !matches!(
+            source.kind,
+            ValueExpressionKind::Parameter(_)
+                | ValueExpressionKind::Literal(hawdb_core::Value::String(_))
+        ) {
+            self.restore(source_start);
+            return Err(
+                self.error("LOAD CSV FROM accepts only a string literal or parameter source")
+            );
+        }
+        self.expect_keyword("AS")?;
+        let variable = self.parse_ident()?;
+        let field_terminator = if self.consume_keyword("FIELDTERMINATOR") {
+            self.skip_ws();
+            let start = self.checkpoint();
+            if !matches!(self.peek_char(), Some('\'' | '"')) {
+                return Err(self.error("FIELDTERMINATOR requires a string literal"));
+            }
+            let text = self.parse_string()?;
+            let mut chars = text.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) if ch.is_ascii() && !matches!(ch, '"' | '\r' | '\n') => ch,
+                _ => {
+                    self.restore(start);
+                    return Err(self.error(
+                        "FIELDTERMINATOR must be one ASCII character other than a double quote or line break",
+                    ));
+                }
+            }
+        } else {
+            ','
+        };
+        Ok(ClauseKind::LoadCsv(LoadCsvClause {
+            with_headers,
+            source,
+            variable,
+            field_terminator,
+        }))
     }
 
     fn parse_pipeline_call(&mut self) -> Result<ClauseKind> {

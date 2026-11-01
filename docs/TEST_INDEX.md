@@ -172,12 +172,14 @@ numeric values with different scales when cached results retain representation.
 Root `api::tests::decimal` runs persistent SQL in both Materialized and OutOfCore
 modes with demand-paged indexes, plus graph WAL/checkpoint reopen. Graph coverage
 checks Decimal ranges with exact integer bounds, repeated-bound intersection,
-IN, NULL, negation and ORDER BY through scalar/composite indexes in both residency
+IN, NULL, negation and ORDER BY with scalar/composite indexes in both residency
 modes. Zone maps, source summaries and range-block envelopes must not prune
 matching Decimal rows using incomplete mixed-numeric extrema. Mixed temporal
 and Decimal records pin distinct value kinds and WAL/checkpoint/spill tags.
-These tests
-do not independently qualify machine power-loss behavior. Replay with
+Explicit scalar/composite range physical plans check exact Decimal and integer
+bounds plus incomparable Float bounds at each recovery stage, independently of
+cost-based scan choices for properties excluded from histogram collection.
+These tests do not independently qualify machine power-loss behavior. Replay with
 `cargo test --locked -p hawdb-core -p hawdb-plan-cache -p hawdb-relational
 -p hawdb-storage -p hawdb-executor --lib decimal`,
 `cargo test --locked -p hawdb-sql -p hawdb-sql-syntax -p hawdb-system-sql --lib`,
@@ -191,6 +193,41 @@ nested lists/maps, while retaining duplicate multiplicities and float bits.
 Replay: `cargo test --locked --manifest-path tools/shiro/Cargo.toml --lib
 decimal_report_preserves_exact_digits_and_scale` and the `comparison` filter.
 These controls remain in the existing local-only Shiro test targets.
+
+Cypher `LOAD CSV` and the type-conversion functions are owned by existing
+targets: `hawdb-core` `conversion_function::tests` (Neo4j conversion rules),
+`hawdb-cypher` `tests::load_csv` and the PEG/reference differential
+`parser::frontend::tests::load_csv_matches_reference_parser`, `hawdb-plan-cypher`
+`logical::load_csv_tests` (row-source binding and refusals), `hawdb-optimizer-graph`
+`graph::tests::load_csv` (lowering/EXPLAIN), `hawdb-plan-cache`
+`template::tests::load_csv_plans_keep_parameter_sources_unbound_and_reusable`,
+`hawdb-executor` `load_csv::tests` (RFC 4180 reader, path policy and its
+`Semantic`/`Execution` error classes, record/file limits and per-row mutation
+resolution, using temporary directories), `hawdb-executor`
+`mutation::staged::tests` (statement-level matched-relationship endpoint
+resolution: result equivalence with per-row scans for duplicates, misses,
+composite keys, missing labels and indexed/unindexed labels; one pass per
+endpoint pattern; cancellation; ledger refusal of staged mutations and endpoint
+maps; fan-out endpoints refused with the commit's own affected-row errors before
+their ids are copied; charged id copies on `UNWIND` batches; the host's
+configured execution memory on the store entrypoint), `hawdb-storage`
+`store::tests::id_in_mutation` (id-led conjunction fast path against a
+single-element `Or` scan oracle, including pending nodes, and a 5,000-source
+fan-out whose recheck excludes the leading id list), and
+root `api::tests::load_csv` (end-to-end LDBC-style loads, refusal without an
+import root, path escapes, remote URLs, parameter rebinding, mutation/WAL/read
+and query-memory budgets, explicit transactions including nodes staged earlier
+in the transaction, zero per-row label scans under the write guard for
+`LOAD CSV` and `UNWIND` relationship loads at 3,000 nodes and rows via the
+hidden storage scan counter, `UNWIND` relationship CREATE and MERGE batches
+resolving their endpoints on the autocommit and explicit-transaction paths,
+fan-out loads beyond `max_affected_rows` refused
+with no writes, CSV fields read through temporal constructors and `toString`
+over temporal values, missing-file error classes and, on Unix, a FIFO source refused
+without blocking). Replay with `cargo test --locked -p hawdb-executor
+--lib load_csv`, `cargo test --locked -p hawdb-executor --lib mutation::staged`
+and `cargo test --locked -p hawdb --lib api::tests::load_csv`. No lane, profile
+or deadline changes; see [LOAD CSV](CYPHER_LOAD_CSV.md).
 
 Cypher `sum()` and expression-argument aggregates are owned by existing
 targets: `blocking::aggregate::tests` (Sum numeric/NULL/empty/overflow/

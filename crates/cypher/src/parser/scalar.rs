@@ -31,13 +31,54 @@ impl Parser<'_> {
             let key = self.parse_ident()?;
             self.skip_ws();
             self.expect_char(':')?;
-            let value = self.parse_value()?;
+            let value = self.parse_property_value()?;
             properties.insert(key, value);
             if self.consume_separator_or_end(',', '}')? {
                 break;
             }
         }
         Ok(properties)
+    }
+
+    /// A property-map or `SET` value: a [`Self::parse_value`] value, a type
+    /// conversion of one (`toInteger(row.id)`), or a list-row element
+    /// (`line[0]`). Predicates keep the narrower value grammar so their
+    /// scalar-expression fallbacks are unchanged.
+    pub(super) fn parse_property_value(&mut self) -> Result<ValueExpression> {
+        self.skip_ws();
+        let start = self.checkpoint();
+        if self
+            .peek_char()
+            .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        {
+            let name = self.parse_ident()?;
+            if let Some(function) = hawdb_core::ConversionFunction::from_function_name(&name)
+                && self.consume_char('(')
+            {
+                let kind = self.with_recursion(|parser| {
+                    let argument = parser.parse_property_value()?;
+                    parser.expect_char(')')?;
+                    Ok(ValueExpressionKind::Conversion {
+                        function,
+                        argument: Box::new(argument),
+                    })
+                })?;
+                return Ok(self.source_node(kind, start.pos));
+            }
+            if self.consume_char('[') {
+                let index = self.parse_int()?;
+                self.expect_char(']')?;
+                return Ok(self.source_node(
+                    ValueExpressionKind::BindingIndex {
+                        variable: name,
+                        index,
+                    },
+                    start.pos,
+                ));
+            }
+            self.restore(start);
+        }
+        self.parse_value()
     }
 
     pub(super) fn parse_value(&mut self) -> Result<ValueExpression> {

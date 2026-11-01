@@ -177,7 +177,9 @@ under the existing graph mixed-kind predicate rules. Equality and IN preserve
 typed identity, while Decimal values with different scales compare equal.
 ORDER BY orders Decimal values numerically and retains the existing type order
 for mixed kinds. Scalar/composite range indexes and checkpoint pruning preserve
-the same results. Decimal and native temporal values have distinct wire tags.
+the same results. Decimal values do not yet populate property histograms, so
+cost-based planning may use fallback selectivity and choose a scan despite an
+available range index. Decimal and native temporal values have distinct wire tags.
 
 SQL DATE/TIMESTAMP support remains separate work under #1361; existing native
 Cypher temporal values retain their behavior and persisted representation.

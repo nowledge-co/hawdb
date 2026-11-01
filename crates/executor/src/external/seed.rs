@@ -90,17 +90,32 @@ pub trait BatchExternalRead {
         &self,
         request: VectorSeedExecutionRequest<'_>,
     ) -> Result<VectorSeedExecutionOutput>;
+
+    /// The directory `LOAD CSV` may read; `None` refuses CSV sources.
+    fn csv_import_policy(&self) -> Option<&crate::load_csv::CsvImportPolicy> {
+        None
+    }
 }
 
 pub struct BatchExternalReadAdapter<'a> {
     external: RefCell<&'a mut dyn ExternalReadOperator>,
+    csv_import: Option<&'a crate::load_csv::CsvImportPolicy>,
 }
 
 impl<'a> BatchExternalReadAdapter<'a> {
     pub fn new(external: &'a mut dyn ExternalReadOperator) -> Self {
         Self {
             external: RefCell::new(external),
+            csv_import: None,
         }
+    }
+
+    pub fn with_csv_import(
+        mut self,
+        csv_import: Option<&'a crate::load_csv::CsvImportPolicy>,
+    ) -> Self {
+        self.csv_import = csv_import;
+        self
     }
 }
 
@@ -143,6 +158,10 @@ impl BatchExternalRead for BatchExternalReadAdapter<'_> {
         request: VectorSeedExecutionRequest<'_>,
     ) -> Result<VectorSeedExecutionOutput> {
         self.external.borrow_mut().execute_vector_seed(request)
+    }
+
+    fn csv_import_policy(&self) -> Option<&crate::load_csv::CsvImportPolicy> {
+        self.csv_import
     }
 }
 

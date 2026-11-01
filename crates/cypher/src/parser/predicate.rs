@@ -226,7 +226,8 @@ impl Parser<'_> {
                 "nodes",
                 "relationships",
             ],
-        ) || hawdb_core::ListFunction::from_function_name(&variable).is_some())
+        ) || hawdb_core::ListFunction::from_function_name(&variable).is_some()
+            || hawdb_core::ConversionFunction::from_function_name(&variable).is_some())
             && self.peek_char() == Some('('))
             || {
                 let after_identifier = self.checkpoint();
@@ -962,10 +963,10 @@ impl Parser<'_> {
                 }
             } else {
                 self.restore(value_start);
-                SetValueExpression::Value(self.parse_value()?)
+                SetValueExpression::Value(self.parse_property_value()?)
             }
         } else {
-            SetValueExpression::Value(self.parse_value()?)
+            SetValueExpression::Value(self.parse_property_value()?)
         };
         Ok(SetProperty {
             variable,

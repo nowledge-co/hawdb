@@ -51,6 +51,9 @@ mod checkpoint_validation_memory_tests;
 mod checkpoint_writer_memory_tests;
 #[cfg(test)]
 mod temporal_value_tests;
+
+#[cfg(test)]
+mod decimal_value_tests;
 pub(crate) use checkpoint_scan::{
     CheckpointCanonicalCursor, CheckpointCanonicalIterator, CheckpointCanonicalRecord,
 };
@@ -121,6 +124,18 @@ fn canonical_temporal_kind(tag: u8) -> Option<hawdb_core::temporal::codec::Tempo
         .iter()
         .find(|(candidate, _)| *candidate == tag)
         .map(|(_, kind)| *kind)
+}
+
+fn read_decimal_value(
+    cursor: &mut SliceCursor<'_>,
+) -> Result<hawdb_core::Decimal, CanonicalSegmentError> {
+    hawdb_core::Decimal::from_le_bytes(
+        cursor
+            .read_exact(hawdb_core::Decimal::ENCODED_LEN)?
+            .try_into()
+            .expect("fixed Decimal length"),
+    )
+    .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))
 }
 
 fn canonical_temporal_tag(kind: hawdb_core::temporal::codec::TemporalValueKind) -> u8 {
@@ -3232,6 +3247,7 @@ fn validate_encoded_value(
                 .map(|_| ())
                 .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))
         }
+        DECIMAL_VALUE_TAG => read_decimal_value(cursor).map(|_| ()),
         tag if canonical_temporal_kind(tag).is_some() => {
             read_temporal_value(cursor, canonical_temporal_kind(tag).expect("checked tag"))
                 .map(|_| ())
@@ -4436,6 +4452,10 @@ fn encoded_value_allocation_bytes(
                 hawdb_core::VectorRef::from_encoded(cursor.read_exact(length)?)
                     .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))?;
                 length
+            }
+            DECIMAL_VALUE_TAG => {
+                read_decimal_value(cursor)?;
+                hawdb_core::Decimal::ENCODED_LEN
             }
             tag if canonical_temporal_kind(tag).is_some() => {
                 let kind = canonical_temporal_kind(tag).expect("checked tag");
