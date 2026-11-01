@@ -1,5 +1,5 @@
 name = "nowledge-co/hawdb"
-version = "0.12.0"
+version = "0.24.0"
 preferred_target = "native"
 supported_targets = "native"
 license = "Apache-2.0"

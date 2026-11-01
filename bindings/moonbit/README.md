@@ -46,6 +46,11 @@ This PR does not introduce a separate SDK publisher.
   value as ISO 8601 text, using the same tags as the C ABI binding.
 - Autocommit `query` / `query_sql` calls fail while a write transaction is
   open on the same database; run those statements through the transaction.
+- `Database::close()` rolls back an open write transaction, releases every
+  read snapshot and the database itself, so the same path can be reopened
+  immediately. Outstanding transaction handles then report `Closed`.
+- NaN and infinities round-trip as `Float` values (tagged `$float` in the
+  transport) instead of becoming null.
 - `HawdbError` for engine, codec, and closed-handle failures
 - Write/read transactions: `begin`, `begin_read`, `commit`, `rollback`,
   `with_transaction`, and `with_read_transaction`

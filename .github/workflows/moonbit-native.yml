@@ -94,17 +94,23 @@ jobs:
           python --version
           moon check --target native
           if ($LASTEXITCODE -ne 0) { throw "MoonBit native check failed" }
-      - name: Build against current HawDB source (rolling)
+      - name: Build against current HawDB source
         working-directory: bindings/moonbit/native
         shell: pwsh
         run: |
           git ls-files --error-unmatch Cargo.lock 2>$null
           if ($LASTEXITCODE -eq 0) { throw "SDK Cargo.lock must not be committed" }
+          # Bazel builds this adapter from the same crates as bindings/ffi, so
+          # seed Cargo from that maintained lock: only the adapter's own entry
+          # is added and every shared dependency keeps its locked version.
+          Copy-Item ../../ffi/Cargo.lock Cargo.lock
+          cargo update --workspace
+          if ($LASTEXITCODE -ne 0) { throw "Seeding the SDK lock failed" }
           cargo fmt --all -- --check
           if ($LASTEXITCODE -ne 0) { throw "Rust formatting failed" }
-          cargo test --release --lib
+          cargo test --locked --release --lib
           if ($LASTEXITCODE -ne 0) { throw "Native lifecycle tests failed" }
-          cargo build --release
+          cargo build --locked --release
           if ($LASTEXITCODE -ne 0) { throw "Rust staticlib build failed" }
           if (!(Test-Path "target/release/hawdb_moonbit.lib")) { throw "Missing Rust .lib output" }
       - name: Configure Windows native linker
