@@ -22,6 +22,8 @@ mod clauses;
 #[cfg(test)]
 mod compatibility_tests;
 mod full;
+#[cfg(test)]
+mod numeric_tests;
 mod owned;
 
 pub fn parse_postgres_sql(input: &str) -> Result<SqlStatement> {
@@ -41,19 +43,21 @@ pub(super) enum ExpressionPosition {
     Predicate,
     Having,
     HavingScalar,
+    PredicateScalar,
     Scalar,
     Column,
     Value,
 }
 
 fn lower_number(raw: &str) -> Result<Value> {
-    if raw.contains('.') {
-        raw.parse::<f64>().map(Value::Float).map_err(|error| {
-            HawDBError::Semantic(format!("invalid PostgreSQL number {raw}: {error}"))
-        })
-    } else {
-        raw.parse::<i64>().map(Value::Int).map_err(|error| {
-            HawDBError::Semantic(format!("invalid PostgreSQL integer {raw}: {error}"))
-        })
+    if !raw.contains(['.', 'e', 'E'])
+        && let Ok(value) = raw.parse::<i64>()
+    {
+        return Ok(Value::Int(value));
     }
+    raw.parse::<hawdb_core::Decimal>()
+        .map(Value::Decimal)
+        .map_err(|error| {
+            HawDBError::Semantic(format!("invalid exact PostgreSQL number {raw}: {error}"))
+        })
 }

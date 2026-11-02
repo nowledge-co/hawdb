@@ -60,6 +60,7 @@ pub(super) const NESTING_RULES: &[&str] = &[
     "ArgumentContents",
     "InContents",
     "FilterContents",
+    "CastContents",
 ];
 pub(super) fn rules() -> Vec<Rule> {
     vec![
@@ -142,7 +143,44 @@ pub(super) fn rules() -> Vec<Rule> {
             "Postfix",
             seq(vec![r("Atom"), rep(choice(vec![r("Cast"), r("Collate")]))]),
         ),
-        ("Cast", seq(vec![t(T::DoubleColon), r("Name")])),
+        ("Cast", seq(vec![t(T::DoubleColon), r("CastType")])),
+        (
+            "CastType",
+            seq(vec![
+                choice(vec![
+                    seq(vec![
+                        E::Ahead(
+                            Box::new(seq(vec![k("DOUBLE"), k("PRECISION")])),
+                            "DOUBLE PRECISION",
+                        ),
+                        r("Name"),
+                        k("PRECISION"),
+                    ]),
+                    r("Name"),
+                ]),
+                opt(r("TypeParameters")),
+            ]),
+        ),
+        (
+            "TypeParameters",
+            seq(vec![
+                t(T::LeftParen),
+                r("TypeParameter"),
+                opt(seq(vec![t(T::Comma), r("TypeParameter")])),
+                t(T::RightParen),
+            ]),
+        ),
+        ("TypeParameter", seq(vec![opt(t(T::Minus)), t(T::Number)])),
+        (
+            "CastExpression",
+            seq(vec![
+                k("CAST"),
+                t(T::LeftParen),
+                r("CastContents"),
+                t(T::RightParen),
+            ]),
+        ),
+        ("CastContents", seq(vec![r("Or"), k("AS"), r("CastType")])),
         ("Collate", seq(vec![k("COLLATE"), r("Name")])),
         (
             "Atom",
@@ -156,6 +194,7 @@ pub(super) fn rules() -> Vec<Rule> {
                 r("True"),
                 r("False"),
                 r("TypedString"),
+                r("CastExpression"),
                 r("Function"),
                 r("QualifiedWildcard"),
                 r("Column"),
@@ -186,7 +225,12 @@ pub(super) fn rules() -> Vec<Rule> {
         ),
         (
             "Function",
-            seq(vec![r("Name"), r("Arguments"), opt(r("Filter"))]),
+            seq(vec![
+                E::Not(Box::new(k("CAST")), "a non-CAST function"),
+                r("Name"),
+                r("Arguments"),
+                opt(r("Filter")),
+            ]),
         ),
         (
             "Arguments",
@@ -262,6 +306,7 @@ impl Fold<'_> {
             "Not" | "Signed" | "Atom" | "NotOperand" | "SignOperand" | "ParenthesizedContents" => {
                 return self.expression(self.first(node))
             }
+            name if name.starts_with("Legacy") => return self.expression(self.first(node)),
             "Or" | "And" | "Concat" | "Sum" | "Product" => {
                 let mut left = self.expression(children[0]);
                 for pair in children[1..].chunks_exact(2) {
@@ -288,17 +333,19 @@ impl Fold<'_> {
             "Postfix" => {
                 let mut expression = self.expression(children[0]);
                 for suffix in &children[1..] {
-                    let name = self.name(self.tree.required(*suffix, "Name"));
-                    let end = name.span.end;
+                    let end = self.span(*suffix).end;
                     let kind = if self.tree.nodes[*suffix].name == Some("Cast") {
+                        let (data_type, type_parameters) =
+                            self.cast_type(self.tree.required(*suffix, "CastType"));
                         Kind::Cast {
                             expression: Box::new(expression),
-                            data_type: name,
+                            data_type,
+                            type_parameters,
                         }
                     } else {
                         Kind::Collate {
                             expression: Box::new(expression),
-                            collation: name,
+                            collation: self.name(self.tree.required(*suffix, "Name")),
                         }
                     };
                     expression = ExpressionSyntax {
@@ -320,6 +367,16 @@ impl Fold<'_> {
                 },
                 expression: Box::new(self.expression(children[1])),
             },
+            "CastExpression" => {
+                let contents = self.tree.required(node, "CastContents");
+                let (data_type, type_parameters) =
+                    self.cast_type(self.tree.required(contents, "CastType"));
+                Kind::Cast {
+                    expression: Box::new(self.expression(self.tree.required(contents, "Or"))),
+                    data_type,
+                    type_parameters,
+                }
+            }
             "Parenthesized" => Kind::Parenthesized(Box::new(self.expression(children[0]))),
             "Wildcard" => Kind::Wildcard(None),
             "QualifiedWildcard" => Kind::Wildcard(Some(self.name(children[0]))),
@@ -375,6 +432,29 @@ impl Fold<'_> {
             other => unreachable!("unexpected expression CST node {other}"),
         };
         ExpressionSyntax { kind, span }
+    }
+    fn cast_type(&self, node: NodeId) -> (QualifiedName, Vec<Span>) {
+        let mut name = self.name(self.tree.required(node, "Name"));
+        let last = self.tree.nodes[self.tree.required(node, "Name")].end;
+        // PRECISION is the optional token between the name and type modifiers.
+        if last < self.tree.nodes[node].end && self.tokens[last].kind == T::Word {
+            name.span.end = self.tokens[last].span.end;
+            if let Some(part) = name.parts.last_mut() {
+                part.span.end = name.span.end;
+            }
+        }
+        let parameters = self
+            .tree
+            .child(node, "TypeParameters")
+            .map(|args| {
+                self.tree
+                    .children(args)
+                    .iter()
+                    .map(|id| self.span(*id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        (name, parameters)
     }
     fn operator(&self, node: NodeId) -> B {
         match self.tokens[self.tree.nodes[node].start].kind {

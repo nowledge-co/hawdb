@@ -155,6 +155,9 @@ pub struct RecordReadsForTest {
     pub projected_nodes: u64,
     /// `relationship_with_allocation`, including ordered adjacency visits.
     pub full_relationships: u64,
+    /// `projected_relationship_with_allocation`, including ordered adjacency
+    /// visits: endpoints, type and selected properties.
+    pub projected_relationships: u64,
 }
 
 impl RecordReadsForTest {
@@ -162,6 +165,7 @@ impl RecordReadsForTest {
         full_nodes: 0,
         projected_nodes: 0,
         full_relationships: 0,
+        projected_relationships: 0,
     };
 
     /// Reads since `earlier`, a value returned on the same thread.
@@ -170,6 +174,7 @@ impl RecordReadsForTest {
             full_nodes: self.full_nodes - earlier.full_nodes,
             projected_nodes: self.projected_nodes - earlier.projected_nodes,
             full_relationships: self.full_relationships - earlier.full_relationships,
+            projected_relationships: self.projected_relationships - earlier.projected_relationships,
         }
     }
 }
@@ -697,26 +702,66 @@ impl GraphStore {
         admit: &mut ControlledGraphReadAllocator<'_>,
     ) -> Result<AdmittedRelationshipRead> {
         record_read(|reads| reads.full_relationships += 1);
+        self.selected_relationship_with_allocation(id, None, admit)
+    }
+
+    /// Like [`Self::relationship_with_allocation`], but the record keeps only
+    /// `required_properties` beside its endpoints and type. Admission covers
+    /// only the selected values, and unselected ones are never decoded.
+    pub fn projected_relationship_with_allocation(
+        &self,
+        id: RelId,
+        required_properties: &BTreeSet<String>,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+    ) -> Result<AdmittedRelationshipRead> {
+        record_read(|reads| reads.projected_relationships += 1);
+        self.selected_relationship_with_allocation(id, Some(required_properties), admit)
+    }
+
+    fn selected_relationship_with_allocation(
+        &self,
+        id: RelId,
+        required_properties: Option<&BTreeSet<String>>,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+    ) -> Result<AdmittedRelationshipRead> {
         let work = admit.work();
         work.charge_work(1)?;
         if self.relationship_tombstones.contains(&id) {
             return Ok(AdmittedRelationshipRead::Missing);
         }
         if let Some(relationship) = self.relationships.get(&id) {
-            let Some(allocation) =
-                admit.reserve(hawdb_core::ids::relationship_allocation_bytes(relationship))?
-            else {
+            let Some(required) = required_properties else {
+                let Some(allocation) =
+                    admit.reserve(hawdb_core::ids::relationship_allocation_bytes(relationship))?
+                else {
+                    return Ok(AdmittedRelationshipRead::Stopped);
+                };
+                return AdmittedRelationshipRecord::clone_admitted(relationship, allocation)
+                    .map(AdmittedRelationshipRead::Relationship);
+            };
+            let bytes =
+                hawdb_core::ids::projected_relationship_allocation_bytes(relationship, required);
+            let Some(allocation) = admit.reserve(bytes)? else {
                 return Ok(AdmittedRelationshipRead::Stopped);
             };
-            return AdmittedRelationshipRecord::clone_admitted(relationship, allocation)
-                .map(AdmittedRelationshipRead::Relationship);
+            if allocation.bytes() < bytes {
+                return Err(HawDBError::Execution(
+                    "relationship admission returned an insufficient allocation permit".into(),
+                ));
+            }
+            return Ok(AdmittedRelationshipRead::Relationship(
+                AdmittedRelationshipRecord::new(
+                    hawdb_core::ids::project_relationship_record_ref(relationship, required),
+                    allocation,
+                ),
+            ));
         }
         let Some(reader) = self.canonical_base.as_ref() else {
             return Ok(AdmittedRelationshipRead::Missing);
         };
         let mut result = Ok(AdmittedRelationshipRead::Missing);
         reader
-            .visit_relationship_payload(id, |layout, payload| {
+            .visit_relationship_payload(id, required_properties, |layout, payload| {
                 let allocation = match admit.reserve(layout.allocation_bytes) {
                     Ok(Some(allocation)) => allocation,
                     Ok(None) => {
@@ -734,7 +779,12 @@ impl GraphStore {
                     ));
                     return Ok(());
                 }
-                let relationship = reader.decode_scanned_relationship(id, payload)?;
+                let relationship = match required_properties {
+                    Some(required) => {
+                        reader.decode_scanned_projected_relationship(id, payload, required)?
+                    }
+                    None => reader.decode_scanned_relationship(id, payload)?,
+                };
                 result = Ok(AdmittedRelationshipRead::Relationship(
                     AdmittedRelationshipRecord::new(relationship, allocation),
                 ));
@@ -3144,6 +3194,32 @@ impl GraphStore {
         )
     }
 
+    /// [`Self::visit_ordered_adjacent_relationships_with_allocation`] whose
+    /// records keep only `required_properties` beside their endpoints and
+    /// type, read with [`Self::projected_relationship_with_allocation`].
+    pub fn visit_ordered_projected_relationships_with_allocation(
+        &self,
+        selection: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        required_properties: &BTreeSet<String>,
+        memory_budget_bytes: usize,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+        mut consumer: impl FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
+    ) -> Result<GraphScanControl> {
+        self.visit_ordered_adjacency(
+            selection,
+            memory_budget_bytes,
+            admit,
+            &mut |entry, admit| {
+                let read = self.projected_relationship_with_allocation(
+                    entry.relationship_id,
+                    required_properties,
+                    admit,
+                )?;
+                emit_admitted_relationship_read(selection, entry, read, &mut consumer)
+            },
+        )
+    }
+
     /// Visits the entries of
     /// [`Self::visit_ordered_adjacent_relationships_with_allocation`] in the
     /// same order, with the same key admission and per-entry work, but never
@@ -4928,7 +5004,18 @@ fn emit_admitted_relationship(
     admit: &mut ControlledGraphReadAllocator<'_>,
     consumer: &mut impl FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
 ) -> Result<GraphScanControl> {
-    let relationship = match store.relationship_with_allocation(entry.relationship_id, admit)? {
+    let read = store.relationship_with_allocation(entry.relationship_id, admit)?;
+    emit_admitted_relationship_read(selection, entry, read, consumer)
+}
+
+/// Checks one ordered read against its adjacency key before handing it on.
+fn emit_admitted_relationship_read(
+    selection: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+    entry: OrderedAdjacencyEntry,
+    read: AdmittedRelationshipRead,
+    consumer: &mut impl FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
+) -> Result<GraphScanControl> {
+    let relationship = match read {
         AdmittedRelationshipRead::Missing => {
             return Err(HawDBError::StorageIntegrity(format!(
                 "ordered adjacency references missing relationship {}",

@@ -118,6 +118,10 @@ pub(super) fn encode_value_with_work<W: super::encoding::EncodeWork, O: ValueOut
             encoded.push(2)?;
             encoded.extend_from_slice(&value.to_le_bytes())?;
         }
+        RelationalValue::Decimal(value) => {
+            encoded.push(9)?;
+            encoded.extend_from_slice(&value.to_le_bytes())?;
+        }
         RelationalValue::DoublePrecision(value) => {
             encoded.push(3)?;
             encoded.extend_from_slice(&value.to_bits().to_le_bytes())?;
@@ -403,10 +407,13 @@ fn validate_value(
             validate_overflow_shape(&reference, limits, ErrorClass::Corrupt)
         }
         7 if encoded.len() == 17 => Ok(()),
+        9 if encoded.len() == 1 + hawdb_core::Decimal::ENCODED_LEN => {
+            decode_decimal(&encoded[1..]).map(|_| ())
+        }
         1 => Err(RelationalRowPageError::Corrupt(
             "invalid BOOLEAN value encoding".to_string(),
         )),
-        0 | 2 | 3 | 7 => Err(RelationalRowPageError::Corrupt(format!(
+        0 | 2 | 3 | 7 | 9 => Err(RelationalRowPageError::Corrupt(format!(
             "value tag {tag} has an invalid encoded length {}",
             encoded.len()
         ))),
@@ -419,6 +426,7 @@ fn validate_value(
 fn decode_validated_value(encoded: &[u8]) -> Result<RelationalValue, RelationalRowPageError> {
     match encoded[0] {
         0 => Ok(RelationalValue::Null),
+        9 => decode_decimal(&encoded[1..]).map(RelationalValue::Decimal),
         1 => Ok(RelationalValue::Boolean(encoded[1] == 1)),
         2 => Ok(RelationalValue::BigInt(i64::from_le_bytes(
             encoded[1..9]
@@ -498,6 +506,7 @@ fn decode_validated_value_ref(
 ) -> Result<RelationalValueRef<'_>, RelationalRowPageError> {
     match encoded[0] {
         0 => Ok(RelationalValueRef::Null),
+        9 => decode_decimal(&encoded[1..]).map(RelationalValueRef::Decimal),
         1 => Ok(RelationalValueRef::Boolean(encoded[1] == 1)),
         2 => Ok(RelationalValueRef::BigInt(i64::from_le_bytes(
             encoded[1..9]
@@ -641,6 +650,7 @@ fn scalar_type_tag(scalar_type: RelationalScalarType) -> u8 {
         RelationalScalarType::Bytea => 5,
         RelationalScalarType::Uuid => 6,
         RelationalScalarType::Vector(_) => 7,
+        RelationalScalarType::Decimal(_) => 8,
     }
 }
 
@@ -659,4 +669,12 @@ fn classify(error_class: ErrorClass, message: String) -> RelationalRowPageError 
         ErrorClass::Admission => RelationalRowPageError::Admission(message),
         ErrorClass::Corrupt => RelationalRowPageError::Corrupt(message),
     }
+}
+
+fn decode_decimal(encoded: &[u8]) -> Result<hawdb_core::Decimal, RelationalRowPageError> {
+    let bytes = encoded
+        .try_into()
+        .map_err(|_| RelationalRowPageError::Corrupt("invalid Decimal value width".into()))?;
+    hawdb_core::Decimal::from_le_bytes(bytes)
+        .map_err(|error| RelationalRowPageError::Corrupt(error.to_string()))
 }

@@ -1,5 +1,10 @@
 # Selected-vector and adjacency layout investigation
 
+> **Partly historical (#1469).** The selected-vector arm compared V1 text
+> vector decoders and was removed when layout V2 replaced the text sidecar with
+> binary rows; replay it from a revision before #1469. The adjacency probe
+> (`layout_probe::adjacency_layout_measurement`) is unchanged.
+
 ## Experiment
 
 Issue: [#1326](https://github.com/nowledge-co/hawdb/issues/1326).

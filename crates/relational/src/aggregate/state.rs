@@ -85,6 +85,16 @@ pub(super) enum AggregateExpressionState {
         distinct: Option<BTreeSet<RelationalValue>>,
     },
     Coalesce(Vec<AggregateExpressionState>),
+    Arithmetic {
+        left: Box<Self>,
+        op: hawdb_core::numeric::NumericBinaryOp,
+        right: Box<Self>,
+    },
+    Negate(Box<Self>),
+    Cast {
+        expression: Box<Self>,
+        target: hawdb_core::numeric::NumericType,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -124,6 +134,25 @@ impl AggregateMemoryDelta {
 impl AggregateExpressionState {
     pub(super) fn new(expression: &SqlExpression, parameters: &[Value]) -> Result<Self> {
         match expression {
+            Expr {
+                kind: ExprKind::Arithmetic { left, op, right },
+                ..
+            } => Ok(Self::Arithmetic {
+                left: Box::new(Self::new(left, parameters)?),
+                op: *op,
+                right: Box::new(Self::new(right, parameters)?),
+            }),
+            Expr {
+                kind: ExprKind::Negate(expression),
+                ..
+            } => Ok(Self::Negate(Box::new(Self::new(expression, parameters)?))),
+            Expr {
+                kind: ExprKind::Cast { expression, target },
+                ..
+            } => Ok(Self::Cast {
+                expression: Box::new(Self::new(expression, parameters)?),
+                target: *target,
+            }),
             Expr {
                 kind: ExprKind::Value(value),
                 ..
@@ -182,7 +211,7 @@ impl AggregateExpressionState {
                         ));
                     };
                     Ok(Self::Numeric {
-                        expression: expression.clone(),
+                        expression: bind_row_parameters(expression, parameters)?,
                         filter: filter.as_deref().cloned(),
                         aggregate: match name.as_str() {
                             "sum" => NumericAggregate::Sum,
@@ -228,6 +257,14 @@ impl AggregateExpressionState {
         parameters: &[Value],
     ) -> Result<AggregateMemoryDelta> {
         match self {
+            Self::Arithmetic { left, right, .. } => {
+                let mut delta = left.update(row, parameters)?;
+                delta.combine(right.update(row, parameters)?);
+                Ok(delta)
+            }
+            Self::Negate(expression) | Self::Cast { expression, .. } => {
+                expression.update(row, parameters)
+            }
             Self::Having(state) => state.update(row, parameters),
             Self::Constant(_) => Ok(AggregateMemoryDelta::default()),
             Self::First { column, value } => {
@@ -316,6 +353,17 @@ impl AggregateExpressionState {
 
     pub(super) fn finish(self) -> Result<Value> {
         match self {
+            Self::Arithmetic { left, op, right } => hawdb_core::numeric::evaluate_numeric(
+                left.finish()?.as_ref(),
+                op,
+                right.finish()?.as_ref(),
+            ),
+            Self::Negate(expression) => {
+                hawdb_core::numeric::negate_numeric(expression.finish()?.as_ref())
+            }
+            Self::Cast { expression, target } => {
+                hawdb_core::numeric::cast_numeric(expression.finish()?.as_ref(), target)
+            }
             Self::Having(_) => Err(HawDBError::Execution(
                 "HAVING state reached output projection".into(),
             )),
@@ -349,39 +397,50 @@ pub(super) fn update_numeric_aggregate(
     aggregate: NumericAggregate,
 ) -> Result<AggregateMemoryDelta> {
     let previous_bytes = result.as_ref().map_or(0, relational_value_memory_bytes);
-    match (aggregate, &mut *result, candidate) {
-        (NumericAggregate::Sum, result @ None, RelationalValue::BigInt(value)) => {
-            *result = Some(RelationalValue::BigInt(value));
+    match aggregate {
+        NumericAggregate::Sum => {
+            if !candidate
+                .logical_type()
+                .is_some_and(|kind| kind.is_numeric())
+            {
+                return Err(HawDBError::Semantic("SUM requires numeric input".into()));
+            }
+            let next = match result.as_ref() {
+                None => candidate,
+                Some(total) => value_to_relational(hawdb_core::numeric::evaluate_numeric(
+                    crate::query_value::core_value_ref(total.as_ref())?,
+                    hawdb_core::numeric::NumericBinaryOp::Add,
+                    crate::query_value::core_value_ref(candidate.as_ref())?,
+                )?)?,
+            };
+            *result = Some(next);
         }
-        (
-            NumericAggregate::Sum,
-            Some(RelationalValue::BigInt(total)),
-            RelationalValue::BigInt(value),
-        ) => {
-            *total = total
-                .checked_add(value)
-                .ok_or_else(|| HawDBError::Execution("BIGINT SUM overflow".to_string()))?;
-        }
-        (NumericAggregate::Sum, result @ None, RelationalValue::DoublePrecision(value)) => {
-            *result = Some(RelationalValue::DoublePrecision(value));
-        }
-        (
-            NumericAggregate::Sum,
-            Some(RelationalValue::DoublePrecision(total)),
-            RelationalValue::DoublePrecision(value),
-        ) => {
-            *total += value;
-        }
-        (NumericAggregate::Max, result @ None, value) => *result = Some(value),
-        (NumericAggregate::Max, Some(current), value) if value > *current => *current = value,
-        (NumericAggregate::Max, Some(_), _) => {}
-        (NumericAggregate::Min, result @ None, value) => *result = Some(value),
-        (NumericAggregate::Min, Some(current), value) if value < *current => *current = value,
-        (NumericAggregate::Min, Some(_), _) => {}
-        (NumericAggregate::Sum, _, _) => {
-            return Err(HawDBError::Semantic(
-                "SUM requires BIGINT or DOUBLE PRECISION input".to_string(),
-            ))
+        NumericAggregate::Min | NumericAggregate::Max => {
+            let replace = match result.as_ref() {
+                None => true,
+                Some(current) => {
+                    let ordering = if current.logical_type().is_some_and(|kind| kind.is_numeric())
+                        && candidate
+                            .logical_type()
+                            .is_some_and(|kind| kind.is_numeric())
+                    {
+                        hawdb_core::numeric::compare_numeric(
+                            crate::query_value::core_value_ref(candidate.as_ref())?,
+                            crate::query_value::core_value_ref(current.as_ref())?,
+                        )?
+                    } else {
+                        candidate.cmp(current)
+                    };
+                    match aggregate {
+                        NumericAggregate::Min => ordering.is_lt(),
+                        NumericAggregate::Max => ordering.is_gt(),
+                        NumericAggregate::Sum => unreachable!(),
+                    }
+                }
+            };
+            if replace {
+                *result = Some(candidate);
+            }
         }
     }
     let next_bytes = result.as_ref().map_or(0, relational_value_memory_bytes);
@@ -426,6 +485,14 @@ pub fn aggregate_group_base_memory_bytes(
 pub(super) fn aggregate_expression_base_memory_bytes(state: &AggregateExpressionState) -> usize {
     let state_bytes = std::mem::size_of::<AggregateExpressionState>();
     state_bytes.saturating_add(match state {
+        AggregateExpressionState::Arithmetic { left, right, .. } => {
+            aggregate_expression_base_memory_bytes(left)
+                .saturating_add(aggregate_expression_base_memory_bytes(right))
+        }
+        AggregateExpressionState::Negate(expression)
+        | AggregateExpressionState::Cast { expression, .. } => {
+            aggregate_expression_base_memory_bytes(expression)
+        }
         AggregateExpressionState::Having(state) => state.base_memory_bytes(),
         AggregateExpressionState::Constant(value) => {
             hawdb_executor::binding::value_memory_bytes(value)
@@ -491,12 +558,14 @@ pub(super) fn sql_expression_memory_bytes(expression: &SqlExpression) -> usize {
             .saturating_add(filter.as_deref().map_or(0, sql_expression_memory_bytes)),
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
-        | ExprKind::Compare { left, right, .. } => {
+        | ExprKind::Compare { left, right, .. }
+        | ExprKind::Arithmetic { left, right, .. } => {
             sql_expression_memory_bytes(left).saturating_add(sql_expression_memory_bytes(right))
         }
-        ExprKind::Not(expression) | ExprKind::IsNull { expression, .. } => {
-            sql_expression_memory_bytes(expression)
-        }
+        ExprKind::Not(expression)
+        | ExprKind::IsNull { expression, .. }
+        | ExprKind::Negate(expression)
+        | ExprKind::Cast { expression, .. } => sql_expression_memory_bytes(expression),
         ExprKind::InList { left, values, .. } => values.iter().fold(
             sql_expression_memory_bytes(left).saturating_add(std::mem::size_of::<Vec<Expr>>()),
             |total, value| total.saturating_add(sql_expression_memory_bytes(value)),
@@ -516,6 +585,7 @@ pub(super) fn sql_value_memory_bytes(value: &SqlValue) -> usize {
     match value {
         SqlValue::Literal(value) => hawdb_executor::binding::value_memory_bytes(value),
         SqlValue::Parameter(_) => 0,
+        SqlValue::Expression(expression) => sql_expression_memory_bytes(expression),
     }
 }
 
@@ -527,4 +597,17 @@ pub(super) fn column_ref_memory_bytes(column: &SqlColumnRef) -> usize {
 
 pub(super) fn relational_value_memory_bytes(value: &RelationalValue) -> usize {
     std::mem::size_of::<RelationalValue>().saturating_add(value.estimated_payload_bytes())
+}
+
+fn bind_row_parameters(expression: &Expr, parameters: &[Value]) -> Result<Expr> {
+    let mut expression = expression.clone();
+    expression.try_visit_mut(&mut |node| -> Result<()> {
+        if let ExprKind::Value(value) = &mut node.kind
+            && !matches!(value, SqlValue::Literal(_))
+        {
+            *value = SqlValue::Literal(bind_sql_value(value, parameters)?);
+        }
+        Ok(())
+    })?;
+    Ok(expression)
 }

@@ -33,6 +33,7 @@ pub(super) fn parse(input: &str, root: &'static str) -> Result<Output, SyntaxErr
             ..Limits::default()
         },
     )?;
+    crate::peg::validate_sql_expression_depth(&tree, &tokens)?;
     let mut pending = vec![tree.root];
     while let Some(id) = pending.pop() {
         let node = &tree.nodes[id];

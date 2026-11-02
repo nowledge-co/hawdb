@@ -115,6 +115,78 @@ scenarios, but MUST preserve whether PostgreSQL accepts them in raw parsing or
 rejects them later during graph binding. PostgreSQL output strings and C parser
 implementation details are not part of the HawDB test contract.
 
+## Exact numeric execution
+
+Relational SQL supports native `DECIMAL(p,s)` / `NUMERIC(p,s)` with precision
+1 through 38 and scale 0 through precision. Omitted precision/scale means
+`DECIMAL(38,0)`. The Rust facade exposes `Decimal`, `DecimalType`, and
+`Value::Decimal` / `ValueRef::Decimal`. A scalar stores a signed coefficient
+of at most 38 digits and scale 0 through 38 in 17 inline bytes.
+
+Integer literals fitting BIGINT remain integers. Other numeric literals,
+including decimal points and exponents, retain their exact decimal digits;
+they no longer pass through `f64`. `+`, `-`, `*`, `/`, `%`, unary signs,
+parameters and numeric `CAST` / `::` share one kernel across projections,
+predicates, INSERT values, defaults, UPDATE assignments and aggregate inputs.
+UPDATE expressions read the original row. An expression, conversion or
+constraint failure must leave the statement's changes unpublished.
+Numeric arithmetic propagates NULL after operand type validation. Assigning
+that NULL to a NOT NULL column still fails the complete statement.
+
+BIGINT and Decimal promote exactly. Decimal addition, subtraction,
+multiplication and remainder reject unrepresentable results, including
+nonzero underflow; they never silently round. Division rounds once from the
+original rational to at most 38 coefficient digits and scale 38, with ties
+away from zero; very small quotients may round to zero. Assignment and an
+explicit Decimal cast rescale with the same tie rule and check declared
+precision after rounding. Division's result rounding and a subsequent column
+assignment are separate SQL operations. Division by zero and overflow fail.
+SUM uses these checked semantics; NULL-only and empty inputs yield NULL.
+
+BIGINT/DOUBLE PRECISION comparisons use numeric ordering without first rounding
+the integer through `f64`. Serializable dependency capture still refuses a
+cross-domain primary-key point it cannot represent; an exactly integral Decimal
+can instead bind to a BIGINT key. Valid ordinary execution does not bypass that
+capture boundary.
+
+Decimal/DOUBLE PRECISION arithmetic and comparisons require an explicit cast.
+COALESCE retains its same-domain argument rule; for example, a DOUBLE vector
+distance needs `CAST(9.0 AS DOUBLE PRECISION)` as a decimal-literal fallback.
+Assignment to a declared DOUBLE PRECISION column permits approximate conversion;
+assignment of a floating value to Decimal requires a cast. Decimal-to-BIGINT
+casts reject fractions. Float-to-Decimal casts parse the float's shortest
+round-trip decimal spelling and apply the declared rescale; they do not recover
+precision already lost in a float. Explicit text-to-numeric casts reject invalid
+or out-of-range values. NaN and infinity are not Decimal values.
+
+This bounded numeric contract is not PostgreSQL numeric compatibility: division
+uses HawDB's 38-digit/scale ceiling, fractional Decimal-to-BIGINT casts fail,
+and exact multiplication fails when its nonzero result requires scale above 38.
+Decimal literals keep that type beside DOUBLE operands; callers must cast the
+literal or the operand explicitly rather than relying on contextual coercion.
+
+Decimal equality, hashing and ordered keys compare numeric value, so `1.0` and
+`1.00` identify the same key. Index predicates and joins must not rescale their
+query boundaries to the stored column's scale. Row, WAL, checkpoint and spill
+payloads preserve the original scale. New scalar/schema/expression tags are
+additive; older readers cannot read databases containing the new values or
+expressions. Existing tags retain their meaning. Decimal graph properties use
+residual storage instead of float or dictionary coercion. This extension does
+not enable Decimal property types in the separate SQL/PGQ creation binder.
+
+Cypher graph range predicates compare Decimal/Decimal and Decimal/Int exactly,
+including integer boundaries above 2^53. Decimal/Float pairs remain incomparable
+under the existing graph mixed-kind predicate rules. Equality and IN preserve
+typed identity, while Decimal values with different scales compare equal.
+ORDER BY orders Decimal values numerically and retains the existing type order
+for mixed kinds. Scalar/composite range indexes and checkpoint pruning preserve
+the same results. Decimal values do not yet populate property histograms, so
+cost-based planning may use fallback selectivity and choose a scan despite an
+available range index. Decimal and native temporal values have distinct wire tags.
+
+SQL DATE/TIMESTAMP support remains separate work under #1361; existing native
+Cypher temporal values retain their behavior and persisted representation.
+
 ## Property Graph Catalog
 
 A property graph is logical catalog metadata over existing table-like objects;

@@ -199,6 +199,21 @@ impl<'a> Transformer<'a> {
                         ));
                     }
                     Ok(SetValueExpression::DecrementFloorZero { variable, property })
+                } else if values.len() == 2 {
+                    if values[0] != values[1] {
+                        return Err(self.error(
+                            node,
+                            "CASE null-preserving SET ELSE must return the incoming value",
+                        ));
+                    }
+                    Ok(SetValueExpression::PreserveNewerExisting {
+                        variable,
+                        property,
+                        incoming: values.remove(0),
+                        preserve: AstNode::synthetic(ValueExpressionKind::Literal(Value::Bool(
+                            false,
+                        ))),
+                    })
                 } else {
                     if values[2].kind != ValueExpressionKind::Literal(Value::Bool(true))
                         || values[0] != values[3]
@@ -209,14 +224,32 @@ impl<'a> Transformer<'a> {
                             "CASE preserve SET requires true and the same incoming value",
                         ));
                     }
-                    Ok(SetValueExpression::PreserveNewerExisting {
-                        variable,
-                        property,
-                        incoming: values[0].clone(),
-                        preserve: values[1].clone(),
+                    let compared = self
+                        .iter_named_children(node, rule_id!("d_ref"))
+                        .nth(2)
+                        .expect("comparison property");
+                    let preserve_older = self.tokens[self.tree.node(compared).end].kind
+                        == hawdb_sql_syntax::TokenKind::Less;
+                    let incoming = values.remove(0);
+                    let preserve = values.remove(0);
+                    Ok(if preserve_older {
+                        SetValueExpression::PreserveOlderExisting {
+                            variable,
+                            property,
+                            incoming,
+                            preserve,
+                        }
+                    } else {
+                        SetValueExpression::PreserveNewerExisting {
+                            variable,
+                            property,
+                            incoming,
+                            preserve,
+                        }
                     })
                 }
             }
+
             _ => unreachable!("set value rule"),
         }
     }

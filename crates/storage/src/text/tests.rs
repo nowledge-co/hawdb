@@ -77,6 +77,10 @@ fn fixed_value_encodings_preserve_tags_bits_and_container_framing() {
         (Value::Int(i64::MAX), "i9223372036854775807"),
         (Value::Float(0.0), "f0"),
         (Value::Float(-0.0), "f9223372036854775808"),
+        (
+            Value::Decimal("9007199254740993.0100".parse().unwrap()),
+            "d9007199254740993.0100",
+        ),
         (Value::Float(f64::INFINITY), "f9218868437227405312"),
         (
             Value::Float(f64::from_bits(0x7ff8_0000_0000_0001)),

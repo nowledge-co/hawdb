@@ -735,12 +735,7 @@ fn bind_predicate(mut predicate: SqlPredicate, parameters: &[Value]) -> Result<S
 }
 
 fn bind_value(value: SqlValue, parameters: &[Value]) -> Result<Value> {
-    match value {
-        SqlValue::Literal(value) => Ok(value),
-        SqlValue::Parameter(position) => parameters.get(position - 1).cloned().ok_or_else(|| {
-            HawDBError::Semantic(format!("missing PostgreSQL parameter ${position}"))
-        }),
-    }
+    hawdb_sql::bind_sql_value(&value, parameters)
 }
 
 fn bind_bound(bound: SqlBound, parameters: &[Value], name: &str) -> Result<u64> {
@@ -814,7 +809,14 @@ fn execute_system_table_scan<Store: SystemSqlStore>(
     };
 
     if let Some(predicate) = &scan.predicate {
-        rows.retain(|row| predicate_matches(predicate, row));
+        let mut retained = 0;
+        for index in 0..rows.len() {
+            if predicate_matches(predicate, &rows[index])? {
+                rows.swap(retained, index);
+                retained += 1;
+            }
+        }
+        rows.truncate(retained);
     }
 
     if !scan.order_by.is_empty() {
@@ -1128,6 +1130,15 @@ struct InformationSchemaType {
 
 fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSchemaType {
     match scalar_type {
+        RelationalScalarType::Decimal(kind) => InformationSchemaType {
+            data_type: "numeric",
+            udt_name: "numeric",
+            character_maximum_length: None,
+            character_octet_length: None,
+            numeric_precision: Some(i64::from(kind.precision())),
+            numeric_precision_radix: Some(10),
+            numeric_scale: Some(i64::from(kind.scale())),
+        },
         RelationalScalarType::Boolean => InformationSchemaType {
             data_type: "boolean",
             udt_name: "bool",
@@ -1204,6 +1215,9 @@ fn relational_default_value(default: Option<&RelationalColumnDefault>) -> Value 
             Value::String(value.to_string())
         }
         Some(RelationalColumnDefault::Literal(RelationalValue::BigInt(value))) => {
+            Value::String(value.to_string())
+        }
+        Some(RelationalColumnDefault::Literal(RelationalValue::Decimal(value))) => {
             Value::String(value.to_string())
         }
         Some(RelationalColumnDefault::Literal(RelationalValue::DoublePrecision(value))) => {
@@ -2226,24 +2240,34 @@ fn statement_summary_rows(records: &[StatementSummaryRecord]) -> Vec<Row> {
         .collect()
 }
 
-fn predicate_matches(predicate: &SqlPredicate, row: &Row) -> bool {
-    match &predicate.kind {
-        ExprKind::And(left, right) => predicate_matches(left, row) && predicate_matches(right, row),
-        ExprKind::Or(left, right) => predicate_matches(left, row) || predicate_matches(right, row),
-        ExprKind::Not(inner) => !predicate_matches(inner, row),
-        ExprKind::Compare { left, op, right } => system_expression_value(left, row)
-            .zip(system_expression_value(right, row))
-            .is_some_and(|(left, right)| compare_values(left, *op, right)),
+fn predicate_matches(predicate: &SqlPredicate, row: &Row) -> Result<bool> {
+    Ok(match &predicate.kind {
+        ExprKind::And(left, right) => {
+            predicate_matches(left, row)? && predicate_matches(right, row)?
+        }
+        ExprKind::Or(left, right) => {
+            predicate_matches(left, row)? || predicate_matches(right, row)?
+        }
+        ExprKind::Not(inner) => !predicate_matches(inner, row)?,
+        ExprKind::Compare { left, op, right } => {
+            let left = system_expression_value(left, row)?;
+            let right = system_expression_value(right, row)?;
+            compare_values(&left, *op, &right)?
+        }
         ExprKind::InList {
             left,
             values,
             negated,
         } => {
-            let matched = system_expression_value(left, row).is_some_and(|left| {
-                values.iter().any(|value| {
-                    system_expression_value(value, row).is_some_and(|value| left == value)
-                })
-            });
+            let left = system_expression_value(left, row)?;
+            let mut matched = false;
+            for value in values {
+                let value = system_expression_value(value, row)?;
+                if compare_values(&left, SqlComparisonOp::Eq, &value)? {
+                    matched = true;
+                    break;
+                }
+            }
             matched != *negated
         }
         ExprKind::Like {
@@ -2253,46 +2277,89 @@ fn predicate_matches(predicate: &SqlPredicate, row: &Row) -> bool {
             negated,
             escape,
         } => {
-            let Some((Value::String(value), Value::String(pattern))) =
-                system_expression_value(left, row).zip(system_expression_value(pattern, row))
+            let left = system_expression_value(left, row)?;
+            let pattern = system_expression_value(pattern, row)?;
+            let (Value::String(value), Value::String(pattern)) = (left.as_ref(), pattern.as_ref())
             else {
-                return false;
+                return Ok(false);
             };
-            hawdb_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)
-                .is_ok_and(|matched| matched != *negated)
+            hawdb_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)? != *negated
         }
         ExprKind::IsNull {
             expression,
             negated,
         } => {
-            let matched = system_expression_value(expression, row)
-                .is_none_or(|value| matches!(value, Value::Null));
-            matched != *negated
+            matches!(
+                system_expression_value(expression, row)?.as_ref(),
+                Value::Null
+            ) != *negated
         }
-        _ => false,
-    }
+        _ => {
+            return Err(HawDBError::Semantic(
+                "unsupported system SQL predicate".into(),
+            ))
+        }
+    })
 }
 
-fn system_expression_value<'a>(expression: &'a Expr, row: &'a Row) -> Option<&'a Value> {
-    match &expression.kind {
-        ExprKind::Column(column) => row.get(&column.name),
-        ExprKind::Value(SqlValue::Literal(value)) => Some(value),
-        _ => None,
-    }
+fn system_expression_value<'a>(
+    expression: &'a Expr,
+    row: &'a Row,
+) -> Result<std::borrow::Cow<'a, Value>> {
+    use std::borrow::Cow;
+    let value = match &expression.kind {
+        ExprKind::Column(column) => Cow::Borrowed(row.get(&column.name).unwrap_or(&Value::Null)),
+        ExprKind::Value(SqlValue::Literal(value)) => Cow::Borrowed(value),
+        ExprKind::Arithmetic { left, op, right } => {
+            let left = system_expression_value(left, row)?;
+            let right = system_expression_value(right, row)?;
+            Cow::Owned(hawdb_core::numeric::evaluate_numeric(
+                left.as_ref().as_ref(),
+                *op,
+                right.as_ref().as_ref(),
+            )?)
+        }
+        ExprKind::Negate(expression) => {
+            let value = system_expression_value(expression, row)?;
+            Cow::Owned(hawdb_core::numeric::negate_numeric(
+                value.as_ref().as_ref(),
+            )?)
+        }
+        ExprKind::Cast { expression, target } => {
+            let value = system_expression_value(expression, row)?;
+            Cow::Owned(hawdb_core::numeric::cast_numeric(
+                value.as_ref().as_ref(),
+                *target,
+            )?)
+        }
+        _ => {
+            return Err(HawDBError::Semantic(
+                "unsupported system SQL scalar expression".into(),
+            ))
+        }
+    };
+    Ok(value)
 }
 
-fn compare_values(left: &Value, op: SqlComparisonOp, right: &Value) -> bool {
+fn compare_values(left: &Value, op: SqlComparisonOp, right: &Value) -> Result<bool> {
     if matches!(left, Value::Null) || matches!(right, Value::Null) {
-        return false;
+        return Ok(false);
     }
-    match op {
-        SqlComparisonOp::Eq => left == right,
-        SqlComparisonOp::NotEq => left != right,
-        SqlComparisonOp::Lt => left < right,
-        SqlComparisonOp::Lte => left <= right,
-        SqlComparisonOp::Gt => left > right,
-        SqlComparisonOp::Gte => left >= right,
-    }
+    let ordering = if left.logical_type().is_some_and(|kind| kind.is_numeric())
+        && right.logical_type().is_some_and(|kind| kind.is_numeric())
+    {
+        hawdb_core::numeric::compare_numeric(left.as_ref(), right.as_ref())?
+    } else {
+        left.cmp(right)
+    };
+    Ok(match op {
+        SqlComparisonOp::Eq => ordering.is_eq(),
+        SqlComparisonOp::NotEq => !ordering.is_eq(),
+        SqlComparisonOp::Lt => ordering.is_lt(),
+        SqlComparisonOp::Lte => !ordering.is_gt(),
+        SqlComparisonOp::Gt => ordering.is_gt(),
+        SqlComparisonOp::Gte => !ordering.is_lt(),
+    })
 }
 
 fn compare_ordered_rows(left: &Row, right: &Row, order_by: &[SqlOrderItem]) -> Ordering {
@@ -2736,6 +2803,33 @@ mod statement_summary_tests;
 mod tests {
     use super::*;
 
+    #[test]
+    fn catalog_numeric_predicates_share_exact_arithmetic_and_comparison() {
+        let row = BTreeMap::from([("value".into(), Value::Int(9_007_199_254_740_993))]);
+        for sql in [
+            "SELECT value FROM system.plan_cache WHERE value = 9007199254740993.00",
+            "SELECT value FROM system.plan_cache WHERE CAST(value AS DECIMAL(38,2)) + 0.01 = $1",
+            "SELECT value FROM system.plan_cache WHERE value IN (9007199254740993.00)",
+        ] {
+            let SqlStatement::Select(select) = hawdb_sql::parse_postgres_sql(sql).unwrap() else {
+                panic!("SELECT");
+            };
+            let predicate = bind_predicate(
+                select.selection.unwrap(),
+                &[Value::Decimal("9007199254740993.01".parse().unwrap())],
+            )
+            .unwrap();
+            assert!(predicate_matches(&predicate, &row).unwrap(), "{sql}");
+        }
+        let SqlStatement::Select(select) = hawdb_sql::parse_postgres_sql(
+            "SELECT value FROM system.plan_cache WHERE value / 0 > 1",
+        )
+        .unwrap() else {
+            panic!("SELECT");
+        };
+        assert!(predicate_matches(&select.selection.unwrap(), &row).is_err());
+    }
+
     #[derive(Debug, Default)]
     struct TestStore;
 
@@ -2823,7 +2917,8 @@ mod tests {
                 ("value".to_owned(), Value::Null),
                 ("metric".to_owned(), Value::String("misses".to_owned())),
             ])
-        ));
+        )
+        .unwrap());
         assert!(bind_predicate(
             predicate,
             &[

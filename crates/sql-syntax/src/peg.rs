@@ -777,3 +777,57 @@ pub fn sql_select(
 ) -> crate::PostgresSelectSyntax {
     crate::parser::frontend::select_from_tree(input, tokens, tree, node)
 }
+
+/// Check the height of expression ASTs before constructing recursive boxes.
+/// Repeated sums and casts create depth without recursive grammar calls.
+/// Only reachable captures contribute; speculative PEG matches are excluded.
+pub fn validate_sql_expression_depth(
+    tree: &ParseTree,
+    tokens: &[Token],
+) -> Result<(), SyntaxError> {
+    let mut heights = vec![None; tree.nodes.len()];
+    let mut pending = vec![(tree.root, false)];
+    while let Some((id, visited)) = pending.pop() {
+        if heights[id].is_some() {
+            continue;
+        }
+        let children = tree.children(id);
+        if !visited {
+            pending.push((id, true));
+            pending.extend(children.iter().rev().map(|child| (*child, false)));
+            continue;
+        }
+        let height = |id: NodeId| heights[id].expect("child captures visited first");
+        let maximum = || {
+            children
+                .iter()
+                .map(|id| height(*id))
+                .max()
+                .unwrap_or(0usize)
+        };
+        let value = match tree.nodes[id].name {
+            Some("Or" | "And" | "Concat" | "Sum" | "Product") => children[1..]
+                .chunks_exact(2)
+                .fold(height(children[0]), |left, pair| {
+                    left.max(height(pair[1])) + 1
+                }),
+            Some("Compare" | "Postfix") => children[1..]
+                .iter()
+                .fold(height(children[0]), |left, suffix| {
+                    left.max(height(*suffix)) + 1
+                }),
+            Some("NotPrefix" | "SignPrefix" | "Parenthesized" | "CastExpression" | "Function") => {
+                maximum() + 1
+            }
+            _ => maximum(),
+        };
+        if value > crate::parser::MAX_EXPRESSION_NESTING {
+            return Err(SyntaxError::new(
+                crate::SyntaxErrorCode::ExpressionNestingLimitExceeded,
+                tree.span(id, tokens),
+            ));
+        }
+        heights[id] = Some(value);
+    }
+    Ok(())
+}

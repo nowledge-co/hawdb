@@ -189,11 +189,22 @@ fn bulk_values_fit_the_active_composite_lock_workload_without_raising_peg_limits
         assert_eq!(insert.rows.len(), 5001, "{literal}");
         assert!(insert.rows.iter().all(|row| row.len() == 5), "{literal}");
     }
-    for sql in [
-        "INSERT INTO bulk VALUES (1 + 2)",
-        "INSERT INTO bulk VALUES (upper('value'))",
-        "INSERT INTO bulk VALUES (-NULL)",
+    for (sql, expected) in [
+        ("INSERT INTO bulk VALUES (1 + 2)", Value::Int(3)),
+        ("INSERT INTO bulk VALUES (-NULL)", Value::Null),
     ] {
+        let SqlStatement::Insert(insert) = parse_postgres_sql(sql).unwrap() else {
+            panic!("expected INSERT");
+        };
+        assert_eq!(insert.rows.len(), 1);
+        assert_eq!(insert.rows[0].len(), 1);
+        assert_eq!(
+            hawdb_expression::sql::bind_sql_value(&insert.rows[0][0], &[]).unwrap(),
+            expected
+        );
+    }
+    {
+        let sql = "INSERT INTO bulk VALUES (upper('value'))";
         assert!(
             matches!(parse_postgres_sql(sql), Err(HawDBError::Semantic(_))),
             "{sql}"

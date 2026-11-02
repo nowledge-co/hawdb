@@ -56,6 +56,7 @@ enum AggregateState {
 enum SumTotal {
     Int(i64),
     Float(f64),
+    Decimal(hawdb_core::Decimal),
 }
 
 impl SumTotal {
@@ -69,6 +70,26 @@ impl SumTotal {
             (Self::Int(total), Value::Float(value)) => Self::Float(total as f64 + value),
             (Self::Float(total), Value::Int(value)) => Self::Float(total + *value as f64),
             (Self::Float(total), Value::Float(value)) => Self::Float(total + value),
+            (Self::Decimal(total), value) => {
+                match hawdb_core::numeric::evaluate_numeric(
+                    hawdb_core::ValueRef::Decimal(total),
+                    hawdb_core::numeric::NumericBinaryOp::Add,
+                    value.as_ref(),
+                )? {
+                    Value::Decimal(value) => Self::Decimal(value),
+                    _ => unreachable!("Decimal SUM keeps exact numeric state"),
+                }
+            }
+            (total, Value::Decimal(value)) => {
+                match hawdb_core::numeric::evaluate_numeric(
+                    total.value().as_ref(),
+                    hawdb_core::numeric::NumericBinaryOp::Add,
+                    hawdb_core::ValueRef::Decimal(*value),
+                )? {
+                    Value::Decimal(value) => Self::Decimal(value),
+                    _ => unreachable!("Decimal SUM keeps exact numeric state"),
+                }
+            }
             (_, value) => {
                 return Err(HawDBError::Execution(format!(
                     "sum() requires numeric values, got {}",
@@ -88,6 +109,7 @@ impl SumTotal {
         match self {
             Self::Int(value) => Value::Int(value),
             Self::Float(value) => Value::Float(value),
+            Self::Decimal(value) => Value::Decimal(value),
         }
     }
 }
@@ -98,6 +120,7 @@ fn value_type_name(value: &Value) -> &'static str {
         Value::Bool(_) => "BOOLEAN",
         Value::Int(_) => "INTEGER",
         Value::Float(_) => "FLOAT",
+        Value::Decimal(_) => "DECIMAL",
         Value::String(_) => "STRING",
         Value::List(_) => "LIST",
         Value::Map(_) => "MAP",
@@ -1393,6 +1416,25 @@ mod tests {
             run(AggregateFunction::Sum, true, &[]).unwrap(),
             Value::Int(0)
         );
+    }
+
+    #[test]
+    fn decimal_sum_preserves_exact_promotion_and_scale_identity() {
+        let value = |text: &str| Value::Decimal(text.parse().unwrap());
+        assert_eq!(
+            sum(&[value("9007199254740993.01"), value("0.0001"), Value::Int(1)]).unwrap(),
+            value("9007199254740994.0101")
+        );
+        assert_eq!(
+            run(AggregateFunction::Sum, true, &[value("1.0"), value("1.00")]).unwrap(),
+            value("1")
+        );
+        for values in [
+            [value("1"), Value::Float(0.5)],
+            [Value::Float(0.5), value("1")],
+        ] {
+            assert!(sum(&values).unwrap_err().to_string().contains("CAST"));
+        }
     }
 
     #[test]

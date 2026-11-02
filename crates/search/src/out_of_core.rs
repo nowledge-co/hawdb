@@ -17,13 +17,13 @@ use super::lexical_projection::{
     LexicalProjectionConfig, LexicalProjectionReader, DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE,
 };
 use super::{
-    checksum_bytes, decode_embedding, decode_metadata, decode_search_snapshot_text_bounded,
-    decode_string, encode_embedding, encode_metadata, encode_search_snapshot_text, encode_string,
-    lexical_analyzer_digest, lexical_documents_digest, matched_query_spans_bounded,
-    matched_query_terms, rrf_child_score, search_empty_reasons, top_ranked_candidates,
-    top_ranked_ids, weighted_rrf_score, CompressedVectorSearchMode, SearchAccessControlContext,
-    SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest,
-    SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit, SearchIndex, SearchMode,
+    checksum_bytes, decode_metadata, decode_search_snapshot_text_bounded, decode_string,
+    encode_metadata, encode_search_snapshot_text, encode_string, lexical_analyzer_digest,
+    lexical_documents_digest, matched_query_spans_bounded, matched_query_terms, rrf_child_score,
+    search_empty_reasons, top_ranked_candidates, top_ranked_ids, weighted_rrf_score,
+    CompressedVectorSearchMode, SearchAccessControlContext, SearchAnalyzerLexicon,
+    SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest, SearchFallbackReasonCode,
+    SearchFieldPruningAccumulator, SearchHit, SearchHitHydration, SearchIndex, SearchMode,
     SearchPageWindow, SearchPredicatePushdownReport, SearchProjectionFreshness, SearchQueryOptions,
     SearchResultSet, SearchRetrieverReport, SearchScoredCandidate, SearchSegmentDescriptor,
     SearchSegmentDescriptorEntry, SearchTruncationReasonCode, VectorRelevanceQuery,
@@ -264,8 +264,7 @@ mod text_seed;
 mod vector_qualification;
 #[cfg(feature = "vector-search")]
 mod vector_reader;
-#[cfg(test)]
-mod vector_selection_tests;
+mod vector_segment;
 mod vector_serving;
 pub use generation_writer::{
     GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter, PreparedSearchPublication,
@@ -291,7 +290,10 @@ use vector_serving::VectorScoreScan;
 
 pub(crate) const OUT_OF_CORE_MANIFEST_FILE: &str = "search_projection.out_of_core.manifest.hawdb";
 const OUT_OF_CORE_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_V4";
-const OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V1";
+/// V2 stores raw vectors as binary rows (`out_of_core::vector_segment`).
+const OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2";
+/// V1 stored zstd-compressed decimal-text vector sidecars. Readers refuse it.
+const SUPERSEDED_OUT_OF_CORE_LAYOUT_FORMATS: &[&str] = &["HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V1"];
 pub(crate) const MAX_OUT_OF_CORE_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_MARKER_BYTES: u64 = 64 * 1024;
 const CANDIDATE_FILE_HEADER: &[u8; 8] = b"SKNCAND1";
@@ -1141,6 +1143,13 @@ impl SearchOutOfCoreLayoutBody {
         descriptor: &SearchSegmentDescriptor,
         max_compressed_segment_bytes: u64,
     ) -> Result<()> {
+        if SUPERSEDED_OUT_OF_CORE_LAYOUT_FORMATS.contains(&self.format.as_str()) {
+            return Err(HawDBError::Storage(format!(
+                "search out-of-core layout {} uses a superseded vector sidecar format; \
+                 rebuild the search projection to publish {OUT_OF_CORE_LAYOUT_FORMAT}",
+                self.format
+            )));
+        }
         if self.format != OUT_OF_CORE_LAYOUT_FORMAT
             || self.generation != manifest.generation
             || self.document_count != manifest.document_count
@@ -2607,6 +2616,28 @@ impl SearchOutOfCoreReader {
         )
     }
 
+    /// Ranks exactly like the other search entry points, then materializes
+    /// hits at the requested level. Use [`SearchHitHydration::ScoresOnly`]
+    /// when only identifiers and scores are consumed.
+    pub fn search_with_hydration(
+        &self,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        mode: SearchMode,
+        options: SearchQueryOptions,
+        execution: SearchOutOfCoreExecutionContext<'_>,
+        hydration: SearchHitHydration,
+    ) -> Result<SearchOutOfCoreOutput> {
+        self.search_hits(
+            query_text,
+            query_embedding,
+            mode,
+            options,
+            execution,
+            hydration,
+        )
+    }
+
     fn search_with_options_internal<'execution>(
         &self,
         query_text: &str,
@@ -2614,6 +2645,25 @@ impl SearchOutOfCoreReader {
         mode: SearchMode,
         options: SearchQueryOptions,
         execution: impl Into<query_memory::Execution<'execution>>,
+    ) -> Result<SearchOutOfCoreOutput> {
+        self.search_hits(
+            query_text,
+            query_embedding,
+            mode,
+            options,
+            execution,
+            SearchHitHydration::Documents,
+        )
+    }
+
+    fn search_hits<'execution>(
+        &self,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        mode: SearchMode,
+        options: SearchQueryOptions,
+        execution: impl Into<query_memory::Execution<'execution>>,
+        hydration: SearchHitHydration,
     ) -> Result<SearchOutOfCoreOutput> {
         if options.limit > self.config.max_hydrated_documents.get() {
             return Err(HawDBError::Storage(format!(
@@ -2627,7 +2677,9 @@ impl SearchOutOfCoreReader {
             mode,
             options,
             execution,
-            |candidates, context, metrics| self.hydrate_hits(candidates, context, metrics),
+            |candidates, context, metrics| {
+                self.hydrate_hits(candidates, context, hydration, metrics)
+            },
         )
     }
 
@@ -3122,6 +3174,7 @@ impl SearchOutOfCoreReader {
         &self,
         candidates: &[SearchScoredCandidate],
         context: HitHydrationContext<'_>,
+        level: SearchHitHydration,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Vec<SearchHit>> {
         if candidates.len() > self.config.max_hydrated_documents.get() {
@@ -3131,9 +3184,27 @@ impl SearchOutOfCoreReader {
                 self.config.max_hydrated_documents
             )));
         }
+        if level == SearchHitHydration::ScoresOnly {
+            return self.score_only_hits(candidates, &context);
+        }
         // Reported vector scores must equal the ranking scores' metric.
         let metric = self.vector_metric()?;
-        let mut hydrated = hydration::query::Loaded::new(self, candidates, metrics, context.query)?;
+        // Matched spans are the only hit fields that need the stored body.
+        let mut hydrated = if context.mode == SearchMode::Vector && context.query_terms.is_empty() {
+            HydratedHits::Sidecars(hydration::sidecar::load(
+                self,
+                candidates,
+                metrics,
+                context.query,
+            )?)
+        } else {
+            HydratedHits::Documents(hydration::query::Loaded::new(
+                self,
+                candidates,
+                metrics,
+                context.query,
+            )?)
+        };
         let query_scorer = if context.mode != SearchMode::Text && !candidates.is_empty() {
             context
                 .query_embedding
@@ -3156,6 +3227,7 @@ impl SearchOutOfCoreReader {
                     candidate.id
                 ))
             })?;
+            let document: &SearchDocument = &document;
             let vector_score = if context.mode != SearchMode::Text {
                 context
                     .query_embedding
@@ -3171,7 +3243,7 @@ impl SearchOutOfCoreReader {
             };
             let matched = context.output_memory.matches(
                 context.query_terms,
-                &document,
+                document,
                 &self.analyzer_lexicon,
                 query_output::matches::Limits {
                     count: self
@@ -3222,6 +3294,43 @@ impl SearchOutOfCoreReader {
             });
         }
         metrics.hydrated_documents = hits.len();
+        Ok(hits)
+    }
+
+    fn score_only_hits(
+        &self,
+        candidates: &[SearchScoredCandidate],
+        context: &HitHydrationContext<'_>,
+    ) -> Result<Vec<SearchHit>> {
+        let mut hits = context.output_memory.vec(candidates.len())?;
+        for candidate in candidates {
+            if let Some(query) = context.query {
+                query.checkpoint()?;
+            }
+            hits.push(SearchHit {
+                id: context.output_memory.text(&candidate.id)?,
+                score: candidate.score,
+                vector_score: candidate.vector_score,
+                text_score: candidate.text_score,
+                rrf_score: candidate.rrf_score,
+                vector_rrf_score: candidate.vector_rrf_score,
+                text_rrf_score: candidate.text_rrf_score,
+                vector_rank: candidate.vector_rank,
+                text_rank: candidate.text_rank,
+                kind: None,
+                external_id: None,
+                source_id: None,
+                matched_terms: Vec::new(),
+                matched_spans: Vec::new(),
+                fallback_reason_codes: context
+                    .output_memory
+                    .codes(context.fallback_reason_codes)?,
+                fallback_reasons: context.output_memory.strings(context.fallback_reasons)?,
+                projection_freshness: context
+                    .output_memory
+                    .freshness(context.projection_freshness)?,
+            });
+        }
         Ok(hits)
     }
 
@@ -3552,33 +3661,18 @@ impl SearchOutOfCoreReader {
         selected_capacity: usize,
         selected: impl FnMut(u64) -> bool,
     ) -> Result<Vec<SearchVectorDocument>> {
-        let layout = Self::artifact_layout_range(artifact, segment.segment_id)?;
-        let range = layout.vectors;
-        let payload = read_out_of_core_payload_range(
-            &artifact.vector_payload,
-            range,
-            segment.segment_id,
-            "vector",
-            metrics,
-        )?;
-        metrics.vector_segment_bytes_read = metrics
-            .vector_segment_bytes_read
-            .saturating_add(range.length);
-        let text = decode_search_snapshot_text_bounded(
-            &payload,
-            self.config.max_uncompressed_segment_bytes.get(),
-        )?;
-        metrics.peak_vector_segment_bytes =
-            metrics.peak_vector_segment_bytes.max(text.len() as u64);
-        decode_vector_segment(
-            &text,
-            segment,
-            range.entry_count,
-            layout.vector_ordinal_base,
-            self.manifest.embedding_dimension,
-            selected_capacity,
-            selected,
-        )
+        let entry_count = Self::artifact_layout_range(artifact, segment.segment_id)?
+            .vectors
+            .entry_count;
+        let mut documents = Vec::with_capacity(entry_count.min(selected_capacity));
+        self.visit_vector_segment(artifact, segment, metrics, None, selected, |document| {
+            documents.push(SearchVectorDocument {
+                id: document.id.clone(),
+                embedding: document.embedding.clone(),
+            });
+            Ok(())
+        })?;
+        Ok(documents)
     }
 
     fn artifact_layout_range(
@@ -4747,8 +4841,7 @@ fn write_out_of_core_sidecars(
             }
 
             let mut metadata_body = String::from("HAWDB_SEARCH_METADATA_SEGMENT_V1\n");
-            let mut vector_body = String::from("HAWDB_SEARCH_VECTOR_SEGMENT_V1\n");
-            let mut vector_count = 0usize;
+            let mut vectors = Vec::new();
             for document in documents {
                 let document_vector_ordinal = document.embedding.as_ref().map(|_| vector_ordinal);
                 metadata_body.push_str(&format!(
@@ -4766,21 +4859,17 @@ fn write_out_of_core_sidecars(
                             document.id
                         )));
                     }
-                    vector_body.push_str(&format!(
-                        "vector\t{}\t{}\t{}\n",
-                        vector_ordinal,
-                        encode_string(&document.id),
-                        encode_embedding(Some(embedding))
-                    ));
-                    vector_count = vector_count.saturating_add(1);
+                    vectors.push((document.id.as_str(), embedding));
                     vector_ordinal = vector_ordinal.checked_add(1).ok_or_else(|| {
                         HawDBError::Storage("search vector ordinal overflow".to_string())
                     })?;
                 }
             }
+            let vector_count = vectors.len();
 
             let metadata_payload = encode_search_snapshot_text(&metadata_body)?;
-            let vector_payload = encode_search_snapshot_text(&vector_body)?;
+            let mut vector_payload = Vec::new();
+            vector_segment::encode_into(&vectors, &mut vector_payload, || Ok(()))?;
             let metadata = append_sidecar_payload(
                 &mut metadata_file,
                 &mut metadata_offset,
@@ -4853,6 +4942,35 @@ fn append_sidecar_payload_with_context(
         .checked_add(length)
         .ok_or_else(|| HawDBError::Storage("search sidecar payload offset overflow".to_string()))?;
     Ok(range)
+}
+
+enum HydratedHits {
+    Documents(hydration::query::Loaded),
+    Sidecars(hydration::sidecar::Hits),
+}
+
+enum HydratedHit {
+    Document(hydration::query::Document),
+    Sidecar(SearchDocument),
+}
+
+impl std::ops::Deref for HydratedHit {
+    type Target = SearchDocument;
+    fn deref(&self) -> &SearchDocument {
+        match self {
+            Self::Document(document) => document,
+            Self::Sidecar(document) => document,
+        }
+    }
+}
+
+impl HydratedHits {
+    fn remove(&mut self, id: &str) -> Option<HydratedHit> {
+        match self {
+            Self::Documents(loaded) => loaded.remove(id).map(HydratedHit::Document),
+            Self::Sidecars(hits) => hits.values.remove(id).map(HydratedHit::Sidecar),
+        }
+    }
 }
 
 struct HitHydrationContext<'a> {
@@ -5015,168 +5133,6 @@ fn decode_metadata_segment(
     Ok(documents)
 }
 
-fn decode_vector_segment(
-    text: &str,
-    segment: &SearchSegmentDescriptorEntry,
-    expected_count: usize,
-    expected_ordinal_base: u64,
-    expected_dimension: Option<usize>,
-    selected_capacity: usize,
-    mut selected: impl FnMut(u64) -> bool,
-) -> Result<Vec<SearchVectorDocument>> {
-    let mut lines = text.lines();
-    if lines.next() != Some("HAWDB_SEARCH_VECTOR_SEGMENT_V1") {
-        return Err(HawDBError::Storage(format!(
-            "search segment {} vector sidecar has an invalid header",
-            segment.segment_id
-        )));
-    }
-    let mut documents: Vec<SearchVectorDocument> =
-        Vec::with_capacity(expected_count.min(selected_capacity));
-    let mut count = 0usize;
-    let mut previous_unselected_id = None;
-    let mut invalid_layout = false;
-    for line in lines {
-        let fields = line.split('\t').collect::<Vec<_>>();
-        match fields.as_slice() {
-            ["vector", raw_ordinal, raw_id, raw_embedding] => {
-                let vector_ordinal = raw_ordinal.parse::<u64>().map_err(|_| {
-                    HawDBError::Storage(format!(
-                        "search segment {} vector sidecar has an invalid ordinal",
-                        segment.segment_id
-                    ))
-                })?;
-                let embedding = if selected(vector_ordinal) {
-                    decode_embedding(raw_embedding)?
-                } else {
-                    None
-                };
-                let (dimension, finite) = match &embedding {
-                    Some(values) => (values.len(), values.iter().all(|value| value.is_finite())),
-                    None => validate_unselected_embedding(raw_embedding)?,
-                };
-                if dimension == 0 {
-                    return Err(HawDBError::Storage(format!(
-                        "search segment {} vector sidecar contains an empty embedding",
-                        segment.segment_id
-                    )));
-                }
-                if !finite || expected_dimension.is_none_or(|expected| dimension != expected) {
-                    return Err(HawDBError::Storage(format!(
-                        "search segment {} vector sidecar has an invalid embedding",
-                        segment.segment_id
-                    )));
-                }
-                let id = decode_string(raw_id)?;
-                // Retained IDs remain in the output; only an unselected predecessor
-                // needs separate ownership for the ordering check.
-                let previous_id = previous_unselected_id
-                    .as_deref()
-                    .or_else(|| documents.last().map(|document| document.id.as_str()));
-                invalid_layout |= vector_ordinal
-                    != expected_ordinal_base.saturating_add(count as u64)
-                    || previous_id.is_some_and(|previous| previous >= id.as_str())
-                    || id < segment.first_document_id
-                    || id > segment.last_document_id;
-                count = count.saturating_add(1);
-                if let Some(embedding) = embedding {
-                    previous_unselected_id = None;
-                    documents.push(SearchVectorDocument { id, embedding });
-                } else {
-                    previous_unselected_id = Some(id);
-                }
-            }
-            _ => {
-                return Err(HawDBError::Storage(format!(
-                    "search segment {} has an invalid vector sidecar line",
-                    segment.segment_id
-                )));
-            }
-        }
-    }
-    // Keep layout errors after row parsing, including errors in unselected rows.
-    if count != expected_count || invalid_layout {
-        return Err(HawDBError::Storage(format!(
-            "search segment {} vector sidecar count, bounds, or ordering mismatch",
-            segment.segment_id
-        )));
-    }
-    Ok(documents)
-}
-
-fn validate_unselected_embedding(input: &str) -> Result<(usize, bool)> {
-    if input.is_empty() {
-        return Ok((0, true));
-    }
-    let mut dimension = 0usize;
-    let mut finite = true;
-    let mut remaining = input;
-    loop {
-        // Locate the delimiter while validating canonical finite decimals. Do
-        // not scan every common coordinate twice through split + digit checks.
-        let (raw, rest, common) = match common_finite_decimal_end(remaining.as_bytes()) {
-            Some(end) => (
-                &remaining[..end],
-                (end < remaining.len()).then(|| &remaining[end + 1..]),
-                true,
-            ),
-            None => match remaining.split_once(',') {
-                Some((raw, rest)) => (raw, Some(rest), false),
-                None => (remaining, None, false),
-            },
-        };
-        if !common {
-            let value = raw
-                .parse::<f32>()
-                .map_err(|_| HawDBError::Storage(format!("invalid embedding value: {raw}")))?;
-            // A later parse error must still take precedence over a non-finite value.
-            finite &= value.is_finite();
-        }
-        dimension += 1;
-        match rest {
-            Some(rest) => remaining = rest,
-            None => return Ok((dimension, finite)),
-        }
-    }
-}
-
-/// Ends only at a comma or EOF after an ASCII decimal known to be finite.
-/// Other forms use the original f32 parser for just that coordinate.
-fn common_finite_decimal_end(value: &[u8]) -> Option<usize> {
-    let mut end = usize::from(value.first() == Some(&b'-'));
-    let integer = *value.get(end)?;
-    if integer != b'0' && integer != b'1' {
-        return None;
-    }
-    end += 1;
-    if integer == b'0' && value.get(end) == Some(&b'.') {
-        end += 1;
-        let fraction = end;
-        while value.get(end).is_some_and(u8::is_ascii_digit) {
-            end += 1;
-        }
-        if end == fraction {
-            return None;
-        }
-    }
-    match value.get(end) {
-        None | Some(b',') => Some(end),
-        _ => None,
-    }
-}
-
-// The manual selected-materialization prototype retains its original guard.
-#[cfg(test)]
-fn is_common_finite_decimal(value: &str) -> bool {
-    // These normalized decimal forms are finite without conversion. All other
-    // representations retain the same parser, including exponent and overflow cases.
-    let unsigned = value.strip_prefix('-').unwrap_or(value);
-    matches!(unsigned, "0" | "1")
-        || unsigned.strip_prefix("0.").is_some_and(|fraction| {
-            !fraction.is_empty() && fraction.bytes().all(|byte| byte.is_ascii_digit())
-        })
-}
-
 fn decode_optional_vector_ordinal(raw: &str) -> Result<Option<u64>> {
     if raw == "-" {
         return Ok(None);
@@ -5320,6 +5276,30 @@ fn temporary_artifact_path(target: &Path) -> PathBuf {
     ))
 }
 
+/// Unadmitted serving source for one vector segment payload.
+struct PlainVectorSource<'a> {
+    file: &'a File,
+    offset: u64,
+}
+
+impl vector_segment::Source for PlainVectorSource<'_> {
+    fn read_exact_at(&mut self, offset: u64, output: &mut [u8]) -> Result<()> {
+        let offset = self
+            .offset
+            .checked_add(offset)
+            .ok_or_else(|| HawDBError::Storage("search vector range offset overflow".into()))?;
+        read_search_range(self.file, offset, output)
+    }
+
+    fn reserve(&mut self, _bytes: usize) -> Result<()> {
+        Ok(())
+    }
+
+    fn checkpoint(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
 fn read_search_range(file: &File, offset: u64, bytes: &mut [u8]) -> Result<()> {
     #[cfg(any(unix, windows))]
     {
@@ -5364,6 +5344,7 @@ mod tests {
     mod target_admission;
     #[cfg(feature = "full-text-search")]
     mod text_seed;
+    mod vector_segments;
 
     use super::*;
     use crate::{
@@ -7012,11 +6993,15 @@ mod tests {
         assert_eq!(build.document_count, 1);
         assert_eq!(build.document_payload_bytes, 0);
         assert_eq!(build.lexical_artifact_bytes, 0);
+        // The tiny fixture's binary vector sidecars make the corpus about as
+        // small as one manifest, so compare the rewritten content bytes instead.
+        let rewritten = build.descriptor_bytes
+            + build.metadata_payload_bytes
+            + build.vector_payload_bytes
+            + build.rabitq_artifact_bytes;
         assert!(
-            build.generation_bytes < corpus_artifact_bytes,
-            "delete-only checkpoint rewrote the corpus: {} >= {}",
-            build.generation_bytes,
-            corpus_artifact_bytes
+            rewritten == 0,
+            "delete-only checkpoint rewrote the corpus: {rewritten} of {corpus_artifact_bytes}"
         );
         assert!(stale
             .finish()
@@ -8166,9 +8151,10 @@ mod tests {
         let error = vector_reader
             .search_with_options("", Some(&[1.0, 0.5]), SearchMode::Vector, options(0, None))
             .unwrap_err();
+        // Binary sidecars verify the head checksum-covered bytes they read.
         assert!(error
             .to_string()
-            .contains("vector payload checksum mismatch"));
+            .contains("vector sidecar has an invalid header"));
         fs::remove_dir_all(vector_path).unwrap();
     }
 

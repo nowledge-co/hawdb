@@ -52,6 +52,8 @@ pub(super) fn parse(input: &str) -> Result<SqlStatement> {
             },
         )
         .map_err(parse_error)?;
+    syntax::peg::validate_sql_expression_depth(&tree, &tokens)
+        .map_err(|_| semantic("SQL expression nesting limit exceeded"))?;
     let fold = Fold {
         input,
         tokens: &tokens,
@@ -194,59 +196,14 @@ impl Fold<'_> {
             })
             .collect()
     }
-    fn assignment_operand(&self, expr: &syntax::ExpressionSyntax) -> Result<SqlArithmeticOperand> {
-        if matches!(expr.kind, syntax::ExpressionKindSyntax::Column(_)) {
-            self.lowerer.column(expr).map(SqlArithmeticOperand::Column)
-        } else {
-            self.lowerer.literal(expr).map(SqlArithmeticOperand::Value)
-        }
-    }
     fn assignment_value(&self, expr: &syntax::ExpressionSyntax) -> Result<SqlAssignmentValue> {
-        use syntax::{BinaryOperatorSyntax as B, ExpressionKindSyntax as E};
-        match &expr.kind {
-            E::Column(_) => self.lowerer.column(expr).map(SqlAssignmentValue::Column),
-            E::Binary {
-                left,
-                operator,
-                right,
-            } => {
-                let invalid = || {
-                    semantic("UPDATE arithmetic supports column + value, value + column, and column - value")
-                };
-                if !matches!(operator, B::Add | B::Subtract) {
-                    return Err(invalid());
-                }
-                let left = self.assignment_operand(left)?;
-                let right = self.assignment_operand(right)?;
-                if !matches!(
-                    (operator, &left, &right),
-                    (
-                        B::Add,
-                        SqlArithmeticOperand::Column(_),
-                        SqlArithmeticOperand::Value(_)
-                    ) | (
-                        B::Add,
-                        SqlArithmeticOperand::Value(_),
-                        SqlArithmeticOperand::Column(_)
-                    ) | (
-                        B::Subtract,
-                        SqlArithmeticOperand::Column(_),
-                        SqlArithmeticOperand::Value(_)
-                    )
-                ) {
-                    return Err(invalid());
-                }
-                Ok(SqlAssignmentValue::Arithmetic {
-                    left,
-                    operator: if *operator == B::Add {
-                        SqlArithmeticOperator::Add
-                    } else {
-                        SqlArithmeticOperator::Subtract
-                    },
-                    right,
-                })
-            }
-            _ => self.lowerer.literal(expr).map(SqlAssignmentValue::Value),
+        let expression = self
+            .lowerer
+            .lower(expr, super::ExpressionPosition::Scalar)?;
+        match expression.kind {
+            ExprKind::Column(column) => Ok(SqlAssignmentValue::Column(column)),
+            ExprKind::Value(value) => Ok(SqlAssignmentValue::Value(value)),
+            _ => Ok(SqlAssignmentValue::Expression(expression)),
         }
     }
     fn insert_value(&self, node: NodeId) -> Result<SqlValue> {
@@ -587,6 +544,71 @@ impl Fold<'_> {
             }),
             _ => {
                 let name = self.name(self.child(kind, "Name"));
+                if name.parts.len() == 1
+                    && matches!(
+                        self.lowerer.ident(&name.parts[0]).as_str(),
+                        "decimal" | "numeric" | "dec"
+                    )
+                {
+                    let parameters = if let Some(args) = self.tree.child(kind, "HawTypeArguments") {
+                        let tokens = &self.tokens
+                            [self.tree.nodes[args].start + 1..self.tree.nodes[args].end - 1];
+                        if tokens
+                            .iter()
+                            .filter(|token| token.kind == TokenKind::Comma)
+                            .count()
+                            > 1
+                        {
+                            return Err(HawDBError::Parse(
+                                "at most two numeric type parameters".into(),
+                            ));
+                        }
+                        let mut parameters = Vec::new();
+                        for (index, part) in tokens
+                            .split(|token| token.kind == TokenKind::Comma)
+                            .enumerate()
+                        {
+                            let number = match part {
+                                [number] if number.kind == TokenKind::Number => number,
+                                [sign, number]
+                                    if index == 1
+                                        && matches!(
+                                            sign.kind,
+                                            TokenKind::Minus | TokenKind::Plus
+                                        )
+                                        && number.kind == TokenKind::Number =>
+                                {
+                                    if sign.kind == TokenKind::Minus {
+                                        return Err(semantic("Decimal scale must be 0..precision"));
+                                    }
+                                    number
+                                }
+                                _ => {
+                                    return Err(HawDBError::Parse(
+                                        "invalid numeric type parameter".into(),
+                                    ))
+                                }
+                            };
+                            if !number
+                                .text(self.input)
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit())
+                            {
+                                return Err(HawDBError::Parse(
+                                    "numeric type parameters must be integers".into(),
+                                ));
+                            }
+                            parameters.push(number.span);
+                        }
+                        parameters
+                    } else {
+                        Vec::new()
+                    };
+                    return self
+                        .lowerer
+                        .decimal_type(&parameters)
+                        .map(SqlDataType::Decimal);
+                }
                 if name.parts.len() != 1 || self.lowerer.ident(&name.parts[0]) != "vector" {
                     return Err(semantic(format!(
                         "unsupported PostgreSQL data type {}",

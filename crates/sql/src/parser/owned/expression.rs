@@ -103,19 +103,65 @@ impl Lowerer<'_> {
             E::Literal(L::String(span)) => decode_string(&self.input[span.start..span.end])
                 .map(|v| SqlValue::Literal(Value::String(v))),
             E::Parenthesized(inner) => self.literal(inner),
-            E::Unary {
-                operator: syntax::UnaryOperatorSyntax::Minus,
-                expression,
-            } => match self.literal(expression)? {
-                SqlValue::Literal(Value::Int(v)) => v
-                    .checked_neg()
-                    .map(|v| SqlValue::Literal(Value::Int(v)))
-                    .ok_or_else(|| semantic("cannot negate integer literal outside its range")),
-                SqlValue::Literal(Value::Float(v)) => Ok(SqlValue::Literal(Value::Float(-v))),
-                _ => Err(semantic("cannot negate literal value")),
-            },
-            _ => Err(semantic("expected a literal value")),
+            _ => {
+                let expr = self.lower(value, P::Scalar)?;
+                if let ExprKind::Value(value) = expr.kind {
+                    return Ok(value);
+                }
+                let mut constant_numeric = true;
+                expr.visit(&mut |child| {
+                    constant_numeric &= matches!(
+                        child.kind,
+                        ExprKind::Value(_)
+                            | ExprKind::Arithmetic { .. }
+                            | ExprKind::Negate(_)
+                            | ExprKind::Cast { .. }
+                    )
+                });
+                if !constant_numeric {
+                    return Err(semantic("expected a constant numeric expression"));
+                }
+                Ok(SqlValue::Expression(Box::new(expr)))
+            }
         }
+    }
+    pub(in crate::parser) fn numeric_cast_type(
+        &self,
+        name: &syntax::QualifiedName,
+        parameters: &[syntax::Span],
+    ) -> Result<hawdb_core::numeric::NumericType> {
+        use hawdb_core::numeric::NumericType;
+        let [part] = name.parts.as_slice() else {
+            return Err(semantic("CAST requires an unqualified numeric type"));
+        };
+        let name = self.ident(part);
+        if !matches!(name.as_str(), "decimal" | "numeric" | "dec") && !parameters.is_empty() {
+            return Err(semantic("invalid numeric CAST type parameters"));
+        }
+        Ok(match name.as_str() {
+            "bigint" | "int8" => NumericType::BigInt,
+            "double precision" | "float8" => NumericType::DoublePrecision,
+            "decimal" | "numeric" | "dec" => NumericType::Decimal(self.decimal_type(parameters)?),
+            _ => return Err(semantic("CAST requires a numeric target type")),
+        })
+    }
+    pub(in crate::parser) fn decimal_type(
+        &self,
+        parameters: &[syntax::Span],
+    ) -> Result<hawdb_core::DecimalType> {
+        let invalid = || semantic("invalid Decimal type parameters");
+        let number = |span: &syntax::Span| {
+            self.input[span.start..span.end]
+                .parse::<u8>()
+                .map_err(|_| invalid())
+        };
+        let (precision, scale) = match parameters {
+            [] => (38, 0),
+            [p] => (number(p)?, 0),
+            [p, s] => (number(p)?, number(s)?),
+            _ => return Err(invalid()),
+        };
+        hawdb_core::DecimalType::new(precision, scale).map_err(|e| semantic(e.to_string()))
     }
     fn literal_span(&self, value: &S) -> SqlSourceSpan {
         match &value.kind {
@@ -135,9 +181,15 @@ impl Lowerer<'_> {
         }
     }
     pub(in crate::parser) fn lower(&self, value: &S, position: P) -> Result<crate::Expr> {
-        use P::{Column, Having, HavingScalar, Predicate, Scalar, Value as Literal};
+        use P::{
+            Column, Having, HavingScalar, Predicate, PredicateScalar, Scalar, Value as Literal,
+        };
         let having = matches!(position, Having | HavingScalar);
-        let operand = if having { HavingScalar } else { Column };
+        let operand = if having {
+            HavingScalar
+        } else {
+            PredicateScalar
+        };
         match position {
             Column => Ok(expression(
                 ExprKind::Column(self.column(value)?),
@@ -147,11 +199,76 @@ impl Lowerer<'_> {
                 ExprKind::Value(self.literal(value)?),
                 self.literal_span(value),
             )),
-            Scalar | HavingScalar => match &value.kind {
+            Scalar | HavingScalar | PredicateScalar => match &value.kind {
                 E::Parenthesized(inner) => self.lower(inner, position),
                 E::Column(_) => self.lower(value, Column),
-                E::Parameter(_) | E::Literal(_) | E::Unary { .. } => self.lower(value, Literal),
-                E::Function { .. } | E::Filtered { .. } => self.function(value, position),
+                E::Parameter(_) | E::Literal(_) => self.lower(value, Literal),
+                E::Unary {
+                    operator: syntax::UnaryOperatorSyntax::Plus,
+                    expression: inner,
+                } => self.lower(inner, position),
+                E::Unary {
+                    operator: syntax::UnaryOperatorSyntax::Minus,
+                    expression: inner,
+                } => {
+                    if let E::Literal(L::Number(span)) = inner.kind {
+                        return Ok(expression(
+                            ExprKind::Value(SqlValue::Literal(super::super::lower_number(
+                                &format!("-{}", &self.input[span.start..span.end]),
+                            )?)),
+                            self.span(inner.span),
+                        ));
+                    }
+                    let inner = self.lower(inner, position)?;
+                    let span = inner.span;
+                    Ok(expression(ExprKind::Negate(Box::new(inner)), span))
+                }
+                E::Binary {
+                    left,
+                    operator,
+                    right,
+                } => {
+                    use hawdb_core::numeric::NumericBinaryOp as N;
+                    use syntax::BinaryOperatorSyntax as B;
+                    let op = match operator {
+                        B::Add => N::Add,
+                        B::Subtract => N::Subtract,
+                        B::Multiply => N::Multiply,
+                        B::Divide => N::Divide,
+                        B::Modulo => N::Remainder,
+                        _ => return Err(semantic("unsupported numeric operator")),
+                    };
+                    let left = self.lower(left, position)?;
+                    let right = self.lower(right, position)?;
+                    let span = union(left.span, right.span);
+                    Ok(expression(
+                        ExprKind::Arithmetic {
+                            left: Box::new(left),
+                            op,
+                            right: Box::new(right),
+                        },
+                        span,
+                    ))
+                }
+                E::Cast {
+                    expression: inner,
+                    data_type,
+                    type_parameters,
+                } => {
+                    let target = self.numeric_cast_type(data_type, type_parameters)?;
+                    let inner = self.lower(inner, position)?;
+                    let span = inner.span;
+                    Ok(expression(
+                        ExprKind::Cast {
+                            expression: Box::new(inner),
+                            target,
+                        },
+                        span,
+                    ))
+                }
+                E::Function { .. } | E::Filtered { .. } if !matches!(position, PredicateScalar) => {
+                    self.function(value, position)
+                }
                 _ => Err(semantic("unsupported PostgreSQL projection expression")),
             },
             Predicate | Having => match &value.kind {
@@ -191,16 +308,7 @@ impl Lowerer<'_> {
                         _ => return Err(semantic("unsupported PostgreSQL predicate operator")),
                     };
                     let left = self.lower(left, operand)?;
-                    let right = self.lower(
-                        right,
-                        if having {
-                            HavingScalar
-                        } else if matches!(right.kind, E::Column(_)) {
-                            Column
-                        } else {
-                            Literal
-                        },
-                    )?;
+                    let right = self.lower(right, operand)?;
                     let span = union(left.span, right.span);
                     Ok(expression(
                         ExprKind::Compare {
@@ -219,7 +327,7 @@ impl Lowerer<'_> {
                     let left = self.lower(left, operand)?;
                     let values = values
                         .iter()
-                        .map(|v| self.lower(v, if having { HavingScalar } else { Literal }))
+                        .map(|v| self.lower(v, operand))
                         .collect::<Result<Vec<_>>>()?;
                     let span = values.iter().fold(left.span, |span, v| union(span, v.span));
                     Ok(expression(

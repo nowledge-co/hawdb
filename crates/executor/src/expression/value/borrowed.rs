@@ -54,6 +54,7 @@ impl<'a> ProjectedValue<'a> {
             Cow::Owned(Value::Bool(value)) => ValueRef::Bool(value),
             Cow::Owned(Value::Int(value)) => ValueRef::Int(value),
             Cow::Owned(Value::Float(value)) => ValueRef::Float(value),
+            Cow::Owned(Value::Decimal(value)) => ValueRef::Decimal(value),
             Cow::Owned(Value::Uuid(value)) => ValueRef::Uuid(value),
             Cow::Owned(_) => unreachable!("native numeric projections never allocate payloads"),
         }
@@ -280,6 +281,36 @@ fn evaluate_scoped<'a>(
             function,
             arguments,
         } => list::function(*function, arguments, evaluate, account, work),
+        ProjectionExpression::StringFunction {
+            function,
+            arguments,
+            pattern,
+        } => {
+            let values = arguments
+                .iter()
+                .map(&evaluate)
+                .collect::<Result<Vec<_>>>()?;
+            for value in &values {
+                if let Value::String(text) = value.as_ref() {
+                    work.charge(text.len())?;
+                }
+            }
+            let refs = values.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+            let mut allocation = account
+                .map(|a| a.reserve(std::mem::size_of::<Value>()))
+                .transpose()?;
+            let value = function.apply_prepared(&refs, pattern.as_deref(), |bytes| {
+                work.charge(bytes.saturating_add(1))?;
+                match &mut allocation {
+                    Some(lease) => lease.grow(bytes),
+                    None => work.charge_unaccounted(bytes),
+                }
+            })?;
+            Ok(ProjectedValue {
+                value: Cow::Owned(value),
+                _allocation: allocation,
+            })
+        }
         ProjectionExpression::Conversion { function, argument } => function
             .apply(evaluate(argument)?.as_ref())
             .map(ProjectedValue::scalar),

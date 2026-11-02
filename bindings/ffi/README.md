@@ -79,14 +79,20 @@ Parameters and results are JSON so hosts never see HawDB's `Value` type.
 | Bool | `true`/`false` |
 | Int | integer |
 | Float | number (`null` for non-finite) |
+| Decimal | `{"$decimal": "<exact decimal text>"}` |
 | String | string |
 | Binary | `{"$binary": "<base64>"}` |
 | Uuid | `{"$uuid": "<canonical text>"}` |
 | List | array |
 | Map | object |
 
-`{"$binary": ...}` and `{"$uuid": ...}` decode back to `Binary`/`Uuid` in
-parameters; any other object shape stays a `Map`.
+`{"$binary": ...}`, `{"$uuid": ...}`, and `{"$decimal": ...}` decode back to
+their native types in parameters; any other object shape stays a `Map`.
+Decimal uses at most 38 coefficient digits and scale 0 through 38. Its JSON
+payload must be a string; invalid or out-of-range values are rejected.
+The experimental retained ABI has no Decimal buffer type and reports
+`HAWDB_RETAINED_UNSUPPORTED_TYPE` for Decimal node scalar access. Use ordinary
+JSON queries for exact Decimal results.
 
 ## Options
 

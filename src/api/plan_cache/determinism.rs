@@ -107,7 +107,7 @@ fn value_is_clock_reading_map(value: &cypher::ValueExpression) -> bool {
     }
 }
 
-fn scalar_is_deterministic(expression: &cypher::ScalarExpression) -> bool {
+pub(in crate::api) fn scalar_is_deterministic(expression: &cypher::ScalarExpression) -> bool {
     use cypher::ScalarExpressionKind as Scalar;
     let values_are_deterministic = match &expression.kind {
         Scalar::Value(value) => value_is_deterministic(value),
@@ -149,6 +149,7 @@ fn scalar_is_deterministic(expression: &cypher::ScalarExpression) -> bool {
         | Scalar::Not(_)
         | Scalar::IsNull { .. }
         | Scalar::ListFunction { .. }
+        | Scalar::StringFunction { .. }
         | Scalar::ListComprehension { .. }
         | Scalar::List(_)
         | Scalar::ListIndex { .. }

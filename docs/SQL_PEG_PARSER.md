@@ -384,3 +384,29 @@ transitions from the earlier oracles plus 672 new context, direction, depth and
 refusal cases, independently exported from main `0892820255`. Older fixtures
 remain immutable; transition layers require matching previous fingerprints.
 The dedicated sort whitelist is removed without raising any parser budget.
+
+## Main compatibility after 0.25.0
+
+The migration also preserves main `fd10958dd37b8878151aeb73ff0477d189b5db5e`,
+including #1504's Mem Cypher contracts and #1429's exact SQL arithmetic and
+Decimal types. The independently compiled main exports are recorded in
+`migration_main_1514_mem_peg_baseline_v1.jsonl` (1,537 Cypher outcomes,
+including 290 explicit transitions),
+`migration_main_1514_mem_api_peg_baseline_v1.jsonl` (112 independently exported
+Mem API and list-append outcomes), and
+`frontend_main_1514_numeric_peg_baseline_v1.jsonl` (92 SQL outcomes,
+including 52 transitions). Earlier oracle files remain immutable. Tests verify
+complete AST and contributing spans, or the parse/semantic rejection category;
+the expected results come from main rather than the PEG candidate.
+
+Cypher recognizes the core list-function catalog (including `list_append`),
+string scalars, computed read-side UNWIND, and null-preserving
+or older-value-preserving CASE SET directly through the compiled PEG. SQL PEG
+recognizes numeric casts and lowers arithmetic, constant numeric mutation values,
+and Decimal schema types directly. DDL/DML retain their former 47-call recursive
+expression boundary independently of SELECT's 128-level limit. A bounded capture
+walk checks the resulting AST height before constructing recursive boxes, so
+flat arithmetic and cast chains cannot bypass the height limit.
+
+These compatibility results do not resolve the throughput, heap, rendered-error,
+or end-to-end performance gates described above.

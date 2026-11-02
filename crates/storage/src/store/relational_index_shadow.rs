@@ -173,6 +173,10 @@ fn hash_relational_value(hasher: &mut IntegrityHasher, value: &RelationalValue) 
     match value {
         RelationalValue::Null => hasher.update(&[0]),
         RelationalValue::Boolean(value) => hasher.update(&[1, u8::from(*value)]),
+        RelationalValue::Decimal(value) => {
+            hasher.update(&[9]);
+            hasher.update(&value.to_ordered_bytes());
+        }
         RelationalValue::BigInt(value) => {
             hasher.update(&[2]);
             hasher.update(&value.to_le_bytes());
@@ -215,6 +219,7 @@ const fn relational_scalar_type_tag(scalar_type: RelationalScalarType) -> u8 {
         RelationalScalarType::Bytea => 4,
         RelationalScalarType::Uuid => 5,
         RelationalScalarType::Vector(_) => 6,
+        RelationalScalarType::Decimal(_) => 7,
     }
 }
 

@@ -646,7 +646,14 @@ impl SearchOutOfCoreReader {
                     Ok(())
                 };
                 if let Some(context) = context {
-                    self.visit_query_vector_segment(artifact, segment, metrics, context, score)?;
+                    self.visit_query_vector_segment(
+                        artifact,
+                        segment,
+                        metrics,
+                        context,
+                        |_| true,
+                        score,
+                    )?;
                 } else {
                     for document in self.read_vector_segment(artifact, segment, metrics)? {
                         score(&document)?;
@@ -978,33 +985,29 @@ impl SearchOutOfCoreReader {
                 raw_segment_scan_count = raw_segment_scan_count.saturating_add(1);
                 let selected_segment = &selected_layer[start_index..end_index];
                 if let Some(query) = policy.query {
-                    let mut ordinal = layout.vector_ordinal_base;
                     let mut vector_bytes = 0u64;
                     self.visit_query_vector_segment(
                         artifact,
                         segment,
                         metrics,
                         query,
-                        |document| {
-                            let selected = selected_segment
+                        |ordinal| {
+                            selected_segment
                                 .binary_search_by_key(&ordinal, |candidate| candidate.ordinal)
-                                .is_ok();
-                            ordinal = ordinal.checked_add(1).ok_or_else(|| {
-                                HawDBError::StorageIntegrity("vector ordinal overflow".into())
-                            })?;
-                            if selected {
-                                reranked_candidate_count += 1;
-                                vector_bytes = vector_bytes.saturating_add(
-                                    (document.embedding.len() as u64).saturating_mul(4),
-                                );
-                                if let Some(score) = rerank_score(
-                                    &query_scorer,
-                                    &document.embedding,
-                                    policy.score,
-                                    || query.checkpoint(),
-                                )? {
-                                    collector.push_borrowed(&document.id, score)?;
-                                }
+                                .is_ok()
+                        },
+                        |document| {
+                            reranked_candidate_count += 1;
+                            vector_bytes = vector_bytes.saturating_add(
+                                (document.embedding.len() as u64).saturating_mul(4),
+                            );
+                            if let Some(score) = rerank_score(
+                                &query_scorer,
+                                &document.embedding,
+                                policy.score,
+                                || query.checkpoint(),
+                            )? {
+                                collector.push_borrowed(&document.id, score)?;
                             }
                             Ok(())
                         },
@@ -1136,17 +1139,12 @@ impl SearchOutOfCoreReader {
                 continue;
             }
             let candidates = &hits[start_index..end_index];
-            let mut visit = |document: &super::SearchMetadataDocument| -> Result<()> {
-                let Some(ordinal) = document.vector_ordinal else {
-                    return Ok(());
-                };
+            let visit = |ordinal: u64, id: &str| -> Result<()> {
                 let Ok(index) = candidates.binary_search_by_key(&ordinal, |hit| hit.id) else {
                     return Ok(());
                 };
                 if previous.is_some_and(|prior| prior >= ordinal)
-                    || !self
-                        .visibility
-                        .is_visible(artifact.content_segment_id, &document.id)
+                    || !self.visibility.is_visible(artifact.content_segment_id, id)
                 {
                     return Err(HawDBError::Storage(
                         "search RaBitQ candidate mapping is duplicated, unordered or hidden".into(),
@@ -1155,25 +1153,19 @@ impl SearchOutOfCoreReader {
                 previous = Some(ordinal);
                 mapped += 1;
                 let _copy_memory = query
-                    .map(|query| query.memory.reserve(document.id.len()))
+                    .map(|query| query.memory.reserve(id.len()))
                     .transpose()?;
                 selected
                     .push(LayeredProjectionHit {
                         layer,
                         ordinal,
                         score: candidates[index].score,
-                        logical_id: Some(document.id.clone()),
+                        logical_id: Some(id.to_owned()),
                     })
                     .map_err(RabitqScanError::into_error)?;
                 Ok(())
             };
-            if let Some(query) = query {
-                self.visit_query_metadata_segment(artifact, segment, metrics, query, visit)?;
-            } else {
-                for document in self.read_metadata_segment(artifact, segment, metrics)? {
-                    visit(&document)?;
-                }
-            }
+            self.visit_vector_segment_ids(artifact, segment, metrics, query, visit)?;
         }
         if mapped != hits.len() {
             return Err(HawDBError::Storage(format!(

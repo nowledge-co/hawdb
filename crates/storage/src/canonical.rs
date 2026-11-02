@@ -51,12 +51,20 @@ mod checkpoint_validation_memory_tests;
 mod checkpoint_writer_memory_tests;
 #[cfg(test)]
 mod temporal_value_tests;
+
+#[cfg(test)]
+mod decimal_value_tests;
 pub(crate) use checkpoint_scan::{
     CheckpointCanonicalCursor, CheckpointCanonicalIterator, CheckpointCanonicalRecord,
 };
 mod node_label_cursor;
 pub(crate) mod point_directory;
+mod point_read_scope;
+#[cfg(test)]
+mod point_read_scope_tests;
 pub(crate) use node_label_cursor::{CanonicalLabelAction, CanonicalNodeLabelCursor};
+use point_read_scope::PointSegment;
+pub use point_read_scope::{point_descriptor_seeks_for_test, CanonicalPointReadScope};
 
 use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_tree::demand::{
@@ -98,6 +106,7 @@ const MANIFEST_HEADER_V1: &str = "HAWDB_CANONICAL_MANIFEST_V1";
 const SEGMENT_HEADER: &[u8; 8] = b"SKNSEG01";
 const ARTIFACT_ID: u64 = 0x534b_4341_4e4f_4e31;
 pub(crate) const MAX_VALUE_DEPTH: usize = 32;
+const DECIMAL_VALUE_TAG: u8 = 16;
 /// Canonical value tags 11..=15 hold temporal values, followed by their
 /// fixed-width `hawdb_core::temporal::codec` payload. Older binaries reject
 /// these tags as unknown, so they fail closed instead of misreading data.
@@ -120,6 +129,18 @@ fn canonical_temporal_kind(tag: u8) -> Option<hawdb_core::temporal::codec::Tempo
         .iter()
         .find(|(candidate, _)| *candidate == tag)
         .map(|(_, kind)| *kind)
+}
+
+fn read_decimal_value(
+    cursor: &mut SliceCursor<'_>,
+) -> Result<hawdb_core::Decimal, CanonicalSegmentError> {
+    hawdb_core::Decimal::from_le_bytes(
+        cursor
+            .read_exact(hawdb_core::Decimal::ENCODED_LEN)?
+            .try_into()
+            .expect("fixed Decimal length"),
+    )
+    .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))
 }
 
 fn canonical_temporal_tag(kind: hawdb_core::temporal::codec::TemporalValueKind) -> u8 {
@@ -1592,7 +1613,13 @@ pub struct CanonicalSegmentReader {
     property_spills: Option<PropertySpillReader>,
     max_segment_bytes: NonZeroU64,
     poisoned: Arc<AtomicBool>,
+    // Identifies this opened reader (shared by its clones) to point-read scopes.
+    point_read_identity: u64,
 }
+
+/// Source of [`CanonicalSegmentReader::point_read_identity`]; never reused.
+static NEXT_POINT_READ_IDENTITY: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
 
 impl CanonicalSegmentReader {
     pub fn open(
@@ -1700,6 +1727,7 @@ impl CanonicalSegmentReader {
             property_spills,
             max_segment_bytes,
             poisoned: Arc::new(AtomicBool::new(false)),
+            point_read_identity: NEXT_POINT_READ_IDENTITY.fetch_add(1, Ordering::Relaxed),
         })
     }
 
@@ -1953,27 +1981,20 @@ impl CanonicalSegmentReader {
         id: NodeId,
         required_properties: &BTreeSet<String>,
     ) -> Result<Option<ProjectedNodeRecord>, CanonicalSegmentError> {
-        self.ensure_healthy()?;
-        let result = (|| {
-            let (segment, _) = self.find_descriptor_for_id(CanonicalSegmentKind::Nodes, id.0)?;
-            let Some(segment) = segment else {
-                return Ok(None);
-            };
-            let read = self.read_segment_with_report(&segment)?;
-            self.point_frame(&segment, &read.payload, id.0)?
-                .map(|frame| {
-                    decode_projected_node_with_property_spills(
-                        frame.id,
-                        &read.payload[frame.payload_start..frame.payload_end],
-                        self.property_spills.as_ref(),
-                        Some(self.property_keys()),
-                        required_properties,
-                    )
-                })
-                .transpose()
-        })();
-        self.poison_on_physical_failure(&result);
-        result
+        self.with_point_record(
+            CanonicalSegmentKind::Nodes,
+            id.0,
+            |payload, values_validated| {
+                decode_projected_node_with_property_spills(
+                    id.0,
+                    payload,
+                    self.property_spills.as_ref(),
+                    Some(self.property_keys()),
+                    required_properties,
+                    values_validated,
+                )
+            },
+        )
     }
 
     /// Preflight selected owned-value allocations without decoding a Value.
@@ -2002,30 +2023,36 @@ impl CanonicalSegmentReader {
         required_properties: Option<&BTreeSet<String>>,
         label_ids: Option<&[LabelId]>,
     ) -> Result<Option<usize>, CanonicalSegmentError> {
-        self.point_allocation_bytes(CanonicalSegmentKind::Nodes, id.0, |payload| {
-            let input = CanonicalNodeInput {
-                id,
-                payload,
-                property_keys: self.property_keys(),
-                property_spills: self.property_spills.as_ref(),
-            };
-            if let Some(labels) = label_ids {
-                let mut matches = false;
-                for &label in labels {
-                    matches |= input.has_label(label)?;
+        self.point_allocation_bytes(
+            CanonicalSegmentKind::Nodes,
+            id.0,
+            |payload, values_validated| {
+                let input = CanonicalNodeInput {
+                    id,
+                    payload,
+                    property_keys: self.property_keys(),
+                    property_spills: self.property_spills.as_ref(),
+                    values_validated,
+                };
+                if let Some(labels) = label_ids {
+                    let mut matches = false;
+                    for &label in labels {
+                        matches |= input.has_label(label)?;
+                    }
+                    if !matches {
+                        return Ok(None);
+                    }
                 }
-                if !matches {
-                    return Ok(None);
-                }
-            }
-            node_payload_allocation_bytes(
-                payload,
-                self.property_keys(),
-                self.property_spills.as_ref(),
-                required_properties,
-            )
-            .map(Some)
-        })
+                node_payload_allocation_bytes(
+                    payload,
+                    self.property_keys(),
+                    self.property_spills.as_ref(),
+                    required_properties,
+                    values_validated,
+                )
+                .map(Some)
+            },
+        )
     }
 
     /// Bound full relationship ownership from encoded properties before decode.
@@ -2033,7 +2060,7 @@ impl CanonicalSegmentReader {
         &self,
         id: RelId,
     ) -> Result<Option<usize>, CanonicalSegmentError> {
-        self.point_allocation_bytes(CanonicalSegmentKind::Relationships, id.0, |payload| {
+        self.point_allocation_bytes(CanonicalSegmentKind::Relationships, id.0, |payload, _| {
             relationship_payload_layout(
                 payload,
                 Some(self.property_keys()),
@@ -2048,29 +2075,38 @@ impl CanonicalSegmentReader {
         id: NodeId,
         mut consume: impl FnMut(CanonicalNodeInput<'_>) -> Result<T, CanonicalSegmentError>,
     ) -> Result<Option<T>, CanonicalSegmentError> {
-        self.with_point_record(CanonicalSegmentKind::Nodes, id.0, |payload| {
-            consume(CanonicalNodeInput {
-                id,
-                payload,
-                property_keys: self.property_keys(),
-                property_spills: self.property_spills.as_ref(),
-            })
-        })
+        self.with_point_record(
+            CanonicalSegmentKind::Nodes,
+            id.0,
+            |payload, values_validated| {
+                consume(CanonicalNodeInput {
+                    id,
+                    payload,
+                    property_keys: self.property_keys(),
+                    property_spills: self.property_spills.as_ref(),
+                    values_validated,
+                })
+            },
+        )
     }
 
+    /// Visits one relationship's payload with its allocation bound, limited
+    /// to `required_properties` when they are given.
     pub(crate) fn visit_relationship_payload(
         &self,
         id: RelId,
+        required_properties: Option<&BTreeSet<String>>,
         mut consumer: impl FnMut(
             CanonicalRelationshipLayout,
             &[u8],
         ) -> Result<(), CanonicalSegmentError>,
     ) -> Result<(), CanonicalSegmentError> {
-        self.point_allocation_bytes(CanonicalSegmentKind::Relationships, id.0, |payload| {
-            let layout = relationship_payload_layout(
+        self.point_allocation_bytes(CanonicalSegmentKind::Relationships, id.0, |payload, _| {
+            let layout = selected_relationship_payload_layout(
                 payload,
                 Some(self.property_keys()),
                 self.property_spills.as_ref(),
+                required_properties,
             )?;
             consumer(layout, payload)?;
             Ok(None)
@@ -2082,28 +2118,64 @@ impl CanonicalSegmentReader {
         &self,
         kind: CanonicalSegmentKind,
         id: u64,
-        measure: impl FnMut(&[u8]) -> Result<Option<usize>, CanonicalSegmentError>,
+        measure: impl FnMut(&[u8], bool) -> Result<Option<usize>, CanonicalSegmentError>,
     ) -> Result<Option<usize>, CanonicalSegmentError> {
         self.with_point_record(kind, id, measure)
             .map(Option::flatten)
     }
 
+    /// Runs `consume` on the payload of record `id` and whether its segment's
+    /// records were all validated when its point directory was built. Inside
+    /// a [`CanonicalPointReadScope`] a segment selected by an earlier read of
+    /// this reader is reused without another descriptor seek or cache lookup.
     fn with_point_record<T>(
         &self,
         kind: CanonicalSegmentKind,
         id: u64,
-        mut consume: impl FnMut(&[u8]) -> Result<T, CanonicalSegmentError>,
+        mut consume: impl FnMut(&[u8], bool) -> Result<T, CanonicalSegmentError>,
     ) -> Result<Option<T>, CanonicalSegmentError> {
         self.ensure_healthy()?;
         let result = (|| {
-            let (segment, _) = self.find_descriptor_for_id(kind, id)?;
-            let Some(segment) = segment else {
-                return Ok(None);
-            };
-            let read = self.read_segment_with_report(&segment)?;
-            self.point_frame(&segment, &read.payload, id)?
-                .map(|frame| consume(&read.payload[frame.payload_start..frame.payload_end]))
-                .transpose()
+            let segment =
+                match point_read_scope::retained_segment(self.point_read_identity, kind, id) {
+                    Some(segment) => segment,
+                    None => {
+                        let (descriptor, _) = self.find_descriptor_for_id(kind, id)?;
+                        let Some(descriptor) = descriptor else {
+                            return Ok(None);
+                        };
+                        let read = self.read_segment_with_report(&descriptor)?;
+                        let directory = self.point_directory_for(&descriptor, &read.payload)?;
+                        let segment = PointSegment {
+                            descriptor: std::rc::Rc::new(descriptor),
+                            bytes: read.payload,
+                            directory,
+                        };
+                        if let Some((cache, _, _)) = self.range_reader.cache_identity() {
+                            point_read_scope::retain_segment(
+                                self.point_read_identity,
+                                &segment,
+                                cache.capacity_bytes(),
+                            );
+                        }
+                        segment
+                    }
+                };
+            let values_validated = segment.directory.is_some();
+            point_directory::locate_point_frame(
+                self.manifest.generation,
+                &segment.descriptor,
+                &segment.bytes,
+                segment.directory.as_deref(),
+                id,
+            )?
+            .map(|frame| {
+                consume(
+                    &segment.bytes[frame.payload_start..frame.payload_end],
+                    values_validated,
+                )
+            })
+            .transpose()
         })();
         self.poison_on_physical_failure(&result);
         result
@@ -2115,7 +2187,7 @@ impl CanonicalSegmentReader {
         &self,
         id: RelId,
     ) -> Result<Option<(NodeId, NodeId, RelTypeId)>, CanonicalSegmentError> {
-        self.with_point_record(CanonicalSegmentKind::Relationships, id.0, |payload| {
+        self.with_point_record(CanonicalSegmentKind::Relationships, id.0, |payload, _| {
             let layout = relationship_payload_layout(
                 payload,
                 Some(self.property_keys()),
@@ -2285,6 +2357,8 @@ impl CanonicalSegmentReader {
                         payload,
                         property_spills: self.property_spills.as_ref(),
                         property_keys: self.property_keys(),
+                        // Scans validate each record they decode.
+                        values_validated: false,
                     })?;
                     // Record envelopes are decoded even when overlay visibility
                     // allows the callback to leave property values encoded.
@@ -2380,6 +2454,44 @@ impl CanonicalSegmentReader {
             self.property_spills.as_ref(),
             Some(self.property_keys()),
         );
+        self.poison_on_physical_failure(&result);
+        result
+    }
+
+    /// Decodes the endpoints, type and only `required_properties` of one
+    /// relationship payload; unrequested values are validated and skipped.
+    pub(crate) fn decode_scanned_projected_relationship(
+        &self,
+        id: RelId,
+        payload: &[u8],
+        required_properties: &BTreeSet<String>,
+    ) -> Result<RelRecord, CanonicalSegmentError> {
+        self.ensure_healthy()?;
+        let result = (|| {
+            let mut cursor = SliceCursor::new(payload);
+            let source = NodeId(cursor.read_u64()?);
+            let target = NodeId(cursor.read_u64()?);
+            let rel_type = RelTypeId(cursor.read_u32()?);
+            let properties = decode_projected_record_properties(
+                &mut cursor,
+                self.property_spills.as_ref(),
+                Some(self.property_keys()),
+                required_properties,
+                false,
+            )?;
+            if !cursor.is_empty() {
+                return Err(CanonicalSegmentError::Corrupt(
+                    "projected relationship record has trailing bytes".to_string(),
+                ));
+            }
+            Ok(RelRecord {
+                id,
+                source,
+                target,
+                rel_type,
+                properties,
+            })
+        })();
         self.poison_on_physical_failure(&result);
         result
     }
@@ -2643,6 +2755,7 @@ impl CanonicalSegmentReader {
         ),
         CanonicalSegmentError,
     > {
+        point_read_scope::record_descriptor_seek();
         let mut lower_bound = Vec::with_capacity(9);
         lower_bound.push(kind.tag());
         lower_bound.extend_from_slice(&id.to_be_bytes());
@@ -3231,6 +3344,7 @@ fn validate_encoded_value(
                 .map(|_| ())
                 .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))
         }
+        DECIMAL_VALUE_TAG => read_decimal_value(cursor).map(|_| ()),
         tag if canonical_temporal_kind(tag).is_some() => {
             read_temporal_value(cursor, canonical_temporal_kind(tag).expect("checked tag"))
                 .map(|_| ())
@@ -3239,6 +3353,49 @@ fn validate_encoded_value(
             "unknown canonical value tag {tag}"
         ))),
     }
+}
+
+/// Skips one encoded value of a record whose segment passed whole-segment
+/// validation (a built point directory), by its encoded length only. Bounds
+/// and tags are still checked, so inconsistent bytes fail closed instead of
+/// being misread; content (UTF-8, temporal and vector payloads, spill ids)
+/// was validated once for the segment.
+fn skip_validated_value(
+    cursor: &mut SliceCursor<'_>,
+    depth: usize,
+) -> Result<(), CanonicalSegmentError> {
+    ensure_depth(depth)?;
+    let length = match cursor.read_u8()? {
+        0 => 0,
+        1 => 1,
+        2 | 3 | 7 => 8,
+        9 => 16,
+        4 | 8 | 10 => cursor.read_u32()? as usize,
+        5 => {
+            for _ in 0..cursor.read_u32()? {
+                skip_validated_value(cursor, depth.saturating_add(1))?;
+            }
+            0
+        }
+        6 => {
+            for _ in 0..cursor.read_u32()? {
+                let key_length = cursor.read_u32()? as usize;
+                cursor.read_exact(key_length)?;
+                skip_validated_value(cursor, depth.saturating_add(2))?;
+            }
+            0
+        }
+        tag => match canonical_temporal_kind(tag) {
+            Some(kind) => kind.payload_len(),
+            None => {
+                return Err(CanonicalSegmentError::Corrupt(format!(
+                    "unknown canonical value tag {tag}"
+                )))
+            }
+        },
+    };
+    cursor.read_exact(length)?;
+    Ok(())
 }
 
 fn validate_encoded_string(cursor: &mut SliceCursor<'_>) -> Result<(), CanonicalSegmentError> {
@@ -3509,6 +3666,9 @@ pub struct CanonicalNodeInput<'a> {
     payload: &'a [u8],
     property_keys: &'a [String],
     property_spills: Option<&'a PropertySpillReader>,
+    // Every record of the payload's segment passed validation when its point
+    // directory was built, so unselected values may be skipped by length.
+    values_validated: bool,
 }
 
 // The selected labels are sorted. Read the complete extent even after a match
@@ -3553,6 +3713,7 @@ impl CanonicalNodeInput<'_> {
             self.property_keys,
             self.property_spills,
             required_properties,
+            self.values_validated,
         )?;
         let allocation = admit(bytes)?;
         let node = match required_properties {
@@ -3562,6 +3723,7 @@ impl CanonicalNodeInput<'_> {
                 self.property_spills,
                 Some(self.property_keys),
                 required,
+                self.values_validated,
             )?,
             None => {
                 let node = decode_node_with_property_spills(
@@ -3586,6 +3748,7 @@ fn node_payload_allocation_bytes(
     property_keys: &[String],
     property_spills: Option<&PropertySpillReader>,
     required_properties: Option<&BTreeSet<String>>,
+    values_validated: bool,
 ) -> Result<usize, CanonicalSegmentError> {
     let mut cursor = SliceCursor::new(payload);
     let labels = cursor.read_u32()? as usize;
@@ -3599,6 +3762,7 @@ fn node_payload_allocation_bytes(
         Some(property_keys),
         property_spills,
         required_properties,
+        values_validated,
     )
     .map(|properties| bytes.saturating_add(properties))
 }
@@ -3636,12 +3800,28 @@ pub(crate) fn relationship_payload_layout(
     property_keys: Option<&[String]>,
     property_spills: Option<&PropertySpillReader>,
 ) -> Result<CanonicalRelationshipLayout, CanonicalSegmentError> {
+    selected_relationship_payload_layout(payload, property_keys, property_spills, None)
+}
+
+/// [`relationship_payload_layout`] whose allocation bound covers only
+/// `required_properties` when they are given.
+fn selected_relationship_payload_layout(
+    payload: &[u8],
+    property_keys: Option<&[String]>,
+    property_spills: Option<&PropertySpillReader>,
+    required_properties: Option<&BTreeSet<String>>,
+) -> Result<CanonicalRelationshipLayout, CanonicalSegmentError> {
     let mut cursor = SliceCursor::new(payload);
     let source = NodeId(cursor.read_u64()?);
     let target = NodeId(cursor.read_u64()?);
     let rel_type = RelTypeId(cursor.read_u32()?);
-    let properties =
-        record_properties_allocation_bytes(&mut cursor, property_keys, property_spills, None)?;
+    let properties = record_properties_allocation_bytes(
+        &mut cursor,
+        property_keys,
+        property_spills,
+        required_properties,
+        false,
+    )?;
     Ok(CanonicalRelationshipLayout {
         source,
         target,
@@ -3650,11 +3830,14 @@ pub(crate) fn relationship_payload_layout(
     })
 }
 
+/// `values_validated` (see [`CanonicalNodeInput`]) skips unselected values by
+/// their encoded length; otherwise they are validated without being owned.
 fn record_properties_allocation_bytes(
     cursor: &mut SliceCursor<'_>,
     property_keys: Option<&[String]>,
     property_spills: Option<&PropertySpillReader>,
     required_properties: Option<&BTreeSet<String>>,
+    values_validated: bool,
 ) -> Result<usize, CanonicalSegmentError> {
     let mut bytes = 0usize;
     let mut selected = 0usize;
@@ -3680,6 +3863,8 @@ fn record_properties_allocation_bytes(
             bytes = bytes
                 .saturating_add(key.len())
                 .saturating_add(encoded_value_allocation_bytes(cursor, 1, property_spills)?);
+        } else if values_validated {
+            skip_validated_value(cursor, 1)?;
         } else {
             validate_encoded_value(
                 cursor,
@@ -3706,6 +3891,7 @@ fn decode_projected_node_with_property_spills(
     property_spills: Option<&PropertySpillReader>,
     property_keys: Option<&[String]>,
     required_properties: &BTreeSet<String>,
+    values_validated: bool,
 ) -> Result<ProjectedNodeRecord, CanonicalSegmentError> {
     let mut cursor = SliceCursor::new(payload);
     let label_count = cursor.read_u32()? as usize;
@@ -3718,6 +3904,7 @@ fn decode_projected_node_with_property_spills(
         property_spills,
         property_keys,
         required_properties,
+        values_validated,
     )?;
     if !cursor.is_empty() {
         return Err(CanonicalSegmentError::Corrupt(
@@ -3835,11 +4022,14 @@ fn encode_properties_with_property_spills(
     Ok(())
 }
 
+/// `values_validated` (see [`CanonicalNodeInput`]) skips unselected values by
+/// their encoded length and trusts the segment-wide duplicate key check.
 fn decode_projected_record_properties(
     cursor: &mut SliceCursor<'_>,
     property_spills: Option<&PropertySpillReader>,
     property_keys: Option<&[String]>,
     required_properties: &BTreeSet<String>,
+    values_validated: bool,
 ) -> Result<BTreeMap<String, Value>, CanonicalSegmentError> {
     let count = cursor.read_u32()? as usize;
     let spill_count = property_spills.map(|reader| reader.manifest().value_count);
@@ -3853,16 +4043,19 @@ fn decode_projected_record_properties(
                     "canonical record references unknown property key id {key_id}"
                 ))
             })?;
-            if !seen.insert(key_id) {
+            if !values_validated && !seen.insert(key_id) {
                 return Err(CanonicalSegmentError::Corrupt(format!(
                     "canonical property map has duplicate key id {key_id}"
                 )));
             }
             if required_properties.contains(key) {
+                // A validated record holds each key once, so this never replaces.
                 properties.insert(
                     key.clone(),
                     decode_value_with_property_spills(cursor, 1, property_spills)?,
                 );
+            } else if values_validated {
+                skip_validated_value(cursor, 1)?;
             } else {
                 validate_encoded_value(cursor, 1, spill_count)?;
             }
@@ -3922,6 +4115,10 @@ fn encode_value(
             output.push(10);
             output.extend_from_slice(&u32_len(value.encoded().len(), "vector")?.to_le_bytes());
             output.extend_from_slice(value.encoded());
+        }
+        Value::Decimal(value) => {
+            output.push(DECIMAL_VALUE_TAG);
+            output.extend_from_slice(&value.to_le_bytes());
         }
         Value::Uuid(value) => {
             output.push(9);
@@ -4033,6 +4230,7 @@ fn encoded_value_len_with_work(
             1 + 4 + value.encoded().len() as u64
         }
         Value::Uuid(_) => 17,
+        Value::Decimal(_) => 18,
         Value::Date(_)
         | Value::LocalTime(_)
         | Value::LocalDateTime(_)
@@ -4131,6 +4329,10 @@ fn write_value_streaming<W: Write + ?Sized>(
             out.write_all(&[10])?;
             out.write_all(&u32_len(value.encoded().len(), "vector")?.to_le_bytes())?;
             out.write_all(value.encoded())?;
+        }
+        Value::Decimal(value) => {
+            out.write_all(&[DECIMAL_VALUE_TAG])?;
+            out.write_all(&value.to_le_bytes())?;
         }
         Value::Uuid(value) => {
             out.write_all(&[9])?;
@@ -4427,6 +4629,10 @@ fn encoded_value_allocation_bytes(
                     .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))?;
                 length
             }
+            DECIMAL_VALUE_TAG => {
+                read_decimal_value(cursor)?;
+                hawdb_core::Decimal::ENCODED_LEN
+            }
             tag if canonical_temporal_kind(tag).is_some() => {
                 let kind = canonical_temporal_kind(tag).expect("checked tag");
                 read_temporal_value(cursor, kind)?;
@@ -4630,7 +4836,7 @@ mod tests {
     use super::*;
     use crate::property_spill::{PersistentPropertySpillDescriptorTree, PropertySpillConfig};
 
-    fn collect_descriptors(
+    pub(super) fn collect_descriptors(
         reader: &CanonicalSegmentReader,
         kind: CanonicalSegmentKind,
     ) -> Vec<CanonicalSegmentDescriptor> {
@@ -4645,7 +4851,7 @@ mod tests {
         descriptors
     }
 
-    fn replace_descriptor_tree(
+    pub(super) fn replace_descriptor_tree(
         path: &Path,
         manifest: &mut CanonicalSegmentManifest,
         mut descriptors: Vec<CanonicalSegmentDescriptor>,
@@ -6224,6 +6430,15 @@ mod tests {
             (7, Value::String("列存".to_string())),
             (8, Value::Binary(vec![0, 1, 0xfe, 0xff])),
             (9, Value::Null),
+            (12, Value::Decimal("9007199254740993.0100".parse().unwrap())),
+            (
+                13,
+                Value::Date(hawdb_core::temporal::parse_date("2026-11-01").unwrap()),
+            ),
+            (
+                14,
+                Value::duration(hawdb_core::temporal::parse_duration("P1DT2H").unwrap()),
+            ),
             (
                 10,
                 Value::List(vec![Value::Int(1), Value::String("x".to_string())]),
@@ -6239,6 +6454,10 @@ mod tests {
             .collect();
         let encoded = encode_residual_row_properties(&entries).unwrap();
         let decoded = decode_residual_row_properties(&encoded).unwrap();
+        let Value::Decimal(decimal) = decoded.iter().find(|(id, _)| *id == 12).unwrap().1 else {
+            panic!("native Decimal");
+        };
+        assert_eq!(decimal.to_string(), "9007199254740993.0100");
         assert_eq!(
             decoded,
             entries
@@ -6301,7 +6520,7 @@ mod tests {
         format!("{body}checksum\t{}\n", content_digest(body.as_bytes()).0)
     }
 
-    struct CanonicalFixturePath(PathBuf);
+    pub(super) struct CanonicalFixturePath(PathBuf);
 
     impl std::ops::Deref for CanonicalFixturePath {
         type Target = Path;
@@ -6335,7 +6554,7 @@ mod tests {
         }
     }
 
-    fn unique_path(name: &str) -> CanonicalFixturePath {
+    pub(super) fn unique_path(name: &str) -> CanonicalFixturePath {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

@@ -82,6 +82,9 @@ pub(crate) fn build_with_rules(
     roots: &[&'static str],
     double_equal: bool,
 ) -> Result<Grammar, String> {
+    // The former DDL/DML frontend admitted 47 recursive expression calls.
+    // Keep that boundary independently of the SELECT AST-height limit.
+    let mutation = !extra.is_empty();
     let mut rules: Vec<Rule> = vec![
         ("SqlInput", complete("Statement")),
         ("SelectInput", complete("Select")),
@@ -618,9 +621,52 @@ pub(crate) fn build_with_rules(
         }
     }
     rules.retain(|(name, _)| needed.contains(name));
+    let mut right_guards = Vec::new();
+    if mutation {
+        if let Some((_, E::Sequence(sequence))) = rules
+            .iter_mut()
+            .find(|(rule, _)| *rule == "BinaryComparison")
+        {
+            sequence[1] = r("LegacyComparisonRight");
+            right_guards.push(("LegacyComparisonRight", r("Concat")));
+        }
+        for (name, operand) in [
+            ("Or", "And"),
+            ("And", "Not"),
+            ("Concat", "Sum"),
+            ("Sum", "Product"),
+            ("Product", "Signed"),
+        ] {
+            let guard = match name {
+                "Or" => "LegacyOrRight",
+                "And" => "LegacyAndRight",
+                "Concat" => "LegacyConcatRight",
+                "Sum" => "LegacySumRight",
+                _ => "LegacyProductRight",
+            };
+            if let Some((_, E::Sequence(sequence))) =
+                rules.iter_mut().find(|(rule, _)| *rule == name)
+            {
+                let E::Repeat(repeated) = &mut sequence[1] else {
+                    unreachable!()
+                };
+                let E::Sequence(pair) = repeated.as_mut() else {
+                    unreachable!()
+                };
+                pair[1] = r(guard);
+                right_guards.push((guard, r(operand)));
+            }
+        }
+    }
+    let mut right_names: Vec<_> = right_guards.iter().map(|(name, _)| *name).collect();
+    if mutation {
+        right_names.push("HawRow");
+    }
+    rules.extend(right_guards);
     let expression_guards: Vec<_> = expression::NESTING_RULES
         .iter()
         .copied()
+        .chain(right_names)
         .filter(|guard| rules.iter().any(|(name, _)| name == guard))
         .collect();
     let graph_guards: Vec<_> = ["NestedContents"]
@@ -632,7 +678,11 @@ pub(crate) fn build_with_rules(
         &[
             (
                 &expression_guards,
-                super::super::MAX_EXPRESSION_NESTING,
+                if mutation {
+                    47
+                } else {
+                    super::super::MAX_EXPRESSION_NESTING
+                },
                 crate::SyntaxErrorCode::ExpressionNestingLimitExceeded,
             ),
             (

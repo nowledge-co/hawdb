@@ -795,6 +795,10 @@ pub(super) fn plan_projection_with_columns(
             plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
             function.function_name().to_string(),
         ),
+        ScalarExpressionKind::StringFunction { function, .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            function.function_name().to_string(),
+        ),
         ScalarExpressionKind::List(_) => (
             plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
             "list".to_string(),
@@ -848,6 +852,7 @@ pub(super) fn bind_relationship_set_value(
         | hawdb_cypher::SetValueExpression::CoalesceProperty { .. }
         | hawdb_cypher::SetValueExpression::DecrementFloorZero { .. }
         | hawdb_cypher::SetValueExpression::PreserveNewerExisting { .. }
+        | hawdb_cypher::SetValueExpression::PreserveOlderExisting { .. }
         | hawdb_cypher::SetValueExpression::CoalescePropertyAdd { .. } => {
             Err(HawDBError::Semantic(
                 "relationship property increment SET is not supported".to_string(),
@@ -933,6 +938,29 @@ pub(super) fn plan_set_value(
                 ));
             };
             Ok(SetValue::PreserveNewerExisting {
+                property: property.clone(),
+                incoming: bind_value(incoming, parameters)?,
+                preserve,
+            })
+        }
+        hawdb_cypher::SetValueExpression::PreserveOlderExisting {
+            variable,
+            property,
+            incoming,
+            preserve,
+        } => {
+            if variable != &set.variable || property != &set.property {
+                return Err(HawDBError::Semantic(
+                    "CASE preserve SET must read the same variable property it writes".to_string(),
+                ));
+            }
+            let preserve = bind_value(preserve, parameters)?;
+            let Value::Bool(preserve) = preserve else {
+                return Err(HawDBError::Semantic(
+                    "CASE preserve SET requires a boolean preserve flag".to_string(),
+                ));
+            };
+            Ok(SetValue::PreserveOlderExisting {
                 property: property.clone(),
                 incoming: bind_value(incoming, parameters)?,
                 preserve,
@@ -1538,6 +1566,29 @@ pub(super) fn plan_scalar_expression_with_columns(
                 })
                 .collect::<Result<Vec<_>>>()?,
         }),
+        ScalarExpressionKind::StringFunction {
+            function,
+            arguments,
+        } => {
+            let arguments = arguments
+                .iter()
+                .map(|argument| {
+                    plan_scalar_expression_with_columns(scope, column_scope, argument, parameters)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let pattern = match (function, arguments.get(1)) {
+                (
+                    hawdb_core::StringFunction::RegexpReplace,
+                    Some(ProjectionExpression::Literal(Value::String(source))),
+                ) => Some(Box::new(ValidatedRegex::new(source.clone())?)),
+                _ => None,
+            };
+            Ok(ProjectionExpression::StringFunction {
+                function: *function,
+                arguments,
+                pattern,
+            })
+        }
         ScalarExpressionKind::ListComprehension {
             variable,
             list,

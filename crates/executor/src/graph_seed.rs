@@ -192,6 +192,7 @@ fn write_property(
         Value::Bool(value) => write!(output, "{value}").map_err(write_error)?,
         Value::Int(value) => write!(output, "{value}").map_err(write_error)?,
         Value::Float(value) => write!(output, "{value}").map_err(write_error)?,
+        Value::Decimal(value) => write!(output, "{value}").map_err(write_error)?,
         Value::String(value) => output.write_str(value).map_err(write_error)?,
         Value::Uuid(value) => write!(output, "{value}").map_err(write_error)?,
         Value::Date(_)

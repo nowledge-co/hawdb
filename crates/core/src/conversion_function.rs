@@ -190,6 +190,7 @@ fn type_name(value: ValueRef<'_>) -> &'static str {
         ValueRef::Null => "NULL",
         ValueRef::Bool(_) => "BOOLEAN",
         ValueRef::Int(_) => "INTEGER",
+        ValueRef::Decimal(_) => "DECIMAL",
         ValueRef::Float(_) => "FLOAT",
         ValueRef::String(_) => "STRING",
         ValueRef::Binary(_) => "BYTES",

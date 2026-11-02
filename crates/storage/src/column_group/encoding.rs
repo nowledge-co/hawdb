@@ -480,9 +480,10 @@ fn candidate_encodings(values: &[Value]) -> Vec<ChunkEncoding> {
                 all_string = false;
                 all_binary = false;
             }
-            // Temporal values live in the residual column: no chunk encoding or
+            // Decimal and temporal values live in the residual column: no chunk encoding or
             // zone-map format knows them, so older readers never see them here.
-            Value::Vector(_)
+            Value::Decimal(_)
+            | Value::Vector(_)
             | Value::List(_)
             | Value::Map(_)
             | Value::Date(_)

@@ -25,6 +25,11 @@ pub enum ClauseKind {
         source: ValueExpression,
         variable: String,
     },
+    /// Computed read-side list expression, evaluated once per incoming row.
+    UnwindExpression {
+        source: ScalarExpression,
+        variable: String,
+    },
     /// `LOAD CSV [WITH HEADERS] FROM <source> AS <variable> [FIELDTERMINATOR <c>]`.
     LoadCsv(LoadCsvClause),
     Match {

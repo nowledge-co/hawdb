@@ -15,4 +15,23 @@ excludes = [
     "**/*.sql",
     "**/BUILD.bazel",
     "**/*.bzl",
+    # Preserve source-bound benchmark evidence, including raw JUnit XML and
+    # reproduction snapshots whose bytes are recorded by historical manifests.
+    "docs/benchmarks/**",
+    # Compiler output and downloaded MoonBit dependencies are not project source.
+    "**/target/**",
+    "**/_build/**",
+    "**/.mooncakes/**",
+    "examples/wasm-playground/pkg/**",
 ]
+
+[[rules]]
+# Keep Go headers compatible with gofmt and separate from build constraints.
+extensions = ["go"]
+style_out = "doubleslash"
+styles_in = ["doubleslash", "slashstar"]
+
+[[rules]]
+extensions = ["mbt", "mbti"]
+filenames = ["moon.mod", "moon.pkg"]
+style_out = "doubleslash"

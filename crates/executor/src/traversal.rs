@@ -405,28 +405,6 @@ pub(crate) fn visit_one_hop_relationships_with_context(
     )
 }
 
-/// Like [`visit_one_hop_relationships_with_context`], but reads each target's
-/// identity, labels and only `target_properties` when they are given.
-pub(crate) fn visit_one_hop_relationships_projected(
-    store: &dyn GraphExecutionRead,
-    spec: OneHopRelationshipSpec<'_>,
-    memory: AdjacencyReadMemory<'_>,
-    observer: &dyn ExecutionObserver,
-    task_context: Option<&RuntimeTaskContext>,
-    target_properties: Option<&BTreeSet<String>>,
-    consumer: &mut dyn FnMut(RelRecord, NodeRecord) -> Result<ScanControl>,
-) -> Result<ScanControl> {
-    visit_one_hop_relationships_selected(
-        store,
-        spec,
-        memory,
-        observer,
-        task_context,
-        target_properties,
-        consumer,
-    )
-}
-
 /// Visits the relationship id and the neighbor of every one-hop match of an
 /// anonymous relationship pattern without property constraints, in the order
 /// of [`visit_one_hop_relationships_with_context`]. No relationship or node
@@ -615,6 +593,112 @@ fn visit_one_hop_relationships_selected(
                     &mut |bytes| memory.admit_node(bytes, 0, task_context).map(Some),
                     task_context,
                 ),
+                &mut visit,
+            )
+        }
+    };
+    match spec.direction {
+        RelationshipDirection::Outgoing => visit_direction(AdjacencyDirection::Outgoing, false),
+        RelationshipDirection::Incoming => visit_direction(AdjacencyDirection::Incoming, false),
+        RelationshipDirection::Undirected => {
+            if visit_direction(AdjacencyDirection::Outgoing, false)? == ScanControl::Stop {
+                return Ok(ScanControl::Stop);
+            }
+            visit_direction(AdjacencyDirection::Incoming, true)
+        }
+    }
+}
+
+/// One one-hop expansion from a bound source, as
+/// [`visit_one_hop_relationship_records`] reads it.
+#[derive(Clone, Copy)]
+pub(crate) struct OneHopRecordSpec<'a> {
+    pub source: NodeId,
+    pub rel_type_id: Option<RelTypeId>,
+    pub direction: RelationshipDirection,
+    /// Pattern property constraints of the relationship.
+    pub rel_properties: &'a BTreeMap<String, Value>,
+    /// The properties each record keeps beside its endpoints and type; all
+    /// of them when `None`. It must include the keys of `rel_properties`.
+    pub projection: Option<&'a BTreeSet<String>>,
+}
+
+/// Visits every relationship of a one-hop expansion that satisfies its
+/// pattern properties, with the id of the node at its other end, in the
+/// order of [`visit_one_hop_relationships_with_context`]. The other node is
+/// not read, so a caller can reject the relationship before paying for it.
+/// An undirected self-loop is visited once.
+pub(crate) fn visit_one_hop_relationship_records(
+    store: &dyn GraphExecutionRead,
+    spec: OneHopRecordSpec<'_>,
+    memory: AdjacencyReadMemory<'_>,
+    observer: &dyn ExecutionObserver,
+    task_context: Option<&RuntimeTaskContext>,
+    consumer: &mut dyn FnMut(RelRecord, NodeId) -> Result<ScanControl>,
+) -> Result<ScanControl> {
+    let relationship_filter = property_filter_from_properties(spec.rel_properties);
+    let mut visit_direction = |adjacency_direction: AdjacencyDirection,
+                               skip_undirected_self_loops: bool|
+     -> Result<ScanControl> {
+        let selection = (spec.source, spec.rel_type_id, adjacency_direction);
+        let mut visit = |input: hawdb_storage::read_view::AdmittedRelationshipRecord| {
+            crate::pipeline::runtime_checkpoint(task_context)?;
+            let (mut relationship, _allocation) = input.into_parts();
+            if skip_undirected_self_loops
+                && relationship.source == spec.source
+                && relationship.target == spec.source
+            {
+                return Ok(ScanControl::Continue);
+            }
+            let Some(target_id) = relationship_target_for_source_direction(
+                &relationship,
+                spec.source,
+                spec.direction,
+            ) else {
+                return Ok(ScanControl::Continue);
+            };
+            if !relationship_properties_match(&relationship, spec.rel_properties) {
+                return Ok(ScanControl::Continue);
+            }
+            if let Some(projection) = spec.projection {
+                // A filtered read returns whole records; give every read the
+                // same shape.
+                relationship
+                    .properties
+                    .retain(|name, _| projection.contains(name));
+            }
+            consumer(relationship, target_id)
+        };
+        let mut admit = |bytes| memory.admit_node(bytes, 0, task_context).map(Some);
+        let mut allocator =
+            hawdb_storage::read_view::ControlledGraphReadAllocator::new(&mut admit, task_context);
+        if let Some(filter) = relationship_filter.as_ref() {
+            let (control, report) = store.visit_filtered_ordered_relationships_with_allocation(
+                selection,
+                filter,
+                memory,
+                &mut allocator,
+                &mut visit,
+            )?;
+            if let Some(report) = report {
+                observer.record_scan_pruning_report(report);
+            }
+            Ok(control)
+        } else if let Some(projection) = spec.projection {
+            store.visit_ordered_projected_relationships_with_allocation(
+                selection,
+                projection,
+                memory,
+                &mut allocator,
+                &mut visit,
+            )
+        } else {
+            store.visit_ordered_adjacent_relationships_with_allocation(
+                spec.source,
+                spec.rel_type_id,
+                adjacency_direction,
+                memory,
+                &mut allocator,
                 &mut visit,
             )
         }

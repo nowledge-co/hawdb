@@ -831,6 +831,7 @@ fn explain_sql_value(value: &SqlValue) -> String {
     match value {
         SqlValue::Literal(value) => value.to_string(),
         SqlValue::Parameter(position) => format!("${position}"),
+        SqlValue::Expression(expression) => explain_expression(expression),
     }
 }
 

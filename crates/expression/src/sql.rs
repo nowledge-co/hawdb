@@ -19,10 +19,15 @@
 
 use hawdb_core::Value;
 
+mod numeric;
+pub use numeric::{bind_constant_numeric, bind_sql_value};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlValue {
     Literal(Value),
     Parameter(usize),
+    /// A constant numeric expression, possibly containing parameters.
+    Expression(Box<Expr>),
 }
 
 /// An owned SQL expression shared by predicates, projections and ordering.
@@ -50,6 +55,16 @@ pub struct SqlSourceLocation {
 pub enum ExprKind {
     Column(SqlColumnRef),
     Value(SqlValue),
+    Arithmetic {
+        left: Box<Expr>,
+        op: hawdb_core::numeric::NumericBinaryOp,
+        right: Box<Expr>,
+    },
+    Negate(Box<Expr>),
+    Cast {
+        expression: Box<Expr>,
+        target: hawdb_core::numeric::NumericType,
+    },
     Function {
         name: String,
         arguments: Vec<SqlFunctionArgument>,
@@ -140,6 +155,9 @@ impl Expr {
         visitor: &mut impl FnMut(&mut Self) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
         match &mut self.kind {
+            ExprKind::Value(SqlValue::Expression(expression)) => {
+                expression.try_visit_mut(visitor)?
+            }
             ExprKind::Column(_) | ExprKind::Value(_) => {}
             ExprKind::Function {
                 arguments, filter, ..
@@ -155,13 +173,15 @@ impl Expr {
             }
             ExprKind::And(left, right)
             | ExprKind::Or(left, right)
-            | ExprKind::Compare { left, right, .. } => {
+            | ExprKind::Compare { left, right, .. }
+            | ExprKind::Arithmetic { left, right, .. } => {
                 left.try_visit_mut(visitor)?;
                 right.try_visit_mut(visitor)?;
             }
-            ExprKind::Not(expression) | ExprKind::IsNull { expression, .. } => {
-                expression.try_visit_mut(visitor)?
-            }
+            ExprKind::Not(expression)
+            | ExprKind::IsNull { expression, .. }
+            | ExprKind::Negate(expression)
+            | ExprKind::Cast { expression, .. } => expression.try_visit_mut(visitor)?,
             ExprKind::InList { left, values, .. } => {
                 left.try_visit_mut(visitor)?;
                 for value in values {
@@ -180,6 +200,7 @@ impl Expr {
     pub fn visit<'a>(&'a self, visitor: &mut impl FnMut(&'a Self)) {
         visitor(self);
         match &self.kind {
+            ExprKind::Value(SqlValue::Expression(expression)) => expression.visit(visitor),
             ExprKind::Column(_) | ExprKind::Value(_) => {}
             ExprKind::Function {
                 arguments, filter, ..
@@ -195,13 +216,15 @@ impl Expr {
             }
             ExprKind::And(left, right)
             | ExprKind::Or(left, right)
-            | ExprKind::Compare { left, right, .. } => {
+            | ExprKind::Compare { left, right, .. }
+            | ExprKind::Arithmetic { left, right, .. } => {
                 left.visit(visitor);
                 right.visit(visitor);
             }
-            ExprKind::Not(expression) | ExprKind::IsNull { expression, .. } => {
-                expression.visit(visitor)
-            }
+            ExprKind::Not(expression)
+            | ExprKind::IsNull { expression, .. }
+            | ExprKind::Negate(expression)
+            | ExprKind::Cast { expression, .. } => expression.visit(visitor),
             ExprKind::InList { left, values, .. } => {
                 left.visit(visitor);
                 for value in values {
@@ -277,6 +300,7 @@ impl std::fmt::Display for SqlValue {
         match self {
             Self::Literal(value) => write!(formatter, "{value}"),
             Self::Parameter(position) => write!(formatter, "${position}"),
+            Self::Expression(expression) => write!(formatter, "{:?}", expression.kind),
         }
     }
 }

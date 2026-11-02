@@ -49,7 +49,9 @@ fn chain(predicate: Option<Predicate>) -> PhysicalPlan {
             imports: Vec::new(),
             introduced: ["a", "r", "b", "c"].map(String::from).to_vec(),
             projected_nodes: BTreeMap::new(),
+            projected_relationships: BTreeMap::new(),
             predicate_steps: Vec::new(),
+            edge_predicates: Vec::new(),
             steps: vec![
                 GraphMatchStep::Node(node("a", &["id"])),
                 expand("a", Some("r"), node("b", &[])),
@@ -303,7 +305,9 @@ fn a_later_match_passes_its_reads_to_the_match_that_bound_the_node() {
             imports: Vec::new(),
             introduced: vec!["d".into()],
             projected_nodes: BTreeMap::new(),
+            projected_relationships: BTreeMap::new(),
             predicate_steps: Vec::new(),
+            edge_predicates: Vec::new(),
             steps: vec![
                 GraphMatchStep::Node(node("b", &["kind"])),
                 expand("b", None, node("d", &[])),
@@ -336,7 +340,9 @@ fn imports_and_reintroduced_names_stop_demand_at_their_match() {
             }],
             introduced: vec!["c".into()],
             projected_nodes: BTreeMap::new(),
+            projected_relationships: BTreeMap::new(),
             predicate_steps: Vec::new(),
+            edge_predicates: Vec::new(),
             steps: vec![
                 GraphMatchStep::Node(node("b", &[])),
                 expand("b", None, node("c", &["tag"])),
@@ -401,4 +407,170 @@ fn whole_nodes_nested_in_maps_keep_full_reads() {
         analyzed(project(vec![map], chain(None))),
         vec![expected(&[("a", &["id"]), ("c", &["name"])])]
     );
+}
+
+/// `projected_relationships` of the first `GraphMatchExec` in `plan`.
+fn relationship_projection(plan: PhysicalPlan) -> BTreeMap<String, Vec<String>> {
+    fn first(plan: &PhysicalPlan) -> Option<&GraphMatchProgram> {
+        match plan {
+            PhysicalPlan::GraphMatchExec { program, .. } => Some(program),
+            PhysicalPlan::ProjectExec { input, .. }
+            | PhysicalPlan::AggregateExec { input, .. }
+            | PhysicalPlan::FilterExec { input, .. } => first(input),
+            _ => None,
+        }
+    }
+    let plan = project_graph_match_reads(plan, &mut Vec::new());
+    first(&plan)
+        .expect("a GraphMatchExec")
+        .projected_relationships
+        .iter()
+        .map(|(name, properties)| (name.clone(), properties.iter().cloned().collect()))
+        .collect()
+}
+
+#[test]
+fn relationship_reads_keep_the_properties_later_operators_and_the_predicate_use() {
+    // RETURN r.since, with WHERE r.weight > 1: both properties, nothing else.
+    let predicate = Predicate::PropertyCompare {
+        variable: "r".into(),
+        property: "weight".into(),
+        op: hawdb_plan_cypher::ComparisonOp::Gt,
+        value: Value::Int(1),
+    };
+    let plan = project(vec![property("r", "since")], chain(Some(predicate)));
+    assert_eq!(
+        relationship_projection(plan),
+        expected(&[("r", &["since", "weight"])])
+    );
+    // Unread beyond its identity: only endpoints and type.
+    let plan = project(vec![property("b", "name")], chain(None));
+    assert_eq!(relationship_projection(plan), expected(&[("r", &[])]));
+    // `count(r)` tests only that it is bound.
+    let plan = PhysicalPlan::AggregateExec {
+        group_keys: Vec::new(),
+        items: vec![Aggregation {
+            function: AggregateFunction::Count,
+            target: AggregateTarget::Variable("r".into()),
+            distinct: false,
+            name: "n".into(),
+        }],
+        input: Box::new(chain(None)),
+    };
+    assert_eq!(relationship_projection(plan), expected(&[("r", &[])]));
+}
+
+#[test]
+fn relationship_pattern_properties_are_read() {
+    let mut plan = chain(None);
+    if let PhysicalPlan::GraphMatchExec { program, .. } = &mut plan
+        && let GraphMatchStep::Expand { properties, .. } = &mut program.steps[1]
+    {
+        properties.insert("kind".into(), Value::Int(1));
+    }
+    let plan = project(vec![property("r", "since")], plan);
+    assert_eq!(
+        relationship_projection(plan),
+        expected(&[("r", &["kind", "since"])])
+    );
+}
+
+#[test]
+fn whole_relationship_uses_read_every_property() {
+    // RETURN r, collect(r), r in a list, type(r) (kept whole as for nodes),
+    // or a column of the same name.
+    let collect = PhysicalPlan::AggregateExec {
+        group_keys: Vec::new(),
+        items: vec![Aggregation {
+            function: AggregateFunction::Collect,
+            target: AggregateTarget::Variable("r".into()),
+            distinct: false,
+            name: "rs".into(),
+        }],
+        input: Box::new(chain(None)),
+    };
+    let listed = project(
+        vec![ProjectionExpression::List(vec![variable("r")])],
+        chain(None),
+    );
+    let typed = project(
+        vec![ProjectionExpression::RelationshipType {
+            variable: "r".into(),
+        }],
+        chain(None),
+    );
+    let column = project(
+        vec![ProjectionExpression::ColumnProperty {
+            column: "r".into(),
+            property: "since".into(),
+        }],
+        chain(None),
+    );
+    for plan in [
+        project(vec![variable("r")], chain(None)),
+        collect,
+        listed,
+        typed,
+        column,
+    ] {
+        assert_eq!(relationship_projection(plan), BTreeMap::new());
+    }
+    // An operator the analysis does not understand hides what it reads.
+    let joined = project_graph_match_reads(
+        project(
+            vec![property("r", "since")],
+            PhysicalPlan::NodeCartesianProductExec {
+                left: Box::new(chain(None)),
+                right: Box::new(chain(None)),
+            },
+        ),
+        &mut Vec::new(),
+    );
+    let PhysicalPlan::ProjectExec { input, .. } = joined else {
+        panic!("projection root");
+    };
+    let PhysicalPlan::NodeCartesianProductExec { left, .. } = *input else {
+        panic!("cartesian product");
+    };
+    assert_eq!(relationship_projection(*left), BTreeMap::new());
+}
+
+#[test]
+fn imported_and_variable_length_relationships_are_not_projected() {
+    let program = GraphMatchProgram {
+        imports: vec![GraphBindingImport {
+            variable: "r".into(),
+            column: "r_column".into(),
+            kind: GraphEntityKind::Relationship,
+        }],
+        introduced: vec!["b".into(), "s".into()],
+        projected_nodes: BTreeMap::new(),
+        projected_relationships: BTreeMap::new(),
+        predicate_steps: Vec::new(),
+        edge_predicates: Vec::new(),
+        steps: vec![
+            GraphMatchStep::Node(node("a", &[])),
+            expand("a", Some("r"), node("b", &[])),
+            GraphMatchStep::Expand {
+                source: "b".into(),
+                relationship: Some("s".into()),
+                rel_type: "R".into(),
+                properties: BTreeMap::new(),
+                direction: RelationshipDirection::Outgoing,
+                min_hops: 1,
+                max_hops: 2,
+                target: node("c", &[]),
+            },
+        ],
+        predicate: None,
+        optional: false,
+    };
+    let plan = project(
+        vec![property("r", "since"), property("s", "since")],
+        PhysicalPlan::GraphMatchExec {
+            program,
+            input: None,
+        },
+    );
+    assert_eq!(relationship_projection(plan), BTreeMap::new());
 }

@@ -9,6 +9,17 @@ use super::Transformer;
 use crate::*;
 
 impl Transformer<'_> {
+    fn check_computed_unwind(&self, node: NodeId) -> Result<()> {
+        let next = self.tree.node(node).end;
+        if ["CREATE", "MERGE", "SET", "DELETE"]
+            .iter()
+            .any(|word| self.tokens[next].is_keyword(self.input, word))
+        {
+            return Err(self.error(node, "computed UNWIND sources require a read pipeline"));
+        }
+        Ok(())
+    }
+
     pub(super) fn source<Ty>(&self, node: NodeId, kind: Ty) -> AstNode<Ty> {
         let span = self.tree.span(node, self.tokens);
         AstNode::from_source(
@@ -277,26 +288,34 @@ impl Transformer<'_> {
                 })
             }
             "unwind_clause" => {
-                let source = self.value(self.tree.required(node, rule_id!("v_value")), depth)?;
-                if !matches!(
-                    source.kind,
-                    ValueExpressionKind::Parameter(_)
-                        | ValueExpressionKind::List(_)
-                        | ValueExpressionKind::Binding(_)
-                        | ValueExpressionKind::BindingProperty { .. }
-                ) {
-                    return Err(self.error(
-                        node,
-                        "UNWIND accepts a parameter, list literal or row-bound list",
-                    ));
-                }
-                ClauseKind::Unwind {
-                    source,
-                    variable: self
-                        .text(self.tree.required(node, rule_id!("v_identifier")))
-                        .to_owned(),
+                let variable = self
+                    .text(self.tree.required(node, rule_id!("v_identifier")))
+                    .to_owned();
+                if let Some(value) = self.tree.child(node, rule_id!("v_value")) {
+                    let source = self.value(value, depth)?;
+                    if matches!(
+                        source.kind,
+                        ValueExpressionKind::Parameter(_)
+                            | ValueExpressionKind::List(_)
+                            | ValueExpressionKind::Binding(_)
+                            | ValueExpressionKind::BindingProperty { .. }
+                    ) {
+                        ClauseKind::Unwind { source, variable }
+                    } else {
+                        self.check_computed_unwind(node)?;
+                        ClauseKind::UnwindExpression {
+                            source: self.source(value, ScalarExpressionKind::Value(source)),
+                            variable,
+                        }
+                    }
+                } else {
+                    let source = self
+                        .case_scalar(self.tree.required(node, rule_id!("x_case_scalar")), depth)?;
+                    self.check_computed_unwind(node)?;
+                    ClauseKind::UnwindExpression { source, variable }
                 }
             }
+
             "merge_clause" => {
                 let pattern = self.pattern(
                     self.tree.required(node, rule_id!("p_pattern")),

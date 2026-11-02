@@ -48,6 +48,7 @@ fn value_capacity(value: &Value, depth: usize) -> Option<usize> {
         | Value::Int(_)
         | Value::Float(_)
         | Value::Uuid(_)
+        | Value::Decimal(_)
         | Value::Date(_)
         | Value::LocalTime(_)
         | Value::LocalDateTime(_)

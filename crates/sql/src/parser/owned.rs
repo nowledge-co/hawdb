@@ -484,7 +484,50 @@ mod peg_baseline {
         assert_eq!(count, 8);
     }
 
+    #[test]
+    fn frozen_main_1514_numeric_contracts_preserve_complete_ir_and_rejection_classes() {
+        let mut count = 0;
+        for line in
+            include_str!("../../fixtures/frontend_main_1514_numeric_peg_baseline_v1.jsonl").lines()
+        {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                expected["source_commit"],
+                "fd10958dd37b8878151aeb73ff0477d189b5db5e"
+            );
+            assert_case(expected["sql"].as_str().unwrap(), &expected);
+            count += 1;
+        }
+        assert_eq!(count, 92);
+    }
+
     pub(super) fn assert_case(input: &str, expected: &serde_json::Value) {
+        use std::sync::OnceLock;
+        static TRANSITIONS: OnceLock<std::collections::BTreeMap<String, serde_json::Value>> =
+            OnceLock::new();
+        let transitions = TRANSITIONS.get_or_init(|| {
+            include_str!("../../fixtures/frontend_main_1514_numeric_peg_baseline_v1.jsonl")
+                .lines()
+                .map(|line| {
+                    let case: serde_json::Value = serde_json::from_str(line).unwrap();
+                    (case["sql"].as_str().unwrap().to_owned(), case)
+                })
+                .collect()
+        });
+        let expected = if let Some(current) = transitions.get(input) {
+            if current["kind"] != expected["kind"]
+                || current["ast_sha256"] != expected["ast_sha256"]
+            {
+                assert_eq!(current["previous_kind"], expected["kind"], "{input}");
+                assert_eq!(
+                    current["previous_ast_sha256"], expected["ast_sha256"],
+                    "{input}"
+                );
+            }
+            current
+        } else {
+            expected
+        };
         let (kind, digest) = match parse_postgres_sql(input) {
             Ok(ast) => (
                 "accept",

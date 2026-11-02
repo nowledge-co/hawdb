@@ -232,10 +232,9 @@ impl Transformer<'_> {
             "r_aggregate" => ReturnExpressionKind::Aggregate(self.aggregate(selected, depth + 1)?),
             "r_list_function" => {
                 let call = self.tree.required(selected, rule_id!("r_list_call"));
-                let function = ListFunction::from_function_name(
-                    self.text(self.tree.required(call, rule_id!("x_list_function_name"))),
-                )
-                .expect("list function");
+                let name = self.text(self.tree.required(call, rule_id!("x_list_function_name")));
+                let string_function = hawdb_core::StringFunction::from_function_name(name);
+                let list_function = ListFunction::from_function_name(name);
                 let mut arguments = Vec::new();
                 for argument in self
                     .tree
@@ -246,6 +245,23 @@ impl Transformer<'_> {
                 {
                     arguments.push(self.return_expression(argument, depth + 1)?)
                 }
+                if let Some(function) = string_function {
+                    self.string_arity(selected, function, arguments.len())?;
+                    let scalars = arguments
+                        .into_iter()
+                        .map(|argument| self.scalar_return_argument(argument, selected, depth + 1))
+                        .collect::<Result<Vec<_>>>()?;
+                    let scalar = self.source(
+                        call,
+                        ScalarExpressionKind::StringFunction {
+                            function,
+                            arguments: scalars,
+                        },
+                    );
+                    let scalar = self.scalar_postfixes(selected, scalar, depth + 1)?;
+                    return Ok(self.source(node, ReturnExpressionKind::Value(scalar)));
+                }
+                let function = list_function.expect("list function");
                 self.list_arity(selected, function, arguments.len())?;
                 if arguments.iter().any(contains_aggregate) {
                     if self

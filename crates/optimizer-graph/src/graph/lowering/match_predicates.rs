@@ -23,6 +23,14 @@
 //! final evaluation would have removed. OPTIONAL MATCH still pads a row only
 //! when no complete match survives.
 //!
+//! A placed conjunct that reads only the relationship a one-hop step binds is
+//! also marked in [`GraphMatchProgram::edge_predicates`] (#1483). The executor
+//! evaluates it on each relationship it reads, before it reads the step's
+//! target node, so a relationship the conjunct rejects costs no node read.
+//! It drops exactly the candidates the conjunct would drop after the step.
+//! Variable-length steps bind no relationship variable, so nothing is pushed
+//! into them.
+//!
 //! The placement reads the final step order, so it must run after any step
 //! reordering at lowering.
 
@@ -33,18 +41,29 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Returns the decision text when at least one conjunct runs before the end.
 pub(super) fn place_graph_match_predicates(program: &mut GraphMatchProgram) -> Option<String> {
     program.predicate_steps.clear();
+    program.edge_predicates.clear();
     let end = program.steps.len();
-    let steps = {
+    let (steps, edge) = {
         let mut conjuncts = Vec::new();
         conjunction_parts(program.predicate.as_ref()?, &mut conjuncts);
         let bound_after = bound_after_steps(program);
-        conjuncts
-            .into_iter()
+        let steps = conjuncts
+            .iter()
             .map(|conjunct| conjunct_step(conjunct, &bound_after, end))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        let edge = conjuncts
+            .iter()
+            .zip(&steps)
+            .enumerate()
+            .filter(|(_, (conjunct, step))| {
+                reads_only_relationship_of_step(conjunct, program, &bound_after, **step)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        (steps, edge)
     };
     let placed = steps.iter().filter(|step| **step < end).count();
-    if placed == 0 {
+    if placed == 0 && edge.is_empty() {
         // Keep the bound predicate unchanged when everything runs at the end.
         return None;
     }
@@ -55,12 +74,47 @@ pub(super) fn place_graph_match_predicates(program: &mut GraphMatchProgram) -> O
     } else {
         Predicate::And(conjuncts)
     });
-    let decision = format!(
+    let mut decision = format!(
         "evaluate {placed} of {} GraphMatchExec WHERE conjunct(s) before the last step: after steps {steps:?} of {end}",
         steps.len()
     );
+    if !edge.is_empty() {
+        decision.push_str(&format!(
+            "; evaluate conjunct(s) {edge:?} on each relationship before reading its target node"
+        ));
+    }
     program.predicate_steps = steps;
+    program.edge_predicates = edge;
     Some(decision)
+}
+
+/// Whether `conjunct`, placed after `step` steps, reads nothing but the
+/// relationship variable that the one-hop step `step - 1` introduces.
+/// Constants and parameters are bound values, not names, so they qualify.
+fn reads_only_relationship_of_step(
+    conjunct: &Predicate,
+    program: &GraphMatchProgram,
+    bound_after: &BTreeMap<&str, usize>,
+    step: usize,
+) -> bool {
+    let Some(GraphMatchStep::Expand {
+        relationship: Some(relationship),
+        min_hops: 1,
+        max_hops: 1,
+        ..
+    }) = step
+        .checked_sub(1)
+        .and_then(|index| program.steps.get(index))
+    else {
+        return false;
+    };
+    // A relationship bound before this step is compared by id, not read.
+    if bound_after.get(relationship.as_str()) != Some(&step) {
+        return false;
+    }
+    let mut names = BTreeSet::new();
+    predicate_names(conjunct, &mut names);
+    names.len() == 1 && names.contains(relationship)
 }
 
 fn conjunction_parts<'a>(predicate: &'a Predicate, output: &mut Vec<&'a Predicate>) {
@@ -241,6 +295,7 @@ fn expression_names(expression: &ProjectionExpression, names: &mut BTreeSet<Stri
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. }

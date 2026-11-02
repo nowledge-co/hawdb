@@ -389,7 +389,7 @@ fn scalar_type(data_type: SqlDataType) -> Option<PgqDataType> {
         SqlDataType::Text => PgqDataType::String,
         SqlDataType::Bytea => PgqDataType::Binary,
         SqlDataType::Uuid => PgqDataType::Uuid,
-        SqlDataType::Vector(_) => return None,
+        SqlDataType::Vector(_) | SqlDataType::Decimal(_) => return None,
     })
 }
 

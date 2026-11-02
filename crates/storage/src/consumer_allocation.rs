@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Durable, bounded reservations independent of the rebuildable Consumer cache.
 //! Reservations are not directory birth or publication receipts. Unresolved

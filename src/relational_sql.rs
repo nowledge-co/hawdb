@@ -13,7 +13,7 @@
 // limitations under the License.
 
 pub(crate) use hawdb_relational::{
-    bind_relational_value, compile_prepared_append_explain_sql, compile_prepared_append_select_sql,
+    compile_prepared_append_explain_sql, compile_prepared_append_select_sql,
     compile_prepared_append_statement_sql, compile_prepared_relational_statement_with_result,
     format_append_explain, project_append_rows, RelationalReturningProjection,
 };
@@ -908,10 +908,10 @@ mod tests {
             .expect("commit transaction-local increments");
 
         let overflow = database
-            .query_sql("UPDATE counters SET count = count + 1 WHERE id >= 3")
+            .query_sql("UPDATE counters SET count = count + 1 WHERE id >= 2")
             .expect_err("BIGINT overflow must reject the complete UPDATE");
         assert!(overflow.to_string().contains("arithmetic overflow"));
-        for (id, expected) in [(3, i64::MAX), (4, i64::MIN)] {
+        for (id, expected) in [(2, -1), (3, i64::MAX), (4, i64::MIN), (5, 0)] {
             assert_eq!(
                 database
                     .query_sql(&format!("SELECT count FROM counters WHERE id = {id}"))
@@ -921,41 +921,74 @@ mod tests {
             );
         }
 
+        let before_invalid_assignments = database
+            .query_sql("SELECT * FROM counters ORDER BY id")
+            .expect("read before rejected assignments")
+            .rows;
         for (sql, parameters, expected) in [
             (
                 "UPDATE counters SET label = label + 1 WHERE id = 1",
                 Vec::new(),
-                "target",
+                "arithmetic requires numeric operands",
+            ),
+            (
+                "UPDATE counters SET label = count + 1 WHERE id = 1",
+                Vec::new(),
+                "numeric assignment requires numeric operands and target",
             ),
             (
                 "UPDATE counters SET count = label + 1 WHERE id = 1",
                 Vec::new(),
-                "source",
+                "arithmetic requires numeric operands",
             ),
             (
                 "UPDATE counters SET count = count + $1 WHERE id = 1",
                 vec![Value::String("one".to_string())],
-                "BIGINT",
+                "arithmetic requires numeric operands",
             ),
             (
                 "UPDATE counters SET count = count + $1 WHERE id = 1",
                 vec![Value::Null],
-                "non-null",
+                "column count is NOT NULL",
             ),
         ] {
             let error = database
                 .query_sql_with_params(sql, &parameters)
                 .expect_err("invalid arithmetic assignment must fail before publication");
-            assert!(error.to_string().contains(expected));
+            assert!(
+                error.to_string().contains(expected),
+                "{sql}: expected {expected:?}, got {error}"
+            );
+            assert_eq!(
+                database
+                    .query_sql("SELECT * FROM counters ORDER BY id")
+                    .expect("read after rejected assignment")
+                    .rows,
+                before_invalid_assignments,
+                "rejected assignment must leave every row unchanged: {sql}"
+            );
         }
 
-        let null_operand = database
+        database
             .query_sql("UPDATE counters SET nullable_count = nullable_count + 1 WHERE id = 5")
-            .expect_err("NULL arithmetic operand must fail");
-        assert!(null_operand.to_string().contains("NULL operands"));
+            .expect("NULL arithmetic propagates to a nullable target");
+        assert_eq!(
+            database
+                .query_sql("SELECT nullable_count FROM counters WHERE id = 5")
+                .unwrap()
+                .rows[0]["nullable_count"],
+            Value::Null
+        );
         database
             .query_sql("UPDATE counters SET nullable_count = count + 1 WHERE id = 5")
             .expect("non-null source can update a nullable BIGINT target");
+        assert_eq!(
+            database
+                .query_sql("SELECT nullable_count FROM counters WHERE id = 5")
+                .unwrap()
+                .rows[0]["nullable_count"],
+            Value::Int(1)
+        );
     }
 
     #[test]

@@ -75,12 +75,13 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
     use std::collections::BTreeMap;
     use std::sync::OnceLock;
     type TransitionMap = BTreeMap<(String, String), serde_json::Value>;
-    static TRANSITIONS: OnceLock<[TransitionMap; 4]> = OnceLock::new();
+    static TRANSITIONS: OnceLock<[TransitionMap; 5]> = OnceLock::new();
     // Keep each earlier oracle immutable. Main #1411 changes row bindings and
     // read-only UNWIND; #1403 expands ORDER BY and changes aggregate sort ASTs.
     // #1382 adds temporal syntax and generic scalar/postfix behavior. Every
     // transition was exported from an independently compiled main.
     // #1428 admits boolean predicates and row-bound UNWIND sources.
+    // #1504 adds Mem string functions, computed UNWIND and CASE SET branches.
     let transitions = TRANSITIONS.get_or_init(|| {
         [
             include_str!("../../../fixtures/migration_main_1411_peg_baseline_v1.jsonl"),
@@ -91,6 +92,7 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
             include_str!(
                 "../../../fixtures/migration_main_1428_boolean_unwind_peg_baseline_v1.jsonl"
             ),
+            include_str!("../../../fixtures/migration_main_1514_mem_peg_baseline_v1.jsonl"),
         ]
         .map(|fixture| {
             fixture
@@ -686,5 +688,56 @@ fn csv_value_extensions_preserve_ordinary_property_diagnostics() {
             };
             assert_eq!(actual, expected, "{query}");
         }
+    }
+}
+
+#[test]
+fn frozen_main_1514_mem_contracts_preserve_complete_ir_and_rejection_classes() {
+    let mut count = 0;
+    for line in
+        include_str!("../../../fixtures/migration_main_1514_mem_peg_baseline_v1.jsonl").lines()
+    {
+        let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            expected["source_commit"],
+            "fd10958dd37b8878151aeb73ff0477d189b5db5e"
+        );
+        assert_frozen(&expected);
+        count += 1;
+    }
+    assert_eq!(count, 1537);
+}
+
+#[test]
+fn frozen_main_mem_api_queries_preserve_complete_ir_and_rejections() {
+    let mut count = 0;
+    for line in
+        include_str!("../../../fixtures/migration_main_1514_mem_api_peg_baseline_v1.jsonl").lines()
+    {
+        let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            expected["source_commit"],
+            "fd10958dd37b8878151aeb73ff0477d189b5db5e"
+        );
+        assert_frozen(&expected);
+        count += 1;
+    }
+    assert_eq!(count, 112);
+}
+
+#[test]
+fn every_core_list_function_is_recognized_by_the_compiled_grammar() {
+    for function in hawdb_core::ListFunction::ALL {
+        let (arity, _) = function.arity();
+        let arguments = (0..arity)
+            .map(|index| format!("$argument_{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let query = format!(
+            "UNWIND [1] AS row RETURN {}({arguments}) AS result",
+            function.function_name()
+        );
+        crate::parse(&query).unwrap();
+        crate::parse_pipeline(&query).unwrap();
     }
 }

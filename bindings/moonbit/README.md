@@ -41,7 +41,9 @@ This PR does not introduce a separate SDK publisher.
   `Database::query_sql(statement, positional_params)` for SQL
 - Materialized `QueryResult.columns`, `rows`, and `get(row, column)`
 - `Value` types for null, bool, signed Int64, floating-point numbers, text,
-  bytes, UUID, temporal, vector, list, and map values. `Temporal(kind, text)`
+  bytes, exact Decimal, UUID, temporal, vector, list, and map values.
+  `Decimal(text)` preserves digits and scale through the `$decimal` string tag;
+  the Rust engine validates its bounded numeric domain. `Temporal(kind, text)`
   carries a `date`, `localtime`, `localdatetime`, `datetime` or `duration`
   value as ISO 8601 text, using the same tags as the C ABI binding.
 - Autocommit `query` / `query_sql` calls fail while a write transaction is

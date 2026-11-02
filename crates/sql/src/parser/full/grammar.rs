@@ -327,7 +327,14 @@ pub(super) fn build() -> Result<Grammar, String> {
         ),
         (
             "HawCustomType",
-            s(vec![r("Name"), o(r("HawTypeArguments"))]),
+            s(vec![
+                E::Not(
+                    Box::new(s(vec![k("DOUBLE"), t(T::Dot)])),
+                    "DOUBLE PRECISION",
+                ),
+                r("Name"),
+                o(r("HawTypeArguments")),
+            ]),
         ),
         ("HawTypeArguments", group(many(r("HawRawAtom")))),
         (

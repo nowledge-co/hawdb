@@ -173,10 +173,9 @@ impl Transformer<'_> {
                 ScalarExpressionKind::Path(self.scalar_path(node, depth)?)
             }
             "x_list_function" => {
-                let function = ListFunction::from_function_name(
-                    self.text(self.tree.required(node, rule_id!("x_list_function_name"))),
-                )
-                .expect("list function");
+                let name = self.text(self.tree.required(node, rule_id!("x_list_function_name")));
+                let string_function = hawdb_core::StringFunction::from_function_name(name);
+                let list_function = ListFunction::from_function_name(name);
                 let mut arguments = Vec::new();
                 for arg in self
                     .tree
@@ -187,10 +186,19 @@ impl Transformer<'_> {
                 {
                     arguments.push(self.case_scalar(arg, depth)?);
                 }
-                self.list_arity(node, function, arguments.len())?;
-                ScalarExpressionKind::ListFunction {
-                    function,
-                    arguments,
+                if let Some(function) = string_function {
+                    self.string_arity(node, function, arguments.len())?;
+                    ScalarExpressionKind::StringFunction {
+                        function,
+                        arguments,
+                    }
+                } else {
+                    let function = list_function.expect("list function");
+                    self.list_arity(node, function, arguments.len())?;
+                    ScalarExpressionKind::ListFunction {
+                        function,
+                        arguments,
+                    }
                 }
             }
             "x_list" => {
@@ -300,6 +308,24 @@ impl Transformer<'_> {
                 },
             )
         }
+    }
+    pub(super) fn string_arity(
+        &self,
+        node: NodeId,
+        function: hawdb_core::StringFunction,
+        arguments: usize,
+    ) -> Result<()> {
+        let (min, max) = function.arity();
+        if !(min..=max).contains(&arguments) {
+            return Err(self.error(
+                node,
+                &format!(
+                    "{}() expects {min}..={max} arguments",
+                    function.function_name()
+                ),
+            ));
+        }
+        Ok(())
     }
     pub(super) fn list_arity(
         &self,

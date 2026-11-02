@@ -229,6 +229,9 @@ fn bind<'a>(
 ) -> Result<&'a hawdb_core::Value> {
     match value {
         SqlValue::Literal(value) => Ok(value),
+        SqlValue::Expression(_) => Err(invalid(
+            "SQL vector index arguments require literal or parameter values",
+        )),
         SqlValue::Parameter(position) => position
             .checked_sub(1)
             .and_then(|position| parameters.get(position))

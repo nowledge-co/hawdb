@@ -67,7 +67,7 @@ pub fn parse_graph_table(input: &str) -> Result<GraphTable, SyntaxError> {
 }
 
 const MAX_GRAPH_PATTERN_NESTING: usize = 128;
-const MAX_EXPRESSION_NESTING: usize = 128;
+pub(crate) const MAX_EXPRESSION_NESTING: usize = 128;
 
 fn identifier_from_token(token: Token) -> Identifier {
     Identifier {

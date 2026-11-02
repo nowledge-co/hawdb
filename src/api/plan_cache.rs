@@ -1368,6 +1368,7 @@ pub(super) fn statement_uses_plan_cache(statement: &cypher::Statement) -> bool {
                     // every execution opens and reads the file again.
                     cypher::ClauseKind::LoadCsv(_) => true,
                     cypher::ClauseKind::Unwind { .. }
+                    | cypher::ClauseKind::UnwindExpression { .. }
                     | cypher::ClauseKind::Create(_)
                     | cypher::ClauseKind::Merge { .. }
                     | cypher::ClauseKind::Set(_)

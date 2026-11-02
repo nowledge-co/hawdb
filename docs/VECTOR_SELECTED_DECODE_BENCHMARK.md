@@ -1,5 +1,12 @@
 # Selected Raw-Vector Decoding
 
+> **Superseded (#1469).** Layout `HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2` stores raw
+> vectors as checksummed binary rows, so serving reads and decodes only the
+> selected rows and no longer parses decimal text. The text decoder and its
+> `vector_selection_tests` were removed with the V1 layout; see
+> [STORAGE.md](STORAGE.md#binary-vector-sidecar-layout-v2). The measurements
+> below remain historical evidence for the V1 decoder.
+
 Issue #1067 reduces raw-vector preparation before bounded RaBitQ reranking.
 Each touched vector frame is still read, checksummed, decompressed and fully
 validated. Only embeddings for selected ordinals are materialized. Unselected

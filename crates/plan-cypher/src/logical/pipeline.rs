@@ -1166,6 +1166,31 @@ fn bind_read_clauses(
 ) -> Result<LogicalPlan> {
     for clause in clauses {
         match &clause.kind {
+            ClauseKind::UnwindExpression { source, variable } => {
+                if scope.0.contains_key(variable) {
+                    return Err(HawDBError::Semantic(format!(
+                        "UNWIND variable '{variable}' is already bound"
+                    )));
+                }
+                let mut expression = plan_scalar_expression_with_columns(
+                    &scope.graph_names(),
+                    &scope.columns(),
+                    source,
+                    parameters,
+                )?;
+                let needed = imports::for_expression(&mut expression, &scope)?;
+                let input_plan = input.take().unwrap_or_else(|| LogicalPlan::Unwind {
+                    rows: vec![Value::Null],
+                    variable: String::new(),
+                });
+                let input_plan = imports::restore(input_plan, &scope, &needed);
+                scope.0.insert(variable.clone(), BindingType::Scalar);
+                input = Some(LogicalPlan::UnwindRows {
+                    expression,
+                    variable: variable.clone(),
+                    input: Box::new(input_plan),
+                });
+            }
             ClauseKind::Unwind { source, variable }
                 if input.is_none() && scope.0.is_empty() && !source.reads_row_binding() =>
             {
@@ -1327,9 +1352,11 @@ fn bind_read_clauses(
                         imports,
                         introduced,
                         projected_nodes: BTreeMap::new(),
+                        projected_relationships: BTreeMap::new(),
                         steps,
                         predicate,
                         predicate_steps: Vec::new(),
+                        edge_predicates: Vec::new(),
                         optional: *optional,
                     },
                     input: input.map(Box::new),
@@ -1377,9 +1404,11 @@ fn restore_bindings(input: Option<LogicalPlan>, scope: &mut Scope) -> LogicalPla
             imports,
             introduced: Vec::new(),
             projected_nodes: BTreeMap::new(),
+            projected_relationships: BTreeMap::new(),
             steps: Vec::new(),
             predicate: None,
             predicate_steps: Vec::new(),
+            edge_predicates: Vec::new(),
             optional: false,
         },
         input: input.map(Box::new),
@@ -1644,6 +1673,7 @@ fn reads_only_group_keys(expression: &ProjectionExpression, keys: &[Projection])
         | ProjectionExpression::Coalesce(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. } => {
