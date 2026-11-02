@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 
 pub(super) fn bind_set(
@@ -6,6 +9,9 @@ pub(super) fn bind_set(
     returns: Option<&[ReturnItem]>,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
+    if input.patterns.len() > 1 {
+        return bind_matched_node_sets(input, sets, returns, parameters);
+    }
     let pattern = input.single_pattern()?;
     let source = &pattern.first;
     let predicate = input.predicate();
@@ -228,5 +234,58 @@ pub(super) fn bind_delete(
         target_variable: target.variable.clone(),
         target_label: target.label.clone(),
         target_properties: mutation_predicate.target_properties,
+    })
+}
+
+/// Constants are invariant across the MATCH Cartesian product: deduplicating
+/// target IDs preserves their final state. Other assignments stay unsupported.
+fn bind_matched_node_sets(
+    input: &MutationInput<'_>,
+    sets: &[SetProperty],
+    returns: Option<&[ReturnItem]>,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    if returns.is_some() || !input.predicates.is_empty() || sets.is_empty() {
+        return Err(unsupported(
+            "multi-binding SET supports property-map MATCH and constant assignments without RETURN",
+        ));
+    }
+    let mut nodes = BTreeMap::new();
+    for pattern in &input.patterns {
+        let node = &pattern.first;
+        if !pattern.steps.is_empty() || node.anonymous || nodes.contains_key(&node.variable) {
+            return Err(unsupported(
+                "multi-binding SET requires distinct independent node bindings",
+            ));
+        }
+        nodes.insert(
+            node.variable.clone(),
+            crate::logical::MatchedNodeSet {
+                label: node.label.clone(),
+                properties: bind_properties(&node.properties, parameters)?,
+                assignments: BTreeMap::new(),
+            },
+        );
+    }
+    let mut operations = nodes.values().cloned().collect::<Vec<_>>();
+    for set in sets {
+        let node = nodes
+            .get_mut(&set.variable)
+            .ok_or_else(|| unsupported("unknown multi-binding SET variable"))?;
+        let SetValueExpression::Value(value) = &set.value else {
+            return Err(unsupported(
+                "multi-binding SET requires literal or parameter assignments",
+            ));
+        };
+        let mut operation = node.clone();
+        operation
+            .assignments
+            .insert(set.property.clone(), bind_value(value, parameters)?);
+        operations.push(operation);
+    }
+    Ok(LogicalPlan::UnwindMutation {
+        rows: vec![Value::Null],
+        variable: String::new(),
+        operation: BatchMutationOperation::SetMatchedNodes(operations),
     })
 }

@@ -76,6 +76,22 @@ pub fn evaluate_node_set_value(
             }
             Ok(incoming.clone())
         }
+        NodeSetValue::PreserveOlderExisting { incoming, preserve } => {
+            let current = properties
+                .get(&assignment.property)
+                .cloned()
+                .unwrap_or(Value::Null);
+            if incoming == &Value::Null {
+                return Ok(current);
+            }
+            if *preserve
+                && current != Value::Null
+                && value_gt_for_preserve_newer_existing(incoming, &current)
+            {
+                return Ok(current);
+            }
+            Ok(incoming.clone())
+        }
     }
 }
 
@@ -86,6 +102,10 @@ fn value_gt_for_preserve_newer_existing(left: &Value, right: &Value) -> bool {
         (Value::Int(left), Value::Float(right)) => (*left as f64) > *right,
         (Value::Float(left), Value::Int(right)) => *left > (*right as f64),
         (Value::String(left), Value::String(right)) => left > right,
+        (Value::Date(left), Value::Date(right)) => left > right,
+        (Value::LocalTime(left), Value::LocalTime(right)) => left > right,
+        (Value::LocalDateTime(left), Value::LocalDateTime(right)) => left > right,
+        (Value::DateTime(left), Value::DateTime(right)) => left > right,
         _ => false,
     }
 }

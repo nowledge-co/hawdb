@@ -6,6 +6,22 @@ authoritative; this is a map of test families, not an exhaustive list of every
 Rust test function. Update it when changing a family's scope, build profile,
 execution lane, fixture size, isolation or known failure mode.
 
+Mem query-shaped compatibility (`nowledge-co/mem#9338`) is owned by
+`api::tests::mem_query_contract` in `//:hawdb_unit_general_tests` (the existing
+required native general lane). The finite fixtures cover C1-C5 execution,
+NULL/type/arity errors, Entity multiplicity, Space isolation, atomic constant
+multi-binding SET, alias ordering, missing bindings, operation/output-memory
+refusal, transaction rollback, temporal range preservation and WAL-backed
+close/reopen. They retain read CASE/UNWIND, OPTIONAL MATCH aggregation and SQL
+comparison controls. Replay `cargo test --locked -p hawdb --lib mem_9338 --
+--test-threads=1` or the owning Bazel target with `--test_arg=mem_9338`.
+The immutable 1,427-case migration corpus is unchanged; explicit stage overrides
+now qualify `mem-0361` and `mem-0420` with supplied parameters, while preserving
+historical counts and missing-parameter errors. Core text-scalar and storage
+minimum-preservation cases use the existing component test owners.
+No new execution lane, profile, fixture amplification or timeout is introduced.
+See [the contract and explicit SQL scope](specs/MEM_QUERY_COMPATIBILITY_9338.md).
+
 The optimizer-graph joint-statistics owner also covers a residual filter above
 HashJoin when either or both marginal key NDVs are missing. Single-key and
 multi-key predicates retain the existing default selectivity; compatible

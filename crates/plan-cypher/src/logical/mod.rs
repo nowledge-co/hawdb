@@ -162,10 +162,25 @@ pub struct BatchRelationshipMerge {
     pub returns: Option<Vec<Projection>>,
 }
 
+/// One independently selected binding in an atomic constant SET statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchedNodeSet {
+    pub label: String,
+    pub properties: BTreeMap<String, Value>,
+    pub assignments: BTreeMap<String, Value>,
+}
+hawdb_core::impl_retained_heap_for_struct!(MatchedNodeSet {
+    label,
+    properties,
+    assignments
+});
+
 /// The mutation operations currently fed by a bounded `UNWIND` row source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchMutationOperation {
     MergeRelationship(Box<BatchRelationshipMerge>),
+    /// Independent MATCH bindings, all required, followed by static assignments.
+    SetMatchedNodes(Vec<MatchedNodeSet>),
     CreateNode {
         label: String,
         properties: BTreeMap<String, BatchMutationValue>,
@@ -678,6 +693,12 @@ pub enum SetValue {
         incoming: Value,
         preserve: bool,
     },
+
+    PreserveOlderExisting {
+        property: String,
+        incoming: Value,
+        preserve: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -830,6 +851,9 @@ hawdb_core::impl_retained_heap_for_struct!(BatchRelationshipMerge {
 impl hawdb_core::RetainedHeapBytes for BatchMutationOperation {
     fn retained_heap_bytes(&self) -> Option<usize> {
         match self {
+            Self::SetMatchedNodes(nodes) => {
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(nodes)
+            }
             Self::MergeRelationship(merge) => {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(merge)
             }
@@ -923,6 +947,15 @@ impl hawdb_core::RetainedHeapBytes for SetValue {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(property),
             ]),
             Self::PreserveNewerExisting {
+                property,
+                incoming,
+                preserve,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(property),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(incoming),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(preserve),
+            ]),
+            Self::PreserveOlderExisting {
                 property,
                 incoming,
                 preserve,

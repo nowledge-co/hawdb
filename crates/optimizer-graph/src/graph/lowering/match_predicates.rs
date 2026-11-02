@@ -241,6 +241,7 @@ fn expression_names(expression: &ProjectionExpression, names: &mut BTreeSet<Stri
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. }

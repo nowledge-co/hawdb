@@ -186,6 +186,7 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         | ProjectionExpression::Column(_)
         | ProjectionExpression::ColumnProperty { .. }
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::LocalVariable { .. }
         | ProjectionExpression::List(_)

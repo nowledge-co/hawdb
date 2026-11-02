@@ -48,16 +48,19 @@ pub enum ListFunction {
     Reverse,
     /// `range(start, end[, step])` with an inclusive end.
     Range,
+    /// `list_append(list, value)`: append one value without flattening it.
+    Append,
 }
 
 impl ListFunction {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Size,
         Self::Head,
         Self::Last,
         Self::Tail,
         Self::Reverse,
         Self::Range,
+        Self::Append,
     ];
 
     pub fn from_function_name(name: &str) -> Option<Self> {
@@ -74,6 +77,7 @@ impl ListFunction {
             Self::Tail => "tail",
             Self::Reverse => "reverse",
             Self::Range => "range",
+            Self::Append => "list_append",
         }
     }
 
@@ -81,6 +85,7 @@ impl ListFunction {
     pub const fn arity(self) -> (usize, usize) {
         match self {
             Self::Range => (2, 3),
+            Self::Append => (2, 2),
             _ => (1, 1),
         }
     }

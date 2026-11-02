@@ -157,7 +157,13 @@ fn oracle(current: Option<&Value>, operation: &NodeSetValue) -> std::result::Res
                 .map(Value::Int)
                 .map_err(|_| "property increment overflowed i64".into())
         }
-        NodeSetValue::PreserveNewerExisting { incoming, preserve } => {
+        NodeSetValue::PreserveNewerExisting { incoming, preserve }
+        | NodeSetValue::PreserveOlderExisting { incoming, preserve } => {
+            let preferred = if matches!(operation, NodeSetValue::PreserveOlderExisting { .. }) {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
             let order = match (current, incoming) {
                 (Value::Int(left), Value::Int(right)) => Some(left.cmp(right)),
                 (Value::Float(left), Value::Float(right)) => left.partial_cmp(right),
@@ -167,7 +173,7 @@ fn oracle(current: Option<&Value>, operation: &NodeSetValue) -> std::result::Res
                 _ => None,
             };
             Ok(
-                if *incoming == Value::Null || (*preserve && order == Some(Ordering::Greater)) {
+                if *incoming == Value::Null || (*preserve && order == Some(preferred)) {
                     current
                 } else {
                     incoming
@@ -249,4 +255,19 @@ fn set_value_differential_campaign() {
     let count = campaign(256);
     assert_eq!(count, 256 * 12 * 12 * 8);
     eprintln!("SET value evaluation: 256 seeds, {count} cases");
+}
+
+#[test]
+fn minimum_preservation_handles_null_replacement_and_disabled_preservation() {
+    for (current, incoming, preserve, expected) in [
+        (Some(Value::Int(10)), Value::Int(20), true, Value::Int(10)),
+        (Some(Value::Int(30)), Value::Int(20), true, Value::Int(20)),
+        (None, Value::Int(20), true, Value::Int(20)),
+        (Some(Value::Int(10)), Value::Null, false, Value::Int(10)),
+        (Some(Value::Int(10)), Value::Int(20), false, Value::Int(20)),
+    ] {
+        let operation = NodeSetValue::PreserveOlderExisting { incoming, preserve };
+        assert_eq!(oracle(current.as_ref(), &operation).unwrap(), expected);
+        assert_eq!(evaluate(current, operation).unwrap(), expected);
+    }
 }

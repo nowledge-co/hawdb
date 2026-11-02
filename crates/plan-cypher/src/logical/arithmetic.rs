@@ -243,6 +243,7 @@ pub(super) fn scalar_expression_is_scoped(
         | ScalarExpressionKind::Not(_)
         | ScalarExpressionKind::IsNull { .. }
         | ScalarExpressionKind::ListFunction { .. }
+        | ScalarExpressionKind::StringFunction { .. }
         | ScalarExpressionKind::List(_)
         | ScalarExpressionKind::ListIndex { .. }
         | ScalarExpressionKind::Conversion { .. }

@@ -177,6 +177,19 @@ pub(super) fn write_set_value(output: &mut String, value: &SetValue) {
             output.push_str(&preserve.to_string());
             output.push(')');
         }
+        SetValue::PreserveOlderExisting {
+            property,
+            incoming,
+            preserve,
+        } => {
+            output.push_str("preserve_older(");
+            write_identifier(output, property);
+            output.push(',');
+            write_value(output, incoming);
+            output.push(',');
+            output.push_str(&preserve.to_string());
+            output.push(')');
+        }
     }
 }
 

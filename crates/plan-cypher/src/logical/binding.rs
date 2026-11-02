@@ -375,6 +375,7 @@ pub(super) fn bind_relationship_copy_on_create_set_properties(
             | SetValueExpression::CoalesceProperty { .. }
             | SetValueExpression::DecrementFloorZero { .. }
             | SetValueExpression::PreserveNewerExisting { .. }
+            | SetValueExpression::PreserveOlderExisting { .. }
             | SetValueExpression::CoalescePropertyAdd { .. } => {
                 return Err(HawDBError::Semantic(
                     "relationship-copy MERGE ON CREATE SET supports only values and matched relationship properties"
@@ -1489,6 +1490,7 @@ pub(super) fn collect_scalar_expression_variables(
         | ScalarExpressionKind::Not(_)
         | ScalarExpressionKind::IsNull { .. }
         | ScalarExpressionKind::ListFunction { .. }
+        | ScalarExpressionKind::StringFunction { .. }
         | ScalarExpressionKind::List(_)
         | ScalarExpressionKind::ListIndex { .. }
         | ScalarExpressionKind::Conversion { .. }

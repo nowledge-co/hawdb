@@ -1166,6 +1166,31 @@ fn bind_read_clauses(
 ) -> Result<LogicalPlan> {
     for clause in clauses {
         match &clause.kind {
+            ClauseKind::UnwindExpression { source, variable } => {
+                if scope.0.contains_key(variable) {
+                    return Err(HawDBError::Semantic(format!(
+                        "UNWIND variable '{variable}' is already bound"
+                    )));
+                }
+                let mut expression = plan_scalar_expression_with_columns(
+                    &scope.graph_names(),
+                    &scope.columns(),
+                    source,
+                    parameters,
+                )?;
+                let needed = imports::for_expression(&mut expression, &scope)?;
+                let input_plan = input.take().unwrap_or_else(|| LogicalPlan::Unwind {
+                    rows: vec![Value::Null],
+                    variable: String::new(),
+                });
+                let input_plan = imports::restore(input_plan, &scope, &needed);
+                scope.0.insert(variable.clone(), BindingType::Scalar);
+                input = Some(LogicalPlan::UnwindRows {
+                    expression,
+                    variable: variable.clone(),
+                    input: Box::new(input_plan),
+                });
+            }
             ClauseKind::Unwind { source, variable }
                 if input.is_none() && scope.0.is_empty() && !source.reads_row_binding() =>
             {
@@ -1644,6 +1669,7 @@ fn reads_only_group_keys(expression: &ProjectionExpression, keys: &[Projection])
         | ProjectionExpression::Coalesce(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. } => {

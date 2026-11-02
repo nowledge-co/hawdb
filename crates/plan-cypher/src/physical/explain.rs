@@ -718,6 +718,11 @@ fn set_value_summary(value: &SetValue) -> String {
             incoming,
             preserve,
         } => format!("preserve_newer({property},{incoming:?},{preserve})"),
+        SetValue::PreserveOlderExisting {
+            property,
+            incoming,
+            preserve,
+        } => format!("preserve_older({property},{incoming:?},{preserve})"),
     }
 }
 

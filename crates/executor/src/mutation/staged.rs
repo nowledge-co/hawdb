@@ -560,6 +560,13 @@ pub(crate) fn graph_mutation_memory_bytes(mutation: &GraphMutation) -> usize {
                 .saturating_add(optional_filter_memory_bytes(request.source_filter.as_ref()))
                 .saturating_add(optional_filter_memory_bytes(request.target_filter.as_ref()))
         }
+        GraphMutation::SetMatchedNodes(nodes) => nodes.iter().fold(0usize, |total, node| {
+            total
+                .saturating_add(size_of::<hawdb_storage::mutation::MatchedNodeSet>())
+                .saturating_add(node.label.len())
+                .saturating_add(optional_filter_memory_bytes(node.filter.as_ref()))
+                .saturating_add(map_memory_bytes(&node.assignments))
+        }),
         // Row-sourced statements stage only the forms above.
         _ => 0,
     })
@@ -571,6 +578,9 @@ fn assignments_memory_bytes(assignments: &[NodeSetAssignment]) -> usize {
             NodeSetValue::Value(value)
             | NodeSetValue::Coalesce { default: value }
             | NodeSetValue::PreserveNewerExisting {
+                incoming: value, ..
+            }
+            | NodeSetValue::PreserveOlderExisting {
                 incoming: value, ..
             } => value_memory_bytes(value),
             NodeSetValue::AddInt { .. } | NodeSetValue::DecrementFloorZero => 0,

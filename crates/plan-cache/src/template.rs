@@ -1031,6 +1031,7 @@ fn marker_use_in_projection_expression(
         | ProjectionExpression::Not(_)
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
@@ -1618,6 +1619,7 @@ fn bind_projection_expression(
         | ProjectionExpression::Not(_)
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }

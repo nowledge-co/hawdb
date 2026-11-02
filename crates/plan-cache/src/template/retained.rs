@@ -239,10 +239,9 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
             value_bytes(null_or_empty),
         ]),
         E::List(elements) => vector(elements, expression_bytes),
-        E::ListFunction {
-            function: _,
-            arguments,
-        } => vector(arguments, expression_bytes),
+        E::ListFunction { arguments, .. } | E::StringFunction { arguments, .. } => {
+            vector(arguments, expression_bytes)
+        }
         E::ListComprehension(comprehension) => boxed(comprehension.as_ref(), |comprehension| {
             sum([
                 Some(comprehension.variable.capacity()),

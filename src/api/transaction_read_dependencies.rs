@@ -233,6 +233,9 @@ fn qualified_sets(sets: &[cypher::SetProperty]) -> bool {
         S::PreserveNewerExisting {
             incoming, preserve, ..
         } => deterministic(incoming) && deterministic(preserve),
+        S::PreserveOlderExisting {
+            incoming, preserve, ..
+        } => deterministic(incoming) && deterministic(preserve),
         S::Property { .. } | S::DecrementFloorZero { .. } => true,
     })
 }
@@ -265,6 +268,9 @@ fn qualified_cypher(statement: &cypher::Statement) -> bool {
                 }
                 C::Set(sets) => qualified_sets(sets),
                 C::Unwind { source, .. } => value_is_deterministic(source),
+                C::UnwindExpression { source, .. } => {
+                    super::plan_cache::determinism::scalar_is_deterministic(source)
+                }
                 C::Delete { .. } => true,
                 // File contents are external input with no read dependency.
                 C::Call { .. } | C::LoadCsv(_) => false,
