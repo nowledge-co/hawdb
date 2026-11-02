@@ -102,11 +102,8 @@ fn value_gt_for_preserve_newer_existing(left: &Value, right: &Value) -> bool {
         (Value::Int(left), Value::Float(right)) => (*left as f64) > *right,
         (Value::Float(left), Value::Int(right)) => *left > (*right as f64),
         (Value::String(left), Value::String(right)) => left > right,
-        (Value::Date(left), Value::Date(right)) => left > right,
-        (Value::LocalTime(left), Value::LocalTime(right)) => left > right,
-        (Value::LocalDateTime(left), Value::LocalDateTime(right)) => left > right,
-        (Value::DateTime(left), Value::DateTime(right)) => left > right,
-        _ => false,
+        _ => hawdb_core::temporal::comparable_ordering(left, right)
+            .is_some_and(std::cmp::Ordering::is_gt),
     }
 }
 

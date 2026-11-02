@@ -42,6 +42,8 @@ require materializing the MATCH Cartesian product. The storage command resolves
 all selectors before preparing ordered writes. Existing mutation operation,
 affected-row and output ceilings apply. Refusal discards the prepared batch;
 transaction rollback and durable reopen remain owned by the existing kernel.
+Temporal range preservation shares the kernel's comparable temporal ordering,
+including offset tie-breaks for zoned datetimes representing the same instant.
 No new WAL encoding, durability default or publication boundary is introduced.
 The fixture does not establish additional power-loss qualification.
 

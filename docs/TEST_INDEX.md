@@ -11,7 +11,8 @@ Mem query-shaped compatibility (`nowledge-co/mem#9338`) is owned by
 required native general lane). The finite fixtures cover C1-C5 execution,
 NULL/type/arity errors, Entity multiplicity, Space isolation, atomic constant
 multi-binding SET, alias ordering, missing bindings, operation/output-memory
-refusal, transaction rollback, temporal range preservation and WAL-backed
+refusal, transaction rollback, temporal range preservation (including equal-instant
+UTC-offset tie-breaks) and WAL-backed
 close/reopen. They retain read CASE/UNWIND, OPTIONAL MATCH aggregation and SQL
 comparison controls. Replay `cargo test --locked -p hawdb --lib mem_9338 --
 --test-threads=1` or the owning Bazel target with `--test_arg=mem_9338`.
