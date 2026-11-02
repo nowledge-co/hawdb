@@ -41,6 +41,10 @@ if [[ "${1:-}" == --list ]]; then
   fi
   echo 'api::tests::storage_recovery::owned: test'
   echo 'api::tests::query_execution::owned: test'
+  echo 'api::automatic_checkpoint::tests::manual::ordinary_manual_during_automatic_preparation_resumes_automatic_progress: test'
+  echo 'api::automatic_checkpoint::tests::idle_handoff::releasing_a_runtime_read_guard_wakes_unattended_handoff: test'
+  echo 'api::automatic_checkpoint::tests::planning_recovery::actual_owner_reports_cached_memory_denial_and_recovers_without_frontend_work: test'
+  echo 'api::automatic_checkpoint::tests::coalesced_capture::coalesced_commits_refresh_and_checkpoint_without_another_frontend_call: test'
   echo 'api::automatic_checkpoint::tests::headroom::pending_idle: test'
   echo 'api::automatic_checkpoint::tests::headroom::capacity_wait::deadline: test'
   echo 'api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen: test'
@@ -57,7 +61,7 @@ if [[ "${1:-}" == --list ]]; then
   if [[ "${PARTITION_PROBE_RSS_OVERLAP:-0}" == 1 ]]; then
     echo 'api::tests::graph_analytics::rss_child_extension: test'
   fi
-  echo '10 tests, 0 benchmarks'
+  echo '15 tests, 0 benchmarks'
   exit 0
 fi
 printf '%s\n' "$@" >"${PARTITION_PROBE_ARGS}"
@@ -83,6 +87,10 @@ owners = {
     "recovery": {"api::tests::storage_recovery::owned"},
     "general": {"api::tests::query_execution::owned"},
     "checkpoint_headroom": {
+        "api::automatic_checkpoint::tests::manual::ordinary_manual_during_automatic_preparation_resumes_automatic_progress",
+        "api::automatic_checkpoint::tests::idle_handoff::releasing_a_runtime_read_guard_wakes_unattended_handoff",
+        "api::automatic_checkpoint::tests::planning_recovery::actual_owner_reports_cached_memory_denial_and_recovers_without_frontend_work",
+        "api::automatic_checkpoint::tests::coalesced_capture::coalesced_commits_refresh_and_checkpoint_without_another_frontend_call",
         "api::automatic_checkpoint::tests::headroom::pending_idle",
         "api::automatic_checkpoint::tests::headroom::capacity_wait::deadline",
         "api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen",
@@ -101,7 +109,7 @@ elif sys.argv[2] == "analytics_core":
 else:
     owned = owners[sys.argv[2]]
 skips = [args[i + 1] for i, value in enumerate(args[:-1]) if value == "--skip"]
-assert set(skips) == (all_names - owned) | {"user_skip"}
+assert set(skips) == (all_names - owned) | {"user_skip"}, (sys.argv[2], set(skips), owned)
 assert args[-4:] == ["custom_filter", "--exact", "--skip", "user_skip"]
 PY
 done
@@ -118,6 +126,10 @@ names = {
     "api::tests::graph_analytics::rss_child",
     "api::tests::storage_recovery::owned",
     "api::tests::query_execution::owned",
+    "api::automatic_checkpoint::tests::manual::ordinary_manual_during_automatic_preparation_resumes_automatic_progress",
+    "api::automatic_checkpoint::tests::idle_handoff::releasing_a_runtime_read_guard_wakes_unattended_handoff",
+    "api::automatic_checkpoint::tests::planning_recovery::actual_owner_reports_cached_memory_denial_and_recovers_without_frontend_work",
+    "api::automatic_checkpoint::tests::coalesced_capture::coalesced_commits_refresh_and_checkpoint_without_another_frontend_call",
     "api::automatic_checkpoint::tests::headroom::pending_idle",
     "api::automatic_checkpoint::tests::headroom::capacity_wait::deadline",
     "api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen",

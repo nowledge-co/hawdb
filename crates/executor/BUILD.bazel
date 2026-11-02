@@ -33,6 +33,8 @@ rust_library(
 
 rust_test(
     name = "hawdb_executor_unit_tests",
+    # Keep the full reference fixtures after competing build/test actions.
+    tags = ["exclusive"],
     crate = ":hawdb_executor",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
