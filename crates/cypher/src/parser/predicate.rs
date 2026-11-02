@@ -993,6 +993,23 @@ impl Parser<'_> {
         let then_variable = self.parse_ident()?;
         self.expect_char('.')?;
         let then_property = self.parse_ident()?;
+        if self.consume_keyword("ELSE") {
+            let else_value = self.parse_value()?;
+            if else_value != incoming {
+                return Err(
+                    self.error("CASE null-preserving SET ELSE must return the incoming value")
+                );
+            }
+            self.expect_keyword("END")?;
+            return Ok(SetValueExpression::PreserveNewerExisting {
+                variable: then_variable,
+                property: then_property,
+                incoming,
+                preserve: AstNode::synthetic(ValueExpressionKind::Literal(
+                    hawdb_core::Value::Bool(false),
+                )),
+            });
+        }
         self.expect_keyword("WHEN")?;
         let preserve = self.parse_value()?;
         self.expect_char('=')?;
@@ -1017,7 +1034,12 @@ impl Parser<'_> {
         if compared_variable != then_variable || compared_property != then_property {
             return Err(self.error("CASE preserve SET must compare the preserved property"));
         }
-        self.expect_char('>')?;
+        let preserve_older = if self.consume_char('<') {
+            true
+        } else {
+            self.expect_char('>')?;
+            false
+        };
         let compared_incoming = self.parse_value()?;
         if compared_incoming != incoming {
             return Err(self.error("CASE preserve SET must compare against the incoming value"));
@@ -1035,11 +1057,20 @@ impl Parser<'_> {
             return Err(self.error("CASE preserve SET ELSE must return the incoming value"));
         }
         self.expect_keyword("END")?;
-        Ok(SetValueExpression::PreserveNewerExisting {
-            variable: then_variable,
-            property: then_property,
-            incoming,
-            preserve,
+        Ok(if preserve_older {
+            SetValueExpression::PreserveOlderExisting {
+                variable: then_variable,
+                property: then_property,
+                incoming,
+                preserve,
+            }
+        } else {
+            SetValueExpression::PreserveNewerExisting {
+                variable: then_variable,
+                property: then_property,
+                incoming,
+                preserve,
+            }
         })
     }
 

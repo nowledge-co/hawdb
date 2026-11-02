@@ -244,6 +244,7 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
         }
         ProjectionExpression::IsNull { expression, .. } => has_native_bindings(expression, input),
         ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }

@@ -504,6 +504,7 @@ fn expression(expression: &ProjectionExpression, demand: &mut Demand) {
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. }

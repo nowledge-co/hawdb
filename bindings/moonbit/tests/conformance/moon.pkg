@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import {
+  "moonbitlang/core/double",
   "nowledge-co/hawdb" @hawdb,
   "moonbitlang/core/json",
 }

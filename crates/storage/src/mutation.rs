@@ -328,6 +328,16 @@ pub enum GraphMutation {
     MergeRelationshipsToMatchedTarget(MatchedRelationshipRetargetMerge),
     MergeRelationshipsFromMatchedTarget(MatchedRelationshipSourceRetargetMerge),
     CreateConnectedNodes(ConnectedNodesCreate),
+    /// All selectors must match before any constant assignment is applied.
+    SetMatchedNodes(Vec<MatchedNodeSet>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchedNodeSet {
+    pub label: String,
+    pub filter: Option<PropertyFilter>,
+    /// Ordered writes, including duplicate properties, for one consecutive group.
+    pub assignments: Vec<(String, Value)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,6 +353,7 @@ pub enum NodeSetValue {
     AddInt { amount: i64 },
     DecrementFloorZero,
     PreserveNewerExisting { incoming: Value, preserve: bool },
+    PreserveOlderExisting { incoming: Value, preserve: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

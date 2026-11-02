@@ -127,6 +127,7 @@ mod list_functions;
 mod list_literals;
 mod load_csv;
 mod materialized_views;
+mod mem_query_contract;
 mod memory_lifecycle;
 mod merge_nodes;
 mod merge_relationships;

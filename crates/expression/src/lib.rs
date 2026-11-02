@@ -262,6 +262,13 @@ pub enum ProjectionExpression {
         function: hawdb_core::ListFunction,
         arguments: Vec<ProjectionExpression>,
     },
+
+    StringFunction {
+        function: hawdb_core::StringFunction,
+        arguments: Vec<ProjectionExpression>,
+        /// Invariant literal/parameter pattern, compiled once per execution.
+        pattern: Option<Box<ValidatedRegex>>,
+    },
     /// `[variable IN list WHERE predicate | projection]`.
     ListComprehension(Box<ListComprehensionProjection>),
     /// The element bound by an enclosing list comprehension, optionally
@@ -426,6 +433,10 @@ impl ProjectionExpression {
                 arguments: expressions,
                 ..
             }
+            | Self::StringFunction {
+                arguments: expressions,
+                ..
+            }
             | Self::TemporalFunction {
                 arguments: expressions,
                 ..
@@ -492,6 +503,10 @@ impl ProjectionExpression {
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {
+                arguments: expressions,
+                ..
+            }
+            | Self::StringFunction {
                 arguments: expressions,
                 ..
             }
@@ -975,6 +990,15 @@ impl hawdb_core::RetainedHeapBytes for ProjectionExpression {
             } => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(function),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(arguments),
+            ]),
+            Self::StringFunction {
+                function,
+                arguments,
+                pattern,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(function),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(arguments),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(pattern),
             ]),
             Self::ListComprehension(comprehension) => {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(comprehension)

@@ -171,7 +171,9 @@ Generated build output, downloaded MoonBit dependencies and historical
 `docs/benchmarks/` evidence are excluded. Historical evidence must retain its
 recorded bytes, including reproduction snapshots and generated JUnit XML.
 Run `python scripts/check-license-headers.test.py` with pinned HawkEye on PATH
-for the positive/negative read-only fixture checks.
+for the positive/negative read-only fixture checks. The `License Headers`
+GitHub Actions workflow runs these fixtures and the full-tree wrapper check
+on pull requests to `main` and pushes to `main`, using the same HawkEye version.
 Use `prek run hawkeye-format --all-files` to audit all tracked files under
 this policy. A staged-file pass covers only the selected files. Preserve
 existing copyright notices and separate the license header from ordinary

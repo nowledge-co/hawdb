@@ -357,6 +357,19 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
                         },
                     }],
                 })),
+                SetValue::PreserveOlderExisting {
+                    incoming, preserve, ..
+                } => Ok(Some(GraphMutation::SetNodeProperties {
+                    label: label.clone(),
+                    filter,
+                    assignments: vec![NodeSetAssignment {
+                        property: property.clone(),
+                        value: NodeSetValue::PreserveOlderExisting {
+                            incoming: incoming.clone(),
+                            preserve: *preserve,
+                        },
+                    }],
+                })),
             }
         }
         PhysicalPlan::SetNodeProperties {
@@ -599,6 +612,12 @@ pub fn node_set_value(value: &SetValue) -> NodeSetValue {
         SetValue::PreserveNewerExisting {
             incoming, preserve, ..
         } => NodeSetValue::PreserveNewerExisting {
+            incoming: incoming.clone(),
+            preserve: *preserve,
+        },
+        SetValue::PreserveOlderExisting {
+            incoming, preserve, ..
+        } => NodeSetValue::PreserveOlderExisting {
             incoming: incoming.clone(),
             preserve: *preserve,
         },

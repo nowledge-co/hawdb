@@ -1,16 +1,5 @@
 // Copyright 2026 Nowledge
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 use super::*;
 
@@ -20,6 +9,9 @@ pub(super) fn bind_set(
     returns: Option<&[ReturnItem]>,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
+    if input.patterns.len() > 1 {
+        return bind_matched_node_sets(input, sets, returns, parameters);
+    }
     let pattern = input.single_pattern()?;
     let source = &pattern.first;
     let predicate = input.predicate();
@@ -242,5 +234,69 @@ pub(super) fn bind_delete(
         target_variable: target.variable.clone(),
         target_label: target.label.clone(),
         target_properties: mutation_predicate.target_properties,
+    })
+}
+
+/// Constants are invariant across the MATCH Cartesian product: deduplicating
+/// target IDs preserves their final state. Other assignments stay unsupported.
+fn bind_matched_node_sets(
+    input: &MutationInput<'_>,
+    sets: &[SetProperty],
+    returns: Option<&[ReturnItem]>,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    if returns.is_some() || !input.predicates.is_empty() || sets.is_empty() {
+        return Err(unsupported(
+            "multi-binding SET supports property-map MATCH and constant assignments without RETURN",
+        ));
+    }
+    let mut nodes = BTreeMap::new();
+    for pattern in &input.patterns {
+        let node = &pattern.first;
+        if !pattern.steps.is_empty() || node.anonymous || nodes.contains_key(&node.variable) {
+            return Err(unsupported(
+                "multi-binding SET requires distinct independent node bindings",
+            ));
+        }
+        nodes.insert(
+            node.variable.clone(),
+            crate::logical::MatchedNodeSet {
+                label: node.label.clone(),
+                properties: bind_properties(&node.properties, parameters)?,
+                assignments: Vec::new(),
+            },
+        );
+    }
+    let mut operations = nodes.values().cloned().collect::<Vec<_>>();
+    let mut last_variable = None;
+    for set in sets {
+        let node = nodes
+            .get_mut(&set.variable)
+            .ok_or_else(|| unsupported("unknown multi-binding SET variable"))?;
+        let SetValueExpression::Value(value) = &set.value else {
+            return Err(unsupported(
+                "multi-binding SET requires literal or parameter assignments",
+            ));
+        };
+        let value = bind_value(value, parameters)?;
+        if last_variable == Some(set.variable.as_str()) {
+            // Only adjacent items can coalesce: another binding may alias this
+            // node, so crossing it would change source-order last-write wins.
+            operations
+                .last_mut()
+                .expect("a previous assignment group exists")
+                .assignments
+                .push((set.property.clone(), value));
+        } else {
+            let mut operation = node.clone();
+            operation.assignments.push((set.property.clone(), value));
+            operations.push(operation);
+        }
+        last_variable = Some(set.variable.as_str());
+    }
+    Ok(LogicalPlan::UnwindMutation {
+        rows: vec![Value::Null],
+        variable: String::new(),
+        operation: BatchMutationOperation::SetMatchedNodes(operations),
     })
 }
