@@ -238,6 +238,8 @@ pub struct SegmentCache {
     admission: Mutex<SegmentCacheAdmission>,
     shards: [Arc<Mutex<SegmentCacheShard>>; CACHE_SHARD_COUNT],
     shard_hasher: RandomState,
+    // Immutable copy of the admission capacity, readable without its lock.
+    capacity_bytes: u64,
 }
 
 const CACHE_SHARD_COUNT: usize = 16;
@@ -298,7 +300,13 @@ impl SegmentCache {
             }),
             shards: std::array::from_fn(|_| Arc::new(Mutex::new(SegmentCacheShard::default()))),
             shard_hasher: RandomState::new(),
+            capacity_bytes,
         }
+    }
+
+    /// The fixed capacity this cache admits resident bytes against.
+    pub(crate) const fn capacity_bytes(&self) -> u64 {
+        self.capacity_bytes
     }
 
     pub fn get(&self, key: &SegmentCacheKey) -> Option<SegmentCacheLease> {
