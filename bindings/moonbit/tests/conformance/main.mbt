@@ -509,6 +509,43 @@ fn typed_vector_roundtrip() -> Bool {
 }
 
 ///|
+/// NaN and infinities survive the transport instead of becoming NULL.
+fn typed_non_finite_roundtrip() -> Bool {
+  let db = match @hawdb.open_in_memory() {
+    Ok(db) => db
+    Err(err) => return failed("typed.non_finite.open", err.describe())
+  }
+  let data = db.query(
+    "UNWIND [1] AS row RETURN $nan AS nan, $inf AS inf, $neg AS neg",
+    {
+      "nan": @hawdb.Value::Float(@double.not_a_number),
+      "inf": @hawdb.Value::Float(@double.infinity),
+      "neg": @hawdb.Value::Float(-@double.infinity),
+    },
+  )
+  let ok = match data {
+    Err(err) => failed("typed.non_finite.read", err.describe())
+    Ok(result) =>
+      match (result.get(0, "nan"), result.get(0, "inf"), result.get(0, "neg")) {
+        (
+          Some(@hawdb.Value::Float(nan)),
+          Some(@hawdb.Value::Float(inf)),
+          Some(@hawdb.Value::Float(neg)),
+        ) =>
+          if nan != nan && inf == @double.infinity && neg == -@double.infinity {
+            println("CASE_PASS typed.non_finite_roundtrip")
+            true
+          } else {
+            failed("typed.non_finite_roundtrip", "non-finite floats differ")
+          }
+        _ => failed("typed.non_finite_roundtrip", "wrong result ADT")
+      }
+  }
+  db.close()
+  ok
+}
+
+///|
 /// Native temporal values keep their kind and ISO 8601 text, and a plain
 /// map whose only key is a temporal tag stays a map.
 fn typed_temporal_roundtrip() -> Bool {
@@ -1184,6 +1221,7 @@ fn main {
   if !typed_value_roundtrip() { return }
   if !typed_vector_roundtrip() { return }
   if !typed_temporal_roundtrip() { return }
+  if !typed_non_finite_roundtrip() { return }
   if !typed_marker_map_case() { return }
   if !typed_vector_range_case() { return }
   if !typed_rejections() { return }

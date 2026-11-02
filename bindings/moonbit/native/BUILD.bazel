@@ -7,12 +7,14 @@ package(default_visibility = ["//visibility:public"])
 # Cargo dependency resolution or second engine compilation.
 _MOONBIT_DEPS = [
     "//:hawdb",
+    "@crate_index//:serde",
     "@crate_index//:serde_json",
     "@ffi_crates//:base64",
 ]
 
 rust_static_library(
     name = "hawdb_moonbit_static",
+    version = "0.24.0",
     crate_name = "hawdb_moonbit",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -24,6 +26,7 @@ rust_static_library(
 # MoonBit objects; actual FFI execution is checked by the MoonBit binary tests.
 rust_test(
     name = "hawdb_moonbit_rust_tests",
+    version = "0.24.0",
     crate_name = "hawdb_moonbit",
     crate_root = "src/lib.rs",
     edition = "2024",

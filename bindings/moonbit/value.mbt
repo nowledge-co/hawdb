@@ -30,7 +30,11 @@ fn temporal_kinds() -> Array[String] {
 ///|
 /// Singleton map keys that the native transport reads as typed values.
 fn is_reserved_tag(key : String) -> Bool {
-  if key == "$binary" || key == "$uuid" || key == "$vector" || key == "$map" {
+  if key == "$binary" ||
+    key == "$uuid" ||
+    key == "$vector" ||
+    key == "$map" ||
+    key == "$float" {
     return true
   }
   for kind in temporal_kinds() {
@@ -100,9 +104,14 @@ fn value_to_json_depth(value : Value, depth : Int) -> Result[Json, HawdbError] {
     Value::Null => Ok(Json::null())
     Value::Bool(v) => Ok(Json::boolean(v))
     Value::Int(v) => Ok(Json::number(0.0, repr=v.to_string()))
+    // JSON has no NaN or infinity; the transport tags them explicitly.
     Value::Float(v) =>
-      if v != v || v == @double.infinity || v == -@double.infinity {
-        Err(HawdbError::Codec("non-finite float is not representable in HawDB JSON"))
+      if v != v {
+        Ok(Json::object({ "$float": Json::string("NaN") }))
+      } else if v == @double.infinity {
+        Ok(Json::object({ "$float": Json::string("Infinity") }))
+      } else if v == -@double.infinity {
+        Ok(Json::object({ "$float": Json::string("-Infinity") }))
       } else {
         Ok(Json::number(v))
       }
@@ -256,6 +265,14 @@ fn json_to_value_depth(json : Json, depth : Int) -> Result[Value, HawdbError] {
         match values.get("$uuid") {
           Some(Json::String(s)) => return Ok(Value::Uuid(s))
           Some(_) => return Err(HawdbError::Codec("$uuid must be a string"))
+          None => ()
+        }
+        match values.get("$float") {
+          Some(Json::String("NaN")) => return Ok(Value::Float(@double.not_a_number))
+          Some(Json::String("Infinity")) => return Ok(Value::Float(@double.infinity))
+          Some(Json::String("-Infinity")) => return Ok(Value::Float(-@double.infinity))
+          Some(_) =>
+            return Err(HawdbError::Codec("$float must be NaN, Infinity or -Infinity"))
           None => ()
         }
         for kind in temporal_kinds() {

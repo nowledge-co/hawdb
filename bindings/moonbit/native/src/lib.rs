@@ -21,6 +21,7 @@ use hawdb::{
     DatabaseReadTransaction, EmbeddedQueryError, HawDBEmbedded, HawDBEmbeddedOpenOptions,
     HawDBError, QueryOutput, RecoveryMode, SqlQueryRequest, Uuid, Value,
 };
+use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::{json, Value as Json};
 
 unsafe extern "C" {
@@ -34,8 +35,51 @@ unsafe extern "C" {
 // The Rust mutex protects each externally owned MoonBit handle's state.
 // A borrowed FFI parameter pins the payload through the native call.
 struct SharedDatabase {
-    engine: Mutex<HawDBEmbedded>,
+    // `None` once closed. Read snapshots live beside the engine, so closing
+    // releases every engine resource at once instead of waiting for MoonBit
+    // to finalize outstanding transaction handles. MoonBit handles are not
+    // shared across threads, so serializing snapshot reads costs nothing.
+    engine: Mutex<Option<OpenEngine>>,
     closed: AtomicBool,
+}
+
+struct OpenEngine {
+    db: HawDBEmbedded,
+    readers: BTreeMap<u64, DatabaseReadTransaction>,
+    next_reader: u64,
+}
+
+impl SharedDatabase {
+    fn with_engine<T>(
+        &self,
+        run: impl FnOnce(&mut OpenEngine) -> Result<T, Failure>,
+    ) -> Result<T, Failure> {
+        let mut engine = self
+            .engine
+            .lock()
+            .map_err(|_| fail("execution", "database mutex poisoned"))?;
+        run(engine
+            .as_mut()
+            .ok_or_else(|| fail("closed", "database is closed"))?)
+    }
+
+    /// Rolls back an open write transaction, drops every read snapshot and
+    /// the engine, and so releases the database for a later open. Waits for
+    /// in-flight engine work first.
+    fn close(&self) {
+        let mut engine = self
+            .engine
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(mut engine) = engine.take() {
+            engine.readers.clear();
+            if engine.db.transaction_active() {
+                // Dropping the engine discards the transaction regardless.
+                let _ = engine.db.rollback_transaction();
+            }
+        }
+        self.closed.store(true, Ordering::Release);
+    }
 }
 
 struct HandleState {
@@ -49,9 +93,13 @@ pub struct Handle {
     state: *mut Mutex<HandleState>,
 }
 
-fn owned_database(engine: HawDBEmbedded) -> Arc<SharedDatabase> {
+fn owned_database(db: HawDBEmbedded) -> Arc<SharedDatabase> {
     Arc::new(SharedDatabase {
-        engine: Mutex::new(engine),
+        engine: Mutex::new(Some(OpenEngine {
+            db,
+            readers: BTreeMap::new(),
+            next_reader: 0,
+        })),
         closed: AtomicBool::new(false),
     })
 }
@@ -132,12 +180,7 @@ fn close_db(handle: *mut Handle) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(shared) = state.db.take() {
-        // Wait for in-flight engine work before marking the handle closed.
-        let _engine = shared
-            .engine
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        shared.closed.store(true, Ordering::Release);
+        shared.close();
     }
 }
 
@@ -282,6 +325,18 @@ fn decode_value(value: &Json) -> Result<Value, Failure> {
                         .map(Value::Uuid)
                         .map_err(|e| fail("invalid_argument", e.to_string()));
                 }
+                if let Some(v) = values.get("$float") {
+                    return v
+                        .as_str()
+                        .and_then(non_finite_value)
+                        .map(Value::Float)
+                        .ok_or_else(|| {
+                            fail(
+                                "invalid_argument",
+                                "$float must be \"NaN\", \"Infinity\" or \"-Infinity\"",
+                            )
+                        });
+                }
                 if let Some((tag, v)) = values.iter().next()
                     && hawdb::temporal::JSON_TAGS.contains(&tag.as_str())
                 {
@@ -306,56 +361,135 @@ fn decode_value(value: &Json) -> Result<Value, Failure> {
     })
 }
 
-fn encode_value(value: &Value) -> Json {
-    match value {
-        Value::Null => Json::Null,
-        Value::Bool(v) => json!(v),
-        Value::Int(v) => json!(v),
-        Value::Float(v) if v.is_finite() => json!(v),
-        Value::Float(_) => Json::Null,
-        Value::String(v) => json!(v),
-        Value::Binary(v) => json!({"$binary":base64::engine::general_purpose::STANDARD.encode(v)}),
-        Value::Uuid(v) => json!({"$uuid":v.to_string()}),
-        Value::Vector(v) => json!({"$vector":v.as_ref().coordinates().collect::<Vec<_>>()}),
-        Value::Date(_)
-        | Value::LocalTime(_)
-        | Value::LocalDateTime(_)
-        | Value::DateTime(_)
-        | Value::Duration(_) => {
-            json!({ hawdb::temporal::json_tag(value).expect("temporal value"): value.to_string() })
-        }
-        Value::List(v) => Json::Array(v.iter().map(encode_value).collect()),
-        Value::Map(v) => {
-            let reserved = v.len() == 1
-                && v.keys().next().is_some_and(|key| {
-                    matches!(key.as_str(), "$binary" | "$uuid" | "$vector" | "$map")
-                        || hawdb::temporal::JSON_TAGS.contains(&key.as_str())
-                });
-            if reserved {
-                let pairs: Vec<Json> = v
-                    .iter()
-                    .map(|(key, value)| {
-                        Json::Array(vec![Json::String(key.clone()), encode_value(value)])
-                    })
-                    .collect();
-                json!({"$map": pairs})
-            } else {
-                Json::Object(
-                    v.iter()
-                        .map(|(key, value)| (key.clone(), encode_value(value)))
-                        .collect(),
-                )
+/// Singleton-map keys that the transport reads as typed values. A user map
+/// with exactly one such key travels as `{"$map": [[key, value]]}`.
+fn is_reserved_tag(key: &str) -> bool {
+    matches!(key, "$binary" | "$uuid" | "$vector" | "$map" | "$float")
+        || hawdb::temporal::JSON_TAGS.contains(&key)
+}
+
+/// JSON has no NaN or infinity, so non-finite floats travel as
+/// `{"$float": "NaN" | "Infinity" | "-Infinity"}` instead of as NULL.
+fn non_finite_text(value: f64) -> &'static str {
+    if value.is_nan() {
+        "NaN"
+    } else if value > 0.0 {
+        "Infinity"
+    } else {
+        "-Infinity"
+    }
+}
+
+fn non_finite_value(text: &str) -> Option<f64> {
+    match text {
+        "NaN" => Some(f64::NAN),
+        "Infinity" => Some(f64::INFINITY),
+        "-Infinity" => Some(f64::NEG_INFINITY),
+        _ => None,
+    }
+}
+
+/// Serializes one engine value in the tagged transport, streaming it
+/// straight into the output buffer instead of building a JSON tree.
+struct Tagged<'a>(&'a Value);
+
+fn tagged_entry<S: Serializer>(
+    serializer: S,
+    tag: &str,
+    payload: &(impl Serialize + ?Sized),
+) -> Result<S::Ok, S::Error> {
+    let mut map = serializer.serialize_map(Some(1))?;
+    map.serialize_entry(tag, payload)?;
+    map.end()
+}
+
+struct Coordinates<'a>(&'a hawdb::Vector);
+
+impl Serialize for Coordinates<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.as_ref().coordinates())
+    }
+}
+
+struct EscapedPairs<'a>(&'a BTreeMap<String, Value>);
+
+impl Serialize for EscapedPairs<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(|(key, value)| (key, Tagged(value))))
+    }
+}
+
+impl Serialize for Tagged<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Null => serializer.serialize_unit(),
+            Value::Bool(v) => serializer.serialize_bool(*v),
+            Value::Int(v) => serializer.serialize_i64(*v),
+            Value::Float(v) if v.is_finite() => serializer.serialize_f64(*v),
+            Value::Float(v) => tagged_entry(serializer, "$float", non_finite_text(*v)),
+            Value::String(v) => serializer.serialize_str(v),
+            Value::Binary(v) => tagged_entry(
+                serializer,
+                "$binary",
+                &base64::engine::general_purpose::STANDARD.encode(v),
+            ),
+            Value::Uuid(v) => tagged_entry(serializer, "$uuid", &v.to_string()),
+            Value::Vector(v) => tagged_entry(serializer, "$vector", &Coordinates(v)),
+            value @ (Value::Date(_)
+            | Value::LocalTime(_)
+            | Value::LocalDateTime(_)
+            | Value::DateTime(_)
+            | Value::Duration(_)) => tagged_entry(
+                serializer,
+                hawdb::temporal::json_tag(value).expect("temporal value"),
+                &value.to_string(),
+            ),
+            Value::List(values) => serializer.collect_seq(values.iter().map(Tagged)),
+            Value::Map(values)
+                if values.len() == 1
+                    && values.keys().next().is_some_and(|key| is_reserved_tag(key)) =>
+            {
+                tagged_entry(serializer, "$map", &EscapedPairs(values))
+            }
+            Value::Map(values) => {
+                serializer.collect_map(values.iter().map(|(key, value)| (key, Tagged(value))))
             }
         }
     }
 }
 
-fn encode_result(result: &QueryOutput) -> String {
-    let rows: Vec<_> = result
-        .value_rows()
-        .map(|row| Json::Array(row.iter().map(encode_value).collect()))
-        .collect();
-    json!({"columns":result.schema().columns(),"rows":rows}).to_string()
+struct Row<'a>(&'a [Value]);
+
+impl Serialize for Row<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(Tagged))
+    }
+}
+
+struct Rows<'a>(&'a QueryOutput);
+
+impl Serialize for Rows<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.value_rows().map(Row))
+    }
+}
+
+/// The `{"columns": [...], "rows": [[...], ...]}` result envelope.
+struct ResultEnvelope<'a>(&'a QueryOutput);
+
+impl Serialize for ResultEnvelope<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("columns", self.0.schema().columns())?;
+        map.serialize_entry("rows", &Rows(self.0))?;
+        map.end()
+    }
+}
+
+/// Encodes a result in one pass into the buffer that is then copied once
+/// into MoonBit-owned bytes.
+fn encode_result(result: &QueryOutput) -> Result<Vec<u8>, Failure> {
+    serde_json::to_vec(&ResultEnvelope(result)).map_err(|e| fail("execution", e.to_string()))
 }
 
 fn named_params(data: &str) -> Result<BTreeMap<String, Value>, Failure> {
@@ -468,7 +602,7 @@ fn execute_statement(
     statement: &str,
     params: &str,
     sql: bool,
-) -> Result<String, Failure> {
+) -> Result<Vec<u8>, Failure> {
     let answer = if sql {
         let args = sql_params(params)?;
         engine.query_sql_request_admitted(SqlQueryRequest::new(statement).with_params(&args))
@@ -476,7 +610,7 @@ fn execute_statement(
         engine.query_with_params_admitted(statement, &named_params(params)?)
     }
     .map_err(|e| query_error(&e))?;
-    Ok(encode_result(&answer))
+    encode_result(&answer)
 }
 
 /// # Safety
@@ -500,17 +634,10 @@ pub unsafe extern "C" fn moonbit_hawdb_execute(
     let result = catch_unwind(AssertUnwindSafe(|| {
         let statement = unsafe { input(text, text_len, "statement") }?;
         let params = unsafe { input(params, params_len, "params") }?;
-        let mut locked = db
-            .engine
-            .lock()
-            .map_err(|_| fail("execution", "database mutex poisoned"))?;
-        if db.closed.load(Ordering::Acquire) {
-            return Err(fail("closed", "database is closed"));
-        }
-        execute_statement(&mut locked, statement, params, sql != 0)
+        db.with_engine(|engine| execute_statement(&mut engine.db, statement, params, sql != 0))
     }));
     match result {
-        Ok(Ok(text)) => to_moonbit_bytes(text.as_bytes()),
+        Ok(Ok(bytes)) => to_moonbit_bytes(&bytes),
         Ok(Err(e)) => {
             save_error(handle, error_json(e));
             to_moonbit_bytes(&[])
@@ -543,6 +670,8 @@ pub unsafe extern "C" fn moonbit_hawdb_error(handle: *mut Handle) -> *mut u8 {
     to_moonbit_bytes(message.as_bytes())
 }
 
+/// The adapter is versioned in lockstep with the workspace (Cargo.toml and
+/// the Bazel `version` attribute), so this is also the engine's version.
 #[unsafe(no_mangle)]
 pub extern "C" fn moonbit_hawdb_version() -> *mut u8 {
     to_moonbit_bytes(concat!("hawdb ", env!("CARGO_PKG_VERSION")).as_bytes())
@@ -551,10 +680,116 @@ pub extern "C" fn moonbit_hawdb_version() -> *mut u8 {
 // Per-transaction mutex serializes mutations and finalization.
 struct TransactionState {
     db: Option<Arc<SharedDatabase>>,
-    read: Option<DatabaseReadTransaction>,
+    // The read snapshot's key in `OpenEngine::readers`.
+    reader: Option<u64>,
     active: bool,
     read_only: bool,
     error: String,
+}
+
+impl TransactionState {
+    fn new(read_only: bool) -> Self {
+        Self {
+            db: None,
+            reader: None,
+            active: false,
+            read_only,
+            error: String::new(),
+        }
+    }
+}
+
+fn tx_begin_state(
+    state: &mut TransactionState,
+    shared: Arc<SharedDatabase>,
+) -> Result<(), Failure> {
+    let read_only = state.read_only;
+    let reader = shared.with_engine(|engine| {
+        if read_only {
+            let snapshot = engine
+                .db
+                .begin_read_transaction()
+                .map_err(|e| engine_error(&e))?;
+            let id = engine.next_reader;
+            engine.next_reader += 1;
+            engine.readers.insert(id, snapshot);
+            Ok(Some(id))
+        } else {
+            engine
+                .db
+                .begin_transaction()
+                .map_err(|e| engine_error(&e))?;
+            Ok(None)
+        }
+    })?;
+    state.db = Some(shared);
+    state.reader = reader;
+    state.active = true;
+    Ok(())
+}
+
+fn tx_query_state(
+    state: &TransactionState,
+    statement: &str,
+    params: &str,
+    sql: bool,
+) -> Result<Vec<u8>, Failure> {
+    if !state.active {
+        return Err(fail("closed", "transaction is closed"));
+    }
+    let shared = state
+        .db
+        .as_ref()
+        .ok_or_else(|| fail("closed", "transaction is closed"))?;
+    let (positional, named) = if sql {
+        (sql_params(params)?, BTreeMap::new())
+    } else {
+        (Vec::new(), named_params(params)?)
+    };
+    let output = shared.with_engine(|engine| {
+        let output = match state.reader {
+            Some(id) => {
+                let read = engine
+                    .readers
+                    .get_mut(&id)
+                    .ok_or_else(|| fail("closed", "read transaction is closed"))?;
+                if sql {
+                    read.query_sql_with_params(statement, &positional)
+                } else {
+                    read.query_with_params(statement, &named)
+                }
+            }
+            None if sql => engine
+                .db
+                .transaction_query_sql_with_params(statement, &positional),
+            None => engine.db.transaction_query_with_params(statement, &named),
+        };
+        output.map_err(|e| engine_error(&e))
+    })?;
+    encode_result(&output)
+}
+
+fn tx_finish_state(state: &mut TransactionState, commit: bool) -> Result<Vec<u8>, Failure> {
+    if !state.active {
+        return Err(fail("closed", "transaction is closed"));
+    }
+    let shared = state
+        .db
+        .clone()
+        .ok_or_else(|| fail("closed", "transaction is closed"))?;
+    if shared.closed.load(Ordering::Acquire) {
+        tx_abandon_state(state)?;
+        return Err(fail("closed", "database is closed"));
+    }
+    if state.read_only || !commit {
+        tx_abandon_state(state)?;
+        return Ok(br#"{"columns":[],"rows":[]}"#.to_vec());
+    }
+    state.active = false;
+    state.db = None;
+    let output = shared
+        .with_engine(|engine| engine.db.commit_transaction().map_err(|e| engine_error(&e)))?;
+    encode_result(&output)
 }
 
 #[repr(C)]
@@ -572,23 +807,27 @@ fn tx_set_error(tx: *mut TransactionHandle, value: Failure) {
 }
 
 fn tx_abandon_state(state: &mut TransactionState) -> Result<(), Failure> {
-    let active = state.active;
-    state.active = false;
-    state.read.take();
-    let db = state.db.take();
-    if active
-        && !state.read_only
-        && let Some(shared) = db
-    {
-        let mut engine = shared
-            .engine
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if engine.transaction_active() {
-            engine
-                .rollback_transaction()
-                .map_err(|e| engine_error(&e))?;
-        }
+    let active = std::mem::take(&mut state.active);
+    let reader = state.reader.take();
+    let Some(shared) = state.db.take() else {
+        return Ok(());
+    };
+    let mut engine = shared
+        .engine
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // A closed database already released the snapshot and the transaction.
+    let Some(engine) = engine.as_mut() else {
+        return Ok(());
+    };
+    if let Some(id) = reader {
+        engine.readers.remove(&id);
+    }
+    if active && !state.read_only && engine.db.transaction_active() {
+        engine
+            .db
+            .rollback_transaction()
+            .map_err(|e| engine_error(&e))?;
     }
     Ok(())
 }
@@ -630,13 +869,7 @@ fn tx_alloc(read_only: bool) -> *mut TransactionHandle {
             ptr::write(
                 tx,
                 TransactionHandle {
-                    state: Box::into_raw(Box::new(Mutex::new(TransactionState {
-                        db: None,
-                        read: None,
-                        active: false,
-                        read_only,
-                        error: String::new(),
-                    }))),
+                    state: Box::into_raw(Box::new(Mutex::new(TransactionState::new(read_only)))),
                 },
             );
         }
@@ -659,30 +892,10 @@ pub unsafe extern "C" fn moonbit_hawdb_tx_begin(
     }
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         let shared = clone_database(parent).ok_or_else(|| fail("closed", "database is closed"))?;
-        let mut locked = shared
-            .engine
-            .lock()
-            .map_err(|_| fail("execution", "database mutex poisoned"))?;
-        if shared.closed.load(Ordering::Acquire) {
-            return Err(fail("closed", "database is closed"));
-        }
-        let read = if read_only != 0 {
-            Some(
-                locked
-                    .begin_read_transaction()
-                    .map_err(|e| engine_error(&e))?,
-            )
-        } else {
-            locked.begin_transaction().map_err(|e| engine_error(&e))?;
-            None
-        };
         let mut state = unsafe { &*(*tx).state }
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.db = Some(shared.clone());
-        state.read = read;
-        state.active = true;
-        Ok(())
+        tx_begin_state(&mut state, shared)
     }));
     match outcome {
         Ok(Ok(())) => (),
@@ -758,48 +971,10 @@ pub unsafe extern "C" fn moonbit_hawdb_tx_query(
             .lock()
             .map_err(|_| fail("execution", "transaction mutex poisoned"))?;
         state.error.clear();
-        if !state.active {
-            return Err(fail("closed", "transaction is closed"));
-        }
-        let shared = state
-            .db
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| fail("closed", "transaction is closed"))?;
-        if shared.closed.load(Ordering::Acquire) {
-            return Err(fail("closed", "database is closed"));
-        }
-        if state.read_only {
-            let read = state
-                .read
-                .as_mut()
-                .ok_or_else(|| fail("closed", "read transaction is closed"))?;
-            let result = if is_sql != 0 {
-                read.query_sql_with_params(stmt, &sql_params(args)?)
-            } else {
-                read.query_with_params(stmt, &named_params(args)?)
-            }
-            .map_err(|e| engine_error(&e))?;
-            Ok::<String, Failure>(encode_result(&result))
-        } else {
-            let mut engine = shared
-                .engine
-                .lock()
-                .map_err(|_| fail("execution", "database mutex poisoned"))?;
-            if shared.closed.load(Ordering::Acquire) {
-                return Err(fail("closed", "database is closed"));
-            }
-            let result = if is_sql != 0 {
-                engine.transaction_query_sql_with_params(stmt, &sql_params(args)?)
-            } else {
-                engine.transaction_query_with_params(stmt, &named_params(args)?)
-            }
-            .map_err(|e| engine_error(&e))?;
-            Ok::<String, Failure>(encode_result(&result))
-        }
+        tx_query_state(&state, stmt, args, is_sql != 0)
     }));
     match outcome {
-        Ok(Ok(json)) => to_moonbit_bytes(json.as_bytes()),
+        Ok(Ok(bytes)) => to_moonbit_bytes(&bytes),
         Ok(Err(err)) => {
             tx_set_error(tx, err);
             to_moonbit_bytes(&[])
@@ -828,43 +1003,10 @@ pub unsafe extern "C" fn moonbit_hawdb_tx_finish(
             .lock()
             .map_err(|_| fail("execution", "transaction mutex poisoned"))?;
         state.error.clear();
-        if !state.active {
-            return Err(fail("closed", "transaction is closed"));
-        }
-        let shared = state
-            .db
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| fail("closed", "transaction is closed"))?;
-        if shared.closed.load(Ordering::Acquire) {
-            tx_abandon_state(&mut state)?;
-            return Err(fail("closed", "database is closed"));
-        }
-        if state.read_only || commit == 0 {
-            tx_abandon_state(&mut state)?;
-            return Ok::<String, Failure>(r#"{"columns":[],"rows":[]}"#.to_owned());
-        }
-        let mut engine = shared
-            .engine
-            .lock()
-            .map_err(|_| fail("execution", "database mutex poisoned"))?;
-        if shared.closed.load(Ordering::Acquire) {
-            if engine.transaction_active() {
-                engine
-                    .rollback_transaction()
-                    .map_err(|e| engine_error(&e))?;
-            }
-            state.active = false;
-            state.db.take();
-            return Err(fail("closed", "database is closed"));
-        }
-        let result = engine.commit_transaction().map_err(|e| engine_error(&e));
-        state.active = false;
-        state.db.take();
-        result.map(|value| encode_result(&value))
+        tx_finish_state(&mut state, commit != 0)
     }));
     match outcome {
-        Ok(Ok(json)) => to_moonbit_bytes(json.as_bytes()),
+        Ok(Ok(bytes)) => to_moonbit_bytes(&bytes),
         Ok(Err(err)) => {
             tx_set_error(tx, err);
             to_moonbit_bytes(&[])
@@ -963,19 +1105,23 @@ mod lifecycle_tests {
     #[test]
     fn dropped_write_scope_rolls_back_once() {
         let shared = owned_database(HawDBEmbedded::open_in_memory());
-        shared.engine.lock().unwrap().begin_transaction().unwrap();
-        let mut state = TransactionState {
-            db: Some(Arc::clone(&shared)),
-            read: None,
-            active: true,
-            read_only: false,
-            error: String::new(),
-        };
+        let mut state = TransactionState::new(false);
+        tx_begin_state(&mut state, Arc::clone(&shared)).unwrap();
         tx_abandon_state(&mut state).unwrap();
         tx_abandon_state(&mut state).unwrap();
         assert!(!state.active);
         assert!(state.db.is_none());
-        assert!(!shared.engine.lock().unwrap().transaction_active());
+        assert!(!shared
+            .with_engine(|engine| Ok(engine.db.transaction_active()))
+            .unwrap());
+    }
+
+    fn encoded(value: &Value) -> Json {
+        serde_json::to_value(Tagged(value)).unwrap()
+    }
+
+    fn rows(bytes: Vec<u8>) -> String {
+        String::from_utf8(bytes).unwrap()
     }
 
     #[test]
@@ -997,8 +1143,124 @@ mod lifecycle_tests {
             assert!(message.contains("transaction is open"), "{message}");
         }
         engine.rollback_transaction().unwrap();
-        let rows = execute_statement(&mut engine, "SELECT id FROM items", "[]", true).unwrap();
-        assert_eq!(rows, r#"{"columns":["id"],"rows":[]}"#);
+        let output = execute_statement(&mut engine, "SELECT id FROM items", "[]", true).unwrap();
+        assert_eq!(rows(output), r#"{"columns":["id"],"rows":[]}"#);
+    }
+
+    #[test]
+    fn close_releases_the_database_and_its_open_transactions() {
+        let path = std::env::temp_dir().join(format!(
+            "hawdb-moonbit-close-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let open = || HawDBEmbedded::open_with_options(open_options(path.clone(), false));
+        let shared = owned_database(open().unwrap());
+        shared
+            .with_engine(|engine| {
+                execute_statement(
+                    &mut engine.db,
+                    "CREATE TABLE items (id BIGINT PRIMARY KEY)",
+                    "[]",
+                    true,
+                )
+            })
+            .unwrap();
+        let mut reader = TransactionState::new(true);
+        tx_begin_state(&mut reader, Arc::clone(&shared)).unwrap();
+        let mut writer = TransactionState::new(false);
+        tx_begin_state(&mut writer, Arc::clone(&shared)).unwrap();
+        tx_query_state(&writer, "INSERT INTO items (id) VALUES ($1)", "[1]", true).unwrap();
+
+        // Both transaction handles stay reachable, as unfinalized MoonBit
+        // objects would; closing must not wait for them.
+        shared.close();
+        for state in [&reader, &writer] {
+            let (kind, _) = tx_query_state(state, "SELECT id FROM items", "[]", true).unwrap_err();
+            assert_eq!(kind, "closed");
+        }
+        let reopened = owned_database(open().unwrap());
+        let output = reopened
+            .with_engine(|engine| {
+                execute_statement(&mut engine.db, "SELECT id FROM items", "[]", true)
+            })
+            .unwrap();
+        assert_eq!(rows(output), r#"{"columns":["id"],"rows":[]}"#);
+
+        let (kind, _) = tx_finish_state(&mut writer, true).unwrap_err();
+        assert_eq!(kind, "closed");
+        tx_abandon_state(&mut reader).unwrap();
+        assert!(!writer.active && !reader.active);
+        reopened.close();
+        std::fs::remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn read_snapshots_are_released_when_their_transaction_finishes() {
+        let shared = owned_database(HawDBEmbedded::open_in_memory());
+        let mut reader = TransactionState::new(true);
+        tx_begin_state(&mut reader, Arc::clone(&shared)).unwrap();
+        let output = tx_query_state(&reader, "UNWIND [1] AS one RETURN one", "{}", false).unwrap();
+        assert_eq!(rows(output), r#"{"columns":["one"],"rows":[[1]]}"#);
+        tx_finish_state(&mut reader, false).unwrap();
+        let readers = shared
+            .with_engine(|engine| Ok(engine.readers.len()))
+            .unwrap();
+        assert_eq!(readers, 0);
+    }
+
+    #[test]
+    fn non_finite_floats_are_tagged_instead_of_null() {
+        for (value, text) in [
+            (f64::NAN, "NaN"),
+            (f64::INFINITY, "Infinity"),
+            (f64::NEG_INFINITY, "-Infinity"),
+        ] {
+            let json = encoded(&Value::Float(value));
+            assert_eq!(json, json!({ "$float": text }));
+            let Value::Float(decoded) = decode_value(&json).unwrap() else {
+                panic!("{text} did not decode as a float");
+            };
+            assert_eq!(decoded.to_bits(), value.to_bits(), "{text}");
+        }
+        assert_eq!(encoded(&Value::Float(1.5)), json!(1.5));
+        let map = Value::Map(BTreeMap::from([(
+            "$float".to_owned(),
+            Value::String("NaN".to_owned()),
+        )]));
+        assert_eq!(decode_value(&encoded(&map)).unwrap(), map);
+        let (kind, _) = decode_value(&json!({"$float": "1.5"})).unwrap_err();
+        assert_eq!(kind, "invalid_argument");
+    }
+
+    #[test]
+    fn streamed_results_keep_the_tagged_transport() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+        let output = execute_statement(
+            &mut engine,
+            "UNWIND [1] AS row RETURN $binary AS binary, $uuid AS uuid, $vector AS vector, $nested AS nested",
+            r#"{
+                "binary": {"$binary": "AP8="},
+                "uuid": {"$uuid": "550e8400-e29b-41d4-a716-446655440000"},
+                "vector": {"$vector": [1.5, -0.25]},
+                "nested": {"$map": [["$uuid", [1, "x", null, true]]]}
+            }"#,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            rows(output),
+            concat!(
+                r#"{"columns":["binary","uuid","vector","nested"],"rows":[["#,
+                r#"{"$binary":"AP8="},"#,
+                r#"{"$uuid":"550e8400-e29b-41d4-a716-446655440000"},"#,
+                r#"{"$vector":[1.5,-0.25]},"#,
+                r#"{"$map":[["$uuid",[1,"x",null,true]]]}]]}"#
+            )
+        );
     }
 
     #[test]
@@ -1013,13 +1275,13 @@ mod lifecycle_tests {
             let json = json!({ tagged: text });
             let value = decode_value(&json).unwrap();
             assert_eq!(hawdb::temporal::json_tag(&value), Some(tagged));
-            assert_eq!(encode_value(&value), json);
+            assert_eq!(encoded(&value), json);
             // A plain map with a temporal key must not turn into a value.
             let map = Value::Map(BTreeMap::from([(
                 tagged.to_owned(),
                 Value::String(text.to_owned()),
             )]));
-            assert_eq!(decode_value(&encode_value(&map)).unwrap(), map);
+            assert_eq!(decode_value(&encoded(&map)).unwrap(), map);
         }
         for invalid in [
             json!({"$date": "2026-02-30"}),
