@@ -40,6 +40,8 @@ pub fn apply_node_visibility_predicates(
                 1 => predicates.pop(),
                 _ => Some(Predicate::And(predicates)),
             };
+            // Conjunct placement is computed at lowering from the final predicate.
+            program.predicate_steps.clear();
             LogicalPlan::GraphMatch {
                 program,
                 input: input

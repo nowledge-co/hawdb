@@ -156,7 +156,7 @@ fn checkpoint_units_relational_validation_preserves_schema_and_row_error_priorit
         match scenario {
             0 => schema.name.clear(),
             1 => schema.columns.clear(),
-            2 => schema.primary_key.clear(),
+            2 => schema.primary_key = vec![String::new()],
             3 => schema.columns[1].name.clear(),
             4 => schema.columns[1].name = schema.columns[0].name.clone(),
             5 => {

@@ -249,10 +249,12 @@ impl<'a> RelationalPipelineState<'a> {
             HawDBError::Execution("relational candidate work count overflow".to_string())
         })?;
         if self.candidate_work > self.max_candidate_work {
-            return Err(HawDBError::Execution(format!(
-                "relational SQL exceeds max_candidate_work {}",
-                self.max_candidate_work
-            )));
+            return Err(super::expression::work_budget_exceeded(
+                "max_candidate_work",
+                self.candidate_work - 1,
+                1,
+                self.max_candidate_work,
+            ));
         }
         self.checkpoint_after_work()
     }

@@ -414,6 +414,20 @@ fn estimate_operator_cost_internal<'a>(
     }
 }
 
+/// The step indexes before which `GraphMatchExec` evaluates WHERE conjuncts;
+/// `steps.len()` stands for the end of the match.
+fn graph_match_filter_points(
+    program: &hawdb_plan_cypher::GraphMatchProgram,
+) -> std::collections::BTreeSet<usize> {
+    if program.predicate.is_none() {
+        return std::collections::BTreeSet::new();
+    }
+    if program.predicate_steps.is_empty() {
+        return std::collections::BTreeSet::from([program.steps.len()]);
+    }
+    program.predicate_steps.iter().copied().collect()
+}
+
 fn estimate_local_operator_cost(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
@@ -549,12 +563,30 @@ fn estimate_local_operator_cost(
         PhysicalPlan::GraphMatchExec { program, .. } => {
             let base = inputs[0].unwrap_or_else(|| PlanCostBreakdown::new(1, 0, 0, 0, 0));
             let mut rows = base.estimated_rows;
+            let mut output_rows = rows;
             let mut work = rows;
+            // Steps run as a per-row nested loop in plan order. A step that
+            // binds a fresh node multiplies the rows by its label; a step that
+            // reaches an imported or already-bound node only filters them. The
+            // output estimate is therefore order-independent, while the work
+            // (the sum of intermediate rows) reflects the anchored order.
             let mut bound = std::collections::BTreeSet::new();
-            for step in &program.steps {
-                let (node, expanding) = match step {
-                    hawdb_plan_cypher::GraphMatchStep::Node(node) => (node, false),
-                    hawdb_plan_cypher::GraphMatchStep::Expand { target, .. } => (target, true),
+            // Each group of WHERE conjuncts keeps a default fraction of the
+            // rows at the point it runs, so later steps expand fewer rows.
+            let filter_points = graph_match_filter_points(program);
+            let filter = |index: usize, rows: u64| {
+                if filter_points.contains(&index) {
+                    rows.div_ceil(crate::cardinality_defaults::FILTER_SELECTIVITY_DIVISOR)
+                        .max(1)
+                } else {
+                    rows
+                }
+            };
+            for (index, step) in program.steps.iter().enumerate() {
+                rows = filter(index, rows);
+                let node = match step {
+                    hawdb_plan_cypher::GraphMatchStep::Node(node) => node,
+                    hawdb_plan_cypher::GraphMatchStep::Expand { target, .. } => target,
                     // A search may visit every relationship of its type for
                     // each endpoint pair; it keeps the row count of its input.
                     hawdb_plan_cypher::GraphMatchStep::ShortestPath(step) => {
@@ -566,12 +598,21 @@ fn estimate_local_operator_cost(
                 };
                 let newly_bound =
                     bound.insert(&node.variable) && program.introduced.contains(&node.variable);
-                if expanding || newly_bound {
-                    rows = rows.saturating_mul(catalog.label_count(&node.label).max(1));
+                if newly_bound {
+                    let multiplier = catalog.label_count(&node.label).max(1);
+                    rows = rows.saturating_mul(multiplier);
+                    output_rows = output_rows.saturating_mul(multiplier);
                 }
                 work = work.saturating_add(rows);
             }
-            base.with_random_io(rows, work, 0)
+            // Placement changes intermediate work, not the selectivity of
+            // the complete WHERE. Apply that output estimate only once.
+            if program.predicate.is_some() {
+                output_rows = output_rows
+                    .div_ceil(crate::cardinality_defaults::FILTER_SELECTIVITY_DIVISOR)
+                    .max(1);
+            }
+            base.with_random_io(output_rows, work, 0)
         }
         PhysicalPlan::NodeColumnLookupExec { label, .. } => {
             let input_cost = inputs[0].expect("unary input cost");

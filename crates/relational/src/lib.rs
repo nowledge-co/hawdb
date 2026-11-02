@@ -223,8 +223,89 @@ fn compile_schema_value(
     scalar_type: RelationalScalarType,
 ) -> Result<RelationalValue> {
     let value = hawdb_expression::sql::bind_sql_value(&value, &[])?;
+    // SQL string constants in a default acquire the declared column type at DDL
+    // binding. Keep typed runtime parameters on their existing conversion path.
+    let value = if let Value::String(text) = &value {
+        let invalid = || HawDBError::Semantic(format!("invalid {scalar_type:?} default {text:?}"));
+        match scalar_type {
+            RelationalScalarType::BigInt => Value::Int(text.trim().parse().map_err(|_| invalid())?),
+            RelationalScalarType::DoublePrecision => {
+                Value::Float(text.trim().parse().map_err(|_| invalid())?)
+            }
+            RelationalScalarType::Decimal(_) => {
+                Value::Decimal(text.trim().parse().map_err(|_| invalid())?)
+            }
+            RelationalScalarType::Boolean => {
+                let text = text.trim().to_ascii_lowercase();
+                let boolean = match text.as_str() {
+                    "1" => true,
+                    "0" => false,
+                    _ if !text.is_empty()
+                        && ["true", "yes", "on"]
+                            .iter()
+                            .any(|word| word.starts_with(&text))
+                        && !"off".starts_with(&text) =>
+                    {
+                        true
+                    }
+                    _ if !text.is_empty()
+                        && ["false", "no", "off"]
+                            .iter()
+                            .any(|word| word.starts_with(&text))
+                        && !"on".starts_with(&text) =>
+                    {
+                        false
+                    }
+                    _ => return Err(invalid()),
+                };
+                Value::Bool(boolean)
+            }
+            _ => value,
+        }
+    } else {
+        value
+    };
     query_value::value_to_relational(value)
         .and_then(|value| coerce_relational_value(value, scalar_type))
+}
+
+fn insert_column_positions(
+    names: &[String],
+    rows: &[Vec<SqlValue>],
+    table: &str,
+    columns: &[RelationalColumnSchema],
+) -> Result<Vec<usize>> {
+    let arity = rows.first().map_or(0, Vec::len);
+    if rows.is_empty()
+        || rows.iter().any(|row| row.len() != arity)
+        || (!names.is_empty() && names.len() != arity)
+        || (names.is_empty() && arity > columns.len())
+    {
+        return Err(HawDBError::Semantic(format!(
+            "INSERT VALUES arity does not match columns of table {table}"
+        )));
+    }
+    if names.is_empty() {
+        return Ok((0..arity).collect());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    names
+        .iter()
+        .map(|name| {
+            let position = columns
+                .iter()
+                .position(|column| column.name == *name)
+                .ok_or_else(|| {
+                    HawDBError::Semantic(format!("table {table} has no column {name}"))
+                })?;
+            if !seen.insert(position) {
+                return Err(HawDBError::Semantic(format!(
+                    "INSERT column {name} is specified more than once"
+                )));
+            }
+            Ok(position)
+        })
+        .collect()
 }
 
 #[doc(hidden)]

@@ -86,11 +86,11 @@ fn verify_checkpoint(encoded: &[u8], expected: &StorageFormatError) {
 
 #[test]
 fn intact_unsupported_versions_are_distinct_from_integrity_failures() {
-    for version in [1_u16, 3, u16::MAX] {
+    for version in [1_u16, 2, u16::MAX] {
         let expected = StorageFormatError::UnsupportedVersion {
             format: "relational durable codec",
             found: version,
-            supported: 2,
+            supported: 3,
         };
         let mut wal = encode_relational_wal_batch(1, &RelationalTransaction::default()).unwrap();
         wal[8..10].copy_from_slice(&version.to_le_bytes());

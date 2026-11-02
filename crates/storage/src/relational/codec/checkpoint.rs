@@ -370,10 +370,17 @@ pub(crate) fn encode_relational_checkpoint_with_work_context<W: Write + Seek>(
         string_with_work_context(&mut table, name, work)?;
         table_schema_with_work_context(&mut table, schema, work)?;
         let unit = work.start_unit().map_err(work_error)?;
+        table.u64(segment.last_row_id as u64);
         table.count(segment.rows.len(), "checkpoint rows")?;
         unit.finish();
         payload.write_all(&table.finish())?;
-        for row in segment.rows.values() {
+        for (key, row) in segment.rows.iter() {
+            if schema.primary_key.is_empty() {
+                crate::relational::validate_hidden_row_handle(key, segment.last_row_id)?;
+                let mut encoded = Encoder::default();
+                encoded.key(key)?;
+                payload.write_all(&encoded.finish())?;
+            }
             schema_encoding::row(&mut payload, row)?;
         }
     }

@@ -68,6 +68,7 @@ on:
       - "tests/branch_project_open.rs"
       - "bindings/ffi/**"
       - "bindings/go/**"
+      - "bindings/moonbit/**"
       - "MODULE.bazel"
       - "BUILD.bazel"
       - ".bazelrc"
@@ -96,6 +97,7 @@ on:
       - "tests/branch_project_open.rs"
       - "bindings/ffi/**"
       - "bindings/go/**"
+      - "bindings/moonbit/**"
       - "MODULE.bazel"
       - "BUILD.bazel"
       - ".bazelrc"
@@ -162,6 +164,12 @@ jobs:
 
       - name: Test the retained C ABI contract
         run: bazel test --test_output=errors //bindings/ffi:hawdb_ffi_tests
+
+      # Compiles the MoonBit adapter against the Bazel-built HawDB facade on
+      # every engine change. It needs no MoonBit toolchain; the executable
+      # conformance suite runs in the MoonBit Native SDK workflow.
+      - name: Test the MoonBit native adapter
+        run: bazel test --test_output=errors //bindings/moonbit/native:hawdb_moonbit_rust_tests
 
       - name: Test query observer under the repository release profile
         if: matrix.os == 'ubuntu-24.04'

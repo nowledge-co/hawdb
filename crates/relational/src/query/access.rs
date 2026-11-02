@@ -238,6 +238,9 @@ pub(super) fn complete_key(
     columns: &[String],
     bound: &BTreeMap<String, RelationalValue>,
 ) -> Option<RelationalKey> {
+    if columns.is_empty() {
+        return None;
+    }
     columns
         .iter()
         .map(|column| bound.get(column).cloned())
@@ -630,6 +633,9 @@ pub(super) fn complete_join_columns(
     columns: &[String],
     bound: &BTreeMap<String, SqlColumnRef>,
 ) -> Option<Vec<(String, SqlColumnRef)>> {
+    if columns.is_empty() {
+        return None;
+    }
     columns
         .iter()
         .map(|column| {

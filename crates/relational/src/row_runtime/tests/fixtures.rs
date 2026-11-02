@@ -162,6 +162,7 @@ impl Fixture {
                     })
                     .collect::<Vec<_>>();
                 RelationalRowPageTableDelta {
+                    last_row_id: 0,
                     table: table.into(),
                     schema: Some(schema.clone()),
                     schema_digest,
@@ -238,6 +239,7 @@ impl Fixture {
             1,
             None,
             vec![RelationalRowDeltaTableMetadata {
+                last_row_id: 0,
                 table: "docs".into(),
                 schema_digest: self.state.table_schema_digest("docs").unwrap().unwrap(),
                 column_count: NonZeroU32::new(3).unwrap(),

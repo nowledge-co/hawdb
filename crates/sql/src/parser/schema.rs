@@ -397,6 +397,12 @@ pub(super) fn lower_data_type(data_type: &DataType) -> Result<SqlDataType> {
     match data_type {
         DataType::Boolean | DataType::Bool => Ok(SqlDataType::Boolean),
         DataType::BigInt(_) | DataType::Int8(_) => Ok(SqlDataType::BigInt),
+        DataType::Int(None)
+        | DataType::Integer(None)
+        | DataType::Int4(None)
+        | DataType::SmallInt(None)
+        | DataType::Int2(None)
+        | DataType::TinyInt(None) => Ok(SqlDataType::BigInt),
         DataType::DoublePrecision | DataType::Float8 => Ok(SqlDataType::DoublePrecision),
         DataType::Decimal(info) | DataType::Numeric(info) | DataType::Dec(info) => {
             use sqlparser::ast::ExactNumberInfo;
@@ -413,7 +419,24 @@ pub(super) fn lower_data_type(data_type: &DataType) -> Result<SqlDataType> {
                 .map(SqlDataType::Decimal)
                 .map_err(|error| HawDBError::Semantic(error.to_string()))
         }
+        DataType::Float(sqlparser::ast::ExactNumberInfo::None)
+        | DataType::Float(sqlparser::ast::ExactNumberInfo::Precision(25..=53)) => {
+            Ok(SqlDataType::DoublePrecision)
+        }
         DataType::Text => Ok(SqlDataType::Text),
+        DataType::Varchar(length)
+        | DataType::CharacterVarying(length)
+        | DataType::CharVarying(length)
+            if matches!(
+                length,
+                None | Some(sqlparser::ast::CharacterLength::IntegerLength {
+                    length: 1..,
+                    unit: None,
+                })
+            ) =>
+        {
+            Ok(SqlDataType::Text)
+        }
         DataType::Bytea => Ok(SqlDataType::Bytea),
         DataType::Uuid => Ok(SqlDataType::Uuid),
         DataType::Custom(name, modifiers) if object_name_parts(name)?.as_slice() == ["vector"] => {

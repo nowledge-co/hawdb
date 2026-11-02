@@ -25,6 +25,7 @@ mod catalog;
 mod costing;
 mod logical_rewrite;
 mod lowering;
+mod match_reads;
 mod properties;
 mod roots;
 mod selected_trace;

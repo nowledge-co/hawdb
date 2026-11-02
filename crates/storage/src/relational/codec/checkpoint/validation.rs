@@ -65,12 +65,6 @@ pub(crate) fn validate_table_schema_with_work_context<'a>(
             "table name and columns must be non-empty".into(),
         ));
     }
-    if schema.primary_key.is_empty() {
-        return Err(RelationalError::Schema(format!(
-            "table {} must declare a primary key",
-            schema.name
-        )));
-    }
     unit.finish();
     let mut positions = BTreeMap::new();
     for (position, column) in schema.columns.iter().enumerate() {
@@ -98,7 +92,9 @@ pub(crate) fn validate_table_schema_with_work_context<'a>(
         }
         unit.finish();
     }
-    validate_columns(schema, &positions, &schema.primary_key, "primary key", work)?;
+    if !schema.primary_key.is_empty() {
+        validate_columns(schema, &positions, &schema.primary_key, "primary key", work)?;
+    }
     for column in &schema.primary_key {
         let unit = work.start_unit().map_err(work_error)?;
         let position = positions.get(column.as_str()).expect("validated column");

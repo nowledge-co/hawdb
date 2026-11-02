@@ -244,32 +244,11 @@ fn compile_insert_values(
     table_name: &str,
     columns: &[RelationalColumnSchema],
 ) -> Result<Vec<Vec<RelationalValue>>> {
-    let mut positions = Vec::with_capacity(insert_columns.len());
-    let mut unique = std::collections::BTreeSet::new();
-    for column in insert_columns {
-        let position = columns
-            .iter()
-            .position(|candidate| candidate.name == *column)
-            .ok_or_else(|| {
-                HawDBError::Semantic(format!("table {table_name} has no column {column}"))
-            })?;
-        if !unique.insert(position) {
-            return Err(HawDBError::Semantic(format!(
-                "INSERT column {column} is specified more than once"
-            )));
-        }
-        positions.push(position);
-    }
+    let positions =
+        crate::insert_column_positions(insert_columns, input_rows, table_name, columns)?;
     input_rows
         .iter()
         .map(|values| {
-            if values.len() != insert_columns.len() {
-                return Err(HawDBError::Semantic(format!(
-                    "INSERT into table {table_name} names {} columns but row contains {} values",
-                    insert_columns.len(),
-                    values.len()
-                )));
-            }
             let mut row = columns
                 .iter()
                 .map(|column| match &column.default {
@@ -281,9 +260,8 @@ fn compile_insert_values(
                     ))),
                 })
                 .collect::<Result<Vec<_>>>()?;
-            for ((position, value), column_name) in
-                positions.iter().zip(values).zip(insert_columns.iter())
-            {
+            for (position, value) in positions.iter().zip(values) {
+                let column_name = &columns[*position].name;
                 row[*position] =
                     bind_relational_value(value.clone(), parameters).map_err(|error| {
                         HawDBError::Semantic(format!(

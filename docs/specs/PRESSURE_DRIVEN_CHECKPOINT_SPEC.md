@@ -12,6 +12,41 @@ soft WAL/delta pressure threshold, or when uncheckpointed data exceeds a finite
 host-configured age. A host need not run a checkpoint loop. Read-only,
 in-memory, and capability-excluded compositions create no maintenance worker.
 
+Relational live row and index overlay occupancy is checkpoint debt too
+([#1438](https://github.com/nowledge-co/hawdb/issues/1438)). Each overlay is
+admitted by entry count and bytes against its cumulative live envelope (rows:
+100,000 entries / 64 MiB resident; indexes: 100,000 entries / 8 MiB encoded),
+and only a published checkpoint folds it into a new canonical base. The owner
+schedules a checkpoint when any of those four ratios reaches the same 70% soft
+threshold, independently of WAL bytes and age. Adoption empties the serving
+overlay (the catch-up suffix lives in the disk-backed recovery delta), so the
+next trigger needs another soft-ratio worth of commits. At the last tenth of
+capacity before the 90% defer threshold, writers wait for the running drain as
+described below rather than reaching the envelope. The envelope remains a hard
+pre-WAL admission bound: a single commit larger than the remaining headroom, a
+parked or denied owner, or a build without background maintenance is still
+rejected before WAL append, with committed data unchanged; the synchronous
+manual checkpoint then drains the overlay.
+
+The row debt is base-relative, not only the live overlay
+([#1464](https://github.com/nowledge-co/hawdb/issues/1464)). A drain captures
+every row key changed since its base, which after an earlier drain is the
+disk-backed recovery delta (the commits made while that drain was prepared)
+plus the live overlay, and admits that capture against the same row envelope.
+The row entry and byte ratios therefore charge both: recovery-delta entries,
+and the live-overlay resident bytes of the recorded delta changes, tracked by
+the delta builder as it records them (a delta opened without its builder
+charges the whole byte envelope). The capture charges only memory it adds: a
+row it shares with the live overlay or resident state, and a key moved out of
+its key set, are not charged again; a row decoded from the recovery delta is.
+Writers fence on that base-relative debt only until an idle owner starts the
+drain. While a drain runs, its capacity wait counts the live overlay alone: the
+running capture already includes the delta, and commits made meanwhile count
+against the live admission envelope and become the next drain's delta.
+Without this, an insert-only workload whose keys never repeat reached a second
+drain whose capture exceeded the envelope; three such failures in one WAL
+generation stopped automatic retries, and the live overlay then filled.
+
 Apps retain the direct, synchronous `Database::checkpoint` and
 `ConcurrentDatabase::checkpoint` APIs. These calls work below automatic
 thresholds and when background maintenance is disabled or not compiled in.

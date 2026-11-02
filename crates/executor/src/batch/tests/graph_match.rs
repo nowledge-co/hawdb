@@ -950,3 +950,100 @@ fn optional_seed_null_hop_uses_final_batch_row_size() {
         }
     });
 }
+
+/// Plans `query` and places the conjuncts of its first predicated MATCH the
+/// way lowering would, at the given step counts.
+fn execute_placed(query: &str, predicate_steps: Vec<usize>) -> Result<Vec<Binding>> {
+    fn place(plan: &mut LogicalPlan, predicate_steps: &mut Option<Vec<usize>>) {
+        match plan {
+            LogicalPlan::GraphMatch { program, input } => {
+                if program.predicate.is_some()
+                    && let Some(steps) = predicate_steps.take()
+                {
+                    program.predicate_steps = steps;
+                    return;
+                }
+                if let Some(input) = input {
+                    place(input, predicate_steps);
+                }
+            }
+            LogicalPlan::Project { input, .. } | LogicalPlan::Filter { input, .. } => {
+                place(input, predicate_steps)
+            }
+            plan => panic!("unexpected generic plan: {plan:?}"),
+        }
+    }
+    let mut logical = hawdb_plan_cypher::plan_pipeline_query(query, &BTreeMap::new())?;
+    let mut predicate_steps = Some(predicate_steps);
+    place(&mut logical, &mut predicate_steps);
+    assert!(predicate_steps.is_none(), "no predicated MATCH in {query}");
+    execute_logical(logical)
+}
+
+#[test]
+fn early_conjunct_matches_the_end_of_match_result() {
+    for (query, steps) in [
+        (
+            "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) WHERE a.id = 1 AND b.id = 2 RETURN a.id AS a, b.id AS b",
+            vec![1, 2],
+        ),
+        (
+            "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) WHERE a.id = 2 AND b.id = 2 RETURN a.id AS a, b.id AS b",
+            vec![1, 2],
+        ),
+        (
+            "MATCH (a:Memory) OPTIONAL MATCH (a)-[:MENTIONS]->(b:Memory) WHERE a.id = 2 RETURN a.id AS a, b.id AS b",
+            vec![0],
+        ),
+        (
+            "MATCH (a:Memory) OPTIONAL MATCH (a)-[:MENTIONS]->(b:Memory) WHERE a.missing IS NULL AND (a.id = 1 OR b.id = 2) RETURN a.id AS a, b.id AS b",
+            vec![0, 2],
+        ),
+    ] {
+        let mut expected = execute(query).unwrap();
+        let mut actual = execute_placed(query, steps).unwrap();
+        let key = |row: &Binding| format!("{:?}", row.values);
+        expected.sort_by_key(key);
+        actual.sort_by_key(key);
+        assert_eq!(actual, expected, "{query}");
+    }
+}
+
+#[test]
+fn optional_match_pads_when_an_early_conjunct_rejects_every_candidate() {
+    let rows = execute_placed(
+        "MATCH (a:Memory) OPTIONAL MATCH (a)-[:MENTIONS]->(b:Memory) WHERE a.id = 5 AND b.id = 2 RETURN a.id AS a, b",
+        vec![0, 2],
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row.values["b"] == Value::Null));
+}
+
+#[test]
+fn early_conjunct_error_on_a_candidate_that_never_completes_is_not_raised() {
+    // Only `a.id = 1` has an outgoing MENTIONS. `head()` fails for `a.id = 2`,
+    // but the match never completes for it, so the end-of-match evaluation
+    // never saw that error. Running the conjunct early must not raise it.
+    let query = "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) WHERE (head(CASE WHEN a.id = 2 THEN a.id ELSE [1] END)) = 1 AND b.id = 2 RETURN a.id AS a";
+    let expected = execute(query).unwrap();
+    assert_eq!(expected.len(), 1);
+    assert_eq!(execute_placed(query, vec![1, 2]).unwrap(), expected);
+    // The candidate that completes still raises an error the end raised.
+    let query = "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) WHERE (head(CASE WHEN a.id = 1 THEN a.id ELSE [1] END)) = 1 RETURN a.id AS a";
+    assert!(execute(query).is_err());
+    assert!(execute_placed(query, vec![1]).is_err());
+}
+
+#[test]
+fn malformed_predicate_placement_is_refused() {
+    let query =
+        "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) WHERE a.id = 1 AND b.id = 2 RETURN a.id AS a";
+    for steps in [vec![1], vec![1, 2, 2], vec![1, 3]] {
+        let error = execute_placed(query, steps).unwrap_err();
+        assert!(
+            error.to_string().contains("MATCH predicate placement"),
+            "{error}"
+        );
+    }
+}

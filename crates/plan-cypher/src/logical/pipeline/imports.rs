@@ -18,8 +18,10 @@ pub(super) fn restore(input: LogicalPlan, scope: &Scope, needed: &BTreeSet<Strin
         program: GraphMatchProgram {
             imports,
             introduced: Vec::new(),
+            projected_nodes: BTreeMap::new(),
             steps: Vec::new(),
             predicate: None,
+            predicate_steps: Vec::new(),
             optional: false,
         },
         input: Some(Box::new(input)),

@@ -77,6 +77,38 @@ pub(crate) fn evaluate_predicate_with_context(
     Ok(evaluate_predicate_truth(predicate, binding, &context)?.is_true())
 }
 
+/// Evaluates `conjuncts` exactly as `Predicate::And` over them: in order,
+/// stopping at the first false conjunct, true only when every one is true.
+pub(crate) fn evaluate_conjunction_with_context(
+    conjuncts: &[&Predicate],
+    catalog: &Catalog,
+    store: &dyn GraphExecutionRead,
+    binding: &Binding,
+    observer: &dyn ExecutionObserver,
+    adjacency_memory: AdjacencyReadMemory<'_>,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<bool> {
+    crate::pipeline::runtime_checkpoint(task_context)?;
+    if let Some(task) = task_context {
+        task.charge_work(1)?;
+    }
+    let context = PredicateEvaluationContext {
+        catalog,
+        store,
+        observer,
+        adjacency_memory,
+        task_context,
+    };
+    let mut truth = PredicateTruth::True;
+    for conjunct in conjuncts {
+        truth = truth.and(evaluate_predicate_truth(conjunct, binding, &context)?);
+        if truth == PredicateTruth::False {
+            break;
+        }
+    }
+    Ok(truth.is_true())
+}
+
 struct PredicateEvaluationContext<'a> {
     catalog: &'a Catalog,
     store: &'a dyn GraphExecutionRead,

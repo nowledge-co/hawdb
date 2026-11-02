@@ -68,6 +68,9 @@ pub struct RelationalRowDeltaBuilder {
     run_bytes: u64,
     peak_dirty_entries: usize,
     peak_dirty_bytes: usize,
+    // Live-overlay resident bytes of every recorded change. The next
+    // checkpoint captures these keys, so they remain checkpoint debt.
+    recorded_resident_bytes: usize,
     row_root_selection: RowRootSelection,
     invalidated: Option<String>,
     // A durable, unselected prefix survives a later reader-admission denial.
@@ -228,6 +231,7 @@ impl RelationalRowDeltaBuilder {
             run_bytes: 0,
             peak_dirty_entries: 0,
             peak_dirty_bytes: 0,
+            recorded_resident_bytes: 0,
             row_root_selection,
             invalidated: None,
             private_prefix: None,
@@ -563,6 +567,7 @@ impl RelationalRowDeltaBuilder {
         }
         for table in &mut self.tables {
             table.row_count = state.row_count(&table.table) as u64;
+            table.last_row_id = state.last_row_id(&table.table);
         }
         Ok(())
     }
@@ -802,6 +807,7 @@ impl RelationalRowDeltaBuilder {
             replayed_batches: self.replayed_batches,
             peak_dirty_entries: self.peak_dirty_entries,
             peak_dirty_bytes: self.peak_dirty_bytes,
+            recorded_resident_bytes: self.recorded_resident_bytes,
             events,
         })
     }
@@ -838,6 +844,14 @@ impl RelationalRowDeltaBuilder {
         for change in changes {
             work.checkpoint()
                 .map_err(super::super::checkpoint::work_error)?;
+            self.recorded_resident_bytes =
+                super::super::live::estimated_change_resident_bytes(&change)
+                    .and_then(|bytes| self.recorded_resident_bytes.checked_add(bytes))
+                    .ok_or_else(|| {
+                        RelationalRowDeltaError::Admission(
+                            "row delta recorded resident-byte accounting overflow".to_string(),
+                        )
+                    })?;
             let (key, value) = self.encode_change(epoch, change, work)?;
             self.insert_change(key, value, work)?;
         }
@@ -1284,6 +1298,7 @@ fn table_metadata_for_state(
                     ))
                 })?;
             Ok(RelationalRowDeltaTableMetadata {
+                last_row_id: state.last_row_id(&schema.name),
                 table: schema.name.clone(),
                 schema_digest,
                 column_count,

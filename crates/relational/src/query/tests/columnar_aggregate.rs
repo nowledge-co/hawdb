@@ -214,6 +214,8 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
             );
         } else if message == "blocking_operator_bytes" {
             assert_aggregate_memory_refusal(&error, "RelationalColumnarAggregate");
+        } else if message == "max_intermediate_rows" {
+            assert_intermediate_work_refusal(&error);
         } else {
             assert!(matches!(error, HawDBError::Execution(_)), "{error}");
         }

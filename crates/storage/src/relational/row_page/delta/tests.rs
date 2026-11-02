@@ -1156,6 +1156,7 @@ fn builder_cannot_publish_after_its_row_root_becomes_stale() {
             2,
             Some(1),
             vec![RelationalRowPageTableDelta {
+                last_row_id: 0,
                 table: "documents".to_string(),
                 schema: None,
                 schema_digest: schema_digest(),
@@ -1442,6 +1443,7 @@ fn publish_and_open_base(directory: &Path) -> RelationalRowPageRootReader {
             1,
             None,
             vec![RelationalRowPageTableDelta {
+                last_row_id: 0,
                 table: "documents".to_string(),
                 schema: Some(crate::relational::row_page::test_row_page_schema(
                     "documents",
@@ -1472,6 +1474,7 @@ fn publish_and_open_base(directory: &Path) -> RelationalRowPageRootReader {
 
 fn table_metadata() -> Vec<RelationalRowDeltaTableMetadata> {
     vec![RelationalRowDeltaTableMetadata {
+        last_row_id: 0,
         table: "documents".to_string(),
         schema_digest: schema_digest(),
         column_count: NonZeroU32::new(2).unwrap(),

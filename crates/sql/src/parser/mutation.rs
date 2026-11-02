@@ -111,9 +111,14 @@ pub(super) fn lower_insert_statement(insert: &sqlparser::ast::Insert) -> Result<
                 .collect::<Result<Vec<_>>>()
         })
         .collect::<Result<Vec<_>>>()?;
-    if rows.is_empty() || rows.iter().any(|row| row.len() != columns.len()) {
+    let arity = columns.len().max(rows.first().map_or(0, Vec::len));
+    if rows.is_empty()
+        || rows.iter().any(|row| row.len() != arity)
+        || (!columns.is_empty() && arity != columns.len())
+    {
         return Err(HawDBError::Semantic(
-            "INSERT VALUES rows must match the explicit column list".to_string(),
+            "INSERT VALUES rows must have equal length and match any explicit column list"
+                .to_string(),
         ));
     }
     Ok(SqlStatement::Insert(InsertStatement {

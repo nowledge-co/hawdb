@@ -396,6 +396,17 @@ pub(super) fn write_root_artifacts(
             (None, Some(delta)) => delta.column_count,
             (None, None) => unreachable!("table name originated from base or delta"),
         };
+        let last_row_id = delta.as_ref().map_or_else(
+            || base_table.map_or(0, |base| base.last_row_id),
+            |delta| delta.last_row_id,
+        );
+        if last_row_id < base_table.map_or(0, |base| base.last_row_id)
+            || (!schema.primary_key.is_empty() && last_row_id != 0)
+        {
+            return Err(RelationalRowPagePublicationError::Admission(format!(
+                "table {table_name} has an invalid hidden row ID allocator"
+            )));
+        }
         let next_page_id = match (base_table, delta.as_ref()) {
             (Some(base_table), Some(delta)) => {
                 if delta.next_page_id < base_table.next_page_id {
@@ -463,6 +474,7 @@ pub(super) fn write_root_artifacts(
         let page_count = writer.descriptor_count - first_descriptor;
         let unit = writer.start_unit()?;
         tables.push(RelationalRowPageTableRoot {
+            last_row_id,
             table: table_name,
             schema,
             schema_digest,

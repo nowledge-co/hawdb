@@ -82,6 +82,16 @@ impl Projection {
         matches!(self, Self::DiskAnn(_) | Self::AdmittedDiskAnn(_))
     }
 
+    /// Distance metric recorded in the artifact. RaBitQ projections are
+    /// cosine-only (`VectorIndexDescriptor::new` refuses other metrics).
+    pub(super) fn metric(&self) -> hawdb_core::VectorDistance {
+        match self {
+            Self::DiskAnn(value) => value.metric(),
+            Self::AdmittedDiskAnn(value) => value.metric(),
+            Self::Ordinary(_) | Self::Admitted(_) => hawdb_core::VectorDistance::Cosine,
+        }
+    }
+
     pub(super) fn backend(&self) -> Result<hawdb_core::VectorIndexBackend> {
         match self {
             Self::DiskAnn(value) => value.backend(),

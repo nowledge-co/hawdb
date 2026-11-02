@@ -431,3 +431,106 @@ fn assert_decimal_range_operators(database: &mut Database) {
         }
     }
 }
+
+#[test]
+fn native_decimal_defaults_preserve_main_type_aliases_and_contextual_strings() {
+    let mut db = Database::new();
+    db.query_sql("CREATE TABLE decimal_defaults (id INTEGER PRIMARY KEY, quoted NUMERIC(22,2) DEFAULT '9007199254740993.125', exact DECIMAL(22,2) DEFAULT 9007199254740993.125, approximate FLOAT(53) DEFAULT '1.25', enabled BOOLEAN DEFAULT 'yes', label VARCHAR(10) DEFAULT 'kept')").unwrap();
+    db.query_sql("INSERT INTO decimal_defaults (id) VALUES (1)")
+        .unwrap();
+    let rows = db
+        .query_sql("SELECT quoted, exact, approximate, enabled, label FROM decimal_defaults")
+        .unwrap()
+        .rows;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["quoted"], decimal("9007199254740993.13"));
+    assert_eq!(rows[0]["exact"], decimal("9007199254740993.13"));
+    assert_eq!(rows[0]["approximate"], Value::Float(1.25));
+    assert_eq!(rows[0]["enabled"], Value::Bool(true));
+    assert_eq!(rows[0]["label"], Value::String("kept".into()));
+    for default in ["'NaN'", "'10.00'", "'1e100'"] {
+        assert!(db.query_sql(&format!("CREATE TABLE invalid_decimal_default (id BIGINT PRIMARY KEY, amount DECIMAL(3,2) DEFAULT {default})")).is_err());
+        assert!(db
+            .query_sql("SELECT id FROM invalid_decimal_default")
+            .is_err());
+    }
+}
+
+#[test]
+fn native_decimal_secondary_rekeys_lock_coerced_values_and_preserve_disjoint_reads() {
+    for (residency, indexes) in [
+        (
+            StorageResidencyMode::Materialized,
+            RelationalIndexMode::Materialized,
+        ),
+        (
+            StorageResidencyMode::OutOfCore,
+            RelationalIndexMode::DemandPaged,
+        ),
+    ] {
+        let path = unique_test_dir("decimal-secondary-locks");
+        let config = DatabaseConfig {
+            storage_residency_mode: residency,
+            relational_index_mode: indexes,
+            ..Default::default()
+        };
+        let mut setup = Database::open_with_config(&path, config.clone()).unwrap();
+        setup
+            .query_sql("CREATE TABLE decimal_locks (id BIGINT PRIMARY KEY, amount DECIMAL(5,2))")
+            .unwrap();
+        setup
+            .query_sql("CREATE INDEX decimal_amount ON decimal_locks (amount)")
+            .unwrap();
+        setup
+            .query_sql("INSERT INTO decimal_locks VALUES (1, 1.00), (2, 5.00)")
+            .unwrap();
+        setup.checkpoint().unwrap();
+        drop(setup);
+        let db = Database::open_with_config(&path, config)
+            .unwrap()
+            .into_concurrent();
+        let options = crate::ConcurrentTransactionOptions::pessimistic(std::time::Duration::ZERO);
+        let mut writer = db.begin_transaction(options).unwrap();
+        writer
+            .query_sql_with_params(
+                "UPDATE decimal_locks SET amount = $1 WHERE id = 1",
+                &[decimal("1.235")],
+            )
+            .unwrap();
+        for bound in ["1.00", "1.24"] {
+            let mut blocked = db.begin_transaction(options).unwrap();
+            let error = blocked
+                .query_sql_with_params(
+                    "SELECT id FROM decimal_locks WHERE amount = $1 FOR UPDATE",
+                    &[decimal(bound)],
+                )
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("transaction lock wait timed out"),
+                "{error}"
+            );
+            blocked.rollback();
+        }
+        let mut disjoint = db.begin_transaction(options).unwrap();
+        assert_eq!(
+            disjoint
+                .query_sql("SELECT id FROM decimal_locks WHERE amount = 5.00 FOR UPDATE")
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+        disjoint.rollback();
+        writer.commit().unwrap();
+        assert_eq!(
+            db.query_sql("SELECT amount FROM decimal_locks WHERE id = 1")
+                .unwrap()
+                .rows[0]["amount"],
+            decimal("1.24")
+        );
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}

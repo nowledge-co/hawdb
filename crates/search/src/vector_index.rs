@@ -158,6 +158,16 @@ impl SearchIndex {
         self.vector_index_descriptor.as_ref()
     }
 
+    /// Ordinary Search relevance metric. Unbound projections are cosine by
+    /// construction; a binding seals its own metric into every artifact.
+    pub(crate) fn vector_metric(&self) -> hawdb_core::VectorDistance {
+        self.vector_index_descriptor
+            .as_ref()
+            .map_or(hawdb_core::VectorDistance::Cosine, |descriptor| {
+                descriptor.distance()
+            })
+    }
+
     /// Binds an empty private builder. The facade owns schema resolution and
     /// source capture; a serving Consumer cannot be redefined in place.
     #[doc(hidden)]

@@ -1,0 +1,45 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# Only tracked sources are staged into writable Bazel test directories; never
+# build a second Rust engine with Cargo from the MoonBit test runner.
+filegroup(
+    name = "sdk_sources",
+    srcs = glob([
+        "*.mbt",
+        "tests/**/*.mbt",
+        "tests/**/moon.pkg",
+        "tools/configure_native_link.py",
+    ]) + [
+        "moon.mod",
+        "moon.pkg",
+    ],
+)
+
+sh_test(
+    name = "hawdb_moonbit_conformance_test",
+    size = "large",
+    timeout = "long",
+    srcs = ["tools/bazel_native_test.sh"],
+    # Requires the MoonBit toolchain on PATH, so wildcard test patterns skip
+    # it; :hawdb_moonbit_tests still lists it explicitly.
+    tags = ["manual"],
+    args = ["$(rootpath //bindings/moonbit/native:hawdb_moonbit_static)"],
+    data = [
+        ":sdk_sources",
+        "//bindings/moonbit/native:hawdb_moonbit_static",
+    ],
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+)
+
+test_suite(
+    name = "hawdb_moonbit_tests",
+    tests = [
+        ":hawdb_moonbit_conformance_test",
+        "//bindings/moonbit/native:hawdb_moonbit_rust_tests",
+    ],
+)
