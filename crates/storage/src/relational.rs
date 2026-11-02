@@ -55,7 +55,9 @@ use primary_key_range::{equality as mutation_equality, mutation_primary_key_rang
 pub use primary_key_range::{RelationalKeyRange, RelationalPrimaryKeyRange};
 pub(crate) mod overflow;
 mod recovery;
+mod resident_rows;
 mod row_page;
+use resident_rows::RelationalRowPages;
 pub(crate) use row_page::CheckpointSnapshotPointRequest;
 
 pub use codec::{
@@ -1907,13 +1909,12 @@ impl RelationalTableSegment {
         let unit = work
             .start_unit()
             .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let rows = RelationalRowPages {
-            pages: RelationalRowDirectory::from_checkpoint_value(
+        let rows = RelationalRowPages::from_empty_directory(
+            RelationalRowDirectory::from_checkpoint_value(
                 Vec::new(),
                 directory_context.memory.into_inner(),
             ),
-            len: 0,
-        };
+        );
         let output = Arc::new(Self {
             last_row_id: 0,
             rows,
@@ -2009,477 +2010,56 @@ fn mutable_segment_with_allocations<'a>(
 const RELATIONAL_ROW_PAGE_MAX_ENTRIES: usize = 256;
 const RELATIONAL_ROW_PAGE_TARGET_BYTES: usize = 1024 * 1024;
 
-/// An ordered row map backed by immutable COW pages.
-///
-/// A relational snapshot shares every page. A mutation clones only the page
-/// containing the affected primary key instead of cloning the entire table.
+/// One immutable COW page of a [`RelationalRowPages`] map.
 type RelationalRowPage = crate::cow::CowSegment<BTreeMap<RelationalKey, RelationalRow>>;
 type RelationalRowDirectory = crate::cow::CowSegment<Vec<RelationalRowPage>>;
-
-#[derive(Debug, Clone, Default)]
-struct RelationalRowPages {
-    pages: RelationalRowDirectory,
-    len: usize,
-}
-
-impl RelationalRowPages {
-    fn prepare_checkpoint_copy_for_key(
-        &mut self,
-        key: &RelationalKey,
-        work: &crate::background::CheckpointWorkContext,
-    ) -> Result<(), RelationalError> {
-        let Some(index) = self.page_index(key) else {
-            return Ok(());
-        };
-        let copy_directory = self.pages.is_shared();
-        let copy_page = copy_directory || self.pages[index].is_shared();
-        if !copy_page {
-            return Ok(());
-        }
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
-        // Inventories precede temporary buffers, so denied copies destroy data first.
-        let directory_allocations = crate::background::CheckpointDecodeContext {
-            work: work.clone(),
-            memory: Default::default(),
-        };
-        let page_allocations = crate::background::CheckpointDecodeContext {
-            work: work.clone(),
-            memory: Default::default(),
-        };
-        let mut directory = if copy_directory {
-            let mut pages = directory_allocations
-                .vector_capacity(self.pages.len())
-                .map_err(admission)?;
-            directory_allocations
-                .reserve(RelationalRowDirectory::checkpoint_ownership_bytes())
-                .map_err(admission)?;
-            for page in self.pages.iter() {
-                let unit = work
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
-                pages.push(page.clone());
-                unit.finish();
-            }
-            Some(pages)
-        } else {
-            None
-        };
-        let node_bytes = (self.pages[index].len() / 4 + 2)
-            .checked_mul(crate::cow::checkpoint_tree_node_bytes::<
-                RelationalKey,
-                RelationalRow,
-            >())
-            .ok_or_else(|| RelationalError::Admission("row page copy capacity overflow".into()))?;
-        page_allocations.reserve(node_bytes).map_err(admission)?;
-        page_allocations
-            .reserve(RelationalRowPage::checkpoint_ownership_bytes())
-            .map_err(admission)?;
-        let mut rows = BTreeMap::new();
-        for (key, row) in self.pages[index].iter() {
-            let key = key.clone_with_allocations(&page_allocations)?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            rows.insert(key, row.clone());
-            unit.finish();
-        }
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let replacement = crate::cow::CowSegment::from_checkpoint_value(
-            rows,
-            page_allocations.memory.into_inner(),
-        );
-        if let Some(mut pages) = directory.take() {
-            pages[index] = replacement;
-            self.pages = crate::cow::CowSegment::from_checkpoint_value(
-                pages,
-                directory_allocations.memory.into_inner(),
-            );
-        } else {
-            self.pages.get_unique_mut().expect("private row directory")[index] = replacement;
-        }
-        Ok(())
-    }
-
-    fn insert_with_allocations(
-        &mut self,
-        key: RelationalKey,
-        row: RelationalRow,
-        allocations: Option<&crate::background::CheckpointDecodeContext>,
-    ) -> Result<Option<RelationalRow>, RelationalError> {
-        let Some(context) = allocations else {
-            return Ok(self.insert(key, row));
-        };
-        let work = &context.work;
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
-        let directory_context = crate::background::CheckpointDecodeContext {
-            work: work.clone(),
-            memory: Default::default(),
-        };
-        let page_context = crate::background::CheckpointDecodeContext {
-            work: work.clone(),
-            memory: Default::default(),
-        };
-        let split_context = crate::background::CheckpointDecodeContext {
-            work: work.clone(),
-            memory: Default::default(),
-        };
-        let index = self.page_index(&key).unwrap_or(0);
-        let previous_len = self.pages.get(index).map_or(0, |page| page.len());
-        let capacity =
-            self.pages.len().checked_add(1).ok_or_else(|| {
-                RelationalError::Admission("row directory growth overflow".into())
-            })?;
-        let mut directory = directory_context
-            .vector_capacity(capacity)
-            .map_err(admission)?;
-        directory_context
-            .reserve(RelationalRowDirectory::checkpoint_ownership_bytes())
-            .map_err(admission)?;
-        for page in self.pages.iter() {
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            directory.push(page.clone());
-            unit.finish();
-        }
-        let nodes = previous_len
-            .checked_add(3)
-            .ok_or_else(|| RelationalError::Admission("row page growth overflow".into()))?;
-        let bytes = nodes
-            .checked_mul(crate::cow::checkpoint_tree_node_bytes::<
-                RelationalKey,
-                RelationalRow,
-            >())
-            .and_then(|bytes| {
-                bytes.checked_add(2 * RelationalRowPage::checkpoint_ownership_bytes())
-            })
-            .ok_or_else(|| RelationalError::Admission("row page growth overflow".into()))?;
-        page_context.reserve(bytes).map_err(admission)?;
-        let mut rows = BTreeMap::new();
-        if let Some(page) = self.pages.get(index) {
-            for (key, row) in page.iter() {
-                let key = key.clone_with_allocations(&page_context)?;
-                let unit = work
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
-                rows.insert(key, row.clone());
-                unit.finish();
-            }
-        }
-        let key = key.clone_with_allocations(&page_context)?;
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let previous = rows.insert(key, row);
-        unit.finish();
-        let mut page_bytes = 0usize;
-        for (key, row) in &rows {
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            page_bytes = page_bytes.saturating_add(relational_row_entry_bytes(key, row));
-            unit.finish();
-        }
-        let right = if rows.len() > 1
-            && (rows.len() > RELATIONAL_ROW_PAGE_MAX_ENTRIES
-                || page_bytes > RELATIONAL_ROW_PAGE_TARGET_BYTES)
-        {
-            let split_key = rows
-                .keys()
-                .nth(rows.len() / 2)
-                .expect("nonempty split page")
-                .clone_with_allocations(&split_context)?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            let right = rows.split_off(&split_key);
-            unit.finish();
-            Some(right)
-        } else {
-            None
-        };
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let memory = page_context.memory.into_inner();
-        let left = crate::cow::CowSegment::from_checkpoint_value(rows, memory.clone());
-        if directory.is_empty() {
-            directory.push(left);
-        } else {
-            directory[index] = left;
-        }
-        if let Some(right) = right {
-            directory.insert(
-                index + 1,
-                crate::cow::CowSegment::from_checkpoint_value(right, memory),
-            );
-        }
-        self.pages = crate::cow::CowSegment::from_checkpoint_value(
-            directory,
-            directory_context.memory.into_inner(),
-        );
-        if previous.is_none() {
-            self.len += 1;
-        }
-        Ok(previous)
-    }
-
-    fn from_map(rows: BTreeMap<RelationalKey, RelationalRow>) -> Self {
-        let len = rows.len();
-        let mut pages = Vec::new();
-        let mut page = BTreeMap::new();
-        let mut page_bytes = 0usize;
-        for (key, row) in rows {
-            let entry_bytes = relational_row_entry_bytes(&key, &row);
-            if !page.is_empty()
-                && (page.len() >= RELATIONAL_ROW_PAGE_MAX_ENTRIES
-                    || page_bytes.saturating_add(entry_bytes) > RELATIONAL_ROW_PAGE_TARGET_BYTES)
-            {
-                pages.push(crate::cow::CowSegment::from(std::mem::take(&mut page)));
-                page_bytes = 0;
-            }
-            page_bytes = page_bytes.saturating_add(entry_bytes);
-            page.insert(key, row);
-        }
-        if !page.is_empty() {
-            pages.push(crate::cow::CowSegment::from(page));
-        }
-        Self {
-            pages: pages.into(),
-            len,
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn page_index(&self, key: &RelationalKey) -> Option<usize> {
-        if self.pages.is_empty() {
-            return None;
-        }
-        let index = self.pages.partition_point(|page| {
-            page.last_key_value()
-                .is_some_and(|(last_key, _)| last_key < key)
-        });
-        Some(index.min(self.pages.len() - 1))
-    }
-
-    fn get(&self, key: &RelationalKey) -> Option<&RelationalRow> {
-        self.page_index(key)
-            .and_then(|index| self.pages[index].get(key))
-    }
-
-    fn get_key_value(&self, key: &RelationalKey) -> Option<(&RelationalKey, &RelationalRow)> {
-        self.page_index(key)
-            .and_then(|index| self.pages[index].get_key_value(key))
-    }
-
-    fn contains_key(&self, key: &RelationalKey) -> bool {
-        self.get(key).is_some()
-    }
-
-    fn iter(&self) -> impl DoubleEndedIterator<Item = (&RelationalKey, &RelationalRow)> {
-        self.pages.iter().flat_map(|page| page.iter())
-    }
-
-    fn range(
-        &self,
-        range: Option<RelationalPrimaryKeyRange>,
-    ) -> impl Iterator<Item = (&RelationalKey, &RelationalRow)> {
-        use std::ops::Bound;
-        let range = range.unwrap_or(RelationalPrimaryKeyRange {
-            lower: Bound::Unbounded,
-            upper: Bound::Unbounded,
-        });
-        let start = match &range.lower {
-            Bound::Included(key) | Bound::Excluded(key) => self.page_index(key).unwrap_or(0),
-            Bound::Unbounded => 0,
-        };
-        let end = if range.is_empty() {
-            start
-        } else {
-            match &range.upper {
-                Bound::Included(key) | Bound::Excluded(key) => {
-                    self.page_index(key).map_or(0, |index| index + 1)
-                }
-                Bound::Unbounded => self.pages.len(),
-            }
-            .max(start)
-        };
-        self.pages[start..end]
-            .iter()
-            .flat_map(move |page| page.range((range.lower.as_ref(), range.upper.as_ref())))
-    }
-
-    fn first_key_after(&self, after: Option<&RelationalKey>) -> Option<&RelationalKey> {
-        let Some(after) = after else {
-            return self.pages.first()?.first_key_value().map(|(key, _)| key);
-        };
-        let page = self
-            .pages
-            .partition_point(|page| page.last_key_value().is_none_or(|(last, _)| last <= after));
-        self.pages
-            .get(page)?
-            .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
-            .next()
-            .map(|(key, _)| key)
-    }
-
-    fn values(&self) -> impl DoubleEndedIterator<Item = &RelationalRow> {
-        self.iter().map(|(_, row)| row)
-    }
-
-    fn append_value_to_all_with_allocations(
-        &mut self,
-        value: &RelationalValue,
-        allocations: &crate::background::CheckpointDecodeContext,
-    ) -> Result<(), RelationalError> {
-        let work = &allocations.work;
-        let directory_context = crate::background::CheckpointDecodeContext {
-            work: work.clone(),
-            memory: Default::default(),
-        };
-        let mut pages = directory_context
-            .vector_capacity(self.pages.len())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        directory_context
-            .reserve(RelationalRowDirectory::checkpoint_ownership_bytes())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        for source in self.pages.iter() {
-            let page_context = crate::background::CheckpointDecodeContext {
-                work: work.clone(),
-                memory: Default::default(),
-            };
-            let bytes = (source.len() / 4 + 2)
-                .checked_mul(crate::cow::checkpoint_tree_node_bytes::<
-                    RelationalKey,
-                    RelationalRow,
-                >())
-                .and_then(|bytes| {
-                    bytes.checked_add(RelationalRowPage::checkpoint_ownership_bytes())
-                })
-                .ok_or_else(|| {
-                    RelationalError::Admission("schema row page capacity overflow".into())
-                })?;
-            page_context
-                .reserve(bytes)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            let mut rows = BTreeMap::new();
-            for (key, row) in source.iter() {
-                let key = key.clone_with_allocations(&page_context)?;
-                let count = row.values().len().checked_add(1).ok_or_else(|| {
-                    RelationalError::Admission("schema row value count overflow".into())
-                })?;
-                let row = RelationalRow::reconstruct_values_with_allocations(
-                    count,
-                    Some(allocations),
-                    |ordinal| {
-                        Ok(if ordinal + 1 == count {
-                            value.as_ref()
-                        } else {
-                            row.values()[ordinal].as_ref()
-                        })
-                    },
-                )?;
-                let unit = work
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
-                rows.insert(key, row);
-                unit.finish();
-            }
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            pages.push(RelationalRowPage::from_checkpoint_value(
-                rows,
-                page_context.memory.into_inner(),
-            ));
-            unit.finish();
-        }
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let replacement = RelationalRowDirectory::from_checkpoint_value(
-            pages,
-            directory_context.memory.into_inner(),
-        );
-        unit.finish();
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        self.pages = replacement;
-        Ok(())
-    }
-
-    fn append_value_to_all(&mut self, value: &RelationalValue) {
-        let pages = &mut *self.pages;
-        for page in pages {
-            for row in page.values_mut() {
-                let mut values = row.values().to_vec();
-                values.push(value.clone());
-                *row = RelationalRow::new(values);
-            }
-        }
-    }
-
-    fn insert(&mut self, key: RelationalKey, row: RelationalRow) -> Option<RelationalRow> {
-        if self.pages.is_empty() {
-            self.pages = vec![crate::cow::CowSegment::from(BTreeMap::from([(key, row)]))].into();
-            self.len = 1;
-            return None;
-        }
-        let index = self
-            .page_index(&key)
-            .expect("non-empty relational row pages have a target page");
-        let pages = &mut *self.pages;
-        let previous = pages[index].insert(key, row);
-        if previous.is_none() {
-            self.len = self.len.saturating_add(1);
-        }
-        split_relational_row_page(pages, index);
-        previous
-    }
-
-    fn remove(&mut self, key: &RelationalKey) -> Option<RelationalRow> {
-        let index = self.page_index(key)?;
-        if !self.pages[index].contains_key(key) {
-            return None;
-        }
-        let pages = &mut *self.pages;
-        let removed = pages[index].remove(key);
-        if removed.is_some() {
-            self.len = self.len.saturating_sub(1);
-            if pages[index].is_empty() {
-                pages.remove(index);
-            }
-        }
-        removed
-    }
-
-    #[cfg(test)]
-    fn page_count(&self) -> usize {
-        self.pages.len()
-    }
-
-    #[cfg(test)]
-    fn shared_page_count(&self, other: &Self) -> usize {
-        self.pages
-            .iter()
-            .filter(|left| {
-                other
-                    .pages
-                    .iter()
-                    .any(|right| left.shares_storage_with(right))
-            })
-            .count()
-    }
-}
 
 fn relational_row_entry_bytes(key: &RelationalKey, row: &RelationalRow) -> usize {
     relational_row_entry_bytes_with_visit(key, row, &mut || Ok::<_, std::convert::Infallible>(()))
         .unwrap_or_else(|never| match never {})
+}
+
+/// Test-only count of row entries sized on the current thread. Regression
+/// tests use it to prove that per-commit work does not walk resident rows.
+#[cfg(test)]
+pub(crate) mod row_entry_byte_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static VISITS: Cell<u64> = const { Cell::new(0) };
+        static SUPPRESSED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(crate) fn visits() -> u64 {
+        VISITS.get()
+    }
+
+    pub(super) fn record() {
+        if !SUPPRESSED.get() {
+            VISITS.set(VISITS.get().saturating_add(1));
+        }
+    }
+
+    pub(super) fn suppressed<T>(f: impl FnOnce() -> T) -> T {
+        let previous = SUPPRESSED.replace(true);
+        let output = f();
+        SUPPRESSED.set(previous);
+        output
+    }
+}
+
+/// Runs debug-only verification folds without charging them to the test
+/// probe, so the probe observes production work only.
+#[cfg(any(test, debug_assertions))]
+fn without_row_entry_byte_probe<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(test)]
+    {
+        row_entry_byte_probe::suppressed(f)
+    }
+    #[cfg(not(test))]
+    {
+        f()
+    }
 }
 
 fn relational_row_entry_bytes_with_visit<E>(
@@ -2487,6 +2067,8 @@ fn relational_row_entry_bytes_with_visit<E>(
     row: &RelationalRow,
     visit: &mut impl FnMut() -> std::result::Result<(), E>,
 ) -> std::result::Result<usize, E> {
+    #[cfg(test)]
+    row_entry_byte_probe::record();
     visit()?;
     let mut payload = 0usize;
     for value in key.0.iter().chain(row.values.iter()) {
@@ -2547,27 +2129,6 @@ fn relational_replay_access_resident_bytes_parts(
         .checked_add(table.len())?
         .checked_add(std::mem::size_of::<RelationalKey>())?
         .checked_add(key_payload_bytes)
-}
-
-fn split_relational_row_page(pages: &mut Vec<RelationalRowPage>, index: usize) {
-    let page = &mut *pages[index];
-    let page_bytes = page
-        .iter()
-        .map(|(key, row)| relational_row_entry_bytes(key, row))
-        .sum::<usize>();
-    if page.len() <= 1
-        || (page.len() <= RELATIONAL_ROW_PAGE_MAX_ENTRIES
-            && page_bytes <= RELATIONAL_ROW_PAGE_TARGET_BYTES)
-    {
-        return;
-    }
-    let split_key = page
-        .keys()
-        .nth(page.len() / 2)
-        .cloned()
-        .expect("oversized relational row page is non-empty");
-    let right = page.split_off(&split_key);
-    pages.insert(index + 1, right.into());
 }
 
 const RELATIONAL_INDEX_PAGE_MAX_KEYS: usize = 256;
@@ -3555,13 +3116,40 @@ impl RelationalState {
             .sum()
     }
 
+    /// Estimated bytes of all resident materialized rows.
+    ///
+    /// O(tables): each row map maintains its exact entry-byte total on every
+    /// mutation, so durable commit admission does not walk resident rows
+    /// (nowledge-co/hawdb#1519). The value equals the saturating per-row fold
+    /// in [`Self::recomputed_materialized_row_bytes`]; debug builds check it.
     pub fn estimated_materialized_row_bytes(&self) -> u64 {
         if !self.materialized_rows_resident {
             return 0;
         }
-        self.segments.values().fold(0u64, |bytes, segment| {
-            segment.rows.iter().fold(bytes, |bytes, (key, row)| {
-                bytes.saturating_add(relational_row_entry_bytes(key, row) as u64)
+        let total = self.segments.values().fold(0u128, |bytes, segment| {
+            bytes.saturating_add(segment.rows.entry_bytes())
+        });
+        let bytes = u64::try_from(total).unwrap_or(u64::MAX);
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            bytes,
+            self.recomputed_materialized_row_bytes(),
+            "maintained relational row byte total diverged from its rows"
+        );
+        bytes
+    }
+
+    /// Reference O(rows) fold for [`Self::estimated_materialized_row_bytes`].
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn recomputed_materialized_row_bytes(&self) -> u64 {
+        if !self.materialized_rows_resident {
+            return 0;
+        }
+        without_row_entry_byte_probe(|| {
+            self.segments.values().fold(0u64, |bytes, segment| {
+                segment.rows.iter().fold(bytes, |bytes, (key, row)| {
+                    bytes.saturating_add(relational_row_entry_bytes(key, row) as u64)
+                })
             })
         })
     }
@@ -5258,66 +4846,12 @@ impl RelationalState {
             let replaced = if let Some(context) = &workspace_allocations {
                 // Authenticated hydration is sorted. Append bounded pages by
                 // moving keys, avoiding split-key clones and directory growth.
-                let entry_bytes = relational_row_entry_bytes(&hydrated.primary_key, &row);
-                let new_page = segment.rows.pages.last().is_none_or(|page| {
-                    page.len() >= RELATIONAL_ROW_PAGE_MAX_ENTRIES
-                        || (!page.is_empty()
-                            && page
-                                .iter()
-                                .map(|(key, row)| relational_row_entry_bytes(key, row))
-                                .sum::<usize>()
-                                .saturating_add(entry_bytes)
-                                > RELATIONAL_ROW_PAGE_TARGET_BYTES)
-                });
-                context
-                    .reserve(crate::cow::checkpoint_tree_node_bytes::<
-                        RelationalKey,
-                        RelationalRow,
-                    >())
-                    .map_err(admission)?;
-                if segment.rows.pages.is_empty() {
-                    let pages = context
-                        .vector_capacity(directory_capacity)
-                        .map_err(admission)?;
-                    context
-                        .reserve(RelationalRowDirectory::checkpoint_ownership_bytes())
-                        .map_err(admission)?;
-                    segment.rows.pages = pages.into();
-                }
-                if new_page {
-                    context
-                        .reserve(RelationalRowPage::checkpoint_ownership_bytes())
-                        .map_err(admission)?;
-                    let unit = context
-                        .start_unit()
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?;
-                    segment
-                        .rows
-                        .pages
-                        .get_unique_mut()
-                        .expect("private sparse directory")
-                        .push(BTreeMap::new().into());
-                    unit.finish();
-                }
-                let unit = context
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
-                let pages = segment
-                    .rows
-                    .pages
-                    .get_unique_mut()
-                    .expect("private sparse directory");
-                let replaced = pages
-                    .last_mut()
-                    .expect("sparse row page")
-                    .get_unique_mut()
-                    .expect("private sparse row page")
-                    .insert(hydrated.primary_key, row);
-                if replaced.is_none() {
-                    segment.rows.len += 1;
-                }
-                unit.finish();
-                replaced
+                segment.rows.push_sorted_with_allocations(
+                    hydrated.primary_key,
+                    row,
+                    context,
+                    directory_capacity,
+                )?
             } else {
                 segment.rows.insert(hydrated.primary_key, row)
             };

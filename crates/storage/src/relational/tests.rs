@@ -20,6 +20,8 @@ mod checkpoint_admission;
 mod hidden_row_id;
 #[path = "tests/overflow_pruning.rs"]
 mod overflow_pruning;
+#[path = "tests/resident_row_bytes.rs"]
+mod resident_row_bytes;
 
 #[test]
 fn relational_types_map_to_shared_logical_types() {

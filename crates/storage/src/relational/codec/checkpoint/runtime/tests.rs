@@ -194,8 +194,8 @@ fn checkpoint_units_relational_runtime_rebuilds_all_postings_and_bidirectional_r
     assert_complete(&source, &actual);
     assert!(actual.segments["children"]
         .rows
-        .pages
-        .shares_storage_with(&source.segments["children"].rows.pages));
+        .pages()
+        .shares_storage_with(source.segments["children"].rows.pages()));
     let child = &actual.segments["children"];
     assert!(child.indexes["group_id"].pages.len() > 1);
     let group = &child.indexes["group"];
@@ -307,8 +307,8 @@ fn checkpoint_units_relational_runtime_wide_keys_and_row_page_boundaries_match_o
     let actual = row_pages(rows, &work).unwrap();
     assert_eq!(actual.len(), 1025);
     assert!(actual.iter().eq(expected.iter()));
-    assert_eq!(actual.pages.len(), expected.pages.len());
-    for (left, right) in actual.pages.iter().zip(expected.pages.iter()) {
+    assert_eq!(actual.pages().len(), expected.pages().len());
+    for (left, right) in actual.pages().iter().zip(expected.pages().iter()) {
         assert!(left == right);
     }
     assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
