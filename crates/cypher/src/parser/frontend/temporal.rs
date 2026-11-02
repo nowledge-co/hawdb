@@ -247,13 +247,17 @@ impl Transformer<'_> {
 // temporal syntax admits richer generic CASE operands. Lower those same CST
 // captures to the generic AST; never retry recognition or revive an old parser.
 impl Transformer<'_> {
-    fn captured_reference(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpression> {
+    pub(super) fn captured_reference(
+        &mut self,
+        node: NodeId,
+        depth: usize,
+    ) -> Result<ScalarExpression> {
         self.expression_budget(node, depth + 1)?;
-        let identifiers: Vec<_> = self
-            .iter_named_children(node, rule_id!("v_identifier"))
-            .collect();
-        let variable = self.text(identifiers[0]);
-        let property = self.text(identifiers[1]).to_owned();
+        let mut identifiers = self.iter_named_children(node, rule_id!("v_identifier"));
+        let variable_node = identifiers.next().expect("reference variable");
+        let property_node = identifiers.next().expect("reference property");
+        let variable = self.text(variable_node);
+        let property = self.text(property_node).to_owned();
         let literal = if variable.eq_ignore_ascii_case("true") {
             Some(Value::Bool(true))
         } else if variable.eq_ignore_ascii_case("false") {
@@ -267,8 +271,8 @@ impl Transformer<'_> {
             return Err(self.error(node, "expected CASE expression"));
         }
         let kind = if let Some(literal) = literal {
-            let value = self.source(identifiers[0], ValueExpressionKind::Literal(literal));
-            let expression = self.source(identifiers[0], ScalarExpressionKind::Value(value));
+            let value = self.source(variable_node, ValueExpressionKind::Literal(literal));
+            let expression = self.source(variable_node, ScalarExpressionKind::Value(value));
             ScalarExpressionKind::PropertyAccess {
                 expression: Box::new(expression),
                 key: property,

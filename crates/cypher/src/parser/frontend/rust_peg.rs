@@ -1551,6 +1551,9 @@ impl Builder<'_> {
         {
             return Ok(id);
         }
+        if let Some(id) = super::tree::inline_branch(rule, start, end, first..self.edges.len()) {
+            return Ok(id);
+        }
         if self.nodes.capacity() == 0 {
             self.nodes.reserve_exact(16);
         }

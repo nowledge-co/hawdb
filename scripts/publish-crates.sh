@@ -95,6 +95,14 @@ publish_order() {
     | ($wspkgs | map({key: .id, value: .name}) | from_entries) as $idToName
     | ($wspkgs | map({key: .name, value: ((.publish // null) != [])}) | from_entries) as $publishable
     | ($meta.resolve.nodes | map(select(.id as $id | $wsids | index($id)))) as $wsnodes
+    | if any($wspkgs[]; .name == "hawdb-test-contracts" and .publish != []) then
+        error("hawdb-test-contracts must set publish = false")
+      else . end
+    | if any($wsnodes[]; any(.deps[];
+        $idToName[.pkg] == "hawdb-test-contracts"
+        and any(.dep_kinds[]; .kind != "dev"))) then
+        error("hawdb-test-contracts must only be a dev-dependency")
+      else . end
     | (reduce $wsnodes[] as $n ({}; . + {
           ($idToName[$n.id]): (
             [$n.deps[] | select(.pkg as $d | $wsids | index($d)) | $idToName[.pkg]] | unique
@@ -160,13 +168,22 @@ main() {
   fi
 
   if [[ "${dry_run}" -eq 1 ]]; then
-    cargo_extra_args=("--dry-run" "${cargo_extra_args[@]}")
+    if [[ "${#cargo_extra_args[@]}" -eq 0 ]]; then
+      cargo_extra_args=("--dry-run")
+    else
+      cargo_extra_args=("--dry-run" "${cargo_extra_args[@]}")
+    fi
   fi
 
+  # Preserve metadata/policy failures; process substitution hides their status.
+  local order_text
+  order_text="$(publish_order "${workspace_root}")" || return $?
   local -a order=()
   while IFS= read -r crate; do
-    order+=("${crate}")
-  done < <(publish_order "${workspace_root}")
+    if [[ -n "${crate}" ]]; then
+      order+=("${crate}")
+    fi
+  done <<<"${order_text}"
 
   local skipping=0
   if [[ -n "${from_crate}" ]]; then

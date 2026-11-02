@@ -1,0 +1,20 @@
+[package]
+name = "hawdb-test-contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Unpublished fixtures and external checkpoint contracts for HawDB"
+
+[features]
+default = ["full"]
+full = ["hawdb/default"]
+
+[dev-dependencies]
+hawdb = { path = "../..", default-features = false }
+hawdb-storage = { path = "../storage", features = ["test-support"] }
+
+[[test]]
+name = "checkpoint_contracts"
+path = "tests/checkpoint_contracts.rs"

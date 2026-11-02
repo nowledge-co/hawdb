@@ -276,8 +276,27 @@ with no writes, CSV fields read through temporal constructors and `toString`
 over temporal values, missing-file error classes and, on Unix, a FIFO source refused
 without blocking). Replay with `cargo test --locked -p hawdb-executor
 --lib load_csv`, `cargo test --locked -p hawdb-executor --lib mutation::staged`
-and `cargo test --locked -p hawdb --lib api::tests::load_csv`. No lane, profile
-or deadline changes; see [LOAD CSV](CYPHER_LOAD_CSV.md).
+and `cargo test --locked -p hawdb --lib api::tests::load_csv`. See
+[LOAD CSV](CYPHER_LOAD_CSV.md).
+
+The complete existing `//crates/executor:hawdb_executor_unit_tests` owner runs
+with Bazel `exclusive` after competing build/test actions in the same invocation.
+It keeps the same executable, features, default libtest concurrency and original
+300-second ceiling. The 3,000-node / 3,005-row endpoint comparison retains both
+index modes and all four endpoint patterns. No new CI job, owner, partition
+script or compiler profile is needed; Cargo and native Windows selections stay
+unchanged. Ref [#1462](https://github.com/nowledge-co/hawdb/issues/1462).
+
+[PR #1502 crate CI](https://github.com/nowledge-co/hawdb/runs/125103553248), head
+`1a78af07764cf960080cd827a8c4cdc406ffd9c0`, passed 105/106 targets but timed out
+this existing executor owner at 300.6s; the endpoint comparison was the last
+unfinished case. [The same head's root CI](https://github.com/nowledge-co/hawdb/runs/125103553427)
+passed 74/75 targets, including both new checkpoint-contract carriers, while
+general failed five automatic-checkpoint lifecycle cases. The complete-family
+root selector from #1500 moves those cases into the existing isolated checkpoint
+owner (see below). These scheduling changes preserve every fixture, assertion,
+feature and deadline. Final-head CI must qualify the mitigation; local timing
+and the timeout tail alone do not establish the cause or a remote speedup.
 
 Cypher `sum()` and expression-argument aggregates are owned by existing
 targets: `blocking::aggregate::tests` (Sum numeric/NULL/empty/overflow/
@@ -798,8 +817,8 @@ legacy document tombstones before reducing the complete pinned source interval.
 | Python release: `.github/workflows/pypi.yaml` | Released tag/version/main-history agreement, reviewed shared dependency identities, byte-identical sdist lock/profile and tool exclusions, five native wheel builds from that sdist, installed default/Pydantic binding tests, typing/license/metadata payloads and PyPI file hashes | GitHub Release publication or explicit replay of an existing release tag. Linux x86-64/AArch64 use manylinux 2.28; macOS x86-64/AArch64 and Windows x86-64 build natively. Reuses `bindings/python/tests` on CPython 3.11; the final public install smoke is Linux x86-64 with bounded index/CDN retries. No fuzz campaigns or new presubmit test lane. Build cost includes a first release-profile compilation on each platform. See [publishing](../bindings/python/README.md#publishing). |
 | Python dependency lock: `bindings/python/test_check_lock.py` and `check_lock.py` | Reject shared version/source/checksum drift and local engine version mismatch; accept reviewed multiple-version selections and binding-only dependencies | Existing Python Bindings pip job, before its locked wheel build. Replay: `python -m unittest discover -s bindings/python -p test_check_lock.py` and `python bindings/python/check_lock.py` with Python 3.11+. These pure metadata controls do not join the Bazel native-binding test inventory or compile the engine. |
 | Weekly platform and daily Windows abandonment qualification | Supported platform/feature combinations and the complete Windows abandonment/GC fault matrix | Scheduled or explicit workflows. They are not fuzz time budgets. |
-| Cypher PEG frontend | The default statement, profiled, pipeline and projected-filter entries use the shared SQL/PGQ PEG engine with a Cypher-specific lexer. All supported syntax families use pure PEG rules and selected-CST lowering to owned ASTs. Immutable pre-removal and independently compiled main fixtures cover complete AST/source spans and rejection classes, including row-bound patterns/UNWIND and general ORDER BY transitions. Generated clause/wrapper, contextual-keyword, UTF-8 truncation and backtracking cases cover anonymous-name order, hints, procedure admission, independent language nesting and PEG work/node/memo/depth limits. Exact error regressions retain legacy algorithm diagnostics and incomplete scalar/aggregate call diagnostics at the following token. Handwritten parser drivers and native matcher/capture APIs are removed. | `cargo test --locked -p hawdb-cypher`; `bazel test //crates/cypher:hawdb_cypher_tests //crates/cypher:hawdb_cypher_backtracking_fuzz_tests`. Shared engine regressions remain in `//crates/sql-syntax:hawdb_sql_syntax_tests`; SQL/PGQ integration targets remain unchanged. No new CI or crate boundary. |
-| Local Shiro and MVCC tools | Generated SQL/Cypher result relations, parser/storage campaigns and optimistic transaction-history checking | Manual only. Never include the tools in normal or dedicated CI, scheduled workflows or production dependencies. |
+| Cypher PEG frontend | The default statement, profiled, pipeline and projected-filter entries use the compiled peg grammar with a Cypher-specific lexer. Selected captures lower to owned ASTs; immutable pre-removal and independently compiled main fixtures cover complete AST/source spans and rejection classes, including the current Mem query contracts. Generated clause/wrapper, contextual-keyword, UTF-8 truncation and backtracking cases cover anonymous-name order, hints, procedure admission and independent work/capture/nesting limits. The core function catalog supplies list/string names. Compact capture tests cover branch span/count boundaries, alias tag overlap, borrowed child slices and arena fallback; property-only scalar lists lower directly without temporary value lists. Logical capture budgets are unchanged. SQL retains its separate memoized PEG engine and resource tests. Handwritten drivers, the duplicate Cypher DSL and backend selection feature are removed. | `cargo test --locked -p hawdb-cypher`; `bazel test //crates/cypher:hawdb_cypher_tests //crates/cypher:hawdb_cypher_backtracking_fuzz_tests`. SQL engine regressions remain in `//crates/sql-syntax:hawdb_sql_syntax_tests`; SQL/PGQ integration targets remain unchanged. No new CI or crate boundary. |
+| Local Shiro and MVCC tools | Generated SQL/Cypher result relations, parser/storage campaigns, independent Decimal/Cypher/temporal/keyless models, optimistic history checking and composite/secondary/keyless range-lock models | Manual only. Existing `//tools/shiro:shiro_tests` and `//tools/shiro:shiro_cli_tests` own Shiro controls. MVCC range controls use `cargo test --locked --manifest-path tools/mvcc-fuzz/Cargo.toml ranges`; campaigns/replay/reduction are documented in [Shiro](../tools/shiro/README.md) and [MVCC](../tools/mvcc-fuzz/README.md#composite-secondary-and-keyless-range-models). Preserve legacy replay formats; new coverage uses explicit protocols. No CI, scheduling, profile or deadline change. |
 
 ## Root regression owners
 
@@ -837,9 +856,9 @@ owns the restricted-token descriptor case.
 
 | Target / family | What it detects | Notes |
 | --- | --- | --- |
-| `//:hawdb_manual_checkpoint_tests`, `//:hawdb_manual_checkpoint_minimal_tests` | Explicit ordinary/concurrent/embedded checkpoints preserve durable publication independently of background support/admission. Embedded controls retain one same-governor background or foreground I/O permit, distinguish allowed foreground work from legitimate refusal, and check reopen and refunds. | Existing default/minimal public-consumer carriers and profiles; replay `cargo test --locked --test manual_checkpoint`, adding `--no-default-features` for minimal. The existing root automatic-checkpoint `publication_io` family also pauses the actual owner with its acquired wave, observes manual suspension, and checks durable completion/refunds under [#1219](https://github.com/nowledge-co/hawdb/issues/1219). |
+| `//:hawdb_manual_checkpoint_tests`, `//:hawdb_manual_checkpoint_minimal_tests` | Explicit ordinary/concurrent/embedded checkpoints preserve durable publication independently of background support/admission. Embedded controls retain one same-governor background or foreground I/O permit, distinguish allowed foreground work from legitimate refusal, and check reopen and refunds. | Compatibility labels for the unpublished `hawdb-test-contracts` crate; default merges these five cases with six WAL recovery cases, and minimal retains those five plus all six WAL cases already available under Cargo without default features. Both required root carriers retain the original 300s deadline and use exclusive/single-thread execution. Replay `cargo test --locked -p hawdb-test-contracts --test checkpoint_contracts`, adding `--no-default-features` for minimal. The existing root automatic-checkpoint `publication_io` family also pauses the actual owner with its acquired wave, observes manual suspension, and checks durable completion/refunds under [#1219](https://github.com/nowledge-co/hawdb/issues/1219). |
 | `//:hawdb_unit_general_tests` | Embedded API, schema/query and general facade regressions | Shared unit executable; partition script assigns each discovered case an owner. |
-| Automatic checkpoint `read_handoff` | Read callbacks, concurrent and SQL reads adopt ready generations; invalid identities fail closed; typed EXPLAIN ANALYZE progresses without the owner mutex | Five existing cases in `//:hawdb_unit_general_tests`. The seal-pause fixture waits for the owner's handoff-pause acknowledgement before adoption or guard release; observing `Phase::Handoff` alone races probe entry. The invalid-identity case prepares its foreign persistent database before entering the bounded owner pause, keeping unrelated setup I/O outside the 15-second assertion window. Existing query, admission refund, snapshot and reopen assertions and deadlines remain. Replay: `bazel test //:hawdb_unit_general_tests --test_arg=api::automatic_checkpoint::tests::read_handoff`. Ref [#1116](https://github.com/nowledge-co/hawdb/issues/1116); this fixture race is distinct from other checkpoint/branch-open stalls. |
+| Automatic checkpoint `read_handoff` | Read callbacks, concurrent and SQL reads adopt ready generations; invalid identities fail closed; typed EXPLAIN ANALYZE progresses without the owner mutex | Five existing cases in `//:hawdb_unit_checkpoint_lifecycle_tests`. The seal-pause fixture waits for the owner's handoff-pause acknowledgement before adoption or guard release; observing `Phase::Handoff` alone races probe entry. The invalid-identity case prepares its foreign persistent database before entering the bounded owner pause, keeping unrelated setup I/O outside the 15-second assertion window. Existing query, admission refund, snapshot and reopen assertions and deadlines remain. Replay: `bazel test //:hawdb_unit_checkpoint_lifecycle_tests --test_arg=api::automatic_checkpoint::tests::read_handoff`. Ref [#1116](https://github.com/nowledge-co/hawdb/issues/1116); this fixture race is distinct from other checkpoint/branch-open stalls. |
 | `//:hawdb_unit_concurrent_tests` | Transaction locks, read observation, commit admission and concurrent publication races | Known long target: [#972](https://github.com/nowledge-co/hawdb/issues/972). Preserve barriers and observations; a deadline is not a substitute for a deterministic schedule. |
 | Covered pessimistic graph mutations (`covered_graph`) and concurrent metrics (`api::concurrent::metrics::tests`) | Retained staged results under existing locks, new-target/upgrade replay, stale-epoch refusal, lock timeout/retry, rollback, failed-statement atomicity, durable reopen, disabled-by-default instrumentation and explicit metrics inspection during writer ownership | Owned by `//:hawdb_unit_concurrent_tests`; local replay with `--test_arg=covered_graph` or `--test_arg=api::concurrent::metrics::tests`. Assertions use work counts and final rows rather than timing thresholds. |
 | Typed pessimistic retry errors | Core transaction-error tests cover typed-only classification and preserve optimistic conflict behavior. Root concurrent transaction tests verify SQL/Cypher stale snapshots, repeated query and commit calls, typed deadlock victims, lock release, unchanged rejected graph mutations and usable transactions after statement-level lock timeout. Owned by existing core and `//:hawdb_unit_concurrent_tests` CI; replay with `cargo test --locked -p hawdb --lib pessimistic_` and `cargo test --locked -p hawdb --lib deadlock_`. |
@@ -957,6 +976,7 @@ workload does not change default or CI benchmark selection.
 | Sparse composite prefix ranges | `//crates/optimizer-graph:hawdb_optimizer_graph_tests`, `//crates/storage:hawdb_storage_tests` and root `//:hawdb_unit_general_tests` cover [#1183](https://github.com/nowledge-co/hawdb/issues/1183): missing/NULL suffix values, one or multiple leading equalities, strict/inclusive bounds, checkpoint/delta/reopen and retained views. Storage differentials force owned/admitted access independently of planner selection, preserve Stop and admission refusal, and check native index work for complete keys. Unconstrained wider suffixes use a complete fallback; full-key ranges retain their existing path. The contiguous-prefix projection fixture uses a complete `(prefix, range)` key; candidate guards separately reject an unconstrained suffix. Existing profiles and lanes apply; fixtures stay small. Focused Cargo replay: `cargo test --locked -p hawdb-storage sparse_composite`, `cargo test --locked -p hawdb sparse_composite`, or optimizer-graph package filter `composite_range_candidates`. |
 | Native keyless SQL tables ([#1454](https://github.com/nowledge-co/hawdb/issues/1454)) | Existing storage unit owner: `relational::tests::hidden_row_id` covers duplicate identities, stable update handles, snapshot retention, deletion/checkpoint allocation fences, WAL replay, failed durability publication, concurrent allocation and exhaustion. Existing root general owner: `relational_sql::postgres_compat` covers Materialized and OutOfCore/DemandPaged SQL, implicit INSERT, duplicate rows, secondary and unique indexes, UPSERT, rollback, WAL and checkpoint reopen, and ALTER TABLE. `api::tests::hidden_row_id` checks allocation-only checkpoint changes and read-only recovery; `api::concurrent::key_range_tests::hidden_row_id` checks pessimistic lock conflicts. No new CI lane. |
 | Relational overflow pruning per commit ([#1439](https://github.com/nowledge-co/hawdb/issues/1439)) | Existing `//crates/storage:hawdb_storage_tests` / Prow crates owner (`relational::tests::overflow_pruning`) and root `//:hawdb_unit_general_tests` (`relational_sql::tests::relational_bulk_load_with_overflow_values_keeps_constraints_and_payloads`). A thread-local `#[doc(hidden)]` counter of rows examined for overflow reachability bounds each insert commit by its own rows (40 commits of 50 always-overflowed rows), independently of table size; an update that keeps its value examines its two row images. Exactness covers content-shared segments, release and reuse within one transaction, values of rows an upsert did not store, whole-table column rewrites and checkpoint encode/decode, which rejects unreachable segments. Checked builds also compare every incremental result with the full reachability pass. The SQL case loads parent/child tables with shared overflow bodies across 20 commits, then checks primary-key, unique and foreign-key rejection, cascade delete, value replacement and checkpoint reopen. Replay: `cargo test --locked -p hawdb-storage --lib overflow_pruning` and `cargo test --locked -p hawdb --lib relational_bulk_load_with_overflow`. No new lane, profile or timeout. |
+| Relational resident row bytes per commit ([#1519](https://github.com/nowledge-co/hawdb/issues/1519)) | Existing `//crates/storage:hawdb_storage_tests` / Prow crates owner (`relational::tests::resident_row_bytes`, `store::relational_row_pages::tests::relational_row_bytes`). Each resident row map keeps the exact sum of its row-entry size estimates beside its row count, so durable commit admission and storage-pressure checkpoint sizing are O(tables). A `#[cfg(test)]` thread-local count of sized row entries bounds a single-row durable UPDATE commit at 1,000 and 8,000 resident rows (at most 576 entries, against at least 16,000 for the previous per-commit walk), with a positive control that a real walk is counted. Exactness against the full fold covers insert, replacement, primary-key change, upsert, delete, page splits and emptied pages, allocation-metered inserts and page copies, sparse hydration, both column-rewrite paths, COW clones and staged states, a rejected transaction, checkpoint encode/decode, row detachment, and durable WAL replay plus checkpoint-and-WAL reopen. Checked builds also compare the maintained total with the full fold on every read and on metered checkpoint decode. Replay: `cargo test --locked -p hawdb-storage --lib row_bytes`. No new lane, profile or timeout. |
 | SQL composite index intervals | Root `//:hawdb_unit_general_tests` (`api::tests::relational_range`), relational unit and storage unit / existing Prow crates lanes. Compare indexed SQL with an unindexed database across open/closed, one-sided, NULL/contradictory bounds, duplicates, aliases, parameters, residuals, uniform ASC/DESC, OFFSET/LIMIT and first-column ranges. Cover nullable unique suffixes, checkpoint/live/pinned/private/recovery views in Shadow/DemandPaged/Authoritative modes. A 5,000-row prefix must deliver a late LIMIT 3 under a four-row index budget with three observed index rows and early Stop. Tiny-page and scalar/encoded-bound differentials cover trailing-key ties and extrema. Replay: `cargo test --locked -p hawdb --lib api::tests::relational_range`, storage filters `encoded_partial_bounds` / `relational_index_shadow_range_seek`, and the relational index-runtime suite. See [contract](specs/POSTGRES_RELATIONAL_CONTENT_STORE_SPEC.md). No new grammar, persisted format, lane or profile. |
 | Executor and query/query-policy | Operator execution, result delivery, cancellation and budget/refusal behavior. Small borrowed-projection units in the existing executor unit / Prow crates lane compare 1–8 simple columns with the general path, preserve duplicate-alias and computed/wide fallback, exact wide-row refusal and workspace refunds, and release preparation before a byte-boundary Stop without repeated evaluation. Replay: `cargo test --locked -p hawdb-executor --lib expression::projection::tests`. No new lane, feature, fixture deadline or profile. Text-seed result-owner unit cases cover prepaid window storage and the internal capacity-growth path, including simultaneous replacement admission, exact row limits, sticky refusal and parent-allowance retention. Allocation probes use the repository profile; compare measurements only within the same profile. |
 | Complete lexical and grouped evidence | Existing Cypher/Plan-Cypher, executor, Search, readiness and root general lanes cover opt-in complete providers, exhaustion/skipped reports, candidate ceilings before canonical filtering, lazy capacity growth, scalar MAX and bounded per-group evidence. Root differentials cover mixed supported keys, signed zero, ID maxima, permutations, graph eligibility and retained reads across raw/resident/layered disk sources with replacement and deletion. Executor allocation probes cover ID admission, one owned copy of repeated wide scalar keys, retained callback ownership and cancellation/error precedence. Search regressions compare canonical field phrase-alias occurrences and full-corpus scores, including raw window/complete parity and actual allocation peaks. Sparse overlapping-layer regressions cover metadata predicates, external identities and exact live-corpus scores in window/complete modes. The `grouped_evidence` and `grouped_evidence_native` release benches manually qualify scalar and native lexical/graph paths; neither is a CI performance gate. See [measured results](benchmarks/GROUPED_RETRIEVAL_RESULTS.md). See [contract](specs/GROUPED_RETRIEVAL_SPEC.md). |
@@ -1707,19 +1727,24 @@ in the existing TLA suite; native capacity-band tests own Tokio waiter renewal.
 
 ## PR #1217 root CI scheduling
 
-- `//:hawdb_unit_checkpoint_headroom_tests` owns the complete
-  `api::automatic_checkpoint::tests::headroom::` namespace and the two sustained
-  `delta_pressure_sustains_generations_and_preserves_all_values_after_reopen`
-  and `soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints`
-  cases, including capacity,
-  notification, foreground and preparation-backoff submodules. It is included
-  through the existing required root unit suites and excluded from general by
-  the same inventory partitioner. It reuses the ordinary root executable and
-  global checked profile, runs with one libtest thread and Bazel `exclusive`,
-  and keeps the existing 900-second partition deadline. Internal test-created
-  concurrency remains intact. Automatic-checkpoint headroom CREATE failures retain the original success/refusal contract and add phase, actual work-progress, wake/resource and libtest-concurrency diagnostics for [#1116](https://github.com/nowledge-co/hawdb/issues/1116); no caller retries or deadline changes. This prevents the phase/clock assertions from
-  competing with roughly 1,800 unrelated unit cases and other test actions
-  in the same Bazel invocation; external node contention remains possible.
+- `//:hawdb_unit_checkpoint_headroom_tests` retains the original headroom,
+  relational live-overlay and two sustained WAL/delta pressure selections.
+  `//:hawdb_unit_checkpoint_lifecycle_tests` owns the remaining
+  `api::automatic_checkpoint::tests::` cases, including manual takeover,
+  unattended/read handoff, planning/resource recovery, coalesced capture and
+  shutdown. New lifecycle families inherit this second owner. Together the two
+  disjoint partitions isolate the complete automatic-checkpoint namespace from
+  general, without putting all 97 current cases under one deadline.
+- Both checkpoint targets are included through the existing required root unit
+  suites. They reuse the ordinary root executable and global checked profile,
+  each with one libtest thread, Bazel `exclusive` and the unchanged 900-second
+  deadline. Internal test-created concurrency remains intact. Automatic-checkpoint
+  headroom CREATE failures retain the original success/refusal contract and phase,
+  work-progress, wake/resource and libtest-concurrency diagnostics for
+  [#1116](https://github.com/nowledge-co/hawdb/issues/1116); no caller retries or
+  deadline changes. Isolation prevents phase/clock assertions from competing
+  with unrelated unit cases and other actions in the same Bazel invocation;
+  external node contention remains possible.
 - The production five-second no-progress refusal, deliberate stalled-owner
   deadline tests, 320 acknowledged rows, checkpoint-count and reopen assertions
   are unchanged. No Busy retry, ignored assertion or production timing change
@@ -1734,9 +1759,35 @@ in the existing TLA suite; native capacity-band tests own Tokio waiter renewal.
   `//:root_unit_partition_script_test`. They check complete/disjoint inventory
   ownership, nonempty execution, shard status signaling and native error
   propagation. Local replay uses the existing public joined-read labels or
-  `bazel test //:hawdb_unit_checkpoint_headroom_tests`; no CI-only flags or
+  `bazel test //:hawdb_unit_checkpoint_headroom_tests //:hawdb_unit_checkpoint_lifecycle_tests`; no CI-only flags or
   special compiler profile are required. Final-head CI must establish runtime
   acceptance; target isolation alone is not a measured speedup.
+
+The complete-family ownership closes a scheduling gap observed in
+[PR #1492's root run](https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1492/pull-skein-bazel-test-root/2117077993091239936),
+head `0dc0983755b3e4941b554a8735291f10259b0bc5`, base
+`f3e5ecd01514b2703bf2a00fffbaeb3d97ba9399`. General ran 2,161 cases and reported
+17 automatic-owner failures: the unchanged 15-second waits expired in Preparing,
+with continuing completed-unit progress and no operation failure in the retained
+diagnostics. The partial selector had left these lifecycle cases in general.
+The partition regression includes manual, handoff, planning-recovery and
+coalesced-capture names, plus future nested and top-level lifecycle names. It
+checks the separate owners, complete/disjoint inventory, empty-owner rejection
+and status/argument propagation. No runtime
+deadline, case assertion, compilation profile or retry changes. The diagnostics
+do not establish corruption or every source of slow progress; external contention
+remains possible. Complete current-head root execution, including both isolated
+lanes, must qualify the mitigation under
+https://github.com/nowledge-co/hawdb/issues/1499.
+
+[PR #1502 review](https://github.com/nowledge-co/hawdb/pull/1502#issuecomment-6572313001)
+showed why the complete namespace needs two owners: the original single-thread
+97-case target passed in 832.8 seconds under its 900-second ceiling, while the
+identical selector in #1500 timed out at 900.1 seconds. Restoring the original
+headroom membership and giving the remaining lifecycle cases their own target
+preserves isolation without increasing deadlines, relaxing assertions or adding
+another root binary. Both target runtimes must be checked in current-head root
+CI; the split alone does not establish runtime headroom.
 
 PR #1277 scheduling evidence is bound to head `66920d194a` and base `84d5ed46e`.
 The complete Prow BEP records one uncached failed Search text/background unit
@@ -2834,3 +2885,35 @@ list types, multiplicity and payload admission checked by binding/execution.
 No handwritten parser, extra named rule or increased grammar/resource cap is
 introduced. Embedded row-bound, multi-WITH and shortest-path tests from main
 remain under their existing root test owners.
+
+
+## Unpublished public checkpoint contracts (#1501)
+
+`crates/test-contracts` owns external manual-checkpoint and WAL-recovery
+contracts through the same facade APIs and recovery oracle as before. One
+engine-linked default `rust_test` contains all 11 original cases; its separate
+minimal carrier preserves those five manual-checkpoint cases and the six WAL
+cases available under the former Cargo minimal configuration. The shared
+fixture owns a fresh directory for each case and removes only that directory.
+The lightweight `fixture_tests` case proves independent data and cleanup even
+when two live fixtures use the same label.
+
+The required `//:hawdb_unit_tests` root suite owns both contract carriers.
+`//:hawdb_linux_ci_smoke_tests` and the legacy WAL label refer to the same default
+carrier, so aggregate expansion compiles/runs it once per invocation. The three
+old public Bazel labels remain single-member `test_suite` wrappers. The actual
+contract targets are marked `manual` to avoid duplicate implicit discovery, and
+run with `exclusive`, one libtest thread, the ordinary checked profile and their original 300s ceilings.
+The crate presubmit owns only the fixture unit test. No CI job is added; the
+private automatic-checkpoint lifecycle/pause-hook tests remain in the root
+unit binary. Their complete namespace uses the existing isolated checkpoint
+owner, with unchanged deadline contracts.
+
+`publish = false`, a Bazel `testonly` fixture library and explicit facade archive
+exclusion keep the helper outside production artifacts. `publish-crates.sh`
+refuses a publishable `hawdb-test-contracts` package or any normal/build edge to
+it; the existing script regression covers both refusals and allowed dev edges.
+Verify the actual publication order and facade archive as well as Cargo's
+production dependency closure. This is test ownership/build consolidation;
+measure cold/incremental compilation and actual execution separately before
+claiming a CI speedup.

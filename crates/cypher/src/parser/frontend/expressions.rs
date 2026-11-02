@@ -205,6 +205,9 @@ impl Transformer<'_> {
                 let list = self.tree.children(node)[0];
                 match self.tree.node(list).name {
                     Some("x_value_list") => {
+                        if let Some(kind) = self.captured_property_list(list, depth)? {
+                            return Ok(kind);
+                        }
                         let value = self.value(list, depth)?;
                         if !value.kind.reads_row_binding() {
                             ScalarExpressionKind::Value(value)
@@ -308,6 +311,37 @@ impl Transformer<'_> {
                 },
             )
         }
+    }
+    // Property-only lists already have the scalar capture shape. Decode their
+    // names once while retaining the value and scalar depth checks in order.
+    fn captured_property_list(
+        &mut self,
+        node: NodeId,
+        depth: usize,
+    ) -> Result<Option<ScalarExpressionKind>> {
+        let tree = self.tree;
+        let list = tree.children(node)[0];
+        let contents = tree.required(list, rule_id!("v_list_contents"));
+        let children = tree.children(contents);
+        if children.is_empty()
+            || !children.iter().all(|child| {
+                let selected = tree.children(*child)[0];
+                tree.rule_id(selected) == rule_id!("v_property")
+                    && tree.children(selected).len() == 2
+            })
+        {
+            return Ok(None);
+        }
+        self.check_depth(node, depth, 1)?;
+        self.check_depth(children[0], depth + 1, 1)?;
+        let captured_depth = depth.saturating_sub(1);
+        self.check_depth(node, captured_depth + 1, 1)?;
+        self.check_depth(children[0], captured_depth + 2, 1)?;
+        let mut elements = Vec::with_capacity(children.len());
+        for child in children {
+            elements.push(self.captured_reference(tree.children(*child)[0], captured_depth + 2)?);
+        }
+        Ok(Some(ScalarExpressionKind::List(elements)))
     }
     pub(super) fn string_arity(
         &self,

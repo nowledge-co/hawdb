@@ -14,6 +14,7 @@ exclude = [
   "/tools/shiro/**",
   "/tests/pg-regress/**",
   "/crates/fuzz/**",
+  "/crates/test-contracts/**",
   # Benchmark evidence stays in the repository, outside the crates.io archive.
   "/docs/benchmarks/**",
 ]
@@ -117,6 +118,7 @@ members = [
   "crates/query",
   "crates/query-policy",
   "crates/qualification",
+  "crates/test-contracts",
   "crates/readiness",
   "crates/relational",
   "crates/resource-profile",

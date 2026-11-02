@@ -44,10 +44,13 @@ pub(super) struct NodeView {
     pub start: usize,
     pub end: usize,
 }
-// On 64-bit hosts a childless match fits in the handle itself. Smaller
+// On 64-bit hosts small captures fit in the handle itself. Smaller
 // hosts retain ordinary arena nodes; representation never limits admission.
 const INLINE_LEAF: u64 = 1 << 63;
 const INLINE_ALIAS: u64 = 1 << 62;
+const INLINE_BRANCH: u64 = 1 << 53;
+const BRANCH_LENGTH_BITS: u32 = 8;
+const BRANCH_LENGTH_MASK: u64 = (1 << BRANCH_LENGTH_BITS) - 1;
 const ALIAS_EDGE_BITS: u32 = 18;
 const ALIAS_LENGTH_BITS: u32 = 11;
 const ALIAS_EDGE_MASK: u64 = (1 << ALIAS_EDGE_BITS) - 1;
@@ -84,6 +87,34 @@ pub(super) fn inline_alias(rule: u16, start: usize, end: usize, edge: usize) -> 
             | ((edge as u64) << 36)
             | ((start as u64) << ALIAS_LENGTH_BITS)
             | len as u64,
+    )
+    .ok()
+}
+pub(super) fn inline_branch(
+    rule: u16,
+    start: usize,
+    end: usize,
+    edges: Range<usize>,
+) -> Option<NodeId> {
+    let len = end.checked_sub(start)?;
+    let count = edges.end.checked_sub(edges.start)?;
+    if usize::BITS < 64
+        || rule > u16::from(u8::MAX)
+        || start as u64 > TOKEN_MASK
+        || len as u64 > BRANCH_LENGTH_MASK
+        || edges.start as u64 > ALIAS_EDGE_MASK
+        || !(2..=5).contains(&count)
+    {
+        return None;
+    }
+    usize::try_from(
+        INLINE_LEAF
+            | INLINE_BRANCH
+            | (u64::from(rule) << 54)
+            | (((count - 2) as u64) << 51)
+            | ((len as u64) << 43)
+            | ((edges.start as u64) << TOKEN_BITS)
+            | start as u64,
     )
     .ok()
 }
@@ -207,6 +238,12 @@ impl ParseTree {
             let (start, end) = if packed & INLINE_ALIAS != 0 {
                 let start = ((packed >> ALIAS_LENGTH_BITS) & TOKEN_MASK) as usize;
                 (start, start + (packed & ALIAS_LENGTH_MASK) as usize)
+            } else if packed & INLINE_BRANCH != 0 {
+                let start = (packed & TOKEN_MASK) as usize;
+                (
+                    start,
+                    start + ((packed >> 43) & BRANCH_LENGTH_MASK) as usize,
+                )
             } else {
                 (
                     ((packed >> TOKEN_BITS) & TOKEN_MASK) as usize,
@@ -232,6 +269,11 @@ impl ParseTree {
             if packed & INLINE_ALIAS != 0 {
                 let edge = ((packed >> 36) & ALIAS_EDGE_MASK) as usize;
                 return &self.edges[edge..edge + 1];
+            }
+            if packed & INLINE_BRANCH != 0 {
+                let edge = ((packed >> TOKEN_BITS) & ALIAS_EDGE_MASK) as usize;
+                let count = ((packed >> 51) & 3) as usize + 2;
+                return &self.edges[edge..edge + count];
             }
             return &[];
         }
@@ -266,5 +308,54 @@ impl ParseTree {
             tokens[node.end - 1].span.end
         };
         Span::new(start, end)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_branches_preserve_spans_and_borrowed_children() {
+        if usize::BITS < 64 {
+            assert!(inline_branch(0, 0, 1, 0..2).is_none());
+            return;
+        }
+        let mut edges = vec![0; ALIAS_EDGE_MASK as usize + 5];
+        let first = ALIAS_EDGE_MASK as usize;
+        edges[first..].copy_from_slice(&[3, 7, 11, 17, 23]);
+        let tree = ParseTree::from_token_matches(Vec::new(), edges, 0);
+        for count in 2..=5 {
+            for len in [0, 1, BRANCH_LENGTH_MASK as usize] {
+                let start = TOKEN_MASK as usize - len;
+                let id = inline_branch(0, start, start + len, first..first + count).unwrap();
+                let view = tree.node(id);
+                assert_eq!((view.start, view.end), (start, start + len));
+                assert_eq!(view.name, Some(RULE_NAMES[0]));
+                assert!(tree.rule_id(id) == RuleId(0));
+                assert_eq!(tree.children(id), &tree.edges[first..first + count]);
+                assert_eq!(tree.children(id).as_ptr(), tree.edges[first..].as_ptr());
+            }
+        }
+        // Alias edge bits overlap the branch marker; alias decoding takes priority.
+        let alias = inline_alias(0, 42, 43, first).unwrap();
+        assert_eq!(tree.node(alias).start, 42);
+        assert_eq!(tree.children(alias), &[3]);
+        let leaf = inline_leaf(0, TOKEN_MASK as usize, TOKEN_MASK as usize).unwrap();
+        assert_eq!(tree.node(leaf).end, TOKEN_MASK as usize);
+        assert!(tree.children(leaf).is_empty());
+    }
+
+    #[test]
+    fn inline_branch_limits_fall_back_to_arena_nodes() {
+        assert!(inline_branch(0, 0, 256, 0..2).is_none());
+        assert!(inline_branch(0, 2, 1, 0..2).is_none());
+        assert!(inline_branch(0, 0, 1, 0..1).is_none());
+        assert!(inline_branch(0, 0, 1, 0..6).is_none());
+        assert!(inline_branch(256, 0, 1, 0..2).is_none());
+        let edge = ALIAS_EDGE_MASK as usize + 1;
+        assert!(inline_branch(0, 0, 1, edge..edge + 2).is_none());
+        let start = TOKEN_MASK as usize + 1;
+        assert!(inline_branch(0, start, start, 0..2).is_none());
     }
 }

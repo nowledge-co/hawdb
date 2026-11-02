@@ -12,33 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[path = "../benches/wal_group_commit/recovery.rs"]
+#[path = "../../../../benches/wal_group_commit/recovery.rs"]
 mod recovery;
 
 #[cfg(test)]
 mod tests {
     use super::recovery::*;
     use hawdb::Database;
+    use hawdb_test_contracts::ProjectFixture;
     use std::io::Write;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Fixture {
-        path: PathBuf,
+        project: ProjectFixture,
         epoch: u64,
         checkpoint_commit_epoch: u64,
     }
 
     impl Fixture {
         fn create(rows: &[(i64, &str)]) -> Self {
-            static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "hawdb-wal-benchmark-recovery-{}-{}",
-                std::process::id(),
-                SEQUENCE.fetch_add(1, Ordering::Relaxed),
-            ));
-            std::fs::create_dir(&path).unwrap();
-            let mut database = Database::open(&path).unwrap();
+            let project = ProjectFixture::new("wal-recovery");
+            let mut database = Database::open(project.path()).unwrap();
             database
                 .query_sql(
                     "CREATE TABLE public.messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)",
@@ -56,7 +49,7 @@ mod tests {
             let epoch = database.commit_epoch().unwrap();
             drop(database);
             Self {
-                path,
+                project,
                 epoch,
                 checkpoint_commit_epoch,
             }
@@ -73,18 +66,12 @@ mod tests {
         }
     }
 
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.path).unwrap();
-        }
-    }
-
     #[test]
     fn one_reopen_proves_order_and_every_row_including_warmup() {
         let fixture = Fixture::create(&[(0, "payload-0"), (1, "payload-1"), (2, "warmup-2")]);
         let mut phases = Vec::new();
         let verified = verify_recovery(
-            &fixture.path,
+            fixture.project.path(),
             ExpectedRecovery {
                 warmup_commit_count: 1,
                 ..fixture.expected()
@@ -112,7 +99,7 @@ mod tests {
     #[test]
     fn clean_recovery_keeps_the_original_separate_proofs() {
         let fixture = Fixture::create(&[(0, "payload-0"), (1, "payload-1")]);
-        let original_order = Database::open(&fixture.path).is_ok_and(|db| {
+        let original_order = Database::open(fixture.project.path()).is_ok_and(|db| {
             let report = db.storage_recovery_report().unwrap();
             report.checkpoint_commit_epoch == Some(fixture.checkpoint_commit_epoch)
                 && report.wal_replay_start_lsn == Some(fixture.checkpoint_commit_epoch + 1)
@@ -121,13 +108,13 @@ mod tests {
                     == fixture.epoch - fixture.checkpoint_commit_epoch
                 && report.torn_tail_reason.is_none()
         });
-        let original_rows = Database::open(&fixture.path)
+        let original_rows = Database::open(fixture.project.path())
             .and_then(|mut db| {
                 db.query_sql("SELECT id FROM public.messages ORDER BY id")
                     .map(|rows| rows.rows.len() == 2 && db.commit_epoch().unwrap() == fixture.epoch)
             })
             .unwrap_or(false);
-        let verified = verify_recovery(&fixture.path, fixture.expected(), |_| {});
+        let verified = verify_recovery(fixture.project.path(), fixture.expected(), |_| {});
         assert!(original_order && original_rows);
         assert_eq!(verified.wal_order_verified, original_order);
         assert_eq!(verified.strict_recovery_verified, original_rows);
@@ -139,7 +126,7 @@ mod tests {
         for final_epoch in [fixture.epoch - 1, fixture.epoch + 1, u64::MAX] {
             assert_eq!(
                 verify_recovery(
-                    &fixture.path,
+                    fixture.project.path(),
                     ExpectedRecovery {
                         final_epoch,
                         ..fixture.expected()
@@ -160,7 +147,7 @@ mod tests {
             vec![(0, "payload-0"), (1, "wrong-payload")],
         ] {
             let fixture = Fixture::create(&rows);
-            let verified = verify_recovery(&fixture.path, fixture.expected(), |_| {});
+            let verified = verify_recovery(fixture.project.path(), fixture.expected(), |_| {});
             assert!(verified.wal_order_verified);
             assert!(
                 !verified.strict_recovery_verified,
@@ -172,8 +159,11 @@ mod tests {
     #[test]
     fn checkpointed_rows_do_not_substitute_for_full_wal_replay() {
         let fixture = Fixture::create(&[(0, "payload-0"), (1, "payload-1")]);
-        Database::open(&fixture.path).unwrap().checkpoint().unwrap();
-        let verified = verify_recovery(&fixture.path, fixture.expected(), |_| {});
+        Database::open(fixture.project.path())
+            .unwrap()
+            .checkpoint()
+            .unwrap();
+        let verified = verify_recovery(fixture.project.path(), fixture.expected(), |_| {});
         assert!(!verified.wal_order_verified);
         assert!(verified.strict_recovery_verified);
     }
@@ -182,12 +172,14 @@ mod tests {
     fn torn_wal_rejects_recovery_before_any_row_proof() {
         let fixture = Fixture::create(&[(0, "payload-0"), (1, "payload-1")]);
         let hawdb_storage::branch_project::ProjectManifest::Branch(selector) =
-            hawdb_storage::branch_project::inspect_project_manifest(&fixture.path).unwrap()
+            hawdb_storage::branch_project::inspect_project_manifest(fixture.project.path())
+                .unwrap()
         else {
             panic!("fixture must be a branch project")
         };
         let branch = fixture
-            .path
+            .project
+            .path()
             .join("branches")
             .join(selector.main_branch_id().as_uuid().to_string());
         let head =
@@ -200,7 +192,7 @@ mod tests {
             .write_all(b"torn-entry-without-checksum")
             .unwrap();
         let mut phases = Vec::new();
-        let verified = verify_recovery(&fixture.path, fixture.expected(), |phase| {
+        let verified = verify_recovery(fixture.project.path(), fixture.expected(), |phase| {
             phases.push(phase)
         });
         assert_eq!(verified, RecoveryVerification::default());
