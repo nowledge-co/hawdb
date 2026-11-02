@@ -2505,6 +2505,75 @@ fn bigint_arithmetic_update_uses_the_existing_point_lock_contract() {
 }
 
 #[test]
+fn double_arithmetic_update_uses_the_same_lock_and_conflict_contract() {
+    let db = Database::new().into_concurrent();
+    db.query_sql(
+        "CREATE TABLE public.balances (id BIGINT PRIMARY KEY, balance DOUBLE PRECISION NOT NULL)",
+    )
+    .unwrap();
+    db.query_sql_with_params(
+        "INSERT INTO public.balances (id, balance) VALUES (1, $1)",
+        &[Value::Float(0.0)],
+    )
+    .unwrap();
+    let increment = |transaction: &mut crate::ConcurrentDatabaseTransaction, delta: f64| {
+        transaction.query_sql_with_params(
+            "UPDATE public.balances SET balance = balance + $1 WHERE id = $2",
+            &[Value::Float(delta), Value::Int(1)],
+        )
+    };
+
+    // Pessimistic: a second writer waits on the point lock like BIGINT.
+    let mut owner = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_secs(1),
+        ))
+        .unwrap();
+    increment(&mut owner, 1.5).unwrap();
+    let mut waiter = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_millis(25),
+        ))
+        .unwrap();
+    let error = increment(&mut waiter, 1.5).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("transaction lock wait timed out"));
+    owner.commit().unwrap();
+    let mut retry = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_secs(1),
+        ))
+        .unwrap();
+    increment(&mut retry, 1.5).unwrap();
+    retry.commit().unwrap();
+
+    // Optimistic: first committer wins; the loser is a retryable conflict and
+    // publishes nothing.
+    let mut winner = db
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    let mut loser = db
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    increment(&mut winner, 0.25).unwrap();
+    increment(&mut loser, 100.0).unwrap();
+    winner.commit().unwrap();
+    let error = loser.commit().unwrap_err();
+    assert!(
+        matches!(&error, HawDBError::TransactionConflict { key, .. } if key == "relational_row"),
+        "{error}"
+    );
+    assert!(error.is_retryable_transaction_conflict());
+    assert_eq!(
+        db.query_sql("SELECT balance FROM public.balances WHERE id = 1")
+            .unwrap()
+            .rows[0]["balance"],
+        Value::Float(3.25)
+    );
+}
+
+#[test]
 fn delete_cascade_blocks_a_concurrent_child_insert_before_publication() {
     let db = Database::new().into_concurrent();
     db.query_sql("CREATE TABLE public.parents (id BIGINT PRIMARY KEY)")

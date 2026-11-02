@@ -29,6 +29,10 @@ mod query;
 #[path = "relational_sql/postgres_compat.rs"]
 mod postgres_compat;
 
+#[cfg(test)]
+#[path = "relational_sql/update_arithmetic.rs"]
+mod update_arithmetic;
+
 pub use hawdb_optimizer_relational::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
     RelationalJoinPlanningDirective, RelationalJoinPlanningFallbackClass,
