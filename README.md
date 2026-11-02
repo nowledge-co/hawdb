@@ -1,4 +1,4 @@
-# HawDB
+# <img src="docs/images/hawdb-mark.svg" alt="" width="40" height="41" align="absmiddle"> HawDB
 
 [![Website](https://img.shields.io/badge/website-hawdb.ai-111111?style=flat)](https://hawdb.ai)
 [![License](https://img.shields.io/github/license/nowledge-co/hawdb?style=flat)](LICENSE)
