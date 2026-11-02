@@ -289,12 +289,7 @@ impl<'a> RelationalLocatorBindingLayout<'a> {
         qualifier: &'a str,
         schema: &'a RelationalTableSchema,
     ) -> Result<Self> {
-        if schema.primary_key.is_empty() {
-            return Err(HawDBError::Storage(format!(
-                "relational locator layout requires a primary key for table {table}"
-            )));
-        }
-        let primary_key_types = schema
+        let mut primary_key_types = schema
             .primary_key
             .iter()
             .map(|column| {
@@ -308,6 +303,9 @@ impl<'a> RelationalLocatorBindingLayout<'a> {
                     })
             })
             .collect::<Result<Vec<_>>>()?;
+        if schema.primary_key.is_empty() {
+            primary_key_types.push(RelationalScalarType::BigInt);
+        }
         Ok(Self {
             binding,
             table,

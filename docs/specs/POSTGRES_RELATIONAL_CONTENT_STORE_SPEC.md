@@ -155,14 +155,50 @@ boundaries MUST preserve raw bytes without retyping them as text or integer
 lists. JSON surfaces use the unambiguous `{ "$binary": "<lowercase-hex>" }`
 envelope because JSON has no native byte-string scalar.
 
-Every relational table MUST declare exactly one primary-key constraint. The
-key may contain multiple columns, but multiple independent column-level
-`PRIMARY KEY` declarations are invalid and MUST NOT be reinterpreted as a
-composite key. A table-level composite primary key makes every participating
-column `NOT NULL`, matching PostgreSQL semantics. DDL binding rejects a missing
-or ambiguous primary key before creating a storage transaction, and catalog
-publication, WAL replay, and checkpoint decode independently enforce the same
-invariant.
+A relational table MAY omit its primary-key constraint. An explicit primary key
+remains the row handle and may contain multiple columns; multiple independent
+primary-key declarations are rejected. Its columns become `NOT NULL`.
+Without a primary key, storage allocates a positive signed 64-bit hidden RowId
+per inserted row, including otherwise identical rows. RowId is not a catalog
+column, a SQL primary-key constraint, or a selectable SQL system column. It does
+not appear in wildcard projection, implicit INSERT columns, or RETURNING.
+
+Hidden handles are stable across UPDATE, conflicting UPSERT updates, page
+rewrites, snapshots, and recovery. Secondary indexes reference the same handle.
+Existing internal row-page and locator fields named `primary_key` carry this
+handle for both table kinds. Sparse INSERT/UPSERT preparation probes a bounded
+upper range of possible allocations and unique-index conflicts; it does not
+scan the table to discover the next RowId.
+Allocation is table-local within a branch and occurs in the private transaction
+state under the existing commit coordinator. Successful inserts advance a
+persisted high-water mark; deletion does not recycle IDs. Failed transactions
+may reuse unpublished allocations. Contiguity and cross-branch uniqueness are
+not contracts. Exhaustion fails before publication. Existing conservative MVCC
+conflict handling remains in force for tables without explicit primary keys.
+Keyless pessimistic mutations, including INSERT, serialize at table granularity;
+concurrent inserts into the same table do not have PostgreSQL heap concurrency.
+
+WAL replay applies the same deterministic allocation to the recovered state.
+Both transitional checkpoints and canonical row roots persist the high-water
+mark even for an empty table. Transitional checkpoints additionally encode each
+hidden handle; canonical row pages already encode their handles. Recovery delta
+manifests carry the final high-water marks, and metadata-only staging retains
+them independently of hydrated rows. An insert followed by deletion must still
+publish its allocator advance at checkpoint.
+
+The relational durable codec is version 3, canonical row-root manifests are
+version 2, and row-delta manifests/runs are version 2. Older development formats
+are rejected; recreate development databases. No production compatibility
+migration is introduced under the current greenfield policy.
+
+PostgreSQL type aliases normalize to canonical storage types: INT/INTEGER,
+SMALLINT and TINYINT to BIGINT; FLOAT, FLOAT8 and FLOAT(25..53) to DOUBLE
+PRECISION; VARCHAR(n) to TEXT. REAL, FLOAT4 and FLOAT(1..24) are rejected until
+native float4 semantics are available; widening them would silently change
+rounding, equality and aggregation results. VARCHAR length is not enforced.
+Integer aliases do not enforce their original narrower ranges or overflow rules.
+String literal defaults are bound at CREATE TABLE time to their declared scalar
+type; invalid defaults leave no schema behind.
 
 Rows and index postings use ordered immutable COW pages. Publishing a snapshot
 shares all untouched pages. A point insert, update, or delete MUST clone only

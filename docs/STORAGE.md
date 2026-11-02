@@ -67,7 +67,7 @@ Files:
 
 ### Reader compatibility refusals
 
-Relational WAL and full-checkpoint envelopes currently use codec version 2;
+Relational WAL and full-checkpoint envelopes currently use codec version 3;
 embedded append WAL records (including checkpoint schema records) use version 3.
 A reader accepts its supported version exactly. An intact envelope requiring a
 different version returns `HawDBError::UnsupportedStorageFormat` with

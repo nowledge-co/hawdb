@@ -1558,6 +1558,12 @@ fn select_lock_requests(
     let Some(schema) = state.table_schema(&select.from_table().name) else {
         return vec![LockRequest::database(mode)];
     };
+    if schema.primary_key.is_empty() {
+        return vec![LockRequest::relational_table(
+            mode,
+            select.from_table().name.clone(),
+        )];
+    }
     if select.selection.is_none() {
         // The primary-key domain also validates write intents whose rows did
         // not change. Table read summaries alone do not retain those intents.
@@ -1672,7 +1678,15 @@ fn insert_lock_requests(
             _ => return None,
         };
         let schema = state.table_schema(table)?;
-        let mut key_columns = vec![schema.primary_key.clone()];
+        let mut key_columns = Vec::new();
+        if schema.primary_key.is_empty() {
+            push_unique_lock_request(
+                &mut requests,
+                LockRequest::relational_table(LockMode::Exclusive, table.clone()),
+            );
+        } else {
+            key_columns.push(schema.primary_key.clone());
+        }
         key_columns.extend(schema.unique_constraints.iter().cloned());
         key_columns.extend(schema.indexes.iter().map(|index| index.columns.clone()));
         for row in rows {

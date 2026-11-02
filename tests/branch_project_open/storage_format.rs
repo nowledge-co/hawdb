@@ -78,23 +78,21 @@ fn refresh_envelope_checksum(encoded: &mut [u8]) {
 }
 
 fn unsupported_record(kind: &str, epoch: u64) -> (WalOp, StorageFormatError) {
-    let (mut encoded, format, supported) = match kind {
+    let (mut encoded, format) = match kind {
         "append" => (
             encode_append_wal_batch(epoch, &AppendTransaction::default()).unwrap(),
             "append WAL",
-            3,
         ),
         "snapshot" => (
             encode_relational_checkpoint(epoch, &RelationalState::default()).unwrap(),
             "relational durable codec",
-            2,
         ),
         _ => (
             encode_relational_wal_batch(epoch, &view_transaction()).unwrap(),
             "relational durable codec",
-            2,
         ),
     };
+    let supported = u16::from_le_bytes(encoded[8..10].try_into().unwrap());
     let expected = if kind == "feature" {
         unknown_expression(&mut encoded);
         refresh_envelope_checksum(&mut encoded);
@@ -348,11 +346,12 @@ fn unsupported_full_checkpoint_preserves_recovery_files() {
             ),
         );
         let mut encoded = std::fs::read(&path).unwrap();
+        let supported = u16::from_le_bytes(encoded[8..10].try_into().unwrap());
         if feature {
             unknown_expression(&mut encoded);
             refresh_envelope_checksum(&mut encoded);
         } else {
-            encoded[8..10].copy_from_slice(&3_u16.to_le_bytes());
+            encoded[8..10].copy_from_slice(&(supported + 1).to_le_bytes());
         }
         let digest = hawdb_integrity::integrity_digest(&encoded);
         std::fs::write(path, encoded).unwrap();
@@ -406,8 +405,8 @@ fn unsupported_full_checkpoint_preserves_recovery_files() {
         } else {
             StorageFormatError::UnsupportedVersion {
                 format: "relational durable codec",
-                found: 3,
-                supported: 2,
+                found: supported + 1,
+                supported,
             }
         };
         assert_refusal(

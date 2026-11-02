@@ -644,6 +644,7 @@ fn table_root_column_count_must_match_every_demand_loaded_page() {
     let page = RelationalRowPageView::open(&encoded, row_publication_config().page_limits)
         .expect("open encoded page");
     let table = super::super::RelationalRowPageTableRoot {
+        last_row_id: 0,
         table: "documents".to_string(),
         schema: crate::relational::row_page::test_row_page_schema("documents", 3),
         schema_digest: schema_digest(),
@@ -750,6 +751,7 @@ fn row_publication_config() -> RelationalRowPagePublicationConfig {
 
 fn table_delta(dirty_pages: Vec<ImmutableRelationalRowPage>) -> RelationalRowPageTableDelta {
     RelationalRowPageTableDelta {
+        last_row_id: 0,
         table: "documents".to_string(),
         schema: Some(crate::relational::row_page::test_row_page_schema(
             "documents",
@@ -1298,6 +1300,7 @@ fn controlled_point_with_wide_table_bounds_denies_without_cloning_root_metadata(
             10,
             None,
             vec![RelationalRowPageTableDelta {
+                last_row_id: 0,
                 table: "documents".into(),
                 schema: Some(schema),
                 schema_digest: digest,

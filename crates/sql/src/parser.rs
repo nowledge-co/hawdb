@@ -376,13 +376,11 @@ pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Res
         Column => ExprKind::Column(lower_column_expr(expr)?),
         Value => ExprKind::Value(lower_literal_expr(expr)?),
         Scalar | HavingScalar => match expr {
-            Expr::Nested(inner) if having => lower_expression(inner, HavingScalar)?.kind,
+            Expr::Nested(inner) => lower_expression(inner, position)?.kind,
             Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
                 ExprKind::Column(lower_column_expr(expr)?)
             }
-            Expr::Value(_) | Expr::Nested(_) | Expr::UnaryOp { .. } => {
-                ExprKind::Value(lower_literal_expr(expr)?)
-            }
+            Expr::Value(_) | Expr::UnaryOp { .. } => ExprKind::Value(lower_literal_expr(expr)?),
             Expr::Function(function) => lower_function_expression(function, position)?,
             _ => {
                 return Err(HawDBError::Semantic(format!(

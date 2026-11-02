@@ -567,6 +567,7 @@ impl RelationalRowDeltaBuilder {
         }
         for table in &mut self.tables {
             table.row_count = state.row_count(&table.table) as u64;
+            table.last_row_id = state.last_row_id(&table.table);
         }
         Ok(())
     }
@@ -1297,6 +1298,7 @@ fn table_metadata_for_state(
                     ))
                 })?;
             Ok(RelationalRowDeltaTableMetadata {
+                last_row_id: state.last_row_id(&schema.name),
                 table: schema.name.clone(),
                 schema_digest,
                 column_count,

@@ -155,6 +155,9 @@ pub(super) fn target_lock_requests(
     schema: &RelationalTableSchema,
 ) -> Vec<LockRequest> {
     let fallback = || vec![LockRequest::relational_table(mode, table.name.clone())];
+    if schema.primary_key.is_empty() {
+        return fallback();
+    }
     let Some(selection) = selection else {
         return fallback();
     };

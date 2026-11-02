@@ -16,6 +16,8 @@ use super::*;
 
 #[path = "tests/checkpoint_admission.rs"]
 mod checkpoint_admission;
+#[path = "tests/hidden_row_id.rs"]
+mod hidden_row_id;
 #[path = "tests/overflow_pruning.rs"]
 mod overflow_pruning;
 
@@ -259,39 +261,6 @@ fn durability_failure_does_not_publish_relational_rows() {
             .row_count("content_documents"),
         0
     );
-}
-
-#[test]
-fn table_without_primary_key_is_rejected_before_catalog_publication() {
-    let store = RelationalStore::default();
-    let error = store
-        .commit(
-            RelationalTransaction {
-                writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
-                    materialized_view: None,
-                    name: "documents".to_string(),
-                    columns: vec![text_column("id", false)],
-                    primary_key: Vec::new(),
-                    unique_constraints: Vec::new(),
-                    foreign_keys: Vec::new(),
-                    indexes: Vec::new(),
-                })],
-            },
-            |_, _| Ok(()),
-        )
-        .expect_err("primary-key-free tables must not enter the catalog");
-
-    assert!(matches!(
-        error,
-        SnapshotCommitError::Stage(RelationalError::Schema(message))
-            if message == "table documents must declare a primary key"
-    ));
-    assert!(store
-        .snapshot()
-        .expect("empty snapshot")
-        .value()
-        .table_schema("documents")
-        .is_none());
 }
 
 #[test]

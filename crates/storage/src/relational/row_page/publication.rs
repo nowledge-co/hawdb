@@ -96,6 +96,7 @@ impl Default for RelationalRowPagePublicationConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalRowPageTableDelta {
+    pub last_row_id: i64,
     pub table: String,
     /// Required when the table has no selected base root. Incremental deltas
     /// may omit it because the immutable base manifest already owns the exact
@@ -136,6 +137,7 @@ pub struct RelationalRowPageRootDescriptor {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalRowPageTableRoot {
+    pub last_row_id: i64,
     pub table: String,
     pub schema: RelationalTableSchema,
     pub schema_digest: Sha256Digest,

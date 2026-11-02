@@ -46,6 +46,7 @@ pub(super) fn empty_manifest(count: usize) -> RelationalRowPageRootManifest {
             let schema_digest =
                 crate::relational::index_shadow::relational_schema_digest(&schema).unwrap();
             RelationalRowPageTableRoot {
+                last_row_id: 0,
                 table,
                 schema,
                 schema_digest,

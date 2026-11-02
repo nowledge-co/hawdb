@@ -2713,6 +2713,7 @@ fn controlled_table_shell_omission_skips_wide_index_names_and_owns_arc_backing()
         RuntimeWorkRequest,
     };
     let source = RelationalTableSegment {
+        last_row_id: 0,
         rows: Default::default(),
         indexes: BTreeMap::from([("i".repeat(128 * 1024), RelationalIndexPages::default())]),
         _memory: Default::default(),

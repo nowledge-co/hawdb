@@ -527,14 +527,14 @@ fn failed_application_system_schema_upgrade_does_not_publish_version() {
             SystemSchemaMigration::new(
                 2,
                 "invalid_table",
-                ["CREATE TABLE invalid_table (body TEXT NOT NULL)"],
+                ["CREATE TABLE invalid_table (body TEXT PRIMARY KEY, other TEXT PRIMARY KEY)"],
             ),
         ],
     );
     {
         let mut db = Database::open(&path).unwrap();
         let error = db.apply_system_schema_registry(&invalid_v2).unwrap_err();
-        assert!(error.to_string().contains("must declare a primary key"));
+        assert!(error.to_string().contains("more than one primary key"));
     }
     {
         let mut db = Database::open(&path).unwrap();
