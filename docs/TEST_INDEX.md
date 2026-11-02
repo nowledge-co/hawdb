@@ -379,6 +379,27 @@ to show that rejected relationships read no target. Replay with `cargo test
 hawdb-executor graph_match` and `cargo test --locked -p hawdb --lib
 api::tests::edge_predicates`. No lane, profile or deadline changes.
 
+Canonical point-read segment reuse (#1482) is owned by storage
+`canonical::point_read_scope_tests` and root `api::tests::point_read_reuse`
+(`//:hawdb_unit_general_tests`). Storage cases prove that reads inside a
+`CanonicalPointReadScope` seek the descriptor tree once per segment in
+ascending and descending id order (gaps and out-of-range ids included), equal
+unscoped and full reads for every property selection and value shape (the
+length-based skip of a directory-validated segment and per-read validation of a
+small segment agree on rows and admitted bytes), never cross reader
+generations, stay per thread, never retain detached or over-budget leases, and
+release every cache pin when the scope closes. Corruption cases rebind the
+segment digest to invalid UTF-8 or an unknown value tag in an unselected
+property and still fail closed and poison the reader, as do digest and
+descriptor corruption, including when a valid segment is retained. The root
+case reads 300 messages of one creator out of core with a bounded number of
+descriptor seeks and checks rows against the resident store after an update,
+a checkpoint, a pinned older snapshot and a reopen. Structural assertions use
+the always-compiled `point_descriptor_seeks_for_test` counter. Replay with
+`cargo test --locked -p hawdb-storage point_read_scope` and `cargo test --locked
+-p hawdb --lib api::tests::point_read_reuse`. No lane, profile or deadline
+changes.
+
 The adaptive execution family extends those existing executor owners with
 encoded non-expression key selection, complete-record validation, 64-KiB nested
 payload forwarding, descriptor/memory-driven 8/4/2-way merges, and live host
@@ -778,7 +799,7 @@ legacy document tombstones before reducing the complete pinned source interval.
 | Python dependency lock: `bindings/python/test_check_lock.py` and `check_lock.py` | Reject shared version/source/checksum drift and local engine version mismatch; accept reviewed multiple-version selections and binding-only dependencies | Existing Python Bindings pip job, before its locked wheel build. Replay: `python -m unittest discover -s bindings/python -p test_check_lock.py` and `python bindings/python/check_lock.py` with Python 3.11+. These pure metadata controls do not join the Bazel native-binding test inventory or compile the engine. |
 | Weekly platform and daily Windows abandonment qualification | Supported platform/feature combinations and the complete Windows abandonment/GC fault matrix | Scheduled or explicit workflows. They are not fuzz time budgets. |
 | Cypher PEG frontend | The default statement, profiled and pipeline entries share the SQL/PGQ packrat engine with a Cypher-specific lexer. Existing migration inventory (1,427 cases) compares acceptance, error classes and full AST/source spans with the test-only handwritten driver. Generated clause/wrapper and UTF-8 truncation differentials cover anonymous-name rollback, hints, legacy procedure admission, combined nesting and PEG work/node/memo/depth limits. A native capture counter checks that two-WITH lookahead reuses accepted clause ASTs. | `cargo test --locked -p hawdb-cypher`; `bazel test //crates/cypher:hawdb_cypher_tests //crates/cypher:hawdb_cypher_backtracking_fuzz_tests`. Shared engine regressions remain in `//crates/sql-syntax:hawdb_sql_syntax_tests`; SQL/PGQ integration targets remain unchanged. No new CI or crate boundary. |
-| Local Shiro and MVCC tools | Generated SQL/Cypher result relations, parser/storage campaigns and optimistic transaction-history checking | Manual only. Never include the tools in normal or dedicated CI, scheduled workflows or production dependencies. |
+| Local Shiro and MVCC tools | Generated SQL/Cypher result relations, parser/storage campaigns, independent Decimal/Cypher/temporal/keyless models, optimistic history checking and composite/secondary/keyless range-lock models | Manual only. Existing `//tools/shiro:shiro_tests` and `//tools/shiro:shiro_cli_tests` own Shiro controls. MVCC range controls use `cargo test --locked --manifest-path tools/mvcc-fuzz/Cargo.toml ranges`; campaigns/replay/reduction are documented in [Shiro](../tools/shiro/README.md) and [MVCC](../tools/mvcc-fuzz/README.md#composite-secondary-and-keyless-range-models). Preserve legacy replay formats; new coverage uses explicit protocols. No CI, scheduling, profile or deadline change. |
 
 ## Root regression owners
 
@@ -952,7 +973,7 @@ workload does not change default or CI benchmark selection.
 | Analytics and vector-projection | Streaming algorithms, projected artifact IO and vector representation behavior. `//crates/vector-projection:hawdb_vector_projection_tests` also owns the Filtered DiskANN kernel/artifact family (`cargo test --locked -p hawdb-vector-projection --all-features diskann`; omit `--all-features` for standalone file I/O): Vamana full-beam/exhaustive distance parity, small-beam filtered recall against exhaustive ground truth, navigation without rejected-vector scoring, optional LSG and duplicate radii, deterministic construction, typed work/memory refusal, work-bounded workspace on a virtual large graph, and cancellation. File cases cover parameter/link/distance round trips, byte-identical mapped successor copying and cancelled-copy source retention, bounded header inspection, source/epoch/generation drift, truncation/trailing bytes/checksums, semantically invalid records with a matching checksum, admission refusal/retry and release of all charges. Core `projection_distance` tests also cover raw queries against unaligned byte-backed vectors and cooperative failure. Small synthetic fixtures use the repository profile; this is kernel/artifact evidence, not default-engine or database CRUD/MVCC qualification. See [delivery contract](specs/FILTERED_DISKANN_SPEC.md). |
 | Exact vector arithmetic and prepared queries | Existing Core, Search and vector-projection owners cover ordered-f64 scalar/AVX2/NEON bit parity, forced short/unaligned native loads, finite/zero/dimension checks, work/error precedence, query-norm reuse, native DiskANN providers and raw-score parity. Replay: `cargo test --locked -p hawdb-core vector::`; `cargo test --locked -p hawdb-search raw_vector_math_tests`; `cargo test --locked -p hawdb-vector-projection --all-features diskann`. Native tests differ from cross-target compilation. Prepared distance entry points retain direct scalar evaluation below 16 dimensions, including work/error precedence. Auto uses portable arithmetic below 16 dimensions and for AArch64 L2/norm; NEON/AVX2 implementations remain directly covered. The ignored Core `exact_distance_measurement` and Cargo-only `exact_vector_profile` example are manual global-release component/complete-Search measurements, excluded from CI/fuzz scheduling: `cargo test --locked --release -p hawdb-core exact_distance_measurement -- --ignored --nocapture --test-threads=1`; `cargo run --locked --release --example exact_vector_profile`. No per-target profile or timeout changes. See [native ARM experiment, including adverse file controls](benchmarks/exact_vector_simd_macos_2026_10_30/README.md). Ref [#1339](https://github.com/nowledge-co/hawdb/issues/1339). |
 | RaBitQ SIMD scoring | Existing `//crates/vector-projection:hawdb_vector_projection_tests` and native vector-platform CI own bitwise scalar/AVX2/NEON parity, CPU selection, all code values, unaligned and short inputs, dimension tails, filtered memory/file scans, ties and worker merging. Replay: `cargo test --locked -p hawdb-vector-projection kernel::`. The two ignored `simd_` release probes are local-only throughput and deadline-response measurements, run serially. The existing `rabitq_query_profile` example adds a local `compare` mode for interleaved scalar/native-SIMD complete-query measurements over 100,000 vectors, including raw-vector reranking and hydration with exact final-result parity. These probes do not replace native AArch64 qualification. See [method and limitations](RABITQ_VECTOR_PROJECTION_BENCHMARK.md). No CI lane, profile or fuzz job is added. |
-| QoS, cgroup, telemetry, resource-profile and runtime-tokio | Resource detection/admission, metrics and synchronous/async runtime boundaries. Existing `//crates/qos:hawdb_qos_tests` owns SharedHost SSD no-hint 12/3 defaults, explicit-hint clamps, unchanged non-SSD/mobile profiles and independent foreground/background I/O saturation/refund. Focused replay: `cargo test --locked -p hawdb-qos resource::tests`. No benchmark or device-discovery qualification is implied. |
+| QoS, cgroup, telemetry, resource-profile and runtime-tokio | Resource detection/admission, metrics and synchronous/async runtime boundaries. Existing `//crates/qos:hawdb_qos_tests` owns SharedHost SSD no-hint 12/3 defaults, explicit-hint clamps, unchanged non-SSD/mobile profiles and independent foreground/background I/O saturation/refund. Host-detector initialization refusals preserve unknown host readings, the fallback budget and independent cgroup pressure; native recovery reuses the successful detector. Focused replay: `cargo test --locked -p hawdb-qos resource::tests`. No benchmark or device-discovery qualification is implied. |
 | Readiness, evidence, route-ownership, nowledge-contracts, compat and qualification | Typed readiness, complete evidence identity, compatibility and host integration contracts. |
 | `crates/fuzz-contracts` | Production readiness contract values only. Its fast unit tests are not the Shiro generator/campaign. |
 | Python DB-API (`bindings/python/tests/test_dbapi.py`) | The PEP 249 layer in `hawdb.dbapi`: module globals and the PEP 249 exception hierarchy, with every engine error and every built-in error from statement parameters raised as its PEP 249 class while keeping its own type, attributes and pickling, or raised unchanged if it cannot be rebuilt as that class; tuple rows in SELECT-list order, a `description` with type codes, also for a key lookup that matches nothing, and identity-hashed type objects; lazily begun connection transactions with commit, rollback, close and context-manager semantics; autocommit set at connect or between transactions, read-only and branch-command routing; `executemany` delegation and the aborted state after a failed batch; parameter containers matching the native rule; and refusal of closed objects and of other threads, including reused thread idents. Owned by `//bindings/python:hawdb_python_tests` and the Python Bindings pip job. Engine transaction semantics run on file and in-memory databases, durability, read-only and branch cases on a file database, and the rest in memory. The engine's column order per query shape belongs to the SQL result column order family. Catalog queries also pin tuple order and empty-result descriptions under both autocommit and transactions; SQL EXPLAIN and EXPLAIN ANALYZE pin their diagnostic column and tuple order. The `pandas.read_sql` smoke skips without pandas; the pip job installs a pinned pandas and selects it with `-k pandas`. Replay: `pytest tests/test_dbapi.py` in `bindings/python` with the wheel installed. |
@@ -2064,10 +2085,15 @@ identities, optional timestamps, retry no-op epochs, invalid property syntax and
 one-batch WAL/reopen in the existing root API partition.
 ## License hook and subprocess lease handshake
 
-- `scripts/check-license-headers.test.py` is a local pinned-HawkEye fixture
+- `scripts/check-license-headers.test.py` is a pinned-HawkEye fixture
   check for full/SPDX forms, Python/Shell shebangs, excluded/unsupported files,
+  Go line headers/build constraints, MoonBit sources/interfaces/manifests,
+  generated output/dependency exclusions, historical benchmark evidence,
   mixed valid/invalid batches, wrong owners/licenses and byte preservation.
   The staged-file hook uses the same HawkEye rules for both header templates.
+  `.github/workflows/license-headers.yml` runs these fixtures and the full-tree
+  wrapper audit on pull requests to `main` and pushes to `main`; the same
+  fixtures can also run locally with pinned HawkEye on PATH.
 - `//crates/storage:hawdb_storage_tests` owns the cross-process directory lease
   case `ownership::tests::rejects_lease_held_by_another_process`. The child keeps
   the lease until a parent pipe notification, avoiding its former ten-second

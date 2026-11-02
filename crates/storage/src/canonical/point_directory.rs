@@ -27,6 +27,14 @@
 //! shared segment cache under its own representation, so it is charged to the
 //! cache capacity, evictable, and dropped with its generation. When admission
 //! is refused the freshly built directory serves the current read only.
+//!
+//! Building a directory also validates every record of the segment once:
+//! property key ids, value tags and lengths, UTF-8 strings, temporal and
+//! vector payloads, and spill references (the scrub's record check). A
+//! directory therefore proves that the verified segment bytes it is bound to
+//! hold only well-formed records, so projected reads skip unrequested values
+//! by their encoded length instead of revalidating them on every read
+//! (#1482). Requested values are still fully decoded and validated per read.
 
 use super::*;
 use crate::cache::{RepresentationKind, SegmentBytes, SegmentCacheError, SegmentCacheKey};
@@ -57,36 +65,28 @@ impl CanonicalSegmentReader {
         bytes: &[u8],
         id: u64,
     ) -> Result<Option<SegmentRecordFrame>, CanonicalSegmentError> {
-        let mut cursor = SegmentRecordCursor::new(bytes, self.manifest.generation, segment)?;
-        if id < segment.min_record_id || id > segment.max_record_id {
-            return Ok(None);
-        }
-        let mut expected_first = None;
+        let directory = self.point_directory_for(segment, bytes)?;
+        locate_point_frame(
+            self.manifest.generation,
+            segment,
+            bytes,
+            directory.as_deref(),
+            id,
+        )
+    }
+
+    /// The validated directory of a segment larger than one stride, or `None`
+    /// for a smaller segment, whose reads walk its few frames directly.
+    pub(super) fn point_directory_for(
+        &self,
+        segment: &CanonicalSegmentDescriptor,
+        bytes: &[u8],
+    ) -> Result<Option<SegmentBytes>, CanonicalSegmentError> {
         if segment.record_count > POINT_DIRECTORY_STRIDE {
-            let directory = self.point_directory(segment, bytes)?;
-            let (ordinal, offset, entry_id) = directory_seek(&directory, segment, id)?;
-            cursor.offset = offset;
-            cursor.index = ordinal;
-            cursor.previous_id = None;
-            expected_first = Some(entry_id);
+            self.point_directory(segment, bytes).map(Some)
+        } else {
+            Ok(None)
         }
-        while let Some(frame) = cursor.next(bytes, segment)? {
-            #[cfg(test)]
-            POINT_FRAMES_EXAMINED.with(|frames| frames.set(frames.get() + 1));
-            if let Some(expected) = expected_first.take()
-                && frame.id != expected
-            {
-                return Err(CanonicalSegmentError::Corrupt(format!(
-                    "canonical segment {} point directory disagrees with its records",
-                    segment.segment_id
-                )));
-            }
-            if frame.id >= id {
-                return Ok((frame.id == id).then_some(frame));
-            }
-            cursor.accept(frame);
-        }
-        Ok(None)
     }
 
     fn point_directory(
@@ -94,9 +94,17 @@ impl CanonicalSegmentReader {
         segment: &CanonicalSegmentDescriptor,
         bytes: &[u8],
     ) -> Result<SegmentBytes, CanonicalSegmentError> {
+        let records = RecordValidation {
+            property_keys: self.property_keys(),
+            property_spill_count: self
+                .property_spills
+                .as_ref()
+                .map(|spills| spills.manifest().value_count),
+        };
         let Some((cache, store_id, manifest_generation)) = self.range_reader.cache_identity()
         else {
-            return build_point_directory(bytes, self.manifest.generation, segment).map(Into::into);
+            return build_point_directory(bytes, self.manifest.generation, segment, records)
+                .map(Into::into);
         };
         let key = SegmentCacheKey {
             store_id,
@@ -109,7 +117,7 @@ impl CanonicalSegmentReader {
         if let Some(lease) = cache.get_verified(&key, tag) {
             return Ok(lease.into_bytes());
         }
-        let directory = build_point_directory(bytes, self.manifest.generation, segment)?;
+        let directory = build_point_directory(bytes, self.manifest.generation, segment, records)?;
         match cache.insert_verified(key, tag, directory) {
             Ok(lease) => Ok(lease.into_bytes()),
             Err(error) => {
@@ -127,14 +135,71 @@ impl CanonicalSegmentReader {
     }
 }
 
-/// Binds a directory to the exact verified segment extent and stride.
+/// Locates record `id` in verified segment `bytes`, starting from the
+/// directory entry at or below `id` when the segment has a directory.
+pub(super) fn locate_point_frame(
+    generation: ManifestGeneration,
+    segment: &CanonicalSegmentDescriptor,
+    bytes: &[u8],
+    directory: Option<&[u8]>,
+    id: u64,
+) -> Result<Option<SegmentRecordFrame>, CanonicalSegmentError> {
+    let mut cursor = SegmentRecordCursor::new(bytes, generation, segment)?;
+    if id < segment.min_record_id || id > segment.max_record_id {
+        return Ok(None);
+    }
+    if (segment.record_count > POINT_DIRECTORY_STRIDE) != directory.is_some() {
+        return Err(CanonicalSegmentError::Corrupt(format!(
+            "canonical segment {} point directory does not match its record count",
+            segment.segment_id
+        )));
+    }
+    let mut expected_first = None;
+    if let Some(directory) = directory {
+        let (ordinal, offset, entry_id) = directory_seek(directory, segment, id)?;
+        cursor.offset = offset;
+        cursor.index = ordinal;
+        cursor.previous_id = None;
+        expected_first = Some(entry_id);
+    }
+    while let Some(frame) = cursor.next(bytes, segment)? {
+        #[cfg(test)]
+        POINT_FRAMES_EXAMINED.with(|frames| frames.set(frames.get() + 1));
+        if let Some(expected) = expected_first.take()
+            && frame.id != expected
+        {
+            return Err(CanonicalSegmentError::Corrupt(format!(
+                "canonical segment {} point directory disagrees with its records",
+                segment.segment_id
+            )));
+        }
+        if frame.id >= id {
+            return Ok((frame.id == id).then_some(frame));
+        }
+        cursor.accept(frame);
+    }
+    Ok(None)
+}
+
+/// What a directory build checks in every record of its segment.
+#[derive(Clone, Copy)]
+struct RecordValidation<'a> {
+    property_keys: &'a [String],
+    property_spill_count: Option<u64>,
+}
+
+/// Marks directories whose build validated every record of the segment.
+const RECORDS_VALIDATED: u32 = 1 << 31;
+
+/// Binds a directory to the exact verified segment extent, its stride and the
+/// record validation its build performed.
 fn point_directory_tag(segment: &CanonicalSegmentDescriptor) -> [u8; 32] {
     let mut tag = [0u8; 32];
     tag[..8].copy_from_slice(&segment.content_digest.0.to_le_bytes());
     tag[8..16].copy_from_slice(&segment.offset.to_le_bytes());
     tag[16..24].copy_from_slice(&segment.length.get().to_le_bytes());
     tag[24..28].copy_from_slice(&segment.record_count.to_le_bytes());
-    tag[28..].copy_from_slice(&POINT_DIRECTORY_STRIDE.to_le_bytes());
+    tag[28..].copy_from_slice(&(POINT_DIRECTORY_STRIDE | RECORDS_VALIDATED).to_le_bytes());
     tag
 }
 
@@ -142,11 +207,12 @@ fn directory_entries(segment: &CanonicalSegmentDescriptor) -> usize {
     segment.record_count.div_ceil(POINT_DIRECTORY_STRIDE) as usize
 }
 
-/// Walks and validates the complete segment framing once.
+/// Walks and validates the complete segment framing and every record once.
 fn build_point_directory(
     bytes: &[u8],
     generation: ManifestGeneration,
     segment: &CanonicalSegmentDescriptor,
+    records: RecordValidation<'_>,
 ) -> Result<Vec<u8>, CanonicalSegmentError> {
     let length = directory_entries(segment)
         .checked_mul(ENTRY_BYTES)
@@ -157,6 +223,12 @@ fn build_point_directory(
     })?;
     let mut cursor = SegmentRecordCursor::new(bytes, generation, segment)?;
     while let Some(frame) = cursor.next(bytes, segment)? {
+        validate_canonical_record_payload(
+            segment.kind,
+            &bytes[frame.payload_start..frame.payload_end],
+            records.property_keys,
+            records.property_spill_count,
+        )?;
         if cursor.index % POINT_DIRECTORY_STRIDE == 0 {
             directory.extend_from_slice(&frame.id.to_le_bytes());
             directory.extend_from_slice(&(cursor.offset as u64).to_le_bytes());

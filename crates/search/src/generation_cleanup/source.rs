@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Captured enumeration/unlink authority borrowed from actual publication.
 //! Only complete captured retention can authorize either production sweep.

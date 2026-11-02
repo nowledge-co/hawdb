@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Process-lifetime registry exclusion must not retain a query's first-use heap.
 //! The Apple gate is immovable static storage and parks through the OS API.
