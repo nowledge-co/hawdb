@@ -58,7 +58,7 @@ gate, and aggregate-page parsing still regresses slightly (4073.25 to 4160 ns).
 The complete independent rendered-diagnostic comparison covers 21,944 records
 and finds 5,621 message or location differences across 102 groups. The earlier
 260 overdeep differences came from a narrower comparison. The follow-up repairs
-610 independently exported CSV, computed-UNWIND and integer-overflow outcomes;
+693 independently exported CSV, string, arity, computed-UNWIND and integer-overflow outcomes;
 other diagnostic transitions and wide-expression resource regressions remain
 open. Frozen full-message fixtures preserve the independent main provenance.
 
@@ -70,3 +70,9 @@ and aggregate pagination at 61,563 ns former / 62,858.75 ns follow-up.
 Complete output columns and row values were checked outside the timed regions.
 These default-cache measurements show no end-to-end improvement. They do not
 qualify the end-to-end gate or isolate cold query preparation.
+
+A repeat of the same eight-run parser protocol on `b607f4b2f9d0` measures
+16.6779 percent equal-weighted throughput improvement (3.46220475 seconds
+former process CPU / 2.96796775 seconds PEG). This also remains below the
+20 percent requirement. The further diagnostic follow-up restores another
+83 full-message and location outcomes from the independent main export.

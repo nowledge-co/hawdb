@@ -234,13 +234,18 @@ impl Transformer<'_> {
         let name = self.tree.node(node).name.expect("clause rule");
         let kind = match name {
             "match_clause" | "optional_clause" | "create_clause" => {
-                let patterns = self.named_children(
-                    self.tree.required(node, rule_id!("p_patterns")),
-                    rule_id!("p_pattern"),
-                );
+                let patterns = self.tree.required(node, rule_id!("p_patterns"));
+                let initial_capacity = self
+                    .iter_named_children(patterns, rule_id!("p_pattern"))
+                    .count()
+                    .min(4);
                 let mut result = Vec::new();
-                for pattern in patterns {
-                    result.push(self.pattern(pattern, depth, anonymous)?);
+                for pattern in self.iter_named_children(patterns, rule_id!("p_pattern")) {
+                    let pattern = self.pattern(pattern, depth, anonymous)?;
+                    if result.is_empty() {
+                        result.reserve_exact(initial_capacity);
+                    }
+                    result.push(pattern);
                 }
                 if name == "create_clause" {
                     ClauseKind::Create(result)

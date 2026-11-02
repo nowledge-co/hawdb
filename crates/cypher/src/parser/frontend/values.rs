@@ -28,10 +28,18 @@ impl Transformer<'_> {
             let index = self.tree.required(node, rule_id!("v_number"));
             ValueExpressionKind::BindingIndex {
                 variable: variable.to_owned(),
-                index: self
-                    .text(index)
-                    .parse()
-                    .map_err(|_| self.error(index, "invalid integer"))?,
+                index: self.text(index).parse().map_err(|_| {
+                    let span = self.tree.span(index, self.tokens);
+                    if let Some((whole, _)) = self.text(index).split_once('.') {
+                        if whole.parse::<i64>().is_ok() {
+                            self.error_at(span.start + whole.len() + 1, "expected ']'")
+                        } else {
+                            self.error_at(span.start + whole.len(), "invalid integer")
+                        }
+                    } else {
+                        self.error_at(span.end, "invalid integer")
+                    }
+                })?,
             }
         };
         Ok(self.source(node, kind))
@@ -165,7 +173,11 @@ impl Transformer<'_> {
                     Some('r') => '\r',
                     Some('t') => '\t',
                     Some(ch) => {
-                        return Err(self.error(node, &format!("unsupported escape sequence \\{ch}")))
+                        return Err(self.error_at(
+                            self.tree.span(node, self.tokens).start + raw.len()
+                                - chars.as_str().len(),
+                            &format!("unsupported escape sequence \\{ch}"),
+                        ))
                     }
                     None => return Err(self.error(node, "unterminated escape sequence")),
                 });
@@ -173,7 +185,7 @@ impl Transformer<'_> {
                 out.push(ch);
             }
         }
-        Err(self.error(node, "unterminated string"))
+        Err(self.error_at(self.tree.span(node, self.tokens).end, "unterminated string"))
     }
     pub(super) fn properties(
         &mut self,

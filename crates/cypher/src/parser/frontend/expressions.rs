@@ -353,8 +353,8 @@ impl Transformer<'_> {
     ) -> Result<()> {
         let (min, max) = function.arity();
         if !(min..=max).contains(&arguments) {
-            return Err(self.error(
-                node,
+            return Err(self.error_at(
+                self.tree.span(node, self.tokens).end,
                 &format!(
                     "{}() expects {min}..={max} arguments",
                     function.function_name()
@@ -378,8 +378,8 @@ impl Transformer<'_> {
         } else {
             format!("{min} or {max}")
         };
-        Err(self.error(
-            node,
+        Err(self.error_at(
+            self.tree.span(node, self.tokens).end,
             &format!(
                 "{}() expects {expected} argument(s), got {count}",
                 function.function_name()
@@ -388,7 +388,7 @@ impl Transformer<'_> {
     }
     pub(super) fn case_boolean(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpression> {
         let ands = self.iter_named_children(node, rule_id!("x_and"));
-        let mut terms = Vec::new();
+        let mut terms = BooleanTerms::default();
         for (index, and) in ands.enumerate() {
             self.expression_budget(and, depth + index)?;
             terms.push(self.case_and(and, depth + index)?)
@@ -402,8 +402,8 @@ impl Transformer<'_> {
         Ok(join_boolean(terms, ScalarBinaryOp::Or))
     }
     fn case_and(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpression> {
-        let mut terms =
-            vec![self.case_condition(self.tree.required(node, rule_id!("x_condition")), depth)?];
+        let mut terms = BooleanTerms::default();
+        terms.push(self.case_condition(self.tree.required(node, rule_id!("x_condition")), depth)?);
         for rest in self.iter_named_children(node, rule_id!("x_and_rest")) {
             let index = terms.len();
             self.expression_budget(rest, depth + index)?;
@@ -751,7 +751,32 @@ pub(super) fn scalar_binary(
         span,
     }
 }
-fn join_boolean(mut terms: Vec<ScalarExpression>, op: ScalarBinaryOp) -> ScalarExpression {
+// Most boolean levels contain one operand. Keep that operand inline while
+// preserving left-to-right lowering and the existing right-associated AST.
+#[derive(Default)]
+struct BooleanTerms {
+    first: Option<ScalarExpression>,
+    rest: Vec<ScalarExpression>,
+}
+impl BooleanTerms {
+    fn push(&mut self, term: ScalarExpression) {
+        if self.first.is_none() {
+            self.first = Some(term);
+        } else {
+            if self.rest.capacity() == 0 {
+                self.rest.reserve_exact(1);
+            }
+            self.rest.push(term);
+        }
+    }
+    fn len(&self) -> usize {
+        usize::from(self.first.is_some()) + self.rest.len()
+    }
+    fn pop(&mut self) -> Option<ScalarExpression> {
+        self.rest.pop().or_else(|| self.first.take())
+    }
+}
+fn join_boolean(mut terms: BooleanTerms, op: ScalarBinaryOp) -> ScalarExpression {
     let mut expression = terms.pop().expect("boolean operand");
     while let Some(left) = terms.pop() {
         expression = scalar_binary(left, op, expression)
