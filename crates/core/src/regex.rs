@@ -17,6 +17,16 @@ use std::sync::Arc;
 
 use crate::{HawDBError, Result};
 
+#[cfg(test)]
+std::thread_local! {
+    static COMPILATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn compilation_count() -> usize {
+    COMPILATIONS.with(std::cell::Cell::get)
+}
+
 #[derive(Clone)]
 pub struct ValidatedRegex {
     source: String,
@@ -26,6 +36,8 @@ pub struct ValidatedRegex {
 impl ValidatedRegex {
     pub fn new(source: impl Into<String>) -> Result<Self> {
         let source = source.into();
+        #[cfg(test)]
+        COMPILATIONS.with(|count| count.set(count.get() + 1));
         let compiled = regex::Regex::new(&source)
             .map_err(|error| HawDBError::Semantic(format!("invalid regex pattern: {error}")))?;
         Ok(Self {
@@ -47,6 +59,19 @@ impl ValidatedRegex {
         regex::Regex::new(&self.source)
             .expect("source was validated with the same regex compiler limits")
             .is_match(value)
+    }
+
+    /// Borrow execution-owned state; source-only templates compile a temporary
+    /// program without populating the retained cache owner.
+    pub(crate) fn with_compiled<T>(&self, apply: impl FnOnce(&regex::Regex) -> T) -> T {
+        match &self.compiled {
+            Some(compiled) => apply(compiled),
+            None => {
+                let execution = Self::new(self.source.clone())
+                    .expect("source was validated with the same regex compiler limits");
+                apply(execution.compiled.as_ref().expect("new regex is compiled"))
+            }
+        }
     }
 
     /// Discard opaque execution state before retaining a plan template.

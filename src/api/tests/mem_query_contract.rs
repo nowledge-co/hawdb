@@ -123,6 +123,8 @@ fn mem_9338_trim_case_preserves_space_isolation() {
         ("null", Value::Null),
         ("empty", text("")),
         ("white", text(" \t\n")),
+        ("unicode", text("\u{00a0}\u{2003}")),
+        ("zero_width", text("\u{200b}")),
         ("default", text("default")),
         ("private", text("private")),
         ("padded", text(" default ")),
@@ -138,7 +140,7 @@ fn mem_9338_trim_case_preserves_space_isolation() {
             .rows;
         assert_eq!(
             rows.len(),
-            usize::from(!matches!(id, "private" | "padded")),
+            usize::from(!matches!(id, "private" | "padded" | "zero_width")),
             "{id}"
         );
     }
@@ -380,4 +382,145 @@ fn mem_9338_passing_language_controls_and_sql_comparison_scope() {
             "SQL comparison is deliberately unqualified: {sql}"
         );
     }
+}
+
+#[test]
+fn mem_9338_invariant_regex_rejects_invalid_patterns_even_on_empty_input() {
+    let mut db = Database::new();
+    assert!(db
+        .query("MATCH (t:Thread) RETURN regexp_replace(t.source, '[', '_', 'g') AS value")
+        .is_err());
+    let query =
+        "MATCH (t:Thread) RETURN regexp_replace(t.source, $pattern, $replacement, 'g') AS value";
+    assert!(db
+        .query_with_params(
+            query,
+            &params(&[("pattern", text("[")), ("replacement", text("_"))])
+        )
+        .is_err());
+    assert!(db
+        .query_with_params(
+            query,
+            &params(&[("pattern", text(" ")), ("replacement", text("_"))])
+        )
+        .unwrap()
+        .rows
+        .is_empty());
+}
+
+#[test]
+fn mem_9338_regex_cache_rebinds_pattern_and_replacement_without_retaining_programs() {
+    let mut db = Database::new();
+    db.query("CREATE (:Thread {source:'A B'})").unwrap();
+    let query =
+        "MATCH (t:Thread) RETURN regexp_replace(t.source, $pattern, $replacement, 'g') AS value";
+    for (pattern, replacement, expected) in
+        [(" ", "_", "A_B"), ("[AB]", "x", "x x"), ("B", "β", "A β")]
+    {
+        let parameters = params(&[
+            ("pattern", text(pattern)),
+            ("replacement", text(replacement)),
+        ]);
+        assert_eq!(
+            db.query_with_params(query, &parameters).unwrap().rows[0]["value"],
+            text(expected)
+        );
+    }
+    assert!(db
+        .query_with_params(
+            query,
+            &params(&[("pattern", text("[")), ("replacement", text("_"))])
+        )
+        .is_err());
+    assert_eq!(
+        db.query_with_params(
+            query,
+            &params(&[("pattern", text(" ")), ("replacement", text("_"))])
+        )
+        .unwrap()
+        .rows[0]["value"],
+        text("A_B")
+    );
+    let report = db
+        .explain_query_with_params(
+            query,
+            &params(&[("pattern", text(" ")), ("replacement", text("_"))]),
+        )
+        .unwrap();
+    assert_eq!(report.plan_cache_lookup, PlanCacheLookup::Hit);
+    db.query("MATCH (t:Thread) SET t.pattern='[AB]'").unwrap();
+    assert_eq!(
+        db.query("MATCH (t:Thread) RETURN regexp_replace(t.source,t.pattern,'x','g') AS value")
+            .unwrap()
+            .rows[0]["value"],
+        text("x x")
+    );
+    db.query("MATCH (t:Thread) SET t.pattern='['").unwrap();
+    assert!(db
+        .query("MATCH (t:Thread) RETURN regexp_replace(t.source,t.pattern,'x','g') AS value")
+        .is_err());
+    let literal = "MATCH (t:Thread) RETURN regexp_replace(t.source, ' ', '_', 'g') AS value";
+    assert_eq!(db.query(literal).unwrap().rows[0]["value"], text("A_B"));
+    assert_eq!(
+        db.explain_query(literal).unwrap().plan_cache_lookup,
+        PlanCacheLookup::Hit
+    );
+}
+
+#[test]
+fn mem_9338_consecutive_set_items_share_the_target_row_budget_and_keep_snapshot_aliases() {
+    let mut config = DatabaseConfig::default();
+    config.mutation_limits.max_affected_rows = std::num::NonZeroUsize::new(2).unwrap();
+    let mut db = fixture(config);
+    db.query("MATCH (a:Memory {id:'old'}), (b:Memory {id:'new'}) SET a.x=1, a.y=2, a.z=3, b.x=4")
+        .unwrap();
+    let row = db
+        .query("MATCH (a:Memory {id:'old'}) RETURN a.x AS x,a.y AS y,a.z AS z")
+        .unwrap()
+        .rows
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(
+        row,
+        params(&[
+            ("x", Value::Int(1)),
+            ("y", Value::Int(2)),
+            ("z", Value::Int(3))
+        ])
+    );
+    db.query("MATCH (a:Memory {id:'old'}), (b:Memory {id:'old'}) SET a.id='changed', a.x=5, b.x=6")
+        .unwrap();
+    assert_eq!(
+        db.query("MATCH (a:Memory {id:'changed'}) RETURN a.x AS x")
+            .unwrap()
+            .rows[0]["x"],
+        Value::Int(6)
+    );
+    assert!(db
+        .query("MATCH (a:Memory {id:'old'}) RETURN a.id")
+        .unwrap()
+        .rows
+        .is_empty());
+}
+
+#[test]
+fn mem_9338_grouped_duplicate_set_properties_preserve_operation_limits_atomically() {
+    let mut config = DatabaseConfig::default();
+    config.mutation_limits.max_affected_rows = std::num::NonZeroUsize::new(2).unwrap();
+    config.mutation_limits.max_operations = std::num::NonZeroUsize::new(3).unwrap();
+    let mut db = fixture(config);
+    let read =
+        "MATCH (m:Memory) RETURN m.id AS id,m.x AS x,m.y AS y,m.is_latest AS latest ORDER BY id";
+    let before = db.query(read).unwrap().rows;
+    let epoch = db.statistics().unwrap().computed_at_commit_epoch;
+    let error = db
+        .query("MATCH (a:Memory {id:'old'}), (b:Memory {id:'new'}) SET a.x=1, a.x=2, a.y=3, b.x=4")
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("max_mutation_operations"),
+        "{error}"
+    );
+    assert_eq!(db.query(read).unwrap().rows, before);
+    assert_eq!(db.statistics().unwrap().computed_at_commit_epoch, epoch);
 }

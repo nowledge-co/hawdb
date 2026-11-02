@@ -19,17 +19,34 @@ than treating parser admission as execution evidence. They use synthetic data.
 `list_append` uses the existing list builder and its memory/work accounting.
 String scalars are a separate expression family whose children participate in
 binding, retained-plan accounting, determinism and physical fingerprints.
+Literal and parameter regex patterns are validated before reading rows (including
+empty input), then reused by row evaluation. Cached plans retain pattern sources
+only and prepare execution-owned programs when rebound; row-dependent patterns
+continue to compile at evaluation. Invalid invariant patterns therefore fail even
+when a scan is empty.
+
 Computed read UNWIND evaluates its expression for each input row and uses the
 existing bounded row-unwind executor. Computed sources do not enable new
 mutation-pipeline forms. Mutation plans continue to bypass the physical cache.
 
 `trim` accepts one string, returns Unicode-whitespace-trimmed text, and
-propagates NULL. `regexp_replace` accepts three string arguments and optional
+propagates NULL. This uses Rust's Unicode `White_Space` semantics, including
+tabs, newlines, NBSP and EM SPACE; zero-width space is not stripped. This is the
+intentionally accepted Cypher Space-normalization contract, whereas PostgreSQL's default `TRIM` strips
+the ordinary space character. SQL `TRIM` remains unsupported here. See the
+[Rust trim contract](https://doc.rust-lang.org/std/primitive.str.html#method.trim)
+and [PostgreSQL string functions](https://www.postgresql.org/docs/18/functions-string.html).
+`regexp_replace` accepts three string arguments and optional
 flags: absent/empty replaces the first match; `g` replaces every match. Regex
 syntax uses the existing Rust regex engine, not unrestricted PostgreSQL regex
 syntax. Replacement supports literal text (including `$`), `\1` through `\9`,
 `\&` for the whole match and `\\` for a literal backslash. Other flags/escapes,
 invalid regexes, arity and type errors fail explicitly. NULL inputs propagate.
+Replacement pieces are admitted during a sizing pass, including early work and
+memory refusal, before one exact output allocation and an emission pass. This
+keeps the original logical-byte/work admission rather than growing a spare-capacity
+buffer or repeatedly copying its prefix. It adds a second regex traversal;
+no general throughput improvement is claimed for row-dependent patterns.
 Output increments are admitted before allocation under the query account or
 the existing unaccounted-expression ceiling; evaluated input bytes and output
 work count against the list-expression work cap. Regex compilation retains the
@@ -38,8 +55,12 @@ for opaque regex-engine scratch memory or a throughput claim.
 
 Multi-binding SET currently rejects relationships, WHERE predicates, repeated
 binding names, RETURN, and property-dependent assignments. Constants do not
-require materializing the MATCH Cartesian product. The storage command resolves
-all selectors before preparing ordered writes. Existing mutation operation,
+require materializing the MATCH Cartesian product. Consecutive constant SET items for the same binding coalesce into one group;
+intervening bindings are never reordered because they can alias the same node.
+Affected-row limits count each selected node once per consecutive group, matching
+single-binding multi-property SET. The storage command resolves each distinct
+selector once and shares its ID list across groups before preparing ordered
+writes. An unused matched binding still gates the entire statement. Existing mutation operation,
 affected-row and output ceilings apply. Refusal discards the prepared batch;
 transaction rollback and durable reopen remain owned by the existing kernel.
 Temporal range preservation shares the kernel's comparable temporal ordering,

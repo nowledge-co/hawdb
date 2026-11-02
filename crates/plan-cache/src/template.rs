@@ -1613,13 +1613,50 @@ fn bind_projection_expression(
     parameters: BindingAction<'_>,
 ) -> Result<()> {
     match expression {
+        ProjectionExpression::StringFunction {
+            function,
+            arguments,
+            pattern,
+        } => {
+            for argument in arguments.iter_mut() {
+                bind_projection_expression(argument, parameters)?;
+            }
+            match parameters {
+                BindingAction::RetainRegex(found) => {
+                    if let Some(pattern) = pattern {
+                        pattern.retain_source_only();
+                        found.set(true);
+                    }
+                }
+                BindingAction::Execute(_) | BindingAction::PrepareRegex => {
+                    match (function, arguments.get(1)) {
+                        (
+                            hawdb_core::StringFunction::RegexpReplace,
+                            Some(ProjectionExpression::Literal(Value::String(source))),
+                        ) => {
+                            if pattern
+                                .as_ref()
+                                .is_none_or(|pattern| pattern.as_str() != source)
+                            {
+                                *pattern = Some(Box::new(hawdb_core::ValidatedRegex::new(
+                                    source.clone(),
+                                )?));
+                            } else if let Some(pattern) = pattern {
+                                pattern.prepare_for_execution()?;
+                            }
+                        }
+                        _ => *pattern = None,
+                    }
+                }
+            }
+        }
+
         ProjectionExpression::Case { .. }
         | ProjectionExpression::VectorDistance { .. }
         | ProjectionExpression::Binary { .. }
         | ProjectionExpression::Not(_)
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
-        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }

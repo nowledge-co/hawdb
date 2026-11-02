@@ -565,7 +565,18 @@ pub(crate) fn graph_mutation_memory_bytes(mutation: &GraphMutation) -> usize {
                 .saturating_add(size_of::<hawdb_storage::mutation::MatchedNodeSet>())
                 .saturating_add(node.label.len())
                 .saturating_add(optional_filter_memory_bytes(node.filter.as_ref()))
-                .saturating_add(map_memory_bytes(&node.assignments))
+                .saturating_add(
+                    node.assignments.iter().fold(
+                        node.assignments
+                            .capacity()
+                            .saturating_mul(size_of::<(String, Value)>()),
+                        |bytes, (property, value)| {
+                            bytes.saturating_add(property.len()).saturating_add(
+                                value_memory_bytes(value).saturating_sub(size_of::<Value>()),
+                            )
+                        },
+                    ),
+                )
         }),
         // Row-sourced statements stage only the forms above.
         _ => 0,

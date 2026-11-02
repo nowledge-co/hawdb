@@ -266,6 +266,8 @@ pub enum ProjectionExpression {
     StringFunction {
         function: hawdb_core::StringFunction,
         arguments: Vec<ProjectionExpression>,
+        /// Invariant literal/parameter pattern, compiled once per execution.
+        pattern: Option<Box<ValidatedRegex>>,
     },
     /// `[variable IN list WHERE predicate | projection]`.
     ListComprehension(Box<ListComprehensionProjection>),
@@ -992,9 +994,11 @@ impl hawdb_core::RetainedHeapBytes for ProjectionExpression {
             Self::StringFunction {
                 function,
                 arguments,
+                pattern,
             } => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(function),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(arguments),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(pattern),
             ]),
             Self::ListComprehension(comprehension) => {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(comprehension)

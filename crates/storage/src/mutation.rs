@@ -336,7 +336,8 @@ pub enum GraphMutation {
 pub struct MatchedNodeSet {
     pub label: String,
     pub filter: Option<PropertyFilter>,
-    pub assignments: BTreeMap<String, Value>,
+    /// Ordered writes, including duplicate properties, for one consecutive group.
+    pub assignments: Vec<(String, Value)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -263,11 +263,12 @@ fn bind_matched_node_sets(
             crate::logical::MatchedNodeSet {
                 label: node.label.clone(),
                 properties: bind_properties(&node.properties, parameters)?,
-                assignments: BTreeMap::new(),
+                assignments: Vec::new(),
             },
         );
     }
     let mut operations = nodes.values().cloned().collect::<Vec<_>>();
+    let mut last_variable = None;
     for set in sets {
         let node = nodes
             .get_mut(&set.variable)
@@ -277,11 +278,21 @@ fn bind_matched_node_sets(
                 "multi-binding SET requires literal or parameter assignments",
             ));
         };
-        let mut operation = node.clone();
-        operation
-            .assignments
-            .insert(set.property.clone(), bind_value(value, parameters)?);
-        operations.push(operation);
+        let value = bind_value(value, parameters)?;
+        if last_variable == Some(set.variable.as_str()) {
+            // Only adjacent items can coalesce: another binding may alias this
+            // node, so crossing it would change source-order last-write wins.
+            operations
+                .last_mut()
+                .expect("a previous assignment group exists")
+                .assignments
+                .push((set.property.clone(), value));
+        } else {
+            let mut operation = node.clone();
+            operation.assignments.push((set.property.clone(), value));
+            operations.push(operation);
+        }
+        last_variable = Some(set.variable.as_str());
     }
     Ok(LogicalPlan::UnwindMutation {
         rows: vec![Value::Null],

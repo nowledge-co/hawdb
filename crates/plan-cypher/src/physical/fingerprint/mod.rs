@@ -1468,7 +1468,14 @@ fn write_batch_mutation_operation(output: &mut String, operation: &BatchMutation
             for node in nodes {
                 write_identifier(output, &node.label);
                 write_properties(output, &node.properties);
-                write_properties(output, &node.assignments);
+                output.push('[');
+                for (property, value) in &node.assignments {
+                    write_identifier(output, property);
+                    output.push('=');
+                    write_value(output, value);
+                    output.push(';');
+                }
+                output.push(']');
             }
             output.push(']');
         }

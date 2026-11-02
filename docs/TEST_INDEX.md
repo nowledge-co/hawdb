@@ -23,6 +23,18 @@ minimum-preservation cases use the existing component test owners.
 No new execution lane, profile, fixture amplification or timeout is introduced.
 See [the contract and explicit SQL scope](specs/MEM_QUERY_COMPATIBILITY_9338.md).
 
+The same Mem query owner also covers PR 1504 review optimizations: invariant
+regexp_replace validation on empty scans, cache rebinding across pattern and
+replacement values (including an invalid-pattern failure), row-dependent patterns,
+Unicode whitespace/zero-width Space isolation, adjacent SET row budgets and
+aliased writes after a selector property changes. Core `string_function` tests
+prove prepared row evaluation does not recompile or mutate source-only cache
+owners and that output admission precedes materialization. Literal/parameter
+patterns use the existing source-only regex cache lifecycle; dynamic patterns
+retain their evaluator path. Replacement sizing admits every piece before a
+single exact buffer allocation. Query memory/work caps and mutation atomicity
+remain required. Existing fixtures and execution lanes are retained.
+
 [Bazel exclusive test scheduling](https://bazel.build/reference/be/common-definitions#common.tags)
 places this owner after build activity and non-exclusive tests.
 `//crates/executor:hawdb_executor_unit_tests` retains its full ordinary unit-test

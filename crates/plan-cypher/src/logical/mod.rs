@@ -167,7 +167,8 @@ pub struct BatchRelationshipMerge {
 pub struct MatchedNodeSet {
     pub label: String,
     pub properties: BTreeMap<String, Value>,
-    pub assignments: BTreeMap<String, Value>,
+    /// Ordered writes, including duplicate properties, for one consecutive group.
+    pub assignments: Vec<(String, Value)>,
 }
 hawdb_core::impl_retained_heap_for_struct!(MatchedNodeSet {
     label,

@@ -272,6 +272,7 @@ fn evaluate_scoped<'a>(
         ProjectionExpression::StringFunction {
             function,
             arguments,
+            pattern,
         } => {
             let values = arguments
                 .iter()
@@ -286,7 +287,7 @@ fn evaluate_scoped<'a>(
             let mut allocation = account
                 .map(|a| a.reserve(std::mem::size_of::<Value>()))
                 .transpose()?;
-            let value = function.apply(&refs, |bytes| {
+            let value = function.apply_prepared(&refs, pattern.as_deref(), |bytes| {
                 work.charge(bytes.saturating_add(1))?;
                 match &mut allocation {
                     Some(lease) => lease.grow(bytes),

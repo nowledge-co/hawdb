@@ -408,6 +408,7 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
         ProjectionExpression::StringFunction {
             function,
             arguments,
+            ..
         } => {
             output.push_str("string_function(");
             output.push_str(function.function_name());

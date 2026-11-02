@@ -911,8 +911,17 @@ impl GraphStore {
                     }
                 }
                 GraphMutation::SetMatchedNodes(nodes) => {
-                    let mut selected = Vec::with_capacity(nodes.len());
-                    for node in &nodes {
+                    let mut selected: Vec<std::sync::Arc<Vec<NodeId>>> =
+                        Vec::with_capacity(nodes.len());
+                    for (index, node) in nodes.iter().enumerate() {
+                        // Resolve identical selectors once against the pre-write
+                        // snapshot. Share ID storage across ordered SET groups.
+                        if let Some(previous) = nodes[..index].iter().position(|previous| {
+                            previous.label == node.label && previous.filter == node.filter
+                        }) {
+                            selected.push(std::sync::Arc::clone(&selected[previous]));
+                            continue;
+                        }
                         let label = optional_label_id(&working_catalog, &node.label);
                         if !node.label.is_empty() && label.is_none() {
                             selected.clear();
@@ -933,7 +942,7 @@ impl GraphStore {
                             selected.clear();
                             break;
                         }
-                        selected.push(ids);
+                        selected.push(std::sync::Arc::new(ids));
                     }
                     if selected.len() == nodes.len() {
                         for (node, ids) in nodes.iter().zip(selected) {
@@ -954,10 +963,7 @@ impl GraphStore {
                                 &mut pending_nodes,
                                 None,
                                 Some(&PropertyFilter::IdIn {
-                                    values: ids
-                                        .into_iter()
-                                        .map(|id| Value::Int(id.0 as i64))
-                                        .collect(),
+                                    values: ids.iter().map(|id| Value::Int(id.0 as i64)).collect(),
                                 }),
                                 &assignments,
                                 limits,

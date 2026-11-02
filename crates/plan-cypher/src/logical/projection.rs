@@ -1569,15 +1569,26 @@ pub(super) fn plan_scalar_expression_with_columns(
         ScalarExpressionKind::StringFunction {
             function,
             arguments,
-        } => Ok(ProjectionExpression::StringFunction {
-            function: *function,
-            arguments: arguments
+        } => {
+            let arguments = arguments
                 .iter()
                 .map(|argument| {
                     plan_scalar_expression_with_columns(scope, column_scope, argument, parameters)
                 })
-                .collect::<Result<Vec<_>>>()?,
-        }),
+                .collect::<Result<Vec<_>>>()?;
+            let pattern = match (function, arguments.get(1)) {
+                (
+                    hawdb_core::StringFunction::RegexpReplace,
+                    Some(ProjectionExpression::Literal(Value::String(source))),
+                ) => Some(Box::new(ValidatedRegex::new(source.clone())?)),
+                _ => None,
+            };
+            Ok(ProjectionExpression::StringFunction {
+                function: *function,
+                arguments,
+                pattern,
+            })
+        }
         ScalarExpressionKind::ListComprehension {
             variable,
             list,
