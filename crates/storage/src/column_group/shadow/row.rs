@@ -66,6 +66,7 @@ pub fn estimated_shadow_value_bytes(value: &Value) -> u64 {
         Value::Binary(value) => 16 + value.len() as u64,
         Value::Vector(value) => 16 + value.encoded().len() as u64,
         Value::Uuid(_) => 16,
+        Value::Decimal(_) => std::mem::size_of::<Value>() as u64,
         Value::Date(_)
         | Value::LocalTime(_)
         | Value::LocalDateTime(_)

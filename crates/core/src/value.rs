@@ -19,7 +19,7 @@ use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 
 use crate::temporal::{self, DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
-use crate::{LogicalType, Vector, VectorRef};
+use crate::{Decimal, LogicalType, Vector, VectorRef};
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -27,6 +27,7 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     Float(f64),
+    Decimal(Decimal),
     String(String),
     Binary(Vec<u8>),
     Vector(Vector),
@@ -64,6 +65,7 @@ pub enum ValueRef<'a> {
     Bool(bool),
     Int(i64),
     Float(f64),
+    Decimal(Decimal),
     String(&'a str),
     Binary(&'a [u8]),
     Vector(VectorRef<'a>),
@@ -99,6 +101,7 @@ impl Ord for Value {
                 (Value::Null, Value::Null) => Ordering::Equal,
                 (Value::Bool(left), Value::Bool(right)) => left.cmp(right),
                 (Value::Int(left), Value::Int(right)) => left.cmp(right),
+                (Value::Decimal(left), Value::Decimal(right)) => left.cmp(right),
                 (Value::Float(left), Value::Float(right)) => left.total_cmp(right),
                 (Value::String(left), Value::String(right)) => left.cmp(right),
                 (Value::Binary(left), Value::Binary(right)) => left.cmp(right),
@@ -125,6 +128,7 @@ impl Hash for Value {
             Value::Null => {}
             Value::Bool(value) => value.hash(state),
             Value::Int(value) => value.hash(state),
+            Value::Decimal(value) => value.hash(state),
             Value::Float(value) => value.to_bits().hash(state),
             Value::String(value) => value.hash(state),
             Value::Binary(value) => value.hash(state),
@@ -161,6 +165,7 @@ impl Value {
             Value::Null => 0,
             Value::Bool(_) => 1,
             Value::Int(_) => 2,
+            Value::Decimal(_) => 15,
             Value::Float(_) => 3,
             Value::String(_) => 4,
             Value::Binary(_) => 5,
@@ -194,6 +199,7 @@ impl<'a> ValueRef<'a> {
             Self::Null => None,
             Self::Bool(_) => Some(LogicalType::Boolean),
             Self::Int(_) => Some(LogicalType::Int64),
+            Self::Decimal(_) => Some(LogicalType::Decimal),
             Self::Float(_) => Some(LogicalType::Float64),
             Self::String(_) => Some(LogicalType::String),
             Self::Binary(_) => Some(LogicalType::Binary),
@@ -219,6 +225,13 @@ impl<'a> ValueRef<'a> {
     pub const fn as_i64(self) -> Option<i64> {
         match self {
             Self::Int(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub const fn as_decimal(self) -> Option<Decimal> {
+        match self {
+            Self::Decimal(value) => Some(value),
             _ => None,
         }
     }
@@ -270,6 +283,7 @@ impl<'a> ValueRef<'a> {
             Self::Null => Value::Null,
             Self::Bool(value) => Value::Bool(value),
             Self::Int(value) => Value::Int(value),
+            Self::Decimal(value) => Value::Decimal(value),
             Self::Float(value) => Value::Float(value),
             Self::String(value) => Value::String(value.to_owned()),
             Self::Binary(value) => Value::Binary(value.to_vec()),
@@ -290,6 +304,7 @@ impl<'a> ValueRef<'a> {
             Self::Null => 0,
             Self::Bool(_) => 1,
             Self::Int(_) => 2,
+            Self::Decimal(_) => 15,
             Self::Float(_) => 3,
             Self::String(_) => 4,
             Self::Binary(_) => 5,
@@ -312,6 +327,7 @@ impl<'a> From<&'a Value> for ValueRef<'a> {
             Value::Null => Self::Null,
             Value::Bool(value) => Self::Bool(*value),
             Value::Int(value) => Self::Int(*value),
+            Value::Decimal(value) => Self::Decimal(*value),
             Value::Float(value) => Self::Float(*value),
             Value::String(value) => Self::String(value),
             Value::Binary(value) => Self::Binary(value),
@@ -350,6 +366,7 @@ impl Ord for ValueRef<'_> {
                 (Self::Null, Self::Null) => Ordering::Equal,
                 (Self::Bool(left), Self::Bool(right)) => left.cmp(right),
                 (Self::Int(left), Self::Int(right)) => left.cmp(right),
+                (Self::Decimal(left), Self::Decimal(right)) => left.cmp(right),
                 (Self::Float(left), Self::Float(right)) => left.total_cmp(right),
                 (Self::String(left), Self::String(right)) => left.cmp(right),
                 (Self::Binary(left), Self::Binary(right)) => left.cmp(right),
@@ -376,6 +393,7 @@ impl Hash for ValueRef<'_> {
             Self::Null => {}
             Self::Bool(value) => value.hash(state),
             Self::Int(value) => value.hash(state),
+            Self::Decimal(value) => value.hash(state),
             Self::Float(value) => value.to_bits().hash(state),
             Self::String(value) => value.hash(state),
             Self::Binary(value) => value.hash(state),
@@ -422,6 +440,7 @@ impl Display for ValueRef<'_> {
             Self::Null => write!(f, "null"),
             Self::Bool(value) => write!(f, "{value}"),
             Self::Int(value) => write!(f, "{value}"),
+            Self::Decimal(value) => write!(f, "{value}"),
             Self::Float(value) => write!(f, "{value}"),
             Self::String(value) => write!(f, "{value}"),
             Self::Binary(value) => write_binary(f, value),
@@ -461,6 +480,7 @@ impl Display for Value {
             Value::Null => write!(f, "null"),
             Value::Bool(value) => write!(f, "{value}"),
             Value::Int(value) => write!(f, "{value}"),
+            Value::Decimal(value) => write!(f, "{value}"),
             Value::Float(value) => write!(f, "{value}"),
             Value::String(value) => write!(f, "{value}"),
             Value::Binary(value) => write_binary(f, value),
@@ -523,6 +543,7 @@ mod tests {
             Value::Bool(true),
             Value::Int(1),
             Value::Float(f64::NAN),
+            Value::Decimal("9007199254740993.0100".parse().unwrap()),
             Value::String("value".into()),
             Value::Binary(vec![0, 0xff]),
             Value::Vector(Vector::new(&[0.0, -0.0]).unwrap()),
@@ -545,6 +566,9 @@ mod tests {
             for right in &values {
                 assert_eq!(left.cmp(right), left.as_ref().cmp(&right.as_ref()));
                 assert_eq!(left == right, left.as_ref() == *right);
+                if left.as_ref().logical_type() != right.as_ref().logical_type() {
+                    assert_ne!(left, right);
+                }
             }
         }
     }

@@ -338,6 +338,7 @@ pub enum ExpressionKindSyntax {
     Cast {
         expression: Box<ExpressionSyntax>,
         data_type: QualifiedName,
+        type_parameters: Vec<Span>,
     },
     Collate {
         expression: Box<ExpressionSyntax>,

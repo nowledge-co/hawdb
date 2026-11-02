@@ -70,6 +70,10 @@ impl<'a> ExpressionParser<'a> {
     ) -> Result<ExpressionSyntax, SyntaxError> {
         let mut left = self.parse_prefix()?;
         loop {
+            // Pratt's loop can build a deep tree without recursive parser
+            // calls (for example repeated :: casts or left-associative sums).
+            // Check each bounded tree before extending it or returning it.
+            validate_expression_depth(&left, 0)?;
             if self.at_keyword("FILTER")
                 && matches!(left.kind, ExpressionKindSyntax::Function { .. })
             {
@@ -149,12 +153,13 @@ impl<'a> ExpressionParser<'a> {
                     break;
                 }
                 self.advance();
-                let data_type = self.parse_qualified_name()?;
+                let (data_type, type_parameters) = self.parse_cast_type()?;
                 left = ExpressionSyntax {
-                    span: Span::new(left.span.start, data_type.span.end),
+                    span: Span::new(left.span.start, self.previous_end()),
                     kind: ExpressionKindSyntax::Cast {
                         expression: Box::new(left),
                         data_type,
+                        type_parameters,
                     },
                 };
                 continue;
@@ -339,9 +344,66 @@ impl<'a> ExpressionParser<'a> {
                     span: Span::new(token.span.start, value.span.end),
                 })
             }
+            TokenKind::Word
+                if token.is_keyword(self.input, "CAST")
+                    && self.peek(1).kind == TokenKind::LeftParen =>
+            {
+                self.parse_cast_expression()
+            }
             kind if is_identifier_kind(kind) => self.parse_name_expression(),
             _ => Err(self.unexpected("a PostgreSQL expression")),
         }
+    }
+
+    fn parse_cast_type(&mut self) -> Result<(QualifiedName, Vec<Span>), SyntaxError> {
+        let mut name = self.parse_qualified_name()?;
+        if name.parts.len() == 1
+            && !name.parts[0].quoted
+            && self.input[name.span.start..name.span.end].eq_ignore_ascii_case("DOUBLE")
+            && self.consume_keyword("PRECISION")
+        {
+            name.span.end = self.previous_end();
+            name.parts[0].span.end = name.span.end;
+        }
+        let mut parameters = Vec::new();
+        if self.consume_kind(TokenKind::LeftParen) {
+            loop {
+                let start = self.current().span.start;
+                self.consume_kind(TokenKind::Minus);
+                let number = self.expect_kind(TokenKind::Number, "a numeric type parameter")?;
+                parameters.push(Span::new(start, number.span.end));
+                if !self.consume_kind(TokenKind::Comma) {
+                    break;
+                }
+                if parameters.len() == 2 {
+                    return Err(self.unexpected("at most two numeric type parameters"));
+                }
+            }
+            self.expect_kind(TokenKind::RightParen, ")")?;
+        }
+        Ok((name, parameters))
+    }
+
+    fn parse_cast_expression(&mut self) -> Result<ExpressionSyntax, SyntaxError> {
+        let start = self.advance().span.start;
+        let open = self.expect_kind(TokenKind::LeftParen, "(")?;
+        self.enter_nesting(open.span)?;
+        let result = (|| {
+            let expression = self.parse_expression(0)?;
+            self.expect_keyword("AS")?;
+            let (data_type, type_parameters) = self.parse_cast_type()?;
+            let end = self.expect_kind(TokenKind::RightParen, ")")?.span.end;
+            Ok(ExpressionSyntax {
+                span: Span::new(start, end),
+                kind: ExpressionKindSyntax::Cast {
+                    expression: Box::new(expression),
+                    data_type,
+                    type_parameters,
+                },
+            })
+        })();
+        self.nesting -= 1;
+        result
     }
 
     fn parse_parenthesized_expression(&mut self) -> Result<ExpressionSyntax, SyntaxError> {
@@ -592,6 +654,69 @@ impl<'a> ExpressionParser<'a> {
         SyntaxError::new(code, token.span)
             .expected(expected)
             .found(token.text(self.input))
+    }
+}
+
+fn validate_expression_depth(
+    expression: &ExpressionSyntax,
+    depth: usize,
+) -> Result<(), SyntaxError> {
+    if depth > MAX_EXPRESSION_NESTING {
+        return Err(SyntaxError::new(
+            SyntaxErrorCode::ExpressionNestingLimitExceeded,
+            expression.span,
+        ));
+    }
+    let child = |expression: &ExpressionSyntax| validate_expression_depth(expression, depth + 1);
+    match &expression.kind {
+        ExpressionKindSyntax::Unary { expression, .. }
+        | ExpressionKindSyntax::IsNull { expression, .. }
+        | ExpressionKindSyntax::Cast { expression, .. }
+        | ExpressionKindSyntax::Collate { expression, .. }
+        | ExpressionKindSyntax::Parenthesized(expression) => child(expression),
+        ExpressionKindSyntax::Binary { left, right, .. }
+        | ExpressionKindSyntax::Filtered {
+            function: left,
+            predicate: right,
+        } => {
+            child(left)?;
+            child(right)
+        }
+        ExpressionKindSyntax::Like {
+            expression,
+            pattern,
+            escape,
+            ..
+        } => {
+            child(expression)?;
+            child(pattern)?;
+            if let Some(escape) = escape {
+                child(escape)?;
+            }
+            Ok(())
+        }
+        ExpressionKindSyntax::Between {
+            expression,
+            low,
+            high,
+            ..
+        } => {
+            child(expression)?;
+            child(low)?;
+            child(high)
+        }
+        ExpressionKindSyntax::InList {
+            expression, values, ..
+        } => {
+            child(expression)?;
+            values.iter().try_for_each(child)
+        }
+        ExpressionKindSyntax::Function { arguments, .. } => arguments.iter().try_for_each(child),
+        ExpressionKindSyntax::Column(_)
+        | ExpressionKindSyntax::Wildcard(_)
+        | ExpressionKindSyntax::Parameter(_)
+        | ExpressionKindSyntax::Literal(_)
+        | ExpressionKindSyntax::TypedString { .. } => Ok(()),
     }
 }
 

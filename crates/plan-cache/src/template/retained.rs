@@ -67,6 +67,7 @@ fn shape_bytes(shape: &ParameterValueShape) -> Option<usize> {
         | ParameterValueShape::Binary
         | ParameterValueShape::Vector(_)
         | ParameterValueShape::Uuid
+        | ParameterValueShape::Decimal(_)
         | ParameterValueShape::Date
         | ParameterValueShape::LocalTime
         | ParameterValueShape::LocalDateTime

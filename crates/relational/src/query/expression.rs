@@ -16,8 +16,7 @@ use super::projection::RELATIONAL_SORT_COLUMN_PREFIX;
 use super::{
     projection_contains_aggregate, BTreeSet, Binding, BoundRow, HawDBError, QuerySchema,
     RelationalScalarType, RelationalState, RelationalValue, Result, Row, SelectProjection,
-    SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument, SqlPredicate, SqlValue,
-    Value,
+    SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument, SqlPredicate, Value,
 };
 use crate::predicate::predicate_truth_with;
 pub(super) use crate::query_value::{
@@ -30,13 +29,21 @@ pub(super) fn projection_uses_non_aggregate_scalar_function(
     projection: &[SelectProjection],
 ) -> bool {
     projection.iter().any(|projection| {
-        matches!(
-            projection,
-            SelectProjection::Expression {
-                expression: Expr { kind: ExprKind::Function { name, .. }, .. },
-                ..
-            } if (name == "coalesce" || hawdb_core::VectorDistance::from_function_name(name).is_some()) && !projection_contains_aggregate(projection)
-        )
+        let SelectProjection::Expression { expression, .. } = projection else {
+            return false;
+        };
+        match &expression.kind {
+            ExprKind::Value(_)
+            | ExprKind::Arithmetic { .. }
+            | ExprKind::Negate(_)
+            | ExprKind::Cast { .. } => !projection_contains_aggregate(projection),
+            ExprKind::Function { name, .. } => {
+                (name == "coalesce"
+                    || hawdb_core::VectorDistance::from_function_name(name).is_some())
+                    && !projection_contains_aggregate(projection)
+            }
+            _ => false,
+        }
     })
 }
 
@@ -49,16 +56,14 @@ pub(super) fn validate_non_aggregate_coalesce_projections(
         let SelectProjection::Expression { expression, .. } = projection else {
             continue;
         };
-        let Expr {
-            kind: ExprKind::Function { name, .. },
-            ..
-        } = expression
-        else {
-            continue;
+        let validate = match &expression.kind {
+            ExprKind::Arithmetic { .. } | ExprKind::Negate(_) | ExprKind::Cast { .. } => true,
+            ExprKind::Function { name, .. } => {
+                name == "coalesce" || hawdb_core::VectorDistance::from_function_name(name).is_some()
+            }
+            _ => false,
         };
-        if (name == "coalesce" || hawdb_core::VectorDistance::from_function_name(name).is_some())
-            && !projection_contains_aggregate(projection)
-        {
+        if validate && !projection_contains_aggregate(projection) {
             infer_coalesce_scalar_type(expression, select, parameters, state)?;
         }
     }
@@ -72,6 +77,12 @@ pub(super) fn infer_coalesce_scalar_type(
     state: &RelationalState,
 ) -> Result<Option<RelationalScalarType>> {
     match expression {
+        Expr {
+            kind: ExprKind::Arithmetic { .. } | ExprKind::Negate(_) | ExprKind::Cast { .. },
+            ..
+        } => crate::query_value::infer_numeric_type(expression, &|child| {
+            infer_coalesce_scalar_type(child, select, parameters, state)
+        }),
         Expr {
             kind: ExprKind::Column(column),
             ..
@@ -114,7 +125,9 @@ pub(super) fn infer_coalesce_scalar_type(
                 };
                 let candidate = infer_coalesce_scalar_type(expression, select, parameters, state)?;
                 if let Some(candidate) = candidate {
-                    if scalar_type.is_some_and(|scalar_type| scalar_type != candidate) {
+                    if scalar_type.is_some_and(|scalar_type: RelationalScalarType| {
+                        !scalar_type.same_value_domain(Some(candidate))
+                    }) {
                         return Err(HawDBError::Semantic(
                             "COALESCE arguments have incompatible scalar types".to_string(),
                         ));
@@ -378,19 +391,19 @@ pub(super) fn evaluate_projection_expression(
 ) -> Result<RelationalValue> {
     match expression {
         Expr {
+            kind: ExprKind::Arithmetic { .. } | ExprKind::Negate(_) | ExprKind::Cast { .. },
+            ..
+        } => crate::query_value::evaluate_numeric_with(expression, &|child| {
+            evaluate_projection_expression(child, row, parameters).map(std::borrow::Cow::Owned)
+        }),
+        Expr {
             kind: ExprKind::Column(column),
             ..
         } => Ok(resolve_column(row, column)?.clone()),
         Expr {
-            kind: ExprKind::Value(SqlValue::Literal(value)),
+            kind: ExprKind::Value(value),
             ..
-        } => value_to_relational(value.clone()),
-        Expr {
-            kind: ExprKind::Value(SqlValue::Parameter(position)),
-            ..
-        } => Err(HawDBError::Semantic(format!(
-            "projection expression cannot bind parameter ${position}"
-        ))),
+        } => value_to_relational(bind_sql_value(value, parameters)?),
         Expr {
             kind:
                 ExprKind::Function {
@@ -499,9 +512,13 @@ pub(super) fn evaluate_coalesce(
                     "unsupported COALESCE argument function {name}"
                 )))
             }
+            Expr {
+                kind: ExprKind::Arithmetic { .. } | ExprKind::Negate(_) | ExprKind::Cast { .. },
+                ..
+            } => evaluate_projection_expression(expression, row, parameters)?,
             _ => {
                 return Err(HawDBError::Semantic(
-                    "unsupported COALESCE argument expression".to_owned(),
+                    "unsupported COALESCE argument expression".into(),
                 ))
             }
         };

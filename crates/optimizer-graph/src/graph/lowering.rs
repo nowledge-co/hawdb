@@ -768,6 +768,7 @@ fn seed_metadata_value(value: &Value) -> Option<String> {
         | Value::DateTime(_)
         | Value::Duration(_) => Some(value.to_string()),
         Value::Null
+        | Value::Decimal(_)
         | Value::Float(_)
         | Value::Binary(_)
         | Value::Vector(_)

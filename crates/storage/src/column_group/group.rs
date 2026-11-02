@@ -719,7 +719,8 @@ impl ColumnGroupWriter {
                         Value::Bool(_) => ChunkEncoding::BoolBitmap,
                         Value::String(_) => ChunkEncoding::StringTable,
                         Value::Binary(_) => ChunkEncoding::ByteTable,
-                        Value::Uuid(_)
+                        Value::Decimal(_)
+                        | Value::Uuid(_)
                         | Value::Vector(_)
                         | Value::Date(_)
                         | Value::LocalTime(_)
@@ -727,7 +728,7 @@ impl ColumnGroupWriter {
                         | Value::DateTime(_)
                         | Value::Duration(_) => {
                             return Err(unsupported(
-                                "streaming single-row column groups do not support UUID, vector or temporal values"
+                                "streaming single-row column groups do not support Decimal, UUID, vector or temporal values"
                                     .to_string(),
                             ));
                         }
@@ -758,7 +759,8 @@ impl ColumnGroupWriter {
                             sink.write_all(&length.to_le_bytes())?;
                             sink.write_all(value)?;
                         }
-                        Value::Uuid(_)
+                        Value::Decimal(_)
+                        | Value::Uuid(_)
                         | Value::Vector(_)
                         | Value::Date(_)
                         | Value::LocalTime(_)

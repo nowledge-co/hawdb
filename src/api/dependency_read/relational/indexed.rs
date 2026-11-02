@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Necessary typed leading equalities bound a whole declared index domain,
 //! regardless of residual ranges, ordering, LIMIT or the physical access choice.
@@ -44,6 +44,7 @@ pub(super) fn prefix_key(
             };
             let value = match value {
                 SqlValue::Literal(value) => value,
+                SqlValue::Expression(_) => break,
                 SqlValue::Parameter(position) => {
                     parameters.get(position.saturating_sub(1)).ok_or_else(|| {
                         HawDBError::Semantic(format!("missing PostgreSQL parameter ${position}"))
@@ -69,7 +70,7 @@ pub(super) fn prefix_key(
             ) {
                 break;
             }
-            if value.scalar_type() != Some(scalar_type) {
+            if !scalar_type.same_value_domain(value.scalar_type()) {
                 return Err(refusal("indexed comparison with incompatible scalar types"));
             }
             values.push(value);

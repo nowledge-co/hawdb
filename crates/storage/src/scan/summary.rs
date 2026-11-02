@@ -75,6 +75,7 @@ impl ScanScalar {
             Value::Binary(value) => Some(Self::Binary(value.clone())),
             Value::Uuid(value) => Some(Self::Uuid(*value)),
             Value::Null
+            | Value::Decimal(_)
             | Value::Float(_)
             | Value::Vector(_)
             | Value::List(_)

@@ -176,6 +176,10 @@ impl Serialize for DisplayValue<'_> {
                 value.serialize_field("type", "float64")?;
                 value.serialize_field("value", &inner.to_string())?;
             }
+            ValueRef::Decimal(inner) => {
+                value.serialize_field("type", "decimal")?;
+                value.serialize_field("value", &inner.to_string())?;
+            }
             ValueRef::String(inner) => {
                 value.serialize_field("type", "string")?;
                 value.serialize_field("value", inner)?;

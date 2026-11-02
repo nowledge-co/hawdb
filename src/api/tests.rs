@@ -62,6 +62,7 @@ mod comparison_chains;
 mod concurrent_transactions;
 mod crystal_reads;
 mod crystal_source;
+mod decimal;
 mod default_pipeline;
 mod delete_mutations;
 mod descriptor_capacity;

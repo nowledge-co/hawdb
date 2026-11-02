@@ -121,10 +121,7 @@ fn shared_traversal_keeps_filter_parameters_and_cached_source_metadata() {
 fn uniform_representation_preserves_frontend_expression_boundaries() {
     for sql in [
         "SELECT id = 1 FROM items",
-        "SELECT id + 1 FROM items",
-        "SELECT id FROM items WHERE 1 = id",
         "SELECT id FROM items WHERE COALESCE(id, 1) = 2",
-        "SELECT id FROM items WHERE id IN (other)",
         "SELECT id FROM items WHERE TRUE",
         "SELECT id FROM items ORDER BY $1",
         "SELECT id FROM items ORDER BY COALESCE(id, 1)",
@@ -136,6 +133,9 @@ fn uniform_representation_preserves_frontend_expression_boundaries() {
     }
     for sql in [
         "SELECT id FROM items WHERE id = other",
+        "SELECT id + 1 FROM items",
+        "SELECT id FROM items WHERE 1 = id",
+        "SELECT id FROM items WHERE id IN (other)",
         "SELECT COALESCE(id, $1) FROM items WHERE NOT (id IS NULL)",
         "SELECT COUNT(*) FILTER (WHERE active = $1) FROM items",
         "SELECT id FROM items HAVING id = 1",

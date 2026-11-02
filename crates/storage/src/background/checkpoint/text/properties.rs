@@ -83,6 +83,9 @@ impl CheckpointText {
                 self.escaped(if *value { b"b1" } else { b"b0" }, escapes, work)?;
             }
             Value::Int(value) => self.escaped_scalar(format_args!("i{value}"), escapes, work)?,
+            Value::Decimal(value) => {
+                self.escaped_scalar(format_args!("d{value}"), escapes, work)?
+            }
             Value::Float(value) => {
                 self.escaped_scalar(format_args!("f{}", value.to_bits()), escapes, work)?;
             }

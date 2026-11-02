@@ -15,7 +15,6 @@
 """Coverage for the optional `hawdb[pydantic]` extra."""
 
 import datetime
-import decimal
 import enum
 import uuid
 
@@ -203,11 +202,10 @@ def test_params_batch_loads_in_one_statement(db):
     ("value", "path", "kind"),
     [
         (complex(1, 2), "$value", "complex"),
-        (decimal.Decimal("1.10"), "$value", "Decimal"),
         (Color.RED, "$value", "Color"),
-        ([1, {"at": decimal.Decimal("1.10")}], "$value[1].at", "Decimal"),
+        ([1, {"at": complex(1, 2)}], "$value[1].at", "complex"),
     ],
-    ids=["complex", "Decimal", "Enum", "nested-Decimal"],
+    ids=["complex", "Enum", "nested-complex"],
 )
 def test_execute_rejects_unsupported_values_by_path(db, value, path, kind):
     dumped = hawdb.pydantic.params(Listing(code="603122", value=value))

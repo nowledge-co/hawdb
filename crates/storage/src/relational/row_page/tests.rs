@@ -87,6 +87,44 @@ fn row_page_round_trip_is_exact() {
 }
 
 #[test]
+fn decimal_row_page_preserves_raw_scale_and_uses_numeric_key_identity() {
+    let decimal = "9007199254740993.0100"
+        .parse::<hawdb_core::Decimal>()
+        .unwrap();
+    let page = ImmutableRelationalRowPage {
+        generation: 1,
+        source_commit_epoch: 1,
+        page_id: page_id(1),
+        schema_digest: integrity_digest(b"decimal schema").sha256,
+        column_count: 2,
+        rows: vec![RelationalRowPageEntry {
+            primary_key: RelationalKey(vec![RelationalValue::Decimal(decimal)]),
+            row: RelationalRow::new(vec![
+                RelationalValue::Decimal(decimal),
+                RelationalValue::Decimal("0.0000".parse().unwrap()),
+            ]),
+        }],
+    };
+    let limits = RelationalRowPageLimits::default();
+    let encoded = page.encode(limits).unwrap();
+    let decoded = ImmutableRelationalRowPage::decode(&encoded, limits).unwrap();
+    let RelationalValue::Decimal(value) = decoded.rows[0].row.values()[0] else {
+        panic!("native Decimal");
+    };
+    assert_eq!(value.to_le_bytes(), decimal.to_le_bytes());
+    let view = RelationalRowPageView::open(&encoded, limits).unwrap();
+    let key = RelationalKey(vec![RelationalValue::Decimal(
+        "9007199254740993.01".parse().unwrap(),
+    )]);
+    assert_eq!(view.find_row(&key).unwrap(), Some(0));
+    let projected = view.find_projected_row(&key, &[1]).unwrap().unwrap();
+    let RelationalValue::Decimal(zero) = projected.fields[0].value else {
+        panic!("native Decimal");
+    };
+    assert_eq!(zero.to_string(), "0.0000");
+}
+
+#[test]
 fn view_binary_searches_keys_and_decodes_only_requested_fields() {
     let page = page();
     let limits = RelationalRowPageLimits::default();
@@ -495,6 +533,7 @@ fn admitted_owned_and_borrowed_row_copies_preserve_all_scalar_variants_and_lease
             RelationalValue::Boolean(true),
             RelationalValue::BigInt(-7),
             RelationalValue::DoublePrecision(1.5),
+            RelationalValue::Decimal("-1.2300".parse().unwrap()),
             RelationalValue::Text("中".repeat(64 * 1024)),
             RelationalValue::Bytea(vec![7; 128 * 1024]),
             RelationalValue::Uuid(hawdb_core::Uuid::from_bytes([3; 16])),

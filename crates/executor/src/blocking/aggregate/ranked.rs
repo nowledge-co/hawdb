@@ -147,6 +147,7 @@ fn scalar_payload_bytes(value: &Value) -> usize {
         | Value::Bool(_)
         | Value::Int(_)
         | Value::Float(_)
+        | Value::Decimal(_)
         | Value::Uuid(_)
         | Value::Date(_)
         | Value::LocalTime(_)

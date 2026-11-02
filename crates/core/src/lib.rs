@@ -17,12 +17,14 @@ pub mod access_control;
 pub mod cancellation;
 pub mod capability;
 pub mod conversion_function;
+pub mod decimal;
 pub mod error;
 pub mod graph;
 pub mod graph_rag;
 pub mod ids;
 pub mod list_function;
 pub mod logical_type;
+pub mod numeric;
 pub mod projection;
 pub mod regex;
 mod retained_heap;
@@ -44,6 +46,7 @@ pub use cancellation::{
 };
 pub use capability::{RuntimeCapabilities, RuntimeCapability};
 pub use conversion_function::ConversionFunction;
+pub use decimal::{Decimal, DecimalError, DecimalType};
 pub use error::{
     HawDBError, ReadBudgetError, ReadBudgetResource, ResourceBudgetError, ResourceBudgetKind,
     ResourceBudgetScope, Result, StorageFormatError, TransactionRetryError, TransactionRetryReason,

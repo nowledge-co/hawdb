@@ -151,6 +151,52 @@ adaptive buffers below an observed peak while preserving hard root refusal,
 as well as the tie-order and wide-row controls. Test lanes, profiles and deadlines stay
 unchanged; allocation microprobes do not establish end-to-end RSS or latency.
 
+Native Decimal and shared numeric SQL execution (#1419) use the existing core,
+SQL, SQL-syntax, plan-cache, relational, system-SQL, storage, executor and root
+unit owners. Core tests check exact arithmetic, bounded parsing, midpoint-away
+rounding, overflow, numeric identity/order and ordered-key encodings against
+integer/rational comparisons. SQL tests check both frontends, prepared parameters,
+CAST metadata and flat expression depth limits. Relational tests check exact
+index boundaries, integer/Decimal joins, SUM/HAVING and atomic failed UPDATEs.
+Root BIGINT mutation regressions cover NULL propagation, NOT NULL and numeric
+type refusals, and unchanged rows after rejected assignments or overflow.
+Vector scalar projection tests require an explicit DOUBLE fallback cast for
+COALESCE and reject a mixed Decimal/DOUBLE call even on an empty table.
+Native locking tests keep comparison bounds unrounded across both residency
+modes. Serializable tests retain true incompatible-type and volatile-value
+refusals while checking mixed BIGINT/DOUBLE results above 2^53, fail-closed
+cross-domain key capture, and exact integral Decimal-to-BIGINT capture.
+Storage and spill tests check raw scale, malformed/truncated payload rejection,
+page projection and subsequent-record alignment. Cache keys distinguish equal
+numeric values with different scales when cached results retain representation.
+Root `api::tests::decimal` runs persistent SQL in both Materialized and OutOfCore
+modes with demand-paged indexes, plus graph WAL/checkpoint reopen. Graph coverage
+checks Decimal ranges with exact integer bounds, repeated-bound intersection,
+IN, NULL, negation and ORDER BY with scalar/composite indexes in both residency
+modes. Zone maps, source summaries and range-block envelopes must not prune
+matching Decimal rows using incomplete mixed-numeric extrema. Mixed temporal
+and Decimal records pin distinct value kinds and WAL/checkpoint/spill tags.
+Explicit scalar/composite range physical plans check exact Decimal and integer
+bounds plus incomparable Float bounds at each recovery stage, independently of
+cost-based scan choices for properties excluded from histogram collection.
+These tests also cover exact and quoted Decimal schema defaults together with
+main's SQL type aliases/contextual strings, and concurrent secondary-index rekeys
+locking both stored images after Decimal rescaling while allowing disjoint readers.
+These tests do not independently qualify machine power-loss behavior. Replay with
+`cargo test --locked -p hawdb-core -p hawdb-plan-cache -p hawdb-relational
+-p hawdb-storage -p hawdb-executor --lib decimal`,
+`cargo test --locked -p hawdb-sql -p hawdb-sql-syntax -p hawdb-system-sql --lib`,
+and `cargo test --locked -p hawdb --all-features --lib native_decimal`.
+Python parameter tests cover native `decimal.Decimal` and seeded arithmetic
+against an independent `fractions.Fraction` oracle; C JSON tests cover the
+exact `$decimal` marker. Existing binding lanes remain unchanged; retained
+foreign numeric buffers do not gain a Decimal ABI type. Manual Shiro result
+controls distinguish Decimal scale in ordered and bag comparisons, including
+nested lists/maps, while retaining duplicate multiplicities and float bits.
+Replay: `cargo test --locked --manifest-path tools/shiro/Cargo.toml --lib
+decimal_report_preserves_exact_digits_and_scale` and the `comparison` filter.
+These controls remain in the existing local-only Shiro test targets.
+
 Cypher `LOAD CSV` and the type-conversion functions are owned by existing
 targets: `hawdb-core` `conversion_function::tests` (Neo4j conversion rules),
 `hawdb-cypher` `tests::load_csv` and the PEG/reference differential
@@ -662,7 +708,7 @@ legacy document tombstones before reducing the complete pinned source interval.
 | Prow dense analytics: `//:hawdb_unit_analytics_rss_tests` | Persistent graph identity admission, edge streaming and bounded incremental RSS in a fresh process | Separate exclusive target; dense fixture construction is outside the measured child's RSS baseline. |
 | Prow storage crash recovery: `//:hawdb_storage_crash_recovery_tests` | Subprocess termination at persistence boundaries, complete transaction recovery, endpoint integrity and artifact generations | Dedicated job binds evidence to source/toolchain/features. Process termination does not alone establish power-loss safety. |
 | Native bindings: `//bindings/ffi:hawdb_ffi_tests`, `//bindings/go:hawdb_go_tests`, `//bindings/python/...` | C ABI retention, host ownership/errors, Go integration/race checks and Python behavior | Binding-specific PR/mainline workflows; Windows contracts and scheduled qualification are distinct receipts. See workflow definitions for current triggers. |
-| MoonBit Native: `//bindings/moonbit:hawdb_moonbit_tests` (Rust lifecycle + real-engine conformance) | Direct Rust adapter builds against `//:hawdb`; Rust ownership, codec, autocommit/transaction separation, SQL/Cypher, transactions and durability contracts | Native Bindings Bazel Linux/macOS matrix runs the toolchain-free `//bindings/moonbit/native:hawdb_moonbit_rust_tests` on every engine change. `.github/workflows/moonbit-native.yml` runs the `manual`-tagged executable conformance through Bazel on Linux/macOS and through Cargo on Windows, for SDK changes and mainline engine changes; the MoonBit compiler must be on `PATH`. |
+| MoonBit Native: `//bindings/moonbit:hawdb_moonbit_tests` (Rust lifecycle + real-engine conformance) | Direct Rust adapter builds against `//:hawdb`; Rust ownership, codec (including exact Decimal text, malformed-tag refusal and literal marker maps), autocommit/transaction separation, SQL/Cypher, transactions and durability contracts | Native Bindings Bazel Linux/macOS matrix runs the toolchain-free `//bindings/moonbit/native:hawdb_moonbit_rust_tests` on every engine change. `.github/workflows/moonbit-native.yml` runs the `manual`-tagged executable conformance through Bazel on Linux/macOS and through Cargo on Windows, for SDK changes and mainline engine changes; the MoonBit compiler must be on `PATH`. |
 | Python release: `.github/workflows/pypi.yaml` | Released tag/version/main-history agreement, reviewed shared dependency identities, byte-identical sdist lock/profile and tool exclusions, five native wheel builds from that sdist, installed default/Pydantic binding tests, typing/license/metadata payloads and PyPI file hashes | GitHub Release publication or explicit replay of an existing release tag. Linux x86-64/AArch64 use manylinux 2.28; macOS x86-64/AArch64 and Windows x86-64 build natively. Reuses `bindings/python/tests` on CPython 3.11; the final public install smoke is Linux x86-64 with bounded index/CDN retries. No fuzz campaigns or new presubmit test lane. Build cost includes a first release-profile compilation on each platform. See [publishing](../bindings/python/README.md#publishing). |
 | Python dependency lock: `bindings/python/test_check_lock.py` and `check_lock.py` | Reject shared version/source/checksum drift and local engine version mismatch; accept reviewed multiple-version selections and binding-only dependencies | Existing Python Bindings pip job, before its locked wheel build. Replay: `python -m unittest discover -s bindings/python -p test_check_lock.py` and `python bindings/python/check_lock.py` with Python 3.11+. These pure metadata controls do not join the Bazel native-binding test inventory or compile the engine. |
 | Weekly platform and daily Windows abandonment qualification | Supported platform/feature combinations and the complete Windows abandonment/GC fault matrix | Scheduled or explicit workflows. They are not fuzz time budgets. |

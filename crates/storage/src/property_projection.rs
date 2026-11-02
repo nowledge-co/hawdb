@@ -3163,6 +3163,7 @@ fn is_range_value(value: &Value) -> bool {
         value,
         Value::Int(_)
             | Value::Float(_)
+            | Value::Decimal(_)
             | Value::String(_)
             | Value::Date(_)
             | Value::LocalTime(_)
@@ -3266,13 +3267,22 @@ fn range_key_bounds_might_match(
     lower: Option<&(Value, bool)>,
     upper: Option<&(Value, bool)>,
 ) -> bool {
-    // Keys use Value::cmp (all Ints precede Floats), while predicates compare
-    // numeric values across types. A Float maximum cannot bound earlier Ints,
-    // nor can an Int minimum bound later Floats. Composite prefix boundaries
-    // may leave the opposite endpoint unknown, requiring the same caution.
+    // Keys group numeric kinds, while predicates can compare across kinds.
+    // A numeric endpoint bounds a block only when both endpoints prove that
+    // every value belongs to that kind, including clipped composite prefixes.
+    let homogeneous_numeric = matches!(
+        (minimum, maximum),
+        (Some(Value::Int(_)), Some(Value::Int(_)))
+            | (Some(Value::Float(_)), Some(Value::Float(_)))
+            | (Some(Value::Decimal(_)), Some(Value::Decimal(_)))
+    );
     if let Some((lower, inclusive)) = lower
         && let Some(maximum) = maximum
-        && (!matches!(maximum, Value::Float(_)) || matches!(minimum, Some(Value::Float(_))))
+        && (!maximum
+            .as_ref()
+            .logical_type()
+            .is_some_and(|kind| kind.is_numeric())
+            || homogeneous_numeric)
         && let Some(ordering) = comparable_value_ordering(maximum, lower)
         && (ordering.is_lt() || (ordering.is_eq() && !inclusive))
     {
@@ -3280,7 +3290,11 @@ fn range_key_bounds_might_match(
     }
     if let Some((upper, inclusive)) = upper
         && let Some(minimum) = minimum
-        && (!matches!(minimum, Value::Int(_)) || matches!(maximum, Some(Value::Int(_))))
+        && (!minimum
+            .as_ref()
+            .logical_type()
+            .is_some_and(|kind| kind.is_numeric())
+            || homogeneous_numeric)
         && let Some(ordering) = comparable_value_ordering(minimum, upper)
         && (ordering.is_gt() || (ordering.is_eq() && !inclusive))
     {
@@ -4575,6 +4589,9 @@ mod tests {
             Value::Float(f64::NAN),
             Value::String("a".into()),
             Value::String("z".into()),
+            Value::Decimal("-1000.01".parse().unwrap()),
+            Value::Decimal("1.50".parse().unwrap()),
+            Value::Decimal("9007199254740993.01".parse().unwrap()),
         ];
         values.sort();
         values

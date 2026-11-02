@@ -352,7 +352,7 @@ impl ConcurrentDatabaseTransaction {
                 .scalar_type;
                 // Protect the stored new key using assignment coercion. Query
                 // boundaries may deliberately retain extra numeric precision.
-                let value = crate::relational_sql::bind_relational_value(value.clone(), parameters)
+                let value = hawdb_relational::bind_relational_value(value.clone(), parameters)
                     .and_then(|value| {
                         hawdb_relational::coerce_relational_value(value, scalar_type)
                     })?;
@@ -466,7 +466,7 @@ impl ConcurrentDatabaseTransaction {
                                 "lock discovery omitted key column {column}"
                             ))
                         })?;
-                        crate::relational_sql::bind_relational_value(
+                        hawdb_relational::bind_relational_value(
                             SqlValue::Literal(value.clone()),
                             &[],
                         )

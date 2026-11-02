@@ -296,6 +296,7 @@ fn retained_value_heap_bytes(value: &Value) -> Result<usize> {
         | Value::Bool(_)
         | Value::Int(_)
         | Value::Float(_)
+        | Value::Decimal(_)
         | Value::Uuid(_)
         | Value::Date(_)
         | Value::LocalTime(_)
@@ -334,6 +335,7 @@ fn cloned_value_heap_bytes(value: ValueRef<'_>) -> Result<usize> {
         | ValueRef::Bool(_)
         | ValueRef::Int(_)
         | ValueRef::Float(_)
+        | ValueRef::Decimal(_)
         | ValueRef::Uuid(_) => Ok(0),
         ValueRef::Duration(_) => Ok(std::mem::size_of::<hawdb_core::temporal::Duration>()),
     }

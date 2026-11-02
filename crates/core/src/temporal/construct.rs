@@ -209,6 +209,7 @@ pub(crate) fn kind_name(value: &Value) -> &'static str {
         Value::Null => "NULL",
         Value::Bool(_) => "BOOLEAN",
         Value::Int(_) => "INTEGER",
+        Value::Decimal(_) => "DECIMAL",
         Value::Float(_) => "FLOAT",
         Value::String(_) => "STRING",
         Value::Binary(_) => "BINARY",

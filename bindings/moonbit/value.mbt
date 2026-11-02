@@ -8,6 +8,8 @@ pub(all) enum Value {
   Null
   Bool(Bool)
   Int(Int64)
+  // Exact coefficient/scale text, validated by the embedded Rust engine.
+  Decimal(String)
   Float(Double)
   Text(String)
   Binary(Bytes)
@@ -32,6 +34,7 @@ fn temporal_kinds() -> Array[String] {
 fn is_reserved_tag(key : String) -> Bool {
   if key == "$binary" ||
     key == "$uuid" ||
+    key == "$decimal" ||
     key == "$vector" ||
     key == "$map" ||
     key == "$float" {
@@ -104,6 +107,7 @@ fn value_to_json_depth(value : Value, depth : Int) -> Result[Json, HawdbError] {
     Value::Null => Ok(Json::null())
     Value::Bool(v) => Ok(Json::boolean(v))
     Value::Int(v) => Ok(Json::number(0.0, repr=v.to_string()))
+    Value::Decimal(v) => Ok(Json::object({ "$decimal": Json::string(v) }))
     // JSON has no NaN or infinity; the transport tags them explicitly.
     Value::Float(v) =>
       if v != v {
@@ -260,6 +264,11 @@ fn json_to_value_depth(json : Json, depth : Int) -> Result[Value, HawdbError] {
             }
           Some(_) =>
             return Err(HawdbError::Codec("$binary must be a string"))
+          None => ()
+        }
+        match values.get("$decimal") {
+          Some(Json::String(s)) => return Ok(Value::Decimal(s))
+          Some(_) => return Err(HawdbError::Codec("$decimal must be a string"))
           None => ()
         }
         match values.get("$uuid") {
