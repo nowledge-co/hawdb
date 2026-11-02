@@ -16,33 +16,12 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use hawdb::{ConcurrentDatabase, Database, DatabaseConfig, QueryOutput, Result, Value};
+use hawdb_test_contracts::ProjectFixture as Fixture;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::Path;
 use std::time::Duration;
 
 const VALUES: &str = "MATCH (n:Memory) RETURN n.id AS id, n.body AS body ORDER BY id";
-
-struct Fixture(PathBuf);
-
-impl Fixture {
-    fn new() -> Self {
-        static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "hawdb-manual-checkpoint-{}-{}",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed),
-        ));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).unwrap();
-    }
-}
 
 enum Host {
     Ordinary(Box<Database>),
@@ -107,8 +86,8 @@ fn copy_project(source: &Path, target: &Path) {
 }
 
 fn manual(config: DatabaseConfig, concurrent: bool) {
-    let fixture = Fixture::new();
-    let mut db = Database::open_with_config(&fixture.0, config).unwrap();
+    let fixture = Fixture::new("manual-checkpoint");
+    let mut db = Database::open_with_config(fixture.path(), config).unwrap();
     let write = |db: &mut Database, id| {
         db.query_with_params(
             "CREATE (:Memory {id: $id, body: $body})",
@@ -150,10 +129,10 @@ fn manual(config: DatabaseConfig, concurrent: bool) {
 
     // Recover an independent copy while the caller and historical reader are
     // still alive. Closing either handle must not complete an enqueued operation.
-    let copied = Fixture::new();
-    copy_project(&fixture.0, &copied.0);
+    let copied = Fixture::new("manual-checkpoint");
+    copy_project(fixture.path(), copied.path());
     let mut recovered = Database::open_with_config(
-        &copied.0,
+        copied.path(),
         DatabaseConfig {
             read_only: true,
             recovery_mode: hawdb::RecoveryMode::Strict,
@@ -171,7 +150,7 @@ fn manual(config: DatabaseConfig, concurrent: bool) {
     assert_eq!(old.query(VALUES).unwrap().rows, expected(&[1]));
     drop(old);
     drop(host);
-    let mut reopened = Database::open(&fixture.0).unwrap();
+    let mut reopened = Database::open(fixture.path()).unwrap();
     assert_eq!(reopened.query(VALUES).unwrap().rows, expected(&[1, 2]));
 }
 
@@ -233,7 +212,7 @@ fn embedded_handle(
     governor: hawdb::RuntimeGovernor,
 ) -> hawdb::NowledgeMemEmbeddedStoreHandle {
     let options = hawdb::NowledgeMemOpenOptions::graph_only(
-        &root.0,
+        root.path(),
         hawdb::NowledgeMemGraphMode::WritableCutover,
     )
     .with_database_config(config());
@@ -250,7 +229,7 @@ fn embedded_handle(
 
 fn embedded_state_after_reopen(root: &Fixture) -> (u64, Option<u64>, usize) {
     let mut recovered = Database::open_with_config(
-        &root.0,
+        root.path(),
         DatabaseConfig {
             read_only: true,
             recovery_mode: hawdb::RecoveryMode::Strict,
@@ -274,14 +253,14 @@ fn embedded_state_after_reopen(root: &Fixture) -> (u64, Option<u64>, usize) {
 }
 
 fn copied_embedded_state(root: &Fixture) -> (u64, Option<u64>, usize) {
-    let copied = Fixture::new();
-    copy_project(&root.0, &copied.0);
+    let copied = Fixture::new("manual-checkpoint");
+    copy_project(root.path(), copied.path());
     embedded_state_after_reopen(&copied)
 }
 
 #[test]
 fn embedded_checkpoint_is_available_with_background_io_saturated() {
-    let root = Fixture::new();
+    let root = Fixture::new("manual-checkpoint");
     let governor = embedded_governor();
     let handle = embedded_handle(&root, governor.clone());
     let pending = copied_embedded_state(&root);
@@ -325,7 +304,7 @@ fn embedded_checkpoint_is_available_with_background_io_saturated() {
 
 #[test]
 fn embedded_checkpoint_retains_foreground_io_refusal_and_refunds() {
-    let root = Fixture::new();
+    let root = Fixture::new("manual-checkpoint");
     let governor = embedded_governor();
     let handle = embedded_handle(&root, governor.clone());
     let pending = copied_embedded_state(&root);

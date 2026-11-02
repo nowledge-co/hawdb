@@ -755,6 +755,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hawdb-test-contracts"
+version = "0.24.0"
+dependencies = [
+ "hawdb",
+ "hawdb-storage",
+]
+
+[[package]]
 name = "hawdb-vector-projection"
 version = "0.24.0"
 dependencies = [

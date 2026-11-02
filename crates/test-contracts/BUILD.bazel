@@ -1,0 +1,46 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# External contracts keep their existing required root lane. The small fixture
+# ownership test belongs to the ordinary crate lane, without duplicate runs.
+test_suite(
+    name = "presubmit_tests",
+    tests = [":fixture_tests"],
+)
+
+rust_library(
+    name = "hawdb_test_contracts",
+    testonly = True,
+    crate_name = "hawdb_test_contracts",
+    crate_root = "src/lib.rs",
+    srcs = ["src/lib.rs"],
+    edition = "2024",
+)
+
+rust_test(
+    name = "fixture_tests",
+    size = "small",
+    crate = ":hawdb_test_contracts",
+    edition = "2024",
+)
+
+[
+    rust_test(
+        name = "checkpoint_contracts%s_tests" % suffix,
+        # Both original integration carriers used the standard 300s ceiling.
+        timeout = "moderate",
+        tags = ["manual", "exclusive"],
+        args = ["--test-threads=1"],
+        crate_name = "checkpoint_contracts",
+        crate_root = "tests/checkpoint_contracts.rs",
+        srcs = glob(["tests/**/*.rs"]) + ["//:wal_recovery_contract_support"],
+        crate_features = features,
+        edition = "2024",
+        deps = [":hawdb_test_contracts", facade, "//crates/storage:hawdb_storage"],
+    )
+    for suffix, facade, features in [
+        ("", "//:hawdb", ["full"]),
+        ("_minimal", "//:hawdb_minimal", []),
+    ]
+]

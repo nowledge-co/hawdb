@@ -51,6 +51,7 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/plan-cypher",
     "crates/qos",
     "crates/qualification",
+    "crates/test-contracts",
     "crates/query",
     "crates/query-policy",
     "crates/readiness",
@@ -720,6 +721,8 @@ test_suite(
         ":hawdb_search_projection_consumer_tests",
         ":hawdb_search_projection_consumer_minimal_tests",
         ":hawdb_execution_request_contract_tests",
+        ":hawdb_manual_checkpoint_tests",
+        ":hawdb_manual_checkpoint_minimal_tests",
         ":hawdb_process_memory_policy_contract_tests",
         ":hawdb_process_memory_policy_contract_minimal_tests",
         ":hawdb_search_lexical_corpus_qualification_tests",
@@ -744,19 +747,13 @@ rust_test(
     deps = [":hawdb_minimal"],
 )
 
-# Caller-triggered checkpoints are available independently of background support.
+# Public checkpoint contracts share a test-only crate and default binary.
 [
-    rust_test(
+    test_suite(
         name = "hawdb_manual_checkpoint%s_tests" % suffix,
-        crate_root = "tests/manual_checkpoint.rs",
-        srcs = ["tests/manual_checkpoint.rs"],
-        edition = "2024",
-        deps = [facade],
+        tests = ["//crates/test-contracts:checkpoint_contracts%s_tests" % suffix],
     )
-    for suffix, facade in [
-        ("", ":hawdb"),
-        ("_minimal", ":hawdb_minimal"),
-    ]
+    for suffix in ["", "_minimal"]
 ]
 
 # Allocator registration belongs to the external consumer, in both profiles.
@@ -1136,15 +1133,17 @@ rust_binary(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
-rust_test(
+# Preserve the public replay/smoke label without another compiled executable.
+test_suite(
     name = "hawdb_wal_group_commit_recovery_tests",
-    crate_root = "tests/wal_group_commit_recovery.rs",
-    srcs = [
-        "benches/wal_group_commit/recovery.rs",
-        "tests/wal_group_commit_recovery.rs",
-    ],
-    edition = "2024",
-    deps = [":hawdb", "//crates/storage:hawdb_storage"],
+    tests = ["//crates/test-contracts:checkpoint_contracts_tests"],
+)
+
+filegroup(
+    name = "wal_recovery_contract_support",
+    testonly = True,
+    srcs = ["benches/wal_group_commit/recovery.rs"],
+    visibility = ["//crates/test-contracts:__pkg__"],
 )
 
 # This exploratory benchmark is intentionally separate from the routine Linux
