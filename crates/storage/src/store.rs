@@ -723,6 +723,44 @@ struct MutationCommitOptions<'a> {
     mvcc_read_epoch: Option<u64>,
     captured_graph_ops: Option<&'a mut Vec<WalOp>>,
     prepared_wal: Option<crate::wal::binary::PreparedWalBatch>,
+    /// Receives the unconsumed inputs when the commit fits an empty
+    /// relational live overlay but not its remaining headroom.
+    retain_on_live_headroom: Option<&'a mut Option<RetainedLiveHeadroomCommit>>,
+}
+
+/// Inputs of a commit rejected before WAL append only for live-overlay
+/// headroom. Relational and append records were removed from `ops`.
+struct RetainedLiveHeadroomCommit {
+    shortfall: hawdb_storage::relational::RelationalLiveOverlayShortfall,
+    ops: Vec<WalOp>,
+    rows: Vec<BTreeMap<String, Value>>,
+    relational: Option<RelationalTransaction>,
+    append: Option<AppendTransaction>,
+}
+
+/// Outcome of a commit that may first need the relational live overlay
+/// drained by a checkpoint (#1479).
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum LiveHeadroomCommit<T> {
+    Committed(MutationSummary),
+    /// The commit fits an empty overlay but not the remaining headroom.
+    /// Nothing was applied: `inputs` can be committed once a drain made room,
+    /// and `error` is the pre-WAL rejection to report without one.
+    NeedsHeadroom {
+        shortfall: hawdb_storage::relational::RelationalLiveOverlayShortfall,
+        inputs: T,
+        error: HawDBError,
+    },
+}
+
+/// Everything one explicit transaction commit consumes.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct PreparedTransactionCommit {
+    pub transaction: PreparedGraphMutationTransaction,
+    pub relational: RelationalTransaction,
+    pub append: AppendTransaction,
 }
 
 /// An isolated graph mutation workspace for a single explicit transaction.

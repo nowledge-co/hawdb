@@ -24,6 +24,7 @@ use hawdb_qos::{
 use hawdb_storage::background::{
     CheckpointOperationError, CheckpointWorkContext, CheckpointWorkError,
 };
+use hawdb_storage::relational::{RelationalLiveOverlayKind, RelationalLiveOverlayShortfall};
 use hawdb_storage::store::{
     CheckpointCandidate, CheckpointDebtSnapshot, CheckpointReclamationContext,
     CheckpointSourceIdentity,
@@ -267,6 +268,10 @@ pub(super) struct State {
     operation_generation: Option<u64>,
     retirement_deferrals: u64,
     debt: Option<CheckpointDebtSnapshot>,
+    /// What the waiting frontend writer's next commit adds to a relational
+    /// live overlay that cannot hold it beside the retained overlay (#1479).
+    /// Set only while that writer waits in `lock_frontend_for_headroom`.
+    headroom_demand: Option<RelationalLiveOverlayShortfall>,
     selected: Option<Selected>,
     retired: Option<Retired>,
     task: Option<RuntimeTaskContext>,
@@ -400,8 +405,59 @@ impl Control {
     }
 
     pub(super) fn lock_frontend(&self) -> Result<MutexGuard<'_, State>> {
+        self.lock_frontend_for_headroom(None)
+    }
+
+    /// Acquires the frontend publication barrier. With `demand`, the writer's
+    /// next commit does not fit beside the retained live overlay: the owner
+    /// is asked to drain it, and the writer waits for that drain under the
+    /// same bounded waits as live-overlay capacity. It waits here, before it
+    /// holds the runtime or this barrier, so the drain can complete (#1479).
+    pub(super) fn lock_frontend_for_headroom(
+        &self,
+        demand: Option<RelationalLiveOverlayShortfall>,
+    ) -> Result<MutexGuard<'_, State>> {
         self.ensure_healthy()?;
         let mut state = self.lock()?;
+        state.headroom_demand = demand;
+        match self.wait_frontend(state) {
+            Ok(mut state) => {
+                state.headroom_demand = None;
+                Ok(state)
+            }
+            Err(error) => {
+                if let Ok(mut state) = self.lock() {
+                    state.headroom_demand = None;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Whether a live-overlay headroom shortfall can be resolved by waiting:
+    /// a healthy automatic owner can start a drain. Builds and handles
+    /// without background maintenance fail closed instead.
+    pub(super) fn can_drain_for_headroom(&self) -> bool {
+        if self.failed.load(Ordering::Acquire) {
+            return false;
+        }
+        self.lock().is_ok_and(|state| {
+            state.enabled
+                && !state.stopping
+                && state.suspensions == 0
+                && !state.report.operation_retry_exhausted
+        })
+    }
+
+    pub(super) fn completed_checkpoints(&self) -> u64 {
+        self.lock()
+            .map_or(0, |state| state.report.completed_checkpoints)
+    }
+
+    fn wait_frontend<'a>(
+        &'a self,
+        mut state: MutexGuard<'a, State>,
+    ) -> Result<MutexGuard<'a, State>> {
         let observed_attempts = state.attempts_started;
         let observed_retirement_deferrals = state.retirement_deferrals;
         let mut notified_owner = false;
@@ -1166,12 +1222,14 @@ fn run(
                     control.notify_all();
                     continue;
                 }
+                // A writer that declared a commit too large for the remaining
+                // live-overlay headroom also makes the source due (#1479).
                 let due = state.latest.as_ref().is_some_and(|source| {
                     due(source, max_age)
                         || state.debt.is_some_and(|debt| {
                             !debt.read_only
                                 && debt.commit_epoch > debt.checkpoint_commit_epoch
-                                && soft_pressure(debt)
+                                && (soft_pressure(debt) || headroom_demand_short(&state))
                         })
                 });
                 if state.phase == Phase::Idle
@@ -1706,6 +1764,9 @@ fn run(
 }
 
 fn needs_headroom(state: &State) -> bool {
+    if headroom_demand_short(state) {
+        return true;
+    }
     let Some(debt) = state.debt else {
         return false;
     };
@@ -1723,6 +1784,9 @@ fn needs_headroom(state: &State) -> bool {
 }
 
 fn preparation_needs_capacity(state: &State) -> bool {
+    if headroom_demand_short(state) {
+        return true;
+    }
     let Some(debt) = state.debt else {
         return false;
     };
@@ -1756,6 +1820,28 @@ fn live_overlay_needs_capacity(pairs: [(u64, Option<u64>); 4]) -> bool {
         .any(|(retained, limit)| limit.is_some_and(|limit| near_limit(retained, limit, limit / 10)))
 }
 
+/// The waiting writer's declared commit does not fit beside what the serving
+/// live overlay retains now. Only a drain empties that overlay, so this is
+/// checkpoint pressure regardless of the soft ratio. An adopted drain makes
+/// it false again; a commit that can never fit is never declared.
+fn headroom_demand_short(state: &State) -> bool {
+    let (Some(debt), Some(demand)) = (state.debt, state.headroom_demand) else {
+        return false;
+    };
+    let live = debt.relational_live;
+    let [row_entries, row_bytes, index_entries, index_bytes] = live.admission_pairs();
+    let (entries, bytes) = match demand.overlay {
+        RelationalLiveOverlayKind::Row => (row_entries, row_bytes),
+        RelationalLiveOverlayKind::Index => (index_entries, index_bytes),
+    };
+    let exceeds = |(retained, limit): (u64, Option<u64>), commit: usize| {
+        limit.is_some_and(|limit| {
+            retained.saturating_add(u64::try_from(commit).unwrap_or(u64::MAX)) > limit
+        })
+    };
+    exceeds(entries, demand.commit_entries) || exceeds(bytes, demand.commit_bytes)
+}
+
 fn near_limit(bytes: u64, limit: u64, reserve: u64) -> bool {
     let defer = (u128::from(limit)
         * u128::from(hawdb_storage::pressure::STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION)
@@ -1768,7 +1854,7 @@ fn pressure_pending(state: &State) -> bool {
         && state.debt.is_some_and(|debt| {
             !debt.read_only
                 && debt.commit_epoch > debt.checkpoint_commit_epoch
-                && soft_pressure(debt)
+                && (soft_pressure(debt) || headroom_demand_short(state))
         })
 }
 

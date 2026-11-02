@@ -49,9 +49,110 @@ pub struct RelationalRowPageReadViewIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalRowPageLiveError {
     Admission(String),
+    /// The commit fits in an empty overlay but not in the remaining headroom.
+    /// A drain empties the overlay, so the same commit can be admitted after
+    /// one. Nothing was applied.
+    Headroom(RelationalLiveOverlayShortfall),
     Corrupt(String),
-    RequiresCheckpoint { tables: Vec<String> },
+    RequiresCheckpoint {
+        tables: Vec<String>,
+    },
     Invalidated(String),
+}
+
+/// Which bounded relational live overlay a commit is admitted into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationalLiveOverlayKind {
+    /// Row overlay: entries and resident bytes.
+    Row,
+    /// Authoritative index overlay: entries and encoded bytes.
+    Index,
+}
+
+impl fmt::Display for RelationalLiveOverlayKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Row => "row",
+            Self::Index => "index",
+        })
+    }
+}
+
+/// A staged commit that its live overlay can hold only after a drain.
+///
+/// `commit_*` is what the commit adds, `retained_*` what the serving overlay
+/// already holds, and `max_*` the admission envelope. The commit alone fits
+/// the envelope; the sum does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelationalLiveOverlayShortfall {
+    pub overlay: RelationalLiveOverlayKind,
+    pub commit_entries: usize,
+    pub commit_bytes: usize,
+    pub retained_entries: usize,
+    pub retained_bytes: usize,
+    pub max_entries: usize,
+    pub max_bytes: usize,
+}
+
+impl RelationalLiveOverlayShortfall {
+    /// Classifies an admission that does not fit: `Ok(Some)` when an empty
+    /// overlay would hold the commit, `Err` when no drain can make room.
+    pub fn classify(
+        overlay: RelationalLiveOverlayKind,
+        commit: (usize, usize),
+        retained: (usize, usize),
+        limits: (usize, usize),
+    ) -> Result<Option<Self>, String> {
+        let unit = match overlay {
+            RelationalLiveOverlayKind::Row => "resident",
+            RelationalLiveOverlayKind::Index => "encoded",
+        };
+        if commit.0 > limits.0 || commit.1 > limits.1 {
+            return Err(format!(
+                "a single commit adds {} entries/{} {unit} bytes to the live {overlay} overlay, \
+                 exceeding its limits {}/{} even when empty; split it into smaller commits",
+                commit.0, commit.1, limits.0, limits.1
+            ));
+        }
+        let fits = |(retained, commit, limit): (usize, usize, usize)| {
+            retained
+                .checked_add(commit)
+                .is_some_and(|total| total <= limit)
+        };
+        if fits((retained.0, commit.0, limits.0)) && fits((retained.1, commit.1, limits.1)) {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            overlay,
+            commit_entries: commit.0,
+            commit_bytes: commit.1,
+            retained_entries: retained.0,
+            retained_bytes: retained.1,
+            max_entries: limits.0,
+            max_bytes: limits.1,
+        }))
+    }
+}
+
+impl fmt::Display for RelationalLiveOverlayShortfall {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let unit = match self.overlay {
+            RelationalLiveOverlayKind::Row => "resident",
+            RelationalLiveOverlayKind::Index => "encoded",
+        };
+        write!(
+            formatter,
+            "live {} overlay would retain {} entries/{} {unit} bytes, exceeding limits {}/{} \
+             (the commit adds {} entries/{} bytes; a checkpoint must drain the overlay first)",
+            self.overlay,
+            self.retained_entries.saturating_add(self.commit_entries),
+            self.retained_bytes.saturating_add(self.commit_bytes),
+            self.max_entries,
+            self.max_bytes,
+            self.commit_entries,
+            self.commit_bytes,
+        )
+    }
 }
 
 impl fmt::Display for RelationalRowPageLiveError {
@@ -61,6 +162,12 @@ impl fmt::Display for RelationalRowPageLiveError {
                 write!(
                     formatter,
                     "relational row live-view admission failed: {message}"
+                )
+            }
+            Self::Headroom(shortfall) => {
+                write!(
+                    formatter,
+                    "relational row live-view admission failed: {shortfall}"
                 )
             }
             Self::Corrupt(message) => {
@@ -268,10 +375,21 @@ impl RelationalRowPageLiveOverlay {
                 )
             })?;
         if entry_count > limits.max_entries.get() || resident_bytes > limits.max_bytes.get() {
-            return Err(RelationalRowPageLiveError::Admission(format!(
-                "live row overlay would retain {entry_count} entries/{resident_bytes} resident bytes, exceeding limits {}/{}",
-                limits.max_entries, limits.max_bytes
-            )));
+            return Err(
+                match RelationalLiveOverlayShortfall::classify(
+                    RelationalLiveOverlayKind::Row,
+                    (changes.len(), capture_resident_bytes),
+                    (self.entry_count, self.resident_bytes),
+                    (limits.max_entries.get(), limits.max_bytes.get()),
+                ) {
+                    Ok(Some(shortfall)) => RelationalRowPageLiveError::Headroom(shortfall),
+                    Ok(None) => RelationalRowPageLiveError::Admission(format!(
+                        "live row overlay would retain {entry_count} entries/{resident_bytes} resident bytes, exceeding limits {}/{}",
+                        limits.max_entries, limits.max_bytes
+                    )),
+                    Err(message) => RelationalRowPageLiveError::Admission(message),
+                },
+            );
         }
         if changes.is_empty() {
             return Ok(self.clone());
@@ -1292,10 +1410,12 @@ mod tests {
             max_entries: NonZeroUsize::new(1).unwrap(),
             max_bytes: NonZeroUsize::new(encoded_bytes).unwrap(),
         };
+        // A commit the empty overlay cannot hold is never deferred to a drain.
         assert!(matches!(
             RelationalRowPageLiveOverlay::empty().append(2, capture(changes), limits),
             Err(RelationalRowPageLiveError::Admission(reason))
-                if reason.contains("resident bytes")
+                if reason.contains(&format!("a single commit adds 1 entries/{resident_bytes} resident bytes"))
+                    && reason.contains(&format!("limits 1/{encoded_bytes} even when empty"))
         ));
     }
 
@@ -1309,10 +1429,33 @@ mod tests {
         let overlay = RelationalRowPageLiveOverlay::empty()
             .append(2, first, limits)
             .unwrap();
-        let error = overlay
-            .append(3, capture(vec![change(2, Some("two"))]), limits)
-            .unwrap_err();
-        assert!(matches!(error, RelationalRowPageLiveError::Admission(_)));
+        let second = capture(vec![change(2, Some("two"))]);
+        let RelationalRowChangeCapture::Captured {
+            changes,
+            encoded_bytes,
+        } = &second
+        else {
+            unreachable!()
+        };
+        let second_bytes = validate_capture(changes, *encoded_bytes).unwrap();
+        let error = overlay.append(3, second, limits).unwrap_err();
+        // It fits the empty overlay, so only the remaining headroom rejects
+        // it: a drain can make room for the same commit (#1479).
+        assert_eq!(
+            error,
+            RelationalRowPageLiveError::Headroom(RelationalLiveOverlayShortfall {
+                overlay: RelationalLiveOverlayKind::Row,
+                commit_entries: 1,
+                commit_bytes: second_bytes,
+                retained_entries: 1,
+                retained_bytes: overlay.resident_bytes,
+                max_entries: 1,
+                max_bytes: 4096,
+            })
+        );
+        assert!(error
+            .to_string()
+            .contains("live row overlay would retain 2 entries"));
         assert_eq!(overlay.entry_count, 1);
         assert_eq!(overlay.batch_count, 1);
         assert_eq!(

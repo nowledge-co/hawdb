@@ -818,11 +818,19 @@ impl Database {
             )?;
             let summary = {
                 super::query_runtime::query_runtime_checkpoint(task_context)?;
-                let mut branch_runtime_access = self.runtime.get_mut()?;
-                let branch_runtime = &mut *branch_runtime_access;
-                branch_runtime.store.commit_relational_transaction(
-                    &mut branch_runtime.catalog,
+                // Waits for a live-overlay drain first when the statement
+                // does not fit beside the retained overlay (#1479).
+                self.runtime.commit_with_live_headroom(
                     compiled.transaction,
+                    task_context,
+                    |branch_runtime, transaction| {
+                        branch_runtime
+                            .store
+                            .commit_relational_transaction_with_live_headroom(
+                                &mut branch_runtime.catalog,
+                                transaction,
+                            )
+                    },
                 )
             }?;
             self.complete_required_relational_row_checkpoint("SQL commit")?;

@@ -112,7 +112,9 @@
 
 - Keep checkpoint headroom timing/phase tests in the required isolated
   `//:hawdb_unit_checkpoint_headroom_tests` lane, using the ordinary checked root
-  binary. Joined-read default/minimal targets shard the complete discovered case
+  binary. Whole-envelope large-commit cases (`relational_live_overlay::large_commit`)
+  run in the separate `//:hawdb_unit_checkpoint_large_commit_tests` lane so the
+  headroom lane stays within its deadline. Joined-read default/minimal targets shard the complete discovered case
   inventory over one executable per mode; retain every scenario and refuse empty
   shards. See `docs/TEST_INDEX.md` for scheduling evidence and replay.
 

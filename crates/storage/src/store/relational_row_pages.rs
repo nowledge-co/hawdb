@@ -883,6 +883,7 @@ impl GraphStore {
                     )))
                 }
                 RelationalRowPageLiveError::Admission(_)
+                | RelationalRowPageLiveError::Headroom(_)
                 | RelationalRowPageLiveError::Invalidated(_) => {
                     Err(crate::error::HawDBError::Storage(format!(
                         "canonical relational row view rejected commit {next_epoch} before WAL append: {}",
@@ -900,6 +901,44 @@ impl GraphStore {
                 self.relational_row_pages.recovery_status
             ))),
         }
+    }
+
+    /// The live-overlay shortfall when headroom alone rejects a staged commit:
+    /// every failing required publication fits its empty overlay, so a drain
+    /// can make room for the same commit (#1479).
+    pub(super) fn relational_live_headroom_shortfall(
+        &self,
+        index: &Option<
+            Result<
+                Arc<hawdb_storage::relational_index_view::RelationalIndexReadView>,
+                hawdb_storage::relational::RelationalIndexLiveUnavailable,
+            >,
+        >,
+        rows: &Option<Result<Arc<RelationalRowPageReadView>, RelationalRowLiveUnavailable>>,
+    ) -> Option<hawdb_storage::relational::RelationalLiveOverlayShortfall> {
+        let index = if self
+            .relational_index_shadow
+            .mode
+            .requires_authoritative_indexes()
+        {
+            match index {
+                Some(Err(unavailable)) => Some(unavailable.shortfall?),
+                _ => None,
+            }
+        } else {
+            // A non-authoritative index view degrades instead of rejecting.
+            None
+        };
+        let rows = match rows {
+            Some(Err(unavailable)) => match &unavailable.error {
+                RelationalRowPageLiveError::Headroom(shortfall) => Some(*shortfall),
+                RelationalRowPageLiveError::RequiresCheckpoint { .. } => None,
+                _ => return None,
+            },
+            _ => None,
+        };
+        // Row admission is the larger envelope; report it when both fall short.
+        rows.or(index)
     }
 
     pub(super) fn publish_relational_row_live_view(

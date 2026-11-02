@@ -63,6 +63,7 @@ if [[ "${1:-}" == --list ]]; then
       echo 'api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay: test'
     fi
   fi
+  echo 'api::automatic_checkpoint::tests::relational_live_overlay::large_commit::owned: test'
   if [[ "${PARTITION_PROBE_OVERLAP:-0}" == 1 ]]; then
     echo 'analytics::overlap: test'
     echo 'api::tests::query_execution::analytics::overlap: test'
@@ -85,7 +86,7 @@ exit "${PARTITION_PROBE_EXIT:-0}"
 EOF
 chmod +x "${fixture}/binary"
 
-for partition in general concurrent checkpoint_headroom checkpoint_lifecycle analytics analytics_core analytics_core_general analytics_identity analytics_rss recovery; do
+for partition in general concurrent checkpoint_headroom checkpoint_lifecycle checkpoint_large_commit analytics analytics_core analytics_core_general analytics_identity analytics_rss recovery; do
   "${runner}" "${fixture}/binary" "${partition}" custom_filter --exact --skip user_skip
   cp "${PARTITION_PROBE_ARGS}" "${fixture}/args.${partition}"
   python3 - "${PARTITION_PROBE_ARGS}" "${partition}" <<'PY'
@@ -117,6 +118,9 @@ owners = {
         "api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints",
         "api::automatic_checkpoint::tests::relational_live_overlay::steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay",
         "api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay",
+    },
+    "checkpoint_large_commit": {
+        "api::automatic_checkpoint::tests::relational_live_overlay::large_commit::owned",
     },
 }
 all_names = set().union(*owners.values())
@@ -194,6 +198,7 @@ names = {
     "api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints",
     "api::automatic_checkpoint::tests::relational_live_overlay::steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay",
     "api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay",
+    "api::automatic_checkpoint::tests::relational_live_overlay::large_commit::owned",
 }
 
 def selected(partition):
@@ -202,7 +207,7 @@ def selected(partition):
     return names - skips
 
 leaves = [selected(name) for name in [
-    "general", "concurrent", "checkpoint_headroom", "checkpoint_lifecycle", "analytics_core_general", "analytics_rss", "recovery"
+    "general", "concurrent", "checkpoint_headroom", "checkpoint_lifecycle", "checkpoint_large_commit", "analytics_core_general", "analytics_rss", "recovery"
 ]]
 assert set().union(*leaves) == names
 assert sum(map(len, leaves)) == len(names)

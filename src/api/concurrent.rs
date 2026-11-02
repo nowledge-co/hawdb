@@ -1022,6 +1022,7 @@ impl ConcurrentDatabaseTransaction {
                         &mut state,
                         prepared,
                         allow_stale_rebase,
+                        task_context.as_ref(),
                     )?;
                     let output = result.output.clone();
                     *result_slot.lock().map_err(|_| {

@@ -35,6 +35,14 @@ impl RelationalTransactionRowView {
         view: Arc<RelationalRowPageReadView>,
         limits: RelationalRowChangeCaptureLimits,
     ) -> Self {
+        // The pinned committed overlay is shared, not retained by this
+        // transaction: only its own changes count against the envelope.
+        // Whether they fit next to the committed overlay is decided at commit,
+        // where a drain can make room first (#1479).
+        let limits = RelationalRowChangeCaptureLimits {
+            max_entries: limits.max_entries.saturating_add(view.live_entry_count()),
+            max_bytes: limits.max_bytes.saturating_add(view.live_resident_bytes()),
+        };
         Self { view, limits }
     }
 
@@ -71,6 +79,9 @@ fn map_transaction_row_live_error(error: RelationalRowPageLiveError) -> Relation
     match error {
         RelationalRowPageLiveError::Admission(message)
         | RelationalRowPageLiveError::Invalidated(message) => RelationalError::Admission(message),
+        RelationalRowPageLiveError::Headroom(shortfall) => {
+            RelationalError::Admission(shortfall.to_string())
+        }
         RelationalRowPageLiveError::RequiresCheckpoint { tables } => {
             RelationalError::Admission(format!(
                 "transaction-private row overlay requires a canonical checkpoint for tables {}",

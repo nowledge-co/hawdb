@@ -733,6 +733,9 @@ impl RelationalIndexShadowState {
         >,
     > {
         let view = self.current_read_view(current_epoch)?;
+        let shortfall = capture.as_ref().and_then(|capture| {
+            view.live_headroom_shortfall(next_epoch, capture, self.live_limits)
+        });
         Some(
             view.advance(next_epoch, capture, self.live_limits)
                 .map(std::sync::Arc::new)
@@ -740,6 +743,7 @@ impl RelationalIndexShadowState {
                     identity: view.identity(),
                     failed_commit_epoch: next_epoch,
                     reason,
+                    shortfall,
                 }),
         )
     }
@@ -750,6 +754,9 @@ pub struct RelationalIndexLiveUnavailable {
     pub identity: crate::relational_index_view::RelationalIndexReadViewIdentity,
     pub failed_commit_epoch: u64,
     pub reason: String,
+    /// Set when only the remaining headroom, not the envelope, rejected the
+    /// commit: a drain can make room for it (#1479).
+    pub shortfall: Option<super::RelationalLiveOverlayShortfall>,
 }
 
 #[derive(Debug)]

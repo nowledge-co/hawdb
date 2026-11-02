@@ -23,10 +23,38 @@ overlay (the catch-up suffix lives in the disk-backed recovery delta), so the
 next trigger needs another soft-ratio worth of commits. At the last tenth of
 capacity before the 90% defer threshold, writers wait for the running drain as
 described below rather than reaching the envelope. The envelope remains a hard
-pre-WAL admission bound: a single commit larger than the remaining headroom, a
-parked or denied owner, or a build without background maintenance is still
-rejected before WAL append, with committed data unchanged; the synchronous
-manual checkpoint then drains the overlay.
+pre-WAL admission bound, with committed data unchanged on rejection.
+
+A single commit larger than the remaining headroom drains first
+([#1479](https://github.com/nowledge-co/hawdb/issues/1479)). Live admission
+classifies a commit that does not fit. A commit that exceeds the envelope by
+itself (entries or bytes, or a row capture beyond the capture limits) can never
+fit; it is rejected before WAL append with an error naming the limits and the
+commit size. A commit that fits an empty overlay but not the remaining headroom
+is rejected before WAL append with nothing applied, and the store hands back its
+unconsumed inputs: the prepared transaction or statement, its relational and
+append writes, and the declared size (entries and bytes it adds). The writer
+releases the runtime and the publication barrier, then re-enters the frontend
+barrier with that declared size. While the retained overlay plus the declared
+size exceeds the envelope, the owner treats it as checkpoint pressure, even below
+the soft ratio, and the writer waits under the existing bounded live-overlay
+capacity waits: a fence until an idle owner starts the drain, then the
+capacity wait while it prepares (renewed by builder progress or publication,
+`BranchBusy` after 5 s without progress). It then adopts the drained generation
+and commits the same inputs, which stage again against the new base. The wait
+happens before the writer holds the runtime or the barrier, so the drain can
+capture, publish and hand off; on a concurrent handle it holds only the commit
+sequencer, which the owner never takes, so later writers queue behind it in
+order and readers keep their published views. The task context is checked
+before each retry, and a further retry needs a newly completed checkpoint. A parked,
+suspended, stopped or exhausted owner, or a build or handle without background
+maintenance, fails closed with the same pre-WAL rejection, which states the
+commit size and that a checkpoint must drain the overlay first; the synchronous
+manual checkpoint then drains it. A transaction-private row view charges only the
+transaction's own changes, so the commit, not a statement, decides headroom.
+Explicit transaction commits (on a database or a concurrent handle) and
+autocommit SQL statements take this path; other write paths keep the plain
+pre-WAL rejection.
 
 The row debt is base-relative, not only the live overlay
 ([#1464](https://github.com/nowledge-co/hawdb/issues/1464)). A drain captures

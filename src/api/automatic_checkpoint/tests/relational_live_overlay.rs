@@ -20,6 +20,8 @@ use hawdb_storage::relational::{
     DEFAULT_MAX_RELATIONAL_ROW_CHANGES, DEFAULT_MAX_RELATIONAL_ROW_CHANGE_BYTES,
 };
 
+mod large_commit;
+
 const ROWS: i64 = 512;
 const BODY_BYTES: usize = 1024;
 

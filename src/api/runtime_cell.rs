@@ -28,8 +28,10 @@ use super::{
     OptimizerPlanningCache, PlanCache, ReaderPins, SharedState, TelemetrySink,
 };
 use crate::error::{HawDBError, Result};
+use crate::store::LiveHeadroomCommit;
 use hawdb_storage::branch_project::CapturedProject;
 use hawdb_storage::file_descriptors::{FileDescriptorMetrics, FileOpenContext};
+use hawdb_storage::relational::RelationalLiveOverlayShortfall;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -238,6 +240,75 @@ impl BranchRuntimeCell {
             publication,
             control: &self.publication,
         })
+    }
+
+    /// Like [`Self::get_mut`], but first waits for the automatic owner to
+    /// drain a live overlay that cannot hold `demand` beside what it retains.
+    fn get_mut_for_headroom(
+        &mut self,
+        demand: Option<RelationalLiveOverlayShortfall>,
+    ) -> Result<AdmittedBranchRuntimeMut<'_>> {
+        self.get()?;
+        let mut publication = if self.needs_publication_barrier() {
+            Some(self.publication.lock_frontend_for_headroom(demand)?)
+        } else {
+            None
+        };
+        let mut runtime = self.admitted.write(&self.publication)?;
+        if let Some(state) = &mut publication {
+            self.publication.adopt(state, &mut runtime.store)?;
+        }
+        Ok(AdmittedBranchRuntimeMut {
+            runtime,
+            publication,
+            control: &self.publication,
+        })
+    }
+
+    /// Commits `inputs` through `commit`. A commit that fits an empty
+    /// relational live overlay but not its remaining headroom is rejected
+    /// before WAL append with nothing applied; it releases the runtime and
+    /// the publication barrier, declares its size, waits there for the
+    /// automatic owner's drain, then commits the same inputs again (#1479).
+    ///
+    /// The wait reuses the bounded live-overlay capacity waits. It ends with
+    /// the original rejection when no owner can drain (no background
+    /// maintenance, a stopped or exhausted owner) or a wait completed no
+    /// checkpoint, and with `BranchBusy` when the drain stops progressing.
+    pub(super) fn commit_with_live_headroom<I>(
+        &mut self,
+        mut inputs: I,
+        task_context: Option<&hawdb_core::RuntimeTaskContext>,
+        mut commit: impl FnMut(&mut AdmittedBranchRuntime, I) -> Result<LiveHeadroomCommit<I>>,
+    ) -> Result<crate::store::MutationSummary> {
+        let mut demand = None;
+        let mut observed_checkpoints = None;
+        loop {
+            let outcome = {
+                let mut access = self.get_mut_for_headroom(demand)?;
+                commit(&mut access, inputs)
+            }?;
+            match outcome {
+                LiveHeadroomCommit::Committed(summary) => return Ok(summary),
+                LiveHeadroomCommit::NeedsHeadroom {
+                    shortfall,
+                    inputs: retained,
+                    error,
+                } => {
+                    let completed = self.publication.completed_checkpoints();
+                    if !self.needs_publication_barrier()
+                        || !self.publication.can_drain_for_headroom()
+                        || observed_checkpoints == Some(completed)
+                    {
+                        return Err(error);
+                    }
+                    super::query_runtime::query_runtime_checkpoint(task_context)?;
+                    observed_checkpoints = Some(completed);
+                    demand = Some(shortfall);
+                    inputs = retained;
+                }
+            }
+        }
     }
 
     pub(super) fn get_read(&mut self) -> Result<AdmittedBranchRuntimeRead<'_>> {

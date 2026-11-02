@@ -139,12 +139,13 @@ pub use row_page::{
     relational_row_delta_manifest_generation_file, relational_row_delta_run_file,
     relational_row_page_artifact_file, relational_row_page_manifest_generation_file,
     relational_row_page_root_descriptor_file, relational_row_page_root_key_file,
-    ImmutableRelationalRowPage, RelationalProjectedField, RelationalProjectedFieldRef,
-    RelationalProjectedRow, RelationalProjectedRowRef, RelationalProjectedRowView,
-    RelationalRowDeltaBaseBinding, RelationalRowDeltaBuilder, RelationalRowDeltaConfig,
-    RelationalRowDeltaError, RelationalRowDeltaGeneration, RelationalRowDeltaManifest,
-    RelationalRowDeltaPublicationPhase, RelationalRowDeltaReadReport, RelationalRowDeltaReader,
-    RelationalRowDeltaReport, RelationalRowDeltaTableMetadata, RelationalRowLiveUnavailable,
+    ImmutableRelationalRowPage, RelationalLiveOverlayKind, RelationalLiveOverlayShortfall,
+    RelationalProjectedField, RelationalProjectedFieldRef, RelationalProjectedRow,
+    RelationalProjectedRowRef, RelationalProjectedRowView, RelationalRowDeltaBaseBinding,
+    RelationalRowDeltaBuilder, RelationalRowDeltaConfig, RelationalRowDeltaError,
+    RelationalRowDeltaGeneration, RelationalRowDeltaManifest, RelationalRowDeltaPublicationPhase,
+    RelationalRowDeltaReadReport, RelationalRowDeltaReader, RelationalRowDeltaReport,
+    RelationalRowDeltaTableMetadata, RelationalRowLiveUnavailable,
     RelationalRowPageArtifactMetadata, RelationalRowPageBootstrap,
     RelationalRowPageBootstrapReport, RelationalRowPageCheckpointError,
     RelationalRowPageCumulativeReadRemaining, RelationalRowPageCumulativeReadReport,
@@ -9359,13 +9360,25 @@ fn capture_relational_row_changes_with_allocations(
             let Some(change_bytes) =
                 estimated_row_change_encoding_bytes_parts(table, primary_key, next_row)
             else {
-                return Ok(row_capture_limit_invalidated(limits));
+                return Ok(row_capture_limit_invalidated(
+                    limits,
+                    changes.len() + 1,
+                    encoded_bytes,
+                ));
             };
             let Some(next_bytes) = encoded_bytes.checked_add(change_bytes) else {
-                return Ok(row_capture_limit_invalidated(limits));
+                return Ok(row_capture_limit_invalidated(
+                    limits,
+                    changes.len() + 1,
+                    encoded_bytes,
+                ));
             };
             if changes.len() >= limits.max_entries.get() || next_bytes > limits.max_bytes.get() {
-                return Ok(row_capture_limit_invalidated(limits));
+                return Ok(row_capture_limit_invalidated(
+                    limits,
+                    changes.len() + 1,
+                    next_bytes,
+                ));
             }
             let table = match allocations {
                 Some(context) => context
@@ -9529,12 +9542,17 @@ fn estimated_replay_access_encoding_bytes(
     FIXED_BYTES.checked_add(table.len())?.checked_add(key_bytes)
 }
 
+/// A single commit whose row changes reach `entries`/`bytes` (at least) cannot
+/// be captured, so no drain can make room for it.
 fn row_capture_limit_invalidated(
     limits: RelationalRowChangeCaptureLimits,
+    entries: usize,
+    bytes: usize,
 ) -> RelationalRowChangeCapture {
     RelationalRowChangeCapture::Invalidated {
         reason: format!(
-            "relational row WAL delta cannot be encoded within capture limits: max_entries={}, max_bytes={}",
+            "relational row WAL delta cannot be encoded within capture limits: max_entries={}, max_bytes={}; \
+             a single commit changes at least {entries} rows/{bytes} encoded bytes, so split it into smaller commits",
             limits.max_entries, limits.max_bytes
         ),
     }

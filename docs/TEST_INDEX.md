@@ -1023,7 +1023,27 @@ handle and exact totals once folded (writers retry the bounded-wait
 `BranchBusy`, which applies nothing, when an unoptimized drain is slow) ([#1464](https://github.com/nowledge-co/hawdb/issues/1464));
 `c8d767cd` refuses the second drain's capture three times and rejects commit 48.
 `relational::row_page::live` pins the live-overlay and checkpoint-capture
-charge of that row shape. Replay with `cargo test --locked
+charge of that row shape. The `large_commit` cases fill the overlay to about
+67% with small ORDER_LINE commits, below the trigger, then commit whole
+districts ([#1479](https://github.com/nowledge-co/hawdb/issues/1479)): two
+consecutive 40,000-line commits (about 59% of the envelope each) each drain first and
+succeed, with no failed attempt, exact totals and reads after reopen (base
+`bd26dc4d` rejects the first, commit 22, before WAL append). A 30,000-line
+autocommit statement drains first too. A commit larger than the whole envelope
+is rejected, in a transaction and in autocommit, with the limits and its size
+named, no drain, an unchanged epoch and nothing written. On a concurrent handle,
+another writer and a reader keep succeeding while a 30,000-line transaction
+waits for its drain. A subprocess stop at `during_checkpoint_publication` and
+`after_manifest_publication` of the drain that a district requests recovers
+exactly the acknowledged commits, and the recovered handle admits the district.
+The `large_commit` cases run in their own
+`//:hawdb_unit_checkpoint_large_commit_tests` partition (one libtest thread,
+Bazel `exclusive`, the same 900-second deadline). Each drives several full
+checkpoints of a table near the default envelope, and inside
+`//:hawdb_unit_checkpoint_headroom_tests` they pushed that partition past its
+deadline in CI. Replay:
+`bazel test //:hawdb_unit_checkpoint_large_commit_tests`.
+Replay with `cargo test --locked
 -p hawdb --lib api::automatic_checkpoint::tests::relational_live_overlay`.
 
 ## Component regression owners
