@@ -76,3 +76,12 @@ A repeat of the same eight-run parser protocol on `b607f4b2f9d0` measures
 former process CPU / 2.96796775 seconds PEG). This also remains below the
 20 percent requirement. The further diagnostic follow-up restores another
 83 full-message and location outcomes from the independent main export.
+
+Rank CASE lowering validates the complete matched reference/literal shape before
+allocating its specialized AST. Other shapes retain the existing generic AST
+lowering. This avoids constructing a generic CASE tree before normalization.
+The wide rank control changes from 168 allocations / 70,174 requested bytes /
+31,116 peak live bytes to 51 / 36,541 / 19,709. Former main's peak is 15,153
+bytes, so this control still has a peak regression. An additional 2,026
+independent main outcomes preserve complete ASTs/spans and rejection classes;
+these resource results do not establish the remaining readiness gates.

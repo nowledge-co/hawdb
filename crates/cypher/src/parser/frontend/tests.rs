@@ -768,3 +768,20 @@ fn diagnostic_repairs_preserve_independently_exported_main_messages_and_location
         }
     }
 }
+
+#[test]
+fn rank_case_lowering_preserves_independent_main_boundaries() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../fixtures/migration_main_1514_rank_boundaries_v1.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        fixture["reference_commit"],
+        "fd10958dd37b8878151aeb73ff0477d189b5db5e"
+    );
+    let cases = fixture["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 2026);
+    for case in cases {
+        assert_frozen(case);
+    }
+}

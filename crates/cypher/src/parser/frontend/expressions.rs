@@ -540,6 +540,10 @@ impl Transformer<'_> {
             selected
         };
         if special {
+            if let Some(kind) = self.literal_rank_case(body)? {
+                self.expression_budget(node, depth + special_value_height(&kind))?;
+                return Ok(kind);
+            }
             let generic = self.generic_case(body, 0)?;
             if let Some(kind) = normalize_case(&generic, self.input) {
                 self.expression_budget(node, depth + special_value_height(&kind))?;
@@ -548,6 +552,126 @@ impl Transformer<'_> {
         }
         self.generic_case(body, depth)
     }
+    // Follow only transparent captures. Parentheses, unary operators and
+    // additional operands keep their full lowering and depth checks.
+    fn singleton_case_capture(
+        &self,
+        mut node: NodeId,
+        target: super::tree::RuleId,
+    ) -> Option<NodeId> {
+        loop {
+            if self.tree.rule_id(node) == target {
+                return Some(node);
+            }
+            if !matches!(
+                self.tree.node(node).name,
+                Some(
+                    "x_or"
+                        | "x_and"
+                        | "x_condition_base"
+                        | "x_case_scalar"
+                        | "x_sum"
+                        | "x_product"
+                        | "x_operand"
+                        | "x_scalar"
+                        | "x_primary"
+                        | "x_condition_tail"
+                        | "x_comparisons"
+                )
+            ) {
+                return None;
+            }
+            let [child] = self.tree.children(node) else {
+                return None;
+            };
+            let parent_span = self.tree.span(node, self.tokens);
+            if parent_span != self.tree.span(*child, self.tokens) {
+                return None;
+            }
+            node = *child;
+        }
+    }
+
+    fn literal_rank_branch(&self, branch: NodeId) -> Option<(NodeId, NodeId, NodeId)> {
+        let condition = self.singleton_case_capture(
+            self.tree.child(branch, rule_id!("x_or"))?,
+            rule_id!("x_condition"),
+        )?;
+        let reference = self.singleton_case_capture(
+            self.tree.child(condition, rule_id!("x_condition_base"))?,
+            rule_id!("x_ref"),
+        )?;
+        let comparison = self.singleton_case_capture(
+            self.tree.child(condition, rule_id!("x_condition_tail"))?,
+            rule_id!("x_comparison"),
+        )?;
+        if self.text(self.tree.child(comparison, rule_id!("x_comparison_op"))?) != "=" {
+            return None;
+        }
+        let value = self.singleton_case_capture(
+            self.tree.child(comparison, rule_id!("x_case_scalar"))?,
+            rule_id!("x_value"),
+        )?;
+        let result = self.singleton_case_capture(
+            self.tree.child(branch, rule_id!("x_case_scalar"))?,
+            rule_id!("x_value"),
+        )?;
+        Some((reference, value, result))
+    }
+
+    fn literal_rank_case(&mut self, node: NodeId) -> Result<Option<ScalarExpressionKind>> {
+        let body = self.tree.children(node)[0];
+        if self.tree.rule_id(body) != rule_id!("x_searched_case") {
+            return Ok(None);
+        }
+        // Validate the complete shape before allocating or decoding anything.
+        // Unsupported shapes use the existing generic AST lowering.
+        let Some(default) = self
+            .tree
+            .child(body, rule_id!("x_else"))
+            .and_then(|id| self.tree.child(id, rule_id!("x_case_scalar")))
+            .and_then(|id| self.singleton_case_capture(id, rule_id!("x_value")))
+        else {
+            return Ok(None);
+        };
+        let mut binding = None;
+        let mut first_reference = None;
+        for branch in self.iter_named_children(body, rule_id!("x_searched_branch")) {
+            let Some((reference, _, _)) = self.literal_rank_branch(branch) else {
+                return Ok(None);
+            };
+            let mut names = self.iter_named_children(reference, rule_id!("v_identifier"));
+            let pair = (
+                self.text(names.next().expect("matched variable")),
+                self.text(names.next().expect("matched property")),
+            );
+            if binding.is_some_and(|old| old != pair) {
+                return Ok(None);
+            }
+            binding = Some(pair);
+            first_reference.get_or_insert(reference);
+        }
+        let Some(reference) = first_reference else {
+            return Ok(None);
+        };
+        let mut branches = Vec::new();
+        for branch in self.iter_named_children(body, rule_id!("x_searched_branch")) {
+            let (_, value, result) = self
+                .literal_rank_branch(branch)
+                .expect("validated rank branch");
+            branches.push((self.value(value, 0)?, self.value(result, 0)?));
+        }
+        let default = self.value(default, 0)?;
+        let (variable, property) = self.identifier_pair(reference);
+        let kind = ScalarExpressionKind::CasePropertyEqualsRank {
+            variable,
+            property,
+            branches,
+            default,
+        };
+        Ok(Some(kind))
+    }
+
     fn reserved_special_case(
         &mut self,
         node: NodeId,
