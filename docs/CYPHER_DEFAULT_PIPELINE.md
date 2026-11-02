@@ -79,9 +79,12 @@ predicates, projected source admission and optional NULL extension. Duplicate
 inputs and nonunique indexed keys retain their complete multiplicities.
 
 Only a required equality in the top-level conjunction can select this access.
-An earlier potentially fallible conjunct, NULL/missing/non-map input, an
+Any potentially fallible conjunct, NULL/missing/non-map input, an
 undeclared scalar index, imports, union labels or multiple pattern steps keep
-the original path. In particular, no key is extracted from an OR branch.
+the original path. Simple property comparisons use row-validated bound inputs;
+computed expressions retain ordinary evaluation. This preserves errors after
+an UNKNOWN equality on a NULL/missing stored property, even when the erroring
+conjunct appears later. No key is extracted from an OR branch.
 One scan-pruning report per MATCH combines its selected property-equality
 accesses and visited candidates before the remaining filters. Its counters
 include repeated input keys; NULL/generic fallback reads are outside that report.

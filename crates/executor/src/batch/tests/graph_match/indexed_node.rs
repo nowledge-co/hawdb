@@ -74,7 +74,8 @@ fn indexed_node_lookup_releases_admission_on_stop_error_cancellation_and_refusal
         let task = RuntimeTaskContext::without_deadline(token.clone());
         let memory = ExecutionMemoryConfig {
             batch_rows: NonZeroUsize::new(1).unwrap(),
-            query_memory_bytes: NonZeroUsize::new(if mode == "refuse" { 4096 } else { 65_536 })
+            batch_payload_bytes: NonZeroUsize::new(16_384).unwrap(),
+            query_memory_bytes: NonZeroUsize::new(if mode == "refuse" { 4096 } else { 524_288 })
                 .unwrap(),
             ..ExecutionMemoryConfig::default()
         };
@@ -120,7 +121,10 @@ fn indexed_node_lookup_releases_admission_on_stop_error_cancellation_and_refusal
                 assert_eq!(emitted, 1);
             }
             "refuse" => {
-                assert!(matches!(result, Err(HawDBError::ResourceBudgetExceeded(_))));
+                let Err(HawDBError::ResourceBudgetExceeded(error)) = result else {
+                    panic!("expected source budget refusal, got {result:?}");
+                };
+                assert_eq!(error.owner, "GraphMatchExec source");
                 assert_eq!(emitted, 0);
             }
             _ => unreachable!(),

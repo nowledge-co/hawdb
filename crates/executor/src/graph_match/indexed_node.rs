@@ -77,6 +77,11 @@ impl<'a> MatchRuntime<'a> {
         }
         let Some(label) = label else { return Ok(None) };
         let Some((property, value)) = self.program.predicate.as_ref().and_then(|predicate| {
+            // Equality on a NULL/missing stored property is UNKNOWN, so even a
+            // later conjunct can fail on a row that an exact seek would omit.
+            if !infallible_predicate(predicate, &node.variable, row) {
+                return None;
+            }
             lookup_key(predicate, &node.variable, row, self.context.catalog, label)
         }) else {
             return Ok(None);
@@ -107,19 +112,9 @@ fn lookup_key<'p, 'r>(
     label: LabelId,
 ) -> Option<(&'p str, &'r Value)> {
     match predicate {
-        Predicate::And(children) => {
-            for child in children {
-                if let Some(key) = lookup_key(child, target, row, catalog, label) {
-                    return Some(key);
-                }
-                // An index must not hide an error in an earlier conjunct on
-                // a node whose key it would reject.
-                if !infallible_prefix(child) {
-                    break;
-                }
-            }
-            None
-        }
+        Predicate::And(children) => children
+            .iter()
+            .find_map(|child| lookup_key(child, target, row, catalog, label)),
         Predicate::ExpressionEq { expression, value } => {
             lookup_sides(expression, value, target, row, catalog, label)
                 .or_else(|| lookup_sides(value, expression, target, row, catalog, label))
@@ -128,7 +123,7 @@ fn lookup_key<'p, 'r>(
     }
 }
 
-fn infallible_prefix(predicate: &Predicate) -> bool {
+fn infallible_predicate(predicate: &Predicate, target: &str, row: &Binding) -> bool {
     match predicate {
         Predicate::ConstantBool(_)
         | Predicate::PropertyEq { .. }
@@ -136,10 +131,38 @@ fn infallible_prefix(predicate: &Predicate) -> bool {
         | Predicate::PropertyCompare { .. }
         | Predicate::PropertyIsNull { .. }
         | Predicate::PropertyIsNotNull { .. } => true,
-        Predicate::And(children) | Predicate::Or(children) => {
-            children.iter().all(infallible_prefix)
+        Predicate::ExpressionEq { expression, value }
+        | Predicate::ExpressionNotEq { expression, value }
+        | Predicate::ExpressionCompare {
+            expression, value, ..
         }
-        Predicate::Not(child) => infallible_prefix(child),
+        | Predicate::ExpressionContains { expression, value } => {
+            infallible_expression(expression, target, row)
+                && infallible_expression(value, target, row)
+        }
+        Predicate::ExpressionIn { expression, .. } => {
+            infallible_expression(expression, target, row)
+        }
+        Predicate::And(children) | Predicate::Or(children) => children
+            .iter()
+            .all(|child| infallible_predicate(child, target, row)),
+        Predicate::Not(child) => infallible_predicate(child, target, row),
+        _ => false,
+    }
+}
+
+fn infallible_expression(expression: &ProjectionExpression, target: &str, row: &Binding) -> bool {
+    match expression {
+        ProjectionExpression::Literal(_) => true,
+        ProjectionExpression::Property { variable, .. } => {
+            variable == target
+                || crate::expression::binding_has_variable(row, variable)
+                || row.values.get(variable) == Some(&Value::Null)
+        }
+        ProjectionExpression::Column(column) => row.values.contains_key(column),
+        ProjectionExpression::ColumnProperty { column, .. } => {
+            matches!(row.values.get(column), Some(Value::Null | Value::Map(_)))
+        }
         _ => false,
     }
 }

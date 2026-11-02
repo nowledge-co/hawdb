@@ -216,13 +216,13 @@ fn indexed_lookup_keeps_fallible_keys_conjunct_order_and_limit_stop() {
             Value::List(vec![Value::String("missing".into())]),
         )]);
         let leading = "UNWIND $ids AS candidate MATCH (n:Item) WHERE head(1) = 1 AND n.id = candidate RETURN n.id";
-        assert!(db.query_with_params(leading, &parameters).is_err());
         let trailing = "UNWIND $ids AS candidate MATCH (n:Item) WHERE n.id = candidate AND head(1) = 1 RETURN n.id";
-        assert!(db
-            .query_with_params(trailing, &parameters)
-            .unwrap()
-            .rows
-            .is_empty());
+        // The NULL indexed property yields UNKNOWN, so AND still evaluates
+        // the failing expression even when the equality appears first.
+        for query in [leading, trailing] {
+            let error = db.query_with_params(query, &parameters).unwrap_err();
+            assert!(error.to_string().contains("head() requires a list"));
+        }
     }
 }
 
