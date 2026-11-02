@@ -57,9 +57,9 @@ state and a torn WAL. The ordinary regression target participates in the existin
 smoke suite; it is not a fuzz campaign.
 
 ```sh
-cargo test --locked --test wal_group_commit_recovery
-cargo clippy --locked --all-features --bench wal_group_commit \
-  --test wal_group_commit_recovery -- -D warnings
+cargo test --locked -p hawdb-test-contracts --test checkpoint_contracts wal_recovery::
+cargo clippy --locked --all-features --bench wal_group_commit -- -D warnings
+cargo clippy --locked -p hawdb-test-contracts --all-features --test checkpoint_contracts -- -D warnings
 bazel test //:hawdb_wal_group_commit_recovery_tests \
   //:hawdb_linux_ci_wal_group_commit_smoke_test
 bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \

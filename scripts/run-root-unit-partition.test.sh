@@ -41,11 +41,21 @@ if [[ "${1:-}" == --list ]]; then
   fi
   echo 'api::tests::storage_recovery::owned: test'
   echo 'api::tests::query_execution::owned: test'
-  echo 'api::automatic_checkpoint::tests::headroom::pending_idle: test'
-  echo 'api::automatic_checkpoint::tests::headroom::capacity_wait::deadline: test'
-  echo 'api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen: test'
-  echo 'api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints: test'
-  echo 'api::automatic_checkpoint::tests::relational_live_overlay::steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay: test'
+  if [[ "${PARTITION_PROBE_EMPTY_LIFECYCLE:-0}" == 0 ]]; then
+    echo 'api::automatic_checkpoint::tests::manual::ordinary_manual_during_automatic_preparation_resumes_automatic_progress: test'
+    echo 'api::automatic_checkpoint::tests::idle_handoff::releasing_a_runtime_read_guard_wakes_unattended_handoff: test'
+    echo 'api::automatic_checkpoint::tests::planning_recovery::actual_owner_reports_cached_memory_denial_and_recovers_without_frontend_work: test'
+    echo 'api::automatic_checkpoint::tests::coalesced_capture::coalesced_commits_refresh_and_checkpoint_without_another_frontend_call: test'
+    echo 'api::automatic_checkpoint::tests::new_family::future_lifecycle: test'
+    echo 'api::automatic_checkpoint::tests::future_lifecycle: test'
+  fi
+  if [[ "${PARTITION_PROBE_EMPTY_HEADROOM:-0}" == 0 ]]; then
+    echo 'api::automatic_checkpoint::tests::headroom::pending_idle: test'
+    echo 'api::automatic_checkpoint::tests::headroom::capacity_wait::deadline: test'
+    echo 'api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen: test'
+    echo 'api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints: test'
+    echo 'api::automatic_checkpoint::tests::relational_live_overlay::steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay: test'
+  fi
   if [[ "${PARTITION_PROBE_OVERLAP:-0}" == 1 ]]; then
     echo 'analytics::overlap: test'
     echo 'api::tests::query_execution::analytics::overlap: test'
@@ -57,7 +67,7 @@ if [[ "${1:-}" == --list ]]; then
   if [[ "${PARTITION_PROBE_RSS_OVERLAP:-0}" == 1 ]]; then
     echo 'api::tests::graph_analytics::rss_child_extension: test'
   fi
-  echo '10 tests, 0 benchmarks'
+  echo '17 tests, 0 benchmarks'
   exit 0
 fi
 printf '%s\n' "$@" >"${PARTITION_PROBE_ARGS}"
@@ -65,7 +75,7 @@ exit "${PARTITION_PROBE_EXIT:-0}"
 EOF
 chmod +x "${fixture}/binary"
 
-for partition in general concurrent checkpoint_headroom analytics analytics_core analytics_core_general analytics_identity analytics_rss recovery; do
+for partition in general concurrent checkpoint_headroom checkpoint_lifecycle analytics analytics_core analytics_core_general analytics_identity analytics_rss recovery; do
   "${runner}" "${fixture}/binary" "${partition}" custom_filter --exact --skip user_skip
   cp "${PARTITION_PROBE_ARGS}" "${fixture}/args.${partition}"
   python3 - "${PARTITION_PROBE_ARGS}" "${partition}" <<'PY'
@@ -82,6 +92,14 @@ owners = {
     },
     "recovery": {"api::tests::storage_recovery::owned"},
     "general": {"api::tests::query_execution::owned"},
+    "checkpoint_lifecycle": {
+        "api::automatic_checkpoint::tests::manual::ordinary_manual_during_automatic_preparation_resumes_automatic_progress",
+        "api::automatic_checkpoint::tests::idle_handoff::releasing_a_runtime_read_guard_wakes_unattended_handoff",
+        "api::automatic_checkpoint::tests::planning_recovery::actual_owner_reports_cached_memory_denial_and_recovers_without_frontend_work",
+        "api::automatic_checkpoint::tests::coalesced_capture::coalesced_commits_refresh_and_checkpoint_without_another_frontend_call",
+        "api::automatic_checkpoint::tests::new_family::future_lifecycle",
+        "api::automatic_checkpoint::tests::future_lifecycle",
+    },
     "checkpoint_headroom": {
         "api::automatic_checkpoint::tests::headroom::pending_idle",
         "api::automatic_checkpoint::tests::headroom::capacity_wait::deadline",
@@ -101,7 +119,7 @@ elif sys.argv[2] == "analytics_core":
 else:
     owned = owners[sys.argv[2]]
 skips = [args[i + 1] for i, value in enumerate(args[:-1]) if value == "--skip"]
-assert set(skips) == (all_names - owned) | {"user_skip"}
+assert set(skips) == (all_names - owned) | {"user_skip"}, (sys.argv[2], set(skips), owned)
 assert args[-4:] == ["custom_filter", "--exact", "--skip", "user_skip"]
 PY
 done
@@ -118,6 +136,12 @@ names = {
     "api::tests::graph_analytics::rss_child",
     "api::tests::storage_recovery::owned",
     "api::tests::query_execution::owned",
+    "api::automatic_checkpoint::tests::manual::ordinary_manual_during_automatic_preparation_resumes_automatic_progress",
+    "api::automatic_checkpoint::tests::idle_handoff::releasing_a_runtime_read_guard_wakes_unattended_handoff",
+    "api::automatic_checkpoint::tests::planning_recovery::actual_owner_reports_cached_memory_denial_and_recovers_without_frontend_work",
+    "api::automatic_checkpoint::tests::coalesced_capture::coalesced_commits_refresh_and_checkpoint_without_another_frontend_call",
+    "api::automatic_checkpoint::tests::new_family::future_lifecycle",
+    "api::automatic_checkpoint::tests::future_lifecycle",
     "api::automatic_checkpoint::tests::headroom::pending_idle",
     "api::automatic_checkpoint::tests::headroom::capacity_wait::deadline",
     "api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen",
@@ -131,7 +155,7 @@ def selected(partition):
     return names - skips
 
 leaves = [selected(name) for name in [
-    "general", "concurrent", "checkpoint_headroom", "analytics_core_general", "analytics_rss", "recovery"
+    "general", "concurrent", "checkpoint_headroom", "checkpoint_lifecycle", "analytics_core_general", "analytics_rss", "recovery"
 ]]
 assert set().union(*leaves) == names
 assert sum(map(len, leaves)) == len(names)
@@ -150,7 +174,11 @@ expect_exit() {
     exit 1
   fi
 }
-expect_exit 42 env PARTITION_PROBE_EXIT=42 "${runner}" "${fixture}/binary" general
+for partition in general checkpoint_headroom checkpoint_lifecycle; do
+  expect_exit 42 env PARTITION_PROBE_EXIT=42 "${runner}" "${fixture}/binary" "${partition}"
+done
+expect_exit 1 env PARTITION_PROBE_EMPTY_HEADROOM=1 "${runner}" "${fixture}/binary" checkpoint_headroom
+expect_exit 1 env PARTITION_PROBE_EMPTY_LIFECYCLE=1 "${runner}" "${fixture}/binary" checkpoint_lifecycle
 expect_exit 17 env PARTITION_PROBE_DISCOVERY_EXIT=17 "${runner}" "${fixture}/binary" general
 expect_exit 1 env PARTITION_PROBE_EMPTY=1 "${runner}" "${fixture}/binary" concurrent
 expect_exit 1 env PARTITION_PROBE_EMPTY_CORE=1 "${runner}" "${fixture}/binary" analytics_core_general
