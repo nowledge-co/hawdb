@@ -163,13 +163,19 @@ HawkEye file/style rules. The wrapper retries rejected files with the short
 template; only a clean alternative passes. Missing, foreign, or incomplete
 headers fail. `prek run hawkeye-format --files path/to/file.rs` checks an explicit set.
 Markdown has no built-in rule and is unsupported (not checked); Python and
-Shell are checked, including their shebangs. TOML/YAML/JSON/lock/SQL/BUILD/bzl
-exclusions remain defined by `licenserc.toml`.
+Shell are checked, including their shebangs. Go uses line-comment headers;
+keep a blank line before any build constraints. MoonBit `.mbt`, `.mbti`,
+`moon.mod` and `moon.pkg` files use the same line-comment header rules.
+TOML/YAML/JSON/lock/SQL/BUILD/bzl exclusions remain defined by `licenserc.toml`.
+Generated build output, downloaded MoonBit dependencies and historical
+`docs/benchmarks/` evidence are excluded. Historical evidence must retain its
+recorded bytes, including reproduction snapshots and generated JUnit XML.
 Run `python scripts/check-license-headers.test.py` with pinned HawkEye on PATH
 for the positive/negative read-only fixture checks.
-Full-tree `prek run --all-files` currently exposes historical license-header
-debt beyond the accepted SPDX form (missing and conflicting headers); do not
-interpret a staged-file pass as a clean full-tree audit or replace existing copyright notices mechanically.
+Use `prek run hawkeye-format --all-files` to audit all tracked files under
+this policy. A staged-file pass covers only the selected files. Preserve
+existing copyright notices and separate the license header from ordinary
+comments with a blank line.
 
 Use the toolchain pinned in [rust-toolchain.toml](rust-toolchain.toml), locked
 dependencies, and the default Bazel configuration. The [README](README.md#build)

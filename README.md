@@ -358,9 +358,15 @@ Issues and pull requests follow [`CONTRIBUTING.md`](CONTRIBUTING.md). Architectu
 
 Apache License 2.0. See [`LICENSE`](LICENSE).
 
-Source files carry the standard Apache-2.0 header. Check or repair them with [hawkeye](https://crates.io/crates/hawkeye) and [`licenserc.toml`](licenserc.toml):
+Source files carry a full Apache-2.0 header or the canonical Nowledge SPDX
+short header. Check both forms with the pinned, read-only HawkEye hook:
 
 ```console
-hawkeye check
-hawkeye format
+prek run hawkeye-format --all-files
 ```
+
+[`licenserc.toml`](licenserc.toml) includes Go and MoonBit source, interfaces and
+manifests, while excluding generated output and historical benchmark evidence.
+See [the contribution guide](CONTRIBUTING.md#validation-and-evidence) for the
+accepted forms and scope. Use `hawkeye format path/to/file` for explicit repair;
+retain existing copyright notices and review the resulting diff.

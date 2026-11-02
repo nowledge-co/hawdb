@@ -2019,6 +2019,8 @@ one-batch WAL/reopen in the existing root API partition.
 
 - `scripts/check-license-headers.test.py` is a local pinned-HawkEye fixture
   check for full/SPDX forms, Python/Shell shebangs, excluded/unsupported files,
+  Go line headers/build constraints, MoonBit sources/interfaces/manifests,
+  generated output/dependency exclusions, historical benchmark evidence,
   mixed valid/invalid batches, wrong owners/licenses and byte preservation.
   The staged-file hook uses the same HawkEye rules for both header templates.
 - `//crates/storage:hawdb_storage_tests` owns the cross-process directory lease

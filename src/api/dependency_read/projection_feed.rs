@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! One pinned query context and its bounded immutable feed. Enumeration is not
 //! authority to publish a projection assembled by arbitrary callback code.
