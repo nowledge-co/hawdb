@@ -14,6 +14,10 @@ pub struct GraphMatchProgram {
     /// a variable that is absent is read in full. Lowering fills it once the
     /// whole plan is known; the binder leaves it empty.
     pub projected_nodes: BTreeMap<String, BTreeSet<String>>,
+    /// The same for relationship variables that a one-hop step introduces:
+    /// the executor reads their endpoints, type and only these properties.
+    /// A variable that is absent is read in full.
+    pub projected_relationships: BTreeMap<String, BTreeSet<String>>,
     pub steps: Vec<GraphMatchStep>,
     pub predicate: Option<Predicate>,
     /// Where each top-level conjunct of `predicate` is evaluated: entry `i`
@@ -22,6 +26,13 @@ pub struct GraphMatchProgram {
     /// `steps.len()`. Empty evaluates the whole predicate after the last step.
     /// Lowering fills it from the final step order; the binder leaves it empty.
     pub predicate_steps: Vec<usize>,
+    /// Ascending indices of the placed conjuncts that read nothing but the
+    /// relationship variable bound by the one-hop step `predicate_steps[i] - 1`.
+    /// The executor evaluates them as soon as it reads each such relationship,
+    /// before it reads the step's target node, instead of after the step.
+    /// Empty when no conjunct qualifies; lowering fills it with
+    /// `predicate_steps`.
+    pub edge_predicates: Vec<usize>,
     pub optional: bool,
 }
 
@@ -112,9 +123,11 @@ hawdb_core::impl_retained_heap_for_struct!(GraphMatchProgram {
     imports,
     introduced,
     projected_nodes,
+    projected_relationships,
     steps,
     predicate,
     predicate_steps,
+    edge_predicates,
     optional
 });
 

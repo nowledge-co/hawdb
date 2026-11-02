@@ -12,14 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Node properties that `GraphMatchExec` must read.
+//! Node and relationship properties that `GraphMatchExec` must read.
 //!
-//! `GraphMatchExec` used to read every property of every node it bound, even
-//! when the rest of the query only compares an id or reads one property. This
-//! pass walks the finished plan from its root, collects what every operator
-//! above a `GraphMatchExec` reads from each graph variable, and records in
-//! [`GraphMatchProgram::projected_nodes`] the properties a node variable needs
-//! when nothing above it uses the whole node.
+//! `GraphMatchExec` used to read every property of every node and
+//! relationship it bound, even when the rest of the query only compares an id
+//! or reads one property. This pass walks the finished plan from its root,
+//! collects what every operator above a `GraphMatchExec` reads from each graph
+//! variable, and records in [`GraphMatchProgram::projected_nodes`] and
+//! [`GraphMatchProgram::projected_relationships`] the properties a variable
+//! needs when nothing above it uses the whole entity. Only relationships that
+//! a one-hop step introduces are projected; imported relationships and path
+//! values are read in full.
 //!
 //! The analysis is conservative:
 //! - A variable used as a whole value (`RETURN n`, `collect(n)`, `n = m`,
@@ -112,7 +115,7 @@ pub(super) fn project_graph_match_reads(
     let plan = project(plan, Demand::default(), &mut projected);
     if !projected.is_empty() {
         decisions.push(format!(
-            "GraphMatchExec reads only the node properties later operators use: {}",
+            "GraphMatchExec reads only the node and relationship properties later operators use: {}",
             projected.join(", ")
         ));
     }
@@ -237,12 +240,31 @@ fn project_program(
         .filter(|import| import.kind == GraphEntityKind::Node)
         .map(|import| import.variable.clone())
         .collect::<BTreeSet<_>>();
+    let mut relationships = BTreeSet::new();
     for step in &program.steps {
         match step {
             GraphMatchStep::Node(node) => nodes.insert(node.variable.clone()),
-            GraphMatchStep::Expand { target, .. } => nodes.insert(target.variable.clone()),
+            GraphMatchStep::Expand {
+                relationship,
+                target,
+                min_hops,
+                max_hops,
+                ..
+            } => {
+                if let Some(relationship) = relationship
+                    && *min_hops == 1
+                    && *max_hops == 1
+                {
+                    relationships.insert(relationship.clone());
+                }
+                nodes.insert(target.variable.clone())
+            }
             GraphMatchStep::ShortestPath(_) => false,
         };
+    }
+    // An imported relationship is re-read in full when the program starts.
+    for import in &program.imports {
+        relationships.remove(&import.variable);
     }
     let mut total = demand.clone();
     total.merge(&own);
@@ -257,6 +279,20 @@ fn project_program(
         }
     }
     program.projected_nodes = projected_nodes;
+    let mut projected_relationships = BTreeMap::new();
+    for variable in relationships
+        .iter()
+        .filter(|variable| bound.contains(*variable))
+    {
+        if let Some(properties) = total.projection(variable) {
+            projected.push(format!(
+                "relationship {variable}[{}]",
+                properties.iter().cloned().collect::<Vec<_>>().join(",")
+            ));
+            projected_relationships.insert(variable.clone(), properties);
+        }
+    }
+    program.projected_relationships = projected_relationships;
     // A variable bound by the input keeps the demand of both the program and
     // the operators above it.
     let input = Demand(
@@ -284,12 +320,17 @@ fn program_demand(program: &GraphMatchProgram) -> Demand {
             GraphMatchStep::Expand {
                 source,
                 relationship,
+                properties,
                 target,
                 ..
             } => {
                 demand.identity(source);
                 if let Some(relationship) = relationship {
-                    demand.whole(relationship);
+                    // The step tests its pattern properties on the record.
+                    demand.identity(relationship);
+                    for property in properties.keys() {
+                        demand.property(relationship, property);
+                    }
                 }
                 node(target, &mut demand);
             }

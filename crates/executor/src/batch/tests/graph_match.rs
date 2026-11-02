@@ -954,13 +954,24 @@ fn optional_seed_null_hop_uses_final_batch_row_size() {
 /// Plans `query` and places the conjuncts of its first predicated MATCH the
 /// way lowering would, at the given step counts.
 fn execute_placed(query: &str, predicate_steps: Vec<usize>) -> Result<Vec<Binding>> {
-    fn place(plan: &mut LogicalPlan, predicate_steps: &mut Option<Vec<usize>>) {
+    execute_placed_on_edges(query, predicate_steps, Vec::new())
+}
+
+/// [`execute_placed`] that also runs the conjuncts `edge_predicates` names on
+/// each relationship before its target is read.
+fn execute_placed_on_edges(
+    query: &str,
+    predicate_steps: Vec<usize>,
+    edge_predicates: Vec<usize>,
+) -> Result<Vec<Binding>> {
+    fn place(plan: &mut LogicalPlan, predicate_steps: &mut Option<(Vec<usize>, Vec<usize>)>) {
         match plan {
             LogicalPlan::GraphMatch { program, input } => {
                 if program.predicate.is_some()
-                    && let Some(steps) = predicate_steps.take()
+                    && let Some((steps, edges)) = predicate_steps.take()
                 {
                     program.predicate_steps = steps;
+                    program.edge_predicates = edges;
                     return;
                 }
                 if let Some(input) = input {
@@ -974,7 +985,7 @@ fn execute_placed(query: &str, predicate_steps: Vec<usize>) -> Result<Vec<Bindin
         }
     }
     let mut logical = hawdb_plan_cypher::plan_pipeline_query(query, &BTreeMap::new())?;
-    let mut predicate_steps = Some(predicate_steps);
+    let mut predicate_steps = Some((predicate_steps, edge_predicates));
     place(&mut logical, &mut predicate_steps);
     assert!(predicate_steps.is_none(), "no predicated MATCH in {query}");
     execute_logical(logical)
@@ -1041,6 +1052,69 @@ fn malformed_predicate_placement_is_refused() {
         "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) WHERE a.id = 1 AND b.id = 2 RETURN a.id AS a";
     for steps in [vec![1], vec![1, 2, 2], vec![1, 3]] {
         let error = execute_placed(query, steps).unwrap_err();
+        assert!(
+            error.to_string().contains("MATCH predicate placement"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn edge_conjuncts_match_the_end_of_match_result() {
+    for (query, steps, edges) in [
+        (
+            "MATCH (a:Memory)-[r:MENTIONS]->(b:Memory) WHERE id(r) >= 0 AND b.id = 2 RETURN a.id AS a, b.id AS b",
+            vec![2, 2],
+            vec![0],
+        ),
+        (
+            "MATCH (a:Memory)-[r:MENTIONS]->(b:Memory) WHERE b.id = 2 AND id(r) <> 999 RETURN a.id AS a",
+            vec![2, 2],
+            vec![1],
+        ),
+        (
+            "MATCH (a:Memory) OPTIONAL MATCH (a)-[r:MENTIONS]->(b:Memory) WHERE id(r) < 0 RETURN a.id AS a, b",
+            vec![2],
+            vec![0],
+        ),
+    ] {
+        let mut expected = execute(query).unwrap();
+        let mut actual = execute_placed_on_edges(query, steps, edges).unwrap();
+        let key = |row: &Binding| format!("{:?}", row.values);
+        expected.sort_by_key(key);
+        actual.sort_by_key(key);
+        assert_eq!(actual, expected, "{query}");
+    }
+}
+
+#[test]
+fn edge_conjunct_error_is_deferred_to_the_end_of_the_match() {
+    // `head()` of an integer fails for every relationship. With a target that
+    // never matches, the end-of-match evaluation never runs, so the edge
+    // evaluation must not raise it either.
+    let query = "MATCH (a:Memory)-[r:MENTIONS]->(b:Missing) WHERE head(CASE WHEN id(r) >= 0 THEN id(r) ELSE [1] END) = 1 RETURN a.id AS a";
+    assert!(execute(query).unwrap().is_empty());
+    assert!(execute_placed_on_edges(query, vec![2], vec![0])
+        .unwrap()
+        .is_empty());
+    // With matching targets, the deferred evaluation raises it.
+    let query = "MATCH (a:Memory)-[r:MENTIONS]->(b:Memory) WHERE head(CASE WHEN id(r) >= 0 THEN id(r) ELSE [1] END) = 1 RETURN a.id AS a";
+    assert!(execute(query).is_err());
+    assert!(execute_placed_on_edges(query, vec![2], vec![0]).is_err());
+}
+
+#[test]
+fn malformed_edge_placement_is_refused() {
+    let query =
+        "MATCH (a:Memory)-[r:MENTIONS]->(b:Memory) WHERE a.id = 1 AND id(r) >= 0 RETURN a.id AS a";
+    // An edge conjunct after a node step, out of range, or out of order.
+    for (steps, edges) in [
+        (vec![1, 2], vec![0]),
+        (vec![1, 2], vec![2]),
+        (vec![2, 2], vec![1, 0]),
+        (Vec::new(), vec![0]),
+    ] {
+        let error = execute_placed_on_edges(query, steps, edges).unwrap_err();
         assert!(
             error.to_string().contains("MATCH predicate placement"),
             "{error}"
