@@ -1210,6 +1210,49 @@ fn lifecycle_stress_case() -> Bool {
 }
 
 ///|
+fn typed_decimal_roundtrip() -> Bool {
+  let db = match @hawdb.open_in_memory() {
+    Ok(v) => v
+    Err(e) => return failed("typed.decimal.open", e.describe())
+  }
+  let text = "9007199254740993.0100"
+  let exact = match db.query_sql("SELECT $1 AS amount", [@hawdb.Value::Decimal(text)]) {
+    Ok(result) =>
+      match result.get(0, "amount") {
+        Some(@hawdb.Value::Decimal(value)) => value == text
+        _ => false
+      }
+    Err(_) => false
+  }
+  let escaped = match db.query(
+    "UNWIND [1] AS row RETURN $plain AS plain",
+    {"plain": @hawdb.Value::Map({"$decimal": @hawdb.Value::Text("ordinary")})},
+  ) {
+    Ok(result) =>
+      match result.get(0, "plain") {
+        Some(@hawdb.Value::Map(values)) =>
+          match values.get("$decimal") {
+            Some(@hawdb.Value::Text("ordinary")) => true
+            _ => false
+          }
+        _ => false
+      }
+    Err(_) => false
+  }
+  let refused = match db.query_sql("SELECT $1 AS amount", [@hawdb.Value::Decimal("NaN")]) {
+    Err(_) => true
+    Ok(_) => false
+  }
+  db.close()
+  if exact && escaped && refused {
+    println("CASE_PASS typed.decimal")
+    true
+  } else {
+    failed("typed.decimal", "precision, scale, marker-map identity or invalid value refusal changed")
+  }
+}
+
+///|
 fn main {
   if !graph_case() { return }
   if !sql_case() { return }
@@ -1221,6 +1264,7 @@ fn main {
   if !typed_value_roundtrip() { return }
   if !typed_vector_roundtrip() { return }
   if !typed_temporal_roundtrip() { return }
+  if !typed_decimal_roundtrip() { return }
   if !typed_non_finite_roundtrip() { return }
   if !typed_marker_map_case() { return }
   if !typed_vector_range_case() { return }

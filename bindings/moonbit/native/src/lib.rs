@@ -316,6 +316,15 @@ fn decode_value(value: &Json) -> Result<Value, Failure> {
                         .map(Value::Binary)
                         .map_err(|e| fail("invalid_argument", e.to_string()));
                 }
+                if let Some(v) = values.get("$decimal") {
+                    let text = v.as_str().ok_or_else(|| {
+                        fail("invalid_argument", "$decimal must be a decimal string")
+                    })?;
+                    return text
+                        .parse::<hawdb::Decimal>()
+                        .map(Value::Decimal)
+                        .map_err(|e| fail("invalid_argument", format!("invalid $decimal: {e}")));
+                }
                 if let Some(v) = values.get("$uuid") {
                     let uuid = v
                         .as_str()
@@ -364,8 +373,10 @@ fn decode_value(value: &Json) -> Result<Value, Failure> {
 /// Singleton-map keys that the transport reads as typed values. A user map
 /// with exactly one such key travels as `{"$map": [[key, value]]}`.
 fn is_reserved_tag(key: &str) -> bool {
-    matches!(key, "$binary" | "$uuid" | "$vector" | "$map" | "$float")
-        || hawdb::temporal::JSON_TAGS.contains(&key)
+    matches!(
+        key,
+        "$binary" | "$uuid" | "$vector" | "$map" | "$float" | "$decimal"
+    ) || hawdb::temporal::JSON_TAGS.contains(&key)
 }
 
 /// JSON has no NaN or infinity, so non-finite floats travel as
@@ -425,6 +436,7 @@ impl Serialize for Tagged<'_> {
             Value::Null => serializer.serialize_unit(),
             Value::Bool(v) => serializer.serialize_bool(*v),
             Value::Int(v) => serializer.serialize_i64(*v),
+            Value::Decimal(v) => tagged_entry(serializer, "$decimal", &v.to_string()),
             Value::Float(v) if v.is_finite() => serializer.serialize_f64(*v),
             Value::Float(v) => tagged_entry(serializer, "$float", non_finite_text(*v)),
             Value::String(v) => serializer.serialize_str(v),
@@ -1260,6 +1272,42 @@ mod lifecycle_tests {
                 r#"{"$vector":[1.5,-0.25]},"#,
                 r#"{"$map":[["$uuid",[1,"x",null,true]]]}]]}"#
             )
+        );
+    }
+
+    #[test]
+    fn decimal_values_preserve_precision_scale_and_literal_marker_maps() {
+        let value = Value::Decimal("9007199254740993.0100".parse().unwrap());
+        let json = encoded(&value);
+        assert_eq!(json, json!({"$decimal": "9007199254740993.0100"}));
+        let Value::Decimal(decoded) = decode_value(&json).unwrap() else {
+            panic!("Decimal did not decode as Decimal");
+        };
+        assert_eq!(decoded.to_string(), "9007199254740993.0100");
+        let map = Value::Map(BTreeMap::from([(
+            "$decimal".into(),
+            Value::String("ordinary".into()),
+        )]));
+        assert_eq!(decode_value(&encoded(&map)).unwrap(), map);
+        for invalid in [
+            json!({"$decimal": 1.5}),
+            json!({"$decimal": null}),
+            json!({"$decimal": "NaN"}),
+            json!({"$decimal": "1e1000"}),
+        ] {
+            assert_eq!(decode_value(&invalid).unwrap_err().0, "invalid_argument");
+        }
+        let mut engine = HawDBEmbedded::open_in_memory();
+        let output = execute_statement(
+            &mut engine,
+            "SELECT $1 AS amount",
+            r#"[{"$decimal":"9007199254740993.0100"}]"#,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Json>(&output).unwrap(),
+            json!({"columns": ["amount"], "rows": [[json]]})
         );
     }
 

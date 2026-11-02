@@ -68,7 +68,7 @@ jobs:
       - name: Disable Git automatic CRLF conversion
         shell: pwsh
         run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Match colmugx/posoco's Windows native toolchain initialization.
       - uses: ilammy/msvc-dev-cmd@v1
       - uses: dtolnay/rust-toolchain@stable
