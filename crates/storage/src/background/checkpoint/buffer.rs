@@ -241,6 +241,59 @@ impl CheckpointBytes {
         Ok(())
     }
 
+    /// Admit a reusable output staging block of exactly `capacity` bytes.
+    ///
+    /// The caller must have an unbuffered path that needs no admitted memory.
+    /// A capacity refusal (reservation ceiling, ledger denial, pressure or an
+    /// allocator refusal) therefore returns `Ok(None)` without recording a
+    /// work failure: a tight budget costs throughput, not the operation.
+    /// Stops and a closed ledger still fail and are recorded.
+    pub(crate) fn try_new_staging(
+        capacity: usize,
+        work: &CheckpointWorkContext,
+    ) -> Result<Option<Self>, CheckpointWorkError> {
+        let unit = work.start_unit()?;
+        let memory = match work.task_context().reserve_working_memory(capacity as u64) {
+            Ok(memory) => memory,
+            Err(RuntimeMemoryError::Stopped(reason)) => {
+                return Err(work.record_failure(CheckpointWorkError::Stopped(reason)));
+            }
+            Err(RuntimeMemoryError::Closed) => {
+                return Err(
+                    work.record_failure(CheckpointWorkError::Memory(RuntimeMemoryError::Closed))
+                );
+            }
+            Err(
+                RuntimeMemoryError::ReservationExceeded { .. }
+                | RuntimeMemoryError::AdmissionDenied { .. }
+                | RuntimeMemoryError::Pressure,
+            ) => {
+                unit.finish();
+                return Ok(None);
+            }
+        };
+        let mut bytes = Vec::new();
+        let output = (bytes.try_reserve_exact(capacity).is_ok() && bytes.capacity() == capacity)
+            .then_some(Self {
+                bytes,
+                _memory: memory,
+            });
+        unit.finish();
+        Ok(output)
+    }
+
+    /// Copy the prefix of `bytes` that fits the admitted capacity, without
+    /// growing the allocation. The caller's I/O unit accounts for the copy.
+    pub(crate) fn fill_within_capacity(&mut self, bytes: &[u8]) -> usize {
+        let accepted = bytes.len().min(self.bytes.capacity() - self.bytes.len());
+        self.bytes.extend_from_slice(&bytes[..accepted]);
+        accepted
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.bytes.clear();
+    }
+
     fn new_with_ownership(
         capacity: usize,
         ownership_bytes: usize,
