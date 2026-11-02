@@ -910,6 +910,67 @@ impl GraphStore {
                         )?;
                     }
                 }
+                GraphMutation::SetMatchedNodes(nodes) => {
+                    let mut selected: Vec<std::sync::Arc<Vec<NodeId>>> =
+                        Vec::with_capacity(nodes.len());
+                    for (index, node) in nodes.iter().enumerate() {
+                        // Resolve identical selectors once against the pre-write
+                        // snapshot. Share ID storage across ordered SET groups.
+                        if let Some(previous) = nodes[..index].iter().position(|previous| {
+                            previous.label == node.label && previous.filter == node.filter
+                        }) {
+                            selected.push(std::sync::Arc::clone(&selected[previous]));
+                            continue;
+                        }
+                        let label = optional_label_id(&working_catalog, &node.label);
+                        if !node.label.is_empty() && label.is_none() {
+                            selected.clear();
+                            break;
+                        }
+                        let mut ids = self.matching_node_ids_bounded(
+                            label,
+                            node.filter.as_ref(),
+                            limits.max_affected_rows.get(),
+                            "max_mutation_affected_rows",
+                        )?;
+                        ids.extend(Self::pending_node_ids_matching(
+                            label,
+                            node.filter.as_ref(),
+                            &pending_nodes,
+                        ));
+                        if ids.is_empty() {
+                            selected.clear();
+                            break;
+                        }
+                        selected.push(std::sync::Arc::new(ids));
+                    }
+                    if selected.len() == nodes.len() {
+                        for (node, ids) in nodes.iter().zip(selected) {
+                            if node.assignments.is_empty() {
+                                continue;
+                            }
+                            let assignments = node
+                                .assignments
+                                .iter()
+                                .map(|(property, value)| NodeSetAssignment {
+                                    property: property.clone(),
+                                    value: NodeSetValue::Value(value.clone()),
+                                })
+                                .collect::<Vec<_>>();
+                            self.apply_set_node_properties_mutation(
+                                &mut ops,
+                                &mut rows,
+                                &mut pending_nodes,
+                                None,
+                                Some(&PropertyFilter::IdIn {
+                                    values: ids.iter().map(|id| Value::Int(id.0 as i64)).collect(),
+                                }),
+                                &assignments,
+                                limits,
+                            )?;
+                        }
+                    }
+                }
                 GraphMutation::SetNodeProperties {
                     label,
                     filter,

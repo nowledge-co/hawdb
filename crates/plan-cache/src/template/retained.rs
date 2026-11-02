@@ -240,10 +240,13 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
             value_bytes(null_or_empty),
         ]),
         E::List(elements) => vector(elements, expression_bytes),
-        E::ListFunction {
-            function: _,
-            arguments,
-        } => vector(arguments, expression_bytes),
+        E::ListFunction { arguments, .. } => vector(arguments, expression_bytes),
+        E::StringFunction {
+            arguments, pattern, ..
+        } => sum([
+            vector(arguments, expression_bytes),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(pattern),
+        ]),
         E::ListComprehension(comprehension) => boxed(comprehension.as_ref(), |comprehension| {
             sum([
                 Some(comprehension.variable.capacity()),

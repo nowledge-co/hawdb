@@ -78,7 +78,7 @@ fn default_pipeline_optional_predicate_retains_filtering_and_null_extension() {
 }
 
 #[test]
-fn default_pipeline_multiple_pattern_set_fails_before_mutation() {
+fn default_pipeline_multiple_pattern_set_requires_parameters_and_commits_atomically() {
     for populated in [true, false] {
         let mut db = Database::new();
         if populated {
@@ -95,21 +95,26 @@ fn default_pipeline_multiple_pattern_set_fails_before_mutation() {
             ("older_id".to_string(), Value::String("older".to_string())),
             ("newer_id".to_string(), Value::String("newer".to_string())),
         ]);
-        for params in [&params, &BTreeMap::new()] {
-            let result = db.query_with_params(MULTIPLE_PATTERN_SET, params);
-            assert_eq!(
-                db.query("MATCH (m:Memory) RETURN m.id, m.is_latest ORDER BY m.id")
-                    .unwrap()
-                    .rows,
-                before,
-                "rejected multi-pattern mutation must retain both nodes: {result:?}"
-            );
-            assert_eq!(
-                result.unwrap_err(),
-                HawDBError::Semantic("mutation requires one bound MATCH pattern".to_string()),
-                "populated={populated}"
-            );
-        }
+        assert_eq!(
+            db.query_with_params(MULTIPLE_PATTERN_SET, &BTreeMap::new())
+                .unwrap_err(),
+            HawDBError::Semantic("missing parameter '$older_id'".into())
+        );
+        assert_eq!(
+            db.query("MATCH (m:Memory) RETURN m.id, m.is_latest ORDER BY m.id")
+                .unwrap()
+                .rows,
+            before
+        );
+        db.query_with_params(MULTIPLE_PATTERN_SET, &params).unwrap();
+        let after = db
+            .query("MATCH (m:Memory) RETURN m.id, m.is_latest ORDER BY m.id")
+            .unwrap()
+            .rows;
+        assert_eq!(after.len(), usize::from(populated) * 2);
+        assert!(after
+            .iter()
+            .all(|row| row["m.is_latest"] == Value::Bool(true)));
     }
 }
 

@@ -139,19 +139,23 @@ outcome manifest remain unchanged. Tests compare every record with its frozen
 outcome or an explicit contract in
 [`migration_default_pipeline_v1.json`](../crates/cypher/fixtures/migration_default_pipeline_v1.json).
 
-Two parser-to-binder transitions are intentional:
+Three parser-to-binder transitions are intentional:
 
 - `mem-0344`: the grammar retains the filtered OPTIONAL relationship. Missing
   `$memory_id` still rejects at binding. Supplying it permits the read; embedded
   tests protect the relationship filter, null extension, count zero, missing
   source, row bound and fresh parameter rebinding.
 - `mem-0361`: the grammar retains the multiple MATCH patterns and SET assignments.
-  Binding rejects the unsupported atomic mutation with or without parameters.
-  Embedded tests verify the same rejection on empty/populated stores and prove
-  both nodes remain unchanged.
+  Missing parameters still reject at binding. Supplying them permits one
+  atomic constant-assignment batch; an empty/missing endpoint matches no rows.
+  Embedded fixtures protect complete post-state, alias ordering, budget refusal,
+  transaction rollback and durable reopen.
+- `mem-0420`: the complete Thread CASE SET now parses. Bound parameters preserve
+  minimum/maximum message times and NULL metadata; native temporal values and
+  close/reopen are covered by the [Mem query contract](specs/MEM_QUERY_COMPATIBILITY_9338.md).
 
 All other frozen parser rejections retain their stage. Historical accepted and
-rejected counts remain checked separately from the two current transitions;
+rejected counts remain checked separately from the three current transitions;
 none of the frozen records is skipped. The 1,327 historically accepted core
 query shapes remain covered by the clause grammar.
 

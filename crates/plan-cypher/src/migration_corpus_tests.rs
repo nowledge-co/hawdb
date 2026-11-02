@@ -434,10 +434,40 @@ fn default_pipeline_stage_qualification() {
                 hawdb_core::Value::String("newer".to_string()),
             ),
         ]);
+        let mut supplied = supplied;
+        supplied.extend([
+            (
+                "thread_uuid".into(),
+                hawdb_core::Value::String("thread".into()),
+            ),
+            ("message_count".into(), hawdb_core::Value::Int(2)),
+            ("first_message_at".into(), hawdb_core::Value::Int(20)),
+            ("last_message_at".into(), hawdb_core::Value::Int(20)),
+            (
+                "preserve_existing_range".into(),
+                hawdb_core::Value::Bool(true),
+            ),
+            ("mutation_at".into(), hawdb_core::Value::Null),
+            ("source_time_metadata".into(), hawdb_core::Value::Null),
+        ]);
         let planned = crate::plan_with_params(&statement, &supplied);
         match change["supplied_parameters"].as_str().unwrap() {
             "accepted" => assert!(
-                matches!(planned, Ok(crate::LogicalPlan::Aggregate { .. })),
+                matches!(
+                    (&planned, change["supplied_plan"].as_str().unwrap()),
+                    (Ok(crate::LogicalPlan::Aggregate { .. }), "aggregate")
+                        | (
+                            Ok(crate::LogicalPlan::UnwindMutation {
+                                operation: crate::BatchMutationOperation::SetMatchedNodes(_),
+                                ..
+                            }),
+                            "matched_node_sets"
+                        )
+                        | (
+                            Ok(crate::LogicalPlan::SetNodeProperties { .. }),
+                            "node_properties"
+                        )
+                ),
                 "{id}: {planned:?}"
             ),
             "rejected" => assert_eq!(
@@ -450,6 +480,10 @@ fn default_pipeline_stage_qualification() {
     }
     assert_eq!(
         qualified,
-        std::collections::BTreeSet::from(["mem-0344".to_string(), "mem-0361".to_string()])
+        std::collections::BTreeSet::from([
+            "mem-0344".to_string(),
+            "mem-0361".to_string(),
+            "mem-0420".to_string()
+        ])
     );
 }

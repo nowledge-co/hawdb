@@ -150,6 +150,24 @@ pub(super) fn function<'a>(
         return range(bounds[0], bounds[1], bounds[2], account, work);
     }
     let input = evaluate(&arguments[0])?;
+    if function == ListFunction::Append {
+        let Value::List(values) = input.as_ref() else {
+            return if input.as_ref() == &Value::Null {
+                Ok(ProjectedValue::scalar(Value::Null))
+            } else {
+                Err(HawDBError::Execution(
+                    "list_append() requires a list".into(),
+                ))
+            };
+        };
+        work.charge(values.len().saturating_add(1))?;
+        let mut result = ListBuilder::new(account, work, values.len().saturating_add(1))?;
+        for value in values {
+            result.push_cloned(value)?;
+        }
+        result.push_projected(evaluate(&arguments[1])?)?;
+        return Ok(result.finish());
+    }
     match (function, input.as_ref()) {
         (_, Value::Null) => Ok(ProjectedValue::scalar(Value::Null)),
         (ListFunction::Size, Value::List(values)) => Ok(ProjectedValue::scalar(Value::Int(

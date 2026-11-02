@@ -108,19 +108,32 @@ impl Parser<'_> {
     }
 
     fn parse_pipeline_unwind(&mut self) -> Result<ClauseKind> {
-        let source = self.parse_value()?;
-        if !matches!(
-            source.kind,
-            ValueExpressionKind::Parameter(_)
-                | ValueExpressionKind::List(_)
-                | ValueExpressionKind::Binding(_)
-                | ValueExpressionKind::BindingProperty { .. }
-        ) {
-            return Err(self.error("UNWIND accepts a parameter, list literal or row-bound list"));
+        let start = self.checkpoint();
+        if let Ok(source) = self.parse_value()
+            && matches!(
+                source.kind,
+                ValueExpressionKind::Parameter(_)
+                    | ValueExpressionKind::List(_)
+                    | ValueExpressionKind::Binding(_)
+                    | ValueExpressionKind::BindingProperty { .. }
+            )
+            && self.consume_keyword("AS")
+        {
+            let variable = self.parse_ident()?;
+            return Ok(ClauseKind::Unwind { source, variable });
         }
+        self.restore(start);
+        let source = self.parse_case_scalar()?;
         self.expect_keyword("AS")?;
         let variable = self.parse_ident()?;
-        Ok(ClauseKind::Unwind { source, variable })
+        // Computed list sources are currently read-side only.
+        if ["CREATE", "MERGE", "SET", "DELETE"]
+            .iter()
+            .any(|keyword| self.next_keyword_is(keyword))
+        {
+            return Err(self.error("computed UNWIND sources require a read pipeline"));
+        }
+        Ok(ClauseKind::UnwindExpression { source, variable })
     }
 
     /// `LOAD CSV [WITH HEADERS] FROM <source> AS <variable> [FIELDTERMINATOR <c>]`.

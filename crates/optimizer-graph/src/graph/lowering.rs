@@ -1950,6 +1950,7 @@ fn collect_projection_properties(
         | ProjectionExpression::Not(_)
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
