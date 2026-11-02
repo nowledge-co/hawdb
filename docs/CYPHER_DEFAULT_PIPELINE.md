@@ -69,13 +69,26 @@ introducing a fresh node variable, with no remaining constant properties and
 exactly one equality between that node's property and an input scalar column,
 can use `NodeColumnLookupExec`. The bare `{id: candidate_id}` form can qualify.
 
-Shapes with additional constant properties, a residual `WHERE` condition,
-property-access input values, or multiple pattern steps can fall back to
-`GraphMatchExec`. For example,
-`OPTIONAL MATCH (n:Item {id: candidate_id, space_id: $space})` scans the label for
-each input row even when an index on `Item(id)` exists. Dynamic predicates are
-evaluated after the pattern steps, so expansions can add work before rejecting a
-candidate. Work can grow with input rows times label size, plus expansion work.
+Shapes with additional constant properties, a residual `WHERE` condition or
+property-access input values retain `GraphMatchExec`. Its single-node access can
+now seek a declared scalar index using a non-NULL input column, map property
+such as `candidate.id`, or already-bound graph property. This includes
+`OPTIONAL MATCH (n:Item {id: candidate_id, space_id: $space})` with an index on
+`Item(id)`. The entire MATCH still owns constant-property checks, residual
+predicates, projected source admission and optional NULL extension. Duplicate
+inputs and nonunique indexed keys retain their complete multiplicities.
+
+Only a required equality in the top-level conjunction can select this access.
+An earlier potentially fallible conjunct, NULL/missing/non-map input, an
+undeclared scalar index, imports, union labels or multiple pattern steps keep
+the original path. In particular, no key is extracted from an OR branch.
+The query's scan-pruning reports expose each selected property-equality access
+and its visited candidates before the remaining MATCH filters. These counts
+do not establish physical I/O or whole-route latency improvements.
+
+Unoptimized correlated matches can still perform input rows times label-size
+work, plus expansion work. Predicate placement may reject partial matches
+before later expansions, but does not turn an unindexed node step into a seek.
 
 Inspect EXPLAIN before adopting extended shapes in a high-cardinality route and
 keep candidate batches bounded. Row/payload budgets and cancellation still

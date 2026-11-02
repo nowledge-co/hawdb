@@ -39,6 +39,8 @@ use hawdb_storage::{adjacency::AdjacencyDirection, NodeId, NodeRecord, RelId};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod indexed_node;
+
 const MAX_MATCH_STEPS: usize = 32;
 
 /// WHERE conjuncts grouped by the number of steps completed before they run.
@@ -610,6 +612,7 @@ impl MatchRuntime<'_> {
                         None
                     }
                 });
+                let lookup = self.indexed_node_access(pattern, label, row)?;
                 // The node joins the row this visit already owns; admission
                 // covers its record and slot, not another copy of the row.
                 let mut admit = |bytes: usize| {
@@ -624,15 +627,87 @@ impl MatchRuntime<'_> {
                     &mut admit,
                     self.context.task_context,
                 );
+                let visited = Cell::new(0usize);
+                let matched = Cell::new(0usize);
                 let mut bind = |node: NodeRecord| {
                     runtime_checkpoint(self.context.task_context)?;
+                    visited.set(visited.get().saturating_add(1));
                     if !self.node_matches(pattern, &node) {
                         return Ok(ScanControl::Continue);
                     }
-                    self.visit_bound(index, row, used, &pattern.variable, node, None, emit)
+                    self.visit_bound(
+                        index,
+                        row,
+                        used,
+                        &pattern.variable,
+                        node,
+                        None,
+                        &mut |row| {
+                            matched.set(matched.get().saturating_add(1));
+                            emit(row)
+                        },
+                    )
                 };
-                match self.projection(&pattern.variable) {
-                    Some(properties) => self.store.visit_projected_nodes_with_allocation(
+                let control = match (lookup.as_ref(), self.projection(&pattern.variable)) {
+                    (Some(lookup), Some(properties)) => {
+                        let mut admit = |bytes: usize| {
+                            crate::store::admit_graph_read(
+                                self.source_account,
+                                self.context.task_context,
+                                bytes.saturating_add(1024 + pattern.variable.len()),
+                            )
+                        };
+                        let mut allocator = hawdb_storage::read_view::GraphReadAllocator::new(
+                            &mut admit,
+                            self.context.task_context,
+                        );
+                        let mut visit = |node: hawdb_storage::ProjectedNodeRecord| {
+                            bind(NodeRecord {
+                                id: node.id,
+                                labels: node.labels,
+                                properties: node.properties,
+                            })
+                        };
+                        let hawdb_plan_cypher::NodeProjectionAccess::PropertyValues {
+                            property,
+                            values,
+                        } = &lookup.access
+                        else {
+                            unreachable!()
+                        };
+                        if !self.store.is_out_of_core()
+                            && let Some(control) = self
+                                .store
+                                .visit_indexed_projected_nodes_by_property_admitted(
+                                    lookup.label,
+                                    property,
+                                    values,
+                                    properties,
+                                    &mut allocator,
+                                    &mut visit,
+                                )?
+                        {
+                            Ok(control)
+                        } else {
+                            self.store.visit_projected_nodes_by_access_admitted(
+                                lookup.label,
+                                &lookup.access,
+                                properties,
+                                &mut allocator,
+                                &mut visit,
+                            )
+                        }
+                    }
+                    (Some(lookup), None) => self.store.visit_nodes_by_access_with_allocation(
+                        lookup.label,
+                        &lookup.access,
+                        &mut allocator,
+                        &mut |input| {
+                            let (node, _allocation) = input.into_parts();
+                            bind(node)
+                        },
+                    ),
+                    (None, Some(properties)) => self.store.visit_projected_nodes_with_allocation(
                         label,
                         properties,
                         &mut allocator,
@@ -645,7 +720,7 @@ impl MatchRuntime<'_> {
                             })
                         },
                     ),
-                    None => self.store.visit_nodes_with_allocation(
+                    (None, None) => self.store.visit_nodes_with_allocation(
                         label,
                         &mut allocator,
                         &mut |input| {
@@ -653,7 +728,35 @@ impl MatchRuntime<'_> {
                             bind(node)
                         },
                     ),
+                }?;
+                if let Some(lookup) = lookup {
+                    use hawdb_storage::scan::{
+                        ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind,
+                    };
+                    let total = self.store.node_count_for_label(Some(lookup.label));
+                    let hawdb_plan_cypher::NodeProjectionAccess::PropertyValues {
+                        property, ..
+                    } = lookup.access
+                    else {
+                        unreachable!()
+                    };
+                    self.context
+                        .observer
+                        .record_scan_pruning_report(ScanPruningReport {
+                            target_kind: ScanPruningTargetKind::Node,
+                            label_id: Some(lookup.label),
+                            rel_type_id: None,
+                            strategy: ScanPruningStrategy::PropertyEq { property },
+                            pruned: true,
+                            exact_empty: visited.get() == 0,
+                            candidate_count_before_pruning: total,
+                            pruned_candidate_count: total.saturating_sub(visited.get()),
+                            candidate_count_before_filter: visited.get(),
+                            output_count: matched.get(),
+                            filtered_out_count: visited.get().saturating_sub(matched.get()),
+                        });
                 }
+                Ok(control)
             }
             GraphMatchStep::Expand {
                 source,

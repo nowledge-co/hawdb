@@ -295,7 +295,17 @@ and root `api::tests::row_bound_pattern_properties` in
 `//:hawdb_unit_general_tests`. The regressions cover scalar/property bindings,
 optional predicate boundaries, duplicate matches and inputs, NULL/empty values,
 indexed and generic execution, parameter cache rebinding, dropped/unknown scope,
-and payload/result budget failures. The Mem Thread-reference regression keeps
+and payload/result budget failures. Its `indexed_lookup` module compares indexed
+single-node GraphMatch access with the unindexed path for scalar/map/native
+property keys, constant and residual Space/active filters, nonunique keys,
+duplicate inputs, missing/NULL/invalid keys, fallible conjunct ordering and LIMIT
+stop. Scan reports require six matching node visits for four bounded input keys;
+wide unrequested bodies remain excluded under a small source/working budget.
+Canonical reopen and a snapshot pinned across update/checkpoint retain exact
+results. Executor `batch::tests::graph_match::indexed_node` owns admission release
+after normal completion, consumer Stop/error, mid-stream cancellation and source
+budget refusal. It runs in the existing executor unit owner; no lane/profile or
+timeout changes. The Mem Thread-reference regression keeps
 its original Boolean/COALESCE predicate and complete MATCH → row-dependent
 UNWIND → WITH/aggregate → correlated MATCH/OPTIONAL MATCH query. Per-row
 expansion also covers WITH aliases/native metadata, nested and multiple sources,
