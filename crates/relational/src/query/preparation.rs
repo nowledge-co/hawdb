@@ -157,6 +157,7 @@ pub(super) fn prepare_relational_select_with_snapshot(
             }
         }
         join_order::bind_from_scopes(&mut select, state)?;
+        join_order::promote_where_equalities(&mut select, state, parameters)?;
         super::having::validate_having(&select, parameters, state)?;
         validate_non_aggregate_coalesce_projections(&select, parameters, state)?;
         for item in &select.order_by {

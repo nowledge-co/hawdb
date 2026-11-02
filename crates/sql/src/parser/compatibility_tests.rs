@@ -102,3 +102,101 @@ fn unsupported_alias_mutation_and_ordering_syntax_is_never_executed() {
         );
     }
 }
+
+#[test]
+fn postgres_type_aliases_keep_main_storage_types_and_precision_bounds() {
+    for (declaration, expected) in [
+        ("INT", SqlDataType::BigInt),
+        ("INTEGER", SqlDataType::BigInt),
+        ("INT2", SqlDataType::BigInt),
+        ("INT4", SqlDataType::BigInt),
+        ("SMALLINT", SqlDataType::BigInt),
+        ("TINYINT", SqlDataType::BigInt),
+        ("FLOAT", SqlDataType::DoublePrecision),
+        ("FLOAT(25)", SqlDataType::DoublePrecision),
+        ("FLOAT(53)", SqlDataType::DoublePrecision),
+        ("VARCHAR", SqlDataType::Text),
+        ("VARCHAR(12)", SqlDataType::Text),
+        ("CHARACTER VARYING", SqlDataType::Text),
+        ("CHAR VARYING(12)", SqlDataType::Text),
+    ] {
+        let sql = format!("CREATE TABLE aliases (value {declaration})");
+        let SqlStatement::CreateTable(table) = parse_postgres_sql(&sql).unwrap() else {
+            panic!("expected CREATE TABLE for {declaration}");
+        };
+        assert_eq!(table.columns[0].data_type, expected, "{declaration}");
+    }
+    for declaration in [
+        "REAL",
+        "FLOAT4",
+        "FLOAT(0)",
+        "FLOAT(24)",
+        "FLOAT(54)",
+        "FLOAT(25.0)",
+        "VARCHAR(0)",
+        "VARCHAR(MAX)",
+        "VARCHAR(1 CHARACTERS)",
+        "VARCHAR(18446744073709551616)",
+        "INT(4)",
+        "CHAR(12)",
+    ] {
+        let sql = format!("CREATE TABLE aliases (value {declaration})");
+        assert!(parse_postgres_sql(&sql).is_err(), "{declaration}");
+    }
+}
+
+#[test]
+fn omitted_insert_columns_preserve_values_arity_validation() {
+    let SqlStatement::Insert(insert) =
+        parse_postgres_sql("INSERT INTO bag VALUES (1, 'one'), (2, 'two')").unwrap()
+    else {
+        panic!("expected INSERT");
+    };
+    assert!(insert.columns.is_empty());
+    assert_eq!(insert.rows.len(), 2);
+    assert!(insert.rows.iter().all(|row| row.len() == 2));
+    for sql in [
+        "INSERT INTO bag VALUES (1, 'one'), (2)",
+        "INSERT INTO bag (id) VALUES (1, 'one')",
+        "INSERT INTO bag (id, label) VALUES (1)",
+    ] {
+        let error = parse_postgres_sql(sql).unwrap_err();
+        assert!(error.to_string().contains("equal length"), "{sql}: {error}");
+    }
+}
+
+#[test]
+fn parenthesized_scalar_arguments_keep_column_and_aggregate_semantics() {
+    for sql in [
+        "SELECT ((value)) FROM items",
+        "SELECT COUNT(DISTINCT ((items.value))) FROM items",
+    ] {
+        assert!(parse_postgres_sql(sql).is_ok(), "{sql}");
+    }
+}
+
+#[test]
+fn bulk_values_fit_the_active_composite_lock_workload_without_raising_peg_limits() {
+    for literal in ["1", "FALSE", "NULL", "-1", "'value'", "$1"] {
+        let row = format!("({literal},{literal},{literal},{literal},{literal})");
+        let sql = format!(
+            "INSERT INTO bulk (a,b,c,d,e) VALUES {}",
+            vec![row; 5001].join(",")
+        );
+        let SqlStatement::Insert(insert) = parse_postgres_sql(&sql).unwrap() else {
+            panic!("expected INSERT");
+        };
+        assert_eq!(insert.rows.len(), 5001, "{literal}");
+        assert!(insert.rows.iter().all(|row| row.len() == 5), "{literal}");
+    }
+    for sql in [
+        "INSERT INTO bulk VALUES (1 + 2)",
+        "INSERT INTO bulk VALUES (upper('value'))",
+        "INSERT INTO bulk VALUES (-NULL)",
+    ] {
+        assert!(
+            matches!(parse_postgres_sql(sql), Err(HawDBError::Semantic(_))),
+            "{sql}"
+        );
+    }
+}

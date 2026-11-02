@@ -148,11 +148,9 @@ impl Lowerer<'_> {
                 self.literal_span(value),
             )),
             Scalar | HavingScalar => match &value.kind {
-                E::Parenthesized(inner) if having => self.lower(inner, HavingScalar),
+                E::Parenthesized(inner) => self.lower(inner, position),
                 E::Column(_) => self.lower(value, Column),
-                E::Parameter(_) | E::Literal(_) | E::Parenthesized(_) | E::Unary { .. } => {
-                    self.lower(value, Literal)
-                }
+                E::Parameter(_) | E::Literal(_) | E::Unary { .. } => self.lower(value, Literal),
                 E::Function { .. } | E::Filtered { .. } => self.function(value, position),
                 _ => Err(semantic("unsupported PostgreSQL projection expression")),
             },

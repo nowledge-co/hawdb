@@ -17,7 +17,7 @@
 use hawdb_core::{Catalog, LabelId, RelTypeId, Result};
 use hawdb_plan_cypher::{CompositeRangeSeek, NodeProjectionAccess};
 use hawdb_storage::{
-    adjacency::AdjacencyDirection,
+    adjacency::{AdjacencyDirection, OrderedAdjacencyEntry},
     mutation::{GraphMutation, MutationLimits, MutationSummary, NodeSetAssignment, PropertyFilter},
     projection::ProjectedGraphDefinition,
     scan::{ScanPredicate, ScanPruningReport, ScanSegmentFallback, SegmentReadExecutionReport},
@@ -557,6 +557,37 @@ pub trait GraphExecutionRead {
         Err(hawdb_core::HawDBError::Execution(
             "storage reader does not support admitted ordered relationship reads".into(),
         ))
+    }
+
+    /// The `(neighbor, relationship)` entries of
+    /// [`Self::visit_ordered_adjacent_relationships_with_allocation`], in the
+    /// same order, for callers that need no relationship record. Readers that
+    /// cannot skip the record derive the entries from it.
+    fn visit_ordered_adjacency_entries_with_allocation(
+        &self,
+        adjacency: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(OrderedAdjacencyEntry) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        let (node_id, rel_type, direction) = adjacency;
+        self.visit_ordered_adjacent_relationships_with_allocation(
+            node_id,
+            rel_type,
+            direction,
+            memory,
+            admit,
+            &mut |input| {
+                let relationship = input.relationship();
+                consumer(OrderedAdjacencyEntry {
+                    neighbor_id: match direction {
+                        AdjacencyDirection::Outgoing => relationship.target,
+                        AdjacencyDirection::Incoming => relationship.source,
+                    },
+                    relationship_id: relationship.id,
+                })
+            },
+        )
     }
 
     /// Filtered ordered sources preserve the allocation and live task at the

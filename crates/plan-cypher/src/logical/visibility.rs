@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 
 /// Applies a node visibility policy while preserving each clause's optional boundary.
@@ -40,6 +43,8 @@ pub fn apply_node_visibility_predicates(
                 1 => predicates.pop(),
                 _ => Some(Predicate::And(predicates)),
             };
+            // Conjunct placement is computed at lowering from the final predicate.
+            program.predicate_steps.clear();
             LogicalPlan::GraphMatch {
                 program,
                 input: input

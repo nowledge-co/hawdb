@@ -249,6 +249,23 @@ impl Fold<'_> {
             _ => self.lowerer.literal(expr).map(SqlAssignmentValue::Value),
         }
     }
+    fn insert_value(&self, node: NodeId) -> Result<SqlValue> {
+        let matched = self.first(node);
+        if self.tree.nodes[matched].name != Some("HawInsertLiteral") {
+            return self.lowerer.literal(&self.expr(matched));
+        }
+        let mut expression = self.expr(self.first(matched));
+        if self.tokens[self.tree.nodes[matched].start].kind == TokenKind::Minus {
+            expression = syntax::ExpressionSyntax {
+                span: self.tree.span(matched, self.tokens),
+                kind: syntax::ExpressionKindSyntax::Unary {
+                    operator: syntax::UnaryOperatorSyntax::Minus,
+                    expression: Box::new(expression),
+                },
+            };
+        }
+        self.lowerer.literal(&expression)
+    }
     fn insert(&self, node: NodeId) -> Result<SqlStatement> {
         let mut unsupported = Vec::new();
         for (name, diagnostic) in [
@@ -297,15 +314,19 @@ impl Fold<'_> {
                 if self.has(*row, "HawExplicitRow") {
                     return Err(semantic("INSERT requires the PostgreSQL VALUES form"));
                 }
-                self.children(*row, "Or")
+                self.children(*row, "HawInsertValue")
                     .iter()
-                    .map(|id| self.lowerer.literal(&self.expr(*id)))
+                    .map(|id| self.insert_value(*id))
                     .collect::<Result<Vec<_>>>()
             })
             .collect::<Result<Vec<_>>>()?;
-        if rows.is_empty() || rows.iter().any(|row| row.len() != columns.len()) {
+        let arity = columns.len().max(rows.first().map_or(0, Vec::len));
+        if rows.is_empty()
+            || rows.iter().any(|row| row.len() != arity)
+            || (!columns.is_empty() && arity != columns.len())
+        {
             return Err(semantic(
-                "INSERT VALUES rows must match the explicit column list",
+                "INSERT VALUES rows must have equal length and match any explicit column list",
             ));
         }
         let on_conflict = self
@@ -505,8 +526,57 @@ impl Fold<'_> {
             .text(self.input)
             .to_ascii_uppercase();
         match self.tree.nodes[kind].name {
-            Some("HawIntegerType") => Ok(SqlDataType::BigInt),
+            Some("HawIntegerType") => {
+                if !matches!(raw.as_str(), "BIGINT" | "INT8") && self.has(kind, "Number") {
+                    return Err(semantic("integer aliases do not support a display width"));
+                }
+                Ok(SqlDataType::BigInt)
+            }
             Some("HawDoubleType") => Ok(SqlDataType::DoublePrecision),
+            Some("HawFloatType") => {
+                let widths = self.children(kind, "Number");
+                if let Some(width) = widths.first() {
+                    let precision = self.text(*width).parse::<u64>().map_err(|_| {
+                        HawDBError::Parse("FLOAT precision must be an unsigned integer".into())
+                    })?;
+                    if let Some(scale) = widths.get(1) {
+                        self.text(*scale).parse::<i64>().map_err(|_| {
+                            HawDBError::Parse("FLOAT scale must be an integer".into())
+                        })?;
+                        return Err(semantic("FLOAT scale is not supported"));
+                    }
+                    if !(25..=53).contains(&precision) {
+                        return Err(semantic("FLOAT precision must be between 25 and 53"));
+                    }
+                }
+                Ok(SqlDataType::DoublePrecision)
+            }
+            Some("HawTextType") => {
+                let tokens = &self.tokens[self.tree.nodes[kind].start..self.tree.nodes[kind].end];
+                if let Some(width) = self.tree.child(kind, "Number") {
+                    let length = self.text(width).parse::<u64>().map_err(|_| {
+                        HawDBError::Parse(
+                            "varying character length must be an unsigned integer".into(),
+                        )
+                    })?;
+                    if length == 0
+                        || tokens.iter().any(|token| {
+                            token.is_keyword(self.input, "CHARACTERS")
+                                || token.is_keyword(self.input, "OCTETS")
+                        })
+                    {
+                        return Err(semantic(
+                            "varying character length must be positive and omit a unit",
+                        ));
+                    }
+                } else if tokens
+                    .iter()
+                    .any(|token| token.kind == TokenKind::LeftParen)
+                {
+                    return Err(semantic("varying character MAX length is not supported"));
+                }
+                Ok(SqlDataType::Text)
+            }
             Some("HawSimpleType") => Ok(match raw.as_str() {
                 "BOOLEAN" | "BOOL" => SqlDataType::Boolean,
                 "FLOAT8" => SqlDataType::DoublePrecision,

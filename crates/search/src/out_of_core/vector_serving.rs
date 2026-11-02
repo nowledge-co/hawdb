@@ -16,7 +16,7 @@ use super::{BoundedScoreCollector, CandidateSet, SearchOutOfCoreMetrics, SearchO
 use crate::build_memory::{checked_add as add, SET_ENTRY_BYTES};
 use crate::error::{HawDBError, Result};
 use crate::lexical_projection::QueryContext;
-use crate::{CompressedVectorSearchMode, CosineQuery, SearchFallbackReasonCode};
+use crate::{CompressedVectorSearchMode, SearchFallbackReasonCode, VectorRelevanceQuery};
 use hawdb_executor::QueryMemoryLease;
 #[cfg(feature = "vector-search")]
 use std::cmp::{Ordering, Reverse};
@@ -217,8 +217,21 @@ impl BoundedLayeredProjectionHits {
 #[derive(Clone, Copy)]
 pub(super) struct RerankPolicy<'a> {
     pub(super) candidate_limit: usize,
-    pub(super) distance: Option<hawdb_core::VectorDistance>,
+    /// The projection's own metric; every final score uses it.
+    pub(super) metric: hawdb_core::VectorDistance,
+    pub(super) score: RerankScore,
     pub(super) query: Option<QueryContext<'a>>,
+}
+
+/// How exact reranked distances are reported. The shared collector maximizes.
+#[cfg(feature = "vector-search")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RerankScore {
+    /// Ordinary Search relevance in [0, 1]; see `VectorRelevanceQuery`.
+    Relevance,
+    /// Negated mathematical distance for schema-bound index results, which
+    /// expose the distance itself.
+    NegatedDistance,
 }
 
 #[derive(Debug)]
@@ -354,7 +367,8 @@ impl SearchOutOfCoreReader {
             metrics,
             RerankPolicy {
                 candidate_limit: request.candidate_limit.get(),
-                distance: Some(request.descriptor.distance()),
+                metric: request.descriptor.distance(),
+                score: RerankScore::NegatedDistance,
                 query: Some(query),
             },
         )
@@ -372,6 +386,8 @@ impl SearchOutOfCoreReader {
         let vector_execution_options = options.execution;
         let task_context = vector_execution_options.task_context;
         checkpoint_vector_task(task_context)?;
+        #[cfg(feature = "vector-search")]
+        let metric = self.vector_metric()?;
         if vector_execution_options.exact
             && options.compressed != CompressedVectorSearchMode::Disabled
         {
@@ -384,8 +400,12 @@ impl SearchOutOfCoreReader {
             && !vector_execution_options.exact
             && self.vector_layers_use_diskann()
         {
-            let mut nonzero = false;
+            // Only cosine leaves a zero query undefined; L2 ranks it normally.
+            let mut nonzero = metric != hawdb_core::VectorDistance::Cosine;
             for chunk in query_embedding.chunks(4096) {
+                if nonzero {
+                    break;
+                }
                 checkpoint_vector_task(task_context)?;
                 if chunk.iter().any(|coordinate| *coordinate != 0.0) {
                     nonzero = true;
@@ -421,7 +441,8 @@ impl SearchOutOfCoreReader {
                     metrics,
                     RerankPolicy {
                         candidate_limit,
-                        distance: None,
+                        metric,
+                        score: RerankScore::Relevance,
                         query: options.query,
                     },
                 )
@@ -453,7 +474,8 @@ impl SearchOutOfCoreReader {
                         metrics,
                         RerankPolicy {
                             candidate_limit: self.config.max_vector_candidates.get(),
-                            distance: None,
+                            metric,
+                            score: RerankScore::Relevance,
                             query: options.query,
                         },
                     ) {
@@ -517,7 +539,8 @@ impl SearchOutOfCoreReader {
                             metrics,
                             RerankPolicy {
                                 candidate_limit: self.config.max_vector_candidates.get(),
-                                distance: None,
+                                metric,
+                                score: RerankScore::Relevance,
                                 query: options.query,
                             },
                         )
@@ -541,6 +564,7 @@ impl SearchOutOfCoreReader {
         context: Option<QueryContext<'_>>,
     ) -> Result<VectorScoreScan> {
         let task_context = vector_execution_options.task_context;
+        let metric = self.vector_metric()?;
         let max_scored_documents = admitted_score_entries(
             self.config.max_score_entries.get(),
             vector_execution_options.max_working_bytes,
@@ -558,7 +582,7 @@ impl SearchOutOfCoreReader {
             )?,
             None => BoundedScoreCollector::new(retained_limit, max_scored_documents)?,
         };
-        let query_scorer = CosineQuery::with_work(query_embedding, || {
+        let query_scorer = VectorRelevanceQuery::with_work(query_embedding, metric, || {
             context.map_or_else(
                 || checkpoint_vector_task(task_context),
                 |query| query.checkpoint(),
@@ -912,12 +936,9 @@ impl SearchOutOfCoreReader {
             policy.query,
         )?;
         let query_scorer = if selected.is_empty() {
-            CosineQuery {
-                query: query_embedding,
-                prepared: None,
-            }
+            VectorRelevanceQuery::unprepared(query_embedding, policy.metric)
         } else {
-            CosineQuery::with_work(query_embedding, || {
+            VectorRelevanceQuery::with_work(query_embedding, policy.metric, || {
                 policy.query.map_or_else(
                     || checkpoint_vector_task(task_context),
                     |query| query.checkpoint(),
@@ -979,7 +1000,7 @@ impl SearchOutOfCoreReader {
                                 if let Some(score) = rerank_score(
                                     &query_scorer,
                                     &document.embedding,
-                                    policy.distance,
+                                    policy.score,
                                     || query.checkpoint(),
                                 )? {
                                     collector.push_borrowed(&document.id, score)?;
@@ -1015,7 +1036,7 @@ impl SearchOutOfCoreReader {
                     );
                     reranked_candidate_count = reranked_candidate_count.saturating_add(1);
                     if let Some(score) =
-                        rerank_score(&query_scorer, &document.embedding, policy.distance, || {
+                        rerank_score(&query_scorer, &document.embedding, policy.score, || {
                             checkpoint_vector_task(task_context)
                         })?
                     {
@@ -1173,6 +1194,37 @@ impl SearchOutOfCoreReader {
             .any(|segment| segment.vectors.entry_count != 0)
     }
 
+    /// The metric every ordinary Search score uses. Opened artifacts record it
+    /// (validated against any binding at open); layers without a candidate
+    /// artifact defer to the sealed binding, and unbound projections are
+    /// cosine by construction.
+    pub(super) fn vector_metric(&self) -> Result<hawdb_core::VectorDistance> {
+        #[cfg(feature = "vector-search")]
+        {
+            let mut recorded = None;
+            for artifact in &self.segments {
+                let Some(projection) = artifact.rabitq_projection.as_ref() else {
+                    continue;
+                };
+                let metric = projection.metric();
+                if recorded.is_some_and(|recorded| recorded != metric) {
+                    return Err(HawDBError::StorageIntegrity(
+                        "search vector projections disagree on their distance metric".into(),
+                    ));
+                }
+                recorded = Some(metric);
+            }
+            if let Some(metric) = recorded {
+                return Ok(metric);
+            }
+        }
+        Ok(self
+            .vector_index_descriptor()?
+            .map_or(hawdb_core::VectorDistance::Cosine, |descriptor| {
+                descriptor.distance()
+            }))
+    }
+
     #[cfg(feature = "vector-search")]
     fn vector_layers_use_diskann(&self) -> bool {
         let mut found = false;
@@ -1219,21 +1271,21 @@ impl SearchOutOfCoreReader {
 
 #[cfg(feature = "vector-search")]
 fn rerank_score(
-    query: &CosineQuery<'_>,
+    query: &VectorRelevanceQuery<'_>,
     embedding: &[f32],
-    distance: Option<hawdb_core::VectorDistance>,
+    score: RerankScore,
     checkpoint: impl FnMut() -> Result<()>,
 ) -> Result<Option<f64>> {
-    if let Some(distance) = distance {
+    match score {
         // The shared collector maximizes scores. Only this internal value is
         // negated; the indexed-distance result exposes the mathematical distance.
-        return match &query.prepared {
-            Some(prepared) => prepared.distance_slices_with_work(distance, embedding, checkpoint),
-            None => distance.distance_slices_with_work(query.query, embedding, checkpoint),
-        }
-        .map(|distance| Some(-distance));
+        RerankScore::NegatedDistance => query
+            .distance_with_work(embedding, checkpoint)
+            .map(|distance| Some(-distance)),
+        // Both metrics map onto positive relevance; only nonpositive cosine
+        // similarity is excluded, as in the exact scalar path.
+        RerankScore::Relevance => Ok(query.score(embedding).filter(|score| *score > 0.0)),
     }
-    Ok(query.score(embedding).filter(|score| *score > 0.0))
 }
 
 fn checkpoint_vector_task(task_context: Option<&crate::RuntimeTaskContext>) -> Result<()> {

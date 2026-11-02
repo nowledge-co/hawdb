@@ -112,7 +112,35 @@ pub(super) fn build() -> Result<Grammar, String> {
             ]),
         ),
         ("HawValues", s(vec![k("VALUES"), list("HawRow")])),
-        ("HawRow", s(vec![o(r("HawExplicitRow")), group(list("Or"))])),
+        (
+            "HawRow",
+            s(vec![o(r("HawExplicitRow")), group(list("HawInsertValue"))]),
+        ),
+        (
+            "HawInsertValue",
+            c(vec![
+                s(vec![
+                    r("HawInsertLiteral"),
+                    E::Ahead(
+                        Box::new(c(vec![t(T::Comma), t(T::RightParen)])),
+                        "a SQL statement token",
+                    ),
+                ]),
+                r("Or"),
+            ]),
+        ),
+        (
+            "HawInsertLiteral",
+            c(vec![
+                r("Number"),
+                r("String"),
+                r("Parameter"),
+                r("Null"),
+                r("True"),
+                r("False"),
+                s(vec![t(T::Minus), r("Number")]),
+            ]),
+        ),
         ("HawExplicitRow", k("ROW")),
         ("HawDefaultValues", s(vec![k("DEFAULT"), k("VALUES")])),
         (
@@ -248,6 +276,8 @@ pub(super) fn build() -> Result<Grammar, String> {
                 c(vec![
                     r("HawIntegerType"),
                     r("HawDoubleType"),
+                    r("HawFloatType"),
+                    r("HawTextType"),
                     r("HawSimpleType"),
                     r("HawCustomType"),
                 ]),
@@ -256,9 +286,41 @@ pub(super) fn build() -> Result<Grammar, String> {
         ),
         (
             "HawIntegerType",
-            s(vec![kw(&["BIGINT", "INT8"]), o(group(r("Number")))]),
+            s(vec![
+                kw(&[
+                    "BIGINT", "INT8", "INT", "INTEGER", "INT4", "SMALLINT", "INT2", "TINYINT",
+                ]),
+                o(group(r("Number"))),
+            ]),
         ),
         ("HawDoubleType", s(vec![k("DOUBLE"), k("PRECISION")])),
+        (
+            "HawFloatType",
+            s(vec![
+                k("FLOAT"),
+                o(group(s(vec![
+                    r("Number"),
+                    o(s(vec![
+                        t(T::Comma),
+                        o(c(vec![t(T::Minus), t(T::Plus)])),
+                        r("Number"),
+                    ])),
+                ]))),
+            ]),
+        ),
+        (
+            "HawTextType",
+            s(vec![
+                c(vec![
+                    k("VARCHAR"),
+                    s(vec![kw(&["CHARACTER", "CHAR"]), k("VARYING")]),
+                ]),
+                o(group(s(vec![
+                    c(vec![k("MAX"), r("Number")]),
+                    o(kw(&["CHARACTERS", "OCTETS"])),
+                ]))),
+            ]),
+        ),
         (
             "HawSimpleType",
             kw(&["BOOLEAN", "BOOL", "FLOAT8", "TEXT", "BYTEA", "UUID"]),

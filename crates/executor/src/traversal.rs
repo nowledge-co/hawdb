@@ -400,9 +400,114 @@ pub(crate) fn visit_one_hop_relationships_with_context(
         memory,
         observer,
         task_context,
-        false,
+        None,
         consumer,
     )
+}
+
+/// Like [`visit_one_hop_relationships_with_context`], but reads each target's
+/// identity, labels and only `target_properties` when they are given.
+pub(crate) fn visit_one_hop_relationships_projected(
+    store: &dyn GraphExecutionRead,
+    spec: OneHopRelationshipSpec<'_>,
+    memory: AdjacencyReadMemory<'_>,
+    observer: &dyn ExecutionObserver,
+    task_context: Option<&RuntimeTaskContext>,
+    target_properties: Option<&BTreeSet<String>>,
+    consumer: &mut dyn FnMut(RelRecord, NodeRecord) -> Result<ScanControl>,
+) -> Result<ScanControl> {
+    visit_one_hop_relationships_selected(
+        store,
+        spec,
+        memory,
+        observer,
+        task_context,
+        target_properties,
+        consumer,
+    )
+}
+
+/// Visits the relationship id and the neighbor of every one-hop match of an
+/// anonymous relationship pattern without property constraints, in the order
+/// of [`visit_one_hop_relationships_with_context`]. No relationship or node
+/// record is read; an undirected self-loop is visited once.
+pub(crate) fn visit_one_hop_adjacency_entries(
+    store: &dyn GraphExecutionRead,
+    source: NodeId,
+    rel_type_id: Option<RelTypeId>,
+    direction: RelationshipDirection,
+    memory: AdjacencyReadMemory<'_>,
+    task_context: Option<&RuntimeTaskContext>,
+    consumer: &mut dyn FnMut(RelId, NodeId) -> Result<ScanControl>,
+) -> Result<ScanControl> {
+    let mut visit_direction = |adjacency_direction: AdjacencyDirection,
+                               skip_undirected_self_loops: bool|
+     -> Result<ScanControl> {
+        store.visit_ordered_adjacency_entries_with_allocation(
+            (source, rel_type_id, adjacency_direction),
+            memory,
+            &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                &mut |bytes| memory.admit_node(bytes, 0, task_context).map(Some),
+                task_context,
+            ),
+            &mut |entry| {
+                crate::pipeline::runtime_checkpoint(task_context)?;
+                if skip_undirected_self_loops && entry.neighbor_id == source {
+                    return Ok(ScanControl::Continue);
+                }
+                consumer(entry.relationship_id, entry.neighbor_id)
+            },
+        )
+    };
+    match direction {
+        RelationshipDirection::Outgoing => visit_direction(AdjacencyDirection::Outgoing, false),
+        RelationshipDirection::Incoming => visit_direction(AdjacencyDirection::Incoming, false),
+        RelationshipDirection::Undirected => {
+            if visit_direction(AdjacencyDirection::Outgoing, false)? == ScanControl::Stop {
+                return Ok(ScanControl::Stop);
+            }
+            visit_direction(AdjacencyDirection::Incoming, true)
+        }
+    }
+}
+
+/// Reads one node's identity, labels and `properties` with an admitted
+/// allocation, or `None` when it is missing or outside `label_ids`.
+pub(crate) fn projected_node_with_allocation(
+    store: &dyn GraphExecutionRead,
+    id: NodeId,
+    label_ids: Option<&[LabelId]>,
+    properties: &BTreeSet<String>,
+    admit: &mut dyn FnMut(usize) -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<
+    Option<(
+        NodeRecord,
+        Box<dyn hawdb_storage::read_view::GraphReadAllocation>,
+    )>,
+> {
+    if let Some(task) = task_context {
+        task.charge_work(1)?;
+    }
+    let mut allocation = None;
+    let Some(node) = store.projected_node_owned_admitted(id, properties, &mut |bytes| {
+        allocation = Some(admit(bytes)?);
+        Ok(())
+    })?
+    else {
+        return Ok(None);
+    };
+    let node = NodeRecord {
+        id: node.id,
+        labels: node.labels,
+        properties: node.properties,
+    };
+    let Some(allocation) = allocation else {
+        return Err(HawDBError::Execution(
+            "projected node read returned a record without admission".into(),
+        ));
+    };
+    Ok(node_matches_label_pattern(&node, label_ids).then_some((node, allocation)))
 }
 
 fn visit_one_hop_relationships_selected(
@@ -411,7 +516,7 @@ fn visit_one_hop_relationships_selected(
     memory: AdjacencyReadMemory<'_>,
     observer: &dyn ExecutionObserver,
     task_context: Option<&RuntimeTaskContext>,
-    metadata_only: bool,
+    target_properties: Option<&BTreeSet<String>>,
     consumer: &mut dyn FnMut(RelRecord, NodeRecord) -> Result<ScanControl>,
 ) -> Result<ScanControl> {
     let relationship_filter = combine_property_filters(
@@ -431,32 +536,19 @@ fn visit_one_hop_relationships_selected(
         {
             return Ok(ScanControl::Continue);
         }
-        if metadata_only {
-            if let Some(task) = task_context {
-                task.charge_work(1)?;
-            }
-            let mut allocation = None;
-            let target =
-                store.projected_node_owned_admitted(target_id, &BTreeSet::new(), &mut |bytes| {
-                    allocation = Some(memory.admit_node(
-                        bytes,
-                        relationship_memory_bytes(&relationship),
-                        task_context,
-                    )?);
-                    Ok(())
-                })?;
-            let Some(target) = target else {
-                return Ok(ScanControl::Continue);
-            };
-            let target = NodeRecord {
-                id: target.id,
-                labels: target.labels,
-                properties: target.properties,
-            };
-            return if node_matches_label_pattern(&target, spec.target_label_ids) {
-                consumer(relationship, target)
-            } else {
-                Ok(ScanControl::Continue)
+        if let Some(properties) = target_properties {
+            let related_bytes = relationship_memory_bytes(&relationship);
+            let target = projected_node_with_allocation(
+                store,
+                target_id,
+                spec.target_label_ids,
+                properties,
+                &mut |bytes| memory.admit_node(bytes, related_bytes, task_context),
+                task_context,
+            )?;
+            return match target {
+                Some((target, _allocation)) => consumer(relationship, target),
+                None => Ok(ScanControl::Continue),
             };
         }
         let mut admit_node = |bytes| {
@@ -577,22 +669,21 @@ pub fn visit_bounded_expand_targets(
 
 /// Like [`visit_bounded_expand_targets`], but also excludes relationships
 /// already bound by the enclosing pattern and reports each trail's
-/// relationships so the caller can keep the whole match isomorphic.
+/// relationships so the caller can keep the whole match isomorphic. Given
+/// `target_properties`, it reads only each endpoint's identity, labels and
+/// those properties.
 pub(crate) fn visit_bounded_expand_trails(
     store: &dyn GraphExecutionRead,
     spec: BoundedExpandSpec<'_>,
     excluded: &BTreeSet<RelId>,
+    target_properties: Option<&BTreeSet<String>>,
     memory: AdjacencyReadMemory<'_>,
     task_context: Option<&RuntimeTaskContext>,
     consumer: &mut TrailConsumer<'_>,
 ) -> Result<ScanControl> {
-    visit_bounded_expand_inner(
-        store,
-        ResolvedBoundedExpandSpec::typed(spec, Some(excluded)),
-        memory,
-        task_context,
-        consumer,
-    )
+    let mut spec = ResolvedBoundedExpandSpec::typed(spec, Some(excluded));
+    spec.target_properties = target_properties;
+    visit_bounded_expand_inner(store, spec, memory, task_context, consumer)
 }
 
 #[derive(Clone, Copy)]
@@ -605,6 +696,8 @@ struct ResolvedBoundedExpandSpec<'a> {
     min_hops: usize,
     max_hops: usize,
     excluded: Option<&'a BTreeSet<RelId>>,
+    // None reads every endpoint property.
+    target_properties: Option<&'a BTreeSet<String>>,
 }
 
 impl<'a> ResolvedBoundedExpandSpec<'a> {
@@ -617,6 +710,7 @@ impl<'a> ResolvedBoundedExpandSpec<'a> {
             min_hops: spec.min_hops,
             max_hops: spec.max_hops,
             excluded,
+            target_properties: None,
         }
     }
 }
@@ -640,6 +734,7 @@ pub(crate) fn visit_zero_hop_expand_target(
             min_hops: 0,
             max_hops,
             excluded: None,
+            target_properties: None,
         },
         memory,
         task_context,
@@ -689,27 +784,45 @@ fn visit_bounded_expand_inner(
             if depth >= self.spec.min_hops {
                 let memory = self.memory;
                 let task_context = self.task_context;
-                let mut admit_node = |bytes| {
-                    memory
-                        .admit_node(bytes, std::mem::size_of::<usize>(), task_context)
-                        .map(Some)
-                };
-                match self.store.node_with_allocation(
-                    current,
-                    self.spec.target_label_ids,
-                    &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
-                        &mut admit_node,
+                if let Some(properties) = self.spec.target_properties {
+                    if let Some((node, _allocation)) = projected_node_with_allocation(
+                        self.store,
+                        current,
+                        self.spec.target_label_ids,
+                        properties,
+                        &mut |bytes| {
+                            memory.admit_node(bytes, std::mem::size_of::<usize>(), task_context)
+                        },
                         task_context,
-                    ),
-                )? {
-                    AdmittedNodeRead::Node(node) => {
-                        let (node, _allocation) = node.into_parts();
-                        if (self.consumer)(node, depth, &self.relationships)? == ScanControl::Stop {
-                            return Ok(ScanControl::Stop);
-                        }
+                    )? && (self.consumer)(node, depth, &self.relationships)? == ScanControl::Stop
+                    {
+                        return Ok(ScanControl::Stop);
                     }
-                    AdmittedNodeRead::Missing => {}
-                    AdmittedNodeRead::Stopped => return Ok(ScanControl::Stop),
+                } else {
+                    let mut admit_node = |bytes| {
+                        memory
+                            .admit_node(bytes, std::mem::size_of::<usize>(), task_context)
+                            .map(Some)
+                    };
+                    match self.store.node_with_allocation(
+                        current,
+                        self.spec.target_label_ids,
+                        &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                            &mut admit_node,
+                            task_context,
+                        ),
+                    )? {
+                        AdmittedNodeRead::Node(node) => {
+                            let (node, _allocation) = node.into_parts();
+                            if (self.consumer)(node, depth, &self.relationships)?
+                                == ScanControl::Stop
+                            {
+                                return Ok(ScanControl::Stop);
+                            }
+                        }
+                        AdmittedNodeRead::Missing => {}
+                        AdmittedNodeRead::Stopped => return Ok(ScanControl::Stop),
+                    }
                 }
             }
             if depth == self.spec.max_hops {
@@ -871,7 +984,7 @@ fn count_one_hop_relationships(
         memory,
         observer,
         task_context,
-        true,
+        Some(&BTreeSet::new()),
         &mut |relationship, _| {
             runtime_checkpoint(task_context)?;
             if relationship_count_filter_matches(&relationship, count_filter) {

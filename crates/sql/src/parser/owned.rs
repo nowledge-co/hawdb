@@ -422,15 +422,55 @@ mod peg_baseline {
 
     #[test]
     fn frozen_generated_select_and_mutation_boundaries() {
+        // Main #1474 intentionally accepts INTEGER and implicit INSERT columns.
+        // Retain the historical fixture and verify only its six sourced changes.
+        let changes: std::collections::BTreeMap<_, _> =
+            include_str!("../../fixtures/frontend_main_1474_peg_baseline_v1.jsonl")
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .filter_map(|case| {
+                    case["replaces"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .map(|id| (id, case))
+                })
+                .collect();
+        assert_eq!(changes.len(), 6);
+        let mut replacements = 0;
         let mut count = 0;
         for line in include_str!("../../fixtures/frontend_generated_peg_baseline_v1.jsonl").lines()
         {
             let expected: serde_json::Value = serde_json::from_str(line).unwrap();
             let input = expected["sql"].as_str().unwrap();
-            assert_case(input, &expected);
+            if let Some(current) = changes.get(expected["id"].as_str().unwrap()) {
+                assert_eq!(current["sql"], expected["sql"]);
+                assert_eq!(current["previous_kind"], expected["kind"]);
+                assert_eq!(current["previous_ast_sha256"], expected["ast_sha256"]);
+                assert_case(input, current);
+                replacements += 1;
+            } else {
+                assert_case(input, &expected);
+            }
             count += 1;
         }
         assert_eq!(count, 489);
+        assert_eq!(replacements, 6);
+    }
+
+    #[test]
+    fn frozen_main_1474_compatibility_preserves_complete_ir_and_rejection_classes() {
+        let mut count = 0;
+        for line in include_str!("../../fixtures/frontend_main_1474_peg_baseline_v1.jsonl").lines()
+        {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                expected["source_commit"],
+                "f3e5ecd01514b2703bf2a00fffbaeb3d97ba9399"
+            );
+            assert_case(expected["sql"].as_str().unwrap(), &expected);
+            count += 1;
+        }
+        assert_eq!(count, 522);
     }
 
     #[test]

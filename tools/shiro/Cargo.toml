@@ -17,8 +17,8 @@ name = "shiro_core"
 
 [dependencies]
 serde_json = "1"
-hawdb = { path = "../..", version = "0.23.0", default-features = false }
-hawdb-fuzz-contracts = { path = "../../crates/fuzz-contracts", version = "0.23.0" }
+hawdb = { path = "../..", version = "0.24.0", default-features = false }
+hawdb-fuzz-contracts = { path = "../../crates/fuzz-contracts", version = "0.24.0" }
 
 [features]
 default = [

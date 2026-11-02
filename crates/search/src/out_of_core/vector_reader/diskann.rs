@@ -67,6 +67,10 @@ impl<R> GraphProjection<R> {
         })
     }
 
+    pub(super) fn metric(&self) -> hawdb_core::VectorDistance {
+        self.graph.metadata().metric
+    }
+
     pub(super) fn parameters(&self) -> Parameters {
         let metadata = self.graph.metadata();
         (

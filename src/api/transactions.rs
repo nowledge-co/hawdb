@@ -691,6 +691,49 @@ pub(super) fn execute_database_transaction_sql(
     )
 }
 
+pub(super) fn transaction_relational_read_modes<'a>(
+    runtime: &DatabaseTransactionRuntime,
+    state: &'a DatabaseTransactionState,
+) -> Result<crate::relational_sql::RelationalQueryReadModes<'a>> {
+    let index_read_mode = if runtime
+        .config
+        .relational_index_mode
+        .requires_authoritative_indexes()
+    {
+        crate::relational_sql::RelationalIndexReadMode::AuthoritativeTransaction(
+            state.authoritative_relational_index()?,
+        )
+    } else if runtime
+        .config
+        .relational_index_mode
+        .serves_demand_paged_reads()
+    {
+        crate::relational_sql::RelationalIndexReadMode::TransactionWorkspace
+    } else {
+        crate::relational_sql::RelationalIndexReadMode::Materialized
+    };
+    let row_read_mode = match &state.relational_rows {
+        Ok(Some(rows)) => crate::relational_sql::RelationalRowReadMode::Transaction {
+            store: state
+                .graph_transaction
+                .as_ref()
+                .expect("database transaction must own a graph workspace")
+                .store(),
+            rows,
+        },
+        Ok(None) => crate::relational_sql::RelationalRowReadMode::CanonicalMemory,
+        Err(error) => {
+            return Err(HawDBError::StorageIntegrity(format!(
+                "authoritative transaction row view could not be pinned: {error}"
+            )));
+        }
+    };
+    Ok(crate::relational_sql::RelationalQueryReadModes::new(
+        index_read_mode,
+        row_read_mode,
+    ))
+}
+
 pub(super) struct DatabaseTransactionSqlOptions<'a> {
     pub(super) allow_system_schema_registry_write: bool,
     pub(super) allow_locking_select: bool,
@@ -879,44 +922,12 @@ pub(super) fn execute_database_transaction_prepared_sql(
         prepared.statement(),
         crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
     ) {
-        let index_read_mode = if runtime
-            .config
-            .relational_index_mode
-            .requires_authoritative_indexes()
-        {
-            crate::relational_sql::RelationalIndexReadMode::AuthoritativeTransaction(
-                state.authoritative_relational_index()?,
-            )
-        } else if runtime
-            .config
-            .relational_index_mode
-            .serves_demand_paged_reads()
-        {
-            crate::relational_sql::RelationalIndexReadMode::TransactionWorkspace
-        } else {
-            crate::relational_sql::RelationalIndexReadMode::Materialized
-        };
-        let row_read_mode = match &state.relational_rows {
-            Ok(Some(rows)) => crate::relational_sql::RelationalRowReadMode::Transaction {
-                store: state
-                    .graph_transaction
-                    .as_ref()
-                    .expect("database transaction must own a graph workspace")
-                    .store(),
-                rows,
-            },
-            Ok(None) => crate::relational_sql::RelationalRowReadMode::CanonicalMemory,
-            Err(error) => {
-                return Err(HawDBError::StorageIntegrity(format!(
-                    "authoritative transaction row view could not be pinned: {error}"
-                )));
-            }
-        };
+        let read_modes = transaction_relational_read_modes(runtime, state)?;
         let output = crate::relational_sql::execute_prepared_relational_query_with_resources(
             prepared,
             parameters,
             &state.relational_state,
-            crate::relational_sql::RelationalQueryReadModes::new(index_read_mode, row_read_mode),
+            read_modes,
             relational_query_resource_context(
                 &runtime.config,
                 max_rows,

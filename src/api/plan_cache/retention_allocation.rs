@@ -351,6 +351,7 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
         let program = GraphMatchProgram {
             imports: Vec::new(),
             introduced: vec!["a".into(), "b".into(), "p".into()],
+            projected_nodes: BTreeMap::new(),
             steps: vec![
                 GraphMatchStep::Node(GraphMatchNode {
                     variable: "a".into(),
@@ -375,6 +376,7 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
                 })),
             ],
             predicate: None,
+            predicate_steps: Vec::new(),
             optional: true,
         };
         let items = [

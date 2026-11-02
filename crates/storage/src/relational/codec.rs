@@ -59,7 +59,7 @@ pub(crate) use checkpoint::{
 
 const WAL_MAGIC: &[u8; 8] = b"SKRLWAL1";
 const CHECKPOINT_MAGIC: &[u8; 8] = b"SKRLCKP1";
-const CODEC_VERSION: u16 = 2;
+const CODEC_VERSION: u16 = 3;
 const HEADER_BYTES: usize = 64;
 const RELATIONAL_CHECKPOINT_ARTIFACT_ID: u64 = 1;
 
@@ -628,10 +628,15 @@ pub fn encode_relational_checkpoint_to_writer<W: Write + Seek>(
         let mut table = Encoder::default();
         table.string(name)?;
         table.table_schema(schema)?;
+        table.u64(segment.last_row_id as u64);
         table.count(segment.rows.len(), "checkpoint rows")?;
         payload.write_all(&table.finish())?;
-        for row in segment.rows.values() {
+        for (key, row) in segment.rows.iter() {
             let mut encoded_row = Encoder::default();
+            if schema.primary_key.is_empty() {
+                super::validate_hidden_row_handle(key, segment.last_row_id)?;
+                encoded_row.key(key)?;
+            }
             encoded_row.row(row)?;
             payload.write_all(&encoded_row.finish())?;
         }
@@ -741,8 +746,18 @@ pub(crate) fn validate_relational_checkpoint_file_format(
                 "checkpoint has a mismatched table {name}"
             )));
         }
+        let last_row_id = i64::try_from(decoder.u64()?)
+            .map_err(|_| RelationalError::Corruption("invalid row ID high-water mark".into()))?;
+        if !schema.primary_key.is_empty() && last_row_id != 0 {
+            return Err(RelationalError::Corruption(
+                "primary-key table has a hidden row ID allocator".into(),
+            ));
+        }
         let row_count = decoder.row_count()?;
         for _ in 0..row_count {
+            if schema.primary_key.is_empty() {
+                super::validate_hidden_row_handle(&decoder.key()?, last_row_id)?;
+            }
             // Reuse value decoding to reach the next schema without building row maps.
             drop(decoder.row()?);
         }
@@ -859,6 +874,13 @@ fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
             validate_table_schema(&schema)?;
             None
         };
+        let last_row_id = i64::try_from(decoder.u64()?)
+            .map_err(|_| RelationalError::Corruption("invalid row ID high-water mark".into()))?;
+        if !schema.primary_key.is_empty() && last_row_id != 0 {
+            return Err(RelationalError::Corruption(
+                "primary-key table has a hidden row ID allocator".into(),
+            ));
+        }
         let row_count = decoder.row_count()?;
         let primary_key = if let (Some(work), Some(positions)) = (&work, &positions) {
             checkpoint::primary_key_positions_with_work_context(&schema, positions, work)?
@@ -867,13 +889,22 @@ fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
         };
         let mut rows = BTreeMap::new();
         for _ in 0..row_count {
+            let hidden_key = if schema.primary_key.is_empty() {
+                let key = decoder.key()?;
+                super::validate_hidden_row_handle(&key, last_row_id)?;
+                Some(key)
+            } else {
+                None
+            };
             let row = decoder.row()?;
             if let Some(work) = &work {
                 checkpoint::validate_row_with_work_context(&schema, &row, work)?;
             } else {
                 validate_row(&schema, &row)?;
             }
-            let key = if let Some(work) = &work {
+            let key = if let Some(key) = hidden_key {
+                key
+            } else if let Some(work) = &work {
                 checkpoint::row_key_with_work_context(&row, &primary_key, work)?
             } else {
                 super::row_key(&row, &primary_key)
@@ -909,6 +940,7 @@ fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
         state.segments.insert(
             name,
             Arc::new(RelationalTableSegment {
+                last_row_id,
                 rows,
                 indexes: BTreeMap::new(),
                 _memory: Default::default(),

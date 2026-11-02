@@ -8,9 +8,32 @@ use super::*;
 pub struct GraphMatchProgram {
     pub imports: Vec<GraphBindingImport>,
     pub introduced: Vec<String>,
+    /// Node variables bound by this program (introduced or imported) that
+    /// every later reader uses only through these properties, its identity
+    /// and its labels. The executor reads just those parts of their records;
+    /// a variable that is absent is read in full. Lowering fills it once the
+    /// whole plan is known; the binder leaves it empty.
+    pub projected_nodes: BTreeMap<String, BTreeSet<String>>,
     pub steps: Vec<GraphMatchStep>,
     pub predicate: Option<Predicate>,
+    /// Where each top-level conjunct of `predicate` is evaluated: entry `i`
+    /// is the number of steps completed before conjunct `i` (a child of
+    /// `Predicate::And`, or the whole predicate otherwise) runs, at most
+    /// `steps.len()`. Empty evaluates the whole predicate after the last step.
+    /// Lowering fills it from the final step order; the binder leaves it empty.
+    pub predicate_steps: Vec<usize>,
     pub optional: bool,
+}
+
+impl GraphMatchProgram {
+    /// The top-level conjuncts that `predicate_steps` places, in order.
+    pub fn predicate_conjuncts(&self) -> &[Predicate] {
+        match &self.predicate {
+            None => &[],
+            Some(Predicate::And(conjuncts)) => conjuncts,
+            Some(predicate) => std::slice::from_ref(predicate),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,8 +111,10 @@ pub struct GraphMatchShortestPath {
 hawdb_core::impl_retained_heap_for_struct!(GraphMatchProgram {
     imports,
     introduced,
+    projected_nodes,
     steps,
     predicate,
+    predicate_steps,
     optional
 });
 

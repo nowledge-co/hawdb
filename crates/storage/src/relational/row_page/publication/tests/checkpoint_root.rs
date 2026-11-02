@@ -572,6 +572,7 @@ fn checkpoint_descriptor_key_buffers_admit_before_copy_and_retain_result_invento
             10,
             None,
             vec![RelationalRowPageTableDelta {
+                last_row_id: 0,
                 table: "documents".into(),
                 schema: Some(schema),
                 schema_digest: digest,
@@ -698,6 +699,7 @@ fn controlled_descriptor_search_releases_replaced_probe_keys_under_fixed_budget(
             10,
             None,
             vec![RelationalRowPageTableDelta {
+                last_row_id: 0,
                 table: "documents".into(),
                 schema: Some(schema),
                 schema_digest: digest,

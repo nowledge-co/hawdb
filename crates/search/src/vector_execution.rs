@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::{
-    CosineQuery, SearchDocument, SearchFallbackReasonCode, VectorSearchBackend,
+    SearchDocument, SearchFallbackReasonCode, VectorRelevanceQuery, VectorSearchBackend,
     VectorSearchExecutionOptions,
 };
 use crate::error::{HawDBError, Result};
@@ -42,6 +42,8 @@ pub(super) struct SearchVectorExecution {
 
 pub(super) struct SearchVectorExecutionRequest<'a, 'b> {
     pub query_embedding: &'a [f32],
+    /// Final raw scores use the index's own metric, never a cosine default.
+    pub metric: hawdb_core::VectorDistance,
     pub documents: &'a [&'a SearchDocument],
     pub backend: VectorSearchBackend<'a>,
     pub filter_fields: Vec<String>,
@@ -58,6 +60,7 @@ pub(super) fn execute_search_vector_plan(
 ) -> Result<SearchVectorExecution> {
     let SearchVectorExecutionRequest {
         query_embedding,
+        metric,
         documents,
         backend,
         filter_fields,
@@ -118,6 +121,7 @@ pub(super) fn execute_search_vector_plan(
     let mut source = SearchVectorSource {
         query_scorer: None,
         query_embedding,
+        metric,
         documents,
         backend,
         fallback_reason_codes,
@@ -146,8 +150,9 @@ pub(super) fn execute_search_vector_plan(
 }
 
 struct SearchVectorSource<'a, 'b> {
-    query_scorer: Option<CosineQuery<'a>>,
+    query_scorer: Option<VectorRelevanceQuery<'a>>,
     query_embedding: &'a [f32],
+    metric: hawdb_core::VectorDistance,
     documents: &'a [&'a SearchDocument],
     backend: VectorSearchBackend<'a>,
     fallback_reason_codes: &'b mut Vec<SearchFallbackReasonCode>,
@@ -372,11 +377,13 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
 }
 
 impl<'a> SearchVectorSource<'a, '_> {
-    fn prepare_query(&mut self) -> Result<CosineQuery<'a>> {
+    fn prepare_query(&mut self) -> Result<VectorRelevanceQuery<'a>> {
         if let Some(scorer) = self.query_scorer {
             return Ok(scorer);
         }
-        let scorer = CosineQuery::with_work(self.query_embedding, || self.checkpoint())?;
+        let scorer = VectorRelevanceQuery::with_work(self.query_embedding, self.metric, || {
+            self.checkpoint()
+        })?;
         self.query_scorer = Some(scorer);
         Ok(scorer)
     }

@@ -156,6 +156,7 @@ impl RelationalRowDeltaBaseBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalRowDeltaTableMetadata {
+    pub last_row_id: i64,
     pub table: String,
     pub schema_digest: Sha256Digest,
     pub column_count: NonZeroU32,
@@ -215,6 +216,9 @@ pub struct RelationalRowDeltaReport {
     pub replayed_batches: u64,
     pub peak_dirty_entries: usize,
     pub peak_dirty_bytes: usize,
+    /// Live-overlay resident bytes of every change recorded since the base,
+    /// counting each recorded version. The next checkpoint must capture them.
+    pub recorded_resident_bytes: usize,
     pub events: [RelationalRowDeltaPublicationPhase; 4],
 }
 

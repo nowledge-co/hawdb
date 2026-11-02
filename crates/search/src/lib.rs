@@ -471,6 +471,11 @@ pub enum SearchMode {
 pub struct SearchHit {
     pub id: String,
     pub score: f64,
+    /// Vector relevance in `[0, 1]`, higher is better. The scale depends on
+    /// the projection's metric: positive cosine similarity for cosine, and
+    /// `1 / (1 + l2_distance)` for Euclidean, which is often far below 1 for
+    /// unnormalized embeddings. Compare scores only within one metric; a
+    /// relevance floor tuned on cosine does not carry over to Euclidean.
     pub vector_score: f64,
     pub text_score: f64,
     pub rrf_score: f64,
@@ -3874,6 +3879,7 @@ impl SearchIndex {
             Some(execute_search_vector_plan(SearchVectorExecutionRequest {
                 query_embedding: query_embedding
                     .expect("vector_available requires query embedding"),
+                metric: self.vector_metric(),
                 documents: &filtered_documents,
                 backend: vector_backend,
                 filter_fields: vector_filter_fields,
@@ -7658,32 +7664,48 @@ fn is_ascii_consonant(ch: char) -> bool {
 #[cfg(test)]
 mod raw_vector_math_tests;
 
-// Final facade vector relevance is positive-only in [0, 1]. Signed RaBitQ
-// estimates are candidate-ranking hints, not final scores; nonpositive exact
-// similarities cannot contribute a vector hit (text may still match).
+#[cfg(all(test, feature = "vector-search"))]
+mod vector_metric_tests;
+
+// Final facade vector relevance is positive-only in [0, 1], higher is better,
+// and is always computed with the projection's own distance metric:
+// - cosine: positive cosine similarity. Nonpositive exact similarities cannot
+//   contribute a vector hit (text may still match);
+// - Euclidean: `1 / (1 + l2_distance)`. It is positive for every finite pair
+//   and strictly decreasing in distance, so descending relevance is ascending
+//   L2 distance and no candidate is dropped for its direction.
+// Signed RaBitQ estimates and graph distances are candidate-ranking hints, not
+// final scores. Schema-bound vector index queries expose raw distances instead.
 /// One prepared query shared by a scoring phase. Keep legacy nonfinite behavior
 /// at this private boundary; public projection distances validate finite inputs.
 #[derive(Clone, Copy)]
-struct CosineQuery<'a> {
+struct VectorRelevanceQuery<'a> {
     query: &'a [f32],
+    metric: hawdb_core::VectorDistance,
     prepared: Option<hawdb_core::vector::PreparedVectorQuery<'a>>,
 }
 
-impl<'a> CosineQuery<'a> {
+impl<'a> VectorRelevanceQuery<'a> {
     #[cfg(test)]
-    fn new(query: &'a [f32]) -> Self {
+    fn new(query: &'a [f32], metric: hawdb_core::VectorDistance) -> Self {
         Self {
             query,
+            metric,
             prepared: (query.len() >= 16)
                 .then(|| hawdb_core::vector::PreparedVectorQuery::new(query).ok())
                 .flatten(),
         }
     }
 
-    fn with_work(query: &'a [f32], mut checkpoint: impl FnMut() -> Result<()>) -> Result<Self> {
+    fn with_work(
+        query: &'a [f32],
+        metric: hawdb_core::VectorDistance,
+        mut checkpoint: impl FnMut() -> Result<()>,
+    ) -> Result<Self> {
         if query.len() < 16 {
             return Ok(Self {
                 query,
+                metric,
                 prepared: None,
             });
         }
@@ -7699,23 +7721,80 @@ impl<'a> CosineQuery<'a> {
         }
         Ok(Self {
             query,
+            metric,
             prepared: prepared.ok(),
         })
     }
 
-    fn score(&self, embedding: &[f32]) -> Option<f64> {
-        if let Some(prepared) = &self.prepared
-            && let Ok(score) = prepared.positive_cosine_similarity(embedding)
-        {
-            return score;
+    /// A query whose scoring phase has no candidates needs no prepared norm.
+    #[cfg(feature = "vector-search")]
+    fn unprepared(query: &'a [f32], metric: hawdb_core::VectorDistance) -> Self {
+        Self {
+            query,
+            metric,
+            prepared: None,
         }
-        scalar_cosine_similarity(self.query, embedding)
     }
+
+    /// Exact mathematical distance under this query's metric.
+    #[cfg(feature = "vector-search")]
+    fn distance_with_work(
+        &self,
+        embedding: &[f32],
+        checkpoint: impl FnMut() -> Result<()>,
+    ) -> Result<f64> {
+        match &self.prepared {
+            Some(prepared) => {
+                prepared.distance_slices_with_work(self.metric, embedding, checkpoint)
+            }
+            None => self
+                .metric
+                .distance_slices_with_work(self.query, embedding, checkpoint),
+        }
+    }
+
+    /// Facade relevance in [0, 1]; `None` when the pair has no defined score.
+    fn score(&self, embedding: &[f32]) -> Option<f64> {
+        match self.metric {
+            hawdb_core::VectorDistance::Cosine => {
+                if let Some(prepared) = &self.prepared
+                    && let Ok(score) = prepared.positive_cosine_similarity(embedding)
+                {
+                    return score;
+                }
+                scalar_cosine_similarity(self.query, embedding)
+            }
+            hawdb_core::VectorDistance::Euclidean => {
+                if self.query.len() != embedding.len() || embedding.is_empty() {
+                    return None;
+                }
+                let distance = match &self.prepared {
+                    Some(prepared) => prepared.distance_slices_with_work(
+                        hawdb_core::VectorDistance::Euclidean,
+                        embedding,
+                        || Ok(()),
+                    ),
+                    None => hawdb_core::VectorDistance::Euclidean.distance_slices_with_work(
+                        self.query,
+                        embedding,
+                        || Ok(()),
+                    ),
+                }
+                .ok()?;
+                euclidean_relevance(distance)
+            }
+        }
+    }
+}
+
+/// Maps a finite L2 distance onto the facade's higher-is-better (0, 1] scale.
+fn euclidean_relevance(distance: f64) -> Option<f64> {
+    (distance.is_finite() && distance >= 0.0).then(|| 1.0 / (1.0 + distance))
 }
 
 #[cfg(test)]
 fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
-    CosineQuery::new(left).score(right)
+    VectorRelevanceQuery::new(left, hawdb_core::VectorDistance::Cosine).score(right)
 }
 
 fn scalar_cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {

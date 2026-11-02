@@ -477,6 +477,11 @@ pub struct RelationalRowPageReadView {
     identity: RelationalRowPageReadViewIdentity,
     base: Arc<RelationalRowPageRootReader>,
     recovery_delta: Option<Arc<RelationalRowDeltaReader>>,
+    /// Live-overlay resident bytes of the changes sealed into
+    /// `recovery_delta`, when this process recorded them. The next checkpoint
+    /// captures those keys together with the live overlay. `None` means the
+    /// delta was opened without its builder and its debt is unknown.
+    recovery_delta_resident_bytes: Option<usize>,
     live: RelationalRowPageLiveOverlay,
 }
 
@@ -493,6 +498,7 @@ impl RelationalRowPageReadView {
             },
             base,
             recovery_delta: None,
+            recovery_delta_resident_bytes: Some(0),
             live: RelationalRowPageLiveOverlay::empty(),
         }
     }
@@ -521,6 +527,7 @@ impl RelationalRowPageReadView {
             },
             base,
             recovery_delta: Some(recovery_delta),
+            recovery_delta_resident_bytes: None,
             live: RelationalRowPageLiveOverlay::empty(),
         })
     }
@@ -539,6 +546,31 @@ impl RelationalRowPageReadView {
 
     pub fn recovery_delta(&self) -> Option<&RelationalRowDeltaReader> {
         self.recovery_delta.as_deref()
+    }
+
+    /// Records the live-overlay resident bytes of the changes its delta
+    /// builder sealed into this view's recovery delta.
+    #[must_use]
+    pub fn with_recovery_delta_resident_bytes(mut self, bytes: usize) -> Self {
+        if self.recovery_delta.is_some() {
+            self.recovery_delta_resident_bytes = Some(bytes);
+        }
+        self
+    }
+
+    /// Entries in the recovery delta. Repeated versions of one key are
+    /// counted once per version, so this bounds the distinct keys from above.
+    pub fn recovery_delta_entries(&self) -> u64 {
+        self.recovery_delta
+            .as_ref()
+            .map_or(0, |delta| delta.manifest().total_entries())
+    }
+
+    /// Live-overlay resident bytes of the changes in the recovery delta, or
+    /// `None` when the delta was opened without the builder that recorded
+    /// them. Zero without a recovery delta.
+    pub const fn recovery_delta_resident_bytes(&self) -> Option<usize> {
+        self.recovery_delta_resident_bytes
     }
 
     pub(super) fn validate_serving_fence(&self) -> Result<(), RelationalRowDeltaError> {
@@ -625,6 +657,7 @@ impl RelationalRowPageReadView {
             identity,
             base: Arc::clone(&self.base),
             recovery_delta: self.recovery_delta.as_ref().map(Arc::clone),
+            recovery_delta_resident_bytes: self.recovery_delta_resident_bytes,
             live,
         })
     }
@@ -1032,13 +1065,11 @@ impl CheckpointChangeKeys {
                         "checkpoint capture encoding-byte accounting overflow".to_string(),
                     )
                 })?;
-                let resident_bytes = estimated_change_resident_bytes(&change)
-                    .and_then(|bytes| bytes.checked_sub(std::mem::size_of::<RelationalRowChange>()))
-                    .ok_or_else(|| {
-                        RelationalRowPageCheckpointError::Admission(
-                            "checkpoint change resident-byte accounting overflow".to_string(),
-                        )
-                    })?;
+                let resident_bytes = checkpoint_capture_change_bytes(&change).ok_or_else(|| {
+                    RelationalRowPageCheckpointError::Admission(
+                        "checkpoint change resident-byte accounting overflow".to_string(),
+                    )
+                })?;
                 capture_resident_bytes = capture_resident_bytes
                     .checked_add(resident_bytes)
                     .ok_or_else(|| {
@@ -1072,6 +1103,28 @@ impl CheckpointChangeKeys {
     }
 }
 
+/// Heap bytes one resolved change adds to a checkpoint capture beyond its slot
+/// in the preallocated change vector.
+///
+/// The primary key is moved out of the admitted key set, whose charge already
+/// covers its allocation, so it is not charged again. A row whose values are
+/// shared with the pinned view or canonical state (a live-overlay batch or a
+/// resident row) adds no allocation; only a row materialized for this capture,
+/// such as one decoded from the recovery delta, is charged. The table name is
+/// cloned per change.
+fn checkpoint_capture_change_bytes(change: &RelationalRowChange) -> Option<usize> {
+    let row_bytes = match change.row.as_ref() {
+        Some(row) if !row.shares_values() => row.values().iter().try_fold(
+            row.values()
+                .len()
+                .checked_mul(std::mem::size_of::<RelationalValue>())?,
+            |bytes, value| bytes.checked_add(value.estimated_payload_bytes()),
+        )?,
+        _ => 0,
+    };
+    change.table.len().checked_add(row_bytes)
+}
+
 fn relational_key_resident_bytes(primary_key: &RelationalKey) -> Option<usize> {
     primary_key.0.iter().try_fold(
         std::mem::size_of::<RelationalKey>()
@@ -1086,7 +1139,8 @@ fn relational_key_resident_bytes(primary_key: &RelationalKey) -> Option<usize> {
     )
 }
 
-fn estimated_change_resident_bytes(change: &RelationalRowChange) -> Option<usize> {
+/// Resident bytes one change retains in a live overlay batch.
+pub(super) fn estimated_change_resident_bytes(change: &RelationalRowChange) -> Option<usize> {
     let key_bytes = change.primary_key.0.iter().try_fold(
         change
             .primary_key
@@ -1323,6 +1377,97 @@ mod tests {
             Err(RelationalRowPageCheckpointError::Admission(reason))
                 if reason.contains("resident-byte") || reason.contains("retains")
         ));
+    }
+
+    fn order_line(line: i64) -> RelationalRowChange {
+        let (order, number) = (line / 10, line % 10);
+        let key = RelationalKey(vec![
+            RelationalValue::BigInt(1),
+            RelationalValue::BigInt(order / 3_000 + 1),
+            RelationalValue::BigInt(order % 3_000),
+            RelationalValue::BigInt(number),
+        ]);
+        let row = RelationalRow::new(vec![
+            RelationalValue::BigInt(order % 3_000),
+            RelationalValue::BigInt(order / 3_000 + 1),
+            RelationalValue::BigInt(1),
+            RelationalValue::BigInt(number),
+            RelationalValue::BigInt(line * 7_919 % 100_000),
+            RelationalValue::BigInt(1),
+            RelationalValue::Text("2026-11-01 00:00:00".to_string()),
+            RelationalValue::BigInt(5),
+            RelationalValue::DoublePrecision(12.5),
+            RelationalValue::Text("x".repeat(24)),
+        ]);
+        RelationalRowChange {
+            table: "order_line".to_string(),
+            primary_key: key,
+            row: Some(row),
+        }
+    }
+
+    /// Pins what one TPC-C ORDER_LINE row (about 120 encoded bytes) costs in
+    /// the live overlay and in the next checkpoint's capture (#1464).
+    #[test]
+    fn order_line_live_overlay_and_checkpoint_capture_charges_are_pinned() {
+        let value = std::mem::size_of::<RelationalValue>();
+        let change = order_line(0);
+        // The overlay retains the decoded row (ten values, 107 payload bytes)
+        // and its four-value primary key (32 payload bytes) in memory. The
+        // inline overflow reference makes every value 56 bytes wide, so the
+        // honest resident charge is about 1 KB per row.
+        assert_eq!(value, 56);
+        let overlay = std::mem::size_of::<RelationalRowChange>() + 10 + 14 * value + 32 + 107;
+        assert_eq!(estimated_change_resident_bytes(&change), Some(overlay));
+        assert_eq!(overlay, 997);
+        assert_eq!(
+            validate_capture(
+                std::slice::from_ref(&change),
+                estimated_row_change_encoding_bytes(&change).unwrap()
+            )
+            .unwrap(),
+            overlay + std::mem::size_of::<RelationalRowPageLiveBatch>() + 32
+        );
+
+        // A capture shares a row resolved from the live overlay or resident
+        // state and moves the primary key out of its key set: the change adds
+        // only its table name. A row decoded for the capture is charged.
+        let key_set = relational_key_resident_bytes(&change.primary_key).unwrap();
+        assert_eq!(
+            key_set,
+            std::mem::size_of::<RelationalKey>() + 32 + 4 * value + 32
+        );
+        let retained = change.row.clone();
+        assert_eq!(checkpoint_capture_change_bytes(&change), Some(10));
+        drop(retained);
+        assert_eq!(
+            checkpoint_capture_change_bytes(&change),
+            Some(10 + 10 * value + 107)
+        );
+
+        // A live overlay filled to its default byte envelope with these rows
+        // is captured in full within the same envelope.
+        let limits = RelationalRowChangeCaptureLimits::default();
+        let lines = limits.max_bytes.get() / overlay;
+        let overlay_rows = (0..lines as i64).map(order_line).collect::<Vec<_>>();
+        let mut keys = CheckpointChangeKeys::new(limits);
+        for change in &overlay_rows {
+            keys.insert(&change.table, &change.primary_key).unwrap();
+        }
+        let per_line = key_set + std::mem::size_of::<RelationalRowChange>() + 10;
+        assert!(lines * per_line < limits.max_bytes.get() / 2, "{per_line}");
+        let mut next = overlay_rows.iter();
+        let RelationalRowChangeCapture::Captured { changes, .. } = keys
+            .into_capture(&mut |_, primary_key| {
+                let change = next.next().unwrap();
+                assert_eq!(&change.primary_key, primary_key);
+                Ok(change.row.clone())
+            })
+            .unwrap()
+        else {
+            panic!("checkpoint capture must remain materialized");
+        };
+        assert_eq!(changes.len(), lines);
     }
 
     fn capture(changes: Vec<RelationalRowChange>) -> RelationalRowChangeCapture {

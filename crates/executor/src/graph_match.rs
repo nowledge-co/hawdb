@@ -1,10 +1,14 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 //! Correlated MATCH execution with one optional boundary around the complete clause.
 
 use crate::binding::{
     binding_memory_bytes, node_memory_bytes, relationship_memory_bytes, value_memory_bytes, Binding,
 };
 use crate::expression::{
-    evaluate_predicate_with_context, node_value, path_value, relationship_value,
+    evaluate_conjunction_with_context, evaluate_predicate_with_context, node_value, path_value,
+    relationship_value,
 };
 use crate::kernel::OperatorMemoryTracker;
 use crate::pipeline::{
@@ -17,23 +21,70 @@ use crate::traversal::shortest_path_bfs::{
     ShortestPathBfs, ShortestPathBfsOutcome, ShortestPathBfsSpec,
 };
 use crate::traversal::{
-    visit_bounded_expand_trails, visit_one_hop_relationships_with_context,
-    visit_zero_hop_expand_target, BoundedExpandSpec, OneHopRelationshipSpec,
+    projected_node_with_allocation, visit_bounded_expand_trails, visit_one_hop_adjacency_entries,
+    visit_one_hop_relationships_projected, visit_zero_hop_expand_target, BoundedExpandSpec,
+    OneHopRelationshipSpec,
 };
 use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryClass};
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_plan_cypher::{
     GraphEntityKind, GraphMatchNode, GraphMatchProgram, GraphMatchShortestPath, GraphMatchStep,
-    PhysicalPlan, ShortestPathSelection,
+    PhysicalPlan, Predicate, ShortestPathSelection,
 };
 use hawdb_storage::read_view::{
     AdmittedNodeRead, AdmittedRelationshipRead, AdmittedVec, GraphReadAdmission,
     GraphReadAllocation,
 };
 use hawdb_storage::{adjacency::AdjacencyDirection, NodeId, NodeRecord, RelId};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_MATCH_STEPS: usize = 32;
+
+/// WHERE conjuncts grouped by the number of steps completed before they run.
+struct PlacedPredicate<'a> {
+    early: Vec<Vec<&'a Predicate>>,
+    last: Vec<&'a Predicate>,
+}
+
+impl<'a> PlacedPredicate<'a> {
+    fn new(program: &'a GraphMatchProgram) -> Result<Self> {
+        let end = program.steps.len();
+        let mut early = vec![Vec::new(); end];
+        let mut last = Vec::new();
+        if program.predicate_steps.is_empty() {
+            last.extend(program.predicate.as_ref());
+            return Ok(Self { early, last });
+        }
+        let conjuncts = program.predicate_conjuncts();
+        if conjuncts.len() != program.predicate_steps.len()
+            || program.predicate_steps.iter().any(|step| *step > end)
+        {
+            return Err(HawDBError::Execution(
+                "MATCH predicate placement does not match its conjuncts and steps".to_string(),
+            ));
+        }
+        for (conjunct, step) in conjuncts.iter().zip(&program.predicate_steps) {
+            match early.get_mut(*step) {
+                Some(group) => group.push(conjunct),
+                None => last.push(conjunct),
+            }
+        }
+        Ok(Self { early, last })
+    }
+}
+
+/// Retained bytes of one relationship id in the trail-uniqueness set.
+const USED_RELATIONSHIP_BYTES: usize = 48;
+
+/// Bytes one more graph slot adds to a bound row: the slot pair, both `Arc`
+/// headers, the name `String` and slot-vector growth, as charged by
+/// `binding_memory_bytes`.
+fn graph_slot_entry_bytes(name: &str) -> usize {
+    name.len()
+        .saturating_add(16 * std::mem::size_of::<usize>())
+        .saturating_add(std::mem::size_of::<NodeRecord>())
+}
 
 pub(crate) fn stream_graph_match(
     program: &GraphMatchProgram,
@@ -68,6 +119,7 @@ pub(crate) fn stream_graph_match(
             ));
         }
     }
+    let placed = PlacedPredicate::new(program)?;
     if limit.is_reached(0) {
         return Ok(BatchControl::Stop);
     }
@@ -86,10 +138,15 @@ pub(crate) fn stream_graph_match(
     );
     let runtime = MatchRuntime {
         program,
+        placed,
+        deferred: Cell::new(false),
         store,
         context,
         account: &account,
         source_account: &source_account,
+        // Seed scoring reads the candidate's properties and annotates each
+        // hop, so it keeps whole records and per-step row copies.
+        scoring: context.observer.seed_graph_scoring_input().is_some(),
     };
     let mut emitted = 0;
     let mut append = |binding: &Binding| {
@@ -108,9 +165,11 @@ pub(crate) fn stream_graph_match(
     };
     let mut visit_input = |input: &Binding| -> Result<BatchControl> {
         runtime_checkpoint(context.task_context)?;
-        let (binding, _leases) = runtime.prepare(input)?;
+        let (mut binding, _leases) = runtime.prepare(input)?;
+        runtime.deferred.set(false);
         let mut matched = false;
-        let control = runtime.visit(0, &binding, &BTreeSet::new(), &mut |row| {
+        // Steps extend this one row in place and restore it on return.
+        let control = runtime.visit(0, &mut binding, &mut BTreeSet::new(), &mut |row| {
             matched = true;
             append(row)
         })?;
@@ -162,13 +221,72 @@ pub(crate) fn stream_graph_match(
 
 struct MatchRuntime<'a> {
     program: &'a GraphMatchProgram,
+    placed: PlacedPredicate<'a>,
+    /// Set while the current partial candidate carries an early conjunct
+    /// whose evaluation failed. Its descendants then skip early filtering
+    /// and evaluate the whole predicate after the last step, so a candidate
+    /// that never completes, or that a text-earlier conjunct rejects, raises
+    /// no error the end-of-match evaluation would not have raised.
+    deferred: Cell<bool>,
     store: &'a dyn GraphExecutionRead,
     context: BatchExecutionContext<'a>,
     account: &'a QueryMemoryAccount,
     source_account: &'a QueryMemoryAccount,
+    scoring: bool,
+}
+
+/// One candidate target of an expansion step.
+enum Target {
+    /// The step's target variable is already bound to this node id.
+    Bound,
+    /// A record read for an unbound target variable.
+    Read(NodeRecord),
 }
 
 impl MatchRuntime<'_> {
+    /// The properties a node variable's reads are limited to, if any.
+    fn projection(&self, variable: &str) -> Option<&BTreeSet<String>> {
+        if self.scoring {
+            return None;
+        }
+        self.program.projected_nodes.get(variable)
+    }
+
+    /// Reads an unbound target, limited to its projection, with an admitted
+    /// allocation retained by the caller while the record is bound.
+    fn read_target(
+        &self,
+        variable: &str,
+        id: NodeId,
+        label_ids: Option<&[hawdb_core::LabelId]>,
+    ) -> Result<Option<(NodeRecord, Box<dyn GraphReadAllocation>)>> {
+        let memory = self.adjacency_memory();
+        let task_context = self.context.task_context;
+        if let Some(properties) = self.projection(variable) {
+            return projected_node_with_allocation(
+                self.store,
+                id,
+                label_ids,
+                properties,
+                &mut |bytes| memory.admit_node(bytes, 0, task_context),
+                task_context,
+            );
+        }
+        let mut admit = |bytes| memory.admit_node(bytes, 0, task_context).map(Some);
+        match self.store.node_with_allocation(
+            id,
+            label_ids,
+            &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                &mut admit,
+                task_context,
+            ),
+        )? {
+            AdmittedNodeRead::Node(node) => Ok(Some(node.into_parts())),
+            // This admission never requests Stop; it fails instead.
+            AdmittedNodeRead::Missing | AdmittedNodeRead::Stopped => Ok(None),
+        }
+    }
+
     fn adjacency_memory(&self) -> AdjacencyReadMemory<'_> {
         AdjacencyReadMemory {
             budget_bytes: self.context.memory.query_memory_bytes.get(),
@@ -215,6 +333,33 @@ impl MatchRuntime<'_> {
             };
             let id = entity_id(values, "_id")?;
             match import.kind {
+                GraphEntityKind::Node
+                    if let Some(properties) = self.projection(&import.variable) =>
+                {
+                    let node = projected_node_with_allocation(
+                        self.store,
+                        NodeId(id),
+                        None,
+                        properties,
+                        &mut |bytes| {
+                            admit_graph_read(
+                                self.source_account,
+                                self.context.task_context,
+                                bytes
+                                    .saturating_add(import.variable.len())
+                                    .saturating_add(1024),
+                            )
+                        },
+                        self.context.task_context,
+                    )?;
+                    let Some((node, allocation)) = node else {
+                        return Err(HawDBError::Execution(
+                            "bound node disappeared during MATCH".to_string(),
+                        ));
+                    };
+                    leases.try_push(allocation)?;
+                    row.nodes.insert(import.variable.clone(), node);
+                }
                 GraphEntityKind::Node => {
                     let mut admit_node = |bytes: usize| {
                         admit_graph_read(
@@ -290,26 +435,90 @@ impl MatchRuntime<'_> {
         Ok((row, leases))
     }
 
+    /// Runs the conjuncts placed before step `index`, then the step. A
+    /// conjunct that is false or NULL drops the partial candidate: the final
+    /// conjunction could not be true for any completion of it.
     fn visit(
         &self,
         index: usize,
-        row: &Binding,
-        used: &BTreeSet<RelId>,
+        row: &mut Binding,
+        used: &mut BTreeSet<RelId>,
         emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
         runtime_checkpoint(self.context.task_context)?;
+        let conjuncts = self
+            .placed
+            .early
+            .get(index)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if self.deferred.get() || conjuncts.is_empty() {
+            return self.visit_step(index, row, used, emit);
+        }
+        for conjunct in conjuncts {
+            match self.conjunct_holds(conjunct, row) {
+                Ok(true) => {}
+                Ok(false) => return Ok(ScanControl::Continue),
+                Err(HawDBError::Execution(_)) => {
+                    // Cancellation is sticky; report it now rather than defer.
+                    runtime_checkpoint(self.context.task_context)?;
+                    self.deferred.set(true);
+                    let control = self.visit_step(index, row, used, emit);
+                    self.deferred.set(false);
+                    return control;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        self.visit_step(index, row, used, emit)
+    }
+
+    fn conjunct_holds(&self, conjunct: &Predicate, row: &Binding) -> Result<bool> {
+        evaluate_predicate_with_context(
+            conjunct,
+            self.context.catalog,
+            self.store,
+            row,
+            self.context.observer,
+            self.adjacency_memory(),
+            self.context.task_context,
+        )
+    }
+
+    /// Accepts a complete match. Conjuncts that ran early were true, so the
+    /// remaining ones decide, in their original order.
+    fn complete_match_holds(&self, row: &Binding) -> Result<bool> {
+        let full;
+        let conjuncts: &[&Predicate] = match &self.program.predicate {
+            Some(predicate) if self.deferred.get() => {
+                full = [predicate];
+                &full
+            }
+            _ => &self.placed.last,
+        };
+        if conjuncts.is_empty() {
+            return Ok(true);
+        }
+        evaluate_conjunction_with_context(
+            conjuncts,
+            self.context.catalog,
+            self.store,
+            row,
+            self.context.observer,
+            self.adjacency_memory(),
+            self.context.task_context,
+        )
+    }
+
+    fn visit_step(
+        &self,
+        index: usize,
+        row: &mut Binding,
+        used: &mut BTreeSet<RelId>,
+        emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
         let Some(step) = self.program.steps.get(index) else {
-            if let Some(predicate) = &self.program.predicate
-                && !evaluate_predicate_with_context(
-                    predicate,
-                    self.context.catalog,
-                    self.store,
-                    row,
-                    self.context.observer,
-                    self.adjacency_memory(),
-                    self.context.task_context,
-                )?
-            {
+            if !self.complete_match_holds(row)? {
                 return Ok(ScanControl::Continue);
             }
             return emit(row);
@@ -334,32 +543,50 @@ impl MatchRuntime<'_> {
                         None
                     }
                 });
-                self.store.visit_nodes_with_allocation(
-                    label,
-                    &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
-                        &mut |bytes| {
-                            crate::store::admit_graph_read(
-                                self.source_account,
-                                self.context.task_context,
-                                bytes
-                                    .saturating_add(binding_memory_bytes(row))
-                                    .saturating_add(1024 + pattern.variable.len()),
-                            )
-                            .map(Some)
-                        },
+                // The node joins the row this visit already owns; admission
+                // covers its record and slot, not another copy of the row.
+                let mut admit = |bytes: usize| {
+                    crate::store::admit_graph_read(
+                        self.source_account,
                         self.context.task_context,
+                        bytes.saturating_add(1024 + pattern.variable.len()),
+                    )
+                    .map(Some)
+                };
+                let mut allocator = hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                    &mut admit,
+                    self.context.task_context,
+                );
+                let mut bind = |node: NodeRecord| {
+                    runtime_checkpoint(self.context.task_context)?;
+                    if !self.node_matches(pattern, &node) {
+                        return Ok(ScanControl::Continue);
+                    }
+                    self.visit_bound(index, row, used, &pattern.variable, node, None, emit)
+                };
+                match self.projection(&pattern.variable) {
+                    Some(properties) => self.store.visit_projected_nodes_with_allocation(
+                        label,
+                        properties,
+                        &mut allocator,
+                        &mut |input| {
+                            let (node, _allocation) = input.into_parts();
+                            bind(NodeRecord {
+                                id: node.id,
+                                labels: node.labels,
+                                properties: node.properties,
+                            })
+                        },
                     ),
-                    &mut |input| {
-                        let (node, _allocation) = input.into_parts();
-                        runtime_checkpoint(self.context.task_context)?;
-                        if !self.node_matches(pattern, &node) {
-                            return Ok(ScanControl::Continue);
-                        }
-                        let mut next = row.clone();
-                        next.nodes.insert(pattern.variable.clone(), node);
-                        self.visit(index + 1, &next, used, emit)
-                    },
-                )
+                    None => self.store.visit_nodes_with_allocation(
+                        label,
+                        &mut allocator,
+                        &mut |input| {
+                            let (node, _allocation) = input.into_parts();
+                            bind(node)
+                        },
+                    ),
+                }
             }
             GraphMatchStep::Expand {
                 source,
@@ -372,7 +599,7 @@ impl MatchRuntime<'_> {
                 target,
             } => {
                 let bounded = *min_hops != 1 || *max_hops != 1;
-                let Some(source_node) = row.nodes.get(source) else {
+                let Some(source_id) = row.nodes.get(source).map(|node| node.id) else {
                     if row.values.get(source) == Some(&Value::Null) {
                         return Ok(ScanControl::Continue);
                     }
@@ -388,13 +615,20 @@ impl MatchRuntime<'_> {
                             let labels = label_ids_for_pattern(self.context.catalog, &target.label);
                             return visit_zero_hop_expand_target(
                                 self.store,
-                                source_node.id,
+                                source_id,
                                 labels.as_deref(),
                                 *max_hops,
                                 self.adjacency_memory(),
                                 self.context.task_context,
                                 &mut |node, hop| {
-                                    self.visit_target(index, row, used, target, (node, hop), emit)
+                                    self.visit_target(
+                                        index,
+                                        row,
+                                        used,
+                                        target,
+                                        (Target::Read(node), hop),
+                                        emit,
+                                    )
                                 },
                             );
                         }
@@ -403,39 +637,60 @@ impl MatchRuntime<'_> {
                     Some(id)
                 };
                 let labels = label_ids_for_pattern(self.context.catalog, &target.label);
+                // A bound target is compared by id and matched against its
+                // bound record; reading it again would return the same node.
+                let bound_target = row.nodes.get(&target.variable).map(|node| node.id);
+                let no_properties = BTreeSet::new();
+                let target_properties = if bound_target.is_some() {
+                    Some(&no_properties)
+                } else {
+                    self.projection(&target.variable)
+                };
+                let observed = |node: NodeRecord| match bound_target {
+                    Some(_) => Target::Bound,
+                    None => Target::Read(node),
+                };
                 if bounded {
                     // Trails exclude relationships bound earlier in the
                     // pattern, and later steps exclude the trail's own.
+                    let excluded = used.clone();
+                    let _excluded = self
+                        .account
+                        .reserve(excluded.len().saturating_mul(USED_RELATIONSHIP_BYTES))?;
                     return visit_bounded_expand_trails(
                         self.store,
                         BoundedExpandSpec {
-                            source: source_node.id,
+                            source: source_id,
                             rel_type_id: rel_type_id.unwrap(),
                             direction: *direction,
                             target_label_ids: labels.as_deref(),
                             min_hops: *min_hops,
                             max_hops: *max_hops,
                         },
-                        used,
+                        &excluded,
+                        target_properties,
                         self.adjacency_memory(),
                         self.context.task_context,
                         &mut |node, hop, trail| {
-                            if trail.is_empty() {
-                                return self.visit_target(
-                                    index,
-                                    row,
-                                    used,
-                                    target,
-                                    (node, hop),
-                                    emit,
-                                );
+                            if bound_target.is_some_and(|id| id != node.id) {
+                                return Ok(ScanControl::Continue);
                             }
-                            let _used = self.account.reserve(
-                                used.len().saturating_add(trail.len()).saturating_mul(48),
-                            )?;
-                            let mut used = used.clone();
+                            let _used = self
+                                .account
+                                .reserve(trail.len().saturating_mul(USED_RELATIONSHIP_BYTES))?;
                             used.extend(trail.iter().copied());
-                            self.visit_target(index, row, &used, target, (node, hop), emit)
+                            let control = self.visit_target(
+                                index,
+                                row,
+                                used,
+                                target,
+                                (observed(node), hop),
+                                emit,
+                            );
+                            for id in trail {
+                                used.remove(id);
+                            }
+                            control
                         },
                     );
                 }
@@ -449,10 +704,48 @@ impl MatchRuntime<'_> {
                 {
                     return Ok(ScanControl::Continue);
                 }
-                visit_one_hop_relationships_with_context(
+                if relationship.is_none() && properties.is_empty() {
+                    // Nothing reads an anonymous relationship without property
+                    // constraints beyond its id and endpoint.
+                    return visit_one_hop_adjacency_entries(
+                        self.store,
+                        source_id,
+                        rel_type_id,
+                        *direction,
+                        self.adjacency_memory(),
+                        self.context.task_context,
+                        &mut |relationship_id, neighbor| {
+                            if used.contains(&relationship_id)
+                                || bound_target.is_some_and(|id| id != neighbor)
+                            {
+                                return Ok(ScanControl::Continue);
+                            }
+                            let (observed, _allocation) = match bound_target {
+                                Some(_) => (Target::Bound, None),
+                                None => match self.read_target(
+                                    &target.variable,
+                                    neighbor,
+                                    labels.as_deref(),
+                                )? {
+                                    Some((node, allocation)) => {
+                                        (Target::Read(node), Some(allocation))
+                                    }
+                                    None => return Ok(ScanControl::Continue),
+                                },
+                            };
+                            let _used = self.account.reserve(USED_RELATIONSHIP_BYTES)?;
+                            used.insert(relationship_id);
+                            let control =
+                                self.visit_target(index, row, used, target, (observed, 1), emit);
+                            used.remove(&relationship_id);
+                            control
+                        },
+                    );
+                }
+                visit_one_hop_relationships_projected(
                     self.store,
                     OneHopRelationshipSpec {
-                        source: source_node.id,
+                        source: source_id,
                         rel_type_id,
                         target_label_ids: labels.as_deref(),
                         rel_properties: properties,
@@ -462,27 +755,40 @@ impl MatchRuntime<'_> {
                     self.adjacency_memory(),
                     self.context.observer,
                     self.context.task_context,
+                    target_properties,
                     &mut |edge, node| {
                         if used.contains(&edge.id)
                             || bound_relationship.is_some_and(|id| id != edge.id)
+                            || bound_target.is_some_and(|id| id != node.id)
                             || !properties_match(properties, &edge.properties)
                         {
                             return Ok(ScanControl::Continue);
                         }
-                        let _used = self
-                            .account
-                            .reserve(used.len().saturating_add(1).saturating_mul(48))?;
-                        let _lease = self.source_account.reserve(
-                            binding_memory_bytes(row)
-                                .saturating_add(relationship_memory_bytes(&edge)),
+                        let _used = self.account.reserve(USED_RELATIONSHIP_BYTES)?;
+                        let _edge = self.source_account.reserve(
+                            relationship_memory_bytes(&edge).saturating_add(
+                                relationship
+                                    .as_ref()
+                                    .map_or(0, |name| graph_slot_entry_bytes(name)),
+                            ),
                         )?;
-                        let mut next = row.clone();
-                        let mut used = used.clone();
-                        used.insert(edge.id);
-                        if let Some(variable) = relationship {
-                            next.relationships.insert(variable.clone(), edge);
+                        let edge_id = edge.id;
+                        used.insert(edge_id);
+                        // A bound relationship keeps its record: the ids match.
+                        let inserted = match relationship {
+                            Some(variable) if bound_relationship.is_none() => {
+                                row.relationships.insert(variable.clone(), edge);
+                                Some(variable)
+                            }
+                            _ => None,
+                        };
+                        let control =
+                            self.visit_target(index, row, used, target, (observed(node), 1), emit);
+                        if let Some(variable) = inserted {
+                            row.relationships.remove(variable);
                         }
-                        self.visit_target(index, &next, &used, target, (node, 1), emit)
+                        used.remove(&edge_id);
+                        control
                     },
                 )
             }
@@ -492,14 +798,51 @@ impl MatchRuntime<'_> {
         }
     }
 
+    /// Binds `variable` to `node` in the row for the rest of the pattern,
+    /// then restores the row. With seed scoring the extended row is a copy
+    /// carrying the hop annotation `hop`.
+    #[allow(clippy::too_many_arguments)]
+    fn visit_bound(
+        &self,
+        index: usize,
+        row: &mut Binding,
+        used: &mut BTreeSet<RelId>,
+        variable: &str,
+        node: NodeRecord,
+        hop: Option<usize>,
+        emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        if self.scoring {
+            let _lease = self.source_account.reserve(
+                binding_memory_bytes(row)
+                    .saturating_add(node_memory_bytes(&node))
+                    .saturating_add(variable.len()),
+            )?;
+            let mut next = row.clone();
+            next.nodes.insert(variable.to_string(), node);
+            if let Some(hop) = hop {
+                crate::scoring::advance_seed_hop(&mut next, hop, true)?;
+            }
+            return self.visit(index + 1, &mut next, used, emit);
+        }
+        let _lease = self
+            .source_account
+            .reserve(node_memory_bytes(&node).saturating_add(graph_slot_entry_bytes(variable)))?;
+        row.nodes.insert(variable.to_string(), node);
+        // Evaluate placed conjuncts while this candidate's slot is bound.
+        let control = self.visit(index + 1, row, used, emit);
+        row.nodes.remove(variable);
+        control
+    }
+
     /// Binds the path variable to each selected shortest path between the two
     /// bound endpoints. Relationships bound earlier in the clause are not
     /// traversed, and the path's relationships are unavailable to later steps.
     fn visit_shortest_paths(
         &self,
         index: usize,
-        row: &Binding,
-        used: &BTreeSet<RelId>,
+        row: &mut Binding,
+        used: &mut BTreeSet<RelId>,
         step: &GraphMatchShortestPath,
         emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
@@ -525,6 +868,12 @@ impl MatchRuntime<'_> {
                 None => None,
             }
         };
+        // The search excludes the relationships bound so far while each path
+        // extends `used` in place.
+        let excluded = used.clone();
+        let _excluded = self
+            .account
+            .reserve(excluded.len().saturating_mul(USED_RELATIONSHIP_BYTES))?;
         let spec = ShortestPathBfsSpec {
             source,
             target,
@@ -533,7 +882,7 @@ impl MatchRuntime<'_> {
             max_hops: step.max_hops,
             bounded: step.bounded,
             all: step.selection == ShortestPathSelection::All,
-            excluded: used,
+            excluded: &excluded,
         };
         let task_context = self.context.task_context;
         let memory = self.adjacency_memory();
@@ -546,33 +895,26 @@ impl MatchRuntime<'_> {
             |node: NodeId,
              direction: AdjacencyDirection,
              visit: &mut dyn FnMut(RelId, NodeId) -> Result<ScanControl>| {
-                self.store
-                    .visit_ordered_adjacent_relationships_with_allocation(
-                        node,
-                        rel_type_id,
-                        direction,
-                        memory,
-                        &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
-                            &mut |bytes| memory.admit_node(bytes, 0, task_context).map(Some),
-                            task_context,
-                        ),
-                        &mut |input| {
-                            let (relationship, _allocation) = input.into_parts();
-                            // An undirected self-loop appears in both adjacency
-                            // directions; traverse it once, as other patterns do.
-                            if direction == AdjacencyDirection::Incoming
-                                && step.direction == hawdb_core::RelationshipDirection::Undirected
-                                && relationship.source == relationship.target
-                            {
-                                return Ok(ScanControl::Continue);
-                            }
-                            let neighbor = match direction {
-                                AdjacencyDirection::Outgoing => relationship.target,
-                                AdjacencyDirection::Incoming => relationship.source,
-                            };
-                            visit(relationship.id, neighbor)
-                        },
-                    )
+                // The search needs only relationship ids and neighbors.
+                self.store.visit_ordered_adjacency_entries_with_allocation(
+                    (node, rel_type_id, direction),
+                    memory,
+                    &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                        &mut |bytes| memory.admit_node(bytes, 0, task_context).map(Some),
+                        task_context,
+                    ),
+                    &mut |entry| {
+                        // An undirected self-loop appears in both adjacency
+                        // directions; traverse it once, as other patterns do.
+                        if direction == AdjacencyDirection::Incoming
+                            && step.direction == hawdb_core::RelationshipDirection::Undirected
+                            && entry.neighbor_id == node
+                        {
+                            return Ok(ScanControl::Continue);
+                        }
+                        visit(entry.relationship_id, entry.neighbor_id)
+                    },
+                )
             };
         let search =
             match ShortestPathBfs::search(&spec, &mut adjacency, &mut tracker, &mut checkpoint)? {
@@ -596,8 +938,8 @@ impl MatchRuntime<'_> {
     fn visit_path(
         &self,
         index: usize,
-        row: &Binding,
-        used: &BTreeSet<RelId>,
+        row: &mut Binding,
+        used: &mut BTreeSet<RelId>,
         step: &GraphMatchShortestPath,
         path: (&[NodeId], &[RelId]),
         emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
@@ -658,54 +1000,68 @@ impl MatchRuntime<'_> {
         }
         let value = path_value(nodes, relationships);
         let _lease = self.source_account.reserve(
-            binding_memory_bytes(row)
-                .saturating_add(step.path.len())
-                .saturating_add(
-                    used.len()
-                        .saturating_add(relationship_ids.len())
-                        .saturating_mul(48),
-                ),
+            graph_slot_entry_bytes(&step.path).saturating_add(
+                relationship_ids
+                    .len()
+                    .saturating_mul(USED_RELATIONSHIP_BYTES),
+            ),
         )?;
-        let mut next = row.clone();
-        next.values.insert(step.path.clone(), value);
-        if relationship_ids.is_empty() {
-            return self.visit(index + 1, &next, used, emit);
-        }
-        let mut used = used.clone();
+        // The path variable is introduced by this clause, so the row has no
+        // value under its name to restore.
+        row.values.insert(step.path.clone(), value);
         used.extend(relationship_ids.iter().copied());
-        self.visit(index + 1, &next, &used, emit)
+        let control = self.visit(index + 1, row, used, emit);
+        for id in relationship_ids {
+            used.remove(id);
+        }
+        row.values.remove(&step.path);
+        control
     }
 
     fn visit_target(
         &self,
         index: usize,
-        row: &Binding,
-        used: &BTreeSet<RelId>,
+        row: &mut Binding,
+        used: &mut BTreeSet<RelId>,
         pattern: &GraphMatchNode,
-        observed_target: (NodeRecord, usize),
+        observed_target: (Target, usize),
         emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
-        let (node, hop) = observed_target;
-        if !self.node_matches(pattern, &node)
-            || row
-                .nodes
-                .get(&pattern.variable)
-                .is_some_and(|bound| bound.id != node.id)
-            || row.values.get(&pattern.variable) == Some(&Value::Null)
-        {
+        let (target, hop) = observed_target;
+        if row.values.get(&pattern.variable) == Some(&Value::Null) {
             return Ok(ScanControl::Continue);
         }
-        let _lease = self.source_account.reserve(
-            binding_memory_bytes(row)
-                .saturating_add(node_memory_bytes(&node))
-                .saturating_add(pattern.variable.len()),
-        )?;
-        let mut next = row.clone();
-        next.nodes.insert(pattern.variable.clone(), node);
-        if self.context.observer.seed_graph_scoring_input().is_some() {
-            crate::scoring::advance_seed_hop(&mut next, hop, true)?;
-        }
-        self.visit(index + 1, &next, used, emit)
+        let node = match target {
+            Target::Bound => {
+                let Some(bound) = row.nodes.get(&pattern.variable) else {
+                    return Err(HawDBError::Execution(format!(
+                        "missing MATCH target '{}'",
+                        pattern.variable
+                    )));
+                };
+                if !self.node_matches(pattern, bound) {
+                    return Ok(ScanControl::Continue);
+                }
+                if !self.scoring {
+                    return self.visit(index + 1, row, used, emit);
+                }
+                bound.clone()
+            }
+            Target::Read(node) => {
+                let bound = row.nodes.get(&pattern.variable);
+                if !self.node_matches(pattern, &node)
+                    || bound.is_some_and(|bound| bound.id != node.id)
+                {
+                    return Ok(ScanControl::Continue);
+                }
+                // The same node is already bound; keep its record.
+                if bound.is_some() && !self.scoring {
+                    return self.visit(index + 1, row, used, emit);
+                }
+                node
+            }
+        };
+        self.visit_bound(index, row, used, &pattern.variable, node, Some(hop), emit)
     }
 
     fn node_matches(&self, pattern: &GraphMatchNode, node: &NodeRecord) -> bool {

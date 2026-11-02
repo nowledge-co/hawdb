@@ -539,6 +539,7 @@ pub(super) struct PreparedDirtyPage {
 
 #[derive(Debug)]
 pub(super) struct PreparedTableDelta {
+    pub last_row_id: i64,
     pub table: String,
     pub schema: Option<crate::relational::RelationalTableSchema>,
     pub schema_digest: Sha256Digest,
@@ -776,6 +777,7 @@ fn preflight_deltas(
                     schema: delta.schema,
                     schema_digest: delta.schema_digest,
                     column_count: delta.column_count,
+                    last_row_id: delta.last_row_id,
                     next_page_id: delta.next_page_id,
                     dirty_pages,
                     deleted_page_ids,

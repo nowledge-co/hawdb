@@ -21,14 +21,14 @@ use super::{
     decode_string, encode_embedding, encode_metadata, encode_search_snapshot_text, encode_string,
     lexical_analyzer_digest, lexical_documents_digest, matched_query_spans_bounded,
     matched_query_terms, rrf_child_score, search_empty_reasons, top_ranked_candidates,
-    top_ranked_ids, weighted_rrf_score, CompressedVectorSearchMode, CosineQuery,
-    SearchAccessControlContext, SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument,
-    SearchEmbeddingManifest, SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit,
-    SearchIndex, SearchMode, SearchPageWindow, SearchPredicatePushdownReport,
-    SearchProjectionFreshness, SearchQueryOptions, SearchResultSet, SearchRetrieverReport,
-    SearchScoredCandidate, SearchSegmentDescriptor, SearchSegmentDescriptorEntry,
-    SearchTruncationReasonCode, VectorSearchExecutionOptions, FULL_REINDEX_MARKER,
-    METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE, SEARCH_SEGMENT_PAYLOAD_FILE,
+    top_ranked_ids, weighted_rrf_score, CompressedVectorSearchMode, SearchAccessControlContext,
+    SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest,
+    SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit, SearchIndex, SearchMode,
+    SearchPageWindow, SearchPredicatePushdownReport, SearchProjectionFreshness, SearchQueryOptions,
+    SearchResultSet, SearchRetrieverReport, SearchScoredCandidate, SearchSegmentDescriptor,
+    SearchSegmentDescriptorEntry, SearchTruncationReasonCode, VectorRelevanceQuery,
+    VectorSearchExecutionOptions, FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER,
+    SEARCH_SEGMENT_DESCRIPTOR_FILE, SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use crate::bounded_file::{read_bound_file, read_bounded_file};
 use crate::error::{HawDBError, Result};
@@ -3131,12 +3131,14 @@ impl SearchOutOfCoreReader {
                 self.config.max_hydrated_documents
             )));
         }
+        // Reported vector scores must equal the ranking scores' metric.
+        let metric = self.vector_metric()?;
         let mut hydrated = hydration::query::Loaded::new(self, candidates, metrics, context.query)?;
         let query_scorer = if context.mode != SearchMode::Text && !candidates.is_empty() {
             context
                 .query_embedding
                 .map(|query| {
-                    CosineQuery::with_work(query, || {
+                    VectorRelevanceQuery::with_work(query, metric, || {
                         context.query.map_or(Ok(()), |query| query.checkpoint())
                     })
                 })

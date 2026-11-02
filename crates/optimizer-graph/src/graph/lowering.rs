@@ -44,6 +44,8 @@ use std::collections::{BTreeMap, BTreeSet};
 mod access;
 mod ddl;
 mod join;
+mod match_order;
+mod match_predicates;
 mod mutation;
 mod ordered;
 mod procedure;
@@ -966,7 +968,10 @@ fn lower_logical(
             })))
         }
         LogicalPlan::GraphMatch { program, input } => PhysicalPlan::GraphMatchExec {
-            program: program.clone(),
+            program: placed_graph_match_program(
+                anchored_graph_match_program(program, decisions),
+                decisions,
+            ),
             input: input.as_ref().map(|input| {
                 Box::new(children.lower(
                     input,
@@ -1324,6 +1329,35 @@ fn lower_logical(
     }
 }
 
+/// Starts each pattern path at a bound node when one exists, so the per-row
+/// nested loop expands from it instead of scanning for the path's first node.
+fn anchored_graph_match_program(
+    program: &hawdb_plan_cypher::GraphMatchProgram,
+    decisions: &mut Vec<String>,
+) -> hawdb_plan_cypher::GraphMatchProgram {
+    let mut program = program.clone();
+    if let Some(anchored) = match_order::anchor_graph_match_steps(&program) {
+        decisions.push(format!(
+            "anchor GraphMatchExec at bound variable(s) [{}]: expand from the bound node instead of scanning per input row",
+            anchored.anchors.join(", ")
+        ));
+        program.steps = anchored.steps;
+    }
+    program
+}
+
+/// Places WHERE conjuncts after the step that binds their last variable.
+/// It reads the final step order, so it runs after any step reordering.
+fn placed_graph_match_program(
+    mut program: hawdb_plan_cypher::GraphMatchProgram,
+    decisions: &mut Vec<String>,
+) -> hawdb_plan_cypher::GraphMatchProgram {
+    if let Some(decision) = match_predicates::place_graph_match_predicates(&mut program) {
+        decisions.push(decision);
+    }
+    program
+}
+
 fn select_exact_count_fast_path(
     logical: &LogicalPlan,
     decisions: &mut Vec<String>,
@@ -1467,6 +1501,7 @@ fn finalize_physical_plan(
 ) -> PhysicalPlan {
     let event_count_before = stage_events.len();
     let finalized = finalize_required_node_properties(plan, decisions, stage_events);
+    let finalized = super::match_reads::project_graph_match_reads(finalized, decisions);
     if !stage_events[event_count_before..]
         .iter()
         .any(|event| event.name() == PLAN_FINALIZATION_STAGE.name())

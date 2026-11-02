@@ -330,6 +330,7 @@ pub(crate) fn rebuild_indexes(
         unit.finish();
     }
     let replacement = RelationalTableSegment {
+        last_row_id: segment.last_row_id,
         rows: segment.rows.clone(),
         indexes,
         _memory: Default::default(),
@@ -368,7 +369,7 @@ fn references_unique(
     columns: &[String],
     work: &CheckpointWorkContext,
 ) -> Result<bool, RelationalError> {
-    if same_columns(columns, &schema.primary_key, work)? {
+    if !columns.is_empty() && same_columns(columns, &schema.primary_key, work)? {
         return Ok(true);
     }
     for unique in &schema.unique_constraints {

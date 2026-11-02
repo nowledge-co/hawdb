@@ -263,7 +263,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hawdb-analytics"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "hawdb-core",
 ]
@@ -282,11 +282,11 @@ dependencies = [
 
 [[package]]
 name = "hawdb-cgroup"
-version = "0.23.0"
+version = "0.24.0"
 
 [[package]]
 name = "hawdb-core"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-integrity"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "crc32c",
  "sha2",
@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-qos"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "hawdb-cgroup",
  "hawdb-core",
@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-storage"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "chrono",
  "fs2",
@@ -335,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-telemetry"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "hawdb-qos",
 ]

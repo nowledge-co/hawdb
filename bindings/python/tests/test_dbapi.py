@@ -386,12 +386,12 @@ def test_a_busy_path_is_an_operational_error(tmp_path):
 
 
 def test_translated_errors_keep_attributes_and_pickle():
-    with hawdb.connect(max_read_result_rows=1) as connection:
+    with hawdb.connect() as connection:
         cursor = connection.cursor()
         cursor.execute(CREATE)
         cursor.executemany(INSERT, [(1, "a"), (2, "b")])
         with pytest.raises(hawdb.exceptions.ExecutionError) as caught:
-            cursor.execute("SELECT id FROM items")
+            cursor.execute(INSERT, [1, "duplicate"])
     error = caught.value
     assert (error.kind, error.retryable) == ("execution", False)
     assert pep249_classes(error) == [dbapi.DatabaseError]
@@ -400,6 +400,26 @@ def test_translated_errors_keep_attributes_and_pickle():
     restored = pickle.loads(pickle.dumps(error))
     assert type(restored) is type(error)
     assert (restored.args, restored.kind) == (error.args, "execution")
+
+
+def test_translated_work_budget_errors_keep_attributes_and_pickle():
+    with hawdb.connect(max_read_result_rows=1) as connection:
+        cursor = connection.cursor()
+        cursor.execute(CREATE)
+        cursor.executemany(INSERT, [(1, "a"), (2, "b")])
+        with pytest.raises(hawdb.exceptions.ResourceBudgetError) as caught:
+            cursor.execute("SELECT id FROM items")
+    error = caught.value
+    assert (error.resource, error.scope, error.owner) == (
+        "work_units", "query", "relational SQL"
+    )
+    assert (error.budget_option, error.budget) == ("max_intermediate_rows", 1)
+    assert pep249_classes(error) == [dbapi.DatabaseError, dbapi.OperationalError]
+    assert type(error.__context__) is hawdb.exceptions.ResourceBudgetError
+    restored = pickle.loads(pickle.dumps(error))
+    assert type(restored) is type(error)
+    assert restored.args == error.args
+    assert vars(restored) == vars(error)
 
 
 @pytest.mark.parametrize("native", list(PEP249_CLASS), ids=lambda native: native.__name__)

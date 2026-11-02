@@ -3,7 +3,7 @@
 
 //! Immutable resident graph candidates with an exact changed-record overlay.
 
-use crate::{CosineQuery, DocumentView, HawDBError, Result, SearchDocument, SearchIndex};
+use crate::{DocumentView, HawDBError, Result, SearchDocument, SearchIndex};
 use hawdb_core::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, VectorDistance};
 use hawdb_executor::{
     VectorCandidate, VectorCandidateBatch, VectorCandidateScanMetrics, VectorScoreSource,
@@ -419,7 +419,8 @@ impl ResidentDiskAnn {
                 graph_options,
             )
             .map_err(projection_error)?;
-        let query_scorer = CosineQuery::with_work(query, checkpoint)?;
+        let query_scorer =
+            crate::VectorRelevanceQuery::with_work(query, index.vector_metric(), checkpoint)?;
         let mut candidates = Vec::with_capacity(limit);
         let mut candidate_vector_bytes = 0u64;
         for hit in &output.hits {
