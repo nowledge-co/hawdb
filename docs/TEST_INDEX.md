@@ -1575,11 +1575,10 @@ in the existing TLA suite; native capacity-band tests own Tokio waiter renewal.
 ## PR #1217 root CI scheduling
 
 - `//:hawdb_unit_checkpoint_headroom_tests` owns the complete
-  `api::automatic_checkpoint::tests::headroom::` namespace and the two sustained
-  `delta_pressure_sustains_generations_and_preserves_all_values_after_reopen`
-  and `soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints`
-  cases, including capacity,
-  notification, foreground and preparation-backoff submodules. It is included
+  `api::automatic_checkpoint::tests::` namespace, including headroom, live-overlay
+  pressure, manual takeover, unattended handoff, planning/resource recovery,
+  coalesced capture and shutdown. These fixtures coordinate real background
+  owners and finite stage waits, not only foreground capacity. It is included
   through the existing required root unit suites and excluded from general by
   the same inventory partitioner. It reuses the ordinary root executable and
   global checked profile, runs with one libtest thread and Bazel `exclusive`,
@@ -1604,6 +1603,22 @@ in the existing TLA suite; native capacity-band tests own Tokio waiter renewal.
   `bazel test //:hawdb_unit_checkpoint_headroom_tests`; no CI-only flags or
   special compiler profile are required. Final-head CI must establish runtime
   acceptance; target isolation alone is not a measured speedup.
+
+The complete-family ownership closes a scheduling gap observed in
+[PR #1492's root run](https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1492/pull-skein-bazel-test-root/2117077993091239936),
+head `0dc0983755b3e4941b554a8735291f10259b0bc5`, base
+`f3e5ecd01514b2703bf2a00fffbaeb3d97ba9399`. General ran 2,161 cases and reported
+17 automatic-owner failures: the unchanged 15-second waits expired in Preparing,
+with continuing completed-unit progress and no operation failure in the retained
+diagnostics. The partial selector had left these lifecycle cases in general.
+The partition regression now includes manual, handoff, planning-recovery and
+coalesced-capture names and proves their exclusive ownership together with the
+existing complete/disjoint inventory and status/argument checks. No runtime
+deadline, case assertion, compilation profile or retry changes. The diagnostics
+do not establish corruption or every source of slow progress; external contention
+remains possible. Complete current-head root execution, including the unchanged
+isolated lane, qualifies the mitigation under
+https://github.com/nowledge-co/hawdb/issues/1499.
 
 PR #1277 scheduling evidence is bound to head `66920d194a` and base `84d5ed46e`.
 The complete Prow BEP records one uncached failed Search text/background unit
