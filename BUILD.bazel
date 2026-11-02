@@ -435,17 +435,17 @@ rust_test(
         timeout = "eternal" if partition in ["concurrent", "analytics_rss"] else "long",
         # Wall-clock capacity and dense RSS fixtures must not compete with other
         # test executables here. External contention remains possible.
-        tags = ["exclusive"] if partition in ["analytics_rss", "checkpoint_headroom"] else [],
+        tags = ["exclusive"] if partition in ["analytics_rss", "checkpoint_headroom", "checkpoint_lifecycle"] else [],
         srcs = ["scripts/run-root-unit-partition.sh"],
         args = [
             "$(rootpath :hawdb_unit_test_binary)",
             partition,
             "--skip",
             _HAWDB_STORAGE_CRASH_MATRIX_TEST,
-        ] + (["--test-threads=1"] if partition == "checkpoint_headroom" else []),
+        ] + (["--test-threads=1"] if partition in ["checkpoint_headroom", "checkpoint_lifecycle"] else []),
         data = [":hawdb_unit_test_binary"],
     )
-    for partition in ["general", "concurrent", "checkpoint_headroom", "analytics_core_general", "analytics_rss", "recovery"]
+    for partition in ["general", "concurrent", "checkpoint_headroom", "checkpoint_lifecycle", "analytics_core_general", "analytics_rss", "recovery"]
 ]
 
 # Identity admission now shares the RSS fixture and its isolated measured child.
@@ -509,6 +509,7 @@ test_suite(
     tests = [
         ":hawdb_unit_general_tests",
         ":hawdb_unit_checkpoint_headroom_tests",
+        ":hawdb_unit_checkpoint_lifecycle_tests",
         ":hawdb_unit_concurrent_tests",
         ":hawdb_unit_analytics_tests",
         ":hawdb_unit_recovery_tests",
