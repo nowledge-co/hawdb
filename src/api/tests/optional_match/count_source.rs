@@ -22,19 +22,23 @@ fn populate(db: &mut Database, indexed: bool) {
         )
         .unwrap();
     }
-    for (id, active) in [
+    for (fixture_id, (id, active)) in [
         (Value::String("target".into()), true),
         (Value::String("target".into()), true),
         (Value::String("target".into()), false),
         (Value::String("other".into()), true),
         (Value::Null, true),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         db.query_with_params(
-            "CREATE (:Entity {id:$id, active:$active, body:$body})",
+            "CREATE (:Entity {id:$id, active:$active, body:$body, fixture_id:$fixture_id})",
             &BTreeMap::from([
                 ("id".into(), id),
                 ("active".into(), Value::Bool(active)),
                 ("body".into(), body.clone()),
+                ("fixture_id".into(), Value::Int(fixture_id as i64)),
             ]),
         )
         .unwrap();
@@ -44,7 +48,8 @@ fn populate(db: &mut Database, indexed: bool) {
         "MATCH (e:Entity {id:'target', active:true}), (t:Target {id:'target'}) CREATE (e)-[:RELATES_TO]->(t)",
         "MATCH (e:Entity {id:'target', active:true}), (t:Target {id:'target'}) CREATE (e)-[:RELATES_TO]->(t)",
         "MATCH (e:Entity {id:'target', active:true}), (t:Target {id:'target'}) CREATE (t)-[:RELATES_TO]->(e)",
-        "MATCH (e:Entity {id:'target', active:true}) CREATE (e)-[:RELATES_TO]->(e)",
+        "MATCH (a:Entity {fixture_id:0}), (b:Entity {fixture_id:0}) CREATE (a)-[:RELATES_TO]->(b)",
+        "MATCH (a:Entity {fixture_id:1}), (b:Entity {fixture_id:1}) CREATE (a)-[:RELATES_TO]->(b)",
     ] {
         db.query(query).unwrap();
     }
