@@ -2085,10 +2085,15 @@ identities, optional timestamps, retry no-op epochs, invalid property syntax and
 one-batch WAL/reopen in the existing root API partition.
 ## License hook and subprocess lease handshake
 
-- `scripts/check-license-headers.test.py` is a local pinned-HawkEye fixture
+- `scripts/check-license-headers.test.py` is a pinned-HawkEye fixture
   check for full/SPDX forms, Python/Shell shebangs, excluded/unsupported files,
+  Go line headers/build constraints, MoonBit sources/interfaces/manifests,
+  generated output/dependency exclusions, historical benchmark evidence,
   mixed valid/invalid batches, wrong owners/licenses and byte preservation.
   The staged-file hook uses the same HawkEye rules for both header templates.
+  `.github/workflows/license-headers.yml` runs these fixtures and the full-tree
+  wrapper audit on pull requests to `main` and pushes to `main`; the same
+  fixtures can also run locally with pinned HawkEye on PATH.
 - `//crates/storage:hawdb_storage_tests` owns the cross-process directory lease
   case `ownership::tests::rejects_lease_held_by_another_process`. The child keeps
   the lease until a parent pipe notification, avoiding its former ten-second

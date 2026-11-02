@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Synchronous closure validation borrowed from actual publication custody.
 //! Returned file readers stay inside discovery; no serving capability escapes.

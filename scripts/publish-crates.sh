@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
+
 # HawDB is a workspace of ~35 crates.io packages joined by path
 # dependencies (crates/*/Cargo.toml -> the root `hawdb` package). Publishing
 # any one of them requires every path dependency it references to already

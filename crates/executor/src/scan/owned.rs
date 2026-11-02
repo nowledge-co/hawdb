@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Full-node scan ownership. Source permits stay with buffered bindings,
 //! including the consumer callback; preflight may flush before owning a row.
