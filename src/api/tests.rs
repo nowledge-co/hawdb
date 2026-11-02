@@ -141,6 +141,7 @@ mod ordered_composite;
 mod ordered_range;
 mod out_of_core_labeled_expand;
 mod pagerank;
+mod point_read_reuse;
 mod predicates;
 mod projected_graph_artifacts;
 mod projected_graph_execution;
