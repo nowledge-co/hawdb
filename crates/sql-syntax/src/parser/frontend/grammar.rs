@@ -623,6 +623,39 @@ pub(crate) fn build_with_rules(
     rules.retain(|(name, _)| needed.contains(name));
     let mut right_guards = Vec::new();
     if mutation {
+        if let Some((_, expression)) = rules.iter_mut().find(|(rule, _)| *rule == "CastType") {
+            let standard = std::mem::replace(expression, k("CAST"));
+            *expression = c(vec![
+                s(vec![
+                    E::Ahead(Box::new(t(T::QuotedIdentifier)), "a custom type name"),
+                    r("Name"),
+                    o(r("CustomTypeParameters")),
+                ]),
+                s(vec![
+                    not(t(T::QuotedIdentifier), "a builtin type name"),
+                    standard,
+                ]),
+            ]);
+        }
+        rules.extend([
+            (
+                "CustomTypeParameters",
+                s(vec![
+                    t(T::LeftParen),
+                    list("CustomTypeParameter"),
+                    t(T::RightParen),
+                ]),
+            ),
+            ("CustomTypeParameter", t(T::Number)),
+        ]);
+        if let Some((_, E::Sequence(sequence))) =
+            rules.iter_mut().find(|(rule, _)| *rule == "TypeParameter")
+        {
+            sequence[0] = o(c(vec![
+                t(crate::TokenKind::Minus),
+                t(crate::TokenKind::Plus),
+            ]));
+        }
         if let Some((_, E::Sequence(sequence))) = rules
             .iter_mut()
             .find(|(rule, _)| *rule == "BinaryComparison")

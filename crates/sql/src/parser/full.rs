@@ -58,7 +58,7 @@ pub(super) fn parse(input: &str) -> Result<SqlStatement> {
         input,
         tokens: &tokens,
         tree: &tree,
-        lowerer: Lowerer::new(input),
+        lowerer: Lowerer::for_statement(input, &tokens),
     };
     fold.statement(fold.first(fold.first(tree.root)))
 }

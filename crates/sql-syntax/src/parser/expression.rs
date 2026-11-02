@@ -446,6 +446,7 @@ impl Fold<'_> {
         let parameters = self
             .tree
             .child(node, "TypeParameters")
+            .or_else(|| self.tree.child(node, "CustomTypeParameters"))
             .map(|args| {
                 self.tree
                     .children(args)

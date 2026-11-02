@@ -23,6 +23,26 @@ use syntax::{ExpressionKindSyntax as E, ExpressionSyntax as S, LiteralSyntax as 
 fn semantic(message: impl Into<String>) -> HawDBError {
     HawDBError::Semantic(message.into())
 }
+fn statement_numeric_name(name: &str) -> bool {
+    matches!(
+        name,
+        "bigint"
+            | "int8"
+            | "int"
+            | "integer"
+            | "int4"
+            | "smallint"
+            | "int2"
+            | "tinyint"
+            | "float"
+            | "float8"
+            | "double"
+            | "double precision"
+            | "decimal"
+            | "numeric"
+            | "dec"
+    )
+}
 fn union(left: SqlSourceSpan, right: SqlSourceSpan) -> SqlSourceSpan {
     if left == SqlSourceSpan::default() {
         return right;
@@ -132,9 +152,33 @@ impl Lowerer<'_> {
     ) -> Result<hawdb_core::numeric::NumericType> {
         use hawdb_core::numeric::NumericType;
         let [part] = name.parts.as_slice() else {
+            if self.statement_tokens.is_some()
+                && name
+                    .parts
+                    .first()
+                    .is_some_and(|part| !part.quoted && statement_numeric_name(&self.ident(part)))
+            {
+                return Err(HawDBError::Parse(
+                    "builtin numeric types must be unqualified".into(),
+                ));
+            }
             return Err(semantic("CAST requires an unqualified numeric type"));
         };
         let name = self.ident(part);
+        if let Some(tokens) = self.statement_tokens {
+            if part.quoted {
+                return Err(semantic("CAST requires a numeric target type"));
+            }
+            let first = tokens.partition_point(|token| token.span.start < part.span.start);
+            let last = tokens.partition_point(|token| token.span.end < part.span.end);
+            if last == first + 1
+                && tokens[first].is_keyword(self.input, "DOUBLE")
+                && tokens[last].is_keyword(self.input, "PRECISION")
+            {
+                return self.statement_numeric_cast_type("double precision", parameters, tokens);
+            }
+            return self.statement_numeric_cast_type(&name, parameters, tokens);
+        }
         if !matches!(name.as_str(), "decimal" | "numeric" | "dec") && !parameters.is_empty() {
             return Err(semantic("invalid numeric CAST type parameters"));
         }
@@ -144,6 +188,96 @@ impl Lowerer<'_> {
             "decimal" | "numeric" | "dec" => NumericType::Decimal(self.decimal_type(parameters)?),
             _ => return Err(semantic("CAST requires a numeric target type")),
         })
+    }
+    // Statement casts retain the numeric aliases accepted by DDL/DML. SELECT
+    // has a narrower cast contract. Modifiers come from matched lexer tokens;
+    // whitespace and comments between a sign and its digits are not reparsed.
+    fn statement_numeric_cast_type(
+        &self,
+        name: &str,
+        parameters: &[syntax::Span],
+        tokens: &[syntax::Token],
+    ) -> Result<hawdb_core::numeric::NumericType> {
+        use hawdb_core::numeric::NumericType;
+        if !statement_numeric_name(name) {
+            return Err(semantic("CAST requires a numeric target type"));
+        }
+        if matches!(name, "float8" | "double precision") && !parameters.is_empty() {
+            return Err(HawDBError::Parse("unexpected numeric type modifier".into()));
+        }
+        if matches!(
+            name,
+            "bigint" | "int8" | "int" | "integer" | "int4" | "smallint" | "int2" | "tinyint"
+        ) && parameters.len() > 1
+        {
+            return Err(HawDBError::Parse(
+                "integer CAST types accept one modifier".into(),
+            ));
+        }
+        let invalid = || HawDBError::Parse("numeric type modifiers require integers".into());
+        let parameter = |span: syntax::Span, signed: bool| -> Result<(bool, u64)> {
+            let first = tokens.partition_point(|token| token.span.start < span.start);
+            let last = tokens.partition_point(|token| token.span.end < span.end);
+            let sign = tokens[first].kind;
+            if first != last
+                && !(signed
+                    && first + 1 == last
+                    && matches!(sign, syntax::TokenKind::Minus | syntax::TokenKind::Plus))
+            {
+                return Err(invalid());
+            }
+            if tokens[last].kind != syntax::TokenKind::Number {
+                return Err(invalid());
+            }
+            // The statement dialect tokenizes an immediately following slash
+            // as part of a PostgreSQL minus operator, rather than a comment.
+            if sign == syntax::TokenKind::Minus
+                && self.input.as_bytes().get(tokens[first].span.end) == Some(&b'/')
+            {
+                return Err(invalid());
+            }
+            let value = tokens[last]
+                .text(self.input)
+                .parse::<u64>()
+                .map_err(|_| invalid())?;
+            Ok((sign == syntax::TokenKind::Minus, value))
+        };
+        let precision = parameters
+            .first()
+            .map(|span| parameter(*span, false).map(|(_, value)| value))
+            .transpose()?;
+        let scale = parameters
+            .get(1)
+            .map(|span| -> Result<i64> {
+                let (negative, magnitude) = parameter(*span, true)?;
+                let value = i64::try_from(magnitude).map_err(|_| invalid())?;
+                Ok(if negative { -value } else { value })
+            })
+            .transpose()?;
+        match name {
+            "bigint" | "int8" if scale.is_none() => Ok(NumericType::BigInt),
+            "int" | "integer" | "int4" | "smallint" | "int2" | "tinyint"
+                if parameters.is_empty() =>
+            {
+                Ok(NumericType::BigInt)
+            }
+            "float8" | "double precision" => Ok(NumericType::DoublePrecision),
+            "float"
+                if scale.is_none() && precision.is_none_or(|value| (25..=53).contains(&value)) =>
+            {
+                Ok(NumericType::DoublePrecision)
+            }
+            "decimal" | "numeric" | "dec" => {
+                let precision = u8::try_from(precision.unwrap_or(38))
+                    .map_err(|_| semantic("Decimal precision must be 1..38"))?;
+                let scale = u8::try_from(scale.unwrap_or(0))
+                    .map_err(|_| semantic("Decimal scale must be 0..precision"))?;
+                hawdb_core::DecimalType::new(precision, scale)
+                    .map(NumericType::Decimal)
+                    .map_err(|error| semantic(error.to_string()))
+            }
+            _ => Err(semantic("unsupported numeric CAST type modifiers")),
+        }
     }
     pub(in crate::parser) fn decimal_type(
         &self,

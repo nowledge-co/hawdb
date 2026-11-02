@@ -66,6 +66,7 @@ pub(super) struct Lowerer<'a> {
     input: &'a str,
     lines: Vec<(usize, usize)>,
     checkpoints: Vec<(usize, usize)>,
+    statement_tokens: Option<&'a [syntax::Token]>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -93,6 +94,14 @@ impl<'a> Lowerer<'a> {
             input,
             lines,
             checkpoints,
+            statement_tokens: None,
+        }
+    }
+
+    pub(super) fn for_statement(input: &'a str, tokens: &'a [syntax::Token]) -> Self {
+        Self {
+            statement_tokens: Some(tokens),
+            ..Self::new(input)
         }
     }
 
@@ -499,6 +508,24 @@ mod peg_baseline {
             count += 1;
         }
         assert_eq!(count, 92);
+    }
+
+    #[test]
+    fn frozen_main_statement_cast_aliases_preserve_ir_and_rejection_boundaries() {
+        let mut count = 0;
+        for line in
+            include_str!("../../fixtures/frontend_main_1514_numeric_alias_peg_baseline_v1.jsonl")
+                .lines()
+        {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                expected["source_commit"],
+                "fd10958dd37b8878151aeb73ff0477d189b5db5e"
+            );
+            assert_case(expected["sql"].as_str().unwrap(), &expected);
+            count += 1;
+        }
+        assert_eq!(count, 1005);
     }
 
     pub(super) fn assert_case(input: &str, expected: &serde_json::Value) {

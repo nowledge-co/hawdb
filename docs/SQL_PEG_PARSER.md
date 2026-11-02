@@ -410,3 +410,12 @@ flat arithmetic and cast chains cannot bypass the height limit.
 
 These compatibility results do not resolve the throughput, heap, rendered-error,
 or end-to-end performance gates described above.
+
+`frontend_main_1514_numeric_alias_peg_baseline_v1.jsonl` adds 1,005 independent
+main outcomes across SELECT, INSERT, UPDATE, DELETE, and column defaults. It
+covers integer aliases, FLOAT precision, signed scale modifiers with comments,
+quoted custom type refusals, and overflow boundaries. Statement casts keep the
+broader numeric alias contract of DDL/DML; SELECT retains its narrower contract.
+Both use the same PEG expression grammar with explicit entry-specific rules and
+lower directly into numeric IR. Modifier values are read from already matched
+lexer tokens, including signs separated from digits by comments or whitespace.
