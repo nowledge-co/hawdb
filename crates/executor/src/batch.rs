@@ -416,6 +416,9 @@ pub fn execute_prepared_binding_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    // Consecutive canonical point reads of this execution reuse their selected
+    // segments; the retained cache pins are released when it returns (#1482).
+    let _point_reads = hawdb_storage::canonical::CanonicalPointReadScope::enter();
     let memory_ledger = context
         .memory_ledger
         .clone()

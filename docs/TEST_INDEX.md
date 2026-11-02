@@ -398,6 +398,27 @@ to show that rejected relationships read no target. Replay with `cargo test
 hawdb-executor graph_match` and `cargo test --locked -p hawdb --lib
 api::tests::edge_predicates`. No lane, profile or deadline changes.
 
+Canonical point-read segment reuse (#1482) is owned by storage
+`canonical::point_read_scope_tests` and root `api::tests::point_read_reuse`
+(`//:hawdb_unit_general_tests`). Storage cases prove that reads inside a
+`CanonicalPointReadScope` seek the descriptor tree once per segment in
+ascending and descending id order (gaps and out-of-range ids included), equal
+unscoped and full reads for every property selection and value shape (the
+length-based skip of a directory-validated segment and per-read validation of a
+small segment agree on rows and admitted bytes), never cross reader
+generations, stay per thread, never retain detached or over-budget leases, and
+release every cache pin when the scope closes. Corruption cases rebind the
+segment digest to invalid UTF-8 or an unknown value tag in an unselected
+property and still fail closed and poison the reader, as do digest and
+descriptor corruption, including when a valid segment is retained. The root
+case reads 300 messages of one creator out of core with a bounded number of
+descriptor seeks and checks rows against the resident store after an update,
+a checkpoint, a pinned older snapshot and a reopen. Structural assertions use
+the always-compiled `point_descriptor_seeks_for_test` counter. Replay with
+`cargo test --locked -p hawdb-storage point_read_scope` and `cargo test --locked
+-p hawdb --lib api::tests::point_read_reuse`. No lane, profile or deadline
+changes.
+
 The adaptive execution family extends those existing executor owners with
 encoded non-expression key selection, complete-record validation, 64-KiB nested
 payload forwarding, descriptor/memory-driven 8/4/2-way merges, and live host
@@ -2114,10 +2135,15 @@ identities, optional timestamps, retry no-op epochs, invalid property syntax and
 one-batch WAL/reopen in the existing root API partition.
 ## License hook and subprocess lease handshake
 
-- `scripts/check-license-headers.test.py` is a local pinned-HawkEye fixture
+- `scripts/check-license-headers.test.py` is a pinned-HawkEye fixture
   check for full/SPDX forms, Python/Shell shebangs, excluded/unsupported files,
+  Go line headers/build constraints, MoonBit sources/interfaces/manifests,
+  generated output/dependency exclusions, historical benchmark evidence,
   mixed valid/invalid batches, wrong owners/licenses and byte preservation.
   The staged-file hook uses the same HawkEye rules for both header templates.
+  `.github/workflows/license-headers.yml` runs these fixtures and the full-tree
+  wrapper audit on pull requests to `main` and pushes to `main`; the same
+  fixtures can also run locally with pinned HawkEye on PATH.
 - `//crates/storage:hawdb_storage_tests` owns the cross-process directory lease
   case `ownership::tests::rejects_lease_held_by_another_process`. The child keeps
   the lease until a parent pipe notification, avoiding its former ten-second

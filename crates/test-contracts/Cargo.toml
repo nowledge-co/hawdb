@@ -12,8 +12,8 @@ default = ["full"]
 full = ["hawdb/default"]
 
 [dev-dependencies]
-hawdb = { path = "../..", version = "0.24.0", default-features = false }
-hawdb-storage = { path = "../storage", version = "0.24.0", features = ["test-support"] }
+hawdb = { path = "../..", default-features = false }
+hawdb-storage = { path = "../storage", features = ["test-support"] }
 
 [[test]]
 name = "checkpoint_contracts"

@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Bounded physical retirement, rooted in the complete allocation ledger.
 //! A parent-side copy of the immutable birth marker survives partial removal.

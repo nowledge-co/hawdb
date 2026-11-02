@@ -81,6 +81,15 @@ impl SegmentPayload {
     }
 }
 
+impl SegmentBytes {
+    /// Whether these bytes are a lease on a cache-resident payload, so holding
+    /// them pins memory the cache already charges to its capacity. Detached
+    /// bytes (admission refused, or no cache) are owned by this handle alone.
+    pub(crate) fn is_cache_resident(&self) -> bool {
+        self.payload.pin.is_some()
+    }
+}
+
 impl Clone for SegmentBytes {
     fn clone(&self) -> Self {
         let payload = Arc::clone(&self.payload);
