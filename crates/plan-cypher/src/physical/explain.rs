@@ -429,12 +429,25 @@ impl PhysicalPlan {
                 } else {
                     format!(" predicate_after_steps={:?}", program.predicate_steps)
                 };
+                let edge = if program.edge_predicates.is_empty() {
+                    String::new()
+                } else {
+                    format!(" edge_predicates={:?}", program.edge_predicates)
+                };
                 let projected = if program.projected_nodes.is_empty() {
                     String::new()
                 } else {
                     format!(" projected_nodes={:?}", program.projected_nodes)
                 };
-                format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?}{projected} predicate={:?}{placement}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
+                let projected_relationships = if program.projected_relationships.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " projected_relationships={:?}",
+                        program.projected_relationships
+                    )
+                };
+                format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?}{projected}{projected_relationships} predicate={:?}{placement}{edge}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
             }
             PhysicalPlan::NodeColumnLookupExec {
                 variable,

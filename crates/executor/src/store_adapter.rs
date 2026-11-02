@@ -567,6 +567,27 @@ impl GraphExecutionRead for GraphStore {
         .map(to_execution_control)
     }
 
+    fn visit_ordered_projected_relationships_with_allocation(
+        &self,
+        adjacency: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        required_properties: &BTreeSet<String>,
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_ordered_projected_relationships_with_allocation(
+            self,
+            adjacency,
+            required_properties,
+            memory.budget_bytes,
+            admit,
+            |relationship| consumer(relationship).map(to_store_control),
+        )
+        .map(to_execution_control)
+    }
+
     fn visit_ordered_adjacency_entries_with_allocation(
         &self,
         adjacency: (NodeId, Option<RelTypeId>, AdjacencyDirection),

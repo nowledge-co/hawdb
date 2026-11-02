@@ -67,6 +67,7 @@ mod default_pipeline;
 mod delete_mutations;
 mod descriptor_capacity;
 mod early_match_predicates;
+mod edge_predicates;
 mod entity_labels;
 mod entity_writes;
 mod expression_functions;

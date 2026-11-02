@@ -22,8 +22,8 @@ use crate::traversal::shortest_path_bfs::{
 };
 use crate::traversal::{
     projected_node_with_allocation, visit_bounded_expand_trails, visit_one_hop_adjacency_entries,
-    visit_one_hop_relationships_projected, visit_zero_hop_expand_target, BoundedExpandSpec,
-    OneHopRelationshipSpec,
+    visit_one_hop_relationship_records, visit_zero_hop_expand_target, BoundedExpandSpec,
+    OneHopRecordSpec,
 };
 use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryClass};
 use hawdb_core::{HawDBError, Result, Value};
@@ -45,6 +45,10 @@ const MAX_MATCH_STEPS: usize = 32;
 struct PlacedPredicate<'a> {
     early: Vec<Vec<&'a Predicate>>,
     last: Vec<&'a Predicate>,
+    /// Conjuncts on the relationship that step `i` binds, evaluated on each
+    /// relationship it reads before the target node is read. They belong to
+    /// the group after step `i` and are not repeated there.
+    edge: Vec<Vec<&'a Predicate>>,
 }
 
 impl<'a> PlacedPredicate<'a> {
@@ -52,25 +56,61 @@ impl<'a> PlacedPredicate<'a> {
         let end = program.steps.len();
         let mut early = vec![Vec::new(); end];
         let mut last = Vec::new();
+        let mut edge = vec![Vec::new(); end];
+        let invalid = || {
+            HawDBError::Execution(
+                "MATCH predicate placement does not match its conjuncts and steps".to_string(),
+            )
+        };
         if program.predicate_steps.is_empty() {
+            if !program.edge_predicates.is_empty() {
+                return Err(invalid());
+            }
             last.extend(program.predicate.as_ref());
-            return Ok(Self { early, last });
+            return Ok(Self { early, last, edge });
         }
         let conjuncts = program.predicate_conjuncts();
         if conjuncts.len() != program.predicate_steps.len()
             || program.predicate_steps.iter().any(|step| *step > end)
+            || program
+                .edge_predicates
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
         {
-            return Err(HawDBError::Execution(
-                "MATCH predicate placement does not match its conjuncts and steps".to_string(),
-            ));
+            return Err(invalid());
         }
-        for (conjunct, step) in conjuncts.iter().zip(&program.predicate_steps) {
+        let mut edge_conjuncts = program.edge_predicates.iter().copied().peekable();
+        for (position, (conjunct, step)) in
+            conjuncts.iter().zip(&program.predicate_steps).enumerate()
+        {
+            if edge_conjuncts.next_if_eq(&position).is_some() {
+                // Only a one-hop step that binds a relationship reads one.
+                let expand = step.checked_sub(1).filter(|index| {
+                    matches!(
+                        program.steps.get(*index),
+                        Some(GraphMatchStep::Expand {
+                            relationship: Some(_),
+                            min_hops: 1,
+                            max_hops: 1,
+                            ..
+                        })
+                    )
+                });
+                let Some(expand) = expand else {
+                    return Err(invalid());
+                };
+                edge[expand].push(conjunct);
+                continue;
+            }
             match early.get_mut(*step) {
                 Some(group) => group.push(conjunct),
                 None => last.push(conjunct),
             }
         }
-        Ok(Self { early, last })
+        if edge_conjuncts.next().is_some() {
+            return Err(invalid());
+        }
+        Ok(Self { early, last, edge })
     }
 }
 
@@ -235,6 +275,18 @@ struct MatchRuntime<'a> {
     scoring: bool,
 }
 
+/// The rest of a one-hop step after its relationship is bound.
+struct EdgeTarget<'p, 'l> {
+    /// Conjuncts on the relationship, run before the target is read.
+    conjuncts: &'p [&'p Predicate],
+    pattern: &'p GraphMatchNode,
+    labels: Option<&'l [hawdb_core::LabelId]>,
+    /// The target to read, or `None` when the step's target is bound.
+    neighbor: Option<NodeId>,
+    /// The bound relationship's size, which shares the target's read budget.
+    edge_bytes: usize,
+}
+
 /// One candidate target of an expansion step.
 enum Target {
     /// The step's target variable is already bound to this node id.
@@ -252,13 +304,24 @@ impl MatchRuntime<'_> {
         self.program.projected_nodes.get(variable)
     }
 
+    /// The properties a relationship variable's reads are limited to, if any.
+    fn relationship_projection(&self, variable: &str) -> Option<&BTreeSet<String>> {
+        if self.scoring {
+            return None;
+        }
+        self.program.projected_relationships.get(variable)
+    }
+
     /// Reads an unbound target, limited to its projection, with an admitted
     /// allocation retained by the caller while the record is bound.
+    /// `related_bytes` is the size of the relationship read with it, which
+    /// shares the read budget.
     fn read_target(
         &self,
         variable: &str,
         id: NodeId,
         label_ids: Option<&[hawdb_core::LabelId]>,
+        related_bytes: usize,
     ) -> Result<Option<(NodeRecord, Box<dyn GraphReadAllocation>)>> {
         let memory = self.adjacency_memory();
         let task_context = self.context.task_context;
@@ -268,11 +331,15 @@ impl MatchRuntime<'_> {
                 id,
                 label_ids,
                 properties,
-                &mut |bytes| memory.admit_node(bytes, 0, task_context),
+                &mut |bytes| memory.admit_node(bytes, related_bytes, task_context),
                 task_context,
             );
         }
-        let mut admit = |bytes| memory.admit_node(bytes, 0, task_context).map(Some);
+        let mut admit = |bytes| {
+            memory
+                .admit_node(bytes, related_bytes, task_context)
+                .map(Some)
+        };
         match self.store.node_with_allocation(
             id,
             label_ids,
@@ -726,6 +793,7 @@ impl MatchRuntime<'_> {
                                     &target.variable,
                                     neighbor,
                                     labels.as_deref(),
+                                    0,
                                 )? {
                                     Some((node, allocation)) => {
                                         (Target::Read(node), Some(allocation))
@@ -742,31 +810,43 @@ impl MatchRuntime<'_> {
                         },
                     );
                 }
-                visit_one_hop_relationships_projected(
+                // Conjuncts on this relationship run before its target is read.
+                let edge_conjuncts = self
+                    .placed
+                    .edge
+                    .get(index)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let projection = match relationship {
+                    Some(variable) if bound_relationship.is_none() => {
+                        self.relationship_projection(variable)
+                    }
+                    _ => None,
+                };
+                visit_one_hop_relationship_records(
                     self.store,
-                    OneHopRelationshipSpec {
+                    OneHopRecordSpec {
                         source: source_id,
                         rel_type_id,
-                        target_label_ids: labels.as_deref(),
-                        rel_properties: properties,
-                        relationship_scan_filter: None,
                         direction: *direction,
+                        rel_properties: properties,
+                        projection,
                     },
                     self.adjacency_memory(),
                     self.context.observer,
                     self.context.task_context,
-                    target_properties,
-                    &mut |edge, node| {
+                    &mut |edge, neighbor| {
                         if used.contains(&edge.id)
                             || bound_relationship.is_some_and(|id| id != edge.id)
-                            || bound_target.is_some_and(|id| id != node.id)
+                            || bound_target.is_some_and(|id| id != neighbor)
                             || !properties_match(properties, &edge.properties)
                         {
                             return Ok(ScanControl::Continue);
                         }
+                        let edge_bytes = relationship_memory_bytes(&edge);
                         let _used = self.account.reserve(USED_RELATIONSHIP_BYTES)?;
                         let _edge = self.source_account.reserve(
-                            relationship_memory_bytes(&edge).saturating_add(
+                            edge_bytes.saturating_add(
                                 relationship
                                     .as_ref()
                                     .map_or(0, |name| graph_slot_entry_bytes(name)),
@@ -782,8 +862,19 @@ impl MatchRuntime<'_> {
                             }
                             _ => None,
                         };
-                        let control =
-                            self.visit_target(index, row, used, target, (observed(node), 1), emit);
+                        let control = self.visit_edge_target(
+                            index,
+                            row,
+                            used,
+                            EdgeTarget {
+                                conjuncts: edge_conjuncts,
+                                pattern: target,
+                                labels: labels.as_deref(),
+                                neighbor: bound_target.is_none().then_some(neighbor),
+                                edge_bytes,
+                            },
+                            emit,
+                        );
                         if let Some(variable) = inserted {
                             row.relationships.remove(variable);
                         }
@@ -796,6 +887,59 @@ impl MatchRuntime<'_> {
                 self.visit_shortest_paths(index, row, used, step, emit)
             }
         }
+    }
+
+    /// Runs `conjuncts` on the relationship step `index` has just bound in
+    /// `row`, then reads the step's target, `neighbor` when it is unbound, and
+    /// continues with it. A false or NULL conjunct drops the relationship
+    /// before its target is read, as it would drop the candidate after the
+    /// step. A failing one defers the whole predicate to the end of the match
+    /// for this candidate, as [`Self::visit`] does.
+    fn visit_edge_target(
+        &self,
+        index: usize,
+        row: &mut Binding,
+        used: &mut BTreeSet<RelId>,
+        edge: EdgeTarget<'_, '_>,
+        emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        let EdgeTarget {
+            conjuncts,
+            pattern,
+            labels,
+            neighbor,
+            edge_bytes,
+        } = edge;
+        let mut defer = false;
+        if !self.deferred.get() {
+            for conjunct in conjuncts {
+                match self.conjunct_holds(conjunct, row) {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(ScanControl::Continue),
+                    Err(HawDBError::Execution(_)) => {
+                        // Cancellation is sticky; report it now rather than defer.
+                        runtime_checkpoint(self.context.task_context)?;
+                        defer = true;
+                        break;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        let (observed, _allocation) = match neighbor {
+            None => (Target::Bound, None),
+            Some(id) => match self.read_target(&pattern.variable, id, labels, edge_bytes)? {
+                Some((node, allocation)) => (Target::Read(node), Some(allocation)),
+                None => return Ok(ScanControl::Continue),
+            },
+        };
+        if !defer {
+            return self.visit_target(index, row, used, pattern, (observed, 1), emit);
+        }
+        self.deferred.set(true);
+        let control = self.visit_target(index, row, used, pattern, (observed, 1), emit);
+        self.deferred.set(false);
+        control
     }
 
     /// Binds `variable` to `node` in the row for the rest of the pattern,

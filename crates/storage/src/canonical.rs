@@ -2074,19 +2074,23 @@ impl CanonicalSegmentReader {
         })
     }
 
+    /// Visits one relationship's payload with its allocation bound, limited
+    /// to `required_properties` when they are given.
     pub(crate) fn visit_relationship_payload(
         &self,
         id: RelId,
+        required_properties: Option<&BTreeSet<String>>,
         mut consumer: impl FnMut(
             CanonicalRelationshipLayout,
             &[u8],
         ) -> Result<(), CanonicalSegmentError>,
     ) -> Result<(), CanonicalSegmentError> {
         self.point_allocation_bytes(CanonicalSegmentKind::Relationships, id.0, |payload| {
-            let layout = relationship_payload_layout(
+            let layout = selected_relationship_payload_layout(
                 payload,
                 Some(self.property_keys()),
                 self.property_spills.as_ref(),
+                required_properties,
             )?;
             consumer(layout, payload)?;
             Ok(None)
@@ -2396,6 +2400,43 @@ impl CanonicalSegmentReader {
             self.property_spills.as_ref(),
             Some(self.property_keys()),
         );
+        self.poison_on_physical_failure(&result);
+        result
+    }
+
+    /// Decodes the endpoints, type and only `required_properties` of one
+    /// relationship payload; unrequested values are validated and skipped.
+    pub(crate) fn decode_scanned_projected_relationship(
+        &self,
+        id: RelId,
+        payload: &[u8],
+        required_properties: &BTreeSet<String>,
+    ) -> Result<RelRecord, CanonicalSegmentError> {
+        self.ensure_healthy()?;
+        let result = (|| {
+            let mut cursor = SliceCursor::new(payload);
+            let source = NodeId(cursor.read_u64()?);
+            let target = NodeId(cursor.read_u64()?);
+            let rel_type = RelTypeId(cursor.read_u32()?);
+            let properties = decode_projected_record_properties(
+                &mut cursor,
+                self.property_spills.as_ref(),
+                Some(self.property_keys()),
+                required_properties,
+            )?;
+            if !cursor.is_empty() {
+                return Err(CanonicalSegmentError::Corrupt(
+                    "projected relationship record has trailing bytes".to_string(),
+                ));
+            }
+            Ok(RelRecord {
+                id,
+                source,
+                target,
+                rel_type,
+                properties,
+            })
+        })();
         self.poison_on_physical_failure(&result);
         result
     }
@@ -3653,12 +3694,27 @@ pub(crate) fn relationship_payload_layout(
     property_keys: Option<&[String]>,
     property_spills: Option<&PropertySpillReader>,
 ) -> Result<CanonicalRelationshipLayout, CanonicalSegmentError> {
+    selected_relationship_payload_layout(payload, property_keys, property_spills, None)
+}
+
+/// [`relationship_payload_layout`] whose allocation bound covers only
+/// `required_properties` when they are given.
+fn selected_relationship_payload_layout(
+    payload: &[u8],
+    property_keys: Option<&[String]>,
+    property_spills: Option<&PropertySpillReader>,
+    required_properties: Option<&BTreeSet<String>>,
+) -> Result<CanonicalRelationshipLayout, CanonicalSegmentError> {
     let mut cursor = SliceCursor::new(payload);
     let source = NodeId(cursor.read_u64()?);
     let target = NodeId(cursor.read_u64()?);
     let rel_type = RelTypeId(cursor.read_u32()?);
-    let properties =
-        record_properties_allocation_bytes(&mut cursor, property_keys, property_spills, None)?;
+    let properties = record_properties_allocation_bytes(
+        &mut cursor,
+        property_keys,
+        property_spills,
+        required_properties,
+    )?;
     Ok(CanonicalRelationshipLayout {
         source,
         target,

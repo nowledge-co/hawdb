@@ -14,19 +14,12 @@ pub(super) fn write_program(output: &mut String, program: &GraphMatchProgram) {
     });
     write_identifier_list(output, &program.introduced);
     // Projection decides which record parts are read; a cached plan keeps it.
-    if !program.projected_nodes.is_empty() {
-        output.push_str(",projected=[");
-        for (variable, properties) in &program.projected_nodes {
-            write_identifier(output, variable);
-            output.push(':');
-            for property in properties {
-                write_identifier(output, property);
-                output.push(',');
-            }
-            output.push(';');
-        }
-        output.push(']');
-    }
+    write_projection(output, ",projected=[", &program.projected_nodes);
+    write_projection(
+        output,
+        ",projected_relationships=[",
+        &program.projected_relationships,
+    );
     output.push_str(",imports=[");
     for import in &program.imports {
         output.push_str(match import.kind {
@@ -123,6 +116,35 @@ pub(super) fn write_program(output: &mut String, program: &GraphMatchProgram) {
         }
         output.push(']');
     }
+    if !program.edge_predicates.is_empty() {
+        output.push_str(",edge_predicates=[");
+        for conjunct in &program.edge_predicates {
+            output.push_str(&conjunct.to_string());
+            output.push(';');
+        }
+        output.push(']');
+    }
+}
+
+fn write_projection(
+    output: &mut String,
+    prefix: &str,
+    projection: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+) {
+    if projection.is_empty() {
+        return;
+    }
+    output.push_str(prefix);
+    for (variable, properties) in projection {
+        write_identifier(output, variable);
+        output.push(':');
+        for property in properties {
+            write_identifier(output, property);
+            output.push(',');
+        }
+        output.push(';');
+    }
+    output.push(']');
 }
 
 fn write_node(output: &mut String, node: &GraphMatchNode) {

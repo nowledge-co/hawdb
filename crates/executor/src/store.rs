@@ -559,6 +559,34 @@ pub trait GraphExecutionRead {
         ))
     }
 
+    /// [`Self::visit_ordered_adjacent_relationships_with_allocation`] whose
+    /// records keep only `required_properties` beside their endpoints and
+    /// type. Readers that cannot skip properties read whole records, under
+    /// their full admission, and drop the rest.
+    fn visit_ordered_projected_relationships_with_allocation(
+        &self,
+        adjacency: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        required_properties: &BTreeSet<String>,
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        let (node_id, rel_type, direction) = adjacency;
+        self.visit_ordered_adjacent_relationships_with_allocation(
+            node_id,
+            rel_type,
+            direction,
+            memory,
+            admit,
+            &mut |mut input| {
+                input.retain_properties(|name| required_properties.contains(name));
+                consumer(input)
+            },
+        )
+    }
+
     /// The `(neighbor, relationship)` entries of
     /// [`Self::visit_ordered_adjacent_relationships_with_allocation`], in the
     /// same order, for callers that need no relationship record. Readers that

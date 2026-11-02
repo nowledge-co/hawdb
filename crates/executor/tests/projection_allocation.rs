@@ -2409,9 +2409,11 @@ fn run_point_read_admission(persisted: bool, case: PointReadCase) {
             }],
             introduced: Vec::new(),
             projected_nodes: BTreeMap::new(),
+            projected_relationships: BTreeMap::new(),
             steps: Vec::new(),
             predicate: None,
             predicate_steps: Vec::new(),
+            edge_predicates: Vec::new(),
             optional: false,
         },
         input: Some(Box::new(PhysicalPlan::ProjectExec {

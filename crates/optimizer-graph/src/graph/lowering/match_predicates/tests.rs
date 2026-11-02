@@ -70,9 +70,11 @@ fn program(imports: &[&str], introduced: &[&str], steps: Vec<GraphMatchStep>) ->
             .collect(),
         introduced: introduced.iter().map(|name| name.to_string()).collect(),
         projected_nodes: BTreeMap::new(),
+        projected_relationships: BTreeMap::new(),
         steps,
         predicate: None,
         predicate_steps: Vec::new(),
+        edge_predicates: Vec::new(),
         optional: false,
     }
 }
@@ -453,4 +455,116 @@ fn output_cardinality_is_independent_of_conjunct_placement() {
             .div_ceil(crate::cardinality_defaults::FILTER_SELECTIVITY_DIVISOR),
     );
     assert!(early.random_io < late.random_io);
+}
+
+/// `(a)-[r:R]->(b)`: the relationship step is the last one.
+fn single_hop() -> GraphMatchProgram {
+    program(
+        &[],
+        &["a", "r", "b"],
+        vec![
+            GraphMatchStep::Node(node("a")),
+            expand("a", Some("r"), "b", (1, 1)),
+        ],
+    )
+}
+
+#[test]
+fn relationship_only_conjuncts_run_on_the_edge_before_its_target() {
+    let r_compare = Predicate::PropertyCompare {
+        variable: "r".to_string(),
+        property: "x".to_string(),
+        op: ComparisonOp::Gt,
+        value: Value::Int(1),
+    };
+    let (program, decision) = place(
+        chain(),
+        Predicate::And(vec![
+            // Relationship only, alone and inside OR / NOT / IS NULL.
+            property_eq("r", 1),
+            Predicate::Or(vec![r_compare.clone(), property_eq("r", 5)]),
+            Predicate::Not(Box::new(r_compare.clone())),
+            Predicate::PropertyIsNull {
+                variable: "r".to_string(),
+                property: "y".to_string(),
+            },
+            // Mixed with its target, its source or a later node: not pushed.
+            Predicate::ExpressionEq {
+                expression: property("r"),
+                value: property("b"),
+            },
+            Predicate::Or(vec![property_eq("r", 1), property_eq("a", 1)]),
+            property_eq("b", 2),
+            property_eq("c", 3),
+            // No variable at all: it runs before the first step.
+            Predicate::ConstantBool(true),
+        ]),
+    );
+    assert_eq!(program.predicate_steps, vec![2, 2, 2, 2, 2, 2, 2, 3, 0]);
+    assert_eq!(program.edge_predicates, vec![0, 1, 2, 3]);
+    assert!(
+        decision.as_deref().unwrap().ends_with(
+            "evaluate conjunct(s) [0, 1, 2, 3] on each relationship before reading its target node"
+        ),
+        "{decision:?}"
+    );
+}
+
+#[test]
+fn a_relationship_conjunct_on_the_last_step_still_runs_on_the_edge() {
+    // Every conjunct runs at the end, but the relationship one can still skip
+    // the target read, so the program is placed.
+    let (program, decision) = place(
+        single_hop(),
+        Predicate::And(vec![property_eq("b", 1), property_eq("r", 1)]),
+    );
+    assert_eq!(program.predicate_steps, vec![2, 2]);
+    assert_eq!(program.edge_predicates, vec![1]);
+    assert!(decision.is_some());
+    // A lone relationship conjunct is the whole predicate, conjunct 0.
+    let (program, _) = place(single_hop(), property_eq("r", 1));
+    assert_eq!(program.predicate_steps, vec![2]);
+    assert_eq!(program.edge_predicates, vec![0]);
+    assert_eq!(program.predicate, Some(property_eq("r", 1)));
+}
+
+#[test]
+fn bound_imported_and_reused_relationships_are_not_pushed() {
+    // `r` bound before the match is compared by id; its conjunct runs first.
+    let mut imported = single_hop();
+    imported.introduced = vec!["a".to_string(), "b".to_string()];
+    let (placed, _) = place(imported, property_eq("r", 1));
+    assert_eq!(placed.predicate_steps, vec![0]);
+    assert!(placed.edge_predicates.is_empty());
+    // A second step over the same relationship variable does not read it.
+    let reused = program(
+        &[],
+        &["a", "r", "b", "c"],
+        vec![
+            GraphMatchStep::Node(node("a")),
+            expand("a", Some("r"), "b", (1, 1)),
+            expand("b", Some("r"), "c", (1, 1)),
+        ],
+    );
+    let (program, _) = place(reused, property_eq("r", 1));
+    assert_eq!(program.predicate_steps, vec![2]);
+    assert_eq!(program.edge_predicates, vec![0]);
+}
+
+#[test]
+fn anonymous_and_variable_length_steps_bind_no_edge_conjunct() {
+    let anonymous = program(
+        &[],
+        &["a", "b", "c"],
+        vec![
+            GraphMatchStep::Node(node("a")),
+            expand("a", None, "b", (1, 3)),
+            expand("b", None, "c", (1, 1)),
+        ],
+    );
+    let (program, _) = place(
+        anonymous,
+        Predicate::And(vec![property_eq("b", 1), property_eq("c", 1)]),
+    );
+    assert!(program.edge_predicates.is_empty());
 }

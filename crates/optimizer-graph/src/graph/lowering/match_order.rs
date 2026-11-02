@@ -284,7 +284,9 @@ mod tests {
             introduced,
             steps,
             predicate_steps: Vec::new(),
+            edge_predicates: Vec::new(),
             projected_nodes: BTreeMap::new(),
+            projected_relationships: BTreeMap::new(),
             predicate: None,
             optional: true,
         }

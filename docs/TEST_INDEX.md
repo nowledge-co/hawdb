@@ -314,6 +314,24 @@ parallel cases do not depend on clock uniqueness. Its structural assertions use 
 -p hawdb-optimizer-graph match_reads` and `cargo test --locked -p hawdb --lib
 api::tests::graph_match_reads`. No lane, profile or deadline changes.
 
+`GraphMatchExec` relationship conjunct pushdown and relationship projection
+(#1483) extend those owners: optimizer `graph::lowering::match_predicates::tests`
+(which conjuncts read only a one-hop step's relationship, including OR, NOT,
+IS NULL, mixed, constant, bound, reused, anonymous and variable-length cases),
+optimizer `graph::match_reads::tests` (relationship property demand, pattern
+properties, whole-relationship escapes, imports and variable-length steps),
+executor `batch::tests::graph_match` (edge-conjunct result equivalence, error
+deferral and malformed placement), and root `api::tests::edge_predicates` in
+`//:hawdb_unit_general_tests`. The root family checks exact rows on a resident
+and a checkpointed out-of-core store for three-valued conjuncts, pattern
+properties, whole relationships, OPTIONAL MATCH padding when every edge fails
+and errors raised only for complete matches. Its structural assertion uses the
+`record_reads_for_test` counters, including the new `projected_relationships`,
+to show that rejected relationships read no target. Replay with `cargo test
+--locked -p hawdb-optimizer-graph match_`, `cargo test --locked -p
+hawdb-executor graph_match` and `cargo test --locked -p hawdb --lib
+api::tests::edge_predicates`. No lane, profile or deadline changes.
+
 The adaptive execution family extends those existing executor owners with
 encoded non-expression key selection, complete-record validation, 64-KiB nested
 payload forwarding, descriptor/memory-driven 8/4/2-way merges, and live host
