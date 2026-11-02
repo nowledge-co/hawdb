@@ -157,6 +157,33 @@ fn indexed_lookup_reads_matching_keys_and_keeps_wide_properties_unrequested() {
             6
         );
     }
+    let mut db = database(true);
+    db.query("CREATE INDEX ON :Item(space_id)").unwrap();
+    let parameters = params(
+        vec![
+            Value::Map(BTreeMap::from([
+                ("id".into(), Value::String("k0".into())),
+                ("space".into(), Value::String("a".into())),
+            ])),
+            Value::Map(BTreeMap::from([
+                ("id".into(), Value::Null),
+                ("space".into(), Value::String("a".into())),
+            ])),
+        ],
+        "a",
+    );
+    let output = db.explain_analyze_query_with_params(
+        "UNWIND $rows AS candidate OPTIONAL MATCH (n:Item {id: candidate.id, space_id: candidate.space}) RETURN n.id AS id",
+        &parameters,
+    ).unwrap();
+    assert_eq!(output.output.rows.len(), 3);
+    let reports = &output.execution_profile.scan_pruning_reports;
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert!(
+        matches!(&reports[0].strategy, ScanPruningStrategy::PropertyEq { property } if property == "id")
+    );
+    assert_eq!(reports[0].candidate_count_before_filter, 2);
+
     // A full 32 KiB body cannot fit this source/working budget. The selected
     // projected records and small result do; adding the index must retain that.
     for indexed in [false, true] {

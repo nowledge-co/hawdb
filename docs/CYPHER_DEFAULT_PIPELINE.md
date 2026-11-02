@@ -87,6 +87,7 @@ an UNKNOWN equality on a NULL/missing stored property, even when the erroring
 conjunct appears later. No key is extracted from an OR branch.
 One scan-pruning report per MATCH combines its selected property-equality
 accesses and visited candidates before the remaining filters. Its counters
+use one property selected from syntax/catalog before reading input values and
 include repeated input keys; NULL/generic fallback reads are outside that report.
 Diagnostic state is constant-sized rather than growing with input count. These counts
 do not establish physical I/O or whole-route latency improvements.

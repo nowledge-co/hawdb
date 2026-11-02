@@ -82,7 +82,10 @@ impl<'a> MatchRuntime<'a> {
             if !infallible_predicate(predicate, &node.variable, row) {
                 return None;
             }
-            lookup_key(predicate, &node.variable, row, self.context.catalog, label)
+            let (property, key) =
+                lookup_key(predicate, &node.variable, self.context.catalog, label)?;
+            let value = bound_value(key, row)?;
+            (value != &Value::Null).then_some((property, value))
         }) else {
             return Ok(None);
         };
@@ -104,20 +107,19 @@ impl<'a> MatchRuntime<'a> {
     }
 }
 
-fn lookup_key<'p, 'r>(
+fn lookup_key<'p>(
     predicate: &'p Predicate,
     target: &str,
-    row: &'r Binding,
     catalog: &Catalog,
     label: LabelId,
-) -> Option<(&'p str, &'r Value)> {
+) -> Option<(&'p str, &'p ProjectionExpression)> {
     match predicate {
         Predicate::And(children) => children
             .iter()
-            .find_map(|child| lookup_key(child, target, row, catalog, label)),
+            .find_map(|child| lookup_key(child, target, catalog, label)),
         Predicate::ExpressionEq { expression, value } => {
-            lookup_sides(expression, value, target, row, catalog, label)
-                .or_else(|| lookup_sides(value, expression, target, row, catalog, label))
+            lookup_sides(expression, value, target, catalog, label)
+                .or_else(|| lookup_sides(value, expression, target, catalog, label))
         }
         _ => None,
     }
@@ -167,35 +169,45 @@ fn infallible_expression(expression: &ProjectionExpression, target: &str, row: &
     }
 }
 
-fn lookup_sides<'p, 'r>(
+fn lookup_sides<'p>(
     expression: &'p ProjectionExpression,
-    key: &ProjectionExpression,
+    key: &'p ProjectionExpression,
     target: &str,
-    row: &'r Binding,
     catalog: &Catalog,
     label: LabelId,
-) -> Option<(&'p str, &'r Value)> {
+) -> Option<(&'p str, &'p ProjectionExpression)> {
     let ProjectionExpression::Property { variable, property } = expression else {
         return None;
     };
     if variable != target || !catalog.has_scalar_property_index(label, property) {
         return None;
     }
+    // Pick one property from syntax/catalog before inspecting row values, so
+    // NULL keys cannot switch access paths within an aggregated scan report.
+    let bound = match key {
+        ProjectionExpression::Column(column)
+        | ProjectionExpression::ColumnProperty { column, .. } => column != target,
+        ProjectionExpression::Property { variable, .. } => variable != target,
+        _ => false,
+    };
+    bound.then_some((property, key))
+}
+
+fn bound_value<'r>(key: &ProjectionExpression, row: &'r Binding) -> Option<&'r Value> {
     // Borrow only already-bound values. Fallible/computed keys, including a
     // non-map ColumnProperty, retain ordinary predicate evaluation. NULL keys
     // do too, preserving demand-sensitive errors in other WHERE conjuncts.
-    let value = match key {
-        ProjectionExpression::Column(column) if column != target => row.values.get(column)?,
-        ProjectionExpression::ColumnProperty { column, property } if column != target => {
+    match key {
+        ProjectionExpression::Column(column) => row.values.get(column),
+        ProjectionExpression::ColumnProperty { column, property } => {
             let Value::Map(values) = row.values.get(column)? else {
                 return None;
             };
-            values.get(property)?
+            values.get(property)
         }
-        ProjectionExpression::Property { variable, property } if variable != target => {
-            crate::expression::binding_property(row, variable, property)?
+        ProjectionExpression::Property { variable, property } => {
+            crate::expression::binding_property(row, variable, property)
         }
-        _ => return None,
-    };
-    (value != &Value::Null).then_some((property, value))
+        _ => None,
+    }
 }

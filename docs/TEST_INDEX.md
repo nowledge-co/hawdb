@@ -301,6 +301,7 @@ property keys, constant and residual Space/active filters, nonunique keys,
 duplicate inputs, missing/NULL/invalid keys, fallible conjuncts before and after
 UNKNOWN equality on NULL stored keys, and LIMIT
 stop. Scan reports require six matching node visits for four bounded input keys;
+multiple available indexes retain one selected property across NULL input keys;
 wide unrequested bodies remain excluded under a small source/working budget.
 Canonical reopen and a snapshot pinned across update/checkpoint retain exact
 results. Executor `batch::tests::graph_match::indexed_node` owns admission release
