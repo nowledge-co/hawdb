@@ -1,4 +1,5 @@
 import {
+  "moonbitlang/core/double",
   "nowledge-co/hawdb" @hawdb,
   "moonbitlang/core/json",
 }
