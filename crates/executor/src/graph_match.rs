@@ -186,6 +186,7 @@ pub(crate) fn stream_graph_match(
         context,
         account: &account,
         source_account: &source_account,
+        indexed: indexed_node::IndexedNodeStats::default(),
         // Seed scoring reads the candidate's properties and annotates each
         // hop, so it keeps whole records and per-step row copies.
         scoring: context.observer.seed_graph_scoring_input().is_some(),
@@ -255,6 +256,7 @@ pub(crate) fn stream_graph_match(
     } else {
         visit_input(&Binding::values(BTreeMap::new()))?
     };
+    runtime.indexed.report(context.observer);
     if output.emit(emit)? == BatchControl::Stop {
         return Ok(BatchControl::Stop);
     }
@@ -262,6 +264,7 @@ pub(crate) fn stream_graph_match(
 }
 
 struct MatchRuntime<'a> {
+    indexed: indexed_node::IndexedNodeStats<'a>,
     program: &'a GraphMatchProgram,
     placed: PlacedPredicate<'a>,
     /// Set while the current partial candidate carries an early conjunct
@@ -729,32 +732,10 @@ impl MatchRuntime<'_> {
                         },
                     ),
                 }?;
-                if let Some(lookup) = lookup {
-                    use hawdb_storage::scan::{
-                        ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind,
-                    };
+                if let Some(lookup) = &lookup {
                     let total = self.store.node_count_for_label(Some(lookup.label));
-                    let hawdb_plan_cypher::NodeProjectionAccess::PropertyValues {
-                        property, ..
-                    } = lookup.access
-                    else {
-                        unreachable!()
-                    };
-                    self.context
-                        .observer
-                        .record_scan_pruning_report(ScanPruningReport {
-                            target_kind: ScanPruningTargetKind::Node,
-                            label_id: Some(lookup.label),
-                            rel_type_id: None,
-                            strategy: ScanPruningStrategy::PropertyEq { property },
-                            pruned: true,
-                            exact_empty: visited.get() == 0,
-                            candidate_count_before_pruning: total,
-                            pruned_candidate_count: total.saturating_sub(visited.get()),
-                            candidate_count_before_filter: visited.get(),
-                            output_count: matched.get(),
-                            filtered_out_count: visited.get().saturating_sub(matched.get()),
-                        });
+                    self.indexed
+                        .record(lookup, total, visited.get(), matched.get());
                 }
                 Ok(control)
             }

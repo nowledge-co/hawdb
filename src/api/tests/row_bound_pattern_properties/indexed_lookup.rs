@@ -140,7 +140,7 @@ fn indexed_lookup_reads_matching_keys_and_keeps_wide_properties_unrequested() {
         assert!(output.physical_plan.explain(0).contains("GraphMatchExec"));
         assert_eq!(output.output.rows.len(), 7);
         let reports = &output.execution_profile.scan_pruning_reports;
-        assert_eq!(reports.len(), 4, "{reports:?}");
+        assert_eq!(reports.len(), 1, "{reports:?}");
         assert!(reports.iter().all(|report| matches!(&report.strategy, ScanPruningStrategy::PropertyEq { property } if property == "id")));
         assert_eq!(
             reports

@@ -82,8 +82,10 @@ Only a required equality in the top-level conjunction can select this access.
 An earlier potentially fallible conjunct, NULL/missing/non-map input, an
 undeclared scalar index, imports, union labels or multiple pattern steps keep
 the original path. In particular, no key is extracted from an OR branch.
-The query's scan-pruning reports expose each selected property-equality access
-and its visited candidates before the remaining MATCH filters. These counts
+One scan-pruning report per MATCH combines its selected property-equality
+accesses and visited candidates before the remaining filters. Its counters
+include repeated input keys; NULL/generic fallback reads are outside that report.
+Diagnostic state is constant-sized rather than growing with input count. These counts
 do not establish physical I/O or whole-route latency improvements.
 
 Unoptimized correlated matches can still perform input rows times label-size

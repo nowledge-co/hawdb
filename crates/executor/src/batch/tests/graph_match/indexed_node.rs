@@ -74,12 +74,8 @@ fn indexed_node_lookup_releases_admission_on_stop_error_cancellation_and_refusal
         let task = RuntimeTaskContext::without_deadline(token.clone());
         let memory = ExecutionMemoryConfig {
             batch_rows: NonZeroUsize::new(1).unwrap(),
-            blocking_operator_bytes: NonZeroUsize::new(if mode == "refuse" {
-                4096
-            } else {
-                65_536
-            })
-            .unwrap(),
+            query_memory_bytes: NonZeroUsize::new(if mode == "refuse" { 4096 } else { 65_536 })
+                .unwrap(),
             ..ExecutionMemoryConfig::default()
         };
         let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
@@ -124,7 +120,7 @@ fn indexed_node_lookup_releases_admission_on_stop_error_cancellation_and_refusal
                 assert_eq!(emitted, 1);
             }
             "refuse" => {
-                assert!(result.is_err());
+                assert!(matches!(result, Err(HawDBError::ResourceBudgetExceeded(_))));
                 assert_eq!(emitted, 0);
             }
             _ => unreachable!(),
