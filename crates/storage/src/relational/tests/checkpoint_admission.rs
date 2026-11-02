@@ -739,7 +739,7 @@ fn controlled_sparse_workspace_moves_sorted_rows_into_bounded_pages() {
         .unwrap();
     assert_eq!(access, expected_access);
     assert_eq!(controlled.row_count("documents"), 513);
-    let pages = &controlled.segments["documents"].rows.pages;
+    let pages = controlled.segments["documents"].rows.pages();
     assert_eq!(pages.len(), 3);
     assert!(pages
         .iter()
@@ -843,7 +843,7 @@ fn controlled_row_page_copy_denies_before_wide_keys_and_retains_snapshot_leases(
         let wide_allocations = observer.finish();
         if succeeds {
             result.unwrap();
-            assert!(!target.pages.shares_storage_with(&source.pages));
+            assert!(!target.pages().shares_storage_with(source.pages()));
             assert_eq!(target.shared_page_count(&source), 0);
             assert_eq!(target.get(&key), source.get(&key));
             let retained = target.clone();
@@ -858,7 +858,7 @@ fn controlled_row_page_copy_denies_before_wide_keys_and_retains_snapshot_leases(
         } else {
             assert!(matches!(result, Err(RelationalError::Admission(_))));
             assert_eq!(wide_allocations, 0);
-            assert!(target.pages.shares_storage_with(&source.pages));
+            assert!(target.pages().shares_storage_with(source.pages()));
             assert_eq!(target.shared_page_count(&source), 1);
             assert_eq!(target.get(&key), source.get(&key));
             drop(target);
@@ -898,13 +898,13 @@ fn controlled_row_page_copy_cancellation_keeps_directory_and_retries() {
         Err(RelationalError::Admission(_))
     ));
     probe.assert_released(&scheduler);
-    assert!(target.pages.shares_storage_with(&source.pages));
+    assert!(target.pages().shares_storage_with(source.pages()));
     assert_eq!(target.shared_page_count(&source), 1);
     assert_eq!(target.get(&key), source.get(&key));
     target
         .prepare_checkpoint_copy_for_key(&key, &Default::default())
         .unwrap();
-    assert!(!target.pages.shares_storage_with(&source.pages));
+    assert!(!target.pages().shares_storage_with(source.pages()));
     assert_eq!(target.get(&key), source.get(&key));
 }
 
@@ -959,7 +959,7 @@ fn controlled_row_insert_denies_wide_empty_page_and_retains_new_key_ownership() 
             assert!(matches!(result, Err(RelationalError::Admission(_))));
             assert_eq!(wide_allocations, 0);
             assert_eq!(target.len(), 0);
-            assert!(target.pages.shares_storage_with(&original.pages));
+            assert!(target.pages().shares_storage_with(original.pages()));
             drop(target);
         }
         assert!(
@@ -1002,12 +1002,12 @@ fn controlled_row_insert_splits_match_ordinary_pages_and_keep_source_snapshot() 
     assert_eq!(controlled.page_count(), ordinary.page_count());
     assert_eq!(
         controlled
-            .pages
+            .pages()
             .iter()
             .map(|page| page.len())
             .collect::<Vec<_>>(),
         ordinary
-            .pages
+            .pages()
             .iter()
             .map(|page| page.len())
             .collect::<Vec<_>>()
@@ -1054,7 +1054,7 @@ fn controlled_row_insert_cancellation_keeps_source_and_retries() {
         Err(RelationalError::Admission(_))
     ));
     probe.assert_released(&scheduler);
-    assert!(target.pages.shares_storage_with(&source.pages));
+    assert!(target.pages().shares_storage_with(source.pages()));
     assert_eq!(target.len(), 1);
     assert!(target.get(&key).is_none());
     assert_eq!(target.get(&old_key), source.get(&old_key));
@@ -2736,7 +2736,7 @@ fn controlled_table_shell_omission_skips_wide_index_names_and_owns_arc_backing()
     assert_eq!(observer.finish(), 0);
     assert!(copy.indexes.is_empty());
     assert_eq!(source.indexes.len(), 1);
-    assert!(copy.rows.pages.shares_storage_with(&source.rows.pages));
+    assert!(copy.rows.pages().shares_storage_with(source.rows.pages()));
     let snapshot = copy.clone();
     drop(copy);
     assert!(
@@ -3400,8 +3400,8 @@ fn controlled_index_rebuild_matches_all_postings_and_preserves_shared_rows() {
         rebuild_indexes_with_allocations(&mut actual, table, &context).unwrap();
         assert!(actual.segments[table]
             .rows
-            .pages
-            .shares_storage_with(&source.segments[table].rows.pages));
+            .pages()
+            .shares_storage_with(source.segments[table].rows.pages()));
         for definition in source
             .table_schema(table)
             .unwrap()

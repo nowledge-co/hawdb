@@ -1713,6 +1713,7 @@ fn map_sparse_snapshot_read_error(error: RelationalRowPageSnapshotReadError) -> 
 #[cfg(test)]
 mod tests {
     mod overflow_compaction;
+    mod relational_row_bytes;
 
     use super::*;
     use crate::schema::Catalog;
