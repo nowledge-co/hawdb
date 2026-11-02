@@ -352,6 +352,10 @@ control must refuse. Canonical reopen and a snapshot pinned across an
 update/checkpoint retain exact results. Executor
 `batch::tests::count_source` covers released admission after completion,
 consumer Stop/error, pre-read and mid-traversal cancellation, and source refusal.
+The existing executor `projection_allocation` oracle distinguishes native/cold
+unrequested payload success from requested-payload rejection before copy/decode;
+both retain the original large-allocation, external-call, ledger and store-state
+assertions.
 Replay with `cargo test --locked -p hawdb --lib relationship_count_source`
 and `cargo test --locked -p hawdb-executor --lib relationship_count_source`.
 No CI lane, profile, timeout or feature scope changes.
