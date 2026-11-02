@@ -69,7 +69,12 @@ observed impact rather than from the amount of code involved.
      example `Issue Number: close #123, ref #456`.
 
    `None`, missing references, and unreplaced placeholders are not accepted.
-3. Keep changes focused and fill in the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
+3. Keep changes focused. Before creating or updating a PR body, read and fill in
+   the current [PR template](.github/PULL_REQUEST_TEMPLATE.md) directly. It is
+   the source of truth for the body structure, including assistant-generated
+   bodies and explicit CLI/API submissions. Preserve its headings and order,
+   replace placeholders, and follow its inline guidance. PR-body prompts should
+   reference this file rather than duplicate its sections or define another format.
    Explain the problem, mechanism, important tradeoffs, tests, and compatibility
    impact. Large public API or persistent-format proposals should be discussed
    in the issue before implementation.

@@ -5,7 +5,7 @@ Title: type(scope): concise change, e.g. perf(storage): bound path statistics wo
 See CONTRIBUTING.md for scope, evidence, and review expectations.
 -->
 
-### Issue
+### What problem does this PR solve?
 
 <!--
 Every PR must link an existing, relevant issue, including documentation and
@@ -19,18 +19,20 @@ not accepted. Reviewers must verify the issue and relationship before approval.
 
 Issue Number: ref #xxx
 
-### Problem and context
+Problem Summary:
 
 <!-- Describe the concrete trigger, current behavior, and intended outcome.
 Name the affected component and link the governing design/spec when relevant. -->
 
-### Implementation and tradeoffs
+### What changed and how does it work?
 
 <!-- Explain the approach, root cause for a fix, invariants preserved, and
 alternatives that matter. Identify any bounded analogue paths affected by the
 same cause. For optimizations, discuss small/bulk workloads and resource costs. -->
 
-### Validation
+### Check List
+
+#### Tests
 
 <!-- Check only evidence obtained for this change. Give exact commands, tested
 revision, features/profile, outcome, and relevant counts or artifact links.
@@ -42,20 +44,34 @@ Review CONTRIBUTING.md for change-specific coverage and local fuzz commands. -->
 - [ ] Persistence / recovery / concurrency tests
 - [ ] Differential or local fuzz tests
 - [ ] Benchmark or resource measurements
+- [ ] Manual verification (steps and results below)
 - [ ] Documentation / template validation only (reason below)
 
 Evidence and remaining gaps:
 
-### Compatibility and risks
+#### Side effects and compatibility
 
-<!-- Keep applicable items and explain them; write None with a reason if none apply.
-- Public Rust API, Cypher/SQL semantics, errors, or configuration/defaults.
-- WAL/checkpoint/on-disk format, reopen/replay, or development database recreation.
-- CPU, memory, I/O, lock duration, batch scaling, or budget exhaustion behavior.
-- Cargo features, dependencies, crate ownership, or host integration.
+<!-- Check applicable impacts and explain the risks and mitigations below.
+Write None with a reason if none apply. Unchecked items are not validation evidence.
 For a Mem integration change, follow the release and full-verification contract
 in AGENTS.md. Publishing HawDB crates does not authorize stable Mem activation.
 -->
+
+- [ ] Public Rust API, Cypher/SQL behavior, errors, or configuration/default changes
+- [ ] WAL/checkpoint/on-disk format, reopen/replay, or development database recreation
+- [ ] CPU, memory, I/O, lock duration, batch scaling, or resource-budget impact
+- [ ] Cargo features, dependencies, crate ownership, or host integration changes
+
+Impact and remaining risks:
+
+#### Documentation
+
+<!-- Check the applicable items and link updated documentation or explain why
+no update is needed. Cover observable behavior and compatibility changes. -->
+
+- [ ] User-facing documentation or examples updated
+- [ ] API, query syntax, configuration, or storage-format documentation updated
+- [ ] No documentation update needed (reason below)
 
 ### Release note
 

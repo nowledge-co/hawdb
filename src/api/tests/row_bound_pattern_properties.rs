@@ -3,6 +3,8 @@
 
 use super::*;
 
+mod indexed_lookup;
+
 #[test]
 fn mem_thread_reference_scalar_predicate() {
     let mut db = Database::new();
