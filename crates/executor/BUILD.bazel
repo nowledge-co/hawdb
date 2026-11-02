@@ -33,6 +33,10 @@ rust_library(
 
 rust_test(
     name = "hawdb_executor_unit_tests",
+    # The complete endpoint-resolution oracle retains 3,000 nodes and every
+    # indexed/unindexed reference scan. Keep it off the compilation/test pool
+    # rather than changing fixtures, assertions, profiles or its deadline.
+    tags = ["exclusive"],
     crate = ":hawdb_executor",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),

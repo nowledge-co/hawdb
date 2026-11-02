@@ -23,6 +23,24 @@ minimum-preservation cases use the existing component test owners.
 No new execution lane, profile, fixture amplification or timeout is introduced.
 See [the contract and explicit SQL scope](specs/MEM_QUERY_COMPATIBILITY_9338.md).
 
+[Bazel exclusive test scheduling](https://bazel.build/reference/be/common-definitions#common.tags)
+places this owner after build activity and non-exclusive tests.
+`//crates/executor:hawdb_executor_unit_tests` retains its full ordinary unit-test
+inventory and its original default size/deadline, using one `exclusive` target
+rather than another executable or a reduced filter. The existing staged-mutation
+endpoint oracle keeps all 3,000 Person nodes, duplicate/missing/wrong-type rows,
+both index modes, four endpoint-pattern forms and exact reference comparisons.
+PR 1504 check run 125124334072 timed out while this oracle was still running;
+the visible tail also shows concurrent compilation. The complete remote BEP
+was not obtained, so no precise remote per-case duration or speedup is claimed.
+At source `1ea024e038`, the complete local owner ran 595 passing/16 existing
+ignored cases in 33.124 seconds including runner overhead; an isolated exact
+replay passed in 15.42 seconds. Local compile-cache hits are separate from these
+execution measurements. The isolation preserves Cargo/Bazel feature selections
+and the current fixture, assertions, timeout and compilation profile; external
+machine contention remains possible. Replay the existing owner with
+`bazel test //crates/executor:hawdb_executor_unit_tests`.
+
 The optimizer-graph joint-statistics owner also covers a residual filter above
 HashJoin when either or both marginal key NDVs are missing. Single-key and
 multi-key predicates retain the existing default selectivity; compatible
