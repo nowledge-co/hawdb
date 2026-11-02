@@ -403,11 +403,9 @@ fn lower_data_type(data_type: &DataType) -> Result<SqlDataType> {
         | DataType::SmallInt(None)
         | DataType::Int2(None)
         | DataType::TinyInt(None) => Ok(SqlDataType::BigInt),
-        DataType::DoublePrecision | DataType::Float8 | DataType::Real | DataType::Float4 => {
-            Ok(SqlDataType::DoublePrecision)
-        }
+        DataType::DoublePrecision | DataType::Float8 => Ok(SqlDataType::DoublePrecision),
         DataType::Float(sqlparser::ast::ExactNumberInfo::None)
-        | DataType::Float(sqlparser::ast::ExactNumberInfo::Precision(1..=53)) => {
+        | DataType::Float(sqlparser::ast::ExactNumberInfo::Precision(25..=53)) => {
             Ok(SqlDataType::DoublePrecision)
         }
         DataType::Text => Ok(SqlDataType::Text),

@@ -175,6 +175,8 @@ persisted high-water mark; deletion does not recycle IDs. Failed transactions
 may reuse unpublished allocations. Contiguity and cross-branch uniqueness are
 not contracts. Exhaustion fails before publication. Existing conservative MVCC
 conflict handling remains in force for tables without explicit primary keys.
+Keyless pessimistic mutations, including INSERT, serialize at table granularity;
+concurrent inserts into the same table do not have PostgreSQL heap concurrency.
 
 WAL replay applies the same deterministic allocation to the recovered state.
 Both transitional checkpoints and canonical row roots persist the high-water
@@ -190,10 +192,13 @@ are rejected; recreate development databases. No production compatibility
 migration is introduced under the current greenfield policy.
 
 PostgreSQL type aliases normalize to canonical storage types: INT/INTEGER,
-SMALLINT and TINYINT to BIGINT; REAL and FLOAT (precision 1 through 53) to DOUBLE
-PRECISION; VARCHAR(n) to TEXT. VARCHAR lengths are accepted declarations, not
-stored length constraints. String literal defaults are bound at CREATE TABLE
-time to their declared scalar type; invalid defaults leave no schema behind.
+SMALLINT and TINYINT to BIGINT; FLOAT, FLOAT8 and FLOAT(25..53) to DOUBLE
+PRECISION; VARCHAR(n) to TEXT. REAL, FLOAT4 and FLOAT(1..24) are rejected until
+native float4 semantics are available; widening them would silently change
+rounding, equality and aggregation results. VARCHAR length is not enforced.
+Integer aliases do not enforce their original narrower ranges or overflow rules.
+String literal defaults are bound at CREATE TABLE time to their declared scalar
+type; invalid defaults leave no schema behind.
 
 Rows and index postings use ordered immutable COW pages. Publishing a snapshot
 shares all untouched pages. A point insert, update, or delete MUST clone only

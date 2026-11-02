@@ -257,9 +257,9 @@ fn type_aliases_report_canonical_storage_types() {
         ("INT2", "bigint", Value::Int(42)),
         ("INT4", "bigint", Value::Int(42)),
         ("FLOAT", "double precision", Value::Float(1.25)),
-        ("FLOAT(24)", "double precision", Value::Float(1.25)),
-        ("REAL", "double precision", Value::Float(1.25)),
-        ("FLOAT4", "double precision", Value::Float(1.25)),
+        ("FLOAT(25)", "double precision", Value::Float(1.25)),
+        ("FLOAT(53)", "double precision", Value::Float(1.25)),
+        ("FLOAT8", "double precision", Value::Float(1.25)),
         ("VARCHAR(2)", "text", Value::String("longer".into())),
         ("CHARACTER VARYING", "text", Value::String("longer".into())),
     ]
@@ -288,7 +288,11 @@ fn type_aliases_report_canonical_storage_types() {
         assert_eq!(database.query_sql(&format!("SELECT data_type FROM information_schema.columns WHERE table_name = '{table}' AND column_name = 'value'")).unwrap().rows[0]["data_type"], Value::String(catalog.into()));
     }
     for declaration in [
+        "REAL",
+        "FLOAT4",
         "FLOAT(0)",
+        "FLOAT(1)",
+        "FLOAT(24)",
         "FLOAT(54)",
         "VARCHAR(0)",
         "VARCHAR(MAX)",
