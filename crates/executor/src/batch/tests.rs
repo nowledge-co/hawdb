@@ -19,6 +19,7 @@ use std::cell::Cell;
 
 mod boundaries;
 mod capacity;
+mod count_source;
 mod dispatch;
 mod fixtures;
 mod graph_match;
