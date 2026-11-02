@@ -120,7 +120,7 @@ impl Transformer<'_> {
             }
             "x_coalesce" => {
                 let mut args = Vec::new();
-                for child in self.named_children(node, rule_id!("x_scalar")) {
+                for child in self.iter_named_children(node, rule_id!("x_scalar")) {
                     args.push(self.scalar(child, depth)?);
                 }
                 ScalarExpressionKind::Coalesce(args)
@@ -158,15 +158,17 @@ impl Transformer<'_> {
                 }
             }
             "x_metric" => {
-                let args = self.named_children(node, rule_id!("x_scalar"));
+                let mut args = self.iter_named_children(node, rule_id!("x_scalar"));
+                let left = args.next().expect("metric left argument");
+                let right = args.next().expect("metric right argument");
                 let metric = VectorDistance::from_function_name(
                     self.text(self.tree.required(node, rule_id!("x_metric_name"))),
                 )
                 .expect("metric rule");
                 ScalarExpressionKind::VectorDistance {
                     metric,
-                    left: Box::new(self.scalar(args[0], depth)?),
-                    right: Box::new(self.scalar(args[1], depth)?),
+                    left: Box::new(self.scalar(left, depth)?),
+                    right: Box::new(self.scalar(right, depth)?),
                 }
             }
             "x_path" | "x_path_properties" => {
@@ -782,9 +784,9 @@ fn constant(expression: &ScalarExpression) -> Option<ValueExpression> {
     })
 }
 
-fn property(expression: &ScalarExpression, input: &str) -> Option<(String, String)> {
+fn property<'a>(expression: &'a ScalarExpression, input: &'a str) -> Option<(&'a str, &'a str)> {
     if let ScalarExpressionKind::Property { variable, property } = &expression.kind {
-        Some((variable.clone(), property.clone()))
+        Some((variable.as_str(), property.as_str()))
     } else if let ScalarExpressionKind::PropertyAccess { expression, key } = &expression.kind {
         if let ScalarExpressionKind::Value(value) = &expression.kind
             && matches!(
@@ -798,7 +800,7 @@ fn property(expression: &ScalarExpression, input: &str) -> Option<(String, Strin
                 .iter()
                 .any(|keyword| name.eq_ignore_ascii_case(keyword))
             {
-                return Some((name.to_owned(), key.clone()));
+                return Some((name, key.as_str()));
             }
         }
         None
@@ -806,11 +808,11 @@ fn property(expression: &ScalarExpression, input: &str) -> Option<(String, Strin
         None
     }
 }
-fn is_null_property(
-    expression: &ScalarExpression,
+fn is_null_property<'a>(
+    expression: &'a ScalarExpression,
     negated: bool,
-    input: &str,
-) -> Option<(String, String)> {
+    input: &'a str,
+) -> Option<(&'a str, &'a str)> {
     if let ScalarExpressionKind::IsNull {
         expression,
         negated: n,
@@ -821,11 +823,11 @@ fn is_null_property(
     }
     None
 }
-fn property_compare(
-    expression: &ScalarExpression,
+fn property_compare<'a>(
+    expression: &'a ScalarExpression,
     op: ScalarBinaryOp,
-    input: &str,
-) -> Option<((String, String), ValueExpression)> {
+    input: &'a str,
+) -> Option<((&'a str, &'a str), ValueExpression)> {
     if let ScalarExpressionKind::Binary { left, op: o, right } = &expression.kind
         && *o == op
     {
@@ -846,18 +848,18 @@ fn normalize_case(kind: &ScalarExpressionKind, input: &str) -> Option<ScalarExpr
         let (condition, result) = &branches[0];
         if let Some((variable, property)) = is_null_property(condition, true, input) {
             if let ScalarExpressionKind::Lower(inner) = &result.kind
-                && self::property(inner, input) == Some((variable.clone(), property.clone()))
+                && self::property(inner, input) == Some((variable, property))
             {
                 return Some(ScalarExpressionKind::CaseLowerPropertyDefault {
-                    variable,
-                    property,
+                    variable: variable.to_owned(),
+                    property: property.to_owned(),
                     default: constant(otherwise)?,
                 });
             }
-            if self::property(result, input) == Some((variable.clone(), property.clone())) {
+            if self::property(result, input) == Some((variable, property)) {
                 return Some(ScalarExpressionKind::DefaultIfNull {
-                    variable,
-                    property,
+                    variable: variable.to_owned(),
+                    property: property.to_owned(),
                     default: constant(otherwise)?,
                 });
             }
@@ -870,12 +872,10 @@ fn normalize_case(kind: &ScalarExpressionKind, input: &str) -> Option<ScalarExpr
         {
             let (variable, property) = is_null_property(left, false, input)?;
             let (other, empty) = property_compare(right, ScalarBinaryOp::Eq, input)?;
-            if other == (variable.clone(), property.clone())
-                && self::property(otherwise, input) == Some(other)
-            {
+            if other == (variable, property) && self::property(otherwise, input) == Some(other) {
                 return Some(ScalarExpressionKind::DefaultIfNullOrEq {
-                    variable,
-                    property,
+                    variable: variable.to_owned(),
+                    property: property.to_owned(),
                     empty,
                     default: constant(result)?,
                 });
@@ -889,10 +889,10 @@ fn normalize_case(kind: &ScalarExpressionKind, input: &str) -> Option<ScalarExpr
         {
             let (variable, property) = is_null_property(left, true, input)?;
             let (other, empty) = property_compare(right, ScalarBinaryOp::NotEq, input)?;
-            if other == (variable.clone(), property.clone()) {
+            if other == (variable, property) {
                 return Some(ScalarExpressionKind::CasePropertyNotNullOrEq {
-                    variable,
-                    property,
+                    variable: variable.to_owned(),
+                    property: property.to_owned(),
                     empty: Box::new(empty),
                     non_empty: Box::new(constant(result)?),
                     null_or_empty: Box::new(constant(otherwise)?),
@@ -912,8 +912,8 @@ fn normalize_case(kind: &ScalarExpressionKind, input: &str) -> Option<ScalarExpr
     }
     let (variable, property) = binding?;
     Some(ScalarExpressionKind::CasePropertyEqualsRank {
-        variable,
-        property,
+        variable: variable.to_owned(),
+        property: property.to_owned(),
         branches: normalized,
         default: constant(otherwise)?,
     })

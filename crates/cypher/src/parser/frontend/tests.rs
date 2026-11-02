@@ -741,3 +741,28 @@ fn every_core_list_function_is_recognized_by_the_compiled_grammar() {
         crate::parse_pipeline(&query).unwrap();
     }
 }
+
+#[test]
+fn diagnostic_repairs_preserve_independently_exported_main_messages_and_locations() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../fixtures/migration_main_1514_diagnostic_repairs_v1.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        fixture["reference_commit"],
+        "fd10958dd37b8878151aeb73ff0477d189b5db5e"
+    );
+    for case in fixture["cases"].as_array().unwrap() {
+        let query = case["query"].as_str().unwrap();
+        let result = match case["entry"].as_str().unwrap() {
+            "statement" => crate::parse(query).map(|_| ()),
+            "pipeline" => crate::parse_pipeline(query).map(|_| ()),
+            entry => panic!("unknown diagnostic fixture entry: {entry}"),
+        };
+        assert_eq!(
+            format!("{result:?}"),
+            case["expected"].as_str().unwrap(),
+            "{query}"
+        );
+    }
+}

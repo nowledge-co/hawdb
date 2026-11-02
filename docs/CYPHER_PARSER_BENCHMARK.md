@@ -44,3 +44,29 @@ counts and schema without requesting unrelated property histograms. The trace
 reports this choice, physical templates remain reusable, and ordinary graph
 queries retain their full-statistics path. This does not establish parser
 throughput parity; the isolated RSS ceiling remains unchanged.
+
+The published `d440b791f4ecc60c69fe29287ec389c04a572ef1` revision has completed
+all 98 required local fuzz tests. Eight counterbalanced runs of the unchanged
+five-case release benchmark against former-parser main
+`fd10958dd37b8878151aeb73ff0477d189b5db5e` show a 17.2598 percent
+improvement in equal-weighted throughput. Mean whole-process CPU is
+3.45750525 seconds for the former parser and 2.94485875 seconds for PEG.
+No concurrent compiler, test or benchmark process was observed during these
+runs; other host activity was uncontrolled. This remains below the 20 percent
+gate, and aggregate-page parsing still regresses slightly (4073.25 to 4160 ns).
+
+The complete independent rendered-diagnostic comparison covers 21,944 records
+and finds 5,621 message or location differences across 102 groups. The earlier
+260 overdeep differences came from a narrower comparison. The follow-up repairs
+610 independently exported CSV, computed-UNWIND and integer-overflow outcomes;
+other diagnostic transitions and wide-expression resource regressions remain
+open. Frozen full-message fixtures preserve the independent main provenance.
+
+The same main storage baseline and the unpublished follow-up were also compared
+through `Database::query_with_params` on a 64-node in-memory fixture. Eight
+counterbalanced runs of 11 samples with 2,000 calls per case, after warming the
+database, measured exact lookup at 22,050.75 ns former / 22,255.5 ns follow-up,
+and aggregate pagination at 61,563 ns former / 62,858.75 ns follow-up.
+Complete output columns and row values were checked outside the timed regions.
+These default-cache measurements show no end-to-end improvement. They do not
+qualify the end-to-end gate or isolate cold query preparation.

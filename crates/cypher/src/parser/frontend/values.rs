@@ -107,10 +107,9 @@ impl Transformer<'_> {
                             .map_err(|_| self.error(selected, "invalid float"))?,
                     )
                 } else {
-                    Value::Int(
-                        raw.parse()
-                            .map_err(|_| self.error(selected, "invalid integer"))?,
-                    )
+                    Value::Int(raw.parse().map_err(|_| {
+                        self.error_at(self.tree.span(selected, self.tokens).end, "invalid integer")
+                    })?)
                 })
             }
             "v_list" => {

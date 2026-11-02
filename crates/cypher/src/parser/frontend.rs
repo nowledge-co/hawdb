@@ -134,7 +134,12 @@ fn render(input: &str, error: SyntaxError) -> HawDBError {
     {
         position += ch.len_utf8();
     }
-    if expected == "unexpected trailing input" {
+    if matches!(
+        expected,
+        "unexpected trailing input"
+            | "FIELDTERMINATOR requires a string literal"
+            | "LOAD CSV FROM accepts only a string literal or parameter source"
+    ) {
         parse_error(input, position, expected)
     } else if position == 0 {
         parse_error(input, position, "expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, UNWIND, LOAD, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK")

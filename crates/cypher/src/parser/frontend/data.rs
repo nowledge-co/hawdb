@@ -58,8 +58,9 @@ impl<'a> Transformer<'a> {
         merge: bool,
         depth: usize,
     ) -> Result<Statement> {
-        let nodes = self.named_children(node, rule_id!("d_node"));
-        let source = self.data_node(nodes[0], depth)?;
+        let mut nodes = self.iter_named_children(node, rule_id!("d_node"));
+        let source_node = nodes.next().expect("data source node");
+        let source = self.data_node(source_node, depth)?;
         if let Some(edge) = self.tree.child(node, rule_id!("d_edge")) {
             let rel_type = self
                 .text(self.tree.required(edge, rule_id!("v_identifier")))
@@ -70,7 +71,7 @@ impl<'a> Transformer<'a> {
                 .map(|id| self.properties(id, depth))
                 .transpose()?
                 .unwrap_or_default();
-            let target = self.data_node(nodes[1], depth)?;
+            let target = self.data_node(nodes.next().expect("data target node"), depth)?;
             let relationship = CreateRelationship {
                 source,
                 rel_type,
@@ -88,7 +89,7 @@ impl<'a> Transformer<'a> {
         }
         let variable = self
             .tree
-            .child(nodes[0], rule_id!("d_variable"))
+            .child(source_node, rule_id!("d_variable"))
             .map(|id| self.text(id).to_owned());
         let mut on_create_sets = Vec::new();
         let mut on_match_sets = Vec::new();
@@ -176,8 +177,7 @@ impl<'a> Transformer<'a> {
             }
             "d_case_decrement" | "d_case_preserve" => {
                 let refs = self
-                    .named_children(node, rule_id!("d_ref"))
-                    .into_iter()
+                    .iter_named_children(node, rule_id!("d_ref"))
                     .map(|id| self.reference(id))
                     .collect::<Vec<_>>();
                 let mut values = Vec::new();
