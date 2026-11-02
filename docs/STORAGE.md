@@ -1276,6 +1276,37 @@ entry counts, and explicit compressed and uncompressed segment limits fail
 closed on mismatches. Decompression itself is limited to the admitted byte
 count rather than trusting the envelope length.
 
+### Binary vector sidecar (layout V2)
+
+Layout `HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2` stores each vector sidecar range
+uncompressed as one binary segment (`out_of_core::vector_segment`): an 8-byte
+`HDVSEG02` magic; little-endian row count, dimension, head length and ID-blob
+length; cumulative ID end offsets; the strictly increasing UTF-8 document IDs
+(zero-padded to four bytes); one CRC32C per row; and a CRC32C over the whole
+head. Fixed-stride rows of little-endian `f32` values follow. Row ordinals are
+implicit (`vector_ordinal_base + index`). The writers store the input `f32`
+bits exactly, reject non-finite values, and keep the layout range checksum over
+the complete segment.
+
+Serving reads and verifies the head (normally one positioned read), then only
+the rows it needs: graph/RaBitQ reranks read just their selected candidates,
+coalescing adjacent rows, and full scans read rows in bounded 256 KiB runs.
+Every byte that is read is covered by the head CRC or its row CRC, so a corrupt
+head or selected row fails closed, while unselected rows are never read or
+decoded. Query-admitted reads charge the head, run buffer and decoded row to the
+query memory account and observe cancellation between runs. Mapping graph or
+RaBitQ ordinals to document IDs for layered visibility reads only the head.
+
+Layout V1 stored zstd-compressed decimal text and required decompressing and
+parsing every row of every touched segment on each query (#1469). Out-of-core
+search generations are rebuildable projections and HawDB has no persisted
+compatibility obligation for development generations (see `AGENTS.md`), so
+readers do not decode V1: opening a V1 generation fails closed with a storage
+error naming the superseded layout and asking for a projection rebuild. Rebuild
+it from canonical data, for example with `SearchOutOfCoreGenerationWriter`, or
+let the next resident `SearchIndex::checkpoint` publish a fresh V2 generation;
+neither path decodes the superseded sidecars.
+
 `SearchOutOfCoreReader` opens only these manifests and descriptors, not the
 complete document snapshot. Metadata and ACL predicates prune descriptors,
 decode only metadata sidecar ranges, and write matching ordered document IDs
@@ -1288,6 +1319,17 @@ bounded full-score map. Full title, content, embedding, and metadata payloads
 are not touched until final-page hydration. `SearchOutOfCoreReader::hydrate_documents`
 provides the same row and payload budgets for projection-owned source chunks or
 other payloads.
+
+Final-page hit hydration has two levels (`SearchHitHydration`). The default
+`Documents` level returns metadata fields, matched terms/spans and the vector
+score recomputed from the stored embedding. Vector-only requests without query
+terms have no matched spans, so they read only the hit's metadata sidecar
+segment and its own binary vector row instead of the full document payload;
+the hits are identical. This covers Knowledge Retrieval and Cypher vector seeds
+in vector mode. `SearchOutOfCoreReader::search_with_hydration(..,
+SearchHitHydration::ScoresOnly)` skips hydration entirely for callers that only
+consume IDs and scores; its hits carry the ranking scores and no metadata or
+matched terms.
 
 The read report separates metadata-sidecar, vector-sidecar, and hydration
 payload bytes, and also exposes range reads, peak decoded sidecar and full

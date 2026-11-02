@@ -756,6 +756,24 @@ impl Default for SearchFusionWeights {
     }
 }
 
+/// How much of each ranked out-of-core hit is materialized after scoring.
+///
+/// Ranking, filtering, totals and reports are identical for every level.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SearchHitHydration {
+    /// Hydrate the metadata fields, matched terms/spans and the vector score
+    /// recomputed from the stored embedding. Vector-only requests without
+    /// query terms need no matched spans, so they read the metadata and vector
+    /// sidecars instead of the full document payload; the hits are identical.
+    #[default]
+    Documents,
+    /// Return identifiers and ranking scores without reading any document,
+    /// metadata or vector payload. `kind`, `external_id` and `source_id` are
+    /// `None`, matched terms/spans are empty, and `vector_score` is the vector
+    /// retriever's ranking score (0 for hits it did not rank).
+    ScoresOnly,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchQueryOptions {
     pub limit: usize,
@@ -7822,18 +7840,6 @@ fn dot_product(left: &[f32], right: &[f32]) -> Option<f64> {
     Some(left.iter().zip(right).fold(0.0, |sum, (left, right)| {
         sum + f64::from(*left) * f64::from(*right)
     }))
-}
-
-fn encode_embedding(embedding: Option<&[f32]>) -> String {
-    embedding
-        .map(|values| {
-            values
-                .iter()
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        })
-        .unwrap_or_default()
 }
 
 fn decode_embedding(input: &str) -> Result<Option<Vec<f32>>> {

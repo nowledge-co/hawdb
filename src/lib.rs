@@ -563,7 +563,7 @@ pub use search::{
     SearchBaselineComparisonReport, SearchBodyReadOptions, SearchCandidateSetReport,
     SearchCheckpointReport, SearchDerivedArtifactReport, SearchDocument, SearchDocumentBody,
     SearchDocumentHeader, SearchEmbeddingManifest, SearchEmptyReasonCode, SearchFallbackReasonCode,
-    SearchFusionWeights, SearchGenerationAdmission, SearchHit, SearchIndex,
+    SearchFusionWeights, SearchGenerationAdmission, SearchHit, SearchHitHydration, SearchIndex,
     SearchLexicalFeasibilityCoverage, SearchLexicalFeasibilityMetrics,
     SearchLexicalProductionQualificationReport, SearchLexicalSourcePolicy, SearchLexicalTermPolicy,
     SearchMatchedBaseline, SearchMode, SearchMutationInspectionInput, SearchMutationInspectionStep,

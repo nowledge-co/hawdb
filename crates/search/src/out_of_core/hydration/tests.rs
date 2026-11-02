@@ -17,6 +17,8 @@ use super::*;
 use std::io::Cursor;
 
 mod budgets;
+#[cfg(any(feature = "full-text-search", feature = "vector-search"))]
+mod levels;
 
 const UNLIMITED_HYDRATION: HydrationBudget = HydrationBudget {
     limit: u64::MAX,

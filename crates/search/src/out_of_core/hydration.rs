@@ -20,6 +20,7 @@ use std::io::{self, BufRead, BufReader};
 
 pub(super) mod query;
 mod record;
+pub(super) mod sidecar;
 pub(super) use record::read_record;
 
 const INPUT_BYTES: usize = 8192;

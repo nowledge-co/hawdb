@@ -21,7 +21,9 @@ use super::spool::SpoolSource;
 use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
 use crate::build_control::{checkpoint, temporary::RemoveOnDrop};
 use crate::build_memory::path::OwnedPath;
-use crate::build_memory::{checked_mul, grow_slots, BuildMemory, SPOOL_BUFFER_BYTES};
+use crate::build_memory::{
+    checked_mul, grow_slots, reserve_capacity, BuildMemory, SPOOL_BUFFER_BYTES,
+};
 use crate::document_encoding::{SegmentEncoding, SegmentKind, HEX_BUFFER_BYTES};
 use crate::error::{HawDBError, Result};
 #[cfg(test)]
@@ -368,19 +370,16 @@ impl<'a> SegmentArtifactBuilder<'a> {
             .filter(|document| document.header().embedding.is_some())
             .count();
         self.next_vector_ordinal = vector_ordinal_base.saturating_add(vector_count as u64);
-        let vector_payload = self.encode_segment_payload(
-            segment_id,
-            SegmentKind::Vectors {
-                vector_ordinal_base,
-            },
-        )?;
+        let (vector_payload, vector_memory) = self.encode_vector_payload(segment_id)?;
         let vectors = append_sidecar_payload_with_context(
             &mut self.vector_file,
             &mut self.vector_offset,
-            vector_payload.as_ref(),
+            &vector_payload,
             vector_count,
             Some(&self.task),
         )?;
+        drop(vector_payload);
+        drop(vector_memory);
         self.descriptor_working_bytes = projected_descriptor_bytes;
         self.descriptor.push(
             &descriptor,
@@ -434,6 +433,48 @@ impl<'a> SegmentArtifactBuilder<'a> {
         temporary_guard.disarm();
         checkpoint(&self.task)?;
         Ok(descriptor_bytes)
+    }
+
+    /// Binary raw-vector rows are stored uncompressed so serving can read and
+    /// verify only selected rows (`out_of_core::vector_segment`).
+    fn encode_vector_payload(&self, segment_id: u64) -> Result<(Vec<u8>, QueryMemoryLease)> {
+        checkpoint(&self.task)?;
+        let mut rows_memory = self.memory.spool.reserve(0)?;
+        let mut rows = Vec::new();
+        reserve_capacity(&mut rows, self.documents.len(), &mut rows_memory)?;
+        let mut id_bytes = 0usize;
+        let mut dimension = 0usize;
+        for document in &self.documents {
+            let header = document.header();
+            if let Some(embedding) = header.embedding {
+                id_bytes = id_bytes
+                    .checked_add(header.id.len())
+                    .ok_or_else(|| HawDBError::Storage("search vector IDs overflow".into()))?;
+                dimension = embedding.len();
+                rows.push((header.id, embedding));
+            }
+        }
+        let length = super::super::vector_segment::encoded_len(rows.len(), id_bytes, dimension)?;
+        let limit = self
+            .options
+            .max_segment_uncompressed_bytes
+            .get()
+            .min(self.options.max_segment_compressed_bytes.get());
+        if length as u64 > limit {
+            return Err(HawDBError::Storage(format!(
+                "search generation vector segment {segment_id} requires {length} stored bytes, exceeding {limit}"
+            )));
+        }
+        let mut payload_memory = self.memory.retained.reserve(0)?;
+        let mut payload = Vec::new();
+        reserve_capacity(&mut payload, length, &mut payload_memory)?;
+        super::super::vector_segment::encode_into(&rows, &mut payload, || checkpoint(&self.task))?;
+        if payload.len() != length {
+            return Err(HawDBError::Storage(
+                "search vector segment encoding did not match its admitted length".into(),
+            ));
+        }
+        Ok((payload, payload_memory))
     }
 
     fn encode_segment_payload(
