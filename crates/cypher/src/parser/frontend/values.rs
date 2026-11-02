@@ -3,208 +3,20 @@
 
 //! Cypher value syntax is recognized by PEG; this fold only decodes the CST.
 use hawdb_core::{Result, Value};
-use hawdb_sql_syntax::peg::{Expression as E, NodeId};
-use hawdb_sql_syntax::TokenKind as T;
+use hawdb_sql_syntax::peg::NodeId;
 
 use super::Transformer;
 use crate::*;
 
-pub(super) fn r(name: &'static str) -> E {
-    E::Rule(name)
-}
-pub(super) fn k(name: &'static str) -> E {
-    E::Keyword(name)
-}
-pub(super) fn t(kind: T) -> E {
-    E::Token(
-        kind,
-        match kind {
-            T::Number => "integer digits",
-            T::Word => "identifier",
-            T::Dot => "'.'",
-            _ => "a Cypher value token",
-        },
-    )
-}
-pub(super) fn s(items: Vec<E>) -> E {
-    E::Sequence(items)
-}
-pub(super) fn c(items: Vec<E>) -> E {
-    E::Choice(items)
-}
-pub(super) fn o(item: E) -> E {
-    E::Optional(Box::new(item))
-}
-pub(super) fn many(item: E) -> E {
-    E::Repeat(Box::new(item))
-}
-// Ordinary bindings skip the call alternatives. Known function heads still
-// enter them without `(` so an incomplete call retains its deeper diagnostic.
-pub(super) fn call_start(heads: Vec<E>) -> E {
-    E::Ahead(
-        Box::new(c(vec![s(vec![t(T::Word), t(T::LeftParen)]), c(heads)])),
-        "a Cypher value token",
-    )
-}
-pub(super) fn group(item: E) -> E {
-    s(vec![t(T::LeftParen), item, t(T::RightParen)])
-}
-pub(super) fn list(name: &'static str) -> E {
-    s(vec![r(name), many(s(vec![t(T::Comma), r(name)]))])
-}
-pub(super) fn conversion_names() -> E {
-    c(hawdb_core::ConversionFunction::ALL
-        .into_iter()
-        .map(|function| k(function.function_name()))
-        .collect())
-}
-pub(super) fn property_value_rule() -> E {
-    // Ordinary values retain their existing named capture and memo entries.
-    // Only conversion calls or row indexes enter the additional value rule.
-    c(vec![
-        s(vec![
-            E::Ahead(
-                Box::new(c(vec![
-                    s(vec![conversion_names(), t(T::LeftParen)]),
-                    s(vec![t(T::Word), t(T::LeftBracket)]),
-                ])),
-                "a Cypher value token",
-            ),
-            r("v_property_value"),
-        ]),
-        r("v_value"),
-    ])
-}
-fn tight(item: E) -> E {
-    E::Tight(Box::new(item))
-}
-
-pub(super) fn rules() -> Vec<(&'static str, E)> {
-    vec![
-        ("v_identifier", t(T::Word)),
-        (
-            "v_value",
-            c(vec![
-                r("v_parameter"),
-                r("v_list"),
-                r("v_string"),
-                r("v_number"),
-                r("v_boolean"),
-                r("v_null"),
-                r("v_current_timestamp"),
-                r("v_timestamp"),
-                r("v_cast"),
-                r("v_temporal"),
-                r("v_property"),
-            ]),
-        ),
-        (
-            "v_parameter",
-            s(vec![t(T::Parameter(0)), r("v_identifier")]),
-        ),
-        (
-            "v_list",
-            s(vec![
-                t(T::LeftBracket),
-                r("v_list_contents"),
-                t(T::RightBracket),
-            ]),
-        ),
-        (
-            "v_list_contents",
-            o(s(vec![list("v_value"), o(t(T::Comma))])),
-        ),
-        ("v_string", t(T::String)),
-        (
-            "v_number",
-            tight(c(vec![
-                s(vec![
-                    o(t(T::Minus)),
-                    t(T::Number),
-                    t(T::Dot),
-                    E::Not(Box::new(t(T::Dot)), "a decimal point"),
-                    o(t(T::Number)),
-                ]),
-                s(vec![t(T::Minus), t(T::Dot), t(T::Number)]),
-                s(vec![o(t(T::Minus)), t(T::Number)]),
-            ])),
-        ),
-        ("v_boolean", c(vec![k("true"), k("false")])),
-        ("v_null", k("null")),
-        (
-            "v_current_timestamp",
-            s(vec![k("CURRENT_TIMESTAMP"), group(s(vec![]))]),
-        ),
-        (
-            "v_timestamp",
-            s(vec![k("timestamp"), group(r("v_call_contents"))]),
-        ),
-        (
-            "v_cast",
-            s(vec![
-                k("CAST"),
-                group(s(vec![r("v_call_contents"), k("AS"), k("TIMESTAMP")])),
-            ]),
-        ),
-        ("v_call_contents", r("v_value")),
-        (
-            "v_property_value",
-            c(vec![
-                s(vec![
-                    E::Ahead(Box::new(conversion_names()), "a conversion function"),
-                    r("v_identifier"),
-                    group(r("v_conversion_contents")),
-                ]),
-                s(vec![
-                    r("v_identifier"),
-                    t(T::LeftBracket),
-                    r("v_number"),
-                    t(T::RightBracket),
-                ]),
-            ]),
-        ),
-        ("v_conversion_contents", property_value_rule()),
-        (
-            "v_property",
-            s(vec![
-                E::Not(
-                    Box::new(c(vec![
-                        k("true"),
-                        k("false"),
-                        k("null"),
-                        k("CURRENT_TIMESTAMP"),
-                        k("timestamp"),
-                        k("CAST"),
-                    ])),
-                    "a property binding",
-                ),
-                r("v_identifier"),
-                o(s(vec![t(T::Dot), r("v_identifier")])),
-            ]),
-        ),
-        (
-            "v_properties",
-            s(vec![
-                t(T::LeftBrace),
-                o(s(vec![list("v_property_entry"), o(t(T::Comma))])),
-                t(T::RightBrace),
-            ]),
-        ),
-        (
-            "v_property_entry",
-            s(vec![r("v_identifier"), t(T::Colon), property_value_rule()]),
-        ),
-    ]
-}
-
 impl Transformer<'_> {
     pub(super) fn property_value(&mut self, node: NodeId, depth: usize) -> Result<ValueExpression> {
-        if self.tree.nodes[node].name == Some("v_value") {
+        if self.tree.rule_id(node) == rule_id!("v_value") {
             return self.value(node, depth);
         }
         self.check_depth(node, depth, 1)?;
-        let variable = self.text(self.tree.required(node, "v_identifier"));
-        let kind = if let Some(contents) = self.tree.child(node, "v_conversion_contents") {
+        let variable = self.text(self.tree.required(node, rule_id!("v_identifier")));
+        let kind = if let Some(contents) = self.tree.child(node, rule_id!("v_conversion_contents"))
+        {
             let function = hawdb_core::ConversionFunction::from_function_name(variable)
                 .expect("matched conversion name");
             let argument = self.property_value(self.tree.children(contents)[0], depth + 1)?;
@@ -213,7 +25,7 @@ impl Transformer<'_> {
                 argument: Box::new(argument),
             }
         } else {
-            let index = self.tree.required(node, "v_number");
+            let index = self.tree.required(node, rule_id!("v_number"));
             ValueExpressionKind::BindingIndex {
                 variable: variable.to_owned(),
                 index: self
@@ -232,7 +44,7 @@ impl Transformer<'_> {
         self.tree
             .children(node)
             .iter()
-            .filter(|id| self.tree.nodes[**id].name == Some("v_identifier"))
+            .filter(|id| self.tree.rule_id(**id) == rule_id!("v_identifier"))
             .map(|id| self.text(*id))
     }
     pub(super) fn ids(&self, node: NodeId) -> Vec<String> {
@@ -263,9 +75,9 @@ impl Transformer<'_> {
     pub(super) fn value(&mut self, node: NodeId, depth: usize) -> Result<ValueExpression> {
         self.check_depth(node, depth, 1)?;
         let selected = self.tree.children(node)[0];
-        let kind = match self.tree.nodes[selected].name.expect("named value rule") {
+        let kind = match self.tree.node(selected).name.expect("named value rule") {
             "v_parameter" => ValueExpressionKind::Parameter(
-                self.text(self.tree.required(selected, "v_identifier"))
+                self.text(self.tree.required(selected, rule_id!("v_identifier")))
                     .to_owned(),
             ),
             "v_property" => {
@@ -304,7 +116,7 @@ impl Transformer<'_> {
             "v_list" => {
                 let children = self
                     .tree
-                    .children(self.tree.required(selected, "v_list_contents"))
+                    .children(self.tree.required(selected, rule_id!("v_list_contents")))
                     .iter()
                     .copied();
                 ValueExpressionKind::List(
@@ -315,13 +127,13 @@ impl Transformer<'_> {
             }
             "v_temporal" => self.temporal_value(selected, depth)?,
             "v_current_timestamp" => ValueExpressionKind::CurrentTimestamp,
-            "v_timestamp" | "v_cast" => ValueExpressionKind::Timestamp(Box::new(
-                self.value(
-                    self.tree
-                        .required(self.tree.required(selected, "v_call_contents"), "v_value"),
-                    depth + 1,
-                )?,
-            )),
+            "v_timestamp" | "v_cast" => ValueExpressionKind::Timestamp(Box::new(self.value(
+                self.tree.required(
+                    self.tree.required(selected, rule_id!("v_call_contents")),
+                    rule_id!("v_value"),
+                ),
+                depth + 1,
+            )?)),
             _ => unreachable!("known value syntax"),
         };
         let span = self.tree.span(node, self.tokens);
@@ -373,12 +185,12 @@ impl Transformer<'_> {
         let mut properties = std::collections::BTreeMap::new();
         for child in children {
             let name = self
-                .text(self.tree.required(child, "v_identifier"))
+                .text(self.tree.required(child, rule_id!("v_identifier")))
                 .to_owned();
             let value_node = self
                 .tree
-                .child(child, "v_property_value")
-                .unwrap_or_else(|| self.tree.required(child, "v_value"));
+                .child(child, rule_id!("v_property_value"))
+                .unwrap_or_else(|| self.tree.required(child, rule_id!("v_value")));
             let value = self.property_value(value_node, depth)?;
             properties.insert(name, value);
         }

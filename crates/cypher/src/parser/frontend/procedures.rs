@@ -3,80 +3,16 @@
 
 //! Procedure argument grammar and typed semantic lowering, without reparsing.
 use hawdb_core::{Result, Value, VectorIndexQueryMode};
-use hawdb_sql_syntax::peg::{Expression as E, NodeId};
+use hawdb_sql_syntax::peg::NodeId;
 use hawdb_sql_syntax::TokenKind as T;
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{values::*, Transformer};
+use super::Transformer;
 use crate::*;
-
-pub(super) fn rules() -> Vec<(&'static str, E)> {
-    vec![
-        (
-            "u_legacy_call",
-            s(vec![
-                k("CALL"),
-                E::Ahead(
-                    Box::new(c(vec![k("page_rank"), k("pagerank"), k("louvain")])),
-                    "a graph algorithm",
-                ),
-                r("u_procedure"),
-                o(r("u_legacy_return")),
-                E::Ahead(Box::new(c(vec![t(T::Semicolon), t(T::End)])), "','"),
-            ]),
-        ),
-        (
-            "u_legacy_return",
-            s(vec![
-                k("RETURN"),
-                list("v_identifier"),
-                o(r("u_legacy_trailing_comma")),
-            ]),
-        ),
-        ("u_legacy_trailing_comma", t(T::Comma)),
-        (
-            "call_clause",
-            s(vec![k("CALL"), r("u_procedure"), o(r("u_yields"))]),
-        ),
-        (
-            "u_procedure",
-            s(vec![r("v_identifier"), group(o(list("u_arg")))]),
-        ),
-        ("u_arg", c(vec![r("u_named"), r("u_option")])),
-        (
-            "u_named",
-            s(vec![
-                r("v_identifier"),
-                E::Tight(Box::new(s(vec![t(T::Colon), t(T::Equal)]))),
-                r("u_option"),
-            ]),
-        ),
-        (
-            "u_option",
-            c(vec![r("v_value"), r("u_map"), r("v_identifier")]),
-        ),
-        (
-            "u_map",
-            s(vec![t(T::LeftBrace), r("u_map_contents"), t(T::RightBrace)]),
-        ),
-        (
-            "u_map_contents",
-            o(s(vec![list("u_map_entry"), o(t(T::Comma))])),
-        ),
-        (
-            "u_map_entry",
-            s(vec![r("u_key"), t(T::Colon), r("u_option")]),
-        ),
-        ("u_key", c(vec![r("v_string"), r("v_identifier")])),
-        ("u_yields", s(vec![k("YIELD"), list("u_yield")])),
-        ("u_yield", s(vec![r("v_identifier"), o(r("u_yield_alias"))])),
-        ("u_yield_alias", s(vec![k("AS"), r("v_identifier")])),
-    ]
-}
 
 impl Transformer<'_> {
     fn procedure_value(&mut self, option: NodeId, depth: usize) -> Result<ValueExpression> {
-        let node = self.tree.required(option, "v_value");
+        let node = self.tree.required(option, rule_id!("v_value"));
         self.value(node, depth)
     }
     fn required_procedure_value(
@@ -84,7 +20,7 @@ impl Transformer<'_> {
         option: NodeId,
         depth: usize,
     ) -> Result<ValueExpression> {
-        if self.tree.child(option, "v_value").is_none() {
+        if self.tree.child(option, rule_id!("v_value")).is_none() {
             return Err(self.error(option, "expected value"));
         }
         self.procedure_value(option, depth)
@@ -105,16 +41,16 @@ impl Transformer<'_> {
     ) -> Result<(Vec<String>, BTreeMap<String, PropertyPredicate>)> {
         let mut labels = Vec::new();
         let mut predicates = BTreeMap::new();
-        if let Some(map) = self.tree.child(option, "u_map") {
+        if let Some(map) = self.tree.child(option, rule_id!("u_map")) {
             let entries = self
                 .tree
-                .children(self.tree.required(map, "u_map_contents"))
+                .children(self.tree.required(map, rule_id!("u_map_contents")))
                 .iter()
                 .copied();
             let mut seen = BTreeSet::new();
             for entry in entries {
-                let key = self.tree.required(entry, "u_key");
-                let Some(key) = self.tree.child(key, "v_string") else {
+                let key = self.tree.required(entry, rule_id!("u_key"));
+                let Some(key) = self.tree.child(key, rule_id!("v_string")) else {
                     return Err(self.error(entry, "expected string"));
                 };
                 let label = self.decode_string(key)?;
@@ -128,7 +64,8 @@ impl Transformer<'_> {
                         },
                     ));
                 }
-                let filter = self.string_value(self.tree.required(entry, "u_option"), depth)?;
+                let filter =
+                    self.string_value(self.tree.required(entry, rule_id!("u_option")), depth)?;
                 if !filter.trim().is_empty() {
                     if !relationships {
                         return Err(
@@ -158,22 +95,25 @@ impl Transformer<'_> {
     }
     fn ignored_procedure_option(&mut self, node: NodeId, depth: usize) -> Result<()> {
         self.check_depth(node, depth, 1)?;
-        if let Some(map) = self.tree.child(node, "u_map") {
+        if let Some(map) = self.tree.child(node, rule_id!("u_map")) {
             for entry in self
                 .tree
-                .children(self.tree.required(map, "u_map_contents"))
+                .children(self.tree.required(map, rule_id!("u_map_contents")))
                 .iter()
                 .copied()
             {
-                let key = self.tree.required(entry, "u_key");
-                if let Some(string) = self.tree.child(key, "v_string") {
+                let key = self.tree.required(entry, rule_id!("u_key"));
+                if let Some(string) = self.tree.child(key, rule_id!("v_string")) {
                     self.decode_string(string)?;
                 }
-                self.ignored_procedure_option(self.tree.required(entry, "u_option"), depth + 1)?;
+                self.ignored_procedure_option(
+                    self.tree.required(entry, rule_id!("u_option")),
+                    depth + 1,
+                )?;
             }
-        } else if let Some(value) = self.tree.child(node, "v_value") {
+        } else if let Some(value) = self.tree.child(node, rule_id!("v_value")) {
             let selected = self.tree.children(value)[0];
-            match self.tree.nodes[selected].name {
+            match self.tree.node(selected).name {
                 Some("v_number") => {
                     self.text(selected)
                         .parse::<f64>()
@@ -191,11 +131,11 @@ impl Transformer<'_> {
         Ok(())
     }
     pub(super) fn procedure_clause(&mut self, node: NodeId, depth: usize) -> Result<Clause> {
-        let procedure = self.tree.required(node, "u_procedure");
+        let procedure = self.tree.required(node, rule_id!("u_procedure"));
         let name = self
-            .text(self.tree.required(procedure, "v_identifier"))
+            .text(self.tree.required(procedure, rule_id!("v_identifier")))
             .to_ascii_lowercase();
-        let args = self.named_children(procedure, "u_arg");
+        let args = self.named_children(procedure, rule_id!("u_arg"));
         let positional = match name.as_str() {
             "vector_index_search" => 2,
             "project_graph" => 3,
@@ -206,7 +146,7 @@ impl Transformer<'_> {
         }
         let mut positions = Vec::new();
         for arg in &args[..positional] {
-            let Some(value) = self.tree.child(*arg, "u_option") else {
+            let Some(value) = self.tree.child(*arg, rule_id!("u_option")) else {
                 return Err(self.error(*arg, "expected positional argument"));
             };
             positions.push(value);
@@ -217,7 +157,7 @@ impl Transformer<'_> {
             let (rel_types, relationship_predicates) =
                 self.projected_labels(positions[2], true, depth)?;
             for arg in &args[3..] {
-                let Some(option) = self.tree.child(*arg, "u_option") else {
+                let Some(option) = self.tree.child(*arg, rule_id!("u_option")) else {
                     return Err(self.error(*arg, "expected procedure option value"));
                 };
                 self.ignored_procedure_option(option, depth)?;
@@ -231,11 +171,11 @@ impl Transformer<'_> {
         } else {
             let mut options = BTreeMap::new();
             for arg in &args[positional..] {
-                let Some(named) = self.tree.child(*arg, "u_named") else {
+                let Some(named) = self.tree.child(*arg, rule_id!("u_named")) else {
                     return Err(self.error(*arg, "expected named procedure option"));
                 };
                 let raw = self
-                    .text(self.tree.required(named, "v_identifier"))
+                    .text(self.tree.required(named, rule_id!("v_identifier")))
                     .to_ascii_lowercase();
                 let canonical = match (name.as_str(), raw.as_str()) {
                     ("vector_search" | "text_search" | "graph_seed_search", "topk" | "limit") => {
@@ -253,7 +193,7 @@ impl Transformer<'_> {
                 }
                 .to_owned();
                 if options
-                    .insert(canonical, self.tree.required(named, "u_option"))
+                    .insert(canonical, self.tree.required(named, rule_id!("u_option")))
                     .is_some()
                 {
                     return Err(self.error(
@@ -349,7 +289,7 @@ impl Transformer<'_> {
                     };
                     let eligible = if let Some(id) = options.get("eligible") {
                         let selected = self.tree.children(*id)[0];
-                        let span = &self.tree.nodes[selected];
+                        let span = &self.tree.node(selected);
                         if span.end != span.start + 1 || self.tokens[span.start].kind != T::Word {
                             return Err(self.error(selected, "expected identifier"));
                         }
@@ -420,15 +360,15 @@ impl Transformer<'_> {
             }
         };
         let mut yields = Vec::new();
-        if let Some(items) = self.tree.child(node, "u_yields") {
+        if let Some(items) = self.tree.child(node, rule_id!("u_yields")) {
             for item in self.tree.children(items) {
                 let name = self
-                    .text(self.tree.required(*item, "v_identifier"))
+                    .text(self.tree.required(*item, rule_id!("v_identifier")))
                     .to_owned();
-                let alias = self
-                    .tree
-                    .child(*item, "u_yield_alias")
-                    .map(|id| self.text(self.tree.required(id, "v_identifier")).to_owned());
+                let alias = self.tree.child(*item, rule_id!("u_yield_alias")).map(|id| {
+                    self.text(self.tree.required(id, rule_id!("v_identifier")))
+                        .to_owned()
+                });
                 yields.push(self.source(*item, YieldItemKind { name, alias }));
             }
         }
@@ -437,7 +377,7 @@ impl Transformer<'_> {
     }
     pub(super) fn call_statement(&mut self, node: NodeId, depth: usize) -> Result<Statement> {
         let mut trailing_comma = None;
-        let pipeline = if let Some(legacy) = self.tree.child(node, "u_legacy_call") {
+        let pipeline = if let Some(legacy) = self.tree.child(node, rule_id!("u_legacy_call")) {
             let mut call = self.procedure_clause(legacy, depth)?;
             let ClauseKind::Call { procedure, .. } = &call.kind else {
                 unreachable!()
@@ -445,10 +385,12 @@ impl Transformer<'_> {
             call.span.as_mut().expect("source call").end =
                 procedure.span.expect("source procedure").end;
             let mut clauses = vec![call];
-            if let Some(returned) = self.tree.child(legacy, "u_legacy_return") {
-                trailing_comma = self.tree.child(returned, "u_legacy_trailing_comma");
+            if let Some(returned) = self.tree.child(legacy, rule_id!("u_legacy_return")) {
+                trailing_comma = self
+                    .tree
+                    .child(returned, rule_id!("u_legacy_trailing_comma"));
                 let items = self
-                    .named_children(returned, "v_identifier")
+                    .named_children(returned, rule_id!("v_identifier"))
                     .into_iter()
                     .map(|id| {
                         let expression = self
@@ -477,7 +419,7 @@ impl Transformer<'_> {
             }
             self.source(legacy, QueryPipelineKind { clauses })
         } else {
-            let pipeline_node = self.tree.required(node, "pipeline");
+            let pipeline_node = self.tree.required(node, rule_id!("pipeline"));
             self.pipeline(pipeline_node, depth, &mut 0)?
         };
         let ClauseKind::Call { procedure, yields } = &pipeline.clauses[0].kind else {
@@ -641,7 +583,7 @@ impl Transformer<'_> {
                             let score = columns.get(index).ok_or_else(|| {
                                 self.error_at(
                                     trailing_comma
-                                        .map(|id| self.tokens[self.tree.nodes[id].end].span.start)
+                                        .map(|id| self.tokens[self.tree.node(id).end].span.start)
                                         .unwrap_or(self.input.len()),
                                     "expected identifier",
                                 )

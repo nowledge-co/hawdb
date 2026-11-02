@@ -266,29 +266,24 @@ fn lookahead_allocates_anonymous_names_only_for_selected_tree() {
 
 #[test]
 fn peg_limits_fail_closed_and_keep_utf8_positions() {
-    use hawdb_sql_syntax::peg::Limits;
-    let input = "MATCH (n {name: 'é'}) RETURN n";
+    use super::rust_peg::{recognize_with_limits, TestLimits};
+    let input = "MATCH (n {name: 'é'}) RETURN coalesce(n,0)";
     let tokens = super::lexer::tokenize(input).unwrap();
     for limits in [
-        Limits {
+        TestLimits {
             steps: 1,
-            ..Limits::default()
+            ..TestLimits::default()
         },
-        Limits {
+        TestLimits {
             nodes: 1,
-            ..Limits::default()
+            ..TestLimits::default()
         },
-        Limits {
-            memo_entries: 1,
-            ..Limits::default()
-        },
-        Limits {
-            depth: 1,
-            ..Limits::default()
+        TestLimits {
+            nesting: 1,
+            ..TestLimits::default()
         },
     ] {
-        let error = super::grammar(true)
-            .parse(input, &tokens, "root", limits)
+        let error = recognize_with_limits(input, &tokens, "root", true, limits)
             .err()
             .expect("limit must refuse the parse");
         assert_eq!(
@@ -296,6 +291,47 @@ fn peg_limits_fail_closed_and_keep_utf8_positions() {
             hawdb_sql_syntax::SyntaxErrorCode::ParserLimitExceeded
         );
         assert!(input.is_char_boundary(error.span.start));
+    }
+    let input = format!(
+        "MATCH (n) RETURN {}1{}",
+        "toInteger(".repeat(33),
+        ")".repeat(33)
+    );
+    let tokens = super::lexer::tokenize(&input).unwrap();
+    let error = recognize_with_limits(
+        &input,
+        &tokens,
+        "root",
+        false,
+        TestLimits {
+            steps: usize::MAX,
+            nodes: usize::MAX,
+            nesting: usize::MAX,
+        },
+    )
+    .err()
+    .expect("test overrides cannot raise production limits");
+    assert_eq!(
+        error.code,
+        hawdb_sql_syntax::SyntaxErrorCode::ParserLimitExceeded
+    );
+    assert!(input.is_char_boundary(error.span.start));
+}
+
+fn assert_named_captures(tree: &super::ParseTree, query: &str) {
+    let mut pending = (0..tree.nodes.len())
+        .chain(std::iter::once(tree.root))
+        .collect::<Vec<_>>();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(node) = pending.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        assert!(
+            tree.node(node).name.is_some(),
+            "native AST capture in {query}"
+        );
+        pending.extend_from_slice(tree.children(node));
     }
 }
 
@@ -455,18 +491,8 @@ fn schema_statements_match_without_native_ast_captures() {
     for query in queries {
         equivalent(&query);
         let tokens = super::lexer::tokenize(&query).unwrap();
-        let tree = super::grammar(false)
-            .parse(
-                &query,
-                &tokens,
-                "root",
-                hawdb_sql_syntax::peg::Limits::default(),
-            )
-            .unwrap();
-        assert!(
-            tree.nodes.iter().all(|node| node.name.is_some()),
-            "native AST capture in {query}"
-        );
+        let tree = super::recognize(&query, &tokens, "root", false).unwrap();
+        assert_named_captures(&tree, &query);
     }
     for query in [
         "CREATE RANGE INDEX ON :Node(a,b)",
@@ -558,18 +584,8 @@ fn graph_mutations_values_and_procedures_match_without_native_captures() {
     ] {
         equivalent(query);
         let tokens = super::lexer::tokenize(query).unwrap();
-        let tree = super::grammar(false)
-            .parse(
-                query,
-                &tokens,
-                "root",
-                hawdb_sql_syntax::peg::Limits::default(),
-            )
-            .unwrap();
-        assert!(
-            tree.nodes.iter().all(|node| node.name.is_some()),
-            "native AST capture in {query}"
-        );
+        let tree = super::recognize(query, &tokens, "root", false).unwrap();
+        assert_named_captures(&tree, query);
     }
 }
 

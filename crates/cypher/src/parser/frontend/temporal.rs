@@ -15,108 +15,18 @@
 //! Temporal calls, map arguments and scalar arithmetic over selected PEG captures.
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{expressions::scalar_binary, values::*, Transformer};
+use super::{expressions::scalar_binary, Transformer};
 use crate::*;
 use hawdb_core::{Result, TemporalFunction, Value};
-use hawdb_sql_syntax::{
-    peg::{Expression as E, NodeId},
-    TokenKind as T,
-};
-
-pub(super) fn rules() -> Vec<(&'static str, E)> {
-    let value_arg = || c(vec![r("v_map"), r("v_value")]);
-    // Each map repeats the same value grammar without adding entry/helper rules.
-    fn map_rule(value: impl Fn() -> E) -> E {
-        let pair = || s(vec![r("v_identifier"), t(T::Colon), value()]);
-        s(vec![
-            t(T::LeftBrace),
-            o(s(vec![
-                pair(),
-                many(s(vec![t(T::Comma), pair()])),
-                o(t(T::Comma)),
-            ])),
-            t(T::RightBrace),
-        ])
-    }
-    vec![
-        (
-            "x_temporal_name",
-            c(vec![
-                s(vec![
-                    E::Tight(Box::new(s(vec![
-                        c(
-                            ["date", "localtime", "localdatetime", "datetime", "duration"]
-                                .into_iter()
-                                .map(k)
-                                .collect(),
-                        ),
-                        t(T::Dot),
-                    ]))),
-                    r("v_identifier"),
-                ]),
-                c(
-                    ["date", "localtime", "localdatetime", "datetime", "duration"]
-                        .into_iter()
-                        .map(k)
-                        .collect(),
-                ),
-            ]),
-        ),
-        (
-            "x_temporal",
-            s(vec![r("x_temporal_name"), group(o(list("x_case_scalar")))]),
-        ),
-        (
-            "v_temporal",
-            s(vec![
-                r("x_temporal_name"),
-                group(o(s(vec![
-                    value_arg(),
-                    many(s(vec![t(T::Comma), value_arg()])),
-                ]))),
-            ]),
-        ),
-        ("x_map", map_rule(|| r("x_case_scalar"))),
-        ("v_map", map_rule(value_arg)),
-        (
-            "x_sum",
-            s(vec![
-                r("x_product"),
-                many(s(vec![r("r_sum_op"), r("x_product")])),
-            ]),
-        ),
-        (
-            "x_product",
-            s(vec![
-                r("x_operand"),
-                many(s(vec![r("r_product_op"), r("x_operand")])),
-            ]),
-        ),
-        (
-            "x_operand",
-            s(vec![
-                E::Not(
-                    Box::new(s(vec![t(T::Minus), t(T::Dot)])),
-                    "a scalar arithmetic operand",
-                ),
-                c(vec![
-                    r("x_timestamp_value"),
-                    r("x_scalar"),
-                    group(r("x_or")),
-                    s(vec![t(T::Minus), r("x_operand")]),
-                ]),
-            ]),
-        ),
-    ]
-}
+use hawdb_sql_syntax::peg::NodeId;
 
 impl Transformer<'_> {
     fn temporal_function(&self, node: NodeId, scalar: bool) -> Result<TemporalFunction> {
-        let name = self.tree.required(node, "x_temporal_name");
-        let namespace = self.tokens[self.tree.nodes[name].start];
+        let name = self.tree.required(node, rule_id!("x_temporal_name"));
+        let namespace = self.tokens[self.tree.node(name).start];
         let member = self
             .tree
-            .child(name, "v_identifier")
+            .child(name, rule_id!("v_identifier"))
             .map(|id| self.text(id));
         TemporalFunction::from_name(namespace.text(self.input), member).ok_or_else(|| {
             if scalar {
@@ -156,7 +66,7 @@ impl Transformer<'_> {
     ) -> Result<ScalarExpressionKind> {
         let function = self.temporal_function(node, true)?;
         let mut arguments = Vec::new();
-        for argument in self.iter_named_children(node, "x_case_scalar") {
+        for argument in self.iter_named_children(node, rule_id!("x_case_scalar")) {
             arguments.push(self.case_scalar(argument, depth)?);
         }
         self.temporal_arity(node, function, arguments.len())?;
@@ -173,7 +83,7 @@ impl Transformer<'_> {
         let function = self.temporal_function(node, false)?;
         let mut arguments = Vec::new();
         for child in self.tree.children(node).iter().copied() {
-            match self.tree.nodes[child].name {
+            match self.tree.node(child).name {
                 Some("v_value") => arguments.push(self.value(child, depth + 1)?),
                 Some("v_map") => arguments.push(self.value_map(child, depth + 1)?),
                 _ => {}
@@ -221,7 +131,7 @@ impl Transformer<'_> {
                     &format!("duplicate map key '{key}'"),
                 ));
             }
-            let value = if self.tree.nodes[pair[1]].name == Some("v_map") {
+            let value = if self.tree.rule_id(pair[1]) == rule_id!("v_map") {
                 self.value_map(pair[1], depth + 1)?
             } else {
                 self.value(pair[1], depth + 1)?
@@ -235,7 +145,7 @@ impl Transformer<'_> {
         node: NodeId,
         depth: usize,
     ) -> Result<ScalarExpression> {
-        let product = self.tree.nodes[node].name == Some("x_product");
+        let product = self.tree.rule_id(node) == rule_id!("x_product");
         let children = self.tree.children(node);
         let mut expression = if product {
             self.scalar_operand(children[0], depth)?
@@ -263,10 +173,10 @@ impl Transformer<'_> {
     fn scalar_operand(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpression> {
         self.expression_budget(node, depth + 1)?;
         let child = self.tree.children(node)[0];
-        match self.tree.nodes[child].name {
+        match self.tree.node(child).name {
             Some("x_scalar") => self.scalar(child, depth),
             Some("x_timestamp_value") => {
-                let value = self.value(self.tree.required(child, "v_value"), depth)?;
+                let value = self.value(self.tree.required(child, rule_id!("v_value")), depth)?;
                 Ok(self.source(child, ScalarExpressionKind::Value(value)))
             }
             Some("x_or") => {
@@ -339,7 +249,9 @@ impl Transformer<'_> {
 impl Transformer<'_> {
     fn captured_reference(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpression> {
         self.expression_budget(node, depth + 1)?;
-        let identifiers: Vec<_> = self.iter_named_children(node, "v_identifier").collect();
+        let identifiers: Vec<_> = self
+            .iter_named_children(node, rule_id!("v_identifier"))
+            .collect();
         let variable = self.text(identifiers[0]);
         let property = self.text(identifiers[1]).to_owned();
         let literal = if variable.eq_ignore_ascii_case("true") {
@@ -375,22 +287,22 @@ impl Transformer<'_> {
         depth: usize,
     ) -> Result<ScalarExpression> {
         let selected = self.tree.children(node)[0];
-        if self.tree.nodes[selected].name == Some("v_temporal") {
+        if self.tree.rule_id(selected) == rule_id!("v_temporal") {
             return self.captured_temporal_scalar(selected, depth);
         }
-        if self.tree.nodes[selected].name == Some("v_list") {
+        if self.tree.rule_id(selected) == rule_id!("v_list") {
             let value = self.value(node, depth + 1)?;
             if !value.kind.reads_row_binding() {
                 return Ok(self.source(node, ScalarExpressionKind::Value(value)));
             }
-            let contents = self.tree.required(selected, "v_list_contents");
+            let contents = self.tree.required(selected, rule_id!("v_list_contents"));
             let mut elements = Vec::new();
-            for child in self.iter_named_children(contents, "v_value") {
+            for child in self.iter_named_children(contents, rule_id!("v_value")) {
                 elements.push(self.captured_value_scalar(child, depth + 2)?);
             }
             return Ok(self.source(node, ScalarExpressionKind::List(elements)));
         }
-        if self.tree.nodes[selected].name == Some("v_property")
+        if self.tree.rule_id(selected) == rule_id!("v_property")
             && self.tree.children(selected).len() == 2
         {
             return self.captured_reference(selected, depth);
@@ -404,7 +316,7 @@ impl Transformer<'_> {
         let function = self.temporal_function(node, true)?;
         let mut arguments = Vec::new();
         for child in self.tree.children(node).iter().copied() {
-            match self.tree.nodes[child].name {
+            match self.tree.node(child).name {
                 Some("v_value") => arguments.push(self.captured_value_scalar(child, depth + 1)?),
                 Some("v_map") => arguments.push(self.captured_map_scalar(child, depth + 1)?),
                 _ => {}
@@ -434,7 +346,7 @@ impl Transformer<'_> {
                     &format!("duplicate map key '{key}'"),
                 ));
             }
-            let value = if self.tree.nodes[pair[1]].name == Some("v_map") {
+            let value = if self.tree.rule_id(pair[1]) == rule_id!("v_map") {
                 self.captured_map_scalar(pair[1], depth + 1)?
             } else {
                 self.captured_value_scalar(pair[1], depth + 1)?
@@ -452,7 +364,7 @@ impl Transformer<'_> {
         let expression = self.captured_reference(reference, depth)?;
         let span = SourceSpan {
             start: self.tree.span(reference, self.tokens).start,
-            end: self.tokens[self.tree.nodes[reference].end + usize::from(negated) + 1]
+            end: self.tokens[self.tree.node(reference).end + usize::from(negated) + 1]
                 .span
                 .end,
         };
@@ -470,15 +382,15 @@ impl Transformer<'_> {
         depth: usize,
     ) -> Result<ScalarExpressionKind> {
         self.expression_budget(node, depth + 1)?;
-        let refs = self.named_children(node, "d_ref");
-        let values = self.named_children(node, "v_value");
+        let refs = self.named_children(node, rule_id!("d_ref"));
+        let values = self.named_children(node, rule_id!("v_value"));
         let (condition, result, otherwise) =
-            if let Some(lower) = self.tree.child(node, "x_special_lower") {
+            if let Some(lower) = self.tree.child(node, rule_id!("x_special_lower")) {
                 let condition = self.captured_null(refs[0], true, depth + 1)?;
                 let expression = self.captured_reference(refs[1], depth + 1)?;
                 let span = SourceSpan {
                     start: self.tree.span(lower, self.tokens).start,
-                    end: self.tokens[self.tree.nodes[refs[1]].end].span.end,
+                    end: self.tokens[self.tree.node(refs[1]).end].span.end,
                 };
                 let result =
                     AstNode::from_source(ScalarExpressionKind::Lower(Box::new(expression)), span);
@@ -541,8 +453,8 @@ impl Transformer<'_> {
         depth: usize,
     ) -> Result<ScalarExpressionKind> {
         self.expression_budget(node, depth + 1)?;
-        let differences = self.named_children(node, "x_difference");
-        let values = self.named_children(node, "v_value");
+        let differences = self.named_children(node, rule_id!("x_difference"));
+        let values = self.named_children(node, rule_id!("v_value"));
         let left = self.floor_generic_difference(differences[0], depth + 1)?;
         let bound = self.captured_value_scalar(values[0], depth + 1)?;
         let condition = scalar_binary(left, ScalarBinaryOp::Lt, bound);
@@ -557,16 +469,18 @@ impl Transformer<'_> {
     fn floor_generic_difference(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpression> {
         let mut expression = None;
         for (index, term) in self
-            .iter_named_children(node, "x_difference_term")
+            .iter_named_children(node, rule_id!("x_difference_term"))
             .enumerate()
         {
             self.expression_budget(term, depth + index + 1)?;
-            let reference =
-                self.captured_reference(self.tree.required(term, "d_ref"), depth + index + 1)?;
-            let default = self.tree.required(term, "v_value");
+            let reference = self.captured_reference(
+                self.tree.required(term, rule_id!("d_ref")),
+                depth + index + 1,
+            )?;
+            let default = self.tree.required(term, rule_id!("v_value"));
             let selected = self.tree.children(default)[0];
             if matches!(
-                self.tree.nodes[selected].name,
+                self.tree.node(selected).name,
                 Some("v_timestamp" | "v_cast" | "v_current_timestamp")
             ) {
                 return Err(self.error(default, "expected scalar function argument"));

@@ -2,161 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Projection and aggregate grammar with direct AST lowering.
-use super::{values::*, Transformer};
+use super::Transformer;
 use crate::*;
 use hawdb_core::{ListFunction, Result, Value};
-use hawdb_sql_syntax::peg::{Expression as E, NodeId};
+use hawdb_sql_syntax::peg::NodeId;
 use hawdb_sql_syntax::TokenKind as T;
-fn kw(names: &[&'static str]) -> E {
-    c(names.iter().copied().map(k).collect())
-}
-pub(super) fn rules() -> Vec<(&'static str, E)> {
-    let negative_literal = || {
-        E::Ahead(
-            Box::new(E::Tight(Box::new(s(vec![t(T::Minus), t(T::Number)])))),
-            "a negative numeric literal",
-        )
-    };
-    vec![
-        (
-            "with_clause",
-            s(vec![
-                k("WITH"),
-                r("r_projection"),
-                o(r("p_where")),
-                o(r("r_order")),
-                o(r("r_offset")),
-                o(r("r_limit")),
-            ]),
-        ),
-        (
-            "return_clause",
-            s(vec![
-                k("RETURN"),
-                r("r_projection"),
-                o(r("r_order")),
-                o(r("r_offset")),
-                o(r("r_limit")),
-            ]),
-        ),
-        ("r_projection", s(vec![o(r("r_distinct")), list("r_item")])),
-        ("r_distinct", k("DISTINCT")),
-        (
-            "r_item",
-            s(vec![r("r_sum"), o(r("x_is_null")), o(r("r_alias"))]),
-        ),
-        ("r_alias", s(vec![k("AS"), r("v_identifier")])),
-        ("r_sum", s(vec![r("r_product"), many(r("r_sum_rest"))])),
-        ("r_sum_rest", s(vec![r("r_sum_op"), r("r_product")])),
-        ("r_sum_op", c(vec![t(T::Plus), t(T::Minus)])),
-        ("r_product", s(vec![r("r_atom"), many(r("r_product_rest"))])),
-        ("r_product_rest", s(vec![r("r_product_op"), r("r_atom")])),
-        (
-            "r_product_op",
-            c(vec![t(T::Star), t(T::Slash), t(T::Percent)]),
-        ),
-        (
-            "r_atom",
-            c(vec![
-                s(vec![
-                    E::Ahead(Box::new(t(T::LeftParen)), "a Cypher value token"),
-                    r("r_paren"),
-                ]),
-                s(vec![
-                    E::Ahead(Box::new(t(T::Minus)), "a Cypher value token"),
-                    r("r_unary"),
-                ]),
-                s(vec![
-                    call_start(vec![
-                        kw(&["PROPERTIES", "LENGTH", "COLLECT_TOP"]),
-                        r("r_aggregate_name"),
-                        r("x_list_function_name"),
-                    ]),
-                    c(vec![
-                        r("r_path"),
-                        r("r_collect_top"),
-                        r("r_aggregate"),
-                        r("r_list_function"),
-                    ]),
-                ]),
-                s(vec![
-                    c(vec![
-                        E::Not(Box::new(t(T::Minus)), "a scalar atom"),
-                        negative_literal(),
-                    ]),
-                    r("x_scalar"),
-                ]),
-            ]),
-        ),
-        ("r_paren", group(r("r_nested_sum"))),
-        ("r_nested_sum", r("r_sum")),
-        (
-            "r_unary",
-            s(vec![
-                E::Not(Box::new(negative_literal()), "a non-literal unary operand"),
-                t(T::Minus),
-                r("r_unary_contents"),
-            ]),
-        ),
-        ("r_unary_contents", r("r_atom")),
-        (
-            "r_path",
-            c(vec![
-                r("x_path_properties"),
-                s(vec![k("LENGTH"), group(r("v_identifier"))]),
-            ]),
-        ),
-        (
-            "r_collect_top",
-            s(vec![
-                k("COLLECT_TOP"),
-                group(s(vec![
-                    r("v_identifier"),
-                    t(T::Comma),
-                    r("v_identifier"),
-                    t(T::Comma),
-                    r("v_value"),
-                ])),
-            ]),
-        ),
-        (
-            "r_aggregate",
-            s(vec![
-                r("r_aggregate_name"),
-                group(r("r_aggregate_contents")),
-            ]),
-        ),
-        (
-            "r_aggregate_name",
-            kw(&["COUNT", "SUM", "MIN", "MAX", "AVG", "COLLECT"]),
-        ),
-        (
-            "r_aggregate_contents",
-            s(vec![o(r("r_distinct")), c(vec![r("r_star"), r("r_sum")])]),
-        ),
-        ("r_star", t(T::Star)),
-        (
-            "r_list_function",
-            s(vec![r("r_list_call"), many(r("x_postfix"))]),
-        ),
-        (
-            "r_list_call",
-            s(vec![r("x_list_function_name"), group(o(list("r_sum")))]),
-        ),
-        (
-            "r_order",
-            s(vec![k("ORDER"), k("BY"), list("r_order_item")]),
-        ),
-        (
-            "r_order_item",
-            s(vec![r("r_order_expression"), o(r("r_direction"))]),
-        ),
-        ("r_direction", kw(&["ASC", "DESC"])),
-        ("r_order_expression", s(vec![r("r_sum"), o(r("x_is_null"))])),
-        ("r_offset", s(vec![kw(&["SKIP", "OFFSET"]), r("v_value")])),
-        ("r_limit", s(vec![k("LIMIT"), r("v_value")])),
-    ]
-}
 impl Transformer<'_> {
     pub(super) fn projection_clause(
         &mut self,
@@ -164,33 +14,40 @@ impl Transformer<'_> {
         depth: usize,
         anonymous: &mut usize,
     ) -> Result<Clause> {
-        let projection = self.tree.required(node, "r_projection");
-        let distinct = self.tree.child(projection, "r_distinct").is_some();
-        let mut items = Vec::new();
-        for item in self.iter_named_children(projection, "r_item") {
-            let expression = self.projection_expression(item, depth)?;
-            let alias = self
-                .tree
-                .child(item, "r_alias")
-                .map(|id| self.text(self.tree.required(id, "v_identifier")).to_owned());
-            items.push(self.source(item, ReturnItemKind { expression, alias }));
-        }
+        let projection = self.tree.required(node, rule_id!("r_projection"));
+        let distinct = self
+            .tree
+            .child(projection, rule_id!("r_distinct"))
+            .is_some();
+        let items = if let Some(items) = self.tree.take_projection(projection) {
+            items?
+        } else {
+            let mut items = Vec::new();
+            for item in self.iter_named_children(projection, rule_id!("r_item")) {
+                items.push(self.projection_item(item, depth)?);
+            }
+            items
+        };
         let predicate = self.fold_where(node, depth, anonymous)?;
         let mut order_by = Vec::new();
-        if let Some(order) = self.tree.child(node, "r_order") {
-            for item in self.iter_named_children(order, "r_order_item") {
-                order_by.push(self.order_item(item, depth)?);
+        if let Some(order) = self.tree.child(node, rule_id!("r_order")) {
+            if let Some(items) = self.tree.take_order(order) {
+                order_by = items?;
+            } else {
+                for item in self.iter_named_children(order, rule_id!("r_order_item")) {
+                    order_by.push(self.order_item(item, depth)?);
+                }
             }
         }
         let offset = self
             .tree
-            .child(node, "r_offset")
-            .map(|id| self.value(self.tree.required(id, "v_value"), depth))
+            .child(node, rule_id!("r_offset"))
+            .map(|id| self.value(self.tree.required(id, rule_id!("v_value")), depth))
             .transpose()?;
         let limit = self
             .tree
-            .child(node, "r_limit")
-            .map(|id| self.value(self.tree.required(id, "v_value"), depth))
+            .child(node, rule_id!("r_limit"))
+            .map(|id| self.value(self.tree.required(id, rule_id!("v_value")), depth))
             .transpose()?;
         let projection = ProjectionClause {
             distinct,
@@ -202,20 +59,29 @@ impl Transformer<'_> {
         };
         Ok(self.source(
             node,
-            if self.tree.nodes[node].name == Some("with_clause") {
+            if self.tree.rule_id(node) == rule_id!("with_clause") {
                 ClauseKind::With(projection)
             } else {
                 ClauseKind::Return(projection)
             },
         ))
     }
+    pub(super) fn projection_item(&mut self, item: NodeId, depth: usize) -> Result<ReturnItem> {
+        let expression = self.projection_expression(item, depth)?;
+        let alias = self.tree.child(item, rule_id!("r_alias")).map(|id| {
+            self.text(self.tree.required(id, rule_id!("v_identifier")))
+                .to_owned()
+        });
+        Ok(self.source(item, ReturnItemKind { expression, alias }))
+    }
     fn projection_expression(&mut self, node: NodeId, depth: usize) -> Result<ReturnExpression> {
-        let mut expression = self.return_expression(self.tree.required(node, "r_sum"), depth)?;
+        let mut expression =
+            self.return_expression(self.tree.required(node, rule_id!("r_sum")), depth)?;
         if return_depth(&expression) > super::super::MAX_CYPHER_PARSER_DEPTH {
             return Err(self.error(node, "arithmetic expression exceeds maximum nesting depth"));
         }
-        if let Some(null) = self.tree.child(node, "x_is_null") {
-            let negated = self.tree.child(null, "x_negated").is_some();
+        if let Some(null) = self.tree.child(node, rule_id!("x_is_null")) {
+            let negated = self.tree.child(null, rule_id!("x_negated")).is_some();
             let operand = match expression.kind {
                 ReturnExpressionKind::Value(value) => value,
                 ReturnExpressionKind::Path(path) => AstNode {
@@ -249,8 +115,12 @@ impl Transformer<'_> {
         node: NodeId,
         depth: usize,
     ) -> Result<ReturnExpression> {
-        let product = self.tree.nodes[node].name == Some("r_product");
-        let first_name = if product { "r_atom" } else { "r_product" };
+        let product = self.tree.rule_id(node) == rule_id!("r_product");
+        let first_name = if product {
+            rule_id!("r_atom")
+        } else {
+            rule_id!("r_product")
+        };
         let first = self.tree.required(node, first_name);
         let first = if product {
             self.return_atom(first, depth)?
@@ -261,14 +131,19 @@ impl Transformer<'_> {
         for item in self.iter_named_children(
             node,
             if product {
-                "r_product_rest"
+                rule_id!("r_product_rest")
             } else {
-                "r_sum_rest"
+                rule_id!("r_sum_rest")
             },
         ) {
-            let op = self
-                .tree
-                .required(item, if product { "r_product_op" } else { "r_sum_op" });
+            let op = self.tree.required(
+                item,
+                if product {
+                    rule_id!("r_product_op")
+                } else {
+                    rule_id!("r_sum_op")
+                },
+            );
             let op = match self.text(op) {
                 "+" => ArithmeticOp::Add,
                 "-" => ArithmeticOp::Subtract,
@@ -299,19 +174,23 @@ impl Transformer<'_> {
     fn return_atom(&mut self, node: NodeId, depth: usize) -> Result<ReturnExpression> {
         self.expression_budget(node, depth + 1)?;
         let selected = self.tree.children(node)[0];
-        let kind = match self.tree.nodes[selected].name.expect("return atom") {
+        let kind = match self.tree.node(selected).name.expect("return atom") {
             "r_paren" => {
                 self.return_expression(
-                    self.tree
-                        .required(self.tree.required(selected, "r_nested_sum"), "r_sum"),
+                    self.tree.required(
+                        self.tree.required(selected, rule_id!("r_nested_sum")),
+                        rule_id!("r_sum"),
+                    ),
                     depth + 1,
                 )?
                 .kind
             }
             "r_unary" => {
                 let operand = self.return_atom(
-                    self.tree
-                        .required(self.tree.required(selected, "r_unary_contents"), "r_atom"),
+                    self.tree.required(
+                        self.tree.required(selected, rule_id!("r_unary_contents")),
+                        rule_id!("r_atom"),
+                    ),
                     depth + 1,
                 )?;
                 let minus_one = self.source(
@@ -327,13 +206,14 @@ impl Transformer<'_> {
             }
             "x_scalar" => ReturnExpressionKind::Value(self.scalar(selected, depth + 1)?),
             "r_path" => {
-                let path = if let Some(properties) = self.tree.child(selected, "x_path_properties")
+                let path = if let Some(properties) =
+                    self.tree.child(selected, rule_id!("x_path_properties"))
                 {
                     self.scalar_path(properties, depth + 1)?
                 } else {
                     ShortestPathReturnExpression::Length {
                         path_variable: self
-                            .text(self.tree.required(selected, "v_identifier"))
+                            .text(self.tree.required(selected, rule_id!("v_identifier")))
                             .to_owned(),
                     }
                 };
@@ -341,7 +221,8 @@ impl Transformer<'_> {
             }
             "r_collect_top" => {
                 let (document_id, score) = self.identifier_pair(selected);
-                let limit = self.value(self.tree.required(selected, "v_value"), depth + 1)?;
+                let limit =
+                    self.value(self.tree.required(selected, rule_id!("v_value")), depth + 1)?;
                 ReturnExpressionKind::Aggregate(AggregateExpression::CollectTop {
                     document_id,
                     score,
@@ -350,9 +231,9 @@ impl Transformer<'_> {
             }
             "r_aggregate" => ReturnExpressionKind::Aggregate(self.aggregate(selected, depth + 1)?),
             "r_list_function" => {
-                let call = self.tree.required(selected, "r_list_call");
+                let call = self.tree.required(selected, rule_id!("r_list_call"));
                 let function = ListFunction::from_function_name(
-                    self.text(self.tree.required(call, "x_list_function_name")),
+                    self.text(self.tree.required(call, rule_id!("x_list_function_name"))),
                 )
                 .expect("list function");
                 let mut arguments = Vec::new();
@@ -361,14 +242,14 @@ impl Transformer<'_> {
                     .children(call)
                     .iter()
                     .copied()
-                    .filter(|id| self.tree.nodes[*id].name == Some("r_sum"))
+                    .filter(|id| self.tree.rule_id(*id) == rule_id!("r_sum"))
                 {
                     arguments.push(self.return_expression(argument, depth + 1)?)
                 }
                 self.list_arity(selected, function, arguments.len())?;
                 if arguments.iter().any(contains_aggregate) {
                     if self
-                        .iter_named_children(selected, "x_postfix")
+                        .iter_named_children(selected, rule_id!("x_postfix"))
                         .next()
                         .is_some()
                     {
@@ -406,7 +287,7 @@ impl Transformer<'_> {
     }
     fn aggregate(&mut self, node: NodeId, depth: usize) -> Result<AggregateExpression> {
         let function = match self
-            .text(self.tree.required(node, "r_aggregate_name"))
+            .text(self.tree.required(node, rule_id!("r_aggregate_name")))
             .to_ascii_uppercase()
             .as_str()
         {
@@ -417,16 +298,16 @@ impl Transformer<'_> {
             "AVG" => AggregateFunctionName::Avg,
             _ => AggregateFunctionName::Collect,
         };
-        let contents = self.tree.required(node, "r_aggregate_contents");
-        let distinct = self.tree.child(contents, "r_distinct").is_some();
-        if self.tree.child(contents, "r_star").is_some() {
+        let contents = self.tree.required(node, rule_id!("r_aggregate_contents"));
+        let distinct = self.tree.child(contents, rule_id!("r_distinct")).is_some();
+        if self.tree.child(contents, rule_id!("r_star")).is_some() {
             if function != AggregateFunctionName::Count || distinct {
                 return Err(self.error(node, "COUNT(DISTINCT *) is not supported"));
             }
             return Ok(AggregateExpression::CountAll);
         }
-        let arg = self.tree.required(contents, "r_sum");
-        let tokens = &self.tokens[self.tree.nodes[arg].start..self.tree.nodes[arg].end];
+        let arg = self.tree.required(contents, rule_id!("r_sum"));
+        let tokens = &self.tokens[self.tree.node(arg).start..self.tree.node(arg).end];
         let ordinary_word = |token: &hawdb_sql_syntax::Token| {
             token.kind == T::Word
                 && !["true", "false", "null"]
@@ -495,12 +376,12 @@ impl Transformer<'_> {
             argument,
         })
     }
-    fn order_item(&mut self, node: NodeId, depth: usize) -> Result<OrderItem> {
-        let expression = self.tree.required(node, "r_order_expression");
+    pub(super) fn order_item(&mut self, node: NodeId, depth: usize) -> Result<OrderItem> {
+        let expression = self.tree.required(node, rule_id!("r_order_expression"));
         let expression = order_expression(self.projection_expression(expression, depth)?);
         let direction = if self
             .tree
-            .child(node, "r_direction")
+            .child(node, rule_id!("r_direction"))
             .is_some_and(|id| self.text(id).eq_ignore_ascii_case("DESC"))
         {
             OrderDirection::Desc

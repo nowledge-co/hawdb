@@ -11,14 +11,11 @@ impl Transformer<'_> {
     pub(super) fn statement(&mut self, node: NodeId, depth: usize) -> Result<Statement> {
         self.check_depth(node, depth, 0)?;
         let selected = self.tree.children(node)[0];
-        match self.tree.nodes[selected]
-            .name
-            .expect("named statement rule")
-        {
+        match self.tree.node(selected).name.expect("named statement rule") {
             "explain" => {
-                let analyze = self.tokens[self.tree.nodes[selected].start + 1]
+                let analyze = self.tokens[self.tree.node(selected).start + 1]
                     .is_keyword(self.input, "ANALYZE");
-                let child = self.tree.required(selected, "statement");
+                let child = self.tree.required(selected, rule_id!("statement"));
                 let statement = self.statement(child, depth + 1)?;
                 let body = explain_statement_body(&statement);
                 if control_statement(body) {
@@ -32,11 +29,11 @@ impl Transformer<'_> {
                 let children = self.tree.children(selected).iter().copied();
                 let mut system_variables = Vec::new();
                 for child in children {
-                    if self.tree.nodes[child].name == Some("hint") {
+                    if self.tree.rule_id(child) == rule_id!("hint") {
                         system_variables.push(self.system_assignment(child, depth)?);
                     }
                 }
-                let child = self.tree.required(selected, "statement");
+                let child = self.tree.required(selected, rule_id!("statement"));
                 let statement = self.statement(child, depth + 1)?;
                 if control_statement(&statement) {
                     return Err(self.error(
@@ -50,7 +47,7 @@ impl Transformer<'_> {
                 })))
             }
             name @ ("multi_stage" | "match" | "unwind") => {
-                let pipeline = self.tree.required(selected, "pipeline");
+                let pipeline = self.tree.required(selected, rule_id!("pipeline"));
                 let pipeline = self.pipeline(pipeline, depth, &mut 0)?;
                 if name == "match" {
                     admit_optional(&pipeline).map_err(|message| self.error(selected, message))?;
@@ -65,16 +62,27 @@ impl Transformer<'_> {
             "checkpoint" => Ok(Statement::Checkpoint),
             "commit" => Ok(Statement::Commit),
             "rollback" => Ok(Statement::Rollback),
-            "alter" => self.schema_statement(self.tree.required(selected, "schema_alter")),
-            "create" if self.tree.child(selected, "schema_create").is_some() => {
-                self.schema_statement(self.tree.required(selected, "schema_create"))
+            "alter" => {
+                self.schema_statement(self.tree.required(selected, rule_id!("schema_alter")))
             }
-            "create" => {
-                self.data_statement(self.tree.required(selected, "d_create_data"), false, depth)
+            "create"
+                if self
+                    .tree
+                    .child(selected, rule_id!("schema_create"))
+                    .is_some() =>
+            {
+                self.schema_statement(self.tree.required(selected, rule_id!("schema_create")))
             }
-            "merge" => {
-                self.data_statement(self.tree.required(selected, "d_merge_data"), true, depth)
-            }
+            "create" => self.data_statement(
+                self.tree.required(selected, rule_id!("d_create_data")),
+                false,
+                depth,
+            ),
+            "merge" => self.data_statement(
+                self.tree.required(selected, rule_id!("d_merge_data")),
+                true,
+                depth,
+            ),
             "set" => self
                 .system_assignment(selected, depth)
                 .map(Statement::SetSystemVariable),
@@ -93,7 +101,7 @@ impl Transformer<'_> {
         self.clause_nodes(node, &mut nodes);
         let mut clauses = Vec::with_capacity(nodes.len());
         for child in nodes {
-            let name = self.tree.nodes[child].name.expect("clause rule");
+            let name = self.tree.node(child).name.expect("clause rule");
             if name == "call_clause" {
                 clauses.push(self.procedure_clause(child, depth)?);
                 continue;
@@ -127,7 +135,9 @@ impl Transformer<'_> {
     }
 
     fn clause_nodes(&self, node: NodeId, output: &mut Vec<NodeId>) {
-        if self.tree.nodes[node]
+        if self
+            .tree
+            .node(node)
             .name
             .is_some_and(|name| name.ends_with("_clause"))
         {

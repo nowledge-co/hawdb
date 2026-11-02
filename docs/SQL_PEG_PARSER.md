@@ -5,11 +5,13 @@ SELECT and EXPLAIN SELECT execution paths, including prepared statements and
 plan-template cache misses. No feature, environment variable or host opt-in is
 required. The syntax-only CREATE PROPERTY GRAPH and GRAPH_TABLE entry points
 also use PEG. Relational DDL/DML, materialized views, branch lifecycle and paged SHOW commands use PEG as well.
-Cypher uses the same engine with its own token grammar for all supported
-statements, clauses, patterns, values, predicates and projection expressions.
-Both languages construct ASTs only after matching the selected concrete syntax
-tree. The handwritten parsers, including test-only drivers, and native parser
-callbacks have been removed.
+Cypher defaults to a grammar compiled by the external `peg` crate for all
+supported statements, clauses, patterns, values, predicates and projections.
+Its former grammar builder and backend-selection feature have been removed.
+Typed projection and sort actions lower each fully matched item and release its
+temporary captures; other ASTs lower the completed tree. SQL uses the owned
+matcher described below. Neither language retries a handwritten parser after a
+syntax, semantic or resource error.
 
 Parser routing is explicit by statement family:
 
@@ -19,6 +21,7 @@ Parser routing is explicit by statement family:
 | CREATE PROPERTY GRAPH, GRAPH_TABLE syntax APIs | Owned token PEG; existing catalog/binder/execution admission still applies |
 | Relational DDL/DML and materialized-view statements | Owned token PEG in `hawdb-sql`, then direct relational IR lowering |
 | Branch commands | Bounded SQL token PEG and branch AST transformation |
+| Cypher statements, standalone pipelines and stored predicates | Compiled `peg` grammar and typed AST lowering |
 
 All supported SQL families now use PEG without a fallback or an upstream
 parser dependency, including test builds. Cypher also uses PEG throughout; resource and performance
@@ -103,7 +106,7 @@ Alternatives are attempted from the same token position; the first success
 wins. A later sequence failure does not revisit an earlier successful choice.
 The AST transformer and grammar form one internal contract and change together.
 
-Cypher `LOAD CSV` uses the same PEG pipeline and selected-tree transformation.
+Cypher `LOAD CSV` uses its compiled PEG grammar and typed AST transformation.
 The grammar recognizes optional headers, literal/parameter sources and an
 optional literal field terminator; decoding validates the one-character ASCII
 terminator. Conversion functions are recognized in scalar expressions and
@@ -116,7 +119,7 @@ atomic execution remain the existing embedded library implementation.
 
 ## Resources and diagnostics
 
-The matcher runs continuations on an explicit work stack rather than the host
+The SQL matcher runs continuations on an explicit work stack rather than the host
 thread stack. This permits a graph pattern at its 128-level limit to contain an
 expression at its independent 128-level limit without overflowing a Rust thread.
 Admission still bounds internal expression frames, work, captures and memo
@@ -304,10 +307,20 @@ positions, duplicate checks and bounded projected-filter contract remain.
 `project_graph` string predicates use the same WHERE PEG with the existing
 16 KiB and sixteen-conjunct semantic contract.
 Balanced procedure-option maps share the 32-level recursive-language budget.
-The generic PEG `Tight` combinator checks token-source adjacency with charged
-work; it retains capture rollback, memo reuse and fatal resource failures.
-Cypher uses an explicit 8,192-frame internal matcher budget while value/list/map
-language depth and combined statement/value depth retain the existing bound.
+Token-source adjacency remains part of the compiled syntax. The Cypher matcher
+bounds named-rule work and logical node/edge counts, including captures later
+released by failed branches or typed actions. It does not use packrat memoization.
+Value and structural recursion guards, together with AST depth validation,
+retain the 32-level language bound. Generic SQL memo and matcher-frame budget
+tests stay with the SQL engine; Cypher tests directly check its own work,
+capture and nesting refusals, including UTF-8 error locations.
+
+All Cypher entry points use this one grammar without an opt-in or fallback.
+The compatibility diagnostic layer records the first failure at the farthest
+token and restores lookahead diagnostics. Total Option entry wrappers disable
+only `peg`'s unused duplicate diagnostics. Early native nesting refusals still
+have known message/location differences on overdeep inputs; those remain part
+of resource qualification rather than an established compatibility result.
 
 A further 420 statement/pipeline records were exported from independently
 compiled main `9c355e9a46` in its main-only target directory. They cover these

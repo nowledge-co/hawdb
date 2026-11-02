@@ -1,40 +1,39 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-//! Cypher statement and clause PEG, sharing the SQL/PGQ packrat engine.
-//! Recognition produces a concrete syntax tree. AST folding allocates names
-//! only for the selected tree; ordered-choice probes have no mutable state.
-
-use std::sync::OnceLock;
+//! Compiled Cypher PEG with typed AST lowering. Failed branches release
+//! captures while preserving logical resource accounting and diagnostics.
 
 use hawdb_core::{HawDBError, Result};
-use hawdb_sql_syntax::peg::{Grammar, Limits, NodeId, ParseTree};
+use hawdb_sql_syntax::peg::{Limits, NodeId};
 use hawdb_sql_syntax::{SyntaxError, SyntaxErrorCode, Token};
 
 use super::{MAX_CYPHER_INPUT_BYTES, MAX_CYPHER_PARSER_DEPTH};
 use crate::*;
 
+// Resolve grammar metadata at compile time; named-child walks compare bytes.
+macro_rules! rule_id {
+    ($name:literal) => {
+        const { $crate::parser::frontend::tree::rule_id($name) }
+    };
+}
+
 mod data;
 mod expressions;
-mod grammar;
 mod lexer;
 mod patterns;
 mod predicates;
 mod procedures;
 mod projection;
+mod rust_peg;
+mod tree;
+use tree::ParseTree;
 mod schema;
 mod temporal;
 #[cfg(test)]
 mod tests;
 mod transform;
 mod values;
-
-fn grammar(multi_stage: bool) -> &'static Grammar {
-    static FULL: OnceLock<Grammar> = OnceLock::new();
-    static SIMPLE: OnceLock<Grammar> = OnceLock::new();
-    let grammar = if multi_stage { &FULL } else { &SIMPLE };
-    grammar.get_or_init(|| grammar::build(multi_stage).expect("valid built-in Cypher PEG grammar"))
-}
 
 fn check_input(input: &str) -> Result<()> {
     if input.len() > MAX_CYPHER_INPUT_BYTES {
@@ -57,18 +56,9 @@ pub(super) fn parse(input: &str) -> Result<Statement> {
         .take(2)
         .count()
         == 2;
-    let tree = grammar(multi_stage)
-        .parse(
-            input,
-            &tokens,
-            "root",
-            Limits {
-                depth: 8192,
-                ..Limits::default()
-            },
-        )
-        .map_err(|error| render(input, error))?;
-    let root = tree.required(tree.root, "statement");
+    let tree =
+        recognize(input, &tokens, "root", multi_stage).map_err(|error| render(input, error))?;
+    let root = tree.required(tree.root, rule_id!("statement"));
     Transformer {
         tree: &tree,
         input,
@@ -81,18 +71,9 @@ pub(super) fn parse(input: &str) -> Result<Statement> {
 pub(super) fn parse_pipeline(input: &str) -> Result<QueryPipeline> {
     check_input(input)?;
     let tokens = lexer::tokenize(input)?;
-    let tree = grammar(false)
-        .parse(
-            input,
-            &tokens,
-            "pipeline_root",
-            Limits {
-                depth: 8192,
-                ..Limits::default()
-            },
-        )
-        .map_err(|error| render(input, error))?;
-    let root = tree.required(tree.root, "pipeline");
+    let tree =
+        recognize(input, &tokens, "pipeline_root", false).map_err(|error| render(input, error))?;
+    let root = tree.required(tree.root, rule_id!("pipeline"));
     Transformer {
         tree: &tree,
         input,
@@ -105,18 +86,8 @@ pub(super) fn parse_pipeline(input: &str) -> Result<QueryPipeline> {
 pub(super) fn parse_predicate(input: &str, columns: bool) -> Result<PropertyPredicate> {
     check_input(input)?;
     let tokens = lexer::tokenize(input)?;
-    let tree = grammar(false)
-        .parse(
-            input,
-            &tokens,
-            "w_input",
-            Limits {
-                depth: 8192,
-                ..Limits::default()
-            },
-        )
-        .map_err(|error| render(input, error))?;
-    let root = tree.required(tree.root, "w_or");
+    let tree = recognize(input, &tokens, "w_input", false).map_err(|error| render(input, error))?;
+    let root = tree.required(tree.root, rule_id!("w_or"));
     Transformer {
         tree: &tree,
         input,
@@ -195,4 +166,13 @@ impl Transformer<'_> {
         }
         Ok(())
     }
+}
+
+fn recognize(
+    input: &str,
+    tokens: &[Token],
+    entry: &'static str,
+    multi_stage: bool,
+) -> std::result::Result<ParseTree, SyntaxError> {
+    rust_peg::recognize(input, tokens, entry, multi_stage)
 }

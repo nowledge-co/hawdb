@@ -874,3 +874,42 @@ fn keyword_choices_keep_attempt_charges_depth_and_memo_diagnostics() {
     assert_eq!(failed.found.as_deref(), Some("OTHER"));
     assert_eq!(failed.span, crate::Span { start: 0, end: 5 });
 }
+
+#[test]
+fn generic_peg_limits_fail_closed_and_keep_utf8_positions() {
+    let input = "SELECT 'é' FROM records";
+    let grammar = Grammar::compile(vec![
+        ("Root", S(vec![R("Select"), Tok(TokenKind::End, "end")])),
+        (
+            "Select",
+            S(vec![K("SELECT"), R("Value"), K("FROM"), R("Table")]),
+        ),
+        ("Value", Tok(TokenKind::String, "value")),
+        ("Table", Tok(TokenKind::Word, "table")),
+    ])
+    .unwrap();
+    for limits in [
+        Limits {
+            steps: 1,
+            ..Limits::default()
+        },
+        Limits {
+            nodes: 1,
+            ..Limits::default()
+        },
+        Limits {
+            memo_entries: 1,
+            ..Limits::default()
+        },
+        Limits {
+            depth: 1,
+            ..Limits::default()
+        },
+    ] {
+        let error = parse(&grammar, input, limits)
+            .err()
+            .expect("limit must refuse the parse");
+        assert_eq!(error.code, SyntaxErrorCode::ParserLimitExceeded);
+        assert!(input.is_char_boundary(error.span.start));
+    }
+}
