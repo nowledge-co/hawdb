@@ -278,6 +278,12 @@ pub enum SetValueExpression {
         incoming: ValueExpression,
         preserve: ValueExpression,
     },
+    PreserveOlderExisting {
+        variable: String,
+        property: String,
+        incoming: ValueExpression,
+        preserve: ValueExpression,
+    },
     CoalescePropertyAdd {
         variable: String,
         property: String,
@@ -583,6 +589,11 @@ pub enum ScalarExpressionKind {
         function: hawdb_core::ListFunction,
         arguments: Vec<ScalarExpression>,
     },
+
+    StringFunction {
+        function: hawdb_core::StringFunction,
+        arguments: Vec<ScalarExpression>,
+    },
     /// `[variable IN list WHERE predicate | projection]`.
     ///
     /// `variable` is scoped to `predicate` and `projection`; it must not
@@ -833,6 +844,10 @@ impl ScalarExpressionKind {
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {
+                arguments: expressions,
+                ..
+            }
+            | Self::StringFunction {
                 arguments: expressions,
                 ..
             }

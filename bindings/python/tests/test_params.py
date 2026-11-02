@@ -17,9 +17,12 @@
 import decimal
 import enum
 import fractions
+import random
 import re
 
 import pytest
+
+from hawdb import exceptions
 
 INT64_MAX = 2**63 - 1
 INT64_MIN = -(2**63)
@@ -91,8 +94,8 @@ def test_out_of_range_integers_raise_overflow(table, value):
 
 @pytest.mark.parametrize(
     "value",
-    [decimal.Decimal("1.10"), fractions.Fraction(1, 3), OnlyFloat()],
-    ids=["Decimal", "Fraction", "__float__"],
+    [fractions.Fraction(1, 3), OnlyFloat()],
+    ids=["Fraction", "__float__"],
 )
 def test_inexact_float_conversions_raise_type_error(table, value):
     _rejects(table, TypeError, value, f"unsupported parameter type: {type(value).__name__}")
@@ -160,8 +163,8 @@ def test_numpy_scalars(db):
 
 def test_errors_name_the_path(table):
     # Conversion fails before the statement runs, so one handle serves every case.
-    unsupported = "unsupported parameter type: Decimal"
-    bad = decimal.Decimal("1")
+    unsupported = "unsupported parameter type: Fraction"
+    bad = fractions.Fraction(1, 3)
     fake_uuid = type("UUID", (), {"__str__": lambda self: "not-a-uuid"})()
     odd_module = type("Odd", (), {"__module__": None})()
     cases = [
@@ -217,7 +220,7 @@ def test_nesting_is_bounded(db):
 def test_transactions_name_the_path(table):
     for begin in (table.transaction, table.read_transaction):
         with begin() as tx:
-            _rejects(tx, TypeError, decimal.Decimal("1"), "unsupported parameter type: Decimal")
+            _rejects(tx, TypeError, fractions.Fraction(1, 3), "unsupported parameter type: Fraction")
 
 
 def test_shared_vector_parameters_and_distances(db):
@@ -230,3 +233,75 @@ def test_shared_vector_parameters_and_distances(db):
     for invalid in [[], [float("nan")], [float("inf")], [1e300]]:
         with pytest.raises(ValueError, match="invalid vector"):
             db.execute(COUNT, {"v": {"$vector": invalid}})
+
+
+def test_native_decimal_parameters_and_results_preserve_exact_digits(db):
+    db.execute_sql("CREATE TABLE amounts (id BIGINT PRIMARY KEY, amount DECIMAL(38,4))")
+    amount = decimal.Decimal("9007199254740993.0100")
+    db.execute_sql("INSERT INTO amounts (id, amount) VALUES ($1, $2)", [1, amount])
+    result = db.execute_sql("SELECT amount + $1 AS total FROM amounts", [decimal.Decimal("0.0001")]).fetchall()
+    assert result == [{"total": decimal.Decimal("9007199254740993.0101")}]
+    assert isinstance(result[0]["total"], decimal.Decimal)
+    assert str(db.execute_sql("SELECT amount FROM amounts").fetchall()[0]["amount"]) == str(amount)
+    for invalid in [decimal.Decimal("NaN"), decimal.Decimal("Infinity"), decimal.Decimal("1e1000")]:
+        with pytest.raises(ValueError, match="invalid Decimal parameter"):
+            db.execute_sql("SELECT $1", [invalid])
+
+
+def test_decimal_arithmetic_matches_independent_fraction_oracle(db):
+    limit = 10**38 - 1
+    rng = random.Random(1419)
+    pairs = [
+        (decimal.Decimal(left), decimal.Decimal(right))
+        for left, right in [
+            ("0.1", "0.2"),
+            ("1e-38", "2"),
+            ("-5e-38", "10"),
+            ("1", "0"),
+            (str(limit), "0.1"),
+            ("1e-38", "1e-38"),
+        ]
+    ]
+    for _ in range(64):
+        values = []
+        for _ in range(2):
+            coefficient = rng.randrange(-limit, limit + 1)
+            digits = tuple(map(int, str(abs(coefficient))))
+            values.append(decimal.Decimal((int(coefficient < 0), digits, -rng.randrange(39))))
+        pairs.append(tuple(values))
+
+    def representable(value):
+        return any(
+            (value * 10**scale).denominator == 1
+            and abs(value * 10**scale) <= limit
+            for scale in range(39)
+        )
+
+    def rounded_division(value):
+        for scale in reversed(range(39)):
+            scaled = value * 10**scale
+            numerator, denominator = abs(scaled.numerator), scaled.denominator
+            coefficient = (2 * numerator + denominator) // (2 * denominator)
+            if coefficient <= limit:
+                sign = -1 if value < 0 else 1
+                return fractions.Fraction(sign * coefficient, 10**scale)
+        return None
+
+    for left, right in pairs:
+        a, b = fractions.Fraction(left), fractions.Fraction(right)
+        expected = {
+            "+": a + b,
+            "-": a - b,
+            "*": a * b,
+            "%": a - int(a / b) * b if b else None,
+            "/": rounded_division(a / b) if b else None,
+        }
+        for operator, result in expected.items():
+            sql = f"SELECT $1 {operator} $2 AS value"
+            if result is None or not representable(result):
+                with pytest.raises(exceptions.ExecutionError, match="division by zero|exceeds 38"):
+                    db.execute_sql(sql, [left, right])
+            else:
+                actual = db.execute_sql(sql, [left, right]).fetchall()[0]["value"]
+                assert isinstance(actual, decimal.Decimal)
+                assert fractions.Fraction(actual) == result, (left, operator, right, actual, result)

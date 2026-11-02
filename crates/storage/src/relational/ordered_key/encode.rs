@@ -117,6 +117,10 @@ pub(super) fn value<S: Output>(output: &mut S, value: &RelationalValue) -> Resul
                 output.raw(&[3])?;
                 output.raw(&ordered.to_be_bytes())
             }
+            RelationalValue::Decimal(value) => {
+                output.raw(&[9])?;
+                output.raw(&value.to_ordered_bytes())
+            }
             RelationalValue::Uuid(value) => {
                 output.raw(&[6])?;
                 output.raw(value.as_bytes())

@@ -405,6 +405,19 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             }
             output.push(')');
         }
+        ProjectionExpression::StringFunction {
+            function,
+            arguments,
+            ..
+        } => {
+            output.push_str("string_function(");
+            output.push_str(function.function_name());
+            for argument in arguments {
+                output.push(',');
+                write_projection_expression(output, argument);
+            }
+            output.push(')');
+        }
         ProjectionExpression::ListComprehension(comprehension) => {
             output.push_str("list_comprehension(");
             write_identifier(output, &comprehension.variable);

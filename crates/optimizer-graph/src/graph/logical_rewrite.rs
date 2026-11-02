@@ -438,6 +438,7 @@ fn collect_projection_columns(
         | ProjectionExpression::Not(_)
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
@@ -498,6 +499,7 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         | ProjectionExpression::Not(_)
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }

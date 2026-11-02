@@ -267,6 +267,7 @@ fn estimate_value(value: &Value, work: &CheckpointWorkContext) -> Result<u64> {
     let bytes = match value {
         Value::Null | Value::Bool(_) => 1,
         Value::Int(_) | Value::Float(_) => 8,
+        Value::Decimal(_) => 17,
         Value::String(value) => value.len() as u64,
         Value::Binary(value) => value.len() as u64,
         Value::Vector(value) => value.encoded().len() as u64,

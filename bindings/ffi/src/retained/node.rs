@@ -155,6 +155,7 @@ impl NodeValue {
                 Value::Bool(value) => scalar!(value, HAWDB_RETAINED_BOOL),
                 Value::Int(value) => scalar!(value, HAWDB_RETAINED_NODE_INT64),
                 Value::Float(value) => scalar!(value, HAWDB_RETAINED_NODE_FLOAT64),
+                Value::Decimal(_) => return Err(HAWDB_RETAINED_UNSUPPORTED_TYPE),
                 Value::String(value) => bytes!(value.as_bytes(), HAWDB_RETAINED_UTF8),
                 Value::Binary(value) => bytes!(value, HAWDB_RETAINED_BINARY),
                 Value::Uuid(value) => bytes!(value.as_bytes(), HAWDB_RETAINED_UUID),

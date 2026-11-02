@@ -114,8 +114,10 @@ fn plan(parent: Parent, window: usize) -> PhysicalPlan {
                 imports: vec![],
                 introduced: vec!["target".into()],
                 projected_nodes: BTreeMap::new(),
+                projected_relationships: BTreeMap::new(),
                 predicate: None,
                 predicate_steps: Vec::new(),
+                edge_predicates: Vec::new(),
                 optional: false,
                 steps: vec![GraphMatchStep::Expand {
                     source: "seed".into(),

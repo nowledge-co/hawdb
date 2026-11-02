@@ -19,9 +19,11 @@ pub(super) fn restore(input: LogicalPlan, scope: &Scope, needed: &BTreeSet<Strin
             imports,
             introduced: Vec::new(),
             projected_nodes: BTreeMap::new(),
+            projected_relationships: BTreeMap::new(),
             steps: Vec::new(),
             predicate: None,
             predicate_steps: Vec::new(),
+            edge_predicates: Vec::new(),
             optional: false,
         },
         input: Some(Box::new(input)),
@@ -186,6 +188,7 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         | ProjectionExpression::Column(_)
         | ProjectionExpression::ColumnProperty { .. }
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::LocalVariable { .. }
         | ProjectionExpression::List(_)

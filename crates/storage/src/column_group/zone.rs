@@ -178,7 +178,7 @@ impl ChunkZoneMap {
                     ));
                 }
                 Value::Binary(_) => type_bits |= HAS_BINARY,
-                Value::Uuid(_) => type_bits |= HAS_NESTED,
+                Value::Decimal(_) | Value::Uuid(_) => type_bits |= HAS_NESTED,
                 Value::Vector(_)
                 | Value::List(_)
                 | Value::Map(_)
@@ -255,7 +255,8 @@ impl ChunkZoneMap {
             }
             Value::Binary(_) => self.type_bits & HAS_BINARY != 0,
             // Nested equality is never pruned by zone maps.
-            Value::Uuid(_)
+            Value::Decimal(_)
+            | Value::Uuid(_)
             | Value::Vector(_)
             | Value::List(_)
             | Value::Map(_)
@@ -378,6 +379,12 @@ impl ChunkZoneMap {
     }
 
     fn numeric_excluded_by_lower(&self, bound: f64, inclusive: bool, exact: bool) -> bool {
+        // Decimal values use residual storage and may match an integer bound.
+        // The existing on-disk type bitmap does not distinguish them from
+        // nested values, so mixed residual blocks must remain candidates.
+        if self.type_bits & HAS_NESTED != 0 {
+            return false;
+        }
         if self.type_bits & (HAS_INT | HAS_FLOAT) == 0 {
             return true;
         }
@@ -391,6 +398,9 @@ impl ChunkZoneMap {
     }
 
     fn numeric_excluded_by_upper(&self, bound: f64, inclusive: bool, exact: bool) -> bool {
+        if self.type_bits & HAS_NESTED != 0 {
+            return false;
+        }
         if self.type_bits & (HAS_INT | HAS_FLOAT) == 0 {
             return true;
         }
@@ -599,6 +609,23 @@ mod tests {
         let zone = ChunkZoneMap::build(&[Value::Int(low)]);
         assert!(zone.may_match_equals(&Value::Int(low)));
         assert!(zone.may_match_range(None, Some(&RangeBound::inclusive(Value::Int(low)))));
+    }
+
+    #[test]
+    fn decimal_rows_prevent_incomplete_numeric_range_pruning() {
+        let lower = RangeBound::inclusive(Value::Int(1));
+        let upper = RangeBound::inclusive(Value::Int(2));
+        for values in [
+            vec![Value::Int(100), Value::Decimal("1.25".parse().unwrap())],
+            vec![Value::Decimal("1.25".parse().unwrap())],
+        ] {
+            let zone = ChunkZoneMap::build(&values);
+            for candidate in [zone.clone(), encode_decode(&zone)] {
+                assert!(candidate.may_match_range(Some(&lower), Some(&upper)));
+            }
+        }
+        let integers = ChunkZoneMap::build(&[Value::Int(100), Value::Int(200)]);
+        assert!(!integers.may_match_range(Some(&lower), Some(&upper)));
     }
 
     #[test]

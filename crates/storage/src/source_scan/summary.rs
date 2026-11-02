@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 //! Own summary allocations through the last shared projection. Scalar values
 //! are copied once after admission; input property maps remain borrowed.
 
@@ -136,6 +139,7 @@ impl<'a> ScalarRef<'a> {
             Value::String(value) => Some(Self::String(value)),
             Value::Uuid(value) => Some(Self::Uuid(*value)),
             Value::Null
+            | Value::Decimal(_)
             | Value::Float(_)
             | Value::Binary(_)
             | Value::Vector(_)
@@ -186,6 +190,7 @@ fn field_summary<R: SourceScanProperties>(
     let mut exact_memory = MapMemory::<(roaring::RoaringTreemap, u64)>::default();
     let mut numeric_min = None::<f64>;
     let mut numeric_max = None::<f64>;
+    let mut numeric_complete = true;
     let mut datetime_min = None::<i64>;
     let mut datetime_max = None::<i64>;
     for (row_id, row) in rows.iter().enumerate() {
@@ -204,6 +209,9 @@ fn field_summary<R: SourceScanProperties>(
             numeric_min = Some(numeric_min.map_or(number, |min| min.min(number)));
             numeric_max = Some(numeric_max.map_or(number, |max| max.max(number)));
         }
+        // Decimal/Int range predicates compare exactly. An f64 summary of
+        // only the other rows cannot exclude a Decimal match safely.
+        numeric_complete &= !matches!(input, Value::Decimal(_));
         if let Value::String(text) = input
             && let Some(time) = DateTimeMinMax::parse_rfc3339(text)
         {
@@ -256,7 +264,9 @@ fn field_summary<R: SourceScanProperties>(
     let mut summary = FieldSummary::new(count)
         .with_presence_counts(present_count, null_count, count - present_count)
         .expect("source scan field counts must match rows");
-    if let (Some(min), Some(max)) = (numeric_min, numeric_max) {
+    if let (Some(min), Some(max)) = (numeric_min, numeric_max)
+        && numeric_complete
+    {
         summary = summary
             .with_numeric_min_max(min, max)
             .expect("valid Source numeric range");

@@ -20,6 +20,7 @@ use hawdb_storage::relational::{RelationalScalarType, RelationalValue, Relationa
 
 use crate::query_value::{bind_sql_value, value_to_relational_as};
 
+mod scalar;
 mod streaming;
 pub use streaming::{bind_streaming_column, BoundStreamingPredicate};
 
@@ -39,18 +40,28 @@ fn compare_value_refs(
     if matches!(left, RelationalValueRef::Null) || matches!(right, RelationalValueRef::Null) {
         return Ok(None);
     }
-    if left.scalar_type() != right.scalar_type() {
-        return Err(HawDBError::Semantic(
-            "relational comparison has incompatible scalar types".to_string(),
-        ));
-    }
+    let numeric = left.logical_type().is_some_and(|kind| kind.is_numeric())
+        && right.logical_type().is_some_and(|kind| kind.is_numeric());
+    let ordering = if numeric {
+        hawdb_core::numeric::compare_numeric(
+            crate::query_value::core_value_ref(left)?,
+            crate::query_value::core_value_ref(right)?,
+        )?
+    } else {
+        if left.scalar_type() != right.scalar_type() {
+            return Err(HawDBError::Semantic(
+                "relational comparison has incompatible scalar types".into(),
+            ));
+        }
+        left.cmp(&right)
+    };
     Ok(Some(match op {
-        SqlComparisonOp::Eq => left == right,
-        SqlComparisonOp::NotEq => left != right,
-        SqlComparisonOp::Lt => left < right,
-        SqlComparisonOp::Lte => left <= right,
-        SqlComparisonOp::Gt => left > right,
-        SqlComparisonOp::Gte => left >= right,
+        SqlComparisonOp::Eq => ordering.is_eq(),
+        SqlComparisonOp::NotEq => !ordering.is_eq(),
+        SqlComparisonOp::Lt => ordering.is_lt(),
+        SqlComparisonOp::Lte => !ordering.is_gt(),
+        SqlComparisonOp::Gt => ordering.is_gt(),
+        SqlComparisonOp::Gte => !ordering.is_lt(),
     }))
 }
 
@@ -81,34 +92,41 @@ pub fn predicate_truth_with<'a>(
             Ok(predicate_truth_with(predicate, parameters, resolve)?.map(|value| !value))
         }
         ExprKind::Compare { left, op, right } => {
-            let left = left.require_column()?;
-            match &right.kind {
-                ExprKind::Value(right) => {
-                    let (left_value, scalar_type) = resolve(left)?;
-                    compare_values(
-                        left_value,
-                        &value_to_relational_as(bind_sql_value(right, parameters)?, scalar_type)?,
-                        *op,
-                    )
-                }
-                ExprKind::Column(right) => compare_values(resolve(left)?.0, resolve(right)?.0, *op),
-                _ => Err(HawDBError::Semantic(
-                    "unsupported comparison operand".to_owned(),
-                )),
-            }
+            let (left_value, scalar_type) = if let Some(column) = left.as_column() {
+                let (value, kind) = resolve(column)?;
+                (std::borrow::Cow::Borrowed(value), Some(kind))
+            } else {
+                (predicate_expression(left, parameters, resolve)?, None)
+            };
+            let right_value = if let Some(kind) = scalar_type {
+                predicate_operand(right, parameters, kind, resolve)?
+            } else {
+                predicate_expression(right, parameters, resolve)?
+            };
+            compare_values(left_value.as_ref(), right_value.as_ref(), *op)
         }
         ExprKind::InList {
             left,
             values,
             negated,
         } => {
-            let (left, scalar_type) = resolve(left.require_column()?)?;
+            let (left, scalar_type) = if let Some(column) = left.as_column() {
+                let (value, kind) = resolve(column)?;
+                (std::borrow::Cow::Borrowed(value), Some(kind))
+            } else {
+                (predicate_expression(left, parameters, resolve)?, None)
+            };
             let mut has_unknown = false;
             let mut matched = false;
             for value in values {
                 match compare_values(
-                    left,
-                    predicate_operand(value, parameters, scalar_type, resolve)?.as_ref(),
+                    left.as_ref(),
+                    if let Some(kind) = scalar_type {
+                        predicate_operand(value, parameters, kind, resolve)?
+                    } else {
+                        predicate_expression(value, parameters, resolve)?
+                    }
+                    .as_ref(),
                     SqlComparisonOp::Eq,
                 )? {
                     Some(true) => matched = true,
@@ -159,7 +177,10 @@ pub fn predicate_truth_with<'a>(
             expression: column,
             negated,
         } => Ok(Some(
-            matches!(resolve(column.require_column()?)?.0, RelationalValue::Null) != *negated,
+            matches!(
+                predicate_expression(column, parameters, resolve)?.as_ref(),
+                RelationalValue::Null
+            ) != *negated,
         )),
         _ => Err(HawDBError::Semantic(
             "unsupported relational predicate expression".to_owned(),
@@ -179,7 +200,7 @@ fn predicate_operand<'a>(
             bind_sql_value(value, parameters)?,
             scalar_type,
         )?)),
-        _ => Err(HawDBError::Semantic("unsupported predicate operand".into())),
+        _ => predicate_expression(expression, parameters, resolve),
     }
 }
 
@@ -193,3 +214,24 @@ fn compare_values(
 
 #[cfg(test)]
 mod tests;
+
+fn predicate_expression<'a>(
+    expression: &Expr,
+    parameters: &[Value],
+    resolve: &impl Fn(&SqlColumnRef) -> Result<(&'a RelationalValue, RelationalScalarType)>,
+) -> Result<std::borrow::Cow<'a, RelationalValue>> {
+    use std::borrow::Cow;
+    match &expression.kind {
+        ExprKind::Column(column) => Ok(Cow::Borrowed(resolve(column)?.0)),
+        ExprKind::Value(value) => Ok(Cow::Owned(crate::query_value::value_to_relational(
+            bind_sql_value(value, parameters)?,
+        )?)),
+        ExprKind::Arithmetic { .. } | ExprKind::Negate(_) | ExprKind::Cast { .. } => {
+            crate::query_value::evaluate_numeric_with(expression, &|child| {
+                predicate_expression(child, parameters, resolve)
+            })
+            .map(Cow::Owned)
+        }
+        _ => Err(HawDBError::Semantic("unsupported predicate operand".into())),
+    }
+}

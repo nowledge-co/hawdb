@@ -388,6 +388,7 @@ impl InferredType {
             Value::String(_) => Self::Str,
             Value::Binary(_) => Self::Binary,
             Value::Null
+            | Value::Decimal(_)
             | Value::Uuid(_)
             | Value::Vector(_)
             | Value::List(_)

@@ -74,6 +74,10 @@ pub(super) fn write_value(output: &mut String, value: &Value) {
             output.push_str("int:");
             output.push_str(&value.to_string());
         }
+        Value::Decimal(value) => {
+            output.push_str("decimal:");
+            output.push_str(&value.to_string());
+        }
         Value::Float(value) => {
             output.push_str("float:");
             output.push_str(&value.to_bits().to_string());
@@ -170,6 +174,19 @@ pub(super) fn write_set_value(output: &mut String, value: &SetValue) {
             preserve,
         } => {
             output.push_str("preserve_newer(");
+            write_identifier(output, property);
+            output.push(',');
+            write_value(output, incoming);
+            output.push(',');
+            output.push_str(&preserve.to_string());
+            output.push(')');
+        }
+        SetValue::PreserveOlderExisting {
+            property,
+            incoming,
+            preserve,
+        } => {
+            output.push_str("preserve_older(");
             write_identifier(output, property);
             output.push(',');
             write_value(output, incoming);

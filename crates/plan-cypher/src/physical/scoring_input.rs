@@ -356,6 +356,7 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         | ProjectionExpression::Not(_)
         | ProjectionExpression::IsNull { .. }
         | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
@@ -716,6 +717,7 @@ mod tests {
                 imports: vec![],
                 introduced: vec![],
                 projected_nodes: std::collections::BTreeMap::new(),
+                projected_relationships: std::collections::BTreeMap::new(),
                 steps: vec![crate::GraphMatchStep::Node(crate::GraphMatchNode {
                     variable: "seed".into(),
                     label: "Memory".into(),
@@ -723,6 +725,7 @@ mod tests {
                 })],
                 predicate: Some(predicate),
                 predicate_steps: Vec::new(),
+                edge_predicates: Vec::new(),
                 optional: false,
             },
             input: Some(Box::new(lookup(vec![known_id()]))),

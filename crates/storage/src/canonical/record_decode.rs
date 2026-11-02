@@ -185,6 +185,7 @@ pub(super) fn value<D: Decoder>(
             }
         },
         2 => Value::Int(cursor.read_i64()?),
+        super::DECIMAL_VALUE_TAG => Value::Decimal(super::read_decimal_value(cursor)?),
         3 => Value::Float(f64::from_bits(cursor.read_u64()?)),
         4 => {
             decoder.finish_unit(unit)?;

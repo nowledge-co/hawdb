@@ -258,6 +258,10 @@ pub fn range_bounds_match(
 
 pub fn comparable_value_ordering(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
     match (left, right) {
+        (Value::Decimal(_), Value::Decimal(_) | Value::Int(_))
+        | (Value::Int(_), Value::Decimal(_)) => {
+            hawdb_core::numeric::compare_numeric(left.as_ref(), right.as_ref()).ok()
+        }
         (Value::Int(left), Value::Int(right)) => Some(left.cmp(right)),
         (Value::Float(left), Value::Float(right)) => Some(left.total_cmp(right)),
         (Value::Int(left), Value::Float(right)) => Some((*left as f64).total_cmp(right)),
@@ -271,6 +275,38 @@ pub fn comparable_value_ordering(left: &Value, right: &Value) -> Option<std::cmp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decimal_ranges_compare_exactly_without_float_coercion() {
+        use std::cmp::Ordering;
+        let decimal = |value: &str| Value::Decimal(value.parse().unwrap());
+        let wide = decimal("9007199254740993.01");
+        let integer = Value::Int(9_007_199_254_740_993);
+        assert_eq!(
+            comparable_value_ordering(&wide, &integer),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            comparable_value_ordering(&integer, &wide),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            comparable_value_ordering(&decimal("1.00"), &decimal("1.0000")),
+            Some(Ordering::Equal)
+        );
+        assert_eq!(
+            comparable_value_ordering(&decimal("1.25"), &Value::Float(1.25)),
+            None
+        );
+        assert_eq!(
+            comparable_value_ordering(&Value::Float(1.25), &decimal("1.25")),
+            None
+        );
+        assert_eq!(
+            comparable_value_ordering(&decimal("1.25"), &Value::Null),
+            None
+        );
+    }
 
     #[test]
     fn property_filters_preserve_null_and_numeric_range_semantics() {

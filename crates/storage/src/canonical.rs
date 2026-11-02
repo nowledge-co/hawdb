@@ -51,6 +51,9 @@ mod checkpoint_validation_memory_tests;
 mod checkpoint_writer_memory_tests;
 #[cfg(test)]
 mod temporal_value_tests;
+
+#[cfg(test)]
+mod decimal_value_tests;
 pub(crate) use checkpoint_scan::{
     CheckpointCanonicalCursor, CheckpointCanonicalIterator, CheckpointCanonicalRecord,
 };
@@ -98,6 +101,7 @@ const MANIFEST_HEADER_V1: &str = "HAWDB_CANONICAL_MANIFEST_V1";
 const SEGMENT_HEADER: &[u8; 8] = b"SKNSEG01";
 const ARTIFACT_ID: u64 = 0x534b_4341_4e4f_4e31;
 pub(crate) const MAX_VALUE_DEPTH: usize = 32;
+const DECIMAL_VALUE_TAG: u8 = 16;
 /// Canonical value tags 11..=15 hold temporal values, followed by their
 /// fixed-width `hawdb_core::temporal::codec` payload. Older binaries reject
 /// these tags as unknown, so they fail closed instead of misreading data.
@@ -120,6 +124,18 @@ fn canonical_temporal_kind(tag: u8) -> Option<hawdb_core::temporal::codec::Tempo
         .iter()
         .find(|(candidate, _)| *candidate == tag)
         .map(|(_, kind)| *kind)
+}
+
+fn read_decimal_value(
+    cursor: &mut SliceCursor<'_>,
+) -> Result<hawdb_core::Decimal, CanonicalSegmentError> {
+    hawdb_core::Decimal::from_le_bytes(
+        cursor
+            .read_exact(hawdb_core::Decimal::ENCODED_LEN)?
+            .try_into()
+            .expect("fixed Decimal length"),
+    )
+    .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))
 }
 
 fn canonical_temporal_tag(kind: hawdb_core::temporal::codec::TemporalValueKind) -> u8 {
@@ -2058,19 +2074,23 @@ impl CanonicalSegmentReader {
         })
     }
 
+    /// Visits one relationship's payload with its allocation bound, limited
+    /// to `required_properties` when they are given.
     pub(crate) fn visit_relationship_payload(
         &self,
         id: RelId,
+        required_properties: Option<&BTreeSet<String>>,
         mut consumer: impl FnMut(
             CanonicalRelationshipLayout,
             &[u8],
         ) -> Result<(), CanonicalSegmentError>,
     ) -> Result<(), CanonicalSegmentError> {
         self.point_allocation_bytes(CanonicalSegmentKind::Relationships, id.0, |payload| {
-            let layout = relationship_payload_layout(
+            let layout = selected_relationship_payload_layout(
                 payload,
                 Some(self.property_keys()),
                 self.property_spills.as_ref(),
+                required_properties,
             )?;
             consumer(layout, payload)?;
             Ok(None)
@@ -2380,6 +2400,43 @@ impl CanonicalSegmentReader {
             self.property_spills.as_ref(),
             Some(self.property_keys()),
         );
+        self.poison_on_physical_failure(&result);
+        result
+    }
+
+    /// Decodes the endpoints, type and only `required_properties` of one
+    /// relationship payload; unrequested values are validated and skipped.
+    pub(crate) fn decode_scanned_projected_relationship(
+        &self,
+        id: RelId,
+        payload: &[u8],
+        required_properties: &BTreeSet<String>,
+    ) -> Result<RelRecord, CanonicalSegmentError> {
+        self.ensure_healthy()?;
+        let result = (|| {
+            let mut cursor = SliceCursor::new(payload);
+            let source = NodeId(cursor.read_u64()?);
+            let target = NodeId(cursor.read_u64()?);
+            let rel_type = RelTypeId(cursor.read_u32()?);
+            let properties = decode_projected_record_properties(
+                &mut cursor,
+                self.property_spills.as_ref(),
+                Some(self.property_keys()),
+                required_properties,
+            )?;
+            if !cursor.is_empty() {
+                return Err(CanonicalSegmentError::Corrupt(
+                    "projected relationship record has trailing bytes".to_string(),
+                ));
+            }
+            Ok(RelRecord {
+                id,
+                source,
+                target,
+                rel_type,
+                properties,
+            })
+        })();
         self.poison_on_physical_failure(&result);
         result
     }
@@ -3231,6 +3288,7 @@ fn validate_encoded_value(
                 .map(|_| ())
                 .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))
         }
+        DECIMAL_VALUE_TAG => read_decimal_value(cursor).map(|_| ()),
         tag if canonical_temporal_kind(tag).is_some() => {
             read_temporal_value(cursor, canonical_temporal_kind(tag).expect("checked tag"))
                 .map(|_| ())
@@ -3636,12 +3694,27 @@ pub(crate) fn relationship_payload_layout(
     property_keys: Option<&[String]>,
     property_spills: Option<&PropertySpillReader>,
 ) -> Result<CanonicalRelationshipLayout, CanonicalSegmentError> {
+    selected_relationship_payload_layout(payload, property_keys, property_spills, None)
+}
+
+/// [`relationship_payload_layout`] whose allocation bound covers only
+/// `required_properties` when they are given.
+fn selected_relationship_payload_layout(
+    payload: &[u8],
+    property_keys: Option<&[String]>,
+    property_spills: Option<&PropertySpillReader>,
+    required_properties: Option<&BTreeSet<String>>,
+) -> Result<CanonicalRelationshipLayout, CanonicalSegmentError> {
     let mut cursor = SliceCursor::new(payload);
     let source = NodeId(cursor.read_u64()?);
     let target = NodeId(cursor.read_u64()?);
     let rel_type = RelTypeId(cursor.read_u32()?);
-    let properties =
-        record_properties_allocation_bytes(&mut cursor, property_keys, property_spills, None)?;
+    let properties = record_properties_allocation_bytes(
+        &mut cursor,
+        property_keys,
+        property_spills,
+        required_properties,
+    )?;
     Ok(CanonicalRelationshipLayout {
         source,
         target,
@@ -3923,6 +3996,10 @@ fn encode_value(
             output.extend_from_slice(&u32_len(value.encoded().len(), "vector")?.to_le_bytes());
             output.extend_from_slice(value.encoded());
         }
+        Value::Decimal(value) => {
+            output.push(DECIMAL_VALUE_TAG);
+            output.extend_from_slice(&value.to_le_bytes());
+        }
         Value::Uuid(value) => {
             output.push(9);
             output.extend_from_slice(value.as_bytes());
@@ -4033,6 +4110,7 @@ fn encoded_value_len_with_work(
             1 + 4 + value.encoded().len() as u64
         }
         Value::Uuid(_) => 17,
+        Value::Decimal(_) => 18,
         Value::Date(_)
         | Value::LocalTime(_)
         | Value::LocalDateTime(_)
@@ -4131,6 +4209,10 @@ fn write_value_streaming<W: Write + ?Sized>(
             out.write_all(&[10])?;
             out.write_all(&u32_len(value.encoded().len(), "vector")?.to_le_bytes())?;
             out.write_all(value.encoded())?;
+        }
+        Value::Decimal(value) => {
+            out.write_all(&[DECIMAL_VALUE_TAG])?;
+            out.write_all(&value.to_le_bytes())?;
         }
         Value::Uuid(value) => {
             out.write_all(&[9])?;
@@ -4426,6 +4508,10 @@ fn encoded_value_allocation_bytes(
                 hawdb_core::VectorRef::from_encoded(cursor.read_exact(length)?)
                     .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))?;
                 length
+            }
+            DECIMAL_VALUE_TAG => {
+                read_decimal_value(cursor)?;
+                hawdb_core::Decimal::ENCODED_LEN
             }
             tag if canonical_temporal_kind(tag).is_some() => {
                 let kind = canonical_temporal_kind(tag).expect("checked tag");
@@ -6224,6 +6310,15 @@ mod tests {
             (7, Value::String("列存".to_string())),
             (8, Value::Binary(vec![0, 1, 0xfe, 0xff])),
             (9, Value::Null),
+            (12, Value::Decimal("9007199254740993.0100".parse().unwrap())),
+            (
+                13,
+                Value::Date(hawdb_core::temporal::parse_date("2026-11-01").unwrap()),
+            ),
+            (
+                14,
+                Value::duration(hawdb_core::temporal::parse_duration("P1DT2H").unwrap()),
+            ),
             (
                 10,
                 Value::List(vec![Value::Int(1), Value::String("x".to_string())]),
@@ -6239,6 +6334,10 @@ mod tests {
             .collect();
         let encoded = encode_residual_row_properties(&entries).unwrap();
         let decoded = decode_residual_row_properties(&encoded).unwrap();
+        let Value::Decimal(decimal) = decoded.iter().find(|(id, _)| *id == 12).unwrap().1 else {
+            panic!("native Decimal");
+        };
+        assert_eq!(decimal.to_string(), "9007199254740993.0100");
         assert_eq!(
             decoded,
             entries

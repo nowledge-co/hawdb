@@ -129,7 +129,8 @@ fn temporal_canonical_payloads_fail_closed() {
     // The next unassigned tag is unknown: a binary that predates a value tag
     // rejects it instead of misreading the record, as binaries older than
     // these temporal tags reject tags 11..=15.
-    for unknown in [16u8, 255] {
+    // Tag 16 is assigned to Decimal.
+    for unknown in [17u8, 255] {
         let bytes = [unknown, 0, 0, 0, 0];
         let error = decode_standalone_value(&bytes).unwrap_err().to_string();
         assert!(error.contains("unknown canonical value tag"), "{error}");

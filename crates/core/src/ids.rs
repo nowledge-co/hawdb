@@ -191,3 +191,45 @@ pub fn relationship_allocation_bytes(relationship: &RelRecord) -> usize {
             .map(|(name, value)| (name.as_str(), value)),
     ))
 }
+
+/// [`relationship_allocation_bytes`] of the record that keeps only
+/// `required_properties`, computed without cloning values.
+#[doc(hidden)]
+pub fn projected_relationship_allocation_bytes(
+    relationship: &RelRecord,
+    required_properties: &BTreeSet<String>,
+) -> usize {
+    std::mem::size_of::<RelRecord>().saturating_add(properties_allocation_bytes(
+        required_properties.iter().filter_map(|name| {
+            relationship
+                .properties
+                .get(name)
+                .map(|value| (name.as_str(), value))
+        }),
+    ))
+}
+
+/// Clones a borrowed relationship with only `required_properties`. Callers
+/// that own a query budget admit
+/// [`projected_relationship_allocation_bytes`] before cloning.
+#[doc(hidden)]
+pub fn project_relationship_record_ref(
+    relationship: &RelRecord,
+    required_properties: &BTreeSet<String>,
+) -> RelRecord {
+    RelRecord {
+        id: relationship.id,
+        source: relationship.source,
+        target: relationship.target,
+        rel_type: relationship.rel_type,
+        properties: required_properties
+            .iter()
+            .filter_map(|name| {
+                relationship
+                    .properties
+                    .get(name)
+                    .map(|value| (name.clone(), value.clone()))
+            })
+            .collect(),
+    }
+}

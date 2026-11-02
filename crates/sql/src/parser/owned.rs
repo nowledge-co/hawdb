@@ -185,6 +185,16 @@ impl<'a> Lowerer<'a> {
                 },
                 span: self.span(expression.span),
             }),
+            E::Cast {
+                expression,
+                data_type,
+                type_parameters,
+            } => Expr::Cast {
+                kind: sqlparser::ast::CastKind::Cast,
+                expr: boxed(expression)?,
+                data_type: self.numeric_cast_type(data_type, type_parameters)?,
+                format: None,
+            },
             E::Parenthesized(inner) => Expr::Nested(boxed(inner)?),
             E::Unary {
                 operator,
@@ -324,6 +334,53 @@ impl<'a> Lowerer<'a> {
             _ => {
                 return Err(HawDBError::Semantic(
                     "unsupported PostgreSQL expression".into(),
+                ))
+            }
+        })
+    }
+
+    fn numeric_cast_type(
+        &self,
+        name: &syntax::QualifiedName,
+        parameters: &[syntax::Span],
+    ) -> Result<sqlparser::ast::DataType> {
+        use sqlparser::ast::{DataType, ExactNumberInfo};
+        let parts = object_name_parts(&self.name(name))?;
+        let [name] = parts.as_slice() else {
+            return Err(HawDBError::Semantic(
+                "CAST requires an unqualified numeric type".into(),
+            ));
+        };
+        let invalid = || HawDBError::Semantic("invalid numeric CAST type parameters".into());
+        if !matches!(name.as_str(), "decimal" | "numeric" | "dec") && !parameters.is_empty() {
+            return Err(invalid());
+        }
+        Ok(match name.as_str() {
+            "bigint" | "int8" => DataType::BigInt(None),
+            "double precision" | "float8" => DataType::DoublePrecision,
+            "decimal" | "numeric" | "dec" => {
+                let info = match parameters {
+                    [] => ExactNumberInfo::None,
+                    [precision] => ExactNumberInfo::Precision(
+                        self.input[precision.start..precision.end]
+                            .parse()
+                            .map_err(|_| invalid())?,
+                    ),
+                    [precision, scale] => ExactNumberInfo::PrecisionAndScale(
+                        self.input[precision.start..precision.end]
+                            .parse()
+                            .map_err(|_| invalid())?,
+                        self.input[scale.start..scale.end]
+                            .parse()
+                            .map_err(|_| invalid())?,
+                    ),
+                    _ => return Err(invalid()),
+                };
+                DataType::Decimal(info)
+            }
+            _ => {
+                return Err(HawDBError::Semantic(
+                    "CAST requires a numeric target type".into(),
                 ))
             }
         })
@@ -626,7 +683,10 @@ mod tests {
                 ),
             }
         }
-        assert_eq!(accepted, 66, "frozen accepted statement inventory");
+        assert_eq!(
+            accepted, 67,
+            "frozen accepted statement inventory including numeric HAVING"
+        );
         assert_eq!(
             reviewed,
             REVIEWED_ERROR_CLASS_TRANSITIONS

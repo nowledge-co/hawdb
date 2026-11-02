@@ -230,6 +230,7 @@ fn projection_value_to_string(value: &Value) -> String {
         Value::Null => String::new(),
         Value::Bool(value) => value.to_string(),
         Value::Int(value) => value.to_string(),
+        Value::Decimal(value) => value.to_string(),
         Value::Float(value) => value.to_string(),
         Value::String(value) => value.clone(),
         Value::Binary(value) => format!(

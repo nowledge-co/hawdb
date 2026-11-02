@@ -87,6 +87,8 @@ impl_retained_heap_for_copy!(
     crate::TableKind,
     crate::schema::ConstraintSubject,
     crate::VectorDimension,
+    crate::Decimal,
+    crate::DecimalType,
     crate::ListFunction,
     crate::temporal::NaiveDate,
     crate::temporal::NaiveTime,
@@ -223,7 +225,12 @@ impl RetainedHeapBytes for Value {
             Self::LocalDateTime(value) => value.retained_heap_bytes(),
             Self::DateTime(value) => value.retained_heap_bytes(),
             Self::Duration(value) => value.retained_heap_bytes(),
-            Self::Null | Self::Bool(_) | Self::Int(_) | Self::Float(_) | Self::Uuid(_) => Some(0),
+            Self::Decimal(_)
+            | Self::Null
+            | Self::Bool(_)
+            | Self::Int(_)
+            | Self::Float(_)
+            | Self::Uuid(_) => Some(0),
         }
     }
 }

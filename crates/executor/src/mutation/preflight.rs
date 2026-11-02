@@ -429,6 +429,24 @@ fn resolve_row_mutation(
                 },
             )))
         }
+        BatchMutationOperation::SetMatchedNodes(nodes) => {
+            if nodes
+                .iter()
+                .any(|node| node.properties.values().any(|value| *value == Value::Null))
+            {
+                return Ok(None);
+            }
+            Ok(Some(GraphMutation::SetMatchedNodes(
+                nodes
+                    .iter()
+                    .map(|node| hawdb_storage::mutation::MatchedNodeSet {
+                        label: node.label.clone(),
+                        filter: property_filter_from_properties(&node.properties),
+                        assignments: node.assignments.clone(),
+                    })
+                    .collect(),
+            )))
+        }
         BatchMutationOperation::CreateNode { label, properties } => {
             Ok(Some(GraphMutation::CreateNode {
                 label: label.clone(),

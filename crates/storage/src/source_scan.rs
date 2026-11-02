@@ -273,6 +273,7 @@ fn estimated_value_bytes(value: &Value) -> usize {
         Value::Null => 1,
         Value::Bool(_) => 1,
         Value::Int(_) | Value::Float(_) => 8,
+        Value::Decimal(_) => 17,
         Value::String(value) => value.len(),
         Value::Binary(value) => value.len(),
         Value::Vector(value) => value.encoded().len(),

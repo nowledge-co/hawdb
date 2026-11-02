@@ -72,7 +72,11 @@ fn migration_corpus_preserves_parser_outcomes_and_source_inventory() {
     }
     assert_eq!(
         requalified,
-        BTreeSet::from(["mem-0344".to_string(), "mem-0361".to_string()])
+        BTreeSet::from([
+            "mem-0344".to_string(),
+            "mem-0361".to_string(),
+            "mem-0420".to_string()
+        ])
     );
     assert_eq!(stage_changes.len(), requalified.len());
     assert_eq!(

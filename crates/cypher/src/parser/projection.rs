@@ -354,6 +354,33 @@ impl Parser<'_> {
         })
     }
 
+    fn parse_string_function_arguments(
+        &mut self,
+        function: hawdb_core::StringFunction,
+    ) -> Result<ScalarExpressionKind> {
+        let mut arguments = Vec::new();
+        if !self.consume_char(')') {
+            loop {
+                arguments.push(self.parse_case_scalar()?);
+                if self.consume_char(')') {
+                    break;
+                }
+                self.expect_char(',')?;
+            }
+        }
+        let (min, max) = function.arity();
+        if !(min..=max).contains(&arguments.len()) {
+            return Err(self.error(&format!(
+                "{}() expects {min}..={max} arguments",
+                function.function_name()
+            )));
+        }
+        Ok(ScalarExpressionKind::StringFunction {
+            function,
+            arguments,
+        })
+    }
+
     pub(super) fn check_list_function_arity(
         &self,
         function: hawdb_core::ListFunction,
@@ -412,6 +439,11 @@ impl Parser<'_> {
             let variable = self.parse_ident()?;
             self.expect_char(')')?;
             return Ok(ScalarExpressionKind::Id(variable));
+        }
+        if let Some(function) = hawdb_core::StringFunction::from_function_name(&variable)
+            && self.consume_char('(')
+        {
+            return self.parse_string_function_arguments(function);
         }
         if let Some(function) = hawdb_core::ListFunction::from_function_name(&variable)
             && self.consume_char('(')

@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 
 pub(super) fn inline_keys(
@@ -241,6 +244,7 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
         }
         ProjectionExpression::IsNull { expression, .. } => has_native_bindings(expression, input),
         ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }

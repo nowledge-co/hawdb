@@ -673,6 +673,42 @@ fn check_projection(nodes: &[NodeRecord], label: Option<LabelId>, epoch: u64, pe
 }
 
 #[test]
+fn decimal_rows_disable_incomplete_numeric_source_summaries() {
+    use crate::scan::{RangeBound, ScanPredicate, SegmentPruner};
+
+    let predicate = ScanPredicate::Range {
+        property: "amount".into(),
+        lower: Some(RangeBound::inclusive(Value::Int(1))),
+        upper: Some(RangeBound::inclusive(Value::Int(2))),
+    };
+    let make_rows = |values: Vec<Value>| {
+        values
+            .into_iter()
+            .enumerate()
+            .map(|(id, value)| SourceScanRow {
+                node_id: id as u64,
+                properties: BTreeMap::from([("amount".into(), value)]),
+            })
+            .collect::<Vec<_>>()
+    };
+    for values in [
+        vec![Value::Int(100), Value::Decimal("1.25".parse().unwrap())],
+        vec![Value::Decimal("1.25".parse().unwrap())],
+    ] {
+        let rows = make_rows(values);
+        let summary = summary::build(0, &rows, &CheckpointWorkContext::default()).unwrap();
+        assert!(SegmentPruner::new(&summary)
+            .evaluate(&predicate)
+            .should_open_payload());
+    }
+    let integers = make_rows(vec![Value::Int(100), Value::Int(200)]);
+    let summary = summary::build(0, &integers, &CheckpointWorkContext::default()).unwrap();
+    assert!(!SegmentPruner::new(&summary)
+        .evaluate(&predicate)
+        .should_open_payload());
+}
+
+#[test]
 fn signed_zero_bounds_preserve_supported_encodings_and_wire_bits() {
     let range = SegmentPayloadRange {
         artifact_id: 1,

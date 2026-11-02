@@ -183,35 +183,7 @@ use hawdb_storage::relational::{
 
 #[doc(hidden)]
 pub fn bind_relational_value(value: SqlValue, parameters: &[Value]) -> Result<RelationalValue> {
-    let value = match value {
-        SqlValue::Literal(value) => value,
-        SqlValue::Parameter(position) => parameters
-            .get(position.saturating_sub(1))
-            .cloned()
-            .ok_or_else(|| {
-                HawDBError::Semantic(format!("missing PostgreSQL parameter ${position}"))
-            })?,
-    };
-    match value {
-        Value::Null => Ok(RelationalValue::Null),
-        Value::Bool(value) => Ok(RelationalValue::Boolean(value)),
-        Value::Int(value) => Ok(RelationalValue::BigInt(value)),
-        Value::Float(value) => Ok(RelationalValue::DoublePrecision(value)),
-        Value::String(value) => Ok(RelationalValue::Text(value)),
-        Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
-        Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
-        Value::Vector(value) => Ok(RelationalValue::Vector(value)),
-        Value::Date(_)
-        | Value::LocalTime(_)
-        | Value::LocalDateTime(_)
-        | Value::DateTime(_)
-        | Value::Duration(_) => Err(HawDBError::Semantic(
-            "relational SQL does not support Cypher temporal values; SQL DATE and TIMESTAMP remain integer epochs".to_string(),
-        )),
-        Value::List(_) | Value::Map(_) => Err(HawDBError::Semantic(
-            "relational SQL parameters must be scalar".to_string(),
-        )),
-    }
+    query_value::value_to_relational(hawdb_expression::sql::bind_sql_value(&value, parameters)?)
 }
 
 #[doc(hidden)]
@@ -238,6 +210,7 @@ fn compile_data_type(data_type: SqlDataType) -> RelationalScalarType {
         SqlDataType::Boolean => RelationalScalarType::Boolean,
         SqlDataType::BigInt => RelationalScalarType::BigInt,
         SqlDataType::DoublePrecision => RelationalScalarType::DoublePrecision,
+        SqlDataType::Decimal(kind) => RelationalScalarType::Decimal(kind),
         SqlDataType::Text => RelationalScalarType::Text,
         SqlDataType::Bytea => RelationalScalarType::Bytea,
         SqlDataType::Uuid => RelationalScalarType::Uuid,
@@ -249,11 +222,7 @@ fn compile_schema_value(
     value: SqlValue,
     scalar_type: RelationalScalarType,
 ) -> Result<RelationalValue> {
-    let SqlValue::Literal(value) = value else {
-        return Err(HawDBError::Semantic(
-            "schema defaults cannot contain parameters".to_string(),
-        ));
-    };
+    let value = hawdb_expression::sql::bind_sql_value(&value, &[])?;
     // SQL string constants in a default acquire the declared column type at DDL
     // binding. Keep typed runtime parameters on their existing conversion path.
     let value = if let Value::String(text) = &value {
@@ -262,6 +231,9 @@ fn compile_schema_value(
             RelationalScalarType::BigInt => Value::Int(text.trim().parse().map_err(|_| invalid())?),
             RelationalScalarType::DoublePrecision => {
                 Value::Float(text.trim().parse().map_err(|_| invalid())?)
+            }
+            RelationalScalarType::Decimal(_) => {
+                Value::Decimal(text.trim().parse().map_err(|_| invalid())?)
             }
             RelationalScalarType::Boolean => {
                 let text = text.trim().to_ascii_lowercase();
@@ -293,27 +265,8 @@ fn compile_schema_value(
     } else {
         value
     };
-    match value {
-        Value::Null => Ok(RelationalValue::Null),
-        Value::Bool(value) => Ok(RelationalValue::Boolean(value)),
-        Value::Int(value) => Ok(RelationalValue::BigInt(value)),
-        Value::Float(value) => Ok(RelationalValue::DoublePrecision(value)),
-        Value::String(value) => Ok(RelationalValue::Text(value)),
-        Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
-        Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
-        Value::Vector(value) => Ok(RelationalValue::Vector(value)),
-        Value::Date(_)
-        | Value::LocalTime(_)
-        | Value::LocalDateTime(_)
-        | Value::DateTime(_)
-        | Value::Duration(_) => Err(HawDBError::Semantic(
-            "relational SQL does not support Cypher temporal values; SQL DATE and TIMESTAMP remain integer epochs".to_string(),
-        )),
-        Value::List(_) | Value::Map(_) => Err(HawDBError::Semantic(
-            "relational schema defaults must be scalar".to_string(),
-        )),
-    }
-    .and_then(|value| coerce_relational_value(value, scalar_type))
+    query_value::value_to_relational(value)
+        .and_then(|value| coerce_relational_value(value, scalar_type))
 }
 
 fn insert_column_positions(
@@ -361,6 +314,28 @@ pub fn coerce_relational_value(
     scalar_type: RelationalScalarType,
 ) -> Result<RelationalValue> {
     match (scalar_type, value) {
+        (RelationalScalarType::Decimal(kind), RelationalValue::BigInt(value)) => kind
+            .coerce(value.into())
+            .map(RelationalValue::Decimal)
+            .map_err(|error| HawDBError::Semantic(error.to_string())),
+        (RelationalScalarType::Decimal(kind), RelationalValue::Decimal(value)) => kind
+            .coerce(value)
+            .map(RelationalValue::Decimal)
+            .map_err(|error| HawDBError::Semantic(error.to_string())),
+        (RelationalScalarType::Decimal(_), RelationalValue::DoublePrecision(_)) => Err(
+            HawDBError::Semantic("DOUBLE PRECISION assignment to Decimal requires CAST".into()),
+        ),
+        (RelationalScalarType::DoublePrecision, RelationalValue::Decimal(value)) => {
+            hawdb_core::numeric::cast_numeric(
+                hawdb_core::ValueRef::Decimal(value),
+                hawdb_core::numeric::NumericType::DoublePrecision,
+            )
+            .and_then(query_value::value_to_relational)
+        }
+        (RelationalScalarType::BigInt, RelationalValue::Decimal(value)) => value
+            .to_i64()
+            .map(RelationalValue::BigInt)
+            .map_err(|error| HawDBError::Semantic(error.to_string())),
         (RelationalScalarType::Uuid, RelationalValue::Text(value)) => {
             hawdb_core::Uuid::parse_str(&value)
                 .map(RelationalValue::Uuid)
