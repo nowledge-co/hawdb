@@ -1,0 +1,213 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
+use super::*;
+use hawdb_core::{Catalog, LabelId};
+use hawdb_plan_cypher::{NodeProjectionAccess, ProjectionExpression};
+
+pub(super) struct IndexedNodeAccess<'a> {
+    pub label: LabelId,
+    pub property: &'a str,
+    pub access: NodeProjectionAccess,
+    _allocation: Box<dyn GraphReadAllocation>,
+}
+
+#[derive(Default)]
+pub(super) struct IndexedNodeStats<'a> {
+    property: Cell<Option<&'a str>>,
+    label: Cell<Option<LabelId>>,
+    before: Cell<usize>,
+    visited: Cell<usize>,
+    matched: Cell<usize>,
+}
+
+impl<'a> IndexedNodeStats<'a> {
+    pub(super) fn record(
+        &self,
+        access: &IndexedNodeAccess<'a>,
+        before: usize,
+        visited: usize,
+        matched: usize,
+    ) {
+        self.property.set(Some(access.property));
+        self.label.set(Some(access.label));
+        self.before.set(self.before.get().saturating_add(before));
+        self.visited.set(self.visited.get().saturating_add(visited));
+        self.matched.set(self.matched.get().saturating_add(matched));
+    }
+
+    pub(super) fn report(&self, observer: &dyn crate::observer::ExecutionObserver) {
+        use hawdb_storage::scan::{ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind};
+        let Some(property) = self.property.get() else {
+            return;
+        };
+        observer.record_scan_pruning_report(ScanPruningReport {
+            target_kind: ScanPruningTargetKind::Node,
+            label_id: self.label.get(),
+            rel_type_id: None,
+            strategy: ScanPruningStrategy::PropertyEq {
+                property: property.into(),
+            },
+            pruned: true,
+            exact_empty: self.visited.get() == 0,
+            candidate_count_before_pruning: self.before.get(),
+            pruned_candidate_count: self.before.get().saturating_sub(self.visited.get()),
+            candidate_count_before_filter: self.visited.get(),
+            output_count: self.matched.get(),
+            filtered_out_count: self.visited.get().saturating_sub(self.matched.get()),
+        });
+    }
+}
+
+impl<'a> MatchRuntime<'a> {
+    pub(super) fn indexed_node_access(
+        &self,
+        node: &GraphMatchNode,
+        label: Option<LabelId>,
+        row: &Binding,
+    ) -> Result<Option<IndexedNodeAccess<'a>>> {
+        // Keep traversal, imported bindings and union-label reads on their
+        // original paths. The complete single-node MATCH retains its predicate.
+        if self.program.steps.len() != 1
+            || !self.program.imports.is_empty()
+            || self.program.introduced.as_slice() != [node.variable.as_str()]
+            || node.label.contains(':')
+        {
+            return Ok(None);
+        }
+        let Some(label) = label else { return Ok(None) };
+        let Some((property, value)) = self.program.predicate.as_ref().and_then(|predicate| {
+            // Equality on a NULL/missing stored property is UNKNOWN, so even a
+            // later conjunct can fail on a row that an exact seek would omit.
+            if !infallible_predicate(predicate, &node.variable, row) {
+                return None;
+            }
+            let (property, key) =
+                lookup_key(predicate, &node.variable, self.context.catalog, label)?;
+            let value = bound_value(key, row)?;
+            (value != &Value::Null).then_some((property, value))
+        }) else {
+            return Ok(None);
+        };
+        let allocation = crate::scan::owned::admit_access_copy(
+            self.account,
+            self.context.task_context,
+            std::iter::once(property),
+            std::iter::once(value),
+        )?;
+        Ok(Some(IndexedNodeAccess {
+            label,
+            property,
+            access: NodeProjectionAccess::PropertyValues {
+                property: property.into(),
+                values: vec![value.clone()],
+            },
+            _allocation: allocation,
+        }))
+    }
+}
+
+fn lookup_key<'p>(
+    predicate: &'p Predicate,
+    target: &str,
+    catalog: &Catalog,
+    label: LabelId,
+) -> Option<(&'p str, &'p ProjectionExpression)> {
+    match predicate {
+        Predicate::And(children) => children
+            .iter()
+            .find_map(|child| lookup_key(child, target, catalog, label)),
+        Predicate::ExpressionEq { expression, value } => {
+            lookup_sides(expression, value, target, catalog, label)
+                .or_else(|| lookup_sides(value, expression, target, catalog, label))
+        }
+        _ => None,
+    }
+}
+
+fn infallible_predicate(predicate: &Predicate, target: &str, row: &Binding) -> bool {
+    match predicate {
+        Predicate::ConstantBool(_)
+        | Predicate::PropertyEq { .. }
+        | Predicate::PropertyNotEq { .. }
+        | Predicate::PropertyCompare { .. }
+        | Predicate::PropertyIsNull { .. }
+        | Predicate::PropertyIsNotNull { .. } => true,
+        Predicate::ExpressionEq { expression, value }
+        | Predicate::ExpressionNotEq { expression, value }
+        | Predicate::ExpressionCompare {
+            expression, value, ..
+        }
+        | Predicate::ExpressionContains { expression, value } => {
+            infallible_expression(expression, target, row)
+                && infallible_expression(value, target, row)
+        }
+        Predicate::ExpressionIn { expression, .. } => {
+            infallible_expression(expression, target, row)
+        }
+        Predicate::And(children) | Predicate::Or(children) => children
+            .iter()
+            .all(|child| infallible_predicate(child, target, row)),
+        Predicate::Not(child) => infallible_predicate(child, target, row),
+        _ => false,
+    }
+}
+
+fn infallible_expression(expression: &ProjectionExpression, target: &str, row: &Binding) -> bool {
+    match expression {
+        ProjectionExpression::Literal(_) => true,
+        ProjectionExpression::Property { variable, .. } => {
+            variable == target
+                || crate::expression::binding_has_variable(row, variable)
+                || row.values.get(variable) == Some(&Value::Null)
+        }
+        ProjectionExpression::Column(column) => row.values.contains_key(column),
+        ProjectionExpression::ColumnProperty { column, .. } => {
+            matches!(row.values.get(column), Some(Value::Null | Value::Map(_)))
+        }
+        _ => false,
+    }
+}
+
+fn lookup_sides<'p>(
+    expression: &'p ProjectionExpression,
+    key: &'p ProjectionExpression,
+    target: &str,
+    catalog: &Catalog,
+    label: LabelId,
+) -> Option<(&'p str, &'p ProjectionExpression)> {
+    let ProjectionExpression::Property { variable, property } = expression else {
+        return None;
+    };
+    if variable != target || !catalog.has_scalar_property_index(label, property) {
+        return None;
+    }
+    // Pick one property from syntax/catalog before inspecting row values, so
+    // NULL keys cannot switch access paths within an aggregated scan report.
+    let bound = match key {
+        ProjectionExpression::Column(column)
+        | ProjectionExpression::ColumnProperty { column, .. } => column != target,
+        ProjectionExpression::Property { variable, .. } => variable != target,
+        _ => false,
+    };
+    bound.then_some((property, key))
+}
+
+fn bound_value<'r>(key: &ProjectionExpression, row: &'r Binding) -> Option<&'r Value> {
+    // Borrow only already-bound values. Fallible/computed keys, including a
+    // non-map ColumnProperty, retain ordinary predicate evaluation. NULL keys
+    // do too, preserving demand-sensitive errors in other WHERE conjuncts.
+    match key {
+        ProjectionExpression::Column(column) => row.values.get(column),
+        ProjectionExpression::ColumnProperty { column, property } => {
+            let Value::Map(values) = row.values.get(column)? else {
+                return None;
+            };
+            values.get(property)
+        }
+        ProjectionExpression::Property { variable, property } => {
+            crate::expression::binding_property(row, variable, property)
+        }
+        _ => None,
+    }
+}
