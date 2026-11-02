@@ -28,6 +28,16 @@ use std::time::{Duration, Instant};
 mod qualification_cli;
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("capabilities") {
+        return match shiro_core::capabilities_cli(std::env::args().skip(2)) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(error) => {
+                eprintln!("shiro: {error}");
+                ExitCode::from(2)
+            }
+        };
+    }
     if std::env::args().nth(1).as_deref() == Some("qualify") {
         return qualification_cli::run(std::env::args().skip(2));
     }
@@ -321,7 +331,7 @@ fn next_usize(args: &mut impl Iterator<Item = String>, option: &str) -> Result<u
 }
 
 fn usage() -> &'static str {
-    "usage: shiro [--timeout-seconds <u64>] [--seed <u64>] [--cases <usize>] [--case-index <usize>] [--shard-index <usize>] [--shard-count <usize>] [--progress-interval <usize>] [--resume] [--log-directory <path>] [--print-report]"
+    "usage: shiro [--timeout-seconds <u64>] [--seed <u64>] [--cases <usize>] [--case-index <usize>] [--shard-index <usize>] [--shard-count <usize>] [--progress-interval <usize>] [--resume] [--log-directory <path>] [--print-report]\n       shiro capabilities generate --seed N --index N | replay FILE | shrink FILE [--attempts N]"
 }
 
 fn run_id(options: CampaignOptions, execution: CampaignExecutionOptions) -> String {
@@ -426,7 +436,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.executed_case_count, 1);
-        assert!(report.success());
+        assert!(report.success(), "{}", report.json());
     }
 
     #[test]

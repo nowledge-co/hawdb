@@ -26,6 +26,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 mod append_oracle;
+mod capability_oracle;
 mod coverage;
 mod generator;
 mod optimizer_qualification;
@@ -44,6 +45,7 @@ use predicate_rewrite::PREDICATE_REWRITE_SHAPES;
 use query_ast::QueryAst;
 
 pub use append_oracle::{run_append_state_machine_case, APPEND_STATE_MACHINE_PROTOCOL};
+pub use capability_oracle::capabilities_cli;
 pub use coverage::PlanCoverageReport;
 pub use hawdb_fuzz_contracts::{
     NowledgeQueryFuzzCaseReport, NowledgeQueryFuzzHarnessOptions, NowledgeQueryFuzzHarnessReport,
@@ -122,7 +124,7 @@ mod capability_parity_tests {
     }
 }
 
-pub const CAMPAIGN_PROTOCOL: &str = "shiro-multi-oracle-fuzz-v4";
+pub const CAMPAIGN_PROTOCOL: &str = "shiro-multi-oracle-fuzz-v5";
 pub const GRAPH_PREDICATE_REWRITE_PROTOCOL: &str = "hawdb-graph-predicate-rewrite-fuzz-v1";
 pub const GRAPH_TLP_AGGREGATE_PROTOCOL: &str = "hawdb-graph-tlp-aggregate-fuzz-v1";
 pub const GRAPH_TLP_PROTOCOL: &str = "hawdb-graph-tlp-fuzz-v1";
@@ -1736,6 +1738,7 @@ pub struct CampaignCaseReport {
     pub optimizer_stages: Vec<String>,
     pub plan_coverage_novel: bool,
     pub sql: SqlCaseReport,
+    pub capabilities: JsonValue,
     pub failure: Option<FailureReport>,
     pub graph_tlp_failure: Option<GraphTlpFailureReport>,
     pub graph_tlp_aggregate_failure: Option<GraphTlpAggregateFailureReport>,
@@ -1766,6 +1769,7 @@ impl CampaignCaseReport {
             "optimizer_stages": self.optimizer_stages,
             "plan_coverage_novel": self.plan_coverage_novel,
             "sql": self.sql.json(),
+            "capabilities": self.capabilities,
             "failure": self.failure.as_ref().map(FailureReport::json),
             "graph_tlp_failure": self.graph_tlp_failure.as_ref().map(GraphTlpFailureReport::json),
             "graph_tlp_aggregate_failure": self.graph_tlp_aggregate_failure.as_ref().map(GraphTlpAggregateFailureReport::json),
@@ -1798,6 +1802,11 @@ impl CampaignReport {
         let tlp_aggregate_profile = CapabilityProfile::graph_tlp_aggregate_v1();
         let predicate_rewrite_profile = CapabilityProfile::graph_predicate_rewrite_v1();
         let metamorphic_profile = CapabilityProfile::graph_metamorphic_v1();
+        let cases = self
+            .cases
+            .iter()
+            .map(CampaignCaseReport::json)
+            .collect::<Vec<_>>();
         json!({
             "protocol": CAMPAIGN_PROTOCOL,
             "success": self.success(),
@@ -1808,7 +1817,7 @@ impl CampaignReport {
             "failed_case_count": self.failed_case_count,
             "complete_shape_coverage": self.complete_shape_coverage,
             "plan_coverage": self.plan_coverage.json(),
-            "oracles": ["plan_differential", "graph_tlp", "graph_tlp_aggregate", "graph_predicate_rewrite", "graph_metamorphic", "sql_tlp", "sql_tlp_aggregate", "sql_predicate_rewrite", "sql_join_rewrite", "sql_operator_relations", "sql_maintenance"],
+            "oracles": ["plan_differential", "graph_tlp", "graph_tlp_aggregate", "graph_predicate_rewrite", "graph_metamorphic", "sql_tlp", "sql_tlp_aggregate", "sql_predicate_rewrite", "sql_join_rewrite", "sql_operator_relations", "sql_maintenance", "capabilities"],
             "oracle_protocols": {
                 "plan_differential": PLAN_DIFFERENTIAL_PROTOCOL,
                 "graph_tlp": GRAPH_TLP_PROTOCOL,
@@ -1821,6 +1830,7 @@ impl CampaignReport {
                 "sql_join_rewrite": SQL_JOIN_REWRITE_PROTOCOL,
                 "sql_operator_relations": sql_oracle::extended_protocol(),
                 "sql_maintenance": sql_oracle::stateful::PROTOCOL,
+                "capabilities": capability_oracle::PROTOCOL,
             },
             "capability_profiles": {
                 "plan_differential": capability_profile_json(&plan_profile),
@@ -1832,12 +1842,14 @@ impl CampaignReport {
                 "sql_tlp_aggregate": sql_oracle::sql_capability_profile_json(true),
                 "sql_predicate_rewrite": sql_oracle::sql_predicate_rewrite_capability_profile_json(),
                 "sql_join_rewrite": sql_oracle::sql_join_rewrite_capability_profile_json(),
+                "capabilities": { "families": capability_oracle::FAMILIES, "reference": "bounded_independent_models", "replay": "shiro capabilities replay FILE" },
                 "sql_maintenance": { "materialized_views": ["projection", "grouped", "global", "indexed_projection"], "aggregates": ["count", "sum", "min", "max"], "reference": "unindexed_table_full_select", "transactions": ["commit", "rollback", "pinned_old_snapshot"], "index_ranges": ["interval", "equal", "reversed", "null"], "storage_profiles": ["memory", "disk_shadow", "disk_demand_paged"], "persistence": ["wal_replay", "checkpoint_reopen", "checkpoint_plus_wal"], "power_loss_qualification": false },
                 "sql_operator_relations": { "oracles": ["norec_filter", "dqp", "having_tlp", "distinct_tlp", "sum_tlp", "distinct_count", "cross_join", "ordered_limit"], "norec_reference": "sum_filter_not_case_when", "dqp_same_sql": true, "dqp_distinct_plan_reported_separately": true },
             },
-            "sql_maintenance_coverage": sql_oracle::stateful::coverage(&self.cases.iter().map(CampaignCaseReport::json).collect::<Vec<_>>()),
-            "sql_operator_coverage": sql_oracle::extended_coverage(&self.cases.iter().map(CampaignCaseReport::json).collect::<Vec<_>>()),
-            "cases": self.cases.iter().map(CampaignCaseReport::json).collect::<Vec<_>>(),
+            "capability_coverage": capability_oracle::coverage(&cases),
+            "sql_maintenance_coverage": sql_oracle::stateful::coverage(&cases),
+            "sql_operator_coverage": sql_oracle::extended_coverage(&cases),
+            "cases": cases,
         })
     }
 }
@@ -1956,12 +1968,14 @@ pub fn run_campaign_until(
             MetamorphicOracleResult::Failure(failure) => (false, Some(failure)),
         };
         let sql = sql_oracle::evaluate_sql_case(case.seed, index, case.index_enabled);
+        let capabilities = capability_oracle::evaluate(case.seed, index);
         let success = plan_differential_success
             && graph_tlp_success
             && graph_tlp_aggregate_success
             && graph_predicate_rewrite_success
             && metamorphic_success
-            && sql.success;
+            && sql.success
+            && capabilities["success"] == true;
         let plan_coverage_novel = plan_coverage.observe(
             memo_plan_fingerprint.as_deref(),
             direct_fallback_plan_fingerprint.as_deref(),
@@ -1999,6 +2013,7 @@ pub fn run_campaign_until(
             optimizer_stages,
             plan_coverage_novel,
             sql,
+            capabilities,
             failure,
             graph_tlp_failure,
             graph_tlp_aggregate_failure,
@@ -2109,6 +2124,7 @@ pub fn merge_campaign_report_json(
         complete && campaign.case_index.is_none() && has_complete_shape_coverage_json(&cases),
     );
     json["plan_coverage"] = plan_coverage.report().json();
+    json["capability_coverage"] = capability_oracle::coverage(&cases);
     json["sql_operator_coverage"] = sql_oracle::extended_coverage(&cases);
     json["sql_maintenance_coverage"] = sql_oracle::stateful::coverage(&cases);
     json["cases"] = JsonValue::Array(cases);
@@ -2116,23 +2132,28 @@ pub fn merge_campaign_report_json(
 }
 
 fn has_complete_shape_coverage_json(cases: &[JsonValue]) -> bool {
-    json_observes_all(
-        cases,
-        &["shape"],
-        &CapabilityProfile::plan_differential_v1().shapes,
-    ) && json_observes_all(
-        cases,
-        &["graph_tlp_shape"],
-        &CapabilityProfile::graph_tlp_v1().shapes,
-    ) && json_observes_all(
-        cases,
-        &["graph_tlp_aggregate_shape"],
-        &CapabilityProfile::graph_tlp_aggregate_v1().shapes,
-    ) && json_observes_all(
-        cases,
-        &["graph_predicate_rewrite_shape"],
-        &CapabilityProfile::graph_predicate_rewrite_v1().shapes,
-    ) && json_observes_all(cases, &["sql", "shape"], &sql_oracle::SQL_QUERY_SHAPES)
+    capability_oracle::coverage(cases)["complete"] == true
+        && json_observes_all(
+            cases,
+            &["shape"],
+            &CapabilityProfile::plan_differential_v1().shapes,
+        )
+        && json_observes_all(
+            cases,
+            &["graph_tlp_shape"],
+            &CapabilityProfile::graph_tlp_v1().shapes,
+        )
+        && json_observes_all(
+            cases,
+            &["graph_tlp_aggregate_shape"],
+            &CapabilityProfile::graph_tlp_aggregate_v1().shapes,
+        )
+        && json_observes_all(
+            cases,
+            &["graph_predicate_rewrite_shape"],
+            &CapabilityProfile::graph_predicate_rewrite_v1().shapes,
+        )
+        && json_observes_all(cases, &["sql", "shape"], &sql_oracle::SQL_QUERY_SHAPES)
         && json_observes_all(
             cases,
             &["sql", "predicate_rewrite_shape"],
@@ -2166,7 +2187,11 @@ fn has_complete_shape_coverage(cases: &[CampaignCaseReport]) -> bool {
     let graph_tlp_aggregate_profile = CapabilityProfile::graph_tlp_aggregate_v1();
     let graph_predicate_rewrite_profile = CapabilityProfile::graph_predicate_rewrite_v1();
 
-    observes_all_shapes(
+    capability_oracle::FAMILIES.iter().all(|family| {
+        cases.iter().any(|case| {
+            case.capabilities["family"] == *family && case.capabilities["success"] == true
+        })
+    }) && observes_all_shapes(
         cases.iter().map(|case| case.shape.as_str()),
         &plan_profile.shapes,
     ) && observes_all_shapes(

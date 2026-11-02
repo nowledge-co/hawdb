@@ -108,11 +108,22 @@ assert storage["seed"] == 7
 assert storage["requested_case_count"] == 32
 assert storage["failed_case_count"] == 0
 assert storage["success"] is True
-assert optimizer["protocol"] == "shiro-multi-oracle-fuzz-v4"
+assert optimizer["protocol"] == "shiro-multi-oracle-fuzz-v5"
 assert optimizer["seed"] == 7
 assert optimizer["requested_case_count"] == 12
 assert optimizer["failed_case_count"] == 0
 assert optimizer["success"] is True
+capabilities = optimizer["capability_coverage"]
+assert capabilities["protocol"] == "shiro-capabilities-v1"
+assert capabilities["complete"] is True
+assert capabilities["power_loss_qualification"] is False
+assert set(capabilities["families"]) == {
+    "decimal_arithmetic", "cypher_pipeline", "cypher_binding_set",
+    "temporal_case", "keyless_bag",
+}
+assert sum(family["executed"] for family in capabilities["families"].values()) == 12
+for family in capabilities["families"].values():
+    assert family["executed"] == family["verified"] > 0
 maintenance = optimizer["sql_maintenance_coverage"]
 assert maintenance["attempted"] == 12
 assert maintenance["passed"] == 12

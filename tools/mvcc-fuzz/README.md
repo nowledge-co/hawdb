@@ -201,3 +201,45 @@ cargo clippy --locked --manifest-path tools/mvcc-fuzz/Cargo.toml --all-targets -
 The Bazel target is a manual `rust_binary` using existing dependencies; it is
 not registered in test suites or CI. Root workspace membership, release publishing
 and library features remain independent of this tool.
+
+## Composite, secondary and keyless range models
+
+The separate `ranges` entry point adds ten bounded families without changing the
+existing `.mvcc` grammar or version-1 JSON cases. It covers composite primary
+prefixes and inclusive/exclusive intervals, secondary gaps including NULL suffixes,
+old/new secondary rekeys, primary/secondary coordination, reversed lock ownership,
+keyless duplicate bags, stale snapshots (including conservative table validation for
+nullable secondary indexes), bounded-discovery table escalation and
+stale validation after incremental escalation.
+
+```sh
+cargo run --locked --manifest-path tools/mvcc-fuzz/Cargo.toml -- \
+  ranges run --seed 42 --seconds 30 --print-report
+cargo run --quiet --locked --manifest-path tools/mvcc-fuzz/Cargo.toml -- \
+  ranges generate --seed 42 --index 3 > /tmp/range.json
+cargo run --locked --manifest-path tools/mvcc-fuzz/Cargo.toml -- \
+  ranges replay /tmp/range.json --explain
+cargo run --locked --manifest-path tools/mvcc-fuzz/Cargo.toml -- \
+  ranges shrink /tmp/range.json --attempts 64 --explain
+```
+
+`hawdb-mvcc-ranges-v1` JSON stores the complete initial bag, typed selection bounds,
+mutation/read operation and commit/rollback choice. Every SQL statement and typed
+parameter appears in the trace. The independent reference derives conflicts from
+logical intervals, selected primary identities and both mutation images; it does
+not inspect the engine's chosen locks. Records are compared as typed bags, including
+duplicates and NULLs. Pinned reads and visible state are checked after release and
+a fresh retry. Reducers remove initial rows only when the case remains valid and
+the same failure kind recurs. Replay accepts saved artifacts or a bare case.
+
+These probes use `Duration::ZERO`: expected overlap must produce a lock timeout,
+and disjoint controls must succeed. This gives deterministic lock-footprint
+coverage, not proof of waiting, fairness, deadlock scheduling, general serializability
+or power-loss safety. The existing threaded pessimistic campaign owns wait/deadlock
+checks. Current range fixtures are in-memory; durable index/recovery behavior is
+covered separately by Shiro and engine regressions. Reports count attempted cases
+and separately verified conflict/disjoint outcomes. Only full successful cases
+contribute to verified counts. Unexpected errors never count as agreement.
+
+The tool remains manual-only; no CI target or scheduled campaign is added. Local
+model checks: `cargo test --locked --manifest-path tools/mvcc-fuzz/Cargo.toml ranges`.
