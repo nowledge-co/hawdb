@@ -747,6 +747,7 @@ fn diagnostic_repairs_preserve_independently_exported_main_messages_and_location
     for input in [
         include_str!("../../../fixtures/migration_main_1514_diagnostic_repairs_v1.json"),
         include_str!("../../../fixtures/migration_main_1514_diagnostic_repairs_v2.json"),
+        include_str!("../../../fixtures/migration_main_1514_diagnostic_repairs_v3.json"),
     ] {
         let fixture: serde_json::Value = serde_json::from_str(input).unwrap();
         assert_eq!(

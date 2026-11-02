@@ -114,3 +114,23 @@ remain available. Earlier adverse measurements remain evidence for their own
 source revisions. Final-head qualification still needs the required suite;
 diagnostic transitions, resource admission and allocation regressions remain
 open, so these performance results do not make the migration ready by themselves.
+
+
+Failed value alternatives now report the value rule's public expectation when
+none consumes input, while retaining an earlier diagnostic at the same position.
+The scalar-primary rule reports its identifier fallback when no alternative
+consumes input. Deeper failures and fatal work/capture/nesting admission errors
+retain their precedence; these actions do not add a second recognition pass.
+An independent 21,944-record comparison preserves complete ASTs/spans and
+acceptance/rejection classes. Full rendered comparisons repair 815 additional
+main outcomes, reducing the remaining differences from 4,928 to 4,113 without
+losing an existing match. Four already-incompatible diagnostics change wording
+and remain unresolved: two vector-search projection failures and two malformed
+parenthesized COALESCE argument entries. This is incremental compatibility work,
+not completion of the diagnostic gate.
+
+The provenance-bearing third repair fixture checks 818 distinct query/entry
+pairs, including four procedure-argument controls. The 163 existing allocation
+controls introduce no regression against the preceding PEG runtime; wide controls
+still have 14 regressing metrics against former main. Neither these controls nor
+this diagnostic change establishes complete resource or performance readiness.
