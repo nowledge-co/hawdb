@@ -85,3 +85,32 @@ The wide rank control changes from 168 allocations / 70,174 requested bytes /
 bytes, so this control still has a peak regression. An additional 2,026
 independent main outcomes preserve complete ASTs/spans and rejection classes;
 these resource results do not establish the remaining readiness gates.
+
+The shared query-preparation constructor computes identity normalization and the
+value-preserving plan-cache key from one scan. The two existing normalization
+contracts and digest/hash protocols remain unchanged; 27,280 outcomes match an
+independently compiled main reference. Capability and access checks precede this
+work. The existing graph-algorithm statistics isolation remains in place.
+
+A [32-process confirmation](benchmarks/cypher_peg_preparation_2026_11_03/public-query-confirmation.json)
+uses the unchanged two-query public fixture, 64 rows, normal warm-cache policy,
+11 samples and 2,000 calls per sample. Sixteen counterbalanced pairs show point
+lookup throughput improving by 3.0720 percent (95 percent t interval 2.2654 to
+3.8786); aggregate pagination is unchanged within noise (-0.0241 percent,
+interval -0.3708 to 0.3227). Their equal-weighted combined improvement is 0.7676
+percent, interval 0.5251 to 1.0102; all sixteen paired combined gains are positive.
+Mean process CPU is 1.8459808125 seconds former / 1.8299754375 seconds candidate.
+These intervals describe this experiment, not other machines or workloads.
+No compiler/test/benchmark interference was observed; other host activity was
+uncontrolled. Complete ordered columns and rows are checked outside timing.
+
+The captured runtime tree is `b2e1dee89a37b3fc275be116c47b13a885a3e631`, based on
+`91b1ecffb98830be1fb01c3ab00fa09fd1085e32`; the report includes exact hashes of
+the two changed runtime files, executables and
+[verbatim benchmark source](benchmarks/cypher_peg_preparation_2026_11_03/public-query-source.txt).
+The [initial eight-process comparison](benchmarks/cypher_peg_preparation_2026_11_03/public-query-initial.json)
+and [comparison with the preceding PEG runtime](benchmarks/cypher_peg_preparation_2026_11_03/preparation-comparison.json)
+remain available. Earlier adverse measurements remain evidence for their own
+source revisions. Final-head qualification still needs the required suite;
+diagnostic transitions, resource admission and allocation regressions remain
+open, so these performance results do not make the migration ready by themselves.

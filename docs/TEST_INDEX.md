@@ -2917,3 +2917,14 @@ Verify the actual publication order and facade archive as well as Cargo's
 production dependency closure. This is test ownership/build consolidation;
 measure cold/incremental compilation and actual execution separately before
 claiming a CI speedup.
+
+### Shared identity and plan-cache normalization (#1375)
+
+The existing `hawdb-query` owner checks that the combined constructor matches
+both standalone APIs, including mixed language casing and whitespace, repeated
+and distinct parameter names, literals, quotes, invalid text and Unicode. The
+existing digest/hash framing vectors and capacity checks remain unchanged.
+`cargo test --locked -p hawdb --lib api::plan_cache::tests` retains cache admission,
+parameter binding byte limits, capability/cancellation checks, statistics
+isolation and WAL replay coverage. `in_memory_portable` and minimal WASM strict
+Clippy cover the embedded facade. No new crate or CI job is introduced.

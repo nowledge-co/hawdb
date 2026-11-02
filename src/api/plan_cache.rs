@@ -773,12 +773,6 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
 ) -> Result<OptimizedQueryPlan> {
     #[cfg(feature = "qualification")]
     let _preparation = super::query_preparation_metrics::PlanPreparationTiming::start();
-    let query_identity = hawdb_query::QueryIdentity::new("cypher", cypher_text);
-    let query_optimizer =
-        CascadesOptimizer::with_context(context.optimizer.context().clone().with_query_identity(
-            query_identity.normalized_query(),
-            query_identity.query_digest(),
-        ));
     if let Some(access_control) = context.access_control {
         context
             .config
@@ -791,8 +785,13 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
     }
     let effective_max_optimizer_groups =
         optimizer_config_from_database_config(context.config).max_groups;
-    let normalized_plan_cache_query =
-        hawdb_query::normalize_query_for_plan_cache("cypher", cypher_text);
+    let (query_identity, normalized_plan_cache_query) =
+        hawdb_query::QueryIdentity::new_with_plan_cache_key("cypher", cypher_text);
+    let query_optimizer =
+        CascadesOptimizer::with_context(context.optimizer.context().clone().with_query_identity(
+            query_identity.normalized_query(),
+            query_identity.query_digest(),
+        ));
     let access_control_cache_key = context.access_control.map(AccessControlPlanCacheKey::from);
     let execution_parameters = parameters_with_access_control(parameters, context.access_control);
     let mut binding_template_hit = false;
