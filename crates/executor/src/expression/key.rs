@@ -16,6 +16,19 @@ pub(crate) struct PreparedKey<T> {
     pub(crate) allocation: QueryMemoryLease,
 }
 
+pub(crate) enum SortKeyValues {
+    // On 64-bit targets this representation fits in the former Vec header.
+    #[cfg(target_pointer_width = "64")]
+    Integer(i64, SortDirection),
+    Owned(Box<[(Value, SortDirection)]>),
+}
+
+impl From<Vec<(Value, SortDirection)>> for SortKeyValues {
+    fn from(values: Vec<(Value, SortDirection)>) -> Self {
+        Self::Owned(values.into_boxed_slice())
+    }
+}
+
 pub(crate) struct KeyMemory {
     evaluation: QueryMemoryAccount,
     preparation: QueryMemoryAccount,
@@ -69,6 +82,47 @@ impl KeyMemory {
         }
         runtime_checkpoint(task_context)?;
         Ok(PreparedKey { values, allocation })
+    }
+
+    pub(crate) fn sort_run(
+        &self,
+        items: &[SortItem],
+        catalog: &Catalog,
+        binding: &Binding,
+        task_context: Option<&RuntimeTaskContext>,
+    ) -> Result<PreparedKey<SortKeyValues>> {
+        #[cfg(target_pointer_width = "64")]
+        if let [SortItem {
+            key: SortKey::Column(name),
+            direction,
+        }] = items
+        {
+            runtime_checkpoint(task_context)?;
+            // Keep the original allowance and cancellation boundaries. Prepare
+            // the column once for both inline and variable-width keys.
+            let mut allocation = self
+                .preparation
+                .reserve(std::mem::size_of::<(Value, SortDirection)>())?;
+            runtime_checkpoint(task_context)?;
+            let value = binding
+                .values
+                .get(name)
+                .map(ProjectedValue::borrowed)
+                .unwrap_or_else(|| ProjectedValue::scalar(Value::Null));
+            let values = if let Value::Int(integer) = value.as_ref() {
+                SortKeyValues::Integer(*integer, *direction)
+            } else {
+                vec![(value.into_owned_accounted(&mut allocation)?, *direction)].into()
+            };
+            runtime_checkpoint(task_context)?;
+            return Ok(PreparedKey { values, allocation });
+        }
+        let PreparedKey { values, allocation } =
+            self.sort(items, catalog, binding, task_context)?;
+        Ok(PreparedKey {
+            values: values.into(),
+            allocation,
+        })
     }
 
     pub(crate) fn sort(

@@ -42,7 +42,7 @@ mod projection;
 mod simple_case;
 mod value;
 
-pub(crate) use key::{KeyMemory, PreparedKey};
+pub(crate) use key::{KeyMemory, PreparedKey, SortKeyValues};
 pub use predicate::*;
 pub(crate) use projection::{
     prepare_borrowed_projection, push_borrowed_projection, SmallBorrowedProjection,

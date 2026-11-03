@@ -22,11 +22,176 @@ fn has_expression_key(items: &[SortItem]) -> bool {
         .any(|item| matches!(item.key, hawdb_plan_cypher::SortKey::Expression(_)))
 }
 
-struct SortRunRow {
-    sort_values: Vec<(Value, SortDirection)>,
+impl SortKeyValues {
+    fn cmp_key(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            #[cfg(target_pointer_width = "64")]
+            (Self::Integer(left, direction), Self::Integer(right, other_direction)) => {
+                debug_assert_eq!(direction, other_direction);
+                match direction {
+                    SortDirection::Asc => left.cmp(right),
+                    SortDirection::Desc => left.cmp(right).reverse(),
+                }
+            }
+            #[cfg(target_pointer_width = "64")]
+            (Self::Integer(value, direction), Self::Owned(right)) => {
+                compare_sort_values(&[(Value::Int(*value), *direction)], right)
+            }
+            #[cfg(target_pointer_width = "64")]
+            (Self::Owned(left), Self::Integer(value, direction)) => {
+                compare_sort_values(left, &[(Value::Int(*value), *direction)])
+            }
+            (Self::Owned(left), Self::Owned(right)) => compare_sort_values(left, right),
+        }
+    }
+
+    fn memory_bytes(&self) -> usize {
+        let layout = std::mem::size_of::<Vec<(Value, SortDirection)>>();
+        match self {
+            #[cfg(target_pointer_width = "64")]
+            Self::Integer(..) => {
+                layout.saturating_add(std::mem::size_of::<(Value, SortDirection)>())
+            }
+            Self::Owned(values) => values.iter().fold(
+                layout.saturating_add(std::mem::size_of_val(values.as_ref())),
+                |total, (value, _)| {
+                    total.saturating_add(
+                        value_memory_bytes(value).saturating_sub(std::mem::size_of::<Value>()),
+                    )
+                },
+            ),
+        }
+    }
+}
+
+// Keep run keys within the old Vec header without a per-row discriminant.
+// An empty owned slice represents an inline integer only for a single-column
+// run. The run's mode owns that distinction (and its common direction).
+struct RunKeyValues {
+    owned: Box<[(Value, SortDirection)]>,
+    #[cfg(target_pointer_width = "64")]
+    integer: i64,
+}
+
+impl From<SortKeyValues> for RunKeyValues {
+    fn from(values: SortKeyValues) -> Self {
+        match values {
+            #[cfg(target_pointer_width = "64")]
+            SortKeyValues::Integer(integer, _) => Self {
+                owned: Box::default(),
+                integer,
+            },
+            SortKeyValues::Owned(owned) => Self {
+                owned,
+                #[cfg(target_pointer_width = "64")]
+                integer: 0,
+            },
+        }
+    }
+}
+
+impl From<Vec<(Value, SortDirection)>> for RunKeyValues {
+    fn from(values: Vec<(Value, SortDirection)>) -> Self {
+        SortKeyValues::from(values).into()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RunKeyMode {
+    Empty,
+    General,
+    #[cfg(target_pointer_width = "64")]
+    Integers(SortDirection),
+    #[cfg(target_pointer_width = "64")]
+    Mixed(SortDirection),
+}
+
+impl RunKeyMode {
+    fn for_row(values: &RunKeyValues, items: &[SortItem]) -> Self {
+        #[cfg(target_pointer_width = "64")]
+        if values.owned.is_empty()
+            && let [SortItem {
+                key: hawdb_plan_cypher::SortKey::Column(_),
+                direction,
+            }] = items
+        {
+            return Self::Integers(*direction);
+        }
+        let _ = (values, items);
+        Self::General
+    }
+
+    fn include(self, next: Self) -> Self {
+        match (self, next) {
+            (Self::Empty, mode) | (mode, Self::Empty) => mode,
+            (Self::General, Self::General) => Self::General,
+            #[cfg(target_pointer_width = "64")]
+            (Self::Integers(left), Self::Integers(right)) => {
+                debug_assert_eq!(left, right);
+                Self::Integers(left)
+            }
+            #[cfg(target_pointer_width = "64")]
+            (Self::Integers(direction), Self::General)
+            | (Self::General, Self::Integers(direction))
+            | (Self::Mixed(direction), _)
+            | (_, Self::Mixed(direction)) => Self::Mixed(direction),
+        }
+    }
+
+    fn is_inline(self, values: &RunKeyValues) -> bool {
+        match self {
+            #[cfg(target_pointer_width = "64")]
+            Self::Integers(_) | Self::Mixed(_) => values.owned.is_empty(),
+            _ => {
+                let _ = values;
+                false
+            }
+        }
+    }
+
+    fn sort(self, rows: &mut [SortRunRow]) {
+        // Ordinals order equal keys, so in-place sorting preserves output ties.
+        // Select once per run. Pure fallback comparisons have exactly the
+        // original slice comparator, without checking both keys' layouts.
+        match self {
+            Self::Empty => debug_assert!(rows.is_empty()),
+            Self::General => rows.sort_unstable_by(|left, right| {
+                compare_sort_values(&left.sort_values.owned, &right.sort_values.owned)
+                    .then_with(|| left.ordinal.cmp(&right.ordinal))
+            }),
+            #[cfg(target_pointer_width = "64")]
+            Self::Integers(SortDirection::Asc) => rows.sort_unstable_by(|left, right| {
+                left.sort_values
+                    .integer
+                    .cmp(&right.sort_values.integer)
+                    .then_with(|| left.ordinal.cmp(&right.ordinal))
+            }),
+            #[cfg(target_pointer_width = "64")]
+            Self::Integers(SortDirection::Desc) => rows.sort_unstable_by(|left, right| {
+                right
+                    .sort_values
+                    .integer
+                    .cmp(&left.sort_values.integer)
+                    .then_with(|| left.ordinal.cmp(&right.ordinal))
+            }),
+            #[cfg(target_pointer_width = "64")]
+            Self::Mixed(direction) => {
+                rows.sort_unstable_by(|left, right| left.cmp_mixed(right, direction))
+            }
+        }
+    }
+}
+
+struct SortRow<K> {
+    sort_values: K,
     ordinal: u64,
     binding: Binding,
 }
+
+type SortRunRow = SortRow<RunKeyValues>;
+// Spill records still contain bindings and ordinals. Reconstructed merge keys
+// retain the original tagged representation and comparator.
+type SortMergeRow = SortRow<SortKeyValues>;
 
 struct SortOperator<'plan, 'runtime> {
     items: &'plan [SortItem],
@@ -39,12 +204,13 @@ struct SortOperator<'plan, 'runtime> {
     key_memory: KeyMemory,
     spill_budget: SpillBudgetTracker,
     rows: Vec<SortRunRow>,
+    key_mode: RunKeyMode,
     tracker: OperatorMemoryTracker,
     runs: Vec<spill::SpillRun>,
     input_rows: u64,
 }
 
-impl SortRunRow {
+impl<K: From<SortKeyValues>> SortRow<K> {
     fn new(
         catalog: &Catalog,
         items: &[SortItem],
@@ -56,25 +222,71 @@ impl SortRunRow {
         let PreparedKey {
             allocation,
             values: sort_values,
-        } = key_memory.sort(items, catalog, &binding, task_context)?;
+        } = key_memory.sort_run(items, catalog, &binding, task_context)?;
         Ok(PreparedKey {
             values: Self {
-                sort_values,
+                sort_values: sort_values.into(),
                 ordinal,
                 binding,
             },
             allocation,
         })
     }
+}
 
+impl SortMergeRow {
     fn cmp_key(&self, other: &Self) -> Ordering {
-        compare_sort_values(&self.sort_values, &other.sort_values)
+        self.sort_values
+            .cmp_key(&other.sort_values)
             .then_with(|| self.ordinal.cmp(&other.ordinal))
     }
 
     fn memory_bytes(&self) -> usize {
-        binding_memory_bytes(&self.binding)
-            .saturating_add(crate::binding::sort_values_memory_bytes(&self.sort_values))
+        binding_memory_bytes(&self.binding).saturating_add(self.sort_values.memory_bytes())
+    }
+}
+
+impl SortRunRow {
+    fn memory_bytes(&self, mode: RunKeyMode) -> usize {
+        binding_memory_bytes(&self.binding).saturating_add(self.sort_key_memory_bytes(mode))
+    }
+
+    fn sort_key_memory_bytes(&self, mode: RunKeyMode) -> usize {
+        if mode.is_inline(&self.sort_values) {
+            std::mem::size_of::<Vec<(Value, SortDirection)>>()
+                .saturating_add(std::mem::size_of::<(Value, SortDirection)>())
+        } else {
+            self.sort_values.owned.iter().fold(
+                std::mem::size_of::<Vec<(Value, SortDirection)>>()
+                    .saturating_add(std::mem::size_of_val(self.sort_values.owned.as_ref())),
+                |total, (value, _)| {
+                    total.saturating_add(
+                        value_memory_bytes(value).saturating_sub(std::mem::size_of::<Value>()),
+                    )
+                },
+            )
+        }
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    fn cmp_mixed(&self, other: &Self, direction: SortDirection) -> Ordering {
+        let ordering = match (
+            self.sort_values.owned.as_ref(),
+            other.sort_values.owned.as_ref(),
+        ) {
+            ([], []) => match direction {
+                SortDirection::Asc => self.sort_values.integer.cmp(&other.sort_values.integer),
+                SortDirection::Desc => other.sort_values.integer.cmp(&self.sort_values.integer),
+            },
+            ([], right) => {
+                compare_sort_values(&[(Value::Int(self.sort_values.integer), direction)], right)
+            }
+            (left, []) => {
+                compare_sort_values(left, &[(Value::Int(other.sort_values.integer), direction)])
+            }
+            (left, right) => compare_sort_values(left, right),
+        };
+        ordering.then_with(|| self.ordinal.cmp(&other.ordinal))
     }
 }
 
@@ -96,7 +308,7 @@ fn compare_sort_values(
 }
 
 struct SortMergeEntry {
-    row: SortRunRow,
+    row: SortMergeRow,
     run_index: usize,
 }
 
@@ -173,6 +385,7 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
                 context.memory_ledger,
             ),
             rows: Vec::new(),
+            key_mode: RunKeyMode::Empty,
             runs: Vec::new(),
             input_rows: 0,
         }
@@ -190,15 +403,18 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
             &self.key_memory,
             self.task_context,
         )?;
-        let bytes = row.memory_bytes();
+        let row_mode = RunKeyMode::for_row(&row.sort_values, self.items);
+        let bytes = row.memory_bytes(row_mode);
         ensure_operator_item_fits("SortExec", bytes, &self.tracker)?;
         if self.tracker.should_spill(bytes, self.task_context) {
             self.runs.push(spill_sort_run(
                 &mut self.rows,
+                self.key_mode,
                 &mut self.spill_budget,
                 self.task_context,
             )?);
             self.tracker.reset();
+            self.key_mode = RunKeyMode::Empty;
             // A pressure spill must release the row-vector backing as well as
             // its payloads; ordinary capacity spills can reuse that allocation.
             if self.task_context.is_some_and(|task| {
@@ -209,6 +425,7 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
             }
         }
         self.tracker.try_charge_from(&mut allocation, bytes)?;
+        self.key_mode = self.key_mode.include(row_mode);
         self.rows.push(row);
         self.input_rows = self.input_rows.saturating_add(1);
         Ok(())
@@ -222,10 +439,10 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
         if self.runs.is_empty() {
             runtime_checkpoint(self.task_context)?;
             self.record_memory_report(0);
-            self.rows.sort_unstable_by(SortRunRow::cmp_key);
+            self.key_mode.sort(&mut self.rows);
             return emit_sorted_output(
                 self.rows.into_iter().map(|row| {
-                    let bytes = row.memory_bytes();
+                    let bytes = row.memory_bytes(self.key_mode);
                     (bytes, row.binding)
                 }),
                 &mut self.tracker,
@@ -244,6 +461,7 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
         if !self.rows.is_empty() {
             self.runs.push(spill_sort_run(
                 &mut self.rows,
+                self.key_mode,
                 &mut self.spill_budget,
                 self.task_context,
             )?);
@@ -561,17 +779,17 @@ fn emit_sorted_output(
 
 fn spill_sort_run(
     rows: &mut Vec<SortRunRow>,
+    key_mode: RunKeyMode,
     spill_budget: &mut SpillBudgetTracker,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<spill::SpillRun> {
     runtime_checkpoint(task_context)?;
-    // The ordinal already orders ties, so stable sort's scratch is unnecessary.
-    rows.sort_unstable_by(SortRunRow::cmp_key);
+    key_mode.sort(rows);
     let (run, mut writer) = spill_budget.create_run("sort")?;
     for row in rows.drain(..) {
         runtime_checkpoint(task_context)?;
-        writer.note_merge_record_bytes(row.memory_bytes());
-        writer.note_sort_key_bytes(crate::binding::sort_values_memory_bytes(&row.sort_values));
+        writer.note_merge_record_bytes(row.memory_bytes(key_mode));
+        writer.note_sort_key_bytes(row.sort_key_memory_bytes(key_mode));
         writer.write(row.ordinal, &row.binding, spill_budget)?;
     }
     runtime_checkpoint(task_context)?;
@@ -826,7 +1044,7 @@ fn merge_sort_runs_with_output(
             tracker.release(bytes);
             skipped = skipped.saturating_add(1);
         } else {
-            let SortRunRow {
+            let SortRow {
                 sort_values,
                 binding,
                 ..
@@ -890,7 +1108,7 @@ fn read_sort_merge_entry(
                     let PreparedKey {
                         allocation,
                         values: row,
-                    } = SortRunRow::new(
+                    } = SortMergeRow::new(
                         catalog,
                         items,
                         ordinal,
