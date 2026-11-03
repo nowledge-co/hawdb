@@ -438,7 +438,7 @@ rust_test(
         shard_count = 2 if partition == "checkpoint_headroom" else 0,
         # Wall-clock capacity and dense RSS fixtures must not compete with other
         # test executables here. External contention remains possible.
-        tags = ["exclusive"] if partition in ["analytics_rss", "checkpoint_headroom", "checkpoint_lifecycle"] else [],
+        tags = ["exclusive"] if partition in ["analytics_rss", "checkpoint_headroom", "checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted"] else [],
         srcs = ["scripts/run-root-unit-partition.sh"],
         args = [
             "$(rootpath :hawdb_unit_test_binary)",
@@ -446,13 +446,13 @@ rust_test(
             "--skip",
             _HAWDB_STORAGE_CRASH_MATRIX_TEST,
         ] + (
-            ["--test-threads=1"] if partition in ["checkpoint_headroom", "checkpoint_lifecycle"] else []
+            ["--test-threads=1"] if partition in ["checkpoint_headroom", "checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted"] else []
         ) + (
             ["--nocapture"] if partition == "checkpoint_headroom" else []
         ),
         data = [":hawdb_unit_test_binary"],
     )
-    for partition in ["general", "concurrent", "checkpoint_headroom", "checkpoint_lifecycle", "analytics_core_general", "analytics_rss", "recovery"]
+    for partition in ["general", "concurrent", "checkpoint_headroom", "checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted", "analytics_core_general", "analytics_rss", "recovery"]
 ]
 
 # Identity admission now shares the RSS fixture and its isolated measured child.
@@ -517,6 +517,8 @@ test_suite(
         ":hawdb_unit_general_tests",
         ":hawdb_unit_checkpoint_headroom_tests",
         ":hawdb_unit_checkpoint_lifecycle_tests",
+        ":hawdb_unit_checkpoint_large_commit_tests",
+        ":hawdb_unit_checkpoint_large_commit_interrupted_tests",
         ":hawdb_unit_concurrent_tests",
         ":hawdb_unit_analytics_tests",
         ":hawdb_unit_recovery_tests",

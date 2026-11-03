@@ -336,10 +336,19 @@ impl RelationalIndexLiveOverlay {
             .checked_add(encoded_bytes)
             .ok_or_else(|| "relational index live byte accounting overflow".to_string())?;
         if entry_count > limits.max_entries.get() || total_bytes > limits.max_bytes.get() {
-            return Err(format!(
-                "relational index live overlay exceeds max_entries={} or max_bytes={}",
-                limits.max_entries, limits.max_bytes
-            ));
+            let commit = (changes.len(), encoded_bytes);
+            return Err(
+                match live_index_shortfall(commit, (self.entry_count, self.encoded_bytes), limits) {
+                    Err(never_fits) => format!(
+                    "relational index live overlay exceeds max_entries={} or max_bytes={}: {never_fits}",
+                    limits.max_entries, limits.max_bytes
+                ),
+                    Ok(_) => format!(
+                        "relational index live overlay exceeds max_entries={} or max_bytes={}",
+                        limits.max_entries, limits.max_bytes
+                    ),
+                },
+            );
         }
         let mut captured_bytes = 0usize;
         let mut captured = BTreeMap::<
@@ -755,6 +764,37 @@ impl RelationalIndexReadView {
 
     pub fn live_batch_count(&self) -> usize {
         self.live.batch_count()
+    }
+
+    /// The shortfall when `capture` fits an empty live overlay but not the
+    /// headroom that `advance` would admit it into (#1479).
+    pub fn live_headroom_shortfall(
+        &self,
+        next_commit_epoch: u64,
+        capture: &RelationalIndexChangeCapture,
+        limits: RelationalIndexChangeCaptureLimits,
+    ) -> Option<crate::relational::RelationalLiveOverlayShortfall> {
+        let RelationalIndexChangeCapture::Captured {
+            changes,
+            encoded_bytes,
+        } = capture
+        else {
+            return None;
+        };
+        // `advance` rejects a stale epoch or poisoned view before admission.
+        if changes.is_empty()
+            || self.is_poisoned()
+            || self.identity.visible_commit_epoch.checked_add(1) != Some(next_commit_epoch)
+        {
+            return None;
+        }
+        live_index_shortfall(
+            (changes.len(), *encoded_bytes),
+            (self.live.entry_count, self.live.encoded_bytes),
+            limits,
+        )
+        .ok()
+        .flatten()
     }
 
     pub fn live_entry_count(&self) -> usize {
@@ -1546,6 +1586,20 @@ impl RelationalIndexReadView {
             RelationalIndexReadBackend::Recovered(reader) => reader.base_manifest(),
         }
     }
+}
+
+/// Classifies an index live-overlay admission that does not fit.
+fn live_index_shortfall(
+    commit: (usize, usize),
+    retained: (usize, usize),
+    limits: RelationalIndexChangeCaptureLimits,
+) -> Result<Option<crate::relational::RelationalLiveOverlayShortfall>, String> {
+    crate::relational::RelationalLiveOverlayShortfall::classify(
+        crate::relational::RelationalLiveOverlayKind::Index,
+        commit,
+        retained,
+        (limits.max_entries.get(), limits.max_bytes.get()),
+    )
 }
 
 fn admission(message: impl Into<String>) -> RelationalIndexShadowError {

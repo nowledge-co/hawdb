@@ -128,6 +128,77 @@ impl GraphStore {
         )
     }
 
+    /// Commits like [`Self::commit_prepared_graph_transaction`], except that
+    /// a commit which fits an empty relational live overlay but not its
+    /// remaining headroom returns its unconsumed inputs instead of only an
+    /// error. Nothing was applied; the caller can wait for a drain, outside
+    /// every lock the checkpoint needs, and commit the same inputs (#1479).
+    #[doc(hidden)]
+    pub fn commit_prepared_graph_transaction_with_live_headroom(
+        &mut self,
+        catalog: &mut Catalog,
+        inputs: PreparedTransactionCommit,
+        limits: MutationLimits,
+        allow_stale_rebase: bool,
+    ) -> Result<LiveHeadroomCommit<PreparedTransactionCommit>> {
+        let PreparedTransactionCommit {
+            transaction,
+            relational,
+            append,
+        } = inputs;
+        let mut retained = None;
+        let result = self.commit_prepared_transaction_parts(
+            catalog,
+            transaction,
+            relational,
+            append,
+            limits,
+            allow_stale_rebase,
+            Some(&mut retained),
+        );
+        match (result, retained) {
+            (Err(error), Some((retained, transaction))) => Ok(LiveHeadroomCommit::NeedsHeadroom {
+                shortfall: retained.shortfall,
+                inputs: PreparedTransactionCommit {
+                    transaction,
+                    relational: retained.relational.unwrap_or_default(),
+                    append: retained.append.unwrap_or_default(),
+                },
+                error,
+            }),
+            (result, _) => result.map(LiveHeadroomCommit::Committed),
+        }
+    }
+
+    /// The relational-only form of
+    /// [`Self::commit_prepared_graph_transaction_with_live_headroom`].
+    #[doc(hidden)]
+    pub fn commit_relational_transaction_with_live_headroom(
+        &mut self,
+        catalog: &mut Catalog,
+        transaction: RelationalTransaction,
+    ) -> Result<LiveHeadroomCommit<RelationalTransaction>> {
+        let mut retained = None;
+        let result = self.commit_mutations_internal(
+            catalog,
+            Vec::new(),
+            MutationLimits::default(),
+            MutationCommitOptions {
+                relational: Some(transaction),
+                retain_on_live_headroom: Some(&mut retained),
+                ..MutationCommitOptions::default()
+            },
+        );
+        match (result, retained) {
+            (Err(error), Some(retained)) => Ok(LiveHeadroomCommit::NeedsHeadroom {
+                shortfall: retained.shortfall,
+                inputs: retained.relational.unwrap_or_default(),
+                error,
+            }),
+            (result, _) => result.map(LiveHeadroomCommit::Committed),
+        }
+    }
+
     fn commit_mutation_transaction_and_relational_internal(
         &mut self,
         catalog: &mut Catalog,
@@ -137,8 +208,33 @@ impl GraphStore {
         limits: MutationLimits,
         allow_stale_rebase: bool,
     ) -> Result<MutationSummary> {
+        self.commit_prepared_transaction_parts(
+            catalog,
+            prepared,
+            relational_transaction,
+            append_transaction,
+            limits,
+            allow_stale_rebase,
+            None,
+        )
+    }
+
+    /// With `retain`, a live-overlay headroom shortfall moves the unconsumed
+    /// inputs and the rebuilt graph preparation into it before returning the
+    /// rejection.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_prepared_transaction_parts(
+        &mut self,
+        catalog: &mut Catalog,
+        prepared: PreparedGraphMutationTransaction,
+        relational_transaction: RelationalTransaction,
+        append_transaction: AppendTransaction,
+        limits: MutationLimits,
+        allow_stale_rebase: bool,
+        retain: Option<&mut Option<(RetainedLiveHeadroomCommit, PreparedGraphMutationTransaction)>>,
+    ) -> Result<MutationSummary> {
         let PreparedGraphMutationTransaction {
-            transaction,
+            mut transaction,
             wal,
             had_graph_writes,
         } = prepared;
@@ -158,7 +254,11 @@ impl GraphStore {
         let working_catalog = if transaction.catalog == transaction.base_catalog {
             catalog.clone()
         } else if *catalog == transaction.base_catalog {
-            transaction.catalog
+            if retain.is_some() {
+                transaction.catalog.clone()
+            } else {
+                std::mem::take(&mut transaction.catalog)
+            }
         } else {
             return Err(HawDBError::TransactionConflict {
                 read_epoch: transaction.base_commit_epoch,
@@ -166,21 +266,55 @@ impl GraphStore {
                 key: "catalog".into(),
             });
         };
-        let ops = transaction.ops;
-        self.commit_prepared_mutation_ops(
+        let ops = std::mem::take(&mut transaction.ops);
+        let rows = std::mem::take(&mut transaction.rows);
+        let Some(retain) = retain else {
+            return self.commit_prepared_mutation_ops(
+                catalog,
+                working_catalog,
+                ops,
+                rows,
+                limits,
+                MutationCommitOptions {
+                    relational: Some(relational_transaction),
+                    append: Some(append_transaction),
+                    mvcc_read_epoch,
+                    prepared_wal,
+                    ..MutationCommitOptions::default()
+                },
+            );
+        };
+        let mut retained = None;
+        let result = self.commit_prepared_mutation_ops(
             catalog,
             working_catalog,
             ops,
-            transaction.rows,
+            rows,
             limits,
             MutationCommitOptions {
                 relational: Some(relational_transaction),
                 append: Some(append_transaction),
                 mvcc_read_epoch,
                 prepared_wal,
+                retain_on_live_headroom: Some(&mut retained),
                 ..MutationCommitOptions::default()
             },
-        )
+        );
+        if let Some(mut retained) = retained {
+            // A shortfall is found only with relational writes, so the graph-only
+            // WAL preparation was never usable and is not rebuilt.
+            transaction.ops = std::mem::take(&mut retained.ops);
+            transaction.rows = std::mem::take(&mut retained.rows);
+            *retain = Some((
+                retained,
+                PreparedGraphMutationTransaction {
+                    transaction,
+                    wal: None,
+                    had_graph_writes,
+                },
+            ));
+        }
+        result
     }
 
     pub fn commit_mutation_with_limits(
@@ -1915,6 +2049,7 @@ impl GraphStore {
             mvcc_read_epoch,
             captured_graph_ops,
             prepared_wal,
+            retain_on_live_headroom,
         } = options;
         self.ensure_usable()?;
         ensure_mutation_commit_limits(&ops, &rows, limits)?;
@@ -1935,6 +2070,11 @@ impl GraphStore {
             .commit_epoch
             .checked_add(1)
             .ok_or_else(|| HawDBError::Storage("commit epoch overflow".to_string()))?;
+        // Graph operations precede the relational and append records that a
+        // live-overlay headroom shortfall removes again before retaining them.
+        let graph_op_count = ops.len();
+        let mut retained_relational = None;
+        let mut retained_append = None;
         if let Some(transaction) = relational_transaction.filter(|value| !value.writes.is_empty()) {
             crate::relational::admit_transaction(&transaction, self.relational_mutation_limits)
                 .map_err(map_relational_staging_error)?;
@@ -2040,6 +2180,9 @@ impl GraphStore {
             ops.push(WalOp::Relational {
                 record: Arc::from(encoded.record),
             });
+            if retain_on_live_headroom.is_some() {
+                retained_relational = Some(transaction);
+            }
         }
         if let Some(transaction) = append_transaction.filter(|value| !value.writes.is_empty()) {
             let prepared = self
@@ -2055,6 +2198,9 @@ impl GraphStore {
             ops.push(WalOp::Append {
                 record: Arc::from(record),
             });
+            if retain_on_live_headroom.is_some() {
+                retained_append = Some(transaction);
+            }
         }
         if ops.is_empty() {
             return Ok(MutationSummary {
@@ -2084,6 +2230,38 @@ impl GraphStore {
             next_commit_epoch,
             staged_relational_row_capture,
         );
+        if let Some(retain) = retain_on_live_headroom
+            && let Some(shortfall) = self.relational_live_headroom_shortfall(
+                &staged_relational_index_publication,
+                &staged_relational_row_publication,
+            )
+        {
+            // Rejected before WAL append with nothing applied, exactly like the
+            // requirements below; the caller may retry the same inputs.
+            let error = self
+                .require_authoritative_relational_index_live_publication(
+                    next_commit_epoch,
+                    &staged_relational_index_publication,
+                )
+                .and_then(|()| {
+                    self.require_relational_row_live_publication(
+                        next_commit_epoch,
+                        &staged_relational_row_publication,
+                    )
+                })
+                .err()
+                .unwrap_or_else(|| HawDBError::Storage(shortfall.to_string()));
+            ops.truncate(graph_op_count);
+            *retain = Some(RetainedLiveHeadroomCommit {
+                shortfall,
+                ops,
+                rows,
+                relational: retained_relational,
+                append: retained_append,
+            });
+            return Err(error);
+        }
+        drop((retained_relational, retained_append));
         self.require_authoritative_relational_index_live_publication(
             next_commit_epoch,
             &staged_relational_index_publication,

@@ -69,8 +69,8 @@ pub use demand::{
     DEFAULT_RELATIONAL_ROW_PAGE_READ_ROWS, DEFAULT_RELATIONAL_ROW_PAGE_READ_TREE_HEIGHT,
 };
 pub use live::{
-    RelationalRowPageCheckpointError, RelationalRowPageLiveError, RelationalRowPageReadView,
-    RelationalRowPageReadViewIdentity,
+    RelationalLiveOverlayKind, RelationalLiveOverlayShortfall, RelationalRowPageCheckpointError,
+    RelationalRowPageLiveError, RelationalRowPageReadView, RelationalRowPageReadViewIdentity,
 };
 pub use mutation::{
     RelationalRowPageBootstrap, RelationalRowPageBootstrapReport, RelationalRowPageIdAllocator,

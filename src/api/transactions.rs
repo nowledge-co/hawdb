@@ -1325,6 +1325,17 @@ pub(crate) fn commit_database_transaction_state(
     state: &mut DatabaseTransactionState,
     allow_stale_rebase: bool,
 ) -> Result<TransactionCommitResult> {
+    commit_database_transaction_state_with_context(db, state, allow_stale_rebase, None)
+}
+
+/// Commits with `task_context` checked before a commit that must wait for a
+/// live-overlay drain is attempted again.
+pub(crate) fn commit_database_transaction_state_with_context(
+    db: &mut Database,
+    state: &mut DatabaseTransactionState,
+    allow_stale_rebase: bool,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
+) -> Result<TransactionCommitResult> {
     let result = (|| {
         let prepared = state
             .graph_transaction
@@ -1335,7 +1346,13 @@ pub(crate) fn commit_database_transaction_state(
                 state.relational_transaction.writes.is_empty()
                     && state.append_transaction.writes.is_empty(),
             )?;
-        commit_database_transaction_state_inner(db, state, prepared, allow_stale_rebase)
+        commit_database_transaction_state_inner(
+            db,
+            state,
+            prepared,
+            allow_stale_rebase,
+            task_context,
+        )
     })();
     db.poison_on_storage_error(&result);
     result
@@ -1346,8 +1363,15 @@ pub(super) fn commit_prepared_database_transaction_state(
     state: &mut DatabaseTransactionState,
     prepared: crate::store::PreparedGraphMutationTransaction,
     allow_stale_rebase: bool,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<TransactionCommitResult> {
-    let result = commit_database_transaction_state_inner(db, state, prepared, allow_stale_rebase);
+    let result = commit_database_transaction_state_inner(
+        db,
+        state,
+        prepared,
+        allow_stale_rebase,
+        task_context,
+    );
     db.poison_on_storage_error(&result);
     result
 }
@@ -1357,6 +1381,7 @@ pub(super) fn commit_database_transaction_state_inner(
     state: &mut DatabaseTransactionState,
     graph_transaction: crate::store::PreparedGraphMutationTransaction,
     allow_stale_rebase: bool,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<TransactionCommitResult> {
     db.ensure_writable()?;
     if let Some(dependencies) = &state.read_dependencies {
@@ -1365,17 +1390,27 @@ pub(super) fn commit_database_transaction_state_inner(
     let returning = std::mem::take(&mut state.relational_returning);
     let relational_transaction = std::mem::take(&mut state.relational_transaction);
     let append_transaction = std::mem::take(&mut state.append_transaction);
-    let mut branch_runtime_access = db.runtime.get_mut()?;
-    let branch_runtime = &mut *branch_runtime_access;
-    let summary = branch_runtime.store.commit_prepared_graph_transaction(
-        &mut branch_runtime.catalog,
-        graph_transaction,
-        relational_transaction,
-        append_transaction,
-        db.config.mutation_limits,
-        allow_stale_rebase,
+    let mutation_limits = db.config.mutation_limits;
+    // A commit that fits an empty live overlay but not its remaining headroom
+    // waits for a drain and is committed again, unchanged (#1479).
+    let summary = db.runtime.commit_with_live_headroom(
+        crate::store::PreparedTransactionCommit {
+            transaction: graph_transaction,
+            relational: relational_transaction,
+            append: append_transaction,
+        },
+        task_context,
+        |branch_runtime, inputs| {
+            branch_runtime
+                .store
+                .commit_prepared_graph_transaction_with_live_headroom(
+                    &mut branch_runtime.catalog,
+                    inputs,
+                    mutation_limits,
+                    allow_stale_rebase,
+                )
+        },
     )?;
-    drop(branch_runtime_access);
     db.complete_required_relational_row_checkpoint("transaction commit")?;
     if returning.len() != summary.relational_mutation_outcomes.len() {
         return Err(HawDBError::StorageIntegrity(format!(
@@ -1520,7 +1555,12 @@ impl DatabaseTransaction<'_> {
             dependencies.ensure_complete()?;
             query_runtime::query_runtime_checkpoint(self.task_context.as_ref())?;
         }
-        commit_database_transaction_state(self.db, &mut self.state, false)
+        commit_database_transaction_state_with_context(
+            self.db,
+            &mut self.state,
+            false,
+            self.task_context.as_ref(),
+        )
     }
 
     pub fn rollback(mut self) {
