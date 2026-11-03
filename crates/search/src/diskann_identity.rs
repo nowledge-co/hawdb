@@ -33,6 +33,7 @@ pub(crate) fn embedding(
 pub(crate) fn source(
     manifest: Option<&SearchEmbeddingManifest>,
     definition: Option<&VectorIndexDescriptor>,
+    scoring: crate::SearchVectorScoring,
     dimension: usize,
     config: DiskAnnBuildConfig,
     task: Option<&RuntimeTaskContext>,
@@ -49,7 +50,11 @@ pub(crate) fn source(
     if let Some(definition) = definition {
         digest.update(&definition.encode());
     } else {
-        digest.update(b"unbound-cosine");
+        digest.update(if scoring.is_default() {
+            b"unbound-cosine"
+        } else {
+            b"unbound-linear-squared-l2"
+        });
         digest.update(&(dimension as u64).to_le_bytes());
         digest.update(&(config.max_degree as u64).to_le_bytes());
         digest.update(&(config.build_beam as u64).to_le_bytes());

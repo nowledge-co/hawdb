@@ -84,6 +84,7 @@ impl SearchIndex {
         let index = SearchIndex {
             documents: self.documents.clone(),
             vector_index_descriptor: self.vector_index_descriptor.clone(),
+            vector_scoring: self.vector_scoring,
             vector_document_summary: self.vector_document_summary,
             canonical_vector_source_epoch: self.canonical_vector_source_epoch,
             path: self.path.clone(),
@@ -136,6 +137,7 @@ impl ReadGeneration {
         let captured = &self.index;
         if !captured.documents.shares_storage_with(&live.documents)
             || captured.vector_index_descriptor != live.vector_index_descriptor
+            || captured.vector_scoring != live.vector_scoring
             || captured.vector_document_summary != live.vector_document_summary
             || captured.canonical_vector_source_epoch != live.canonical_vector_source_epoch
             || captured.rabitq_checkpoint != live.rabitq_checkpoint

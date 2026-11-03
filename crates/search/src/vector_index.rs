@@ -161,11 +161,8 @@ impl SearchIndex {
     /// Ordinary Search relevance metric. Unbound projections are cosine by
     /// construction; a binding seals its own metric into every artifact.
     pub(crate) fn vector_metric(&self) -> hawdb_core::VectorDistance {
-        self.vector_index_descriptor
-            .as_ref()
-            .map_or(hawdb_core::VectorDistance::Cosine, |descriptor| {
-                descriptor.distance()
-            })
+        self.vector_scoring
+            .metric(self.vector_index_descriptor.as_ref())
     }
 
     /// Binds an empty private builder. The facade owns schema resolution and
@@ -175,6 +172,7 @@ impl SearchIndex {
         self.runtime_capabilities
             .require(hawdb_core::RuntimeCapability::VectorSearch)?;
         self.require_unregistered_publication()?;
+        self.vector_scoring.validate(true, false)?;
         if !self.documents.is_empty() || self.vector_index_descriptor.is_some() {
             return Err(HawDBError::Semantic(
                 "a vector index definition requires an empty unbound builder".into(),

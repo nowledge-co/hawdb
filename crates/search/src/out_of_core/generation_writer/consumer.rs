@@ -81,6 +81,7 @@ impl SearchOutOfCoreGenerationWriter {
                 embedding_dimension: index.embedding_dimension,
                 consumer_binding: index.consumer_binding.as_ref(),
                 vector_index_descriptor: index.vector_index_descriptor.as_ref(),
+                vector_scoring: index.vector_scoring,
                 vector_document_summary: Some(crate::vector_index::VectorDocumentSummary {
                     document_count: writer.document_count,
                     vector_document_count: writer.vector_document_count,

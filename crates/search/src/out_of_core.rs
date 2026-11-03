@@ -525,6 +525,11 @@ struct SearchOutOfCoreManifestBody<S = String> {
     embedding_dimension: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     vector_index_binding: Option<S>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::SearchVectorScoring::is_default"
+    )]
+    vector_scoring: crate::SearchVectorScoring,
 }
 
 /// One immutable artifact closure selected by an out-of-core manifest.
@@ -929,6 +934,8 @@ impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
                 "metadata-only snapshot requires a vector index binding".into(),
             ));
         }
+        self.vector_scoring
+            .validate(self.vector_index_binding.is_some(), false)?;
         if let Some(encoded) = &self.vector_index_binding {
             let descriptor = crate::vector_index::decode(encoded.as_ref())?;
             if self.embedding_dimension != Some(descriptor.dimension().get() as usize) {
@@ -2205,6 +2212,11 @@ impl SearchOutOfCoreReader {
             })
     }
 
+    /// Scoring policy sealed into this immutable projection.
+    pub fn vector_scoring(&self) -> crate::SearchVectorScoring {
+        self.manifest.vector_scoring
+    }
+
     /// Decode the field binding sealed into this immutable projection.
     pub fn vector_index_descriptor(&self) -> Result<Option<hawdb_core::VectorIndexDescriptor>> {
         self.manifest
@@ -2714,6 +2726,16 @@ impl SearchOutOfCoreReader {
             compressed_vector_search_mode,
             vector_execution_options,
         } = execution;
+        if !self.vector_scoring().is_default()
+            && mode != SearchMode::Text
+            && query_embedding.is_some()
+            && !vector_execution_options.exact
+            && compressed_vector_search_mode == CompressedVectorSearchMode::Required
+        {
+            return Err(HawDBError::Semantic(
+                "linear squared-L2 scoring does not support compressed vector search".into(),
+            ));
+        }
         let task_context = vector_execution_options.task_context;
         if let Some(task_context) = task_context {
             task_context.checkpoint().map_err(|reason| {
@@ -3066,6 +3088,13 @@ impl SearchOutOfCoreReader {
             )?,
         });
 
+        for retriever in &mut retrievers {
+            if retriever.name == "vector" {
+                for candidate in &mut retriever.top_candidates {
+                    candidate.score = self.vector_scoring().exposed(candidate.score);
+                }
+            }
+        }
         let mut scored_candidates = query_ranking::Candidates::new(
             query_ranking::Inputs {
                 vector_scores,
@@ -3087,6 +3116,12 @@ impl SearchOutOfCoreReader {
         let page_end = options.offset.saturating_add(options.limit);
         let truncated = total_hits > page_end;
         scored_candidates.page(options.offset, options.limit)?;
+        for candidate in &mut scored_candidates.values {
+            candidate.vector_score = self.vector_scoring().exposed(candidate.vector_score);
+            if mode == SearchMode::Vector {
+                candidate.score = candidate.vector_score;
+            }
+        }
         let page_candidates = &scored_candidates.values;
         let projection_freshness = if immutable_freshness {
             // Born construction checked the actual native directory. Saved
@@ -3214,6 +3249,7 @@ impl SearchOutOfCoreReader {
                     })
                 })
                 .transpose()?
+                .map(|scorer| scorer.with_scoring(self.vector_scoring()))
         } else {
             None
         };
@@ -3266,7 +3302,7 @@ impl SearchOutOfCoreReader {
             hits.push(SearchHit {
                 id: context.output_memory.text(&candidate.id)?,
                 score: candidate.score,
-                vector_score,
+                vector_score: self.vector_scoring().exposed(vector_score),
                 text_score: candidate.text_score,
                 rrf_score: candidate.rrf_score,
                 vector_rrf_score: candidate.vector_rrf_score,
@@ -3748,6 +3784,9 @@ fn open_rabitq_projection(
         None => hawdb_vector_projection::FileProjection::open(root.join(file_name)),
     }
     .map_err(vector_projection_error)?;
+    active_manifest
+        .vector_scoring
+        .validate(active_manifest.vector_index_binding.is_some(), true)?;
     let artifact_manifest = projection.manifest();
     if let Some(encoded) = &active_manifest.vector_index_binding {
         let definition = crate::vector_index::decode(encoded)?;
@@ -4280,6 +4319,7 @@ fn validate_resident_snapshot_manifest(index: &SearchIndex, bytes: &[u8]) -> Res
         || manifest.documents_digest != digest
         || manifest.source_graph_commit_epoch != index.source_graph_commit_epoch
         || manifest.import_source_graph_commit_epoch != index.import_source_graph_commit_epoch
+        || manifest.vector_scoring != index.vector_scoring
         || manifest.embedding_dimension != index.embedding_dimension
         || manifest.vector_index_binding
             != index
@@ -4770,6 +4810,7 @@ fn publish_out_of_core_projection(
         embedding_dimension: embedding
             .map(|manifest| manifest.dimension)
             .or(index.embedding_dimension),
+        vector_scoring: index.vector_scoring,
         vector_index_binding: index
             .vector_index_descriptor
             .as_ref()

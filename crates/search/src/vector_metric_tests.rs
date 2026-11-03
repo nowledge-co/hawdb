@@ -349,3 +349,280 @@ fn cosine_projections_keep_positive_only_similarity() {
         assert!(all.result.hits.iter().all(|hit| hit.score > 0.0));
     }
 }
+
+fn squared_l2_fixture() -> Fixture {
+    let vector = |first, second| {
+        let mut vector = vec![0.0; 1536];
+        vector[0] = first;
+        vector[1] = second;
+        vector
+    };
+    Fixture {
+        query: vector(1.0, 0.0),
+        documents: vec![
+            ("a-farthest".into(), vector(10.0, 0.0)),
+            ("b-far".into(), vector(4.0, 0.0)),
+            ("c-less-far".into(), vector(3.0, 0.0)),
+            ("u-zero".into(), vector(0.0, 0.0)),
+            ("v-opposite".into(), vector(-0.1, 0.0)),
+            ("w-border-far".into(), vector(1.0, 0.632_455_6)),
+            ("x-border-near".into(), vector(1.0, 0.632_455_47)),
+            ("y-scaled".into(), vector(2.0, 0.0)),
+            ("z-identical".into(), vector(1.0, 0.0)),
+        ],
+    }
+}
+
+fn assert_squared_l2_hits(fixture: &Fixture, hits: &[SearchHit]) {
+    // Independent oracle: these fixtures have at most two nonzero coordinates,
+    // so this Float32 reference has no reduction-order ambiguity.
+    let distance = |embedding: &[f32]| {
+        fixture
+            .query
+            .iter()
+            .zip(embedding)
+            .map(|(left, right)| {
+                let difference = left - right;
+                difference * difference
+            })
+            .sum::<f32>()
+    };
+    let mut expected = fixture.documents.iter().collect::<Vec<_>>();
+    expected.sort_by(|left, right| {
+        distance(&left.1)
+            .total_cmp(&distance(&right.1))
+            .then(left.0.cmp(&right.0))
+    });
+    assert_eq!(
+        ids(hits),
+        expected
+            .iter()
+            .take(hits.len())
+            .map(|row| row.0.clone())
+            .collect::<Vec<_>>()
+    );
+    for hit in hits {
+        let expected = (1.0 - f64::from(distance(fixture.embedding(&hit.id))) / 2.0).max(0.0);
+        assert_eq!(hit.score, expected, "{}", hit.id);
+        assert_eq!(hit.vector_score, expected, "{}", hit.id);
+    }
+    if hits.len() == fixture.documents.len() {
+        assert!(
+            hits.iter()
+                .find(|hit| hit.id == "x-border-near")
+                .unwrap()
+                .score
+                >= 0.80
+        );
+        assert!(
+            hits.iter()
+                .find(|hit| hit.id == "w-border-far")
+                .unwrap()
+                .score
+                < 0.80
+        );
+        assert_eq!(hits.iter().filter(|hit| hit.score == 0.0).count(), 3);
+    }
+}
+
+#[test]
+fn ordinary_squared_l2_preserves_scores_zero_neighbors_and_pinned_checkpoint() {
+    let root = directory("ordinary-squared-l2");
+    let fixture = squared_l2_fixture();
+    let query = Some(fixture.query.as_slice());
+    let count = fixture.documents.len();
+    let mut index = SearchIndex::open(&root.0).unwrap();
+    index
+        .set_vector_scoring(SearchVectorScoring::LinearSquaredL2)
+        .unwrap();
+    for row in &fixture.documents {
+        index.upsert(fixture.document(row)).unwrap();
+    }
+    assert!(index
+        .set_vector_scoring(SearchVectorScoring::ProjectionMetric)
+        .is_err());
+    for exact in [false, true] {
+        let result = index
+            .try_search_with_options_adaptive_vector_projection_context(
+                "",
+                query,
+                SearchMode::Vector,
+                options(count, Some(count)),
+                AdaptiveVectorSearchOptions::new(CompressedVectorSearchMode::Disabled),
+                execution(exact),
+            )
+            .unwrap();
+        assert_squared_l2_hits(&fixture, &result.hits);
+    }
+    index.checkpoint().unwrap();
+    let pinned = index.read_snapshot();
+    index.delete("z-identical");
+    index.checkpoint().unwrap();
+    let old = pinned
+        .try_search_with_options_adaptive_vector_projection_context(
+            "",
+            query,
+            SearchMode::Vector,
+            options(count, Some(count)),
+            AdaptiveVectorSearchOptions::new(CompressedVectorSearchMode::Disabled),
+            VectorSearchExecutionOptions::default().with_exact_search(),
+        )
+        .unwrap();
+    assert_squared_l2_hits(&fixture, &old.hits);
+    drop(index);
+    let reopened = SearchIndex::open(&root.0).unwrap();
+    assert_eq!(
+        reopened.vector_scoring(),
+        SearchVectorScoring::LinearSquaredL2
+    );
+    assert_eq!(reopened.vector_metric(), VectorDistance::Euclidean);
+    let current = reopened
+        .search_with_options_exact("", query, SearchMode::Vector, options(count, None))
+        .unwrap();
+    assert!(!ids(&current.hits).contains(&"z-identical".to_string()));
+}
+
+#[test]
+fn out_of_core_squared_l2_retains_profile_and_scores_without_hydration() {
+    let root = directory("streamed-squared-l2");
+    let fixture = squared_l2_fixture();
+    let count = fixture.documents.len();
+    let query = Some(fixture.query.as_slice());
+    let mut writer = SearchOutOfCoreGenerationWriter::create(
+        &root.0,
+        SearchOutOfCoreGenerationBuildOptions {
+            vector_scoring: SearchVectorScoring::LinearSquaredL2,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for row in &fixture.documents {
+        writer.push(fixture.document(row)).unwrap();
+    }
+    writer.finish().unwrap();
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(
+        reader.vector_scoring(),
+        SearchVectorScoring::LinearSquaredL2
+    );
+    for exact in [false, true] {
+        for hydration in [
+            SearchHitHydration::Documents,
+            SearchHitHydration::ScoresOnly,
+        ] {
+            let result = reader
+                .search_with_hydration(
+                    "",
+                    query,
+                    SearchMode::Vector,
+                    options(count, Some(count)),
+                    SearchOutOfCoreExecutionContext {
+                        vector_execution_options: execution(exact),
+                        ..Default::default()
+                    },
+                    hydration,
+                )
+                .unwrap();
+            assert_squared_l2_hits(&fixture, &result.result.hits);
+        }
+    }
+    for exact in [false, true] {
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
+        cancellation.cancel();
+        let task = hawdb_core::RuntimeTaskContext::without_deadline(cancellation);
+        let cancelled = VectorSearchExecutionOptions::admitted(64 << 20, &task);
+        let bounded = VectorSearchExecutionOptions::bounded(NonZeroUsize::new(1).unwrap(), 1, None);
+        for mut control in [cancelled, bounded] {
+            if exact {
+                control = control.with_exact_search();
+            }
+            assert!(reader
+                .search_with_hydration(
+                    "",
+                    query,
+                    SearchMode::Vector,
+                    options(count, None),
+                    SearchOutOfCoreExecutionContext {
+                        vector_execution_options: control,
+                        ..Default::default()
+                    },
+                    SearchHitHydration::ScoresOnly
+                )
+                .is_err());
+        }
+    }
+    // An epoch-only update must inherit the base policy with ordinary defaults.
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: Vec::new(),
+            deletes: Vec::new(),
+            max_operations: None,
+            source_graph_commit_epoch: Some(1),
+        },
+        SearchOutOfCoreGenerationBuildOptions::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+    let reopened = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(
+        reopened.vector_scoring(),
+        SearchVectorScoring::LinearSquaredL2
+    );
+    let result = reopened
+        .search_with_options_exact("", query, SearchMode::Vector, options(count, None))
+        .unwrap();
+    assert_squared_l2_hits(&fixture, &result.result.hits);
+    // The original pinned reader still owns the old immutable score policy.
+    let result = reader
+        .search_with_options_exact("", query, SearchMode::Vector, options(count, None))
+        .unwrap();
+    assert_squared_l2_hits(&fixture, &result.result.hits);
+}
+
+#[test]
+fn squared_l2_refuses_conflicting_bindings_compression_and_corrupt_metadata() {
+    let mut index = SearchIndex::in_memory();
+    index
+        .set_vector_scoring(SearchVectorScoring::LinearSquaredL2)
+        .unwrap();
+    assert!(index
+        .bind_vector_index(descriptor(VectorDistance::Euclidean))
+        .is_err());
+    let mut bound = SearchIndex::in_memory();
+    bound
+        .bind_vector_index(descriptor(VectorDistance::Euclidean))
+        .unwrap();
+    assert!(bound
+        .set_vector_scoring(SearchVectorScoring::LinearSquaredL2)
+        .is_err());
+    let root = directory("refused-compressed-squared-l2");
+    assert!(SearchOutOfCoreGenerationWriter::create(
+        &root.0,
+        SearchOutOfCoreGenerationBuildOptions {
+            vector_scoring: SearchVectorScoring::LinearSquaredL2,
+            vector_backend: None,
+            ..Default::default()
+        }
+    )
+    .is_err());
+    for header in [
+        "vector_scoring\tlinear_squared_l2\nvector_scoring\tlinear_squared_l2\n",
+        "vector_scoring\tunknown\n",
+        "vector_scoring\tlinear_squared_l2\nrabitq_checkpoint\t4\t16\t1\n",
+    ] {
+        let mut restored = SearchIndex::in_memory();
+        assert!(restored
+            .parse_snapshot_text(&format!("HAWDB_SEARCH_PROJECTION_V1\n{header}"))
+            .is_err());
+    }
+}
+
+fn execution(exact: bool) -> VectorSearchExecutionOptions<'static> {
+    if exact {
+        VectorSearchExecutionOptions::default().with_exact_search()
+    } else {
+        VectorSearchExecutionOptions::default()
+    }
+}

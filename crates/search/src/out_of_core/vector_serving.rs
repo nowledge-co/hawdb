@@ -587,7 +587,8 @@ impl SearchOutOfCoreReader {
                 || checkpoint_vector_task(task_context),
                 |query| query.checkpoint(),
             )
-        })?;
+        })?
+        .with_scoring(self.vector_scoring());
         let mut vector_document_count = 0usize;
         let mut segment_scan_count = 0usize;
         let mut id_memory = context
@@ -951,7 +952,8 @@ impl SearchOutOfCoreReader {
                     |query| query.checkpoint(),
                 )
             })?
-        };
+        }
+        .with_scoring(self.vector_scoring());
         let mut raw_segment_scan_count = 0usize;
         let mut reranked_candidate_count = 0usize;
         let mut selected_start = 0usize;
@@ -1211,10 +1213,8 @@ impl SearchOutOfCoreReader {
             }
         }
         Ok(self
-            .vector_index_descriptor()?
-            .map_or(hawdb_core::VectorDistance::Cosine, |descriptor| {
-                descriptor.distance()
-            }))
+            .vector_scoring()
+            .metric(self.vector_index_descriptor()?.as_ref()))
     }
 
     #[cfg(feature = "vector-search")]

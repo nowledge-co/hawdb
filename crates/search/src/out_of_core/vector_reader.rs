@@ -225,6 +225,9 @@ pub(super) fn open(
     let file = admission.pin_bound_file(file, length, max_artifact_read_bytes)?;
     let projection = FileProjection::open_admitted_file(file, &path, admission)
         .map_err(vector_projection_error)?;
+    active
+        .vector_scoring
+        .validate(active.vector_index_binding.is_some(), true)?;
     let artifact = projection.manifest();
     if let Some(encoded) = &active.vector_index_binding {
         let _definition_memory = admission
