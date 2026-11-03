@@ -480,6 +480,25 @@ fn full_scan_wait_validates_unchanged_and_absent_write_intents() {
 }
 
 #[test]
+fn table_guard_validates_unchanged_and_absent_write_intents_without_waiting() {
+    with_fixture("table-guard-intents", |database| {
+        for warehouse in [1, 9] {
+            let mut reader = transaction(database);
+            reader.query_sql("SELECT value FROM lines").unwrap();
+            let mut writer = transaction(database);
+            writer
+                .query_sql_with_params(
+                    "UPDATE lines SET value = 0 WHERE w = $1 AND d = 1 AND o = 1 AND n = 1",
+                    &[Value::Int(warehouse)],
+                )
+                .unwrap();
+            writer.commit().unwrap();
+            retry(reader.query_sql("UPDATE lines SET value = 0 WHERE value >= 0"));
+        }
+    });
+}
+
+#[test]
 fn secondary_discovery_escalates_before_returning_a_partial_lock_set() {
     with_fixture("escalation", |database| {
         let rows = (3..=67)

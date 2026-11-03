@@ -130,6 +130,18 @@ impl GraphStore {
         self.validate_lock_stamp(
             captured,
             VersionKey::ReadRelationalTableDomain(table.into()),
+        )?;
+        // A table guard also covers logical primary-key write intents. Data
+        // summaries do not advance for same-value updates or absent-key writes.
+        self.validate_range(
+            captured,
+            VersionRange {
+                table,
+                index: None,
+                lower: &Bound::Unbounded,
+                upper: &Bound::Unbounded,
+            },
+            budget,
         )
     }
 
