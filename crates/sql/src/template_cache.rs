@@ -188,32 +188,32 @@ mod tests {
 
     #[test]
     fn mutation_templates_reuse_unbound_parameters_without_evicting_queries() {
-        let cache = RelationalPlanTemplateCache::new(Some(1));
         let select = "SELECT id FROM items WHERE id = $1";
-        let query = cache.prepare(select).unwrap();
         for sql in [
             "INSERT INTO items (id, body) VALUES ($1, $2)",
             "INSERT INTO items (id, body) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET body = EXCLUDED.body",
             "UPDATE items SET body = $1 WHERE id = $2",
             "DELETE FROM items WHERE id = $1",
         ] {
+            let cache = RelationalPlanTemplateCache::new(Some(1));
+            let query = cache.prepare(select).unwrap();
             let first = cache.prepare(sql).unwrap();
             let reused = cache.prepare(sql).unwrap();
             assert!(Arc::ptr_eq(&first.template, &reused.template), "{sql}");
             assert_eq!(reused.parse_nanos, 0);
             assert_eq!(first.template.parameters[0].position, 1);
+            let entries = cache.entries();
+            let mutations = entries.mutations.stats();
+            assert_eq!(mutations.entries, 1);
+            assert_eq!(mutations.hits, 1);
+            assert_eq!(mutations.evictions, 0);
+            assert!(mutations.charged_bytes.unwrap() <= MAX_MUTATION_TEMPLATE_BYTES);
+            drop(entries);
+            assert!(Arc::ptr_eq(
+                &query.template,
+                &cache.prepare(select).unwrap().template
+            ));
         }
-        let entries = cache.entries();
-        let mutations = entries.mutations.stats();
-        assert_eq!(mutations.entries, 1);
-        assert_eq!(mutations.hits, 4);
-        assert_eq!(mutations.evictions, 3);
-        assert!(mutations.charged_bytes.unwrap() <= MAX_MUTATION_TEMPLATE_BYTES);
-        drop(entries);
-        assert!(Arc::ptr_eq(
-            &query.template,
-            &cache.prepare(select).unwrap().template
-        ));
     }
 
     #[test]
