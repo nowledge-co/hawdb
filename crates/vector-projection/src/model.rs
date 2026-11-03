@@ -181,6 +181,10 @@ impl ProjectionBuildConfig {
         Ok(ProjectionBuildAdmission {
             configured_working_bytes: validated.max_working_bytes,
             peak_working_bytes: validated.peak_working_bytes,
+            quantization_working_bytes: crate::rabitq::scratch_bytes(
+                self.dimension,
+                self.bit_width,
+            ),
             requested_segment_rows: validated.requested_segment_rows,
             admitted_segment_rows: validated.admitted_segment_rows,
         })
@@ -236,6 +240,9 @@ impl ProjectionBuildConfig {
 pub struct ProjectionBuildAdmission {
     pub configured_working_bytes: usize,
     pub peak_working_bytes: usize,
+    /// Temporary quantizer capacity already included in `peak_working_bytes`.
+    /// Hosts may reserve it only around pushes, retaining the remaining state.
+    pub quantization_working_bytes: usize,
     pub requested_segment_rows: usize,
     pub admitted_segment_rows: usize,
 }

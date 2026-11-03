@@ -300,7 +300,13 @@ pub(super) struct ScanOptions<'a> {
 impl SearchOutOfCoreReader {
     pub(super) fn default_compressed_vector_search_mode(&self) -> CompressedVectorSearchMode {
         #[cfg(feature = "vector-search")]
-        if self.segments.iter().any(|artifact| {
+        if !self.segments.iter().any(|artifact| {
+            Self::layer_has_vectors(artifact)
+                && artifact
+                    .rabitq_projection
+                    .as_ref()
+                    .is_some_and(|projection| projection.is_diskann())
+        }) && self.segments.iter().any(|artifact| {
             Self::layer_has_vectors(artifact)
                 && artifact
                     .rabitq_projection

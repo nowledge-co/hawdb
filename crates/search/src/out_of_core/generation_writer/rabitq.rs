@@ -167,6 +167,7 @@ impl VectorArtifactBuilder {
             HawDBError::Storage("search RaBitQ has no admitted writer".to_owned())
         })?;
         memory.admit_directory(next as usize / memory.segment_rows)?;
+        let quantization_guard = memory.quantization()?;
         let writer = self.writer.as_mut().ok_or_else(|| {
             HawDBError::Storage(
                 "search generation contains unexpected vector documents".to_string(),
@@ -177,6 +178,7 @@ impl VectorArtifactBuilder {
         writer
             .push(self.vector_ordinal, embedding)
             .map_err(rabitq_error)?;
+        drop(quantization_guard);
         #[cfg(test)]
         evidence::completed(1);
         checkpoint(&self.task_context)?;

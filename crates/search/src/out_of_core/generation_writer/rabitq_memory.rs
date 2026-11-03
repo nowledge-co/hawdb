@@ -16,7 +16,7 @@
 
 use super::SearchOutOfCoreGenerationBuildOptions;
 use crate::build_memory::{checked_add, checked_mul, BuildMemory};
-use crate::error::Result;
+use crate::error::{HawDBError, Result};
 use hawdb_executor::QueryMemoryLease;
 use hawdb_vector_projection::{ProjectionBuildAdmission, SegmentDescriptor};
 use std::mem::size_of;
@@ -27,6 +27,7 @@ pub(super) struct Admission {
     state: QueryMemoryLease,
     directory: QueryMemoryLease,
     identity_bytes: usize,
+    quantization_bytes: usize,
     pub(super) segment_rows: usize,
 }
 
@@ -62,16 +63,29 @@ impl Admission {
             state,
             directory,
             identity_bytes,
+            quantization_bytes: 0,
             segment_rows: 0,
         })
     }
 
     pub(super) fn admit_state(&mut self, admission: ProjectionBuildAdmission) -> Result<()> {
-        // The component admission includes row buffers, norms, transforms and
-        // the bounded scalar quantizer scratch for the complete push lifetime.
-        self.state.grow(admission.peak_working_bytes)?;
+        // Split the component's complete peak once: retained rows/transform
+        // live with the builder, while quantizer scratch competes with other
+        // stages only during a push. Never add it on top of the total peak.
+        let retained = admission
+            .peak_working_bytes
+            .checked_sub(admission.quantization_working_bytes)
+            .ok_or_else(|| {
+                HawDBError::Storage("RaBitQ scratch exceeds its build admission".into())
+            })?;
+        self.state.grow(retained)?;
+        self.quantization_bytes = admission.quantization_working_bytes;
         self.segment_rows = admission.admitted_segment_rows;
         Ok(())
+    }
+
+    pub(super) fn quantization(&self) -> Result<QueryMemoryLease> {
+        self.memory.retained.reserve(self.quantization_bytes)
     }
 
     pub(super) fn admit_directory(&mut self, segments: usize) -> Result<()> {

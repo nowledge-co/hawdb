@@ -106,8 +106,9 @@ reopen refuses disagreement even when checksums match.
 
 Default resident queries use an explicitly selected RaBitQ codec, including a
 schema binding. Default out-of-core queries (also the access-control entrypoint)
-use RaBitQ when their vector layers declare it; missing or incompatible layers
-are errors. No implicit scalar fallback or empty successful result may hide a declared
+use RaBitQ for a RaBitQ-only vector closure; missing or incompatible layers
+within that closure are errors. A mixed DiskANN/compatible-codec closure retains
+its existing scalar path and zero-cosine behavior. No implicit scalar fallback or empty successful result may hide a declared
 codec scan failure. Resident default construction admits the complete derived
 cache/build bound before allocating it; a query budget refusal leaves the cache
 unbuilt. Required scans propagate execution failures.
@@ -148,7 +149,9 @@ Projection construction MUST be streaming and segment-bounded. At most one
 admitted compressed segment, one transformed vector, one packed row and the
 bounded scalar quantizer scratch may be mutable build intermediates. The core
 admission includes the temporary absolute coordinates, refinement codes and a
-preallocated event heap; host accounting must not charge that scratch twice. If the requested segment size exceeds the memory
+preallocated event heap; host accounting must not charge that scratch twice. The admission separates
+quantizer working bytes from retained state so the temporary push charge still
+competes with other stages in the shared query budget. If the requested segment size exceeds the memory
 budget, the builder MUST reduce the admitted row count or fail with a stable
 resource-budget error; it MUST NOT collect all transformed vectors.
 Input numeric IDs MUST be strictly increasing. This permits constant-memory
