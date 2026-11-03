@@ -67,6 +67,7 @@ impl VectorArtifactBuilder {
                 )
             },
         ) && !(input.options.vector_index_descriptor.is_none()
+            && input.options.vector_scoring.is_default()
             && input.has_zero_vector);
         let diskann = (use_diskann && input.vector_document_count != 0)
             .then(|| super::diskann::DiskAnnArtifactBuilder::new(input, generation))

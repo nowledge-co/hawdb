@@ -7870,3 +7870,78 @@ fn grouped_evidence_complete_text_preserves_graph_eligibility_and_retained_reads
 }
 
 mod catch_up_admission_tests;
+
+#[cfg(feature = "vector-search")]
+#[test]
+fn embedded_vector_seed_preserves_ordinary_squared_l2_score() {
+    for out_of_core in [false, true] {
+        let root = unique_nowledge_mem_test_dir("linear_squared_l2_seed");
+        let mut graph =
+            NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+        graph.query("CREATE (:Memory {id: 'scaled'})").unwrap();
+        graph.query("CREATE (:Memory {id: 'near'})").unwrap();
+        let mut index = SearchIndex::open(&root).unwrap();
+        index
+            .set_vector_scoring(crate::SearchVectorScoring::LinearSquaredL2)
+            .unwrap();
+        index
+            .apply_projection_delta(SearchProjectionDelta {
+                upserts: [("scaled", vec![2.0, 0.0]), ("near", vec![1.0, 0.5])]
+                    .into_iter()
+                    .map(|(id, embedding)| SearchProjectionRow {
+                        kind: SearchProjectionKind::Memory,
+                        external_id: id.into(),
+                        title: String::new(),
+                        body: String::new(),
+                        embedding: Some(embedding),
+                        source_id: None,
+                        metadata: BTreeMap::new(),
+                    })
+                    .collect(),
+                deletes: Vec::new(),
+                max_operations: None,
+                source_graph_commit_epoch: Some(graph.database().commit_epoch().unwrap()),
+            })
+            .unwrap();
+        let store = if out_of_core {
+            index.checkpoint().unwrap();
+            drop(index);
+            NowledgeMemEmbeddedStore::new_with_out_of_core_search(
+                graph,
+                NowledgeMemOutOfCoreSearchProjection::open(&root).unwrap(),
+                NowledgeMemRetrievalProjectionAdvisor::default(),
+            )
+        } else {
+            NowledgeMemEmbeddedStore::new(
+                graph,
+                Some(NowledgeMemSearchProjection::from_index(index)),
+            )
+        };
+        let handle = NowledgeMemEmbeddedStoreHandle::new(store).unwrap();
+        let result = handle
+            .query_with_params_with_report(
+                "CALL vector_search($embedding, topK := 2) RETURN id, score",
+                &BTreeMap::from([(
+                    "embedding".into(),
+                    Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
+                )]),
+            )
+            .unwrap();
+        assert_eq!(result.output.rows.len(), 2);
+        assert_eq!(
+            result.output.rows[0].get("id"),
+            Some(&Value::String("memory:near".into()))
+        );
+        assert_eq!(
+            result.output.rows[0].get("score"),
+            Some(&Value::Float(0.875))
+        );
+        assert_eq!(
+            result.output.rows[1].get("id"),
+            Some(&Value::String("memory:scaled".into()))
+        );
+        assert_eq!(result.output.rows[1].get("score"), Some(&Value::Float(0.5)));
+        drop(handle);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

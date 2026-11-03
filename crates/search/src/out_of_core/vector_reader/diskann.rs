@@ -313,6 +313,16 @@ fn validate<R>(
             "graph shape or source digest differs from its manifest",
         ));
     }
+    let definition = active
+        .vector_index_binding
+        .as_deref()
+        .map(crate::vector_index::decode)
+        .transpose()?;
+    if metadata.metric != active.vector_scoring.metric(definition.as_ref()) {
+        return Err(invalid(
+            "graph metric differs from the projection scoring policy",
+        ));
+    }
     if let Some(encoded) = &active.vector_index_binding {
         let _scratch = admission
             .map(|value| {

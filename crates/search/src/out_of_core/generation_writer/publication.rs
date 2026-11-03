@@ -72,6 +72,7 @@ pub(super) struct PublishGenerationInput<'a> {
     pub(super) import_source_graph_commit_epoch: Option<u64>,
     pub(super) embedding_manifest: Option<&'a SearchEmbeddingManifest>,
     pub(super) vector_index_descriptor: Option<&'a hawdb_core::VectorIndexDescriptor>,
+    pub(super) vector_scoring: crate::SearchVectorScoring,
     pub(super) embedding_dimension: Option<usize>,
     pub(super) layout: &'a SearchOutOfCoreLayoutBody,
     pub(super) lexical_artifact_name: &'a str,
@@ -622,6 +623,7 @@ pub(super) fn install_generation(
             .embedding_manifest
             .map(|manifest| manifest.dimension)
             .or(input.embedding_dimension),
+        vector_scoring: input.vector_scoring,
         vector_index_binding: input
             .vector_index_descriptor
             .map(crate::vector_index::encode),

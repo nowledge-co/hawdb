@@ -121,9 +121,11 @@ mod snapshot_writer;
 mod test_allocation;
 mod vector_execution;
 mod vector_index;
+mod vector_scoring;
 pub use vector_index::{
     VectorIndexHit, VectorIndexQuery, VectorIndexQueryReport, VectorIndexRetainedOutput,
 };
+pub use vector_scoring::SearchVectorScoring;
 
 use document_encoding::encode_search_document_line;
 
@@ -476,6 +478,8 @@ pub struct SearchHit {
     /// `1 / (1 + l2_distance)` for Euclidean, which is often far below 1 for
     /// unnormalized embeddings. Compare scores only within one metric; a
     /// relevance floor tuned on cosine does not carry over to Euclidean.
+    /// `SearchVectorScoring::LinearSquaredL2` instead exposes
+    /// `max(0, 1 - squared_l2 / 2)` after selecting neighbors by distance.
     pub vector_score: f64,
     pub text_score: f64,
     pub rrf_score: f64,
@@ -1536,6 +1540,7 @@ pub struct SearchIndex {
     read_freshness: Option<Arc<SearchProjectionFreshness>>,
     documents: ResidentDocuments,
     vector_index_descriptor: Option<hawdb_core::VectorIndexDescriptor>,
+    vector_scoring: SearchVectorScoring,
     vector_document_summary: Option<vector_index::VectorDocumentSummary>,
     canonical_vector_source_epoch: Option<u64>,
     canonical_vector_delta: Option<vector_index::CanonicalVectorDelta>,
@@ -1804,6 +1809,8 @@ impl SearchIndex {
                 &identity,
             ) {
                 Ok(projection) => {
+                    self.vector_scoring
+                        .validate(self.vector_index_descriptor.is_some(), true)?;
                     if let Some(binding) = &self.vector_index_descriptor {
                         vector_index::validate_projection(binding, projection.manifest())?;
                     }
@@ -1857,6 +1864,8 @@ impl SearchIndex {
 
     #[cfg(feature = "vector-search")]
     fn build_in_memory_rabitq_projection(&self) -> Result<Option<Arc<RaBitQCandidateProjection>>> {
+        self.vector_scoring
+            .validate(self.vector_index_descriptor.is_some(), true)?;
         // Serialize the first build within a generation. Captured generations
         // reserve its complete build/cache capacity before a governed lease is
         // returned; concurrent readers must not allocate duplicate projections.
@@ -2765,6 +2774,10 @@ impl SearchIndex {
         publication: Option<&out_of_core::SearchProjectionPublishLease>,
         task: &RuntimeTaskContext,
     ) -> Result<SearchCheckpointReport> {
+        self.vector_scoring.validate(
+            self.vector_index_descriptor.is_some(),
+            self.rabitq_checkpoint.is_some(),
+        )?;
         let Some(path) = &self.path else {
             return Ok(SearchCheckpointReport::in_memory(self.documents.len()));
         };
@@ -2794,6 +2807,7 @@ impl SearchIndex {
                     embedding_dimension: self.embedding_dimension,
                     consumer_binding: self.consumer_binding.as_ref(),
                     vector_index_descriptor: self.vector_index_descriptor.as_ref(),
+                    vector_scoring: self.vector_scoring,
                     vector_document_summary: None,
                     canonical_vector_source_epoch: None,
                     rabitq_checkpoint: self.rabitq_checkpoint,
@@ -2905,6 +2919,8 @@ impl SearchIndex {
             self.invalidate_rabitq_projection();
             return Ok((generation, artifact.reference.byte_length, Some(artifact)));
         }
+        self.vector_scoring
+            .validate(self.vector_index_descriptor.is_some(), true)?;
         let projection = RaBitQCandidateProjection::write_from_view(
             &artifact_path,
             &self.documents,
@@ -3738,10 +3754,29 @@ impl SearchIndex {
         filtered_documents.sort_unstable_by(|left, right| left.id.cmp(&right.id));
         let filtered_document_count = filtered_documents.len();
         let mut prepared_adaptive_backend = None;
+        self.vector_scoring.validate(
+            self.vector_index_descriptor.is_some(),
+            self.rabitq_checkpoint.is_some(),
+        )?;
         let vector_backend_request = if vector_execution_options.exact {
             VectorSearchBackendRequest::Fixed(VectorSearchBackend::Scalar)
         } else {
-            vector_backend_request
+            match vector_backend_request {
+                VectorSearchBackendRequest::Adaptive(request)
+                    if !self.vector_scoring.is_default()
+                        && mode != SearchMode::Text
+                        && query_embedding.is_some() =>
+                {
+                    if request.compression_preference == VectorCompressionPreference::Required {
+                        return Err(HawDBError::Semantic(
+                            "linear squared-L2 scoring does not support compressed vector search"
+                                .into(),
+                        ));
+                    }
+                    VectorSearchBackendRequest::Default
+                }
+                request => request,
+            }
         };
         let vector_backend = match vector_backend_request {
             VectorSearchBackendRequest::Default => {
@@ -3898,6 +3933,7 @@ impl SearchIndex {
                 query_embedding: query_embedding
                     .expect("vector_available requires query embedding"),
                 metric: self.vector_metric(),
+                scoring: self.vector_scoring,
                 documents: &filtered_documents,
                 backend: vector_backend,
                 filter_fields: vector_filter_fields,
@@ -3975,7 +4011,7 @@ impl SearchIndex {
         let text_ranks = ranked_scores(&text_scores);
         let vector_window_ranks = window_ranks(&vector_ranks, options.rank_window);
         let text_window_ranks = window_ranks(&text_ranks, options.rank_window);
-        let retrievers = vec![
+        let mut retrievers = vec![
             SearchRetrieverReport {
                 name: "vector".to_string(),
                 backend: vector_backend.report_name().to_string(),
@@ -4191,6 +4227,13 @@ impl SearchIndex {
                 top_candidates: top_ranked_candidates(&text_window_ranks, &text_scores, limit),
             },
         ];
+        for retriever in &mut retrievers {
+            if retriever.name == "vector" {
+                for candidate in &mut retriever.top_candidates {
+                    candidate.score = self.vector_scoring.exposed(candidate.score);
+                }
+            }
+        }
         let mut scored_candidates = vector_scores
             .keys()
             .chain(text_scores.keys())
@@ -4262,8 +4305,12 @@ impl SearchIndex {
                 })?;
             hits.push(SearchHit {
                 id: candidate.id,
-                score: candidate.score,
-                vector_score: candidate.vector_score,
+                score: if mode == SearchMode::Vector {
+                    self.vector_scoring.exposed(candidate.score)
+                } else {
+                    candidate.score
+                },
+                vector_score: self.vector_scoring.exposed(candidate.vector_score),
                 text_score: candidate.text_score,
                 rrf_score: candidate.rrf_score,
                 vector_rrf_score: candidate.vector_rrf_score,
@@ -4450,6 +4497,14 @@ impl SearchIndex {
                     summary.validate()?;
                     self.vector_document_summary = Some(summary);
                 }
+                ["vector_scoring", "linear_squared_l2"] => {
+                    if !self.vector_scoring.is_default() || !self.documents.is_empty() {
+                        return Err(vector_index::invalid(
+                            "duplicate or misplaced vector scoring",
+                        ));
+                    }
+                    self.vector_scoring = SearchVectorScoring::LinearSquaredL2;
+                }
                 ["vector_index_binding", encoded] => {
                     if self.vector_index_descriptor.is_some() || !self.documents.is_empty() {
                         return Err(HawDBError::StorageIntegrity(
@@ -4619,6 +4674,10 @@ impl SearchIndex {
                 "invalid registered projection epochs".into(),
             ));
         }
+        self.vector_scoring.validate(
+            self.vector_index_descriptor.is_some(),
+            self.rabitq_checkpoint.is_some(),
+        )?;
         Ok(())
     }
 
@@ -4744,6 +4803,7 @@ impl Default for SearchIndex {
             rabitq_checkpoint: None,
             embedding_manifest: None,
             vector_index_descriptor: None,
+            vector_scoring: SearchVectorScoring::default(),
             vector_document_summary: None,
             canonical_vector_source_epoch: None,
             canonical_vector_delta: None,
@@ -7701,6 +7761,7 @@ mod vector_metric_tests;
 struct VectorRelevanceQuery<'a> {
     query: &'a [f32],
     metric: hawdb_core::VectorDistance,
+    scoring: SearchVectorScoring,
     prepared: Option<hawdb_core::vector::PreparedVectorQuery<'a>>,
 }
 
@@ -7710,6 +7771,7 @@ impl<'a> VectorRelevanceQuery<'a> {
         Self {
             query,
             metric,
+            scoring: SearchVectorScoring::default(),
             prepared: (query.len() >= 16)
                 .then(|| hawdb_core::vector::PreparedVectorQuery::new(query).ok())
                 .flatten(),
@@ -7725,6 +7787,7 @@ impl<'a> VectorRelevanceQuery<'a> {
             return Ok(Self {
                 query,
                 metric,
+                scoring: SearchVectorScoring::default(),
                 prepared: None,
             });
         }
@@ -7741,6 +7804,7 @@ impl<'a> VectorRelevanceQuery<'a> {
         Ok(Self {
             query,
             metric,
+            scoring: SearchVectorScoring::default(),
             prepared: prepared.ok(),
         })
     }
@@ -7751,8 +7815,14 @@ impl<'a> VectorRelevanceQuery<'a> {
         Self {
             query,
             metric,
+            scoring: SearchVectorScoring::default(),
             prepared: None,
         }
+    }
+
+    fn with_scoring(mut self, scoring: SearchVectorScoring) -> Self {
+        self.scoring = scoring;
+        self
     }
 
     /// Exact mathematical distance under this query's metric.
@@ -7774,6 +7844,9 @@ impl<'a> VectorRelevanceQuery<'a> {
 
     /// Facade relevance in [0, 1]; `None` when the pair has no defined score.
     fn score(&self, embedding: &[f32]) -> Option<f64> {
+        if self.scoring == SearchVectorScoring::LinearSquaredL2 {
+            return self.scoring.ranking_score(self.query, embedding);
+        }
         match self.metric {
             hawdb_core::VectorDistance::Cosine => {
                 if let Some(prepared) = &self.prepared

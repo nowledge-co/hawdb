@@ -124,7 +124,7 @@ impl ResidentDiskAnn {
             return projection.memory_bytes.saturating_add(mapped);
         }
         index.embedding_dimension.map_or(0, |dimension| {
-            Projection::memory_bound(&index.documents, dimension, None)
+            Projection::memory_bound(&index.documents, dimension, index.vector_metric(), None)
                 .map_or(usize::MAX, |(_, _, total)| total)
         })
     }
@@ -252,6 +252,7 @@ impl ResidentDiskAnn {
             *current = Some(Arc::new(Projection::build(
                 &index.documents,
                 dimension,
+                index.vector_metric(),
                 options,
             )?));
         }
@@ -277,8 +278,12 @@ impl ResidentDiskAnn {
         let (count, memory) = match current.as_ref() {
             Some(projection) => (projection.graph.len(), projection.memory_bytes),
             None => {
-                let (count, _, memory) =
-                    Projection::memory_bound(&index.documents, dimension, options.task_context)?;
+                let (count, _, memory) = Projection::memory_bound(
+                    &index.documents,
+                    dimension,
+                    index.vector_metric(),
+                    options.task_context,
+                )?;
                 (count, memory)
             }
         };
@@ -299,7 +304,8 @@ impl ResidentDiskAnn {
         if current.as_ref().is_some_and(|projection| !projection.dirty) {
             return Ok(true);
         }
-        let (_, _, required) = Projection::memory_bound(&index.documents, dimension, task)?;
+        let (_, _, required) =
+            Projection::memory_bound(&index.documents, dimension, index.vector_metric(), task)?;
         let retained = current
             .as_ref()
             .filter(|projection| Arc::strong_count(projection) > 1)
@@ -325,7 +331,8 @@ impl ResidentDiskAnn {
                     .ok_or_else(|| {
                         memory_error(previous.memory_bytes, options.max_working_bytes)
                     })?;
-                let replacement = Projection::build(&index.documents, dimension, options)?;
+                let replacement =
+                    Projection::build(&index.documents, dimension, index.vector_metric(), options)?;
                 *current = Some(Arc::new(replacement));
             }
         }
@@ -333,6 +340,7 @@ impl ResidentDiskAnn {
             *current = Some(Arc::new(Projection::build(
                 &index.documents,
                 dimension,
+                index.vector_metric(),
                 options,
             )?));
         }
@@ -420,7 +428,8 @@ impl ResidentDiskAnn {
             )
             .map_err(projection_error)?;
         let query_scorer =
-            crate::VectorRelevanceQuery::with_work(query, index.vector_metric(), checkpoint)?;
+            crate::VectorRelevanceQuery::with_work(query, index.vector_metric(), checkpoint)?
+                .with_scoring(index.vector_scoring);
         let mut candidates = Vec::with_capacity(limit);
         let mut candidate_vector_bytes = 0u64;
         for hit in &output.hits {
@@ -493,7 +502,7 @@ impl ResidentDiskAnn {
             },
             metrics: VectorCandidateScanMetrics {
                 kernel: hawdb_core::vector::distance_kernel_name(
-                    hawdb_core::VectorDistance::Cosine,
+                    index.vector_metric(),
                     query.len(),
                 )
                 .into(),
@@ -554,6 +563,7 @@ impl Projection {
     fn memory_bound(
         documents: &impl DocumentView,
         dimension: usize,
+        metric: VectorDistance,
         task: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<(usize, usize, usize)> {
         let mut count = 0usize;
@@ -567,7 +577,7 @@ impl Projection {
             {
                 return Err(non_finite_source());
             }
-            if valid_embedding(document, dimension) {
+            if valid_embedding(document, dimension, metric) {
                 count = count.saturating_add(1);
                 id_bytes = id_bytes.saturating_add(size_of::<String>() + document.id.len() + 1);
             }
@@ -587,11 +597,12 @@ impl Projection {
     fn build(
         documents: &impl DocumentView,
         dimension: usize,
+        metric: VectorDistance,
         options: crate::VectorSearchExecutionOptions<'_>,
     ) -> Result<Self> {
         let checkpoint = || checkpoint(options.task_context);
         let (count, id_bytes, total) =
-            Self::memory_bound(documents, dimension, options.task_context)?;
+            Self::memory_bound(documents, dimension, metric, options.task_context)?;
         let available = options.max_working_bytes.min(CACHE_BYTES);
         if total > available {
             return Err(memory_error(total, available));
@@ -605,7 +616,7 @@ impl Projection {
         let mut entries = Vec::with_capacity(count);
         for document in documents.values() {
             checkpoint()?;
-            if valid_embedding(document, dimension) {
+            if valid_embedding(document, dimension, metric) {
                 entries.push((
                     ids.len() as u64,
                     document
@@ -617,14 +628,8 @@ impl Projection {
                 ids.push(document.id.clone());
             }
         }
-        let graph = DiskAnnIndex::build(
-            dimension,
-            VectorDistance::Cosine,
-            entries,
-            config,
-            options.task_context,
-        )
-        .map_err(projection_error)?;
+        let graph = DiskAnnIndex::build(dimension, metric, entries, config, options.task_context)
+            .map_err(projection_error)?;
         Ok(Self {
             graph: Arc::new(Graph::Memory(graph)),
             ids: Arc::new(ids),
@@ -636,11 +641,11 @@ impl Projection {
     }
 }
 
-fn valid_embedding(document: &SearchDocument, dimension: usize) -> bool {
+fn valid_embedding(document: &SearchDocument, dimension: usize, metric: VectorDistance) -> bool {
     document.embedding.as_ref().is_some_and(|vector| {
         vector.len() == dimension
             && vector.iter().all(|value| value.is_finite())
-            && vector.iter().any(|value| *value != 0.0)
+            && (metric != VectorDistance::Cosine || vector.iter().any(|value| *value != 0.0))
     })
 }
 

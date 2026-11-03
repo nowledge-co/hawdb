@@ -158,6 +158,7 @@ pub struct SearchOutOfCoreGenerationBuildOptions {
     pub import_source_graph_commit_epoch: Option<u64>,
     pub embedding_manifest: Option<SearchEmbeddingManifest>,
     pub vector_index_descriptor: Option<hawdb_core::VectorIndexDescriptor>,
+    pub vector_scoring: crate::SearchVectorScoring,
     pub analyzer_lexicon: SearchAnalyzerLexicon,
     pub cleanup_options: SearchProjectionCleanupOptions,
 }
@@ -195,6 +196,7 @@ impl Default for SearchOutOfCoreGenerationBuildOptions {
             import_source_graph_commit_epoch: None,
             embedding_manifest: None,
             vector_index_descriptor: None,
+            vector_scoring: crate::SearchVectorScoring::default(),
             analyzer_lexicon: SearchAnalyzerLexicon::default(),
             cleanup_options: SearchProjectionCleanupOptions::default(),
         }
@@ -975,6 +977,7 @@ impl SearchOutOfCoreGenerationWriter {
                 import_source_graph_commit_epoch: self.options.import_source_graph_commit_epoch,
                 embedding_manifest: self.options.embedding_manifest.as_ref(),
                 vector_index_descriptor: self.options.vector_index_descriptor.as_ref(),
+                vector_scoring: self.options.vector_scoring,
                 embedding_dimension: self.embedding_dimension,
                 layout: &segment_output.layout,
                 lexical_artifact_name: &lexical_artifact_name,
@@ -1511,6 +1514,12 @@ fn rabitq_error(error: hawdb_vector_projection::ProjectionError) -> HawDBError {
 }
 
 fn validate_options(options: &SearchOutOfCoreGenerationBuildOptions) -> Result<()> {
+    options.vector_scoring.validate(
+        options.vector_index_descriptor.is_some(),
+        options
+            .vector_backend
+            .is_none_or(|backend| matches!(backend, hawdb_core::VectorIndexBackend::RaBitQ { .. })),
+    )?;
     if let Some(binding) = &options.vector_index_descriptor {
         crate::compiled_capabilities::effective_runtime_capabilities(Default::default())
             .require(hawdb_core::RuntimeCapability::VectorSearch)?;

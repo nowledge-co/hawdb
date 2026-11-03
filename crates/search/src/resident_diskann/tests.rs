@@ -43,7 +43,8 @@ fn oversized_default_resident_graph_falls_back_and_checkpoints_complete_source()
         row.content = "oversized graph fallback".into();
         index.upsert(row).unwrap();
     }
-    let (_, _, required) = Projection::memory_bound(&index.documents, dimension, None).unwrap();
+    let (_, _, required) =
+        Projection::memory_bound(&index.documents, dimension, index.vector_metric(), None).unwrap();
     assert!(
         required > CACHE_BYTES,
         "fixture must exceed the real graph cap"

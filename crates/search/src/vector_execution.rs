@@ -44,6 +44,7 @@ pub(super) struct SearchVectorExecutionRequest<'a, 'b> {
     pub query_embedding: &'a [f32],
     /// Final raw scores use the index's own metric, never a cosine default.
     pub metric: hawdb_core::VectorDistance,
+    pub scoring: crate::SearchVectorScoring,
     pub documents: &'a [&'a SearchDocument],
     pub backend: VectorSearchBackend<'a>,
     pub filter_fields: Vec<String>,
@@ -61,6 +62,7 @@ pub(super) fn execute_search_vector_plan(
     let SearchVectorExecutionRequest {
         query_embedding,
         metric,
+        scoring,
         documents,
         backend,
         filter_fields,
@@ -122,6 +124,7 @@ pub(super) fn execute_search_vector_plan(
         query_scorer: None,
         query_embedding,
         metric,
+        scoring,
         documents,
         backend,
         fallback_reason_codes,
@@ -153,6 +156,7 @@ struct SearchVectorSource<'a, 'b> {
     query_scorer: Option<VectorRelevanceQuery<'a>>,
     query_embedding: &'a [f32],
     metric: hawdb_core::VectorDistance,
+    scoring: crate::SearchVectorScoring,
     documents: &'a [&'a SearchDocument],
     backend: VectorSearchBackend<'a>,
     fallback_reason_codes: &'b mut Vec<SearchFallbackReasonCode>,
@@ -383,7 +387,8 @@ impl<'a> SearchVectorSource<'a, '_> {
         }
         let scorer = VectorRelevanceQuery::with_work(self.query_embedding, self.metric, || {
             self.checkpoint()
-        })?;
+        })?
+        .with_scoring(self.scoring);
         self.query_scorer = Some(scorer);
         Ok(scorer)
     }
