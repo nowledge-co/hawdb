@@ -3842,7 +3842,14 @@ impl SearchIndex {
         let mut prepared_adaptive_backend = None;
         self.vector_scoring
             .validate(self.vector_index_descriptor.is_some())?;
-        let vector_backend_request = if vector_execution_options.exact {
+        let default_without_candidates = mode != SearchMode::Text
+            && matches!(vector_backend_request, VectorSearchBackendRequest::Default)
+            && (limit == 0
+                || !filtered_documents
+                    .iter()
+                    .any(|document| document.embedding.is_some()));
+        let vector_backend_request = if vector_execution_options.exact || default_without_candidates
+        {
             VectorSearchBackendRequest::Fixed(VectorSearchBackend::Scalar)
         } else {
             vector_backend_request

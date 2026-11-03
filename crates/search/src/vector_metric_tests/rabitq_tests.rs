@@ -64,6 +64,29 @@ fn cold_rabitq_queries_validate_before_building_and_keep_l2_zero_queries_valid()
         assert!(result.unwrap_err().to_string().contains("cancel"));
         assert!(index.rabitq_projection().is_none());
         let zero = vec![0.0; fixture.query.len()];
+        let empty_domain = index
+            .search_with_options(
+                "",
+                Some(&fixture.query),
+                SearchMode::Vector,
+                SearchQueryOptions {
+                    metadata_filters: BTreeMap::from([("missing".into(), "value".into())]),
+                    ..options(1, None)
+                },
+            )
+            .unwrap();
+        assert!(empty_domain.hits.is_empty());
+        assert!(index.rabitq_projection().is_none());
+        let empty_page = index
+            .search_with_options(
+                "",
+                Some(&fixture.query),
+                SearchMode::Vector,
+                options(0, None),
+            )
+            .unwrap();
+        assert!(empty_page.hits.is_empty());
+        assert!(index.rabitq_projection().is_none());
         let result = index
             .search_with_options("", Some(&zero), SearchMode::Vector, options(1, None))
             .unwrap();

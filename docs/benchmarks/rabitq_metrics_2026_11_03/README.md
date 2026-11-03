@@ -2,13 +2,13 @@
 
 Issue Number: ref [#1473](https://github.com/nowledge-co/hawdb/issues/1473)
 
-Local macOS AArch64 measurement on 2026-11-03, pinned Rust 1.97.1,
+Local macOS AArch64 measurement on 2026-11-03 UTC, pinned Rust 1.97.1,
 repository checked test profile (optimization 1, debug assertions and overflow
 checks enabled), two compile jobs and one test thread. The branch is based on
 main `38d5bfe550f67df7d89e3935cd3a718f9ab10e18`; the measured implementation and
 fixture hashes are in [source-sha256.txt](source-sha256.txt). No profile or
 machine configuration was changed. Initial test compilation took 2m16s; the
-final-source incremental compilation took 41.88s. The final probe ran in 1.68s.
+final-source incremental compilation took 43.93s. The final probe ran in 1.70s.
 Compilation is excluded from the numbers below.
 
 Replay from the repository root:
@@ -30,14 +30,14 @@ route latency, concurrent load or release-mode throughput.
 
 | Scoring | Bits | Window | Build ms | Query median ms | Recall at 10 | Raw vector bytes read |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| ProjectionMetric | 1 | 64 | 43.087 | 5.709 | 0.90 | 393216 |
-| ProjectionMetric | 1 | 256 | 43.087 | 6.329 | 1.00 | 1572864 |
-| ProjectionMetric | 4 | 64 | 390.241 | 38.408 | 1.00 | 393216 |
-| ProjectionMetric | 4 | 256 | 390.241 | 38.999 | 1.00 | 1572864 |
-| LinearSquaredL2 | 1 | 64 | 43.158 | 5.870 | 1.00 | 393216 |
-| LinearSquaredL2 | 1 | 256 | 43.158 | 6.569 | 1.00 | 1572864 |
-| LinearSquaredL2 | 4 | 64 | 388.912 | 38.358 | 1.00 | 393216 |
-| LinearSquaredL2 | 4 | 256 | 388.912 | 39.188 | 1.00 | 1572864 |
+| ProjectionMetric | 1 | 64 | 43.950 | 5.774 | 0.90 | 393216 |
+| ProjectionMetric | 1 | 256 | 43.950 | 6.379 | 1.00 | 1572864 |
+| ProjectionMetric | 4 | 64 | 392.931 | 38.038 | 1.00 | 393216 |
+| ProjectionMetric | 4 | 256 | 392.931 | 38.097 | 1.00 | 1572864 |
+| LinearSquaredL2 | 1 | 64 | 50.604 | 5.962 | 1.00 | 393216 |
+| LinearSquaredL2 | 1 | 256 | 50.604 | 6.670 | 1.00 | 1572864 |
+| LinearSquaredL2 | 4 | 64 | 386.040 | 37.740 | 1.00 | 393216 |
+| LinearSquaredL2 | 4 | 256 | 386.040 | 38.264 | 1.00 | 1572864 |
 
 For 2,048 rows the complete raw Float32 corpus is 12,582,912 bytes. The
 64-candidate queries rerank exactly 64 rows (393,216 bytes); 256-candidate
