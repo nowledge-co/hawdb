@@ -400,6 +400,41 @@ The parent check is advisory: removal between validation and engine open can
 still race with the engine's parent creation. It is not an atomic
 no-parent-creation guarantee.
 
+For a persistent database, `open`, `Database` and DB-API `connect` also accept
+`namespace_durability_anchor`, a string or `os.PathLike[str]` naming an existing
+ancestor whose own name and ancestry the host guarantees already durable. The
+host must keep that namespace stable while the database is open. HawDB validates
+canonical ancestry before creating the project and synchronizes each required
+directory through the anchor, inclusive. Missing, non-directory, unrelated or
+conflicting anchors fail; an anchor without a database path raises `ValueError`.
+Concurrent opens of the same project must use the same canonical anchor.
+
+On Windows, the user's OS-provisioned LocalAppData directory can supply that
+host guarantee. Obtain its actual path from the Windows known-folder API; the
+path below is illustrative. Create the application directory below that existing
+boundary, then pass the boundary explicitly on every open:
+
+```python
+from pathlib import Path
+
+local_app_data = Path(r"C:\Users\Alice\AppData\Local")
+application_data = local_app_data / "ExampleApp"
+application_data.mkdir(exist_ok=True)
+with hawdb.open(
+    application_data / "graph",
+    namespace_durability_anchor=local_app_data,
+) as db:
+    db.execute("CREATE (:Memory {id: 1})")
+```
+
+Do not infer a durable boundary merely from directory existence or an access
+refusal, and do not use a freshly created application directory as the anchor.
+Omitting the option or passing `None` retains the default synchronization walk
+through the filesystem mount, which may require access to protected Windows
+ancestors such as `C:\Users`. The option preserves synchronous commit durability
+and storage formats. See [namespace durability](../../docs/BRANCH_NAMESPACE_DURABILITY.md)
+for the host guarantee and Windows power-loss qualification limits.
+
 ```python
 db = hawdb.open()
 db.execute("CREATE (:Memory {id: $id})", {"id": 1})

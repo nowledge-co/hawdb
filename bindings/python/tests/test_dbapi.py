@@ -138,6 +138,20 @@ def test_connect_takes_the_options_of_open():
     assert shape(hawdb.connect, skip=("autocommit",)) == shape(hawdb.open)
 
 
+def test_namespace_anchor_survives_commit_close_and_read_only_reopen(tmp_path):
+    path = tmp_path / "anchored"
+    with hawdb.connect(path, namespace_durability_anchor=tmp_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute(CREATE)
+        cursor.execute(INSERT, [1, "anchored"])
+    with hawdb.connect(
+        path, read_only=True, namespace_durability_anchor=tmp_path
+    ) as connection:
+        assert connection.cursor().execute("SELECT id, name FROM items").fetchall() == [
+            (1, "anchored")
+        ]
+
+
 def test_insert_with_parameters_and_fetch_tuples(connection):
     cursor = connection.cursor()
     assert cursor.connection is connection

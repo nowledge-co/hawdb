@@ -135,3 +135,11 @@ jobs:
         run: |
           python -c 'import pandas; print(pandas.__version__)'
           pytest tests/test_dbapi.py -k pandas
+
+      - name: Retain the tested native wheel for host verification
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-wheel-${{ runner.os }}-${{ github.sha }}
+          path: bindings/python/dist/*.whl
+          if-no-files-found: error
+          retention-days: 7

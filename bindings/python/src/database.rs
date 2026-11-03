@@ -48,8 +48,10 @@ impl Database {
         read_only: bool,
         max_read_result_rows: Option<usize>,
         max_read_result_payload_bytes: Option<usize>,
+        namespace_durability_anchor: Option<PathBuf>,
     ) -> PyResult<Self> {
-        let with_read_limits = |mut config: DatabaseConfig| {
+        let with_open_options = |mut config: DatabaseConfig| {
+            config.namespace_durability_anchor = namespace_durability_anchor.clone();
             if let Some(rows) = max_read_result_rows {
                 config.max_read_result_rows = Some(rows);
             }
@@ -62,16 +64,21 @@ impl Database {
             if read_only {
                 return Err(PyValueError::new_err("read_only requires a database path"));
             }
+            if namespace_durability_anchor.is_some() {
+                return Err(PyValueError::new_err(
+                    "namespace_durability_anchor requires a database path",
+                ));
+            }
             return Ok(Self {
-                inner: Some(HawDBEmbedded::open_in_memory_with_config(with_read_limits(
-                    DatabaseConfig::default(),
-                ))),
+                inner: Some(HawDBEmbedded::open_in_memory_with_config(
+                    with_open_options(DatabaseConfig::default()),
+                )),
                 path: None,
             });
         };
         let path = prepare_database_path(&path, read_only)?;
         let inner = if read_only {
-            let config = with_read_limits(DatabaseConfig {
+            let config = with_open_options(DatabaseConfig {
                 read_only: true,
                 recovery_mode: hawdb::RecoveryMode::Strict,
                 ..Default::default()
@@ -88,7 +95,7 @@ impl Database {
             })
         } else {
             let options = HawDBEmbeddedOpenOptions::new(path.clone());
-            let config = with_read_limits(options.config);
+            let config = with_open_options(options.config);
             HawDBEmbedded::open_with_options(HawDBEmbeddedOpenOptions { config, ..options })
         };
         match inner {
@@ -190,18 +197,20 @@ fn prepare_database_path(path: &Path, read_only: bool) -> PyResult<PathBuf> {
 #[pymethods]
 impl Database {
     #[new]
-    #[pyo3(signature = (path = None, read_only = false, *, max_read_result_rows = None, max_read_result_payload_bytes = None))]
+    #[pyo3(signature = (path = None, read_only = false, *, max_read_result_rows = None, max_read_result_payload_bytes = None, namespace_durability_anchor = None))]
     fn new(
         path: Option<PathBuf>,
         read_only: bool,
         max_read_result_rows: Option<usize>,
         max_read_result_payload_bytes: Option<usize>,
+        namespace_durability_anchor: Option<PathBuf>,
     ) -> PyResult<Self> {
         Self::open_impl(
             path,
             read_only,
             max_read_result_rows,
             max_read_result_payload_bytes,
+            namespace_durability_anchor,
         )
     }
 
@@ -921,18 +930,23 @@ impl ReadTransaction {
 /// an empty path. Filesystem path errors raise StorageError.
 /// `read_only=True` requires a path and opens an existing database read-only.
 /// Optional read budgets pass through to the engine; None keeps its defaults.
+/// A namespace_durability_anchor is an existing ancestor whose name and ancestry
+/// the host guarantees durable and stable for the handle's lifetime. Namespace
+/// synchronization includes that boundary. None keeps the engine's mount walk.
 #[pyfunction]
-#[pyo3(signature = (path = None, read_only = false, *, max_read_result_rows = None, max_read_result_payload_bytes = None))]
+#[pyo3(signature = (path = None, read_only = false, *, max_read_result_rows = None, max_read_result_payload_bytes = None, namespace_durability_anchor = None))]
 pub fn open(
     path: Option<PathBuf>,
     read_only: bool,
     max_read_result_rows: Option<usize>,
     max_read_result_payload_bytes: Option<usize>,
+    namespace_durability_anchor: Option<PathBuf>,
 ) -> PyResult<Database> {
     Database::open_impl(
         path,
         read_only,
         max_read_result_rows,
         max_read_result_payload_bytes,
+        namespace_durability_anchor,
     )
 }

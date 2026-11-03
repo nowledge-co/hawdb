@@ -441,12 +441,14 @@ class Connection:
         autocommit: bool = False,
         max_read_result_rows: int | None = None,
         max_read_result_payload_bytes: int | None = None,
+        namespace_durability_anchor: str | os.PathLike[str] | None = None,
     ) -> None:
         self._database: Database | None = _open(
             path,
             read_only,
             max_read_result_rows=max_read_result_rows,
             max_read_result_payload_bytes=max_read_result_payload_bytes,
+            namespace_durability_anchor=namespace_durability_anchor,
         )
         # A read-only database cannot commit even an empty transaction.
         self._read_only = bool(read_only)

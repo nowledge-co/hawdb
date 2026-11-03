@@ -1731,6 +1731,18 @@ surface as NotFound for the child. Preserve the requested absolute path in that
 refusal and leave the existing file untouched. The release profile and feature
 set match the existing Linux wheel lane.
 
+The same Python path family covers explicit `namespace_durability_anchor`
+forwarding through `open`, `Database` and DB-API `connect`: graph/SQL commit,
+writable/read-only reopen, string/PathLike boundaries, preservation of read
+ceilings, invalid-anchor refusal before project creation, conflicting live
+policy and refusal for in-memory opens. It uses the existing Bazel/Python
+Bindings lanes and profiles; replay `pytest tests/test_file.py -k namespace_anchor`
+and `pytest tests/test_dbapi.py -k namespace_anchor` from `bindings/python`
+with the corresponding installed wheel. The Python workflow retains the tested
+wheel by source SHA for manual host verification. CI's administrator process is
+separate from a native ordinary-user process receipt; boundary existence alone
+does not qualify physical power-loss persistence. Ref [#1255](https://github.com/nowledge-co/hawdb/issues/1255).
+
 The `registered_consumer_embedded` cases in
 `tests/support/embedded_consumer_coverage.rs` belong to `mvcc_staging_session`
 and its existing `registered_consumer` native-platform selection. Both default
