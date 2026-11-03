@@ -207,11 +207,6 @@ impl VectorIndexDescriptor {
                         "RaBitQ requires 1 or 4 bits and a positive segment size",
                     ));
                 }
-                if distance != VectorDistance::Cosine {
-                    return Err(invalid(
-                        "RaBitQ indexes currently support cosine distance only",
-                    ));
-                }
             }
             VectorIndexBackend::DiskAnn {
                 max_degree,

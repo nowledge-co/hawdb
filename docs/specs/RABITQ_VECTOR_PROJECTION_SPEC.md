@@ -24,7 +24,9 @@ Keeping these APIs does not authorize ANN dispatch or automatic maintenance.
 
 The `rabitq` algorithm descriptor currently means all of the following:
 
-1. L2-normalize each finite, non-empty input vector.
+1. Record each finite, non-empty input vector's original norm as Float64,
+   then normalize its direction. Exactly zero vectors remain zero; tiny finite
+   vectors are not treated as zero.
 2. Apply the manifest's deterministic signed block-Hadamard orthogonal
    transform. This bounded fast transform replaces a dense QR rotation and
    requires `O(d)` scratch rather than `O(d^2)` resident state.
@@ -34,15 +36,31 @@ The `rabitq` algorithm descriptor currently means all of the following:
    `i % 8` in byte `i / 8`. In 1-bit mode this is the complete code. In 4-bit
    mode, append a separate LSB-first three-bit refinement plane, where the
    refinement bits for coordinate `i` start at bit `3 * i`.
-5. Store a per-vector affine reconstruction scale and offset. Candidate scores
-   are `scale * dot(query, codes) + offset * sum(query)`.
+5. Store inverse-alignment calibration as a Float32 scale and offset. For
+   centered code `c` and transformed unit direction `u`, `scale = 1 / dot(u, c)`;
+   the offset incorporates the code center. Approximate cosine is
+   `scale * dot(query_direction, codes) + offset * sum(query_direction)`.
+6. For `squared_l2`, use the recorded raw norms and calibrated cosine to estimate
+   `norm(x)^2 + norm(q)^2 - 2 * norm(x) * norm(q) * cosine`. Candidate priority
+   is its negation, held as Float64. Do not clip approximate negative distances
+   before candidate selection. For `cosine`, priority is calibrated cosine.
+   Both priorities are higher-is-better; neither is a final relevance score.
 
 The manifest MUST identify the algorithm, transform, quantizer, calibration,
 bit width, metric, seed, dimension, embedding model and version, source epoch,
-source digest, and generation. Format version 1 uses
+source digest, and generation. Format version 2 uses transform
+`signed_block_hadamard_v2`, calibration `inverse_alignment_v1`, and quantizer
 `rabitq_sign_then_refinement_scalar_1bit_v1` or
-`rabitq_sign_then_refinement_scalar_4bit_v1`; its footer magic is `SKRQBF01`.
-The current calibration value is `none`.
+`rabitq_sign_then_refinement_scalar_4bit_v1`. The framing magic remains `SKRQBF01`;
+its manifest version is authoritative. Each segment stores columnar `u64` IDs,
+Float32 scales, Float32 offsets, Float64 original norms, then packed codes.
+This adds 8 bytes per vector to both widths compared with version 1. Raw vectors
+remain stored separately for exact reranking, so code compression is not a
+whole-database compression ratio.
+
+Earlier development artifacts require rebuilding from canonical raw vectors.
+No old approximate-result or development-format compatibility is promised.
+Changing metric requires a replacement index, never a per-query reinterpretation.
 
 The sign/refinement code representation is intentionally aligned with Faiss
 `IndexRaBitQ`, but HawDB stores its reconstruction factors in segment arrays
@@ -51,7 +69,7 @@ is an explicit pre-transform selected by its manifest; Faiss expects any random
 rotation to be performed externally. Therefore HawDB artifacts are not binary
 interchangeable with Faiss artifacts even though their packed quantizer planes
 have the same bit order and code semantics. Centroid calibration, other bit
-widths and ANN integration require production evidence before adoption. SIMD
+widths and new candidate partitioning require separate evidence before adoption. SIMD
 scoring preserves the existing encoding and scalar candidate scores; local
 performance evidence does not replace production qualification.
 
@@ -69,6 +87,35 @@ candidate scoring. An allowlist is converted to a compact row bitmap. A
 ineligible rows in a partially selected block MUST never enter the TopK heap.
 Post-filter-only over-fetch is not an authorization boundary.
 
+
+## Embedded metric selection
+
+The ordinary Search projection defaults to cosine. For Mem-style retrieval,
+select `SearchVectorScoring::LinearSquaredL2` before adding rows and select
+RaBitQ with `SearchIndex::set_rabitq_projection_build_options`. The same policy
+is available through `SearchOutOfCoreGenerationBuildOptions::vector_scoring`.
+Final raw-vector scores remain `max(0, 1 - squared_l2 / 2)`, with Float32 distance
+arithmetic and clipping after TopK/offset selection. There is no formula callback.
+See [ordinary scoring](../SEARCH_VECTOR_SCORING.md).
+
+Schema-bound `VectorIndexDescriptor` supports cosine and Euclidean RaBitQ.
+Euclidean candidate ordering uses squared L2, while its existing public relevance
+remains `1 / (1 + euclidean_distance)`. It is distinct from the ordinary Mem score
+policy. The descriptor, manifest and raw reranker must agree on the metric;
+reopen refuses disagreement even when checksums match.
+
+Default resident queries use an explicitly selected RaBitQ codec, including a
+schema binding. Default out-of-core queries (also the access-control entrypoint)
+use RaBitQ when their vector layers declare it; missing or incompatible layers
+are errors. No implicit scalar fallback or empty successful result may hide a declared
+codec scan failure. Resident default construction admits the complete derived
+cache/build bound before allocating it; a query budget refusal leaves the cache
+unbuilt. Required scans propagate execution failures.
+Explicit exact execution bypasses approximate selection. Advanced calls that
+explicitly set `CompressedVectorSearchMode` retain Disabled/Preferred/Required
+semantics; an out-of-core execution context's default is Disabled. Query limits,
+filters, cancellation and memory remain per-request controls, not metric knobs.
+
 ## Document Ordinal Boundary
 
 Resident and out-of-core search use the same dense vector ordinals: traverse
@@ -84,7 +131,7 @@ table. Resident reopen reconstructs that table from the snapshot and validates
 the artifact's dimension, vector count, generation, embedding/source identity,
 and ordered `(ordinal, embedding)` source digest before using it. Out-of-core
 metadata persists the corresponding string ID and vector ordinal directly.
-No second resident mapping sidecar or v1 format change is required.
+The ordinal mapping needs no second resident mapping sidecar.
 
 Changing the ordered vector stream invalidates the derived artifact. Changing
 only nonvector documents, or renaming an ID while preserving that stream, can
@@ -98,8 +145,10 @@ document identities or compared across generations without the search mapping.
 ## Resource And Concurrency Contract
 
 Projection construction MUST be streaming and segment-bounded. At most one
-admitted compressed segment, one transformed vector, and one packed row may be
-mutable build intermediates. If the requested segment size exceeds the memory
+admitted compressed segment, one transformed vector, one packed row and the
+bounded scalar quantizer scratch may be mutable build intermediates. The core
+admission includes the temporary absolute coordinates, refinement codes and a
+preallocated event heap; host accounting must not charge that scratch twice. If the requested segment size exceeds the memory
 budget, the builder MUST reduce the admitted row count or fail with a stable
 resource-budget error; it MUST NOT collect all transformed vectors.
 Input numeric IDs MUST be strictly increasing. This permits constant-memory

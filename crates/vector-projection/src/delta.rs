@@ -204,6 +204,7 @@ impl DeltaBuffer {
         top_k: usize,
         allowed_ids: Option<&[u64]>,
         task_context: Option<&RuntimeTaskContext>,
+        metric: crate::ProjectionMetric,
     ) -> Result<Vec<ProjectionHit>> {
         if let Some(context) = task_context {
             context.checkpoint()?;
@@ -223,7 +224,22 @@ impl DeltaBuffer {
                 allowed_ids.is_none_or(|allowed| allowed.binary_search(&entry.id).is_ok())
             })
             .filter_map(|entry| {
-                cosine_similarity(query, query_norm, &entry.vector).map(|score| ProjectionHit {
+                let score = match metric {
+                    crate::ProjectionMetric::Cosine => {
+                        cosine_similarity(query, query_norm, &entry.vector)
+                    }
+                    crate::ProjectionMetric::SquaredL2 => Some(
+                        -query
+                            .iter()
+                            .zip(&entry.vector)
+                            .map(|(left, right)| {
+                                let difference = f64::from(*left) - f64::from(*right);
+                                difference * difference
+                            })
+                            .sum::<f64>(),
+                    ),
+                };
+                score.map(|score| ProjectionHit {
                     id: entry.id,
                     score,
                 })
@@ -243,9 +259,9 @@ fn l2_norm(vector: &[f32]) -> f64 {
         .sqrt()
 }
 
-fn cosine_similarity(query: &[f32], query_norm: f64, vector: &[f32]) -> Option<f32> {
+fn cosine_similarity(query: &[f32], query_norm: f64, vector: &[f32]) -> Option<f64> {
     let vector_norm = l2_norm(vector);
-    if query_norm <= f64::EPSILON || vector_norm <= f64::EPSILON {
+    if query_norm == 0.0 || vector_norm == 0.0 {
         return None;
     }
     let dot = query
@@ -253,7 +269,7 @@ fn cosine_similarity(query: &[f32], query_norm: f64, vector: &[f32]) -> Option<f
         .zip(vector.iter())
         .map(|(query_value, vector_value)| f64::from(*query_value) * f64::from(*vector_value))
         .sum::<f64>();
-    Some((dot / (query_norm * vector_norm)) as f32)
+    Some(dot / (query_norm * vector_norm))
 }
 
 /// Result of merging a base projection search with a `DeltaBuffer` scan.
@@ -300,7 +316,13 @@ where
     let base_top_k = top_k.saturating_add(delta.len());
     let allowed_ids = options.candidates.map(|candidates| candidates.ids);
     let base_output = base_search(query, base_top_k, options)?;
-    let delta_hits = delta.scan(query, top_k, allowed_ids, options.task_context)?;
+    let delta_hits = delta.scan(
+        query,
+        top_k,
+        allowed_ids,
+        options.task_context,
+        base_output.report.metric,
+    )?;
 
     let delta_ids: HashSet<u64> = delta.entries.iter().map(|entry| entry.id).collect();
     let mut hits: Vec<ProjectionHit> = base_output
@@ -350,7 +372,7 @@ mod tests {
                 let base = (0..count)
                     .map(|id| ProjectionHit {
                         id: id as u64,
-                        score: 1.0 - id as f32 / 100.0,
+                        score: 1.0 - id as f64 / 100.0,
                     })
                     .collect::<Vec<_>>();
                 let mut delta = DeltaBuffer::new(2);

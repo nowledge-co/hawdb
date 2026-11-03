@@ -82,7 +82,8 @@ pub(crate) fn validate_projection(
     else {
         return Err(invalid("RaBitQ artifact has a different bound backend"));
     };
-    if artifact.dimension != descriptor.dimension().get() as usize
+    if artifact.metric != descriptor.distance().into()
+        || artifact.dimension != descriptor.dimension().get() as usize
         || artifact.bit_width != bit_width
         || artifact.requested_segment_rows != segment_rows as usize
         || artifact.transform_seed != transform_seed
@@ -172,7 +173,7 @@ impl SearchIndex {
         self.runtime_capabilities
             .require(hawdb_core::RuntimeCapability::VectorSearch)?;
         self.require_unregistered_publication()?;
-        self.vector_scoring.validate(true, false)?;
+        self.vector_scoring.validate(true)?;
         if !self.documents.is_empty() || self.vector_index_descriptor.is_some() {
             return Err(HawDBError::Semantic(
                 "a vector index definition requires an empty unbound builder".into(),

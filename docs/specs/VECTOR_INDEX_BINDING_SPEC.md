@@ -16,7 +16,9 @@ the full resolved binding must match before a source is admitted.
 
 The default schema-bound backend is DiskANN with cosine distance. DiskANN also
 supports Euclidean distance and optional Local Scaling Graph construction;
-explicit RaBitQ definitions retain their cosine-only contract. Only one field
+explicit RaBitQ definitions support cosine and Euclidean distance. Their
+candidate estimator uses the corresponding cosine or norm-corrected squared-L2
+priority, followed by exact raw-vector reranking. Only one field
 is indexed. NULL fields are omitted. Non-NULL cosine vectors must have a nonzero norm; a build
 must fail rather than silently exclude an invalid non-NULL value.
 
@@ -53,7 +55,7 @@ their original source and graph; a new canonical epoch cannot bind an old index.
 
 The query mode is explicit and shared by SQL and Cypher. The default
 `ann_window` mode generates bounded approximate candidates and reranks that
-window by exact cosine distance. `exact` exhausts the declared eligible domain
+window by its declared exact distance. `exact` exhausts the declared eligible domain
 before selecting its nearest k records. `filtered_ann` restricts approximate
 candidate generation to the complete eligible domain and exactly reranks the
 selected candidates. Ordinary filtered distance queries remain exact; the

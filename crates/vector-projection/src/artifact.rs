@@ -16,7 +16,7 @@ use crate::build::BuildState;
 use crate::error::{ProjectionError, Result};
 use crate::model::{
     ids_bytes, reconstruction_factor_bytes, ProjectionBuildConfig, ProjectionBuildReport,
-    ProjectionManifest, QuantizedSegment, RaBitQBitWidth, SegmentDescriptor,
+    ProjectionManifest, RaBitQBitWidth, SegmentDescriptor,
 };
 use crc32fast::Hasher;
 use hawdb_core::SharedAllocation;
@@ -196,13 +196,21 @@ impl ProjectionWriter {
                 &mut self.payload_hasher,
             )?;
         }
+        for norm in &segment.original_norms {
+            write_payload(
+                file,
+                &norm.to_le_bytes(),
+                &mut segment_hasher,
+                &mut self.payload_hasher,
+            )?;
+        }
         write_payload(
             file,
             &segment.codes,
             &mut segment_hasher,
             &mut self.payload_hasher,
         )?;
-        let payload_bytes = segment_payload_len(&segment) as u64;
+        let payload_bytes = segment.payload_len() as u64;
         self.segments.push(SegmentDescriptor {
             index: self.segments.len(),
             base_ordinal: segment.base_ordinal,
@@ -594,6 +602,13 @@ fn verify_projection_payload(mmap: &Mmap, manifest: &ProjectionManifest) -> Resu
                     descriptor.index
                 )));
             }
+            let norm = parts.original_norm(row);
+            if !norm.is_finite() || norm < 0.0 {
+                return Err(ProjectionError::CorruptArtifact(format!(
+                    "invalid RaBitQ original norm in segment {} row {row}",
+                    descriptor.index
+                )));
+            }
         }
     }
     if payload_hasher.finalize() != manifest.payload_checksum {
@@ -619,12 +634,13 @@ impl<'a> SegmentBuffer<'a> {
         let ids_end = ids_bytes(rows);
         let scales_end = ids_end.saturating_add(reconstruction_factor_bytes(rows));
         let offsets_end = scales_end.saturating_add(reconstruction_factor_bytes(rows));
-        if offsets_end > self.bytes.len() {
+        let norms_end = offsets_end.saturating_add(rows.saturating_mul(std::mem::size_of::<f64>()));
+        if norms_end > self.bytes.len() {
             return Err(ProjectionError::CorruptArtifact(
                 "segment header arrays exceed payload".to_string(),
             ));
         }
-        let codes = &self.bytes[offsets_end..];
+        let codes = &self.bytes[norms_end..];
         let expected_codes =
             rows.saturating_mul(crate::model::encoded_vector_bytes(dimension, bit_width));
         if codes.len() != expected_codes {
@@ -637,6 +653,7 @@ impl<'a> SegmentBuffer<'a> {
             ids: &self.bytes[..ids_end],
             reconstruction_scales: &self.bytes[ids_end..scales_end],
             reconstruction_offsets: &self.bytes[scales_end..offsets_end],
+            original_norms: &self.bytes[offsets_end..norms_end],
             codes,
         })
     }
@@ -647,6 +664,7 @@ pub(crate) struct SegmentParts<'a> {
     pub ids: &'a [u8],
     pub reconstruction_scales: &'a [u8],
     pub reconstruction_offsets: &'a [u8],
+    pub original_norms: &'a [u8],
     pub codes: &'a [u8],
 }
 
@@ -669,6 +687,15 @@ impl SegmentParts<'_> {
         ))
     }
 
+    pub fn original_norm(self, row: usize) -> f64 {
+        let offset = row * std::mem::size_of::<f64>();
+        f64::from_le_bytes(
+            self.original_norms[offset..offset + std::mem::size_of::<f64>()]
+                .try_into()
+                .expect("validated norm slice"),
+        )
+    }
+
     pub fn reconstruction_offset(self, row: usize) -> f32 {
         let offset = row * std::mem::size_of::<f32>();
         f32::from_bits(u32::from_le_bytes(
@@ -677,13 +704,6 @@ impl SegmentParts<'_> {
                 .expect("validated offset slice"),
         ))
     }
-}
-
-fn segment_payload_len(segment: &QuantizedSegment) -> usize {
-    segment.ids.len() * std::mem::size_of::<u64>()
-        + segment.reconstruction_scales.len() * std::mem::size_of::<f32>()
-        + segment.reconstruction_offsets.len() * std::mem::size_of::<f32>()
-        + segment.codes.len()
 }
 
 fn write_payload(
@@ -969,6 +989,11 @@ mod tests {
                 "negative-scale",
                 "nan-scale",
                 "infinite-offset",
+                "negative-norm",
+                "nan-norm",
+                "infinite-norm",
+                "field-order-offset-before-norm",
+                "row-order-norm-first",
                 "row-order-scale-first",
                 "row-order-offset-first",
                 "field-order-id-first",
@@ -991,6 +1016,17 @@ mod tests {
                     }
                     "infinite-offset" => {
                         bytes[36..40].copy_from_slice(&f32::INFINITY.to_le_bytes())
+                    }
+                    "negative-norm" => bytes[48..56].copy_from_slice(&(-1_f64).to_le_bytes()),
+                    "nan-norm" => bytes[48..56].copy_from_slice(&f64::NAN.to_le_bytes()),
+                    "infinite-norm" => bytes[48..56].copy_from_slice(&f64::INFINITY.to_le_bytes()),
+                    "field-order-offset-before-norm" => {
+                        bytes[36..40].copy_from_slice(&f32::INFINITY.to_le_bytes());
+                        bytes[48..56].copy_from_slice(&f64::NAN.to_le_bytes());
+                    }
+                    "row-order-norm-first" => {
+                        bytes[40..44].copy_from_slice(&f32::INFINITY.to_le_bytes());
+                        bytes[48..56].copy_from_slice(&f64::NAN.to_le_bytes());
                     }
                     "row-order-scale-first" => {
                         bytes[8..16].copy_from_slice(&10_u64.to_le_bytes());
@@ -1144,7 +1180,7 @@ mod tests {
         );
         assert_eq!(
             projection.manifest().segments[0].payload_bytes,
-            2 * (8 + 8 + 2)
+            2 * (8 + 8 + 8 + 2)
         );
         let first = projection.read_segment(0).unwrap();
         let first = first.parts(9, RaBitQBitWidth::One, 2).unwrap();

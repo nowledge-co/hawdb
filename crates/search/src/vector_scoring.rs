@@ -16,7 +16,7 @@ pub enum SearchVectorScoring {
     ProjectionMetric,
     /// Squared L2 over Float32 vectors, exposed as `max(0, 1 - distance / 2)`.
     /// Candidate selection precedes clipping, including zero-score neighbors.
-    /// No normalization is applied. Supported by exact search and DiskANN.
+    /// No normalization is applied. Supported by exact search, DiskANN and RaBitQ.
     LinearSquaredL2,
 }
 
@@ -32,10 +32,10 @@ impl SearchVectorScoring {
         }
     }
 
-    pub(crate) fn validate(self, bound: bool, compressed: bool) -> Result<()> {
-        if self == Self::LinearSquaredL2 && (bound || compressed) {
+    pub(crate) fn validate(self, bound: bool) -> Result<()> {
+        if self == Self::LinearSquaredL2 && bound {
             return Err(HawDBError::Semantic(
-                "linear squared-L2 scoring requires an ordinary exact/DiskANN projection".into(),
+                "linear squared-L2 scoring requires an ordinary unbound projection".into(),
             ));
         }
         Ok(())
@@ -98,10 +98,7 @@ impl SearchIndex {
                 "vector scoring must be selected before inserting documents".into(),
             ));
         }
-        scoring.validate(
-            self.vector_index_descriptor.is_some(),
-            self.rabitq_checkpoint.is_some(),
-        )?;
+        scoring.validate(self.vector_index_descriptor.is_some())?;
         #[cfg(feature = "vector-search")]
         self.resident_diskann.reset();
         self.vector_scoring = scoring;

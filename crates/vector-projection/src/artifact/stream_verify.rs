@@ -29,6 +29,7 @@ enum InvalidField {
     Id { previous: u64, next: u64 },
     Scale,
     Offset,
+    Norm,
 }
 
 #[derive(Clone, Copy)]
@@ -45,6 +46,7 @@ impl Violation {
                 InvalidField::Id { .. } => 0,
                 InvalidField::Scale => 1,
                 InvalidField::Offset => 2,
+                InvalidField::Norm => 3,
             },
         )
     }
@@ -63,6 +65,10 @@ impl Violation {
             }
             InvalidField::Scale => format!(
                 "invalid RaBitQ reconstruction scale in segment {segment} row {}",
+                self.row
+            ),
+            InvalidField::Norm => format!(
+                "invalid RaBitQ original norm in segment {segment} row {}",
                 self.row
             ),
             InvalidField::Offset => format!(
@@ -105,7 +111,11 @@ pub(super) fn verify_admitted_observing(
     for descriptor in &manifest.segments {
         let rows = descriptor.row_count;
         let header_bytes = rows
-            .checked_mul(std::mem::size_of::<u64>() + 2 * std::mem::size_of::<f32>())
+            .checked_mul(
+                std::mem::size_of::<u64>()
+                    + 2 * std::mem::size_of::<f32>()
+                    + std::mem::size_of::<f64>(),
+            )
             .ok_or_else(|| {
                 ProjectionError::CorruptArtifact("segment header arrays exceed payload".into())
             })?;
@@ -174,6 +184,20 @@ pub(super) fn verify_admitted_observing(
             |row, word| {
                 if !f32::from_le_bytes(*word).is_finite() {
                     Violation::retain_first(&mut invalid, row, InvalidField::Offset);
+                }
+            },
+        )?;
+        column::<8>(
+            reader,
+            rows,
+            &mut buffer,
+            &mut hashes,
+            admission,
+            observe,
+            |row, word| {
+                let norm = f64::from_le_bytes(*word);
+                if !norm.is_finite() || norm < 0.0 {
+                    Violation::retain_first(&mut invalid, row, InvalidField::Norm);
                 }
             },
         )?;

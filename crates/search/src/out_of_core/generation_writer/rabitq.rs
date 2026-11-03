@@ -96,16 +96,17 @@ impl VectorArtifactBuilder {
                     .as_ref()
                     .and_then(|manifest| manifest.version.clone()),
             };
+            let metric = input
+                .options
+                .vector_scoring
+                .metric(input.options.vector_index_descriptor.as_ref());
             let config = hawdb_vector_projection::ProjectionBuildConfig::new(dimension, identity)
+                .with_metric(metric.into())
                 .with_bit_width(input.options.rabitq_bit_width)
                 .with_segment_rows(input.options.rabitq_segment_rows.get())
                 .with_max_working_bytes(input.options.rabitq_build_memory_bytes.get())
                 .with_transform_seed(input.options.rabitq_transform_seed);
-            memory.admit_state(
-                config.resource_admission().map_err(rabitq_error)?,
-                dimension,
-                input.options.rabitq_bit_width,
-            )?;
+            memory.admit_state(config.resource_admission().map_err(rabitq_error)?)?;
             admission = Some(memory);
             #[cfg(test)]
             evidence::create();
@@ -166,7 +167,6 @@ impl VectorArtifactBuilder {
             HawDBError::Storage("search RaBitQ has no admitted writer".to_owned())
         })?;
         memory.admit_directory(next as usize / memory.segment_rows)?;
-        let _quantization = memory.quantization()?;
         let writer = self.writer.as_mut().ok_or_else(|| {
             HawDBError::Storage(
                 "search generation contains unexpected vector documents".to_string(),

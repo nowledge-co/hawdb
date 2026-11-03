@@ -16,11 +16,12 @@ use super::SearchDocument;
 use crate::error::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_storage::file_io::File;
+pub use hawdb_vector_projection::RaBitQBitWidth;
 use hawdb_vector_projection::{
     FileProjection, InMemoryProjection, KernelPreference, ProjectionBuildConfig,
     ProjectionBuildReport, ProjectionBuilder, ProjectionError, ProjectionIdentity,
     ProjectionManifest, ProjectionSearchOptions, ProjectionSearchReport, ProjectionWriter,
-    RaBitQBitWidth, DEFAULT_BUILD_MEMORY_BYTES, DEFAULT_SEGMENT_ROWS, DEFAULT_TRANSFORM_SEED,
+    DEFAULT_BUILD_MEMORY_BYTES, DEFAULT_SEGMENT_ROWS, DEFAULT_TRANSFORM_SEED,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -158,7 +159,13 @@ impl RaBitQCandidateProjection {
                     .as_ref()
                     .map_or(0, String::capacity),
             );
-        let Ok(admission) = build_config(dimension, identity, options).resource_admission() else {
+        let Ok(admission) = build_config(
+            dimension,
+            identity,
+            options,
+            hawdb_core::VectorDistance::Cosine,
+        )
+        .resource_admission() else {
             return usize::MAX;
         };
         let segments = count.div_ceil(admission.admitted_segment_rows);
@@ -207,13 +214,19 @@ impl RaBitQCandidateProjection {
         identity: ProjectionIdentity,
         options: RaBitQCandidateProjectionBuildOptions,
     ) -> Result<Option<Self>> {
-        Self::build_from_view(documents, identity, options)
+        Self::build_from_view(
+            documents,
+            identity,
+            options,
+            hawdb_core::VectorDistance::Cosine,
+        )
     }
 
     pub(crate) fn build_from_view(
         documents: &impl crate::resident_documents::DocumentView,
         identity: ProjectionIdentity,
         options: RaBitQCandidateProjectionBuildOptions,
+        metric: hawdb_core::VectorDistance,
     ) -> Result<Option<Self>> {
         let Some(RaBitQDocumentIdMap {
             dimension,
@@ -223,7 +236,7 @@ impl RaBitQCandidateProjection {
         else {
             return Ok(None);
         };
-        let config = build_config(dimension, identity, options);
+        let config = build_config(dimension, identity, options, metric);
         let mut builder = ProjectionBuilder::new(config).map_err(projection_error)?;
         for (ordinal, document_id) in ordinal_to_document_id.iter().enumerate() {
             let embedding = documents
@@ -252,7 +265,13 @@ impl RaBitQCandidateProjection {
         identity: ProjectionIdentity,
         options: RaBitQCandidateProjectionBuildOptions,
     ) -> Result<Option<Self>> {
-        Self::write_from_view(artifact_path, documents, identity, options)
+        Self::write_from_view(
+            artifact_path,
+            documents,
+            identity,
+            options,
+            hawdb_core::VectorDistance::Cosine,
+        )
     }
 
     pub(crate) fn write_from_view(
@@ -260,6 +279,7 @@ impl RaBitQCandidateProjection {
         documents: &impl crate::resident_documents::DocumentView,
         identity: ProjectionIdentity,
         options: RaBitQCandidateProjectionBuildOptions,
+        metric: hawdb_core::VectorDistance,
     ) -> Result<Option<Self>> {
         let Some(RaBitQDocumentIdMap {
             dimension,
@@ -269,7 +289,7 @@ impl RaBitQCandidateProjection {
         else {
             return Ok(None);
         };
-        let config = build_config(dimension, identity, options);
+        let config = build_config(dimension, identity, options, metric);
         let mut writer =
             ProjectionWriter::create(artifact_path, config).map_err(projection_error)?;
         for (ordinal, document_id) in ordinal_to_document_id.iter().enumerate() {
@@ -508,7 +528,7 @@ impl RaBitQCandidateProjection {
                     })?;
                 Ok(RaBitQCandidate {
                     id,
-                    score: f64::from(hit.score),
+                    score: hit.score,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -600,8 +620,10 @@ fn build_config(
     dimension: usize,
     identity: ProjectionIdentity,
     options: RaBitQCandidateProjectionBuildOptions,
+    metric: hawdb_core::VectorDistance,
 ) -> ProjectionBuildConfig {
     ProjectionBuildConfig::new(dimension, identity)
+        .with_metric(metric.into())
         .with_bit_width(options.bit_width)
         .with_segment_rows(options.segment_rows)
         .with_max_working_bytes(options.max_working_bytes)

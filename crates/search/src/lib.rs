@@ -1809,8 +1809,11 @@ impl SearchIndex {
                 &identity,
             ) {
                 Ok(projection) => {
-                    self.vector_scoring
-                        .validate(self.vector_index_descriptor.is_some(), true)?;
+                    if projection.manifest().metric != self.vector_metric().into() {
+                        return Err(HawDBError::StorageIntegrity(
+                            "RaBitQ artifact metric differs from its projection".into(),
+                        ));
+                    }
                     if let Some(binding) = &self.vector_index_descriptor {
                         vector_index::validate_projection(binding, projection.manifest())?;
                     }
@@ -1863,9 +1866,22 @@ impl SearchIndex {
     }
 
     #[cfg(feature = "vector-search")]
+    fn rabitq_backend_selected(&self) -> bool {
+        self.vector_index_descriptor.as_ref().map_or_else(
+            || self.rabitq_checkpoint.is_some(),
+            |definition| {
+                matches!(
+                    definition.backend(),
+                    hawdb_core::VectorIndexBackend::RaBitQ { .. }
+                )
+            },
+        )
+    }
+
+    #[cfg(feature = "vector-search")]
     fn build_in_memory_rabitq_projection(&self) -> Result<Option<Arc<RaBitQCandidateProjection>>> {
         self.vector_scoring
-            .validate(self.vector_index_descriptor.is_some(), true)?;
+            .validate(self.vector_index_descriptor.is_some())?;
         // Serialize the first build within a generation. Captured generations
         // reserve its complete build/cache capacity before a governed lease is
         // returned; concurrent readers must not allocate duplicate projections.
@@ -1880,6 +1896,7 @@ impl SearchIndex {
             &self.documents,
             self.rabitq_projection_identity(0),
             self.rabitq_build_options,
+            self.vector_metric(),
         )?
         .map(Arc::new);
         *cached = projection.clone();
@@ -2774,10 +2791,8 @@ impl SearchIndex {
         publication: Option<&out_of_core::SearchProjectionPublishLease>,
         task: &RuntimeTaskContext,
     ) -> Result<SearchCheckpointReport> {
-        self.vector_scoring.validate(
-            self.vector_index_descriptor.is_some(),
-            self.rabitq_checkpoint.is_some(),
-        )?;
+        self.vector_scoring
+            .validate(self.vector_index_descriptor.is_some())?;
         let Some(path) = &self.path else {
             return Ok(SearchCheckpointReport::in_memory(self.documents.len()));
         };
@@ -2920,12 +2935,13 @@ impl SearchIndex {
             return Ok((generation, artifact.reference.byte_length, Some(artifact)));
         }
         self.vector_scoring
-            .validate(self.vector_index_descriptor.is_some(), true)?;
+            .validate(self.vector_index_descriptor.is_some())?;
         let projection = RaBitQCandidateProjection::write_from_view(
             &artifact_path,
             &self.documents,
             self.rabitq_projection_identity(generation),
             self.rabitq_build_options,
+            self.vector_metric(),
         )?
         .ok_or_else(|| {
             HawDBError::Storage(
@@ -3036,9 +3052,9 @@ impl SearchIndex {
         )
     }
 
-    /// Default graph candidates under the caller's memory and cancellation limits.
-    /// Sources exceeding the ordinary graph cache use scalar search with a
-    /// reported cache-budget fallback. Caller-selected limits remain binding.
+    /// Default candidates under the caller's memory and cancellation limits.
+    /// Explicit RaBitQ selection refuses build/cache or query budget failures.
+    /// The ordinary graph may use scalar search with a reported cache fallback.
     pub fn try_search_with_options_context(
         &self,
         query_text: &str,
@@ -3425,7 +3441,7 @@ impl SearchIndex {
     ) -> Option<VectorProjectionQualificationIdentity> {
         #[cfg(feature = "vector-search")]
         {
-            if self.rabitq_checkpoint.is_none() {
+            if !self.rabitq_backend_selected() {
                 return self.resident_diskann.qualification_identity(self);
             }
             let projection = self.rabitq_projection()?;
@@ -3458,7 +3474,9 @@ impl SearchIndex {
         {
             // Resident graph snapshots do not persist construction measurements.
             // Never manufacture their resource evidence from an unrelated codec.
-            self.rabitq_checkpoint?;
+            if !self.rabitq_backend_selected() {
+                return None;
+            }
             let projection = self.rabitq_projection()?;
             let manifest = projection.manifest();
             let raw_vector_bytes = u64::try_from(manifest.document_count)
@@ -3754,42 +3772,64 @@ impl SearchIndex {
         filtered_documents.sort_unstable_by(|left, right| left.id.cmp(&right.id));
         let filtered_document_count = filtered_documents.len();
         let mut prepared_adaptive_backend = None;
-        self.vector_scoring.validate(
-            self.vector_index_descriptor.is_some(),
-            self.rabitq_checkpoint.is_some(),
-        )?;
+        self.vector_scoring
+            .validate(self.vector_index_descriptor.is_some())?;
         let vector_backend_request = if vector_execution_options.exact {
             VectorSearchBackendRequest::Fixed(VectorSearchBackend::Scalar)
         } else {
-            match vector_backend_request {
-                VectorSearchBackendRequest::Adaptive(request)
-                    if !self.vector_scoring.is_default()
-                        && mode != SearchMode::Text
-                        && query_embedding.is_some() =>
-                {
-                    if request.compression_preference == VectorCompressionPreference::Required {
-                        return Err(HawDBError::Semantic(
-                            "linear squared-L2 scoring does not support compressed vector search"
-                                .into(),
+            vector_backend_request
+        };
+        #[cfg(feature = "vector-search")]
+        let default_rabitq =
+            if matches!(vector_backend_request, VectorSearchBackendRequest::Default)
+                && self.rabitq_backend_selected()
+                && mode != SearchMode::Text
+                && query_embedding.is_some()
+                && limit != 0
+            {
+                if let Some(projection) = self.rabitq_projection() {
+                    Some(projection)
+                } else {
+                    let required = RaBitQCandidateProjection::in_memory_capacity_bound(
+                        &self.documents,
+                        self.rabitq_projection_identity(0),
+                        self.rabitq_build_options,
+                    );
+                    if required > vector_execution_options.max_working_bytes {
+                        return Err(rabitq_projection::map_projection_error(
+                            hawdb_vector_projection::ProjectionError::ResourceBudgetExceeded {
+                                required,
+                                available: vector_execution_options.max_working_bytes,
+                            },
+                            "resident RaBitQ build/cache admission",
                         ));
                     }
-                    VectorSearchBackendRequest::Default
+                    self.build_in_memory_rabitq_projection()?
                 }
-                request => request,
-            }
-        };
+            } else {
+                None
+            };
         let vector_backend = match vector_backend_request {
             VectorSearchBackendRequest::Default => {
                 #[cfg(feature = "vector-search")]
                 {
-                    let valid_query = query_embedding.is_some_and(|vector| {
-                        Some(vector.len()) == self.embedding_dimension
-                            && !vector.is_empty()
-                            && vector.iter().all(|coordinate| coordinate.is_finite())
-                            && vector.iter().any(|coordinate| *coordinate != 0.0)
-                    });
-                    if !vector_execution_options.exact && mode != SearchMode::Text && valid_query {
-                        let candidate_limit = options
+                    if let Some(projection) = default_rabitq.as_deref() {
+                        VectorSearchBackend::RaBitQ {
+                            projection,
+                            required: true,
+                        }
+                    } else {
+                        let valid_query = query_embedding.is_some_and(|vector| {
+                            Some(vector.len()) == self.embedding_dimension
+                                && !vector.is_empty()
+                                && vector.iter().all(|coordinate| coordinate.is_finite())
+                                && vector.iter().any(|coordinate| *coordinate != 0.0)
+                        });
+                        if !vector_execution_options.exact
+                            && mode != SearchMode::Text
+                            && valid_query
+                        {
+                            let candidate_limit = options
                             .offset
                             .saturating_add(limit)
                             .max(options.rank_window.unwrap_or(0))
@@ -3797,22 +3837,23 @@ impl SearchIndex {
                                 hawdb_vector_projection::diskann::DiskAnnSearchOptions::default()
                                     .beam_width,
                             );
-                        if self.resident_diskann.admits_default_search(
-                            self,
-                            &filtered_documents,
-                            query_embedding.expect("valid query").len(),
-                            candidate_limit,
-                            vector_execution_options,
-                        )? {
-                            VectorSearchBackend::DiskAnn { index: self }
+                            if self.resident_diskann.admits_default_search(
+                                self,
+                                &filtered_documents,
+                                query_embedding.expect("valid query").len(),
+                                candidate_limit,
+                                vector_execution_options,
+                            )? {
+                                VectorSearchBackend::DiskAnn { index: self }
+                            } else {
+                                vector_fallback_reason_codes
+                                    .push(SearchFallbackReasonCode::DiskAnnCacheBudgetExceeded);
+                                vector_fallback_reasons.push("resident DiskANN cache exceeds its memory envelope; using scalar vector scan".into());
+                                VectorSearchBackend::Scalar
+                            }
                         } else {
-                            vector_fallback_reason_codes
-                                .push(SearchFallbackReasonCode::DiskAnnCacheBudgetExceeded);
-                            vector_fallback_reasons.push("resident DiskANN cache exceeds its memory envelope; using scalar vector scan".into());
                             VectorSearchBackend::Scalar
                         }
-                    } else {
-                        VectorSearchBackend::Scalar
                     }
                 }
                 #[cfg(not(feature = "vector-search"))]
@@ -4674,10 +4715,8 @@ impl SearchIndex {
                 "invalid registered projection epochs".into(),
             ));
         }
-        self.vector_scoring.validate(
-            self.vector_index_descriptor.is_some(),
-            self.rabitq_checkpoint.is_some(),
-        )?;
+        self.vector_scoring
+            .validate(self.vector_index_descriptor.is_some())?;
         Ok(())
     }
 

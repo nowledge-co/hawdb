@@ -15,10 +15,15 @@ the embedding model, or reinterpret an existing cosine index. Zero vectors have
 ordinary L2 distances; a host's missing-embedding eligibility remains its concern.
 
 ```rust
-use hawdb::{SearchIndex, SearchVectorScoring};
+use hawdb::{RaBitQBitWidth, RaBitQCandidateProjectionBuildOptions, SearchIndex, SearchVectorScoring};
 
 let mut index = SearchIndex::in_memory();
 index.set_vector_scoring(SearchVectorScoring::LinearSquaredL2)?;
+// Optional: use the compressed candidate backend with the same L2 semantics.
+index.set_rabitq_projection_build_options(RaBitQCandidateProjectionBuildOptions {
+    bit_width: RaBitQBitWidth::Four, // One is also supported.
+    ..Default::default()
+});
 # Ok::<(), hawdb::HawDBError>(())
 ```
 
@@ -54,9 +59,12 @@ cancellation, filtering and output admission limits still apply.
 The policy is included in resident snapshots, retained read generations,
 out-of-core manifests and the DiskANN source identity. Incremental updates inherit
 the pinned base policy; changing it requires a full replacement. Schema-bound
-descriptors and cosine-only RaBitQ artifacts are refused with `LinearSquaredL2`.
-Explicit required compressed search is unsupported for this policy. Ordinary
-adaptive reads use the native DiskANN/exact path.
+descriptors are refused with `LinearSquaredL2`, since their score scale is owned
+by the schema binding. RaBitQ supports this policy at both 1 and 4 bits: it keeps
+raw norms for squared-L2 candidate estimation and exactly reranks selected raw
+vectors. The persisted artifact metric must match the projection. Default search
+uses an explicitly selected RaBitQ codec; explicit exact execution stays
+exhaustive. See [the RaBitQ contract](specs/RABITQ_VECTOR_PROJECTION_SPEC.md).
 
 Default projections retain their existing serialized metadata and scoring.
 Opt-in snapshots add `vector_scoring\tlinear_squared_l2`; manifests add

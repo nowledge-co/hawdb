@@ -454,7 +454,7 @@ impl HnswIndex {
             .into_iter()
             .map(|(score, ordinal)| ProjectionHit {
                 id: self.nodes[ordinal as usize].id,
-                score,
+                score: f64::from(score),
             })
             .collect())
     }
@@ -664,7 +664,7 @@ mod tests {
             .iter()
             .map(|(id, vector)| ProjectionHit {
                 id: *id,
-                score: exact_cosine(&query, vector),
+                score: f64::from(exact_cosine(&query, vector)),
             })
             .collect();
         exact.sort_by(|left, right| right.score.total_cmp(&left.score));
@@ -703,7 +703,7 @@ mod tests {
                 .iter()
                 .map(|(id, vector)| ProjectionHit {
                     id: *id,
-                    score: exact_cosine(&query, vector),
+                    score: f64::from(exact_cosine(&query, vector)),
                 })
                 .collect();
             exact.sort_by(|left, right| right.score.total_cmp(&left.score));

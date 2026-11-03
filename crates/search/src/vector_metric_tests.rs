@@ -582,7 +582,7 @@ fn out_of_core_squared_l2_retains_profile_and_scores_without_hydration() {
 }
 
 #[test]
-fn squared_l2_refuses_conflicting_bindings_compression_and_corrupt_metadata() {
+fn squared_l2_refuses_conflicting_bindings_and_corrupt_metadata() {
     let mut index = SearchIndex::in_memory();
     index
         .set_vector_scoring(SearchVectorScoring::LinearSquaredL2)
@@ -597,16 +597,6 @@ fn squared_l2_refuses_conflicting_bindings_compression_and_corrupt_metadata() {
     assert!(bound
         .set_vector_scoring(SearchVectorScoring::LinearSquaredL2)
         .is_err());
-    let root = directory("refused-compressed-squared-l2");
-    assert!(SearchOutOfCoreGenerationWriter::create(
-        &root.0,
-        SearchOutOfCoreGenerationBuildOptions {
-            vector_scoring: SearchVectorScoring::LinearSquaredL2,
-            vector_backend: None,
-            ..Default::default()
-        }
-    )
-    .is_err());
     let snapshot = |header: &str| {
         let body = format!("HAWDB_SEARCH_PROJECTION_V1\n{header}");
         format!("{body}checksum\t{}\n", checksum_bytes(body.as_bytes()))
@@ -624,10 +614,6 @@ fn squared_l2_refuses_conflicting_bindings_compression_and_corrupt_metadata() {
         (
             "vector_scoring\tunknown\n",
             "invalid search projection line",
-        ),
-        (
-            "vector_scoring\tlinear_squared_l2\nrabitq_checkpoint\t4\t16\t1\n",
-            "ordinary exact/DiskANN projection",
         ),
     ] {
         let mut restored = SearchIndex::in_memory();
@@ -655,11 +641,9 @@ fn squared_l2_checkpoint_refuses_conflicting_options_before_replacing_snapshot()
     index.checkpoint().unwrap();
     let snapshot = root.0.join(SEARCH_SNAPSHOT_FILE);
     let before = std::fs::read(&snapshot).unwrap();
-    index.set_rabitq_projection_build_options(Default::default());
+    index.vector_index_descriptor = Some(descriptor(VectorDistance::Euclidean));
     let error = index.checkpoint().unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("ordinary exact/DiskANN projection"));
+    assert!(error.to_string().contains("ordinary unbound projection"));
     assert_eq!(std::fs::read(&snapshot).unwrap(), before);
     drop(index);
     let reopened = SearchIndex::open(&root.0).unwrap();
@@ -682,3 +666,5 @@ fn execution(exact: bool) -> VectorSearchExecutionOptions<'static> {
         VectorSearchExecutionOptions::default()
     }
 }
+
+mod rabitq_tests;

@@ -554,7 +554,7 @@ pub use schema::{
 };
 #[cfg(feature = "vector-search")]
 pub use search::rabitq_projection::{
-    RaBitQCandidate, RaBitQCandidateOutput, RaBitQCandidateProjection,
+    RaBitQBitWidth, RaBitQCandidate, RaBitQCandidateOutput, RaBitQCandidateProjection,
     RaBitQCandidateProjectionBuildOptions, RaBitQCandidateScanOptions,
 };
 #[doc(hidden)]

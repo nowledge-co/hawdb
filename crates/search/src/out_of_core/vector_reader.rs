@@ -82,13 +82,14 @@ impl Projection {
         matches!(self, Self::DiskAnn(_) | Self::AdmittedDiskAnn(_))
     }
 
-    /// Distance metric recorded in the artifact. RaBitQ projections are
-    /// cosine-only (`VectorIndexDescriptor::new` refuses other metrics).
+    /// Distance metric recorded in the artifact, shared by candidate selection
+    /// and raw reranking. Squared L2 and Euclidean have identical ordering.
     pub(super) fn metric(&self) -> hawdb_core::VectorDistance {
         match self {
             Self::DiskAnn(value) => value.metric(),
             Self::AdmittedDiskAnn(value) => value.metric(),
-            Self::Ordinary(_) | Self::Admitted(_) => hawdb_core::VectorDistance::Cosine,
+            Self::Ordinary(value) => value.manifest().metric.into(),
+            Self::Admitted(value) => value.manifest().metric.into(),
         }
     }
 
@@ -123,6 +124,7 @@ impl Projection {
         let left = self.manifest();
         let right = other.manifest();
         if left.algorithm != right.algorithm
+            || self.metric() != other.metric()
             || left.bit_width != right.bit_width
             || left.transform_seed != right.transform_seed
         {
@@ -227,7 +229,7 @@ pub(super) fn open(
         .map_err(vector_projection_error)?;
     active
         .vector_scoring
-        .validate(active.vector_index_binding.is_some(), true)?;
+        .validate(active.vector_index_binding.is_some())?;
     let artifact = projection.manifest();
     if let Some(encoded) = &active.vector_index_binding {
         let _definition_memory = admission
@@ -236,6 +238,10 @@ pub(super) fn open(
             .reserve(hawdb_core::vector_index::MAX_VECTOR_INDEX_DESCRIPTOR_BYTES * 2)?;
         let definition = crate::vector_index::decode(encoded)?;
         crate::vector_index::validate_projection(&definition, artifact)?;
+    } else if artifact.metric != active.vector_scoring.metric(None).into() {
+        return Err(HawDBError::StorageIntegrity(
+            "RaBitQ artifact metric differs from its projection".into(),
+        ));
     }
     if artifact.identity.generation != manifest.generation
         || artifact.identity.source_epoch != manifest.source_graph_commit_epoch

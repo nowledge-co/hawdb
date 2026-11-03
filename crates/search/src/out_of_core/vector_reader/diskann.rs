@@ -168,13 +168,14 @@ impl<R> GraphProjection<R> {
                 .into_iter()
                 .map(|hit| ProjectionHit {
                     id: hit.id,
-                    // Candidate priorities are Float32; logarithmic ordering
-                    // stays finite even when a valid L2 distance exceeds f32.
-                    // Final distances are independently reranked as Float64.
-                    score: -(hit.distance.ln_1p() as f32),
+                    score: match self.metric() {
+                        hawdb_core::VectorDistance::Cosine => 1.0 - hit.distance,
+                        hawdb_core::VectorDistance::Euclidean => -hit.distance * hit.distance,
+                    },
                 })
                 .collect(),
             report: ProjectionSearchReport {
+                metric: self.metric().into(),
                 kernel,
                 worker_count: 1,
                 segment_count: 1,

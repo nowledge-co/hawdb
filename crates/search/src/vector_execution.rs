@@ -253,16 +253,7 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
                     }
                     Err(error) => {
                         if required {
-                            self.fallback_reason_codes.push(
-                                SearchFallbackReasonCode::CompressedVectorProjectionUnavailable,
-                            );
-                            self.fallback_reasons.push(format!(
-                                "HawDB RaBitQ projection is required but candidate scan failed: {error}"
-                            ));
-                            Ok(VectorCandidateBatch {
-                                score_source: VectorScoreSource::Unavailable,
-                                candidates: Vec::new(),
-                            })
+                            Err(error)
                         } else {
                             self.fallback_reason_codes
                                 .push(SearchFallbackReasonCode::VectorIndexEmpty);

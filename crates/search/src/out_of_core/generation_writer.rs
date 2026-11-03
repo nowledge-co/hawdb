@@ -1514,12 +1514,9 @@ fn rabitq_error(error: hawdb_vector_projection::ProjectionError) -> HawDBError {
 }
 
 fn validate_options(options: &SearchOutOfCoreGenerationBuildOptions) -> Result<()> {
-    options.vector_scoring.validate(
-        options.vector_index_descriptor.is_some(),
-        options
-            .vector_backend
-            .is_none_or(|backend| matches!(backend, hawdb_core::VectorIndexBackend::RaBitQ { .. })),
-    )?;
+    options
+        .vector_scoring
+        .validate(options.vector_index_descriptor.is_some())?;
     if let Some(binding) = &options.vector_index_descriptor {
         crate::compiled_capabilities::effective_runtime_capabilities(Default::default())
             .require(hawdb_core::RuntimeCapability::VectorSearch)?;
