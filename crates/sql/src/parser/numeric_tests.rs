@@ -106,3 +106,57 @@ fn numeric_cast_forms_and_schema_validation_agree() {
     }
     assert!(parse_postgres_sql("SELECT CAST(1 AS DOUBLE PRECISION)").is_ok());
 }
+
+#[test]
+fn numeric_peg_retains_independent_select_and_mutation_depth_boundaries() {
+    // Independently checked against main fd10958 (#1429), before PEG lowering.
+    for depth in [47, 48] {
+        for expression in [
+            format!("{}1{}", "CAST(".repeat(depth), " AS BIGINT)".repeat(depth)),
+            format!("{}1{}", "(".repeat(depth), ")".repeat(depth)),
+            format!("{}1", "- ".repeat(depth)),
+        ] {
+            assert!(parse_postgres_sql(&format!("SELECT {expression}")).is_ok());
+            let result = parse_postgres_sql(&format!("UPDATE amounts SET amount = {expression}"));
+            if depth == 47 {
+                assert!(result.is_ok(), "{expression}: {result:?}");
+            } else {
+                assert!(
+                    matches!(result, Err(HawDBError::Parse(_))),
+                    "{expression}: {result:?}"
+                );
+            }
+        }
+    }
+    let expression = format!("1{}", " + 1".repeat(129));
+    assert!(matches!(
+        parse_postgres_sql(&format!("SELECT {expression}")),
+        Err(HawDBError::Parse(_))
+    ));
+    assert!(matches!(
+        parse_postgres_sql(&format!("UPDATE amounts SET amount = {expression}")),
+        Err(HawDBError::Semantic(_))
+    ));
+}
+
+#[test]
+fn numeric_mutation_contexts_keep_their_recursive_frame() {
+    for depth in [46, 47] {
+        let expression = format!("{}1{}", "(".repeat(depth), ")".repeat(depth));
+        for sql in [
+            format!("INSERT INTO amounts VALUES ({expression})"),
+            format!("UPDATE amounts SET amount = 1 WHERE amount = {expression}"),
+            format!("DELETE FROM amounts WHERE amount = {expression}"),
+        ] {
+            let result = parse_postgres_sql(&sql);
+            if depth == 46 {
+                assert!(result.is_ok(), "{sql}: {result:?}");
+            } else {
+                assert!(
+                    matches!(result, Err(HawDBError::Parse(_))),
+                    "{sql}: {result:?}"
+                );
+            }
+        }
+    }
+}

@@ -4,22 +4,20 @@
 use hawdb_core::Result;
 use hawdb_sql_syntax::peg::NodeId;
 
-use super::{native::Value, Transformer};
+use super::Transformer;
 use crate::*;
 
 impl Transformer<'_> {
     pub(super) fn statement(&mut self, node: NodeId, depth: usize) -> Result<Statement> {
         self.check_depth(node, depth, 0)?;
         let selected = self.tree.children(node)[0];
-        match self.tree.nodes[selected]
-            .name
-            .expect("named statement rule")
-        {
+        match self.tree.node(selected).name.expect("named statement rule") {
             "explain" => {
-                let analyze = self.tree.child(selected, "analyze").is_some();
-                let child = self.tree.required(selected, "statement");
+                let analyze = self.tokens[self.tree.node(selected).start + 1]
+                    .is_keyword(self.input, "ANALYZE");
+                let child = self.tree.required(selected, rule_id!("statement"));
                 let statement = self.statement(child, depth + 1)?;
-                let body = super::super::explain_statement_body(&statement);
+                let body = explain_statement_body(&statement);
                 if control_statement(body) {
                     return Err(
                         self.error(selected, "EXPLAIN requires a query or mutation statement")
@@ -28,22 +26,14 @@ impl Transformer<'_> {
                 Ok(Statement::Explain(Box::new(Explain { analyze, statement })))
             }
             "cypher" => {
-                let children = self.tree.children(selected).to_vec();
+                let children = self.tree.children(selected).iter().copied();
                 let mut system_variables = Vec::new();
                 for child in children {
-                    if self.tree.nodes[child].name == Some("hint") {
-                        let Value::Hint {
-                            hint,
-                            depth: native_depth,
-                        } = self.tree.take(child)
-                        else {
-                            unreachable!()
-                        };
-                        self.check_depth(child, depth, native_depth)?;
-                        system_variables.push(hint);
+                    if self.tree.rule_id(child) == rule_id!("hint") {
+                        system_variables.push(self.system_assignment(child, depth)?);
                     }
                 }
-                let child = self.tree.required(selected, "statement");
+                let child = self.tree.required(selected, rule_id!("statement"));
                 let statement = self.statement(child, depth + 1)?;
                 if control_statement(&statement) {
                     return Err(self.error(
@@ -56,10 +46,10 @@ impl Transformer<'_> {
                     statement,
                 })))
             }
-            name @ ("multi_stage" | "match" | "unwind" | "load") => {
-                let pipeline = self.tree.required(selected, "pipeline");
+            name @ ("multi_stage" | "match" | "unwind") => {
+                let pipeline = self.tree.required(selected, rule_id!("pipeline"));
                 let pipeline = self.pipeline(pipeline, depth, &mut 0)?;
-                if name == "match" || name == "load" {
+                if name == "match" {
                     admit_optional(&pipeline).map_err(|message| self.error(selected, message))?;
                 }
                 if name == "unwind" {
@@ -72,17 +62,31 @@ impl Transformer<'_> {
             "checkpoint" => Ok(Statement::Checkpoint),
             "commit" => Ok(Statement::Commit),
             "rollback" => Ok(Statement::Rollback),
-            "create" | "alter" | "merge" | "set" | "call" => {
-                let Value::Statement {
-                    statement,
-                    depth: native_depth,
-                } = self.tree.take(selected)
-                else {
-                    unreachable!()
-                };
-                self.check_depth(selected, depth, native_depth)?;
-                Ok(*statement)
+            "alter" => {
+                self.schema_statement(self.tree.required(selected, rule_id!("schema_alter")))
             }
+            "create"
+                if self
+                    .tree
+                    .child(selected, rule_id!("schema_create"))
+                    .is_some() =>
+            {
+                self.schema_statement(self.tree.required(selected, rule_id!("schema_create")))
+            }
+            "create" => self.data_statement(
+                self.tree.required(selected, rule_id!("d_create_data")),
+                false,
+                depth,
+            ),
+            "merge" => self.data_statement(
+                self.tree.required(selected, rule_id!("d_merge_data")),
+                true,
+                depth,
+            ),
+            "set" => self
+                .system_assignment(selected, depth)
+                .map(Statement::SetSystemVariable),
+            "call" => self.call_statement(selected, depth),
             _ => unreachable!("known statement grammar rule"),
         }
     }
@@ -97,18 +101,16 @@ impl Transformer<'_> {
         self.clause_nodes(node, &mut nodes);
         let mut clauses = Vec::with_capacity(nodes.len());
         for child in nodes {
-            let Value::Clause {
-                mut clause,
-                anonymous: count,
-                depth: native_depth,
-            } = self.tree.take(child)
-            else {
-                unreachable!()
-            };
-            self.check_depth(child, depth, native_depth)?;
-            rebase_clause(&mut clause.kind, *anonymous);
-            *anonymous += count;
-            clauses.push(*clause);
+            let name = self.tree.node(child).name.expect("clause rule");
+            if name == "call_clause" {
+                clauses.push(self.procedure_clause(child, depth)?);
+                continue;
+            }
+            if matches!(name, "with_clause" | "return_clause") {
+                clauses.push(self.projection_clause(child, depth, anonymous)?);
+            } else {
+                clauses.push(self.graph_clause(child, depth, anonymous)?);
+            }
         }
         if !matches!(
             clauses.last().map(|clause| &clause.kind),
@@ -133,7 +135,9 @@ impl Transformer<'_> {
     }
 
     fn clause_nodes(&self, node: NodeId, output: &mut Vec<NodeId>) {
-        if self.tree.nodes[node]
+        if self
+            .tree
+            .node(node)
             .name
             .is_some_and(|name| name.ends_with("_clause"))
         {
@@ -160,7 +164,12 @@ fn control_statement(statement: &Statement) -> bool {
 }
 
 pub(super) fn admit_optional(pipeline: &QueryPipeline) -> std::result::Result<(), &'static str> {
-    if !super::super::Parser::is_multi_stage_pipeline(pipeline)
+    if pipeline
+        .clauses
+        .iter()
+        .filter(|clause| matches!(clause.kind, ClauseKind::With(_)))
+        .count()
+        < 2
         && pipeline.clauses.iter().any(|clause| {
             matches!(&clause.kind,
             ClauseKind::Match { optional: true, patterns, .. } if patterns.iter().any(|pattern|
@@ -173,73 +182,9 @@ pub(super) fn admit_optional(pipeline: &QueryPipeline) -> std::result::Result<()
     Ok(())
 }
 
-// Deferred names cannot collide with source identifiers: NUL is not legal in
-// an identifier. Rebase only fields populated by parse_match_node_pattern;
-// explicit __anonN variables and string/property values remain untouched.
-fn rebase_name(variable: &mut String, offset: usize) {
-    if let Some(index) = variable.strip_prefix("\0anon") {
-        *variable = format!(
-            "__anon{}",
-            offset + index.parse::<usize>().expect("generated ordinal")
-        );
-    }
-}
-fn rebase_node(node: &mut NodePattern, offset: usize) {
-    if node.anonymous {
-        rebase_name(&mut node.variable, offset);
-    }
-}
-fn rebase_pattern(pattern: &mut MatchPattern, offset: usize) {
-    rebase_node(&mut pattern.first, offset);
-    for step in &mut pattern.steps {
-        rebase_node(&mut step.target, offset);
-    }
-}
-fn rebase_predicate(predicate: &mut PropertyPredicate, offset: usize) {
-    match predicate {
-        PropertyPredicate::And(items) | PropertyPredicate::Or(items) => {
-            for item in items {
-                rebase_predicate(item, offset);
-            }
-        }
-        PropertyPredicate::Not(inner) => rebase_predicate(inner, offset),
-        PropertyPredicate::RelationshipExists { variable, .. } => rebase_name(variable, offset),
-        PropertyPredicate::BoundRelationshipExists {
-            source_variable,
-            target_variable,
-            ..
-        } => {
-            rebase_name(source_variable, offset);
-            rebase_name(target_variable, offset);
-        }
-        _ => {}
-    }
-}
-fn rebase_clause(clause: &mut ClauseKind, offset: usize) {
-    match clause {
-        ClauseKind::Match {
-            patterns,
-            predicate,
-            ..
-        } => {
-            for pattern in patterns {
-                rebase_pattern(pattern, offset);
-            }
-            if let Some(predicate) = predicate {
-                rebase_predicate(&mut predicate.kind, offset);
-            }
-        }
-        ClauseKind::Create(patterns) => {
-            for pattern in patterns {
-                rebase_pattern(pattern, offset);
-            }
-        }
-        ClauseKind::Merge { pattern, .. } => rebase_pattern(pattern, offset),
-        ClauseKind::With(projection) => {
-            if let Some(predicate) = &mut projection.predicate {
-                rebase_predicate(&mut predicate.kind, offset);
-            }
-        }
-        _ => {}
+fn explain_statement_body(statement: &Statement) -> &Statement {
+    match statement {
+        Statement::CypherQuery(query) => &query.statement,
+        _ => statement,
     }
 }

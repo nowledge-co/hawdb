@@ -1,0 +1,225 @@
+{
+  "artifacts": {
+    "parent": {
+      "path": "/private/tmp/hawdb-peg-rank-lowering-e2e-candidate-benchmark",
+      "sha256": "ce0bf87d840a0102c7d2286d9bf4e6c307b7b9bbcc6ae8dfe3c299d7437860f8"
+    },
+    "candidate": {
+      "path": "/private/tmp/hawdb-peg-shared-normalization-e2e-benchmark",
+      "sha256": "c37dc1b7d41aae1a40b12b759815269a28243a54f3620c88e4647084815ca350"
+    }
+  },
+  "runs": [
+    {
+      "variant": "parent",
+      "cpu_seconds": 1.86201,
+      "wall_seconds": 1.9305503750000002,
+      "maximum_resident_bytes": 15122432,
+      "cases": [
+        {
+          "case": "public_exact_lookup",
+          "median_ns": "21525",
+          "iterations": "2000",
+          "samples": "11"
+        },
+        {
+          "case": "public_aggregate_page",
+          "median_ns": "62154",
+          "iterations": "2000",
+          "samples": "11"
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "cpu_seconds": 1.820988,
+      "wall_seconds": 1.8234670839999998,
+      "maximum_resident_bytes": 15269888,
+      "cases": [
+        {
+          "case": "public_exact_lookup",
+          "median_ns": "21021",
+          "iterations": "2000",
+          "samples": "11"
+        },
+        {
+          "case": "public_aggregate_page",
+          "median_ns": "61194",
+          "iterations": "2000",
+          "samples": "11"
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "cpu_seconds": 1.8481130000000001,
+      "wall_seconds": 1.8646731250000004,
+      "maximum_resident_bytes": 15204352,
+      "cases": [
+        {
+          "case": "public_exact_lookup",
+          "median_ns": "21397",
+          "iterations": "2000",
+          "samples": "11"
+        },
+        {
+          "case": "public_aggregate_page",
+          "median_ns": "61476",
+          "iterations": "2000",
+          "samples": "11"
+        }
+      ]
+    },
+    {
+      "variant": "parent",
+      "cpu_seconds": 1.8555310000000005,
+      "wall_seconds": 1.8582375420000004,
+      "maximum_resident_bytes": 15269888,
+      "cases": [
+        {
+          "case": "public_exact_lookup",
+          "median_ns": "21289",
+          "iterations": "2000",
+          "samples": "11"
+        },
+        {
+          "case": "public_aggregate_page",
+          "median_ns": "62370",
+          "iterations": "2000",
+          "samples": "11"
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "cpu_seconds": 1.8238040000000013,
+      "wall_seconds": 1.8263025419999996,
+      "maximum_resident_bytes": 15253504,
+      "cases": [
+        {
+          "case": "public_exact_lookup",
+          "median_ns": "21058",
+          "iterations": "2000",
+          "samples": "11"
+        },
+        {
+          "case": "public_aggregate_page",
+          "median_ns": "61275",
+          "iterations": "2000",
+          "samples": "11"
+        }
+      ]
+    },
+    {
+      "variant": "parent",
+      "cpu_seconds": 1.8844730000000003,
+      "wall_seconds": 1.887018750000001,
+      "maximum_resident_bytes": 15253504,
+      "cases": [
+        {
+          "case": "public_exact_lookup",
+          "median_ns": "21519",
+          "iterations": "2000",
+          "samples": "11"
+        },
+        {
+          "case": "public_aggregate_page",
+          "median_ns": "63262",
+          "iterations": "2000",
+          "samples": "11"
+        }
+      ]
+    },
+    {
+      "variant": "parent",
+      "cpu_seconds": 1.865237000000001,
+      "wall_seconds": 1.8677150410000003,
+      "maximum_resident_bytes": 15269888,
+      "cases": [
+        {
+          "case": "public_exact_lookup",
+          "median_ns": "21750",
+          "iterations": "2000",
+          "samples": "11"
+        },
+        {
+          "case": "public_aggregate_page",
+          "median_ns": "62532",
+          "iterations": "2000",
+          "samples": "11"
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "cpu_seconds": 1.8076029999999994,
+      "wall_seconds": 1.810274583,
+      "maximum_resident_bytes": 15237120,
+      "cases": [
+        {
+          "case": "public_exact_lookup",
+          "median_ns": "20877",
+          "iterations": "2000",
+          "samples": "11"
+        },
+        {
+          "case": "public_aggregate_page",
+          "median_ns": "60781",
+          "iterations": "2000",
+          "samples": "11"
+        }
+      ]
+    }
+  ],
+  "case_mean_median_ns": {
+    "parent": [
+      21520.75,
+      62579.5
+    ],
+    "candidate": [
+      21088.25,
+      61181.5
+    ]
+  },
+  "paired_statistics": [
+    {
+      "mean_percent": 2.0659214476197536,
+      "t95_lower_percent": -1.0099547471484813,
+      "t95_upper_percent": 5.1417976423879885,
+      "paired_gains_percent": [
+        2.3976023976024052,
+        -0.5047436556526619,
+        2.1891917561021934,
+        4.181635292427077
+      ]
+    },
+    {
+      "mean_percent": 2.286649955432046,
+      "t95_lower_percent": 0.8412145748612272,
+      "t95_upper_percent": 3.732085336002865,
+      "paired_gains_percent": [
+        1.5687812530640333,
+        1.4542260394300177,
+        3.2427580579355464,
+        2.880834471298588
+      ]
+    }
+  ],
+  "mean_cpu_seconds": {
+    "parent": 1.8668127500000005,
+    "candidate": 1.8251270000000002
+  },
+  "source_context": {
+    "candidate_base": "91b1ecffb98830be1fb01c3ab00fa09fd1085e32",
+    "candidate_tree": "b2e1dee89a37b3fc275be116c47b13a885a3e631",
+    "candidate_source_sha256": {
+      "crates/query/src/lib.rs": "544d2e548e4924ce12a2a63eb502a68cb0d9dfc53d1544bc440646cbe3e61a91",
+      "src/api/plan_cache.rs": "ceb4d4790057b04ba5914446157771dd5e2b85f6c1003f03be4205d1256fff88"
+    },
+    "benchmark_source_sha256": "bce2a3195e03c62733c2e4ad0ff1d7a6525069bba369728df65047ac4c823b7f",
+    "comparison": "shared-normalization-vs-peg",
+    "unpublished": true,
+    "protocol": "Unchanged public fixture, 64 rows, normal warm-cache policy, 11 samples, 2000 calls, eight counterbalanced processes; full columns/rows asserted outside timing."
+  },
+  "interference_monitor": "v4; no observed compiler/test/benchmark interference; other host activity uncontrolled"
+}

@@ -881,7 +881,7 @@ legacy document tombstones before reducing the complete pinned source interval.
 | Python release: `.github/workflows/pypi.yaml` | Released tag/version/main-history agreement, reviewed shared dependency identities, byte-identical sdist lock/profile and tool exclusions, five native wheel builds from that sdist, installed default/Pydantic binding tests, typing/license/metadata payloads and PyPI file hashes | GitHub Release publication or explicit replay of an existing release tag. Linux x86-64/AArch64 use manylinux 2.28; macOS x86-64/AArch64 and Windows x86-64 build natively. Reuses `bindings/python/tests` on CPython 3.11; the final public install smoke is Linux x86-64 with bounded index/CDN retries. No fuzz campaigns or new presubmit test lane. Build cost includes a first release-profile compilation on each platform. See [publishing](../bindings/python/README.md#publishing). |
 | Python dependency lock: `bindings/python/test_check_lock.py` and `check_lock.py` | Reject shared version/source/checksum drift and local engine version mismatch; accept reviewed multiple-version selections and binding-only dependencies | Existing Python Bindings pip job, before its locked wheel build. Replay: `python -m unittest discover -s bindings/python -p test_check_lock.py` and `python bindings/python/check_lock.py` with Python 3.11+. These pure metadata controls do not join the Bazel native-binding test inventory or compile the engine. |
 | Weekly platform and daily Windows abandonment qualification | Supported platform/feature combinations and the complete Windows abandonment/GC fault matrix | Scheduled or explicit workflows. They are not fuzz time budgets. |
-| Cypher PEG frontend | The default statement, profiled and pipeline entries share the SQL/PGQ packrat engine with a Cypher-specific lexer. Existing migration inventory (1,427 cases) compares acceptance, error classes and full AST/source spans with the test-only handwritten driver. Generated clause/wrapper and UTF-8 truncation differentials cover anonymous-name rollback, hints, legacy procedure admission, combined nesting and PEG work/node/memo/depth limits. A native capture counter checks that two-WITH lookahead reuses accepted clause ASTs. | `cargo test --locked -p hawdb-cypher`; `bazel test //crates/cypher:hawdb_cypher_tests //crates/cypher:hawdb_cypher_backtracking_fuzz_tests`. Shared engine regressions remain in `//crates/sql-syntax:hawdb_sql_syntax_tests`; SQL/PGQ integration targets remain unchanged. No new CI or crate boundary. |
+| Cypher PEG frontend | The default statement, profiled, pipeline and projected-filter entries use the compiled peg grammar with a Cypher-specific lexer. Selected captures lower to owned ASTs; immutable pre-removal and independently compiled main fixtures cover complete AST/source spans and rejection classes, including the current Mem query contracts. Generated clause/wrapper, contextual-keyword, UTF-8 truncation and backtracking cases cover anonymous-name order, hints, procedure admission and independent work/capture/nesting limits. The core function catalog supplies list/string names. Compact capture tests cover branch span/count boundaries, alias tag overlap, borrowed child slices and arena fallback; property-only scalar lists lower directly without temporary value lists. Private 12-byte lexer tokens retain the existing byte/token limits; range/layout tests cover full admitted offsets, UTF-8, named parameters and EOF. Logical capture budgets are unchanged. Rank CASE lowering has 2,026 independently exported main statement/pipeline outcomes covering literal and parameter branches, mixed references, operators, parentheses, invalid values and nesting boundaries; complete AST hashes include source spans. Independent main diagnostics cover 693 CSV-message, string-decoding, argument-arity, computed-UNWIND location and overflowing-integer location repairs, checking complete error strings and source positions. A third independent fixture adds 815 value/scalar-default diagnostic repairs and four procedure-argument controls, preserving existing correct diagnostics and checking complete messages and positions. A fourth fixture adds1,590 predicate, punctuation and trailing-input repairs (1,548 distinct cases); a Unicode-message/context regression verifies single-buffer diagnostic formatting. SQL retains its separate memoized PEG engine and resource tests. Handwritten drivers, the duplicate Cypher DSL and backend selection feature are removed. | `cargo test --locked -p hawdb-cypher`; `bazel test //crates/cypher:hawdb_cypher_tests //crates/cypher:hawdb_cypher_backtracking_fuzz_tests`. SQL engine regressions remain in `//crates/sql-syntax:hawdb_sql_syntax_tests`; SQL/PGQ integration targets remain unchanged. No new CI or crate boundary. |
 | Local Shiro and MVCC tools | Generated SQL/Cypher result relations, parser/storage campaigns, independent Decimal/Cypher/temporal/keyless models, optimistic history checking and composite/secondary/keyless range-lock models | Manual only. Existing `//tools/shiro:shiro_tests` and `//tools/shiro:shiro_cli_tests` own Shiro controls. MVCC range controls use `cargo test --locked --manifest-path tools/mvcc-fuzz/Cargo.toml ranges`; campaigns/replay/reduction are documented in [Shiro](../tools/shiro/README.md) and [MVCC](../tools/mvcc-fuzz/README.md#composite-secondary-and-keyless-range-models). Preserve legacy replay formats; new coverage uses explicit protocols. No CI, scheduling, profile or deadline change. |
 
 ## Root regression owners
@@ -2673,36 +2673,83 @@ CI/fuzz lane is weakened.
 The existing `//crates/sql-syntax:hawdb_sql_syntax_tests` target owns the token
 PEG engine regressions: ordered choice, successful and failed packrat reuse,
 lookahead diagnostics, long invalid token text, invalid grammar rejection,
+charged token-adjacency checks with capture rollback, memo reuse and Unicode
+source-token boundaries,
 linear malformed recursion,
-fatal work/storage/depth budgets, capture rollback with memo reuse, and exact
-entry/edge accounting across direct and sparse memo storage. The existing
+fatal work/storage/depth budgets, independent language-depth admission through
+memo reuse, capture rollback, and exact entry/edge accounting across direct,
+small, dense and sparse memo storage. A sparse oracle checks adaptive storage
+through forward visits, backward completion, holes, replacement and density
+changes; dense tables retain at most four logical slots per occupied entry
+and convert to sparse storage at most once. Lexical atoms finish without a
+continuation frame while retaining the same logical work/depth checks. The existing
 `postgres_pgq_tests` and `postgres_select_pgq_tests` targets own syntax ASTs,
-graph nesting, aliases,
+pure PEG expression/graph rules, separate aggregate/SELECT DISTINCT admission,
+independent exact 128-level expression and graph nesting (including their combination on the ordinary test thread), aliases,
 joins, byte spans and composed GRAPH_TABLE rejection. All use the ordinary
 checked profile and existing SQL syntax CI lanes.
 
 `//crates/sql:hawdb_sql_tests` retains the frozen production/owned frontend
 corpus and PGQ binder/lowering tests. It must preserve the recorded acceptance
 and rejection codes, including the explicitly reviewed SELECT-family promotion
-changes. The default SELECT/EXPLAIN PEG path is compared with the legacy parser
-for complete accepted relational IRs (including source positions) and rejected
-inputs across the frozen corpus. Error classes must match outside the 11
-explicit frozen Semantic-to-Parse exceptions; the generated vector `:=` refusal
-has its own explicit exception. Keep those exceptions exercised. Oversized
-INSERT/DDL regression inputs verify that prefix dispatch does not impose the
-owned full-input cap on legacy bodies, while oversized SELECT/EXPLAIN still
-fail closed. Malformed numeric separator cases cover both SQL frontends and
-PGQ syntax refusal before creation binding. Existing root relational SQL tests own embedded
-query results, plans, parameters, caching, joins, aggregates and vector execution.
-DDL/DML retain upstream routing pending separate qualification.
+changes. All supported SQL families now use PEG, including DDL/DML,
+materialized views and branches; production and test builds have no upstream
+SQL parser dependency. Frozen Debug-AST SHA-256 fixtures preserve all 1,009 SQL
+inventory outcomes and both Cypher public entries for 1,427 queries (2,854
+records), exported from main `0f611b6dec` and independently rechecked against
+`9c355e9a46`. Accepted hashes include source locations. The recorded 11
+SELECT-family Semantic-to-Parse changes remain part of the frozen outcome
+contract. The 102-case literal/contributing-span baseline and a new 489-case
+generated SELECT/DDL/DML baseline were exported independently from main
+`9c355e9a46`; the latter includes the generated `:=` rejection, all three comment
+prefixes, empty SELECT/VALUES/storage forms, qualified aliases, mutation
+predicates and unsupported statements. Never refresh these from the candidate. A main-only target directory, never
+used by the candidate, independently recompiled `9c355e9a46` and re-exported all
+1,608 SQL and 2,854 Cypher records with zero differences.
+
+The additional 522-case `frontend_main_1474_peg_baseline_v1.jsonl` is exported
+from an independent `f3e5ecd01514b2703bf2a00fffbaeb3d97ba9399` build. It covers
+PostgreSQL integer/float/varying-character aliases and modifier refusal classes,
+implicit INSERT columns, and parenthesized scalar/aggregate arguments. Six
+explicit source-linked replacements promote INTEGER and implicit INSERT
+columns from the unchanged 489-case historical fixture; each replacement
+asserts the previous outcome and complete new AST hash. The new fixture and
+three parser behavior tests run in the existing SQL test target; its fixture
+glob includes the data without another target or CI lane.
+
+The direct VALUES-literal PEG production keeps the active composite-lock
+workload's 5,001 five-column rows inside the existing PEG step/node/memo caps.
+It supports numeric, negative numeric, string, parameter, boolean and null
+literals, with a delimiter lookahead before selecting that production. Other
+expressions still match the full expression grammar and retain semantic
+refusals. The parser regression uses all six literal families; the unchanged
+`composite_lock_tests::sparse_discovery_work_budget_escalates_without_refusing_valid_statements`
+remains the storage-level owner for the real workload. Baseline benchmarks
+and oracle exports must use a separate Cargo target directory from the
+candidate, including all transitive local crates; a shared target can reuse
+another worktree's artifacts. Earlier shared-target timings are invalid.
+
+The clause diagnostic campaign preserves 59 CREATE/15 INSERT condition cases,
+1,816 priority pairs and 9,216 SQL sources through parse and prepare. Priority
+conditions now exercise owned rejection metadata used by the CST lowerer;
+foreign AST-field injection is retired along with that parser. Source tests
+cover unsupported aliases, mutation OUTPUT, multi-table INSERT and ordering.
+Oversized INSERT/DDL regressions preserve acceptance of large literals/comments;
+oversized SELECT/EXPLAIN still fail closed at the existing input-byte cap.
+The frozen 1,102-keyword admission inventory and explicit token/work tests
+preserve conservative execution admission with the shared lexer. Existing root
+SQL/materialized-view tests own query results, plans, parameters, caching,
+joins, aggregates, vector execution and mutations. Existing branch SQL tests
+own PEG lifecycle selectors, revision/request-key admission and page bounds.
 Local Shiro parser campaigns and
 `//crates/sql-syntax:hawdb_sql_alias_boundary_fuzz_tests` remain manual/local.
 The ignored `parser::owned::tests::parser_timing_diagnostic` is a manual
 production SELECT parser comparison, run with `cargo test --locked --release
 -p hawdb-sql parser::owned::tests::parser_timing_diagnostic -- --exact --ignored
---nocapture`. It compares the legacy reference and default PEG in one binary,
-checks complete successful IRs first, alternates order, and emits nine samples
-per shape (discard the first). It covers short queries, vector calls, rejection,
+--nocapture`. It checks the eight independently exported main Debug-IR fingerprints first
+and emits nine PEG samples per unchanged shape (discard the first). Compare
+with a separate baseline revision using identical iteration counts: 2,000 short
+queries and 100 wide queries. It covers short queries, vector calls, rejection,
 and 500-column ASCII/UTF-8 projections; it is not a CI timing gate.
 `cargo bench --locked -p hawdb-sql-syntax --bench frontend` is a manual parser-only
 release benchmark; `-- --shapes` adds wide projections, many joins and rejected
@@ -2724,6 +2771,108 @@ errors. No CI lane or fuzz target is added.
 Focused replays: `cargo test --locked -p hawdb-storage compatibility_tests`,
 `cargo test --locked -p hawdb-storage append_wal_versions`, and
 `cargo test --locked -p hawdb --test branch_project_open storage_format`.
+
+
+### Full Cypher PEG continuation
+
+`//crates/cypher:hawdb_cypher_tests` retains the existing pipeline and public
+parser tests after deletion of the handwritten parser files. The independent
+`migration_expressions_predicates_peg_baseline_v1.jsonl` adds 8,946 statement
+and pipeline outcomes from main `9c355e9a46`, compiled in its main-only Cargo
+target directory. Complete Debug-AST SHA-256 hashes include source spans;
+rejections retain Parse/Semantic classes. These cases replace the old live
+handwritten oracle for generated clauses, wrappers, Unicode truncations,
+expressions and combined depth boundaries. Nine independently captured legacy
+algorithm diagnostics remain exact-string assertions. The earlier 2,854 corpus
+and 420 value/pattern/procedure records remain unchanged.
+
+The shared engine has no native matcher API or AST value arena. Its
+35 unit tests retain fatal budget propagation through alternatives, optional,
+repeat and lookahead using real bounded PEG rules, and retain memoized subtree
+identity/edges after capture rollback. Empty rules preserve zero-length source
+spans. The adaptive-cache cases also retain pending/failed/matched state,
+end positions, node identity and logical entry counts across forward/backward
+visits, replacement and density changes with compact nonzero memo records.
+These same sparse-oracle assertions cover one historical position in the local
+rule slot, allocation on the third distinct position, the allocated history's
+two inline records, vector growth, dense holes and permanent sparse conversion; all
+logical entry counts, pending states, endpoints and node identities are retained.
+The same assertions retain the original entry accounting when the direct slots
+use the compiled grammar's existing 256-rule cap in a local array. Earlier native
+qualification compares all 12,669 corpus records in cold/warmed worker threads
+against the preceding heap-backed table: release passes at 128/256/512 KiB and
+development passes at 256/512 KiB, with matching smaller-stack failures. This
+is separate from WASM compiler checks and from the standard owner test profile.
+Continuation-local results carry only match/mismatch; fatal resource errors
+return directly from the matcher. The existing fatal-propagation cases retain
+all original assertions across this representation change.
+The compiled instruction matcher also fixes exact public work/depth/node/memo
+boundaries for nested rule aliases, multi-token positive lookahead and cached
+capture reuse. The admitted tree retains both named aliases and their spans.
+SQL and Cypher share the same nongeneric CST grammar API.
+Keyword-choice regression coverage fixes exact attempt charges, depth admission,
+memo entry and capture counts, and diagnostic isolation across successful and
+failed lookahead reuse. Named-rule call fusion keeps the alias and cached-capture
+budget assertions unchanged. Manual comparison against the preceding PEG engine
+retains 53,104 complete budget/CST/error records and 18,744 complete rendered
+Cypher outcomes. An optimization-level-1 worker linked with ThinLTO against the
+release library passes the latter corpus in cold/warmed native threads at
+256/512 KiB; both versions abort at 128 KiB. This does not qualify WASM runtime
+stack requirements or waive parser throughput and allocation gates.
+
+Latest-main integration at `2ae7e88614` (#1411) adds bare row-bound values in
+node patterns and classifies read-only UNWIND as a query pipeline. The PEG
+value rule and selected-tree lowering retain both changes without restoring the
+handwritten parser. All 12,220 earlier Cypher records were independently
+re-exported from that main revision and matched the integrated candidate. The
+older fixtures stay immutable: `migration_main_1411_peg_baseline_v1.jsonl`
+records the eight intentional main transitions with their previous fingerprints,
+plus 132 independently exported row-bound/CASE/context outcomes. Existing
+#1411 parser and embedded query tests remain intact.
+
+Main `9adbb166bf` (#1377) adds LOAD CSV, conversion functions and list-row
+indexes. Its six parser tests remain unchanged. The new frozen
+`migration_main_1377_load_csv_peg_baseline_v1.jsonl` contains 1,626 statement/
+pipeline outcomes independently exported from that exact main revision, including
+complete accepted AST/span hashes, nesting boundaries and rejection classes.
+All 18,744 earlier outcomes are also independently re-exported and compared;
+the combined 20,370 outcomes match the PEG integration. Existing fixtures and
+their fingerprints remain unchanged. Four nonsemantic envelope/flag rules are
+inlined to fit the added syntax within the original 256-rule cap. The ordinary
+value, property-value and scalar-conversion grammars retain distinct admission
+and recursion checks. The same Cypher Cargo/Bazel owner targets execute this
+fixture; root `api::tests::load_csv` covers the embedded importer through PEG.
+The ordinary-property diagnostic regression fixes the original error text for
+invalid and missing values through both entry points. All 18,744 preceding
+rendered outcomes remain exact after the explicit main change that adds LOAD
+to the top-level dispatch keyword list. Conversion/index captures are admitted
+only for those shapes, preserving ordinary value captures and memo accounting.
+All 173 warmed allocation/refusal/wide/late-error/SQL probes retain non-increasing
+calls, total requested bytes and peak live bytes versus PEG `04eb8ea1f7`.
+
+The independent `migration_keyword_context_peg_baseline_v1.jsonl` adds 2,380
+main `2ae7e88614` outcomes for keyword-named properties, all specialized
+CASE families, including coalesced-difference floors, combined depth limits, row-binding refusals and scalar/SET/value
+context differences. Dedicated PEG alternatives preserve specialized CASE on
+`true`, `false`, `null` and `CASE` properties; they retain constant-value and
+same-property admission. Scalar value-list lowering rejects reserved CASE row
+bindings, and SET's ordinary-value branch preserves the CASE/COALESCE prefix
+refusal. The compiled-rule cap stays 256; no resource budget is raised.
+
+CST folding constructs owned identifier pairs and joined names directly, and
+single predicates/comparisons return without allocating temporary predicate
+vectors. Existing independent Debug-AST/error fixtures cover the resulting
+ASTs, including comparison chains and nested boolean scopes. The shared VM and
+memo storage remain unchanged by this allocation cleanup; no parser budget or
+fixture is weakened. Parser allocation and throughput qualification remain open, separately from
+the isolated analytics RSS regression.
+
+The #1399 main continuation's matched-UNWIND assertion is retained in the
+existing `parser/pipeline_tests.rs` owner after removing the legacy
+`parser/pipeline.rs` implementation. Its scalar binding property must still
+produce `ValueExpressionKind::Binding` through the PEG path; the main embedded
+relationship-MERGE tests remain intact. This integration adds no parser fallback
+or language-budget exception.
 
 ### Graph row-width and blocking-cost estimates
 
@@ -2788,6 +2937,45 @@ budgets, width-proxy misses and persistent residency controls. It shows gains
 when TopN removes measured spill and records neutral/adverse outcomes explicitly;
 it is not a CI performance gate or a bound on actual heap allocation.
 
+### Temporal syntax on the owned Cypher PEG (#1382)
+
+The existing Cypher Bazel owner retains all eight temporal parser tests and the
+planner retains its temporal cases. The frontend removes no earlier fixture:
+`migration_main_1382_temporal_peg_baseline_v1.jsonl` adds 386 fingerprinted main
+transitions, 5,354 new outcomes and nine exact rendered diagnostics exported from
+independently compiled main `ceb8db250c`. Complete Debug-AST hashes include spans.
+The 17,888-record paired campaign covers both statement and pipeline entries,
+constructors/namespaced calls, scalar/value maps, arithmetic precedence, unary
+operators, generalized postfixes, contextual names, CASE/list combinations and
+mixed nesting boundaries. Earlier main transition fingerprints stay checked.
+The statement/pipeline behavior changes originate in main; prior oracles remain
+immutable. Selected PEG captures lower directly into the corresponding static
+value or per-row scalar AST, including generic CASE forms when specialization's
+constant/reference checks fail. The handwritten temporal parser stays deleted.
+
+Five unweighted CST container rules are inlined to accommodate the temporal and
+scalar grammar within the unchanged 256-rule cap. Existing weighted rules and
+their limits remain; the new value-call/map guards and scalar folding retain
+bounded recursion. Map keys remain unique, scalar-map entries retain source order,
+value maps remain ordered by key, and named-call/property adjacency follows main.
+Native embedded temporal tests cover construction, parameters, arithmetic,
+components, cached clocks, persistence, index seeks and out-of-core reopen.
+
+### Boolean predicates and row-dependent UNWIND on PEG (#1428)
+
+The Cypher owner retains main's boolean-composition and bounded UNWIND parser
+regressions through the PEG driver. The immutable
+`migration_main_1428_boolean_unwind_peg_baseline_v1.jsonl` adds 856 statement and
+pipeline outcomes exported from independently built main `bb30c40fe2`. Together
+with the temporal cohort, all 18,744 complete AST/span/rejection outcomes match.
+Earlier fixtures remain unchanged. Bare boolean/null scalar predicates lower to
+an equality against synthetic true; numeric/string/function operands still
+require a predicate operator. Row-bound UNWIND sources remain syntax, with scope,
+list types, multiplicity and payload admission checked by binding/execution.
+No handwritten parser, extra named rule or increased grammar/resource cap is
+introduced. Embedded row-bound, multi-WITH and shortest-path tests from main
+remain under their existing root test owners.
+
 
 ## Unpublished public checkpoint contracts (#1501)
 
@@ -2819,3 +3007,14 @@ Verify the actual publication order and facade archive as well as Cargo's
 production dependency closure. This is test ownership/build consolidation;
 measure cold/incremental compilation and actual execution separately before
 claiming a CI speedup.
+
+### Shared identity and plan-cache normalization (#1375)
+
+The existing `hawdb-query` owner checks that the combined constructor matches
+both standalone APIs, including mixed language casing and whitespace, repeated
+and distinct parameter names, literals, quotes, invalid text and Unicode. The
+existing digest/hash framing vectors and capacity checks remain unchanged.
+`cargo test --locked -p hawdb --lib api::plan_cache::tests` retains cache admission,
+parameter binding byte limits, capability/cancellation checks, statistics
+isolation and WAL replay coverage. `in_memory_portable` and minimal WASM strict
+Clippy cover the embedded facade. No new crate or CI job is introduced.

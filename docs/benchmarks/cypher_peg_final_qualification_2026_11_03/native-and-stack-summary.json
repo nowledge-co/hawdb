@@ -1,0 +1,258 @@
+{
+  "runtime_tree": "893beda491ac25bf584bcfe05b31b593a80671eb",
+  "prototype": true,
+  "native_checks": [
+    {
+      "name": "prek-install",
+      "command": [
+        "prek",
+        "install"
+      ],
+      "returncode": 0,
+      "wall_seconds": 0.078012792
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "returncode": 0,
+      "wall_seconds": 6.969584458
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "returncode": 0,
+      "wall_seconds": 69.953199875
+    },
+    {
+      "name": "prek",
+      "command": [
+        "prek",
+        "run",
+        "--all-files"
+      ],
+      "returncode": 0,
+      "wall_seconds": 7.132670625000003
+    },
+    {
+      "name": "query-tests",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb-query",
+        "--lib"
+      ],
+      "returncode": 0,
+      "wall_seconds": 0.9165427079999944
+    },
+    {
+      "name": "cache-tests",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb",
+        "--lib",
+        "api::plan_cache::tests"
+      ],
+      "returncode": 0,
+      "wall_seconds": 434.06771525
+    },
+    {
+      "name": "parsers",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb-cypher",
+        "-p",
+        "hawdb-sql",
+        "-p",
+        "hawdb-sql-syntax",
+        "--lib"
+      ],
+      "returncode": 0,
+      "wall_seconds": 58.859024417
+    },
+    {
+      "name": "storage-locks",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb-storage",
+        "--lib",
+        "locked_ranges::tests"
+      ],
+      "returncode": 0,
+      "wall_seconds": 320.80529049999996
+    },
+    {
+      "name": "concurrent-locks",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb",
+        "--lib",
+        "api::concurrent::composite_lock_tests"
+      ],
+      "returncode": 0,
+      "wall_seconds": 82.9363732920001
+    },
+    {
+      "name": "portable",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb",
+        "--no-default-features",
+        "--test",
+        "in_memory_portable"
+      ],
+      "returncode": 0,
+      "wall_seconds": 289.89589950000004
+    },
+    {
+      "name": "wasm",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "hawdb",
+        "--no-default-features",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--lib",
+        "--test",
+        "in_memory_portable",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "returncode": 0,
+      "wall_seconds": 51.96184012499998
+    }
+  ],
+  "small_stacks": {
+    "3": {
+      "records": 21944,
+      "libraries": {
+        "hawdb_core": "/private/tmp/hawdb-peg-final-diagnostics-target/release/deps/libhawdb_core-271e19ab3def4ada.rlib",
+        "hawdb_cypher": "/private/tmp/hawdb-peg-final-diagnostics-target/release/libhawdb_cypher.rlib"
+      },
+      "checks": [
+        {
+          "bytes": 262144,
+          "mode": "cold",
+          "returncode": 0,
+          "same_as_8MiB": true,
+          "stderr_tail": ""
+        },
+        {
+          "bytes": 262144,
+          "mode": "warm",
+          "returncode": 0,
+          "same_as_8MiB": true,
+          "stderr_tail": ""
+        },
+        {
+          "bytes": 524288,
+          "mode": "cold",
+          "returncode": 0,
+          "same_as_8MiB": true,
+          "stderr_tail": ""
+        },
+        {
+          "bytes": 524288,
+          "mode": "warm",
+          "returncode": 0,
+          "same_as_8MiB": true,
+          "stderr_tail": ""
+        }
+      ]
+    },
+    "1": {
+      "records": 21944,
+      "libraries": {
+        "hawdb_core": "/private/tmp/hawdb-peg-final-diagnostics-opt1-target/release/deps/libhawdb_core-b1672dd4e6e6ebe7.rlib",
+        "hawdb_cypher": "/private/tmp/hawdb-peg-final-diagnostics-opt1-target/release/libhawdb_cypher.rlib"
+      },
+      "checks": [
+        {
+          "bytes": 262144,
+          "mode": "cold",
+          "returncode": 0,
+          "same_as_8MiB": true,
+          "stderr_tail": ""
+        },
+        {
+          "bytes": 262144,
+          "mode": "warm",
+          "returncode": 0,
+          "same_as_8MiB": true,
+          "stderr_tail": ""
+        },
+        {
+          "bytes": 524288,
+          "mode": "cold",
+          "returncode": 0,
+          "same_as_8MiB": true,
+          "stderr_tail": ""
+        },
+        {
+          "bytes": 524288,
+          "mode": "warm",
+          "returncode": 0,
+          "same_as_8MiB": true,
+          "stderr_tail": ""
+        }
+      ]
+    }
+  },
+  "runtime_source_sha256": {
+    "crates/cypher/src/parser/frontend.rs": "650481a64d728fdb7912ff5c59bb63a5e567c304b4f7cf4201601faac9d2ae79",
+    "crates/cypher/src/parser/frontend/data.rs": "7bbc57e4dc8e39bd56944e8919332190957c0b77b78df7712c716a4c32259346",
+    "crates/cypher/src/parser/frontend/expressions.rs": "173efaea519755cc097d2f9d9fc050f6c420008f95c1a113840dba3836573144",
+    "crates/cypher/src/parser/frontend/lexer.rs": "93f3bd65073038307e5af4d87f2434674bd9c3856ba797ffa8d8e6bbd113529d",
+    "crates/cypher/src/parser/frontend/patterns.rs": "0d3c0f5ffa5241c2bd92c817cfd4ab89fa559acfe4cc2dffaa4148c67cf5dbf8",
+    "crates/cypher/src/parser/frontend/predicates.rs": "44288801c661471555b099a8d2c8fa567c4ce2c76ed36ed104e498530895db9a",
+    "crates/cypher/src/parser/frontend/procedures.rs": "7b0436c1c3530ee5d3735fe7959a4536b532ff8066d0f704cac99870508c0c0a",
+    "crates/cypher/src/parser/frontend/projection.rs": "34ea4638dae1148a6ed7bc56c31acca7701e3df82fbdfbfda5a47f55e17ecf38",
+    "crates/cypher/src/parser/frontend/rust_peg.rs": "fc65dfe4ebf63bf12a6e722c6b6082d391b162f42a86f9eb15c99b79f260cee4",
+    "crates/cypher/src/parser/frontend/schema.rs": "5125b3ced7ed52aa4c6818043eb98fb4a5d4a60f510242141e3c8f248899bde7",
+    "crates/cypher/src/parser/frontend/temporal.rs": "c6494ac61da23ed04f0e9fe242a118271c0dd3d595fde0b5432549d1e25755fe",
+    "crates/cypher/src/parser/frontend/tests.rs": "b249ac48b9bc080b3d63435d06f6ab0151e2686284697b9b5747bcfd3506c439",
+    "crates/cypher/src/parser/frontend/transform.rs": "b0369028c3771747d461f7bc812219bb54b195a99a29f10c3f8238f2db9a0b75",
+    "crates/cypher/src/parser/frontend/tree.rs": "7eba632bf44b7f10e4bf7576ec0ce452ca748b953d3caf9ab95afcc3fe31dae9",
+    "crates/cypher/src/parser/frontend/values.rs": "cd5f981bc80fa237f66c9dbbb1d05f19023edcce0aa52ce819a2bc6757bcc81e",
+    "crates/storage/src/store/read_dependencies/locked_ranges.rs": "a9a959cf8f82ba1278fc294fb627d03e15f3996fef87b2239d8a7ba57c681918",
+    "crates/storage/src/store/read_dependencies/locked_ranges/tests.rs": "e8c6bc5049e1e82cb5cc33e78907475cb8525d57a5ad1e7a54936874e4b76b30",
+    "src/api/concurrent/composite_lock_tests.rs": "9eb1a080f051616850a498c4e266ec4001b1880eebc177a9c210f7e10bfa50cf"
+  },
+  "scope": "All exact native checks pass on this runtime snapshot; 8/8 native small-stack checks pass. WASM establishes compilation and token size, not browser execution. Subsequent review-data/documentation changes preserve runtime hashes."
+}

@@ -1,0 +1,1005 @@
+{"ast_sha256": "fcd4f01b6aecc5429028df5ef58835b447ce9b9e2e9ab2f456b4f626c995ea64", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS BIGINT)"}
+{"ast_sha256": "a4538329cda579bd8516429a4ab1121bdcf53dca0407c19cf6794b206d6afbc9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS BIGINT)"}
+{"ast_sha256": "8830c6b83619e15e12c296d77dc3964b6744ec8f70e60517780b8e21315a66c3", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS BIGINT))"}
+{"ast_sha256": "71e5d8c46d4517cf94dacfc2d6090ab7677fe8faa142ea4967d7a474416c5ef4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS BIGINT)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS BIGINT))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS BIGINT(5))"}
+{"ast_sha256": "a4538329cda579bd8516429a4ab1121bdcf53dca0407c19cf6794b206d6afbc9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS BIGINT(5))"}
+{"ast_sha256": "8830c6b83619e15e12c296d77dc3964b6744ec8f70e60517780b8e21315a66c3", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS BIGINT(5)))"}
+{"ast_sha256": "71e5d8c46d4517cf94dacfc2d6090ab7677fe8faa142ea4967d7a474416c5ef4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS BIGINT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS BIGINT(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS BIGINT(53))"}
+{"ast_sha256": "a4538329cda579bd8516429a4ab1121bdcf53dca0407c19cf6794b206d6afbc9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS BIGINT(53))"}
+{"ast_sha256": "8830c6b83619e15e12c296d77dc3964b6744ec8f70e60517780b8e21315a66c3", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS BIGINT(53)))"}
+{"ast_sha256": "71e5d8c46d4517cf94dacfc2d6090ab7677fe8faa142ea4967d7a474416c5ef4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS BIGINT(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS BIGINT(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS BIGINT(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS BIGINT(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS BIGINT(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS BIGINT(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS BIGINT(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS BIGINT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS BIGINT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS BIGINT(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS BIGINT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS BIGINT(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS BIGINT(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS BIGINT(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS BIGINT(4,- 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS BIGINT(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS BIGINT(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS BIGINT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS BIGINT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS BIGINT(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS BIGINT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS BIGINT(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS BIGINT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS BIGINT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS BIGINT(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS BIGINT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS BIGINT(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS BIGINT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS BIGINT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS BIGINT(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS BIGINT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS BIGINT(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS BIGINT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS BIGINT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS BIGINT(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS BIGINT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS BIGINT(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS BIGINT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS BIGINT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS BIGINT(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS BIGINT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS BIGINT(4, /*scale*/ + 2)))"}
+{"ast_sha256": "fcd4f01b6aecc5429028df5ef58835b447ce9b9e2e9ab2f456b4f626c995ea64", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT8)"}
+{"ast_sha256": "a4538329cda579bd8516429a4ab1121bdcf53dca0407c19cf6794b206d6afbc9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT8)"}
+{"ast_sha256": "8830c6b83619e15e12c296d77dc3964b6744ec8f70e60517780b8e21315a66c3", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT8))"}
+{"ast_sha256": "71e5d8c46d4517cf94dacfc2d6090ab7677fe8faa142ea4967d7a474416c5ef4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT8)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT8))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT8(5))"}
+{"ast_sha256": "a4538329cda579bd8516429a4ab1121bdcf53dca0407c19cf6794b206d6afbc9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT8(5))"}
+{"ast_sha256": "8830c6b83619e15e12c296d77dc3964b6744ec8f70e60517780b8e21315a66c3", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT8(5)))"}
+{"ast_sha256": "71e5d8c46d4517cf94dacfc2d6090ab7677fe8faa142ea4967d7a474416c5ef4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT8(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT8(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT8(53))"}
+{"ast_sha256": "a4538329cda579bd8516429a4ab1121bdcf53dca0407c19cf6794b206d6afbc9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT8(53))"}
+{"ast_sha256": "8830c6b83619e15e12c296d77dc3964b6744ec8f70e60517780b8e21315a66c3", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT8(53)))"}
+{"ast_sha256": "71e5d8c46d4517cf94dacfc2d6090ab7677fe8faa142ea4967d7a474416c5ef4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT8(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT8(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT8(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT8(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT8(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT8(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT8(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT8(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT8(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT8(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT8(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT8(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT8(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT8(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT8(4,- 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT8(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT8(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT8(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT8(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT8(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT8(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT8(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT8(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT8(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT8(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT8(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT8(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT8(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT8(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT8(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT8(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT8(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT8(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT8(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT8(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT8(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT8(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT8(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT8(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT8(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT8(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT8(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT)"}
+{"ast_sha256": "a4538329cda579bd8516429a4ab1121bdcf53dca0407c19cf6794b206d6afbc9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT)"}
+{"ast_sha256": "8830c6b83619e15e12c296d77dc3964b6744ec8f70e60517780b8e21315a66c3", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT))"}
+{"ast_sha256": "71e5d8c46d4517cf94dacfc2d6090ab7677fe8faa142ea4967d7a474416c5ef4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT(4,- 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INTEGER)"}
+{"ast_sha256": "a4538329cda579bd8516429a4ab1121bdcf53dca0407c19cf6794b206d6afbc9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INTEGER)"}
+{"ast_sha256": "8830c6b83619e15e12c296d77dc3964b6744ec8f70e60517780b8e21315a66c3", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INTEGER))"}
+{"ast_sha256": "71e5d8c46d4517cf94dacfc2d6090ab7677fe8faa142ea4967d7a474416c5ef4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INTEGER)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INTEGER))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INTEGER(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INTEGER(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INTEGER(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INTEGER(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INTEGER(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INTEGER(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INTEGER(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INTEGER(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INTEGER(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INTEGER(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INTEGER(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INTEGER(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INTEGER(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INTEGER(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INTEGER(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INTEGER(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INTEGER(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INTEGER(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INTEGER(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INTEGER(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INTEGER(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INTEGER(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INTEGER(4,- 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INTEGER(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INTEGER(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INTEGER(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INTEGER(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INTEGER(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INTEGER(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INTEGER(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INTEGER(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INTEGER(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INTEGER(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INTEGER(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INTEGER(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INTEGER(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INTEGER(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INTEGER(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INTEGER(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INTEGER(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INTEGER(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INTEGER(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INTEGER(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INTEGER(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INTEGER(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INTEGER(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INTEGER(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INTEGER(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INTEGER(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INTEGER(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT4)"}
+{"ast_sha256": "a4538329cda579bd8516429a4ab1121bdcf53dca0407c19cf6794b206d6afbc9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT4)"}
+{"ast_sha256": "8830c6b83619e15e12c296d77dc3964b6744ec8f70e60517780b8e21315a66c3", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT4))"}
+{"ast_sha256": "71e5d8c46d4517cf94dacfc2d6090ab7677fe8faa142ea4967d7a474416c5ef4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT4)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT4))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT4(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT4(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT4(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT4(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT4(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT4(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT4(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT4(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT4(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT4(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT4(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT4(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT4(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT4(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT4(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT4(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT4(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT4(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT4(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT4(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT4(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT4(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT4(4,- 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT4(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT4(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT4(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT4(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT4(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT4(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT4(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT4(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT4(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT4(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT4(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT4(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT4(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT4(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT4(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT4(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT4(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT4(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT4(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT4(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT4(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT4(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT4(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT4(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT4(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT4(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT4(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS SMALLINT)"}
+{"ast_sha256": "a4538329cda579bd8516429a4ab1121bdcf53dca0407c19cf6794b206d6afbc9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS SMALLINT)"}
+{"ast_sha256": "8830c6b83619e15e12c296d77dc3964b6744ec8f70e60517780b8e21315a66c3", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS SMALLINT))"}
+{"ast_sha256": "71e5d8c46d4517cf94dacfc2d6090ab7677fe8faa142ea4967d7a474416c5ef4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS SMALLINT)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS SMALLINT))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS SMALLINT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS SMALLINT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS SMALLINT(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS SMALLINT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS SMALLINT(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS SMALLINT(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS SMALLINT(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS SMALLINT(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS SMALLINT(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS SMALLINT(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS SMALLINT(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS SMALLINT(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS SMALLINT(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS SMALLINT(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS SMALLINT(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS SMALLINT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS SMALLINT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS SMALLINT(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS SMALLINT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS SMALLINT(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS SMALLINT(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS SMALLINT(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS SMALLINT(4,- 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS SMALLINT(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS SMALLINT(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS SMALLINT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS SMALLINT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS SMALLINT(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS SMALLINT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS SMALLINT(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS SMALLINT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS SMALLINT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS SMALLINT(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS SMALLINT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS SMALLINT(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS SMALLINT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS SMALLINT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS SMALLINT(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS SMALLINT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS SMALLINT(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS SMALLINT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS SMALLINT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS SMALLINT(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS SMALLINT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS SMALLINT(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS SMALLINT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS SMALLINT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS SMALLINT(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS SMALLINT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS SMALLINT(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT2)"}
+{"ast_sha256": "a4538329cda579bd8516429a4ab1121bdcf53dca0407c19cf6794b206d6afbc9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT2)"}
+{"ast_sha256": "8830c6b83619e15e12c296d77dc3964b6744ec8f70e60517780b8e21315a66c3", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT2))"}
+{"ast_sha256": "71e5d8c46d4517cf94dacfc2d6090ab7677fe8faa142ea4967d7a474416c5ef4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT2)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT2(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT2(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT2(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT2(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT2(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT2(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT2(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT2(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT2(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT2(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT2(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT2(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT2(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT2(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT2(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT2(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT2(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT2(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT2(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT2(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT2(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT2(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT2(4,- 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT2(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT2(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT2(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT2(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT2(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT2(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT2(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT2(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT2(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT2(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT2(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT2(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT2(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT2(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT2(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT2(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT2(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT2(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT2(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT2(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT2(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT2(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT2(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT2(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT2(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT2(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT2(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS TINYINT)"}
+{"ast_sha256": "a4538329cda579bd8516429a4ab1121bdcf53dca0407c19cf6794b206d6afbc9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS TINYINT)"}
+{"ast_sha256": "8830c6b83619e15e12c296d77dc3964b6744ec8f70e60517780b8e21315a66c3", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS TINYINT))"}
+{"ast_sha256": "71e5d8c46d4517cf94dacfc2d6090ab7677fe8faa142ea4967d7a474416c5ef4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS TINYINT)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS TINYINT))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS TINYINT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS TINYINT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS TINYINT(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS TINYINT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS TINYINT(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS TINYINT(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS TINYINT(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS TINYINT(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS TINYINT(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS TINYINT(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS TINYINT(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS TINYINT(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS TINYINT(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS TINYINT(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS TINYINT(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS TINYINT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS TINYINT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS TINYINT(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS TINYINT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS TINYINT(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS TINYINT(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS TINYINT(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS TINYINT(4,- 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS TINYINT(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS TINYINT(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS TINYINT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS TINYINT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS TINYINT(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS TINYINT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS TINYINT(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS TINYINT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS TINYINT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS TINYINT(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS TINYINT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS TINYINT(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS TINYINT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS TINYINT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS TINYINT(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS TINYINT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS TINYINT(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS TINYINT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS TINYINT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS TINYINT(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS TINYINT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS TINYINT(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS TINYINT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS TINYINT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS TINYINT(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS TINYINT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS TINYINT(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT)"}
+{"ast_sha256": "9e7178105c6f9612e710afcf2dcf26d1f29fa18842398eafd01aeffce32ade56", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT)"}
+{"ast_sha256": "75ddd5b69417b71a046f5debad9c612051d6d85772627adc7a7792488f31216c", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT))"}
+{"ast_sha256": "5fa5f535a1429a5282f18c85c1d5739984993ef919dd81a8a5b627ab900c8d30", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT(53))"}
+{"ast_sha256": "9e7178105c6f9612e710afcf2dcf26d1f29fa18842398eafd01aeffce32ade56", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT(53))"}
+{"ast_sha256": "75ddd5b69417b71a046f5debad9c612051d6d85772627adc7a7792488f31216c", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT(53)))"}
+{"ast_sha256": "5fa5f535a1429a5282f18c85c1d5739984993ef919dd81a8a5b627ab900c8d30", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT(4,2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT(4,+ 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT(4, /*scale*/ + 2)))"}
+{"ast_sha256": "d1f21209e9d495698103e63e680cb93be2e59d8d9c6658e2deb7686322bd6a78", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT8)"}
+{"ast_sha256": "9e7178105c6f9612e710afcf2dcf26d1f29fa18842398eafd01aeffce32ade56", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT8)"}
+{"ast_sha256": "75ddd5b69417b71a046f5debad9c612051d6d85772627adc7a7792488f31216c", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT8))"}
+{"ast_sha256": "5fa5f535a1429a5282f18c85c1d5739984993ef919dd81a8a5b627ab900c8d30", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT8)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT8))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT8(5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT8(5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT8(5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT8(5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT8(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT8(53))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT8(53))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT8(53)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT8(53))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT8(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT8(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT8(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT8(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT8(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT8(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT8(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT8(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT8(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT8(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT8(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT8(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT8(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT8(4,- 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT8(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT8(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT8(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT8(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT8(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT8(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT8(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT8(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT8(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT8(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT8(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT8(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT8(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT8(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT8(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT8(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT8(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT8(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT8(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT8(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT8(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT8(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS FLOAT8(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS FLOAT8(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS FLOAT8(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS FLOAT8(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS FLOAT8(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE(4,2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE(4,+ 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE(4,+ 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE(4,+ 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE(4, /*scale*/ + 2)))"}
+{"ast_sha256": "d1f21209e9d495698103e63e680cb93be2e59d8d9c6658e2deb7686322bd6a78", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE PRECISION)"}
+{"ast_sha256": "9e7178105c6f9612e710afcf2dcf26d1f29fa18842398eafd01aeffce32ade56", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE PRECISION)"}
+{"ast_sha256": "75ddd5b69417b71a046f5debad9c612051d6d85772627adc7a7792488f31216c", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE PRECISION))"}
+{"ast_sha256": "5fa5f535a1429a5282f18c85c1d5739984993ef919dd81a8a5b627ab900c8d30", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE PRECISION)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE PRECISION))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE PRECISION(5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE PRECISION(5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE PRECISION(5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE PRECISION(5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE PRECISION(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE PRECISION(53))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE PRECISION(53))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE PRECISION(53)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE PRECISION(53))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE PRECISION(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE PRECISION(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE PRECISION(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE PRECISION(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE PRECISION(4,2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE PRECISION(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE PRECISION(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE PRECISION(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE PRECISION(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE PRECISION(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE PRECISION(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE PRECISION(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE PRECISION(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE PRECISION(4,- 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE PRECISION(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE PRECISION(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE PRECISION(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE PRECISION(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE PRECISION(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE PRECISION(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE PRECISION(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE PRECISION(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE PRECISION(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE PRECISION(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE PRECISION(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE PRECISION(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE PRECISION(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE PRECISION(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE PRECISION(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE PRECISION(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE PRECISION(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE PRECISION(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE PRECISION(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE PRECISION(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE PRECISION(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE PRECISION(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE PRECISION(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE PRECISION(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE PRECISION(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE PRECISION(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE PRECISION(4, /*scale*/ + 2)))"}
+{"ast_sha256": "a95a23b45bb810d52adc336b7d3faa55bcfef166601275fca29511cc312ecf37", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL)"}
+{"ast_sha256": "902ac30392ecb501557b51de8566a511937b3f2d5171141fecc035b24d4757ca", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL)"}
+{"ast_sha256": "8ad1c9afa5b7867662b334c4686963d91878af445667fc985d81fb36dcf98488", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL))"}
+{"ast_sha256": "075739dda713dd489a4ec64360a54de7ad5dbe6278f6c6b81dd63d0ea08b28a4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL))"}
+{"ast_sha256": "a0c683cc85f74fd207254ec194c59d9f958e915b1db217874fb0c3750a6a6086", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(5))"}
+{"ast_sha256": "285d433335e1cc203125da12dc2993c7969738b725a7a6ea5b7be7762b7916bc", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(5))"}
+{"ast_sha256": "08ad56aad921b42b4bc7daf4c3eb691f4bea9dfbf19e5cd660375ebe86e6d0f9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(5)))"}
+{"ast_sha256": "ab50567dc9be912f0222f98fc11d1c16e97b65e82757ac73f5ab902798d33791", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(53)))"}
+{"ast_sha256": "264dc5ce8d9efe12421d56e82e6778137984dc31ee554c0260340df20886c449", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(4,2))"}
+{"ast_sha256": "ecbf17fec6dcdb31b4da19bf0bbcccaa05f1b012db0331ca736e8a6d491c42f8", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(4,2))"}
+{"ast_sha256": "81fcdf75e70366f7e9a8ec322c21a8752b444aa2a3b72949a85b7c586537a418", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(4,2)))"}
+{"ast_sha256": "cf960668884816a51ccfc81b3779aa51aae84ef3de1cb001955d5d99e4159baf", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(4,+ 2))"}
+{"ast_sha256": "ecbf17fec6dcdb31b4da19bf0bbcccaa05f1b012db0331ca736e8a6d491c42f8", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(4,+ 2))"}
+{"ast_sha256": "81fcdf75e70366f7e9a8ec322c21a8752b444aa2a3b72949a85b7c586537a418", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(4,+ 2)))"}
+{"ast_sha256": "cf960668884816a51ccfc81b3779aa51aae84ef3de1cb001955d5d99e4159baf", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(4,+ 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(4, /*scale*/ + 2))"}
+{"ast_sha256": "ecbf17fec6dcdb31b4da19bf0bbcccaa05f1b012db0331ca736e8a6d491c42f8", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(4, /*scale*/ + 2))"}
+{"ast_sha256": "81fcdf75e70366f7e9a8ec322c21a8752b444aa2a3b72949a85b7c586537a418", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(4, /*scale*/ + 2)))"}
+{"ast_sha256": "cf960668884816a51ccfc81b3779aa51aae84ef3de1cb001955d5d99e4159baf", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(4, /*scale*/ + 2)))"}
+{"ast_sha256": "a95a23b45bb810d52adc336b7d3faa55bcfef166601275fca29511cc312ecf37", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC)"}
+{"ast_sha256": "902ac30392ecb501557b51de8566a511937b3f2d5171141fecc035b24d4757ca", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC)"}
+{"ast_sha256": "8ad1c9afa5b7867662b334c4686963d91878af445667fc985d81fb36dcf98488", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC))"}
+{"ast_sha256": "075739dda713dd489a4ec64360a54de7ad5dbe6278f6c6b81dd63d0ea08b28a4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC))"}
+{"ast_sha256": "a0c683cc85f74fd207254ec194c59d9f958e915b1db217874fb0c3750a6a6086", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC(5))"}
+{"ast_sha256": "285d433335e1cc203125da12dc2993c7969738b725a7a6ea5b7be7762b7916bc", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC(5))"}
+{"ast_sha256": "08ad56aad921b42b4bc7daf4c3eb691f4bea9dfbf19e5cd660375ebe86e6d0f9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC(5)))"}
+{"ast_sha256": "ab50567dc9be912f0222f98fc11d1c16e97b65e82757ac73f5ab902798d33791", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC(53)))"}
+{"ast_sha256": "264dc5ce8d9efe12421d56e82e6778137984dc31ee554c0260340df20886c449", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC(4,2))"}
+{"ast_sha256": "ecbf17fec6dcdb31b4da19bf0bbcccaa05f1b012db0331ca736e8a6d491c42f8", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC(4,2))"}
+{"ast_sha256": "81fcdf75e70366f7e9a8ec322c21a8752b444aa2a3b72949a85b7c586537a418", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC(4,2)))"}
+{"ast_sha256": "cf960668884816a51ccfc81b3779aa51aae84ef3de1cb001955d5d99e4159baf", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC(4,+ 2))"}
+{"ast_sha256": "ecbf17fec6dcdb31b4da19bf0bbcccaa05f1b012db0331ca736e8a6d491c42f8", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC(4,+ 2))"}
+{"ast_sha256": "81fcdf75e70366f7e9a8ec322c21a8752b444aa2a3b72949a85b7c586537a418", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC(4,+ 2)))"}
+{"ast_sha256": "cf960668884816a51ccfc81b3779aa51aae84ef3de1cb001955d5d99e4159baf", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC(4,+ 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC(4, /*scale*/ + 2))"}
+{"ast_sha256": "ecbf17fec6dcdb31b4da19bf0bbcccaa05f1b012db0331ca736e8a6d491c42f8", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC(4, /*scale*/ + 2))"}
+{"ast_sha256": "81fcdf75e70366f7e9a8ec322c21a8752b444aa2a3b72949a85b7c586537a418", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC(4, /*scale*/ + 2)))"}
+{"ast_sha256": "cf960668884816a51ccfc81b3779aa51aae84ef3de1cb001955d5d99e4159baf", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC(4, /*scale*/ + 2)))"}
+{"ast_sha256": "a95a23b45bb810d52adc336b7d3faa55bcfef166601275fca29511cc312ecf37", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DEC)"}
+{"ast_sha256": "902ac30392ecb501557b51de8566a511937b3f2d5171141fecc035b24d4757ca", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DEC)"}
+{"ast_sha256": "8ad1c9afa5b7867662b334c4686963d91878af445667fc985d81fb36dcf98488", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DEC))"}
+{"ast_sha256": "075739dda713dd489a4ec64360a54de7ad5dbe6278f6c6b81dd63d0ea08b28a4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DEC)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DEC))"}
+{"ast_sha256": "a0c683cc85f74fd207254ec194c59d9f958e915b1db217874fb0c3750a6a6086", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DEC(5))"}
+{"ast_sha256": "285d433335e1cc203125da12dc2993c7969738b725a7a6ea5b7be7762b7916bc", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DEC(5))"}
+{"ast_sha256": "08ad56aad921b42b4bc7daf4c3eb691f4bea9dfbf19e5cd660375ebe86e6d0f9", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DEC(5)))"}
+{"ast_sha256": "ab50567dc9be912f0222f98fc11d1c16e97b65e82757ac73f5ab902798d33791", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DEC(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DEC(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DEC(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DEC(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DEC(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DEC(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DEC(53)))"}
+{"ast_sha256": "264dc5ce8d9efe12421d56e82e6778137984dc31ee554c0260340df20886c449", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DEC(4,2))"}
+{"ast_sha256": "ecbf17fec6dcdb31b4da19bf0bbcccaa05f1b012db0331ca736e8a6d491c42f8", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DEC(4,2))"}
+{"ast_sha256": "81fcdf75e70366f7e9a8ec322c21a8752b444aa2a3b72949a85b7c586537a418", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DEC(4,2)))"}
+{"ast_sha256": "cf960668884816a51ccfc81b3779aa51aae84ef3de1cb001955d5d99e4159baf", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DEC(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DEC(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DEC(4,+ 2))"}
+{"ast_sha256": "ecbf17fec6dcdb31b4da19bf0bbcccaa05f1b012db0331ca736e8a6d491c42f8", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DEC(4,+ 2))"}
+{"ast_sha256": "81fcdf75e70366f7e9a8ec322c21a8752b444aa2a3b72949a85b7c586537a418", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DEC(4,+ 2)))"}
+{"ast_sha256": "cf960668884816a51ccfc81b3779aa51aae84ef3de1cb001955d5d99e4159baf", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DEC(4,+ 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DEC(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DEC(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DEC(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DEC(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DEC(4,- 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DEC(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DEC(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DEC(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DEC(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DEC(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DEC(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DEC(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DEC(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DEC(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DEC(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DEC(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DEC(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DEC(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DEC(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DEC(4.5))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DEC(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DEC(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DEC(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DEC(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DEC(4,2,1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DEC(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DEC(4, /*scale*/ + 2))"}
+{"ast_sha256": "ecbf17fec6dcdb31b4da19bf0bbcccaa05f1b012db0331ca736e8a6d491c42f8", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DEC(4, /*scale*/ + 2))"}
+{"ast_sha256": "81fcdf75e70366f7e9a8ec322c21a8752b444aa2a3b72949a85b7c586537a418", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DEC(4, /*scale*/ + 2)))"}
+{"ast_sha256": "cf960668884816a51ccfc81b3779aa51aae84ef3de1cb001955d5d99e4159baf", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DEC(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DEC(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"int\")"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"int\")"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"int\"))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"int\")"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"int\"))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"int\"(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"int\"(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"int\"(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"int\"(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"int\"(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"int\"(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"int\"(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"int\"(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"int\"(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"int\"(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"int\"(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"int\"(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"int\"(4,2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"int\"(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"int\"(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"int\"(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"int\"(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"int\"(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"int\"(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"int\"(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"int\"(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"int\"(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"int\"(4,- 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"int\"(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"int\"(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"int\"(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"int\"(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"int\"(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"int\"(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"int\"(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"int\"(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"int\"(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"int\"(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"int\"(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"int\"(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"int\"(4.5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"int\"(4.5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"int\"(4.5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"int\"(4.5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"int\"(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"int\"(4,2,1))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"int\"(4,2,1))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"int\"(4,2,1)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"int\"(4,2,1))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"int\"(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"int\"(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"int\"(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"int\"(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"int\"(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"int\"(4, /*scale*/ + 2)))"}
+{"ast_sha256": "fcd4f01b6aecc5429028df5ef58835b447ce9b9e2e9ab2f456b4f626c995ea64", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"bigint\")"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"bigint\")"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"bigint\"))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"bigint\")"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"bigint\"))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"bigint\"(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"bigint\"(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"bigint\"(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"bigint\"(5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"bigint\"(5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"bigint\"(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"bigint\"(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"bigint\"(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"bigint\"(53))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"bigint\"(53)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"bigint\"(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"bigint\"(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"bigint\"(4,2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"bigint\"(4,2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"bigint\"(4,2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"bigint\"(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"bigint\"(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"bigint\"(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"bigint\"(4,+ 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"bigint\"(4,+ 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"bigint\"(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"bigint\"(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"bigint\"(4,- 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"bigint\"(4,- 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"bigint\"(4,- 2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"bigint\"(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"bigint\"(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"bigint\"(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"bigint\"(-1))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"bigint\"(-1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"bigint\"(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"bigint\"(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"bigint\"(+4)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"bigint\"(+4))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"bigint\"(+4)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"bigint\"(4.5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"bigint\"(4.5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"bigint\"(4.5)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"bigint\"(4.5))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"bigint\"(4.5)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"bigint\"(4,2,1))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"bigint\"(4,2,1))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"bigint\"(4,2,1)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"bigint\"(4,2,1))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"bigint\"(4,2,1)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS \"bigint\"(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS \"bigint\"(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS \"bigint\"(4, /*scale*/ + 2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS \"bigint\"(4, /*scale*/ + 2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS \"bigint\"(4, /*scale*/ + 2)))"}
+{"ast_sha256": "a95a23b45bb810d52adc336b7d3faa55bcfef166601275fca29511cc312ecf37", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(38,0))"}
+{"ast_sha256": "902ac30392ecb501557b51de8566a511937b3f2d5171141fecc035b24d4757ca", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(38,0))"}
+{"ast_sha256": "8ad1c9afa5b7867662b334c4686963d91878af445667fc985d81fb36dcf98488", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(38,0)))"}
+{"ast_sha256": "075739dda713dd489a4ec64360a54de7ad5dbe6278f6c6b81dd63d0ea08b28a4", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(38,0))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(38,0)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(39,0))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(39,0))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(39,0)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(39,0))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(39,0)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(4,-9223372036854775808))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(4,-9223372036854775808))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(4,-9223372036854775808)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(4,-9223372036854775808))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(4,-9223372036854775808)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(4,-9223372036854775809))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(4,-9223372036854775809))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(4,-9223372036854775809)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(4,-9223372036854775809))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(4,-9223372036854775809)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DECIMAL(4,9223372036854775808))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DECIMAL(4,9223372036854775808))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DECIMAL(4,9223372036854775808)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DECIMAL(4,9223372036854775808))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DECIMAL(4,9223372036854775808)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS BIGINT(18446744073709551616))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS BIGINT(18446744073709551616))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS BIGINT(18446744073709551616)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS BIGINT(18446744073709551616))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS BIGINT(18446744073709551616)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC(4,+/*sign*/2))"}
+{"ast_sha256": "ecbf17fec6dcdb31b4da19bf0bbcccaa05f1b012db0331ca736e8a6d491c42f8", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC(4,+/*sign*/2))"}
+{"ast_sha256": "81fcdf75e70366f7e9a8ec322c21a8752b444aa2a3b72949a85b7c586537a418", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC(4,+/*sign*/2)))"}
+{"ast_sha256": "cf960668884816a51ccfc81b3779aa51aae84ef3de1cb001955d5d99e4159baf", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC(4,+/*sign*/2))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC(4,+/*sign*/2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC(4,-/*sign*/2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC(4,-/*sign*/2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC(4,-/*sign*/2)))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC(4,-/*sign*/2))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC(4,-/*sign*/2)))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE  PRECISION)"}
+{"ast_sha256": "9e7178105c6f9612e710afcf2dcf26d1f29fa18842398eafd01aeffce32ade56", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE  PRECISION)"}
+{"ast_sha256": "75ddd5b69417b71a046f5debad9c612051d6d85772627adc7a7792488f31216c", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE  PRECISION))"}
+{"ast_sha256": "5fa5f535a1429a5282f18c85c1d5739984993ef919dd81a8a5b627ab900c8d30", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE  PRECISION)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE  PRECISION))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE/*type*/PRECISION)"}
+{"ast_sha256": "9e7178105c6f9612e710afcf2dcf26d1f29fa18842398eafd01aeffce32ade56", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE/*type*/PRECISION)"}
+{"ast_sha256": "75ddd5b69417b71a046f5debad9c612051d6d85772627adc7a7792488f31216c", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE/*type*/PRECISION))"}
+{"ast_sha256": "5fa5f535a1429a5282f18c85c1d5739984993ef919dd81a8a5b627ab900c8d30", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE/*type*/PRECISION)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE/*type*/PRECISION))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE\nPRECISION)"}
+{"ast_sha256": "9e7178105c6f9612e710afcf2dcf26d1f29fa18842398eafd01aeffce32ade56", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE\nPRECISION)"}
+{"ast_sha256": "75ddd5b69417b71a046f5debad9c612051d6d85772627adc7a7792488f31216c", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE\nPRECISION))"}
+{"ast_sha256": "5fa5f535a1429a5282f18c85c1d5739984993ef919dd81a8a5b627ab900c8d30", "kind": "accept", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE\nPRECISION)"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE\nPRECISION))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS INT.x)"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS INT.x)"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS INT.x))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS INT.x)"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS INT.x))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS NUMERIC.x)"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS NUMERIC.x)"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS NUMERIC.x))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS NUMERIC.x)"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS NUMERIC.x))"}
+{"ast_sha256": null, "kind": "Semantic", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "SELECT CAST(1 AS DOUBLE.PRECISION)"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "UPDATE amounts SET amount = CAST(1 AS DOUBLE.PRECISION)"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "INSERT INTO amounts VALUES (CAST(1 AS DOUBLE.PRECISION))"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "DELETE FROM amounts WHERE amount = CAST(1 AS DOUBLE.PRECISION)"}
+{"ast_sha256": null, "kind": "Parse", "source_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e", "sql": "CREATE TABLE amounts (id BIGINT DEFAULT CAST(1 AS DOUBLE.PRECISION))"}

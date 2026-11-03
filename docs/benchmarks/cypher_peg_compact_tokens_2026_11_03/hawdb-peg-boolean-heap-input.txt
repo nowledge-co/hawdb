@@ -1,0 +1,32 @@
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 AND n.p1 = $p1 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 AND NOT n.p1 = $p1 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 OR n.p1 = $p1 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 OR NOT n.p1 = $p1 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 AND n.p1 = $p1 AND n.p2 = $p2 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 AND NOT n.p1 = $p1 AND NOT n.p2 = $p2 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 OR n.p1 = $p1 OR n.p2 = $p2 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 OR NOT n.p1 = $p1 OR NOT n.p2 = $p2 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 AND n.p1 = $p1 AND n.p2 = $p2 AND n.p3 = $p3 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 AND NOT n.p1 = $p1 AND NOT n.p2 = $p2 AND NOT n.p3 = $p3 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 OR n.p1 = $p1 OR n.p2 = $p2 OR n.p3 = $p3 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 OR NOT n.p1 = $p1 OR NOT n.p2 = $p2 OR NOT n.p3 = $p3 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 AND n.p1 = $p1 AND n.p2 = $p2 AND n.p3 = $p3 AND n.p4 = $p4 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 AND NOT n.p1 = $p1 AND NOT n.p2 = $p2 AND NOT n.p3 = $p3 AND NOT n.p4 = $p4 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 OR n.p1 = $p1 OR n.p2 = $p2 OR n.p3 = $p3 OR n.p4 = $p4 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 OR NOT n.p1 = $p1 OR NOT n.p2 = $p2 OR NOT n.p3 = $p3 OR NOT n.p4 = $p4 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 AND n.p1 = $p1 AND n.p2 = $p2 AND n.p3 = $p3 AND n.p4 = $p4 AND n.p5 = $p5 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 AND NOT n.p1 = $p1 AND NOT n.p2 = $p2 AND NOT n.p3 = $p3 AND NOT n.p4 = $p4 AND NOT n.p5 = $p5 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 OR n.p1 = $p1 OR n.p2 = $p2 OR n.p3 = $p3 OR n.p4 = $p4 OR n.p5 = $p5 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 OR NOT n.p1 = $p1 OR NOT n.p2 = $p2 OR NOT n.p3 = $p3 OR NOT n.p4 = $p4 OR NOT n.p5 = $p5 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 AND n.p1 = $p1 AND n.p2 = $p2 AND n.p3 = $p3 AND n.p4 = $p4 AND n.p5 = $p5 AND n.p6 = $p6 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 AND NOT n.p1 = $p1 AND NOT n.p2 = $p2 AND NOT n.p3 = $p3 AND NOT n.p4 = $p4 AND NOT n.p5 = $p5 AND NOT n.p6 = $p6 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 OR n.p1 = $p1 OR n.p2 = $p2 OR n.p3 = $p3 OR n.p4 = $p4 OR n.p5 = $p5 OR n.p6 = $p6 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 OR NOT n.p1 = $p1 OR NOT n.p2 = $p2 OR NOT n.p3 = $p3 OR NOT n.p4 = $p4 OR NOT n.p5 = $p5 OR NOT n.p6 = $p6 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 AND n.p1 = $p1 AND n.p2 = $p2 AND n.p3 = $p3 AND n.p4 = $p4 AND n.p5 = $p5 AND n.p6 = $p6 AND n.p7 = $p7 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 AND NOT n.p1 = $p1 AND NOT n.p2 = $p2 AND NOT n.p3 = $p3 AND NOT n.p4 = $p4 AND NOT n.p5 = $p5 AND NOT n.p6 = $p6 AND NOT n.p7 = $p7 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN n.p0 = $p0 OR n.p1 = $p1 OR n.p2 = $p2 OR n.p3 = $p3 OR n.p4 = $p4 OR n.p5 = $p5 OR n.p6 = $p6 OR n.p7 = $p7 THEN 1 ELSE 0 END AS result
+MATCH (n) RETURN CASE WHEN NOT n.p0 = $p0 OR NOT n.p1 = $p1 OR NOT n.p2 = $p2 OR NOT n.p3 = $p3 OR NOT n.p4 = $p4 OR NOT n.p5 = $p5 OR NOT n.p6 = $p6 OR NOT n.p7 = $p7 THEN 1 ELSE 0 END AS result

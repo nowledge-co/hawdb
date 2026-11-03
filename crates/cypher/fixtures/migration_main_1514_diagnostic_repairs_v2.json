@@ -1,0 +1,418 @@
+{
+  "reference_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e",
+  "reference_library_sha256": "9c61459cf030e6df33f1271fcc33b800e3e13e52d1707b853ee8add2dd6ad361",
+  "source_records": 21944,
+  "corrected_records": 83,
+  "cases": [
+    {
+      "entry": "statement",
+      "query": "CREATE (:Memory {title: 'bad\\q'})",
+      "expected": "Err(Parse(\"unsupported escape sequence \\\\q at byte 30 line 1 column 31 near `\\\\'})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Memory {title: 'bad\\q'})",
+      "expected": "Err(Parse(\"unsupported escape sequence \\\\q at byte 30 line 1 column 31 near `\\\\'})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (n:Item {value: 'a\\x'})",
+      "expected": "Err(Parse(\"unsupported escape sequence \\\\x at byte 27 line 1 column 28 near `\\\\'})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (n:Item {value: 'a\\x'})",
+      "expected": "Err(Parse(\"unsupported escape sequence \\\\x at byte 27 line 1 column 28 near `\\\\'})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "SET SYSTEM.value = 'a\\x'",
+      "expected": "Err(Parse(\"unsupported escape sequence \\\\x at byte 23 line 1 column 24 near `\\\\'`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "SET SYSTEM.value = 'a\\x'",
+      "expected": "Err(Parse(\"unsupported escape sequence \\\\x at byte 23 line 1 column 24 near `\\\\'`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND ['a\\x'] AS row CREATE (:Item {value: row.id})",
+      "expected": "Err(Parse(\"unsupported escape sequence \\\\x at byte 12 line 1 column 13 near `\\\\'] AS row CREATE (:Item `\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND ['a\\x'] AS row CREATE (:Item {value: row.id})",
+      "expected": "Err(Parse(\"unsupported escape sequence \\\\x at byte 12 line 1 column 13 near `\\\\'] AS row CREATE (:Item `\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "\n            MATCH (m:Memory)\n            WHERE m.created_at >= $cutoff AND (m.is_crystal IS NULL OR m.is_crystal = false)\n            RETURN m.id, m.title,' m.unit_type, m.importance, m.created_at,\n                   m.source, m.metadata,\n                   m.created_by_member_id, m.created_by_agent_key_id\n            ORDER BY m.created_at DESC\n            LIMIT 20\n            ",
+      "expected": "Err(Parse(\"unterminated string at byte 381 line 9 column 13 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "\n            MATCH (m:Memory)\n            WHERE m.created_at >= $cutoff AND (m.is_crystal IS NULL OR m.is_crystal = false)\n            RETURN m.id, m.title,' m.unit_type, m.importance, m.created_at,\n                   m.source, m.metadata,\n                   m.created_by_member_id, m.created_by_agent_key_id\n            ORDER BY m.created_at DESC\n            LIMIT 20\n            ",
+      "expected": "Err(Parse(\"unterminated string at byte 381 line 9 column 13 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('EntityGraph', dampingFactor := 0.85, maxIterations := 20) RETURN node,' pagerank_score",
+      "expected": "Err(Parse(\"unterminated string at byte 102 line 1 column 103 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('EntityGraph', dampingFactor := 0.85, maxIterations := 20) RETURN node,' pagerank_score",
+      "expected": "Err(Parse(\"unterminated string at byte 102 line 1 column 103 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (c:Memory)-[:SYNTHESIZED_FROM]->(s:Memory) WHERE c.is_crystal = true AND s.id IN $source_ids WITH c.id AS cid, c.crystal_title AS ct, count(DISTINCT s.id) AS covered WHERE 'covered = $n RETURN cid, ct LIMIT 1",
+      "expected": "Err(Parse(\"unterminated string at byte 214 line 1 column 215 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (c:Memory)-[:SYNTHESIZED_FROM]->(s:Memory) WHERE c.is_crystal = true AND s.id IN $source_ids WITH c.id AS cid, c.crystal_title AS ct, count(DISTINCT s.id) AS covered WHERE 'covered = $n RETURN cid, ct LIMIT 1",
+      "expected": "Err(Parse(\"unterminated string at byte 214 line 1 column 215 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (e:Entity) WHERE' LOWER(e.name) = LOWER($mention) RETURN e.id",
+      "expected": "Err(Parse(\"unterminated string at byte 67 line 1 column 68 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (e:Entity) WHERE' LOWER(e.name) = LOWER($mention) RETURN e.id",
+      "expected": "Err(Parse(\"unterminated string at byte 67 line 1 column 68 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (j:AugmentationJob {job_id: $job_id})\n         WHERE j.status = 'running'\n         SET j.status = 'comple",
+      "expected": "Err(Parse(\"unterminated string at byte 111 line 3 column 32 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (j:AugmentationJob {job_id: $job_id})\n         WHERE j.status = 'running'\n         SET j.status = 'comple",
+      "expected": "Err(Parse(\"unterminated string at byte 111 line 3 column 32 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (l:Label)\n                 WHERE l.canonical_name = $c AND l.id <> $label_id\n                 RETURN 'l.id LIMIT 1",
+      "expected": "Err(Parse(\"unterminated string at byte 120 line 3 column 38 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (l:Label)\n                 WHERE l.canonical_name = $c AND l.id <> $label_id\n                 RETURN 'l.id LIMIT 1",
+      "expected": "Err(Parse(\"unterminated string at byte 120 line 3 column 38 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)\n         WHERE m.id = $id\n         OPTIONAL MATCH (m)-[r]-()\n         RETURN m.id, m.title, m.created_at, COUNT(r),\n                m.content, m.is_crystal, m.is_latest,\n                m.unit_type, m.importance, m.source, m.metadata,\n    '            m.community_id",
+      "expected": "Err(Parse(\"unterminated string at byte 283 line 7 column 32 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)\n         WHERE m.id = $id\n         OPTIONAL MATCH (m)-[r]-()\n         RETURN m.id, m.title, m.created_at, COUNT(r),\n                m.content, m.is_crystal, m.is_latest,\n                m.unit_type, m.importance, m.source, m.metadata,\n    '            m.community_id",
+      "expected": "Err(Parse(\"unterminated string at byte 283 line 7 column 32 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)\n         WHERE m.id = $id\n         OPTIONAL MATCH (m)-[r]-()\n         RETURN m.id, m.title, m.created_at, COUNT(r),\n'                m.content, m.is_crystal, m.is_latest,\n                m.unit_type, m.importance, m.source, m.metadata,\n                m.community_id",
+      "expected": "Err(Parse(\"unterminated string at byte 283 line 7 column 31 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)\n         WHERE m.id = $id\n         OPTIONAL MATCH (m)-[r]-()\n         RETURN m.id, m.title, m.created_at, COUNT(r),\n'                m.content, m.is_crystal, m.is_latest,\n                m.unit_type, m.importance, m.source, m.metadata,\n                m.community_id",
+      "expected": "Err(Parse(\"unterminated string at byte 283 line 7 column 31 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)\n         WHERE m.is_crystal IS NULL OR m.is_crystal =' false\n         RETURN COUNT(m)",
+      "expected": "Err(Parse(\"unterminated string at byte 102 line 3 column 25 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)\n         WHERE m.is_crystal IS NULL OR m.is_crystal =' false\n         RETURN COUNT(m)",
+      "expected": "Err(Parse(\"unterminated string at byte 102 line 3 column 25 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory) WHERE m.kind = 'note' OR m.id = 2 SET m.flag = 'se",
+      "expected": "Err(Parse(\"unterminated string at byte 67 line 1 column 68 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory) WHERE m.kind = 'note' OR m.id = 2 SET m.flag = 'se",
+      "expected": "Err(Parse(\"unterminated string at byte 67 line 1 column 68 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory) WHERE m.title = 'Old",
+      "expected": "Err(Parse(\"unterminated string at byte 37 line 1 column 38 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory) WHERE m.title = 'Old",
+      "expected": "Err(Parse(\"unterminated string at byte 37 line 1 column 38 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)-[:MENTIONS]->(e:Entity {id: $id})\n         RETURN m.id, m.title, m.content, m.is_crystal,\n                COALESCE(m.crystal_title, m.title) AS display_title,\n   '             m.importance\n         ORDER BY m.is_crystal DESC, m.importance DESC\n         LIMIT $limit",
+      "expected": "Err(Parse(\"unterminated string at byte 282 line 6 column 22 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)-[:MENTIONS]->(e:Entity {id: $id})\n         RETURN m.id, m.title, m.content, m.is_crystal,\n                COALESCE(m.crystal_title, m.title) AS display_title,\n   '             m.importance\n         ORDER BY m.is_crystal DESC, m.importance DESC\n         LIMIT $limit",
+      "expected": "Err(Parse(\"unterminated string at byte 282 line 6 column 22 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (memory:Memory)-[relationship:EXTRACTED_FROM]->(message:Message) WHERE relationship._nmem_source_table_id = $source_table_id AND relationship._nmem_source_offset = $source_offset RETURN relationship._nmem_source_table_id AS source_table_id, relationship._nmem_source_offset AS source_offset, memory.id AS memory_id, message.id AS message_id, 'relationship.extraction_confidence AS extraction_confidence, relationship.created_at AS created_at, relationship.properties AS properties LIMIT 2",
+      "expected": "Err(Parse(\"unterminated string at byte 494 line 1 column 495 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (memory:Memory)-[relationship:EXTRACTED_FROM]->(message:Message) WHERE relationship._nmem_source_table_id = $source_table_id AND relationship._nmem_source_offset = $source_offset RETURN relationship._nmem_source_table_id AS source_table_id, relationship._nmem_source_offset AS source_offset, memory.id AS memory_id, message.id AS message_id, 'relationship.extraction_confidence AS extraction_confidence, relationship.created_at AS created_at, relationship.properties AS properties LIMIT 2",
+      "expected": "Err(Parse(\"unterminated string at byte 494 line 1 column 495 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n:Memory {id: $node_id}) RETURN 'n",
+      "expected": "Err(Parse(\"unterminated string at byte 41 line 1 column 42 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n:Memory {id: $node_id}) RETURN 'n",
+      "expected": "Err(Parse(\"unterminated string at byte 41 line 1 column 42 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (s:Skill) WHERE s.stage = 'a",
+      "expected": "Err(Parse(\"unterminated string at byte 34 line 1 column 35 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (s:Skill) WHERE s.stage = 'a",
+      "expected": "Err(Parse(\"unterminated string at byte 34 line 1 column 35 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (s:Source {id: $id})\n         SET s.lifecycle_state = 'parsed',\n             s.parsed_path = $parsed_path,\n             s.summary = $summary,\n             s.sha256 = $sha256,\n             s.size_bytes = $size_bytes,\n             s.updated_at = 'timestamp($updated_at)",
+      "expected": "Err(Parse(\"unterminated string at byte 273 line 7 column 52 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (s:Source {id: $id})\n         SET s.lifecycle_state = 'parsed',\n             s.parsed_path = $parsed_path,\n             s.summary = $summary,\n             s.sha256 = $sha256,\n             s.size_bytes = $size_bytes,\n             s.updated_at = 'timestamp($updated_at)",
+      "expected": "Err(Parse(\"unterminated string at byte 273 line 7 column 52 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread {id: $thread_uuid})\n             RETURN t.title, t.source, 't.participants, t.project,\n                    t.workspace, t.tool_version, t.metadata\n             LIMIT 1",
+      "expected": "Err(Parse(\"unterminated string at byte 183 line 4 column 21 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread {id: $thread_uuid})\n             RETURN t.title, t.source, 't.participants, t.project,\n                    t.workspace, t.tool_version, t.metadata\n             LIMIT 1",
+      "expected": "Err(Parse(\"unterminated string at byte 183 line 4 column 21 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread)\n                     WHERE t.thread_id = $sid OR t.id = $sid\n                     RETURN t.thread_id, 't.title, t.source, t.created_at\n                     LIMIT 1",
+      "expected": "Err(Parse(\"unterminated string at byte 180 line 4 column 29 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread)\n                     WHERE t.thread_id = $sid OR t.id = $sid\n                     RETURN t.thread_id, 't.title, t.source, t.created_at\n                     LIMIT 1",
+      "expected": "Err(Parse(\"unterminated string at byte 180 line 4 column 29 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread)\n             WHERE t.id IN $ids\n             RETURN t.id, COALESCE(t.title, t.source, 'Thread'),\n '                   t.source, t.summary, t.message_count, t.project, t.workspace",
+      "expected": "Err(Parse(\"unterminated string at byte 195 line 4 column 82 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread)\n             WHERE t.id IN $ids\n             RETURN t.id, COALESCE(t.title, t.source, 'Thread'),\n '                   t.source, t.summary, t.message_count, t.project, t.workspace",
+      "expected": "Err(Parse(\"unterminated string at byte 195 line 4 column 82 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread) WHERE t.thread_id = $id OR t.id =' $id RETURN t.title LIMIT 1",
+      "expected": "Err(Parse(\"unterminated string at byte 78 line 1 column 79 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread) WHERE t.thread_id = $id OR t.id =' $id RETURN t.title LIMIT 1",
+      "expected": "Err(Parse(\"unterminated string at byte 78 line 1 column 79 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN SIZE()",
+      "expected": "Err(Parse(\"size() expects 1 argument(s), got 0 at byte 23 line 1 column 24 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN SIZE()",
+      "expected": "Err(Parse(\"size() expects 1 argument(s), got 0 at byte 23 line 1 column 24 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p = SIZE() RETURN n",
+      "expected": "Err(Parse(\"size() expects 1 argument(s), got 0 at byte 28 line 1 column 29 near ` RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p = SIZE() RETURN n",
+      "expected": "Err(Parse(\"size() expects 1 argument(s), got 0 at byte 28 line 1 column 29 near ` RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN SIZE() ELSE 0 END",
+      "expected": "Err(Parse(\"size() expects 1 argument(s), got 0 at byte 46 line 1 column 47 near ` ELSE 0 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN SIZE() ELSE 0 END",
+      "expected": "Err(Parse(\"size() expects 1 argument(s), got 0 at byte 46 line 1 column 47 near ` ELSE 0 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN SIZE() = 1 THEN 0 ELSE 1 END",
+      "expected": "Err(Parse(\"size() expects 1 argument(s), got 0 at byte 33 line 1 column 34 near ` = 1 THEN 0 ELSE 1 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN SIZE() = 1 THEN 0 ELSE 1 END",
+      "expected": "Err(Parse(\"size() expects 1 argument(s), got 0 at byte 33 line 1 column 34 near ` = 1 THEN 0 ELSE 1 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN [SIZE()]",
+      "expected": "Err(Parse(\"size() expects 1 argument(s), got 0 at byte 24 line 1 column 25 near `]`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN [SIZE()]",
+      "expected": "Err(Parse(\"size() expects 1 argument(s), got 0 at byte 24 line 1 column 25 near `]`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM $f AS row CREATE (:P {value: row[1.5]})",
+      "expected": "Err(Parse(\"expected ']' at byte 49 line 1 column 50 near `5]})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM $f AS row CREATE (:P {value: row[1.5]})",
+      "expected": "Err(Parse(\"expected ']' at byte 49 line 1 column 50 near `5]})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row) SET row.v = row[1.5] RETURN row",
+      "expected": "Err(Parse(\"expected ']' at byte 30 line 1 column 31 near `5] RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row) SET row.v = row[1.5] RETURN row",
+      "expected": "Err(Parse(\"expected ']' at byte 30 line 1 column 31 near `5] RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM $f AS row CREATE (:P {value: row[9223372036854775808]})",
+      "expected": "Err(Parse(\"invalid integer at byte 66 line 1 column 67 near `]})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM $f AS row CREATE (:P {value: row[9223372036854775808]})",
+      "expected": "Err(Parse(\"invalid integer at byte 66 line 1 column 67 near `]})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row) SET row.v = row[9223372036854775808] RETURN row",
+      "expected": "Err(Parse(\"invalid integer at byte 47 line 1 column 48 near `] RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row) SET row.v = row[9223372036854775808] RETURN row",
+      "expected": "Err(Parse(\"invalid integer at byte 47 line 1 column 48 near `] RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND trim() AS x RETURN x",
+      "expected": "Err(Parse(\"trim() expects 1..=1 arguments at byte 13 line 1 column 14 near ` AS x RETURN x`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND trim() AS x CREATE (n:Node)",
+      "expected": "Err(Parse(\"trim() expects 1..=1 arguments at byte 13 line 1 column 14 near ` AS x CREATE (n:Node)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND trim() AS x SET n.x = 1",
+      "expected": "Err(Parse(\"trim() expects 1..=1 arguments at byte 13 line 1 column 14 near ` AS x SET n.x = 1`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND trim() AS x WITH x RETURN x",
+      "expected": "Err(Parse(\"trim() expects 1..=1 arguments at byte 13 line 1 column 14 near ` AS x WITH x RETURN x`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND regexp_replace('a','a') AS x RETURN x",
+      "expected": "Err(Parse(\"regexp_replace() expects 3..=4 arguments at byte 30 line 1 column 31 near ` AS x RETURN x`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND regexp_replace('a','a') AS x CREATE (n:Node)",
+      "expected": "Err(Parse(\"regexp_replace() expects 3..=4 arguments at byte 30 line 1 column 31 near ` AS x CREATE (n:Node)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND regexp_replace('a','a') AS x SET n.x = 1",
+      "expected": "Err(Parse(\"regexp_replace() expects 3..=4 arguments at byte 30 line 1 column 31 near ` AS x SET n.x = 1`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND regexp_replace('a','a') AS x WITH x RETURN x",
+      "expected": "Err(Parse(\"regexp_replace() expects 3..=4 arguments at byte 30 line 1 column 31 near ` AS x WITH x RETURN x`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND list_append([1]) AS x RETURN x",
+      "expected": "Err(Parse(\"list_append() expects 2 argument(s), got 1 at byte 23 line 1 column 24 near ` AS x RETURN x`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND list_append([1]) AS x RETURN x",
+      "expected": "Err(Parse(\"list_append() expects 2 argument(s), got 1 at byte 23 line 1 column 24 near ` AS x RETURN x`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (e:Entity) RETURN list_append([1]) AS x",
+      "expected": "Err(Parse(\"list_append() expects 2 argument(s), got 1 at byte 40 line 1 column 41 near ` AS x`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (e:Entity) RETURN list_append([1]) AS x",
+      "expected": "Err(Parse(\"list_append() expects 2 argument(s), got 1 at byte 40 line 1 column 41 near ` AS x`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND list_append([1],2,3) AS x RETURN x",
+      "expected": "Err(Parse(\"list_append() expects 2 argument(s), got 3 at byte 27 line 1 column 28 near ` AS x RETURN x`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND list_append([1],2,3) AS x RETURN x",
+      "expected": "Err(Parse(\"list_append() expects 2 argument(s), got 3 at byte 27 line 1 column 28 near ` AS x RETURN x`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (e:Entity) RETURN list_append([1],2,3) AS x",
+      "expected": "Err(Parse(\"list_append() expects 2 argument(s), got 3 at byte 44 line 1 column 45 near ` AS x`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (e:Entity) RETURN list_append([1],2,3) AS x",
+      "expected": "Err(Parse(\"list_append() expects 2 argument(s), got 3 at byte 44 line 1 column 45 near ` AS x`\"))"
+    }
+  ]
+}

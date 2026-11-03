@@ -1,0 +1,489 @@
+{"kind": "accept", "sql": "SELECT NULL", "id": "generated-0000", "ast_sha256": "262b5253163d5cf91a4f46be583aeb97c4c398d93d789535bb68a026551183e0"}
+{"kind": "accept", "sql": "-- lead\nSELECT NULL", "id": "generated-0001", "ast_sha256": "50b38627a1030be774f5a60448577c11c0851e82c5758b0bf02f59eb425fda2b"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT NULL", "id": "generated-0002", "ast_sha256": "50b38627a1030be774f5a60448577c11c0851e82c5758b0bf02f59eb425fda2b"}
+{"kind": "accept", "sql": "SELECT NULL FROM items", "id": "generated-0003", "ast_sha256": "4fc32930ce1e927f7822cf4b1b85e798eca7ecfaf67f8e3544c1ab5cf0ebcf89"}
+{"kind": "accept", "sql": "-- lead\nSELECT NULL FROM items", "id": "generated-0004", "ast_sha256": "1a311ef18c182d5f1f6310809424810bfe89a4e23c81235c1015d05987a15f60"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT NULL FROM items", "id": "generated-0005", "ast_sha256": "1a311ef18c182d5f1f6310809424810bfe89a4e23c81235c1015d05987a15f60"}
+{"kind": "accept", "sql": "SELECT NULL AS label FROM items", "id": "generated-0006", "ast_sha256": "e2bf799ef57e34de42ba7696c6a3d5805aceb365e1f0ac8520900c408d862013"}
+{"kind": "accept", "sql": "-- lead\nSELECT NULL AS label FROM items", "id": "generated-0007", "ast_sha256": "621e28260f4b3a4a213bd606d8049e24f7ba0daddc7df6a30405982f41a55a04"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT NULL AS label FROM items", "id": "generated-0008", "ast_sha256": "621e28260f4b3a4a213bd606d8049e24f7ba0daddc7df6a30405982f41a55a04"}
+{"kind": "accept", "sql": "SELECT NULL label FROM items", "id": "generated-0009", "ast_sha256": "e2bf799ef57e34de42ba7696c6a3d5805aceb365e1f0ac8520900c408d862013"}
+{"kind": "accept", "sql": "-- lead\nSELECT NULL label FROM items", "id": "generated-0010", "ast_sha256": "621e28260f4b3a4a213bd606d8049e24f7ba0daddc7df6a30405982f41a55a04"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT NULL label FROM items", "id": "generated-0011", "ast_sha256": "621e28260f4b3a4a213bd606d8049e24f7ba0daddc7df6a30405982f41a55a04"}
+{"kind": "accept", "sql": "SELECT TRUE", "id": "generated-0012", "ast_sha256": "bd637bba6d62775bdf57e63d3f29303a0128ecc933e2ed4a51f719155f4cb562"}
+{"kind": "accept", "sql": "-- lead\nSELECT TRUE", "id": "generated-0013", "ast_sha256": "c8976bfc13d86bc93eef077f506471c68380c8f7fbe9a772a66ab0d99cd46513"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT TRUE", "id": "generated-0014", "ast_sha256": "c8976bfc13d86bc93eef077f506471c68380c8f7fbe9a772a66ab0d99cd46513"}
+{"kind": "accept", "sql": "SELECT TRUE FROM items", "id": "generated-0015", "ast_sha256": "380f622edb11eba71a3143e6ebd311052c2bfc125abc9cab49437604597e3309"}
+{"kind": "accept", "sql": "-- lead\nSELECT TRUE FROM items", "id": "generated-0016", "ast_sha256": "89ae67dab2f3b59e6631b45ee5f8bd9b52d7b4ba59c8261adab62892136f1b04"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT TRUE FROM items", "id": "generated-0017", "ast_sha256": "89ae67dab2f3b59e6631b45ee5f8bd9b52d7b4ba59c8261adab62892136f1b04"}
+{"kind": "accept", "sql": "SELECT TRUE AS label FROM items", "id": "generated-0018", "ast_sha256": "16208df7f49998a13515a89ed087c7d4b544d833b7aab713bcb5d1b70a42cc3f"}
+{"kind": "accept", "sql": "-- lead\nSELECT TRUE AS label FROM items", "id": "generated-0019", "ast_sha256": "578dcec7a6b77a2feda033fd8c85fa47d2884eae60c5e1f96bcff8d38a221a31"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT TRUE AS label FROM items", "id": "generated-0020", "ast_sha256": "578dcec7a6b77a2feda033fd8c85fa47d2884eae60c5e1f96bcff8d38a221a31"}
+{"kind": "accept", "sql": "SELECT TRUE label FROM items", "id": "generated-0021", "ast_sha256": "16208df7f49998a13515a89ed087c7d4b544d833b7aab713bcb5d1b70a42cc3f"}
+{"kind": "accept", "sql": "-- lead\nSELECT TRUE label FROM items", "id": "generated-0022", "ast_sha256": "578dcec7a6b77a2feda033fd8c85fa47d2884eae60c5e1f96bcff8d38a221a31"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT TRUE label FROM items", "id": "generated-0023", "ast_sha256": "578dcec7a6b77a2feda033fd8c85fa47d2884eae60c5e1f96bcff8d38a221a31"}
+{"kind": "accept", "sql": "SELECT -1", "id": "generated-0024", "ast_sha256": "4f9a0c128db7b36c4181f239083144088c9133cb7d8932bf265e79250cdcb8ca"}
+{"kind": "accept", "sql": "-- lead\nSELECT -1", "id": "generated-0025", "ast_sha256": "54e729071e439b0c521fb5b858ffd4e8949b2d581d02df046f447ada812abb68"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT -1", "id": "generated-0026", "ast_sha256": "54e729071e439b0c521fb5b858ffd4e8949b2d581d02df046f447ada812abb68"}
+{"kind": "accept", "sql": "SELECT -1 FROM items", "id": "generated-0027", "ast_sha256": "e9c428e829e18cdb2ccbfe2a5490a1274d53c276d415b250421e68b4b81e6e12"}
+{"kind": "accept", "sql": "-- lead\nSELECT -1 FROM items", "id": "generated-0028", "ast_sha256": "11ca61ccca62108f0a73db8b162d28f7469af7c08f0c7779dc74db076e6f7ad7"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT -1 FROM items", "id": "generated-0029", "ast_sha256": "11ca61ccca62108f0a73db8b162d28f7469af7c08f0c7779dc74db076e6f7ad7"}
+{"kind": "accept", "sql": "SELECT -1 AS label FROM items", "id": "generated-0030", "ast_sha256": "a888dbbcf69b99a251b09da8d19fde0733a30fa3d858932d272816b5f7f82301"}
+{"kind": "accept", "sql": "-- lead\nSELECT -1 AS label FROM items", "id": "generated-0031", "ast_sha256": "c50047f9298f1aa6cbb86b0d8acdad01c71924f8ade8325b86513cffdaac6aeb"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT -1 AS label FROM items", "id": "generated-0032", "ast_sha256": "c50047f9298f1aa6cbb86b0d8acdad01c71924f8ade8325b86513cffdaac6aeb"}
+{"kind": "accept", "sql": "SELECT -1 label FROM items", "id": "generated-0033", "ast_sha256": "a888dbbcf69b99a251b09da8d19fde0733a30fa3d858932d272816b5f7f82301"}
+{"kind": "accept", "sql": "-- lead\nSELECT -1 label FROM items", "id": "generated-0034", "ast_sha256": "c50047f9298f1aa6cbb86b0d8acdad01c71924f8ade8325b86513cffdaac6aeb"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT -1 label FROM items", "id": "generated-0035", "ast_sha256": "c50047f9298f1aa6cbb86b0d8acdad01c71924f8ade8325b86513cffdaac6aeb"}
+{"kind": "accept", "sql": "SELECT 1.25", "id": "generated-0036", "ast_sha256": "e61692c3255f46402de099d1b216518f13aa51af13d3252d7ec0e22a09a7eb03"}
+{"kind": "accept", "sql": "-- lead\nSELECT 1.25", "id": "generated-0037", "ast_sha256": "3799c04615e32f81e65481df9603dd2983ec41d7e3f69abf33db11cdde23b7f1"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT 1.25", "id": "generated-0038", "ast_sha256": "3799c04615e32f81e65481df9603dd2983ec41d7e3f69abf33db11cdde23b7f1"}
+{"kind": "accept", "sql": "SELECT 1.25 FROM items", "id": "generated-0039", "ast_sha256": "2c822936a9b129939f196b7ae051bfcf0b9ad7f6ca339959c9ac94d8f3c6f934"}
+{"kind": "accept", "sql": "-- lead\nSELECT 1.25 FROM items", "id": "generated-0040", "ast_sha256": "729f5faa74f1750a93029173713c21f948de40af3d76847e5fc08d1f13295c57"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT 1.25 FROM items", "id": "generated-0041", "ast_sha256": "729f5faa74f1750a93029173713c21f948de40af3d76847e5fc08d1f13295c57"}
+{"kind": "accept", "sql": "SELECT 1.25 AS label FROM items", "id": "generated-0042", "ast_sha256": "508b26a5a3daa1549fa11d367a7c0d914739805e800cba5f032d4955d6f5d2c3"}
+{"kind": "accept", "sql": "-- lead\nSELECT 1.25 AS label FROM items", "id": "generated-0043", "ast_sha256": "f6a59a32a8934f77374f30b8df8270a08d27ddef0c5324f0e0ba90a6e9348831"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT 1.25 AS label FROM items", "id": "generated-0044", "ast_sha256": "f6a59a32a8934f77374f30b8df8270a08d27ddef0c5324f0e0ba90a6e9348831"}
+{"kind": "accept", "sql": "SELECT 1.25 label FROM items", "id": "generated-0045", "ast_sha256": "508b26a5a3daa1549fa11d367a7c0d914739805e800cba5f032d4955d6f5d2c3"}
+{"kind": "accept", "sql": "-- lead\nSELECT 1.25 label FROM items", "id": "generated-0046", "ast_sha256": "f6a59a32a8934f77374f30b8df8270a08d27ddef0c5324f0e0ba90a6e9348831"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT 1.25 label FROM items", "id": "generated-0047", "ast_sha256": "f6a59a32a8934f77374f30b8df8270a08d27ddef0c5324f0e0ba90a6e9348831"}
+{"kind": "accept", "sql": "SELECT .5", "id": "generated-0048", "ast_sha256": "d47bfc968d2ad404b6fe2f1163c5ffbef9d48fa5c7c00e34b91ac4f814cdda45"}
+{"kind": "accept", "sql": "-- lead\nSELECT .5", "id": "generated-0049", "ast_sha256": "10992eb673c8ac6aea7a53164cdc81f031aca8a98873111dec4385a80f91a812"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT .5", "id": "generated-0050", "ast_sha256": "10992eb673c8ac6aea7a53164cdc81f031aca8a98873111dec4385a80f91a812"}
+{"kind": "accept", "sql": "SELECT .5 FROM items", "id": "generated-0051", "ast_sha256": "a1ad72d6c7dda2669def5fb00a236b1a89e269640c460cddb72e66c6cf048e2b"}
+{"kind": "accept", "sql": "-- lead\nSELECT .5 FROM items", "id": "generated-0052", "ast_sha256": "054f0410788897a51edd1c67a15362a96df26c92dad3c82513dce5437dae69a9"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT .5 FROM items", "id": "generated-0053", "ast_sha256": "054f0410788897a51edd1c67a15362a96df26c92dad3c82513dce5437dae69a9"}
+{"kind": "accept", "sql": "SELECT .5 AS label FROM items", "id": "generated-0054", "ast_sha256": "5bb1308e9f8868bf355f63d05540a2235573b810915b7efd99a29cee0ac848f9"}
+{"kind": "accept", "sql": "-- lead\nSELECT .5 AS label FROM items", "id": "generated-0055", "ast_sha256": "996665ece8f90c773071189bc827bce2bb4e9851c21417c472b8d9ef634ed4c1"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT .5 AS label FROM items", "id": "generated-0056", "ast_sha256": "996665ece8f90c773071189bc827bce2bb4e9851c21417c472b8d9ef634ed4c1"}
+{"kind": "accept", "sql": "SELECT .5 label FROM items", "id": "generated-0057", "ast_sha256": "5bb1308e9f8868bf355f63d05540a2235573b810915b7efd99a29cee0ac848f9"}
+{"kind": "accept", "sql": "-- lead\nSELECT .5 label FROM items", "id": "generated-0058", "ast_sha256": "996665ece8f90c773071189bc827bce2bb4e9851c21417c472b8d9ef634ed4c1"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT .5 label FROM items", "id": "generated-0059", "ast_sha256": "996665ece8f90c773071189bc827bce2bb4e9851c21417c472b8d9ef634ed4c1"}
+{"kind": "accept", "sql": "SELECT 1.", "id": "generated-0060", "ast_sha256": "bc021e01d3d10b94dc553b3ad97470bd27b689d99602b13d8a494f1eaa889471"}
+{"kind": "accept", "sql": "-- lead\nSELECT 1.", "id": "generated-0061", "ast_sha256": "8010ea5b242f3f8b59e802a4b4c2fc3b57f8999bc78fff346f737a28611ee38e"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT 1.", "id": "generated-0062", "ast_sha256": "8010ea5b242f3f8b59e802a4b4c2fc3b57f8999bc78fff346f737a28611ee38e"}
+{"kind": "accept", "sql": "SELECT 1. FROM items", "id": "generated-0063", "ast_sha256": "2697993ec004b78035a6080b875c8c8a0645bddfc27b5b98efd612971ae3fa68"}
+{"kind": "accept", "sql": "-- lead\nSELECT 1. FROM items", "id": "generated-0064", "ast_sha256": "01321df2a4db825d79d708f41ea07372cfb7ee7ebff406e41d958994616f8d29"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT 1. FROM items", "id": "generated-0065", "ast_sha256": "01321df2a4db825d79d708f41ea07372cfb7ee7ebff406e41d958994616f8d29"}
+{"kind": "accept", "sql": "SELECT 1. AS label FROM items", "id": "generated-0066", "ast_sha256": "157709f05deee93b337b3e18030f6cd43c155eff923213ba9de68eeeec95ab37"}
+{"kind": "accept", "sql": "-- lead\nSELECT 1. AS label FROM items", "id": "generated-0067", "ast_sha256": "9d7cd707dbf55ecde3d695d8b217e03693c0a6ab48c4f58117ec32ce26aa71b5"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT 1. AS label FROM items", "id": "generated-0068", "ast_sha256": "9d7cd707dbf55ecde3d695d8b217e03693c0a6ab48c4f58117ec32ce26aa71b5"}
+{"kind": "accept", "sql": "SELECT 1. label FROM items", "id": "generated-0069", "ast_sha256": "157709f05deee93b337b3e18030f6cd43c155eff923213ba9de68eeeec95ab37"}
+{"kind": "accept", "sql": "-- lead\nSELECT 1. label FROM items", "id": "generated-0070", "ast_sha256": "9d7cd707dbf55ecde3d695d8b217e03693c0a6ab48c4f58117ec32ce26aa71b5"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT 1. label FROM items", "id": "generated-0071", "ast_sha256": "9d7cd707dbf55ecde3d695d8b217e03693c0a6ab48c4f58117ec32ce26aa71b5"}
+{"kind": "Semantic", "sql": "SELECT 1_000", "id": "generated-0072", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT 1_000", "id": "generated-0073", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT 1_000", "id": "generated-0074", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT 1_000 FROM items", "id": "generated-0075", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT 1_000 FROM items", "id": "generated-0076", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT 1_000 FROM items", "id": "generated-0077", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT 1_000 AS label FROM items", "id": "generated-0078", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT 1_000 AS label FROM items", "id": "generated-0079", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT 1_000 AS label FROM items", "id": "generated-0080", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT 1_000 label FROM items", "id": "generated-0081", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT 1_000 label FROM items", "id": "generated-0082", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT 1_000 label FROM items", "id": "generated-0083", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT 1_", "id": "generated-0084", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT 1_", "id": "generated-0085", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT 1_", "id": "generated-0086", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT 1_ FROM items", "id": "generated-0087", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT 1_ FROM items", "id": "generated-0088", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT 1_ FROM items", "id": "generated-0089", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT 1_ AS label FROM items", "id": "generated-0090", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT 1_ AS label FROM items", "id": "generated-0091", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT 1_ AS label FROM items", "id": "generated-0092", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT 1_ label FROM items", "id": "generated-0093", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT 1_ label FROM items", "id": "generated-0094", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT 1_ label FROM items", "id": "generated-0095", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT 1__0", "id": "generated-0096", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT 1__0", "id": "generated-0097", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT 1__0", "id": "generated-0098", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT 1__0 FROM items", "id": "generated-0099", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT 1__0 FROM items", "id": "generated-0100", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT 1__0 FROM items", "id": "generated-0101", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT 1__0 AS label FROM items", "id": "generated-0102", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT 1__0 AS label FROM items", "id": "generated-0103", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT 1__0 AS label FROM items", "id": "generated-0104", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT 1__0 label FROM items", "id": "generated-0105", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT 1__0 label FROM items", "id": "generated-0106", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT 1__0 label FROM items", "id": "generated-0107", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT 1._5", "id": "generated-0108", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT 1._5", "id": "generated-0109", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT 1._5", "id": "generated-0110", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT 1._5 FROM items", "id": "generated-0111", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT 1._5 FROM items", "id": "generated-0112", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT 1._5 FROM items", "id": "generated-0113", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT 1._5 AS label FROM items", "id": "generated-0114", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT 1._5 AS label FROM items", "id": "generated-0115", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT 1._5 AS label FROM items", "id": "generated-0116", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT 1._5 label FROM items", "id": "generated-0117", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT 1._5 label FROM items", "id": "generated-0118", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT 1._5 label FROM items", "id": "generated-0119", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT 1.0_0", "id": "generated-0120", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT 1.0_0", "id": "generated-0121", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT 1.0_0", "id": "generated-0122", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT 1.0_0 FROM items", "id": "generated-0123", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT 1.0_0 FROM items", "id": "generated-0124", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT 1.0_0 FROM items", "id": "generated-0125", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT 1.0_0 AS label FROM items", "id": "generated-0126", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT 1.0_0 AS label FROM items", "id": "generated-0127", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT 1.0_0 AS label FROM items", "id": "generated-0128", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT 1.0_0 label FROM items", "id": "generated-0129", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT 1.0_0 label FROM items", "id": "generated-0130", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT 1.0_0 label FROM items", "id": "generated-0131", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT 1.0e1_0", "id": "generated-0132", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT 1.0e1_0", "id": "generated-0133", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT 1.0e1_0", "id": "generated-0134", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT 1.0e1_0 FROM items", "id": "generated-0135", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT 1.0e1_0 FROM items", "id": "generated-0136", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT 1.0e1_0 FROM items", "id": "generated-0137", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT 1.0e1_0 AS label FROM items", "id": "generated-0138", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT 1.0e1_0 AS label FROM items", "id": "generated-0139", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT 1.0e1_0 AS label FROM items", "id": "generated-0140", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT 1.0e1_0 label FROM items", "id": "generated-0141", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT 1.0e1_0 label FROM items", "id": "generated-0142", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT 1.0e1_0 label FROM items", "id": "generated-0143", "ast_sha256": null}
+{"kind": "accept", "sql": "SELECT U&'d\\0061t'", "id": "generated-0144", "ast_sha256": "a67cfd6f33e92b6b87d6b8e1a7adf978a11f3ea3a2dc02a3df182cc05a01d53f"}
+{"kind": "accept", "sql": "-- lead\nSELECT U&'d\\0061t'", "id": "generated-0145", "ast_sha256": "71182bbc2fb30a000c0bc357e159e8b828e553362771ddc36063aa8bddccbf7b"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT U&'d\\0061t'", "id": "generated-0146", "ast_sha256": "71182bbc2fb30a000c0bc357e159e8b828e553362771ddc36063aa8bddccbf7b"}
+{"kind": "accept", "sql": "SELECT U&'d\\0061t' FROM items", "id": "generated-0147", "ast_sha256": "3f3e632946da40dbeeada5497931d360d36c40aa9c2f2ac7f52f4901cefc1d96"}
+{"kind": "accept", "sql": "-- lead\nSELECT U&'d\\0061t' FROM items", "id": "generated-0148", "ast_sha256": "45b9dc393974616587bcbab39d7e85ef6b2ce8ae66b0321908bfed179ac46ab4"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT U&'d\\0061t' FROM items", "id": "generated-0149", "ast_sha256": "45b9dc393974616587bcbab39d7e85ef6b2ce8ae66b0321908bfed179ac46ab4"}
+{"kind": "accept", "sql": "SELECT U&'d\\0061t' AS label FROM items", "id": "generated-0150", "ast_sha256": "3e7be444aa8961939788250f67aa322e651870e9f1f17098da6a6d6e0cf5d3e9"}
+{"kind": "accept", "sql": "-- lead\nSELECT U&'d\\0061t' AS label FROM items", "id": "generated-0151", "ast_sha256": "bbc780d1450f1312f566bcac5b3bd254f768223655acd621e126c96bf03ea5c4"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT U&'d\\0061t' AS label FROM items", "id": "generated-0152", "ast_sha256": "bbc780d1450f1312f566bcac5b3bd254f768223655acd621e126c96bf03ea5c4"}
+{"kind": "accept", "sql": "SELECT U&'d\\0061t' label FROM items", "id": "generated-0153", "ast_sha256": "3e7be444aa8961939788250f67aa322e651870e9f1f17098da6a6d6e0cf5d3e9"}
+{"kind": "accept", "sql": "-- lead\nSELECT U&'d\\0061t' label FROM items", "id": "generated-0154", "ast_sha256": "bbc780d1450f1312f566bcac5b3bd254f768223655acd621e126c96bf03ea5c4"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT U&'d\\0061t' label FROM items", "id": "generated-0155", "ast_sha256": "bbc780d1450f1312f566bcac5b3bd254f768223655acd621e126c96bf03ea5c4"}
+{"kind": "accept", "sql": "SELECT $1", "id": "generated-0156", "ast_sha256": "0cd6bc45736c791f40d3690102495d7e144b97034ac3b59ce7e81f6bc548ca2f"}
+{"kind": "accept", "sql": "-- lead\nSELECT $1", "id": "generated-0157", "ast_sha256": "631442852ad230374be50f211daef391135cdc023987bb6e949b83f914846c90"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT $1", "id": "generated-0158", "ast_sha256": "631442852ad230374be50f211daef391135cdc023987bb6e949b83f914846c90"}
+{"kind": "accept", "sql": "SELECT $1 FROM items", "id": "generated-0159", "ast_sha256": "6efaa51313414eed5f45026c9f93dbd14402981f390adab573e4301e9083d402"}
+{"kind": "accept", "sql": "-- lead\nSELECT $1 FROM items", "id": "generated-0160", "ast_sha256": "71345a18940df1eaf9e1b9ca125b4cf15ebe11937ec78c88f7abd67981d0a009"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT $1 FROM items", "id": "generated-0161", "ast_sha256": "71345a18940df1eaf9e1b9ca125b4cf15ebe11937ec78c88f7abd67981d0a009"}
+{"kind": "accept", "sql": "SELECT $1 AS label FROM items", "id": "generated-0162", "ast_sha256": "f66e235532f856ab0b32e4d602595f211c87d001e2716e53db064f6777b1e7d8"}
+{"kind": "accept", "sql": "-- lead\nSELECT $1 AS label FROM items", "id": "generated-0163", "ast_sha256": "435207e0fc42ea27bb7c4856fac6aff23895b8d36d45b95e879633857000d8c5"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT $1 AS label FROM items", "id": "generated-0164", "ast_sha256": "435207e0fc42ea27bb7c4856fac6aff23895b8d36d45b95e879633857000d8c5"}
+{"kind": "accept", "sql": "SELECT $1 label FROM items", "id": "generated-0165", "ast_sha256": "f66e235532f856ab0b32e4d602595f211c87d001e2716e53db064f6777b1e7d8"}
+{"kind": "accept", "sql": "-- lead\nSELECT $1 label FROM items", "id": "generated-0166", "ast_sha256": "435207e0fc42ea27bb7c4856fac6aff23895b8d36d45b95e879633857000d8c5"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT $1 label FROM items", "id": "generated-0167", "ast_sha256": "435207e0fc42ea27bb7c4856fac6aff23895b8d36d45b95e879633857000d8c5"}
+{"kind": "accept", "sql": "SELECT 'a''b'", "id": "generated-0168", "ast_sha256": "1e3430436d08ab45b34229e550b1921204051394a35dbf8f04b7cd2e517621cf"}
+{"kind": "accept", "sql": "-- lead\nSELECT 'a''b'", "id": "generated-0169", "ast_sha256": "a62ec59cdf37e3a52269d7ccbd391f07bed98eb62e6972763436b7908a93c263"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT 'a''b'", "id": "generated-0170", "ast_sha256": "a62ec59cdf37e3a52269d7ccbd391f07bed98eb62e6972763436b7908a93c263"}
+{"kind": "accept", "sql": "SELECT 'a''b' FROM items", "id": "generated-0171", "ast_sha256": "c1d02bd298f3295d73a329d66ab8c4df3baf570af47cbddf2606a287dd47faf5"}
+{"kind": "accept", "sql": "-- lead\nSELECT 'a''b' FROM items", "id": "generated-0172", "ast_sha256": "52422a7fa16752dbea9bb6d6844dc9bb957a5b129cdf85d4b1dc289efb48fc11"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT 'a''b' FROM items", "id": "generated-0173", "ast_sha256": "52422a7fa16752dbea9bb6d6844dc9bb957a5b129cdf85d4b1dc289efb48fc11"}
+{"kind": "accept", "sql": "SELECT 'a''b' AS label FROM items", "id": "generated-0174", "ast_sha256": "aba9abb2f648f87cafef7008dfbca78f190f07dd1f4f15ade0265b953cd3fade"}
+{"kind": "accept", "sql": "-- lead\nSELECT 'a''b' AS label FROM items", "id": "generated-0175", "ast_sha256": "a01d9f02003ecb113af4fd515ae22eb6cb5fb2202d704740e281a2fb6ad4a59f"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT 'a''b' AS label FROM items", "id": "generated-0176", "ast_sha256": "a01d9f02003ecb113af4fd515ae22eb6cb5fb2202d704740e281a2fb6ad4a59f"}
+{"kind": "accept", "sql": "SELECT 'a''b' label FROM items", "id": "generated-0177", "ast_sha256": "aba9abb2f648f87cafef7008dfbca78f190f07dd1f4f15ade0265b953cd3fade"}
+{"kind": "accept", "sql": "-- lead\nSELECT 'a''b' label FROM items", "id": "generated-0178", "ast_sha256": "a01d9f02003ecb113af4fd515ae22eb6cb5fb2202d704740e281a2fb6ad4a59f"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT 'a''b' label FROM items", "id": "generated-0179", "ast_sha256": "a01d9f02003ecb113af4fd515ae22eb6cb5fb2202d704740e281a2fb6ad4a59f"}
+{"kind": "accept", "sql": "SELECT E'a\\n'", "id": "generated-0180", "ast_sha256": "91f2e8d9356926533b4304580802473fb6d17a158ead60c228341a8637645795"}
+{"kind": "accept", "sql": "-- lead\nSELECT E'a\\n'", "id": "generated-0181", "ast_sha256": "f6404b56e90eebd3c6dce363e4d406d60ad2d4ead9cd7e271403616ad375503b"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT E'a\\n'", "id": "generated-0182", "ast_sha256": "f6404b56e90eebd3c6dce363e4d406d60ad2d4ead9cd7e271403616ad375503b"}
+{"kind": "accept", "sql": "SELECT E'a\\n' FROM items", "id": "generated-0183", "ast_sha256": "94a370e50f4eb8b1cb81fdd083f6971be4048eaa3308a5ea70d6cbb03bf4457f"}
+{"kind": "accept", "sql": "-- lead\nSELECT E'a\\n' FROM items", "id": "generated-0184", "ast_sha256": "171003b79d9b87ac52098f1e9e64ca5cf41081c5542d808d7e10dabffed17635"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT E'a\\n' FROM items", "id": "generated-0185", "ast_sha256": "171003b79d9b87ac52098f1e9e64ca5cf41081c5542d808d7e10dabffed17635"}
+{"kind": "accept", "sql": "SELECT E'a\\n' AS label FROM items", "id": "generated-0186", "ast_sha256": "e45a419ca51425d5ddb9f76d5a6f60952e07f5bf87730a3ef8f65e23b1031875"}
+{"kind": "accept", "sql": "-- lead\nSELECT E'a\\n' AS label FROM items", "id": "generated-0187", "ast_sha256": "adbfe18711db350275469381f53ad81d4e4a09091324952c74f948abb24b5eab"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT E'a\\n' AS label FROM items", "id": "generated-0188", "ast_sha256": "adbfe18711db350275469381f53ad81d4e4a09091324952c74f948abb24b5eab"}
+{"kind": "accept", "sql": "SELECT E'a\\n' label FROM items", "id": "generated-0189", "ast_sha256": "e45a419ca51425d5ddb9f76d5a6f60952e07f5bf87730a3ef8f65e23b1031875"}
+{"kind": "accept", "sql": "-- lead\nSELECT E'a\\n' label FROM items", "id": "generated-0190", "ast_sha256": "adbfe18711db350275469381f53ad81d4e4a09091324952c74f948abb24b5eab"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT E'a\\n' label FROM items", "id": "generated-0191", "ast_sha256": "adbfe18711db350275469381f53ad81d4e4a09091324952c74f948abb24b5eab"}
+{"kind": "accept", "sql": "SELECT E'a\\'b'", "id": "generated-0192", "ast_sha256": "aef329bfd1acc65f9629eed14981d0ce3eb5382c3f5dc921e39f359f624ded5a"}
+{"kind": "accept", "sql": "-- lead\nSELECT E'a\\'b'", "id": "generated-0193", "ast_sha256": "6553184552f336267c31a5a4687cd9cd01c9cc0435fc24c699a3b0adaa36a6c0"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT E'a\\'b'", "id": "generated-0194", "ast_sha256": "6553184552f336267c31a5a4687cd9cd01c9cc0435fc24c699a3b0adaa36a6c0"}
+{"kind": "accept", "sql": "SELECT E'a\\'b' FROM items", "id": "generated-0195", "ast_sha256": "5cf24fc6f45c2f72c4059fbdf63887f2ae3b5902342c405772980c440765c6b1"}
+{"kind": "accept", "sql": "-- lead\nSELECT E'a\\'b' FROM items", "id": "generated-0196", "ast_sha256": "50d80ef8d662d58b78a02cf79f8598c3ccd0e2ee16a6d1abb573f65ee91368ef"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT E'a\\'b' FROM items", "id": "generated-0197", "ast_sha256": "50d80ef8d662d58b78a02cf79f8598c3ccd0e2ee16a6d1abb573f65ee91368ef"}
+{"kind": "accept", "sql": "SELECT E'a\\'b' AS label FROM items", "id": "generated-0198", "ast_sha256": "c84abd53e594ad1e0ef0f7ee10323055d1a740ed07975213272f07d8c098786d"}
+{"kind": "accept", "sql": "-- lead\nSELECT E'a\\'b' AS label FROM items", "id": "generated-0199", "ast_sha256": "0fd3c55a54d187f61120a5cbe281a5fde97c3b748350b8288c79bb737ff5eb13"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT E'a\\'b' AS label FROM items", "id": "generated-0200", "ast_sha256": "0fd3c55a54d187f61120a5cbe281a5fde97c3b748350b8288c79bb737ff5eb13"}
+{"kind": "accept", "sql": "SELECT E'a\\'b' label FROM items", "id": "generated-0201", "ast_sha256": "c84abd53e594ad1e0ef0f7ee10323055d1a740ed07975213272f07d8c098786d"}
+{"kind": "accept", "sql": "-- lead\nSELECT E'a\\'b' label FROM items", "id": "generated-0202", "ast_sha256": "0fd3c55a54d187f61120a5cbe281a5fde97c3b748350b8288c79bb737ff5eb13"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT E'a\\'b' label FROM items", "id": "generated-0203", "ast_sha256": "0fd3c55a54d187f61120a5cbe281a5fde97c3b748350b8288c79bb737ff5eb13"}
+{"kind": "Semantic", "sql": "SELECT $tag$text$tag$", "id": "generated-0204", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT $tag$text$tag$", "id": "generated-0205", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT $tag$text$tag$", "id": "generated-0206", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT $tag$text$tag$ FROM items", "id": "generated-0207", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT $tag$text$tag$ FROM items", "id": "generated-0208", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT $tag$text$tag$ FROM items", "id": "generated-0209", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT $tag$text$tag$ AS label FROM items", "id": "generated-0210", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT $tag$text$tag$ AS label FROM items", "id": "generated-0211", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT $tag$text$tag$ AS label FROM items", "id": "generated-0212", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SELECT $tag$text$tag$ label FROM items", "id": "generated-0213", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSELECT $tag$text$tag$ label FROM items", "id": "generated-0214", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSELECT $tag$text$tag$ label FROM items", "id": "generated-0215", "ast_sha256": null}
+{"kind": "accept", "sql": "SELECT COALESCE(id, $1)", "id": "generated-0216", "ast_sha256": "ae3cbe6a7c12728bc344b940ea3d0b94e0545768485953893cf3caea059c9e37"}
+{"kind": "accept", "sql": "-- lead\nSELECT COALESCE(id, $1)", "id": "generated-0217", "ast_sha256": "c95d1d0deb11818c6d67a1abe63991a635692d38d8e87f702a61b98faeff415a"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT COALESCE(id, $1)", "id": "generated-0218", "ast_sha256": "c95d1d0deb11818c6d67a1abe63991a635692d38d8e87f702a61b98faeff415a"}
+{"kind": "accept", "sql": "SELECT COALESCE(id, $1) FROM items", "id": "generated-0219", "ast_sha256": "dbbe6fe045a0f866bf943b174bf05e1b2ba69e351c736e97da0ed8631882fe4c"}
+{"kind": "accept", "sql": "-- lead\nSELECT COALESCE(id, $1) FROM items", "id": "generated-0220", "ast_sha256": "2b8206977b992bd7b57454da5fbbda7ba3b0f308472983bedd30b1347118ea4f"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT COALESCE(id, $1) FROM items", "id": "generated-0221", "ast_sha256": "2b8206977b992bd7b57454da5fbbda7ba3b0f308472983bedd30b1347118ea4f"}
+{"kind": "accept", "sql": "SELECT COALESCE(id, $1) AS label FROM items", "id": "generated-0222", "ast_sha256": "11d7f047a931286ab3bc880f24b862de600e12acb33e4115c6dcb44980133fc6"}
+{"kind": "accept", "sql": "-- lead\nSELECT COALESCE(id, $1) AS label FROM items", "id": "generated-0223", "ast_sha256": "01822f0c2621b30289eaac352f03dd78584f6cb3abb3d94b175395d8ae1e622f"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT COALESCE(id, $1) AS label FROM items", "id": "generated-0224", "ast_sha256": "01822f0c2621b30289eaac352f03dd78584f6cb3abb3d94b175395d8ae1e622f"}
+{"kind": "accept", "sql": "SELECT COALESCE(id, $1) label FROM items", "id": "generated-0225", "ast_sha256": "11d7f047a931286ab3bc880f24b862de600e12acb33e4115c6dcb44980133fc6"}
+{"kind": "accept", "sql": "-- lead\nSELECT COALESCE(id, $1) label FROM items", "id": "generated-0226", "ast_sha256": "01822f0c2621b30289eaac352f03dd78584f6cb3abb3d94b175395d8ae1e622f"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT COALESCE(id, $1) label FROM items", "id": "generated-0227", "ast_sha256": "01822f0c2621b30289eaac352f03dd78584f6cb3abb3d94b175395d8ae1e622f"}
+{"kind": "accept", "sql": "SELECT COUNT(ALL id)", "id": "generated-0228", "ast_sha256": "92ef1d28a82e398007e7bb7a3bbafac0f29473196abd2fb011aed91e90f603d0"}
+{"kind": "accept", "sql": "-- lead\nSELECT COUNT(ALL id)", "id": "generated-0229", "ast_sha256": "9222d67355213b2d787ce4b636ecf12947ff1e852c198c925cf5871c6818c165"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT COUNT(ALL id)", "id": "generated-0230", "ast_sha256": "9222d67355213b2d787ce4b636ecf12947ff1e852c198c925cf5871c6818c165"}
+{"kind": "accept", "sql": "SELECT COUNT(ALL id) FROM items", "id": "generated-0231", "ast_sha256": "076fb9074ae67a8ba1523c17c65c9f52b715a0e8e3cd39d12bc6784c59ba7fb9"}
+{"kind": "accept", "sql": "-- lead\nSELECT COUNT(ALL id) FROM items", "id": "generated-0232", "ast_sha256": "82f5142840a07c5a45deadeb92a67a997578f160213a8d14ce2f518cf0d2398f"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT COUNT(ALL id) FROM items", "id": "generated-0233", "ast_sha256": "82f5142840a07c5a45deadeb92a67a997578f160213a8d14ce2f518cf0d2398f"}
+{"kind": "accept", "sql": "SELECT COUNT(ALL id) AS label FROM items", "id": "generated-0234", "ast_sha256": "aac4c6b8938a35410af8e19b08d8165e0ed793f342be71e4de646499d9bb79f7"}
+{"kind": "accept", "sql": "-- lead\nSELECT COUNT(ALL id) AS label FROM items", "id": "generated-0235", "ast_sha256": "a5cf9eade4c575ebb9794ecec78758b00a5f15a60f3d4bc53ea2dd12aac78519"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT COUNT(ALL id) AS label FROM items", "id": "generated-0236", "ast_sha256": "a5cf9eade4c575ebb9794ecec78758b00a5f15a60f3d4bc53ea2dd12aac78519"}
+{"kind": "accept", "sql": "SELECT COUNT(ALL id) label FROM items", "id": "generated-0237", "ast_sha256": "aac4c6b8938a35410af8e19b08d8165e0ed793f342be71e4de646499d9bb79f7"}
+{"kind": "accept", "sql": "-- lead\nSELECT COUNT(ALL id) label FROM items", "id": "generated-0238", "ast_sha256": "a5cf9eade4c575ebb9794ecec78758b00a5f15a60f3d4bc53ea2dd12aac78519"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT COUNT(ALL id) label FROM items", "id": "generated-0239", "ast_sha256": "a5cf9eade4c575ebb9794ecec78758b00a5f15a60f3d4bc53ea2dd12aac78519"}
+{"kind": "accept", "sql": "SELECT SUM(id) FILTER (WHERE id > $1)", "id": "generated-0240", "ast_sha256": "0a5e5b80f5e73088232d86f78ba6b1a63359419ecaedb1589cba517f3a3d9876"}
+{"kind": "accept", "sql": "-- lead\nSELECT SUM(id) FILTER (WHERE id > $1)", "id": "generated-0241", "ast_sha256": "a03160d82df4cf1211bc0492066824ae8f1178827e027d11abddc2154aee4599"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT SUM(id) FILTER (WHERE id > $1)", "id": "generated-0242", "ast_sha256": "a03160d82df4cf1211bc0492066824ae8f1178827e027d11abddc2154aee4599"}
+{"kind": "accept", "sql": "SELECT SUM(id) FILTER (WHERE id > $1) FROM items", "id": "generated-0243", "ast_sha256": "682798fe083464b1da5a0c600d6b42cd09c84de0423320ec59603392fa3223ee"}
+{"kind": "accept", "sql": "-- lead\nSELECT SUM(id) FILTER (WHERE id > $1) FROM items", "id": "generated-0244", "ast_sha256": "3cb4863a4190d51ad63b79b3110035ee09f74efcd7cd87b2b5404fcb6a741d42"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT SUM(id) FILTER (WHERE id > $1) FROM items", "id": "generated-0245", "ast_sha256": "3cb4863a4190d51ad63b79b3110035ee09f74efcd7cd87b2b5404fcb6a741d42"}
+{"kind": "accept", "sql": "SELECT SUM(id) FILTER (WHERE id > $1) AS label FROM items", "id": "generated-0246", "ast_sha256": "1e7a3aeabe93feb844f34cc5655ec10ea5a80edbec1e06f09929779cc0111616"}
+{"kind": "accept", "sql": "-- lead\nSELECT SUM(id) FILTER (WHERE id > $1) AS label FROM items", "id": "generated-0247", "ast_sha256": "20e468f4aaebd396e21b0f2bbcf953224bb08e4ec6eaa9da64839b2d997ca7df"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT SUM(id) FILTER (WHERE id > $1) AS label FROM items", "id": "generated-0248", "ast_sha256": "20e468f4aaebd396e21b0f2bbcf953224bb08e4ec6eaa9da64839b2d997ca7df"}
+{"kind": "accept", "sql": "SELECT SUM(id) FILTER (WHERE id > $1) label FROM items", "id": "generated-0249", "ast_sha256": "1e7a3aeabe93feb844f34cc5655ec10ea5a80edbec1e06f09929779cc0111616"}
+{"kind": "accept", "sql": "-- lead\nSELECT SUM(id) FILTER (WHERE id > $1) label FROM items", "id": "generated-0250", "ast_sha256": "20e468f4aaebd396e21b0f2bbcf953224bb08e4ec6eaa9da64839b2d997ca7df"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT SUM(id) FILTER (WHERE id > $1) label FROM items", "id": "generated-0251", "ast_sha256": "20e468f4aaebd396e21b0f2bbcf953224bb08e4ec6eaa9da64839b2d997ca7df"}
+{"kind": "accept", "sql": "SELECT \"列\"", "id": "generated-0252", "ast_sha256": "fedf473ae0ea8abda3dbf7669c55e199e18be79ae920aed596baf4761b7712cc"}
+{"kind": "accept", "sql": "-- lead\nSELECT \"列\"", "id": "generated-0253", "ast_sha256": "8486959f438ddd40ea31954eb2407797953f0cdc03544a2776c0e46dcb948aba"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT \"列\"", "id": "generated-0254", "ast_sha256": "8486959f438ddd40ea31954eb2407797953f0cdc03544a2776c0e46dcb948aba"}
+{"kind": "accept", "sql": "SELECT \"列\" FROM items", "id": "generated-0255", "ast_sha256": "131bf335e588cb97b015aad87f194ec27b3e841c861f0e17c841c9380b0929a4"}
+{"kind": "accept", "sql": "-- lead\nSELECT \"列\" FROM items", "id": "generated-0256", "ast_sha256": "37e208f07d7cc231606a3071db4797904ed66fa132991acd7a2303439ddf10f7"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT \"列\" FROM items", "id": "generated-0257", "ast_sha256": "37e208f07d7cc231606a3071db4797904ed66fa132991acd7a2303439ddf10f7"}
+{"kind": "accept", "sql": "SELECT \"列\" AS label FROM items", "id": "generated-0258", "ast_sha256": "1ba0e0ec69915d2abb57fd23015b58c8f836812d9eb40ea4a0446769673e89a7"}
+{"kind": "accept", "sql": "-- lead\nSELECT \"列\" AS label FROM items", "id": "generated-0259", "ast_sha256": "31eb9326816eb425b68b8d07d8e394b52fd644c446f624ca5ec868d8b1a0809a"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT \"列\" AS label FROM items", "id": "generated-0260", "ast_sha256": "31eb9326816eb425b68b8d07d8e394b52fd644c446f624ca5ec868d8b1a0809a"}
+{"kind": "accept", "sql": "SELECT \"列\" label FROM items", "id": "generated-0261", "ast_sha256": "1ba0e0ec69915d2abb57fd23015b58c8f836812d9eb40ea4a0446769673e89a7"}
+{"kind": "accept", "sql": "-- lead\nSELECT \"列\" label FROM items", "id": "generated-0262", "ast_sha256": "31eb9326816eb425b68b8d07d8e394b52fd644c446f624ca5ec868d8b1a0809a"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT \"列\" label FROM items", "id": "generated-0263", "ast_sha256": "31eb9326816eb425b68b8d07d8e394b52fd644c446f624ca5ec868d8b1a0809a"}
+{"kind": "accept", "sql": "SELECT id FROM items WHERE name LIKE $1 ESCAPE '!'", "id": "generated-0264", "ast_sha256": "31eba5ed46e8e4538fadaa413465ce7a1aef09b30a9b4ef628d2a797f3b39cf7"}
+{"kind": "accept", "sql": "-- lead\nSELECT id FROM items WHERE name LIKE $1 ESCAPE '!'", "id": "generated-0265", "ast_sha256": "cb02aa94d4981d551b3d284ded45d714b19bdfe651db8a034a42b46585cea35a"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT id FROM items WHERE name LIKE $1 ESCAPE '!'", "id": "generated-0266", "ast_sha256": "cb02aa94d4981d551b3d284ded45d714b19bdfe651db8a034a42b46585cea35a"}
+{"kind": "accept", "sql": "EXPLAIN ANALYZE SELECT id FROM items WHERE id = $1", "id": "generated-0267", "ast_sha256": "64fa30487a78263a3635d1a38c1417ffcef828f45ccee9c33e6a2ea1c1eb090d"}
+{"kind": "accept", "sql": "-- lead\nEXPLAIN ANALYZE SELECT id FROM items WHERE id = $1", "id": "generated-0268", "ast_sha256": "6afcafeaa5c1ead19b464798579d68e835a6a44f04cf0005815e34a1285add46"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nEXPLAIN ANALYZE SELECT id FROM items WHERE id = $1", "id": "generated-0269", "ast_sha256": "6afcafeaa5c1ead19b464798579d68e835a6a44f04cf0005815e34a1285add46"}
+{"kind": "accept", "sql": "SELECT id FROM items OFFSET 1 LIMIT 2", "id": "generated-0270", "ast_sha256": "4649d2e980c9ff0ec822318fff68a9e169e191adcd37306c36ca7782e83ab3d9"}
+{"kind": "accept", "sql": "-- lead\nSELECT id FROM items OFFSET 1 LIMIT 2", "id": "generated-0271", "ast_sha256": "85484a53f837e6fbcad9a5845cf927d37e6ca37607a0ac45133e6b308cca971b"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT id FROM items OFFSET 1 LIMIT 2", "id": "generated-0272", "ast_sha256": "85484a53f837e6fbcad9a5845cf927d37e6ca37607a0ac45133e6b308cca971b"}
+{"kind": "accept", "sql": "SELECT id FROM items LIMIT ALL", "id": "generated-0273", "ast_sha256": "e076d73ba0690a1bd2e8c82a99d50f4212290836fae6a2dec0e2e150599a56b5"}
+{"kind": "accept", "sql": "-- lead\nSELECT id FROM items LIMIT ALL", "id": "generated-0274", "ast_sha256": "622d23ad97822f88798cb0ab9afad242dcddcbbb6209e6f976db420c9d2f7166"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT id FROM items LIMIT ALL", "id": "generated-0275", "ast_sha256": "622d23ad97822f88798cb0ab9afad242dcddcbbb6209e6f976db420c9d2f7166"}
+{"kind": "accept", "sql": "SELECT id FROM items OFFSET 2 ROWS", "id": "generated-0276", "ast_sha256": "901bcdae0c211919302ef28c10269ad562f248d7e5ba8ceaea8b98afba47c171"}
+{"kind": "accept", "sql": "-- lead\nSELECT id FROM items OFFSET 2 ROWS", "id": "generated-0277", "ast_sha256": "071ff2ee16951bfd820153ce0405ccef547d933020f44788dfe754c47b8a07b9"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT id FROM items OFFSET 2 ROWS", "id": "generated-0278", "ast_sha256": "071ff2ee16951bfd820153ce0405ccef547d933020f44788dfe754c47b8a07b9"}
+{"kind": "accept", "sql": "SELECT ALL id FROM items", "id": "generated-0279", "ast_sha256": "9489e823006a2bf9fa2f2424c58f3a91ab2a13429c459134e5228a1e9cde8eaf"}
+{"kind": "accept", "sql": "-- lead\nSELECT ALL id FROM items", "id": "generated-0280", "ast_sha256": "36ab100520803ac4d11c78e15b9507c11dad030f49d7ef7f8056a9f79be92279"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT ALL id FROM items", "id": "generated-0281", "ast_sha256": "36ab100520803ac4d11c78e15b9507c11dad030f49d7ef7f8056a9f79be92279"}
+{"kind": "accept", "sql": "SELECT * AS renamed FROM items", "id": "generated-0282", "ast_sha256": "07e242e16021d238bb0df4b3b3e181afc3fddd6759584e915b78178885988681"}
+{"kind": "accept", "sql": "-- lead\nSELECT * AS renamed FROM items", "id": "generated-0283", "ast_sha256": "07e242e16021d238bb0df4b3b3e181afc3fddd6759584e915b78178885988681"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT * AS renamed FROM items", "id": "generated-0284", "ast_sha256": "07e242e16021d238bb0df4b3b3e181afc3fddd6759584e915b78178885988681"}
+{"kind": "accept", "sql": "SELECT * renamed FROM items", "id": "generated-0285", "ast_sha256": "07e242e16021d238bb0df4b3b3e181afc3fddd6759584e915b78178885988681"}
+{"kind": "accept", "sql": "-- lead\nSELECT * renamed FROM items", "id": "generated-0286", "ast_sha256": "07e242e16021d238bb0df4b3b3e181afc3fddd6759584e915b78178885988681"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT * renamed FROM items", "id": "generated-0287", "ast_sha256": "07e242e16021d238bb0df4b3b3e181afc3fddd6759584e915b78178885988681"}
+{"kind": "accept", "sql": "SELECT id FROM items FOR SHARE", "id": "generated-0288", "ast_sha256": "fef72f994debc74902fac3ae2213a159e52e6fe36670f93e8fbe21406fca80be"}
+{"kind": "accept", "sql": "-- lead\nSELECT id FROM items FOR SHARE", "id": "generated-0289", "ast_sha256": "349ce25cb4fe071385e2fc5227fd28cadfcbcebd7b9fcb0f6a393f69bd69af04"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT id FROM items FOR SHARE", "id": "generated-0290", "ast_sha256": "349ce25cb4fe071385e2fc5227fd28cadfcbcebd7b9fcb0f6a393f69bd69af04"}
+{"kind": "accept", "sql": "SELECT * FROM vector_index_search('items', $1, top_k => 1, candidates => 8)", "id": "generated-0291", "ast_sha256": "b98d1abd2a1a86ede95815312bee91a9bd0c7fb74fa3bce7dbe106e72734892f"}
+{"kind": "accept", "sql": "-- lead\nSELECT * FROM vector_index_search('items', $1, top_k => 1, candidates => 8)", "id": "generated-0292", "ast_sha256": "b98d1abd2a1a86ede95815312bee91a9bd0c7fb74fa3bce7dbe106e72734892f"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT * FROM vector_index_search('items', $1, top_k => 1, candidates => 8)", "id": "generated-0293", "ast_sha256": "b98d1abd2a1a86ede95815312bee91a9bd0c7fb74fa3bce7dbe106e72734892f"}
+{"kind": "Parse", "sql": "SELECT * FROM vector_index_search('items', $1, top_k := 1, candidates := 8)", "id": "generated-0294", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT * FROM vector_index_search('items', $1, top_k := 1, candidates := 8)", "id": "generated-0295", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT * FROM vector_index_search('items', $1, top_k := 1, candidates := 8)", "id": "generated-0296", "ast_sha256": null}
+{"kind": "Parse", "sql": "SELECT", "id": "generated-0297", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nSELECT", "id": "generated-0298", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nSELECT", "id": "generated-0299", "ast_sha256": null}
+{"kind": "Parse", "sql": "EXPLAIN SELECT", "id": "generated-0300", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nEXPLAIN SELECT", "id": "generated-0301", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nEXPLAIN SELECT", "id": "generated-0302", "ast_sha256": null}
+{"kind": "accept", "sql": "SELECT FROM items", "id": "generated-0303", "ast_sha256": "70a716e0201becdb3edf2f32cc077f0c053627b0d5a41034a01b047289394afc"}
+{"kind": "accept", "sql": "-- lead\nSELECT FROM items", "id": "generated-0304", "ast_sha256": "70a716e0201becdb3edf2f32cc077f0c053627b0d5a41034a01b047289394afc"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nSELECT FROM items", "id": "generated-0305", "ast_sha256": "70a716e0201becdb3edf2f32cc077f0c053627b0d5a41034a01b047289394afc"}
+{"kind": "accept", "sql": "CREATE TABLE t", "id": "generated-0306", "ast_sha256": "afaf0ff16b4c8a8f0ba2fd25afbf3cbd81893a3f522f4f89a3e7b949d129f582"}
+{"kind": "accept", "sql": "-- lead\nCREATE TABLE t", "id": "generated-0307", "ast_sha256": "afaf0ff16b4c8a8f0ba2fd25afbf3cbd81893a3f522f4f89a3e7b949d129f582"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE TABLE t", "id": "generated-0308", "ast_sha256": "afaf0ff16b4c8a8f0ba2fd25afbf3cbd81893a3f522f4f89a3e7b949d129f582"}
+{"kind": "accept", "sql": "CREATE TABLE t ()", "id": "generated-0309", "ast_sha256": "afaf0ff16b4c8a8f0ba2fd25afbf3cbd81893a3f522f4f89a3e7b949d129f582"}
+{"kind": "accept", "sql": "-- lead\nCREATE TABLE t ()", "id": "generated-0310", "ast_sha256": "afaf0ff16b4c8a8f0ba2fd25afbf3cbd81893a3f522f4f89a3e7b949d129f582"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE TABLE t ()", "id": "generated-0311", "ast_sha256": "afaf0ff16b4c8a8f0ba2fd25afbf3cbd81893a3f522f4f89a3e7b949d129f582"}
+{"kind": "accept", "sql": "CREATE TABLE t (a BIGINT(3))", "id": "generated-0312", "ast_sha256": "b0830797c2101c452d25e80d2007b315326c24a29999b02a0a4fc5a6b2e158ef"}
+{"kind": "accept", "sql": "-- lead\nCREATE TABLE t (a BIGINT(3))", "id": "generated-0313", "ast_sha256": "b0830797c2101c452d25e80d2007b315326c24a29999b02a0a4fc5a6b2e158ef"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE TABLE t (a BIGINT(3))", "id": "generated-0314", "ast_sha256": "b0830797c2101c452d25e80d2007b315326c24a29999b02a0a4fc5a6b2e158ef"}
+{"kind": "Semantic", "sql": "CREATE TABLE t (a INTEGER)", "id": "generated-0315", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nCREATE TABLE t (a INTEGER)", "id": "generated-0316", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nCREATE TABLE t (a INTEGER)", "id": "generated-0317", "ast_sha256": null}
+{"kind": "accept", "sql": "CREATE TABLE t (a BOOLEAN DEFAULT false)", "id": "generated-0318", "ast_sha256": "0025f5eb01fd953b49a071e4731b6ee2902cc6b462f02a7dd84bf57e201fc309"}
+{"kind": "accept", "sql": "-- lead\nCREATE TABLE t (a BOOLEAN DEFAULT false)", "id": "generated-0319", "ast_sha256": "0025f5eb01fd953b49a071e4731b6ee2902cc6b462f02a7dd84bf57e201fc309"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE TABLE t (a BOOLEAN DEFAULT false)", "id": "generated-0320", "ast_sha256": "0025f5eb01fd953b49a071e4731b6ee2902cc6b462f02a7dd84bf57e201fc309"}
+{"kind": "accept", "sql": "CREATE TABLE t (a UUID DEFAULT uuidv7(), b BYTEA, c DOUBLE PRECISION)", "id": "generated-0321", "ast_sha256": "4f0a19daeea9532480a0006db2c192c3d111504a0421ab2e35195719423921d9"}
+{"kind": "accept", "sql": "-- lead\nCREATE TABLE t (a UUID DEFAULT uuidv7(), b BYTEA, c DOUBLE PRECISION)", "id": "generated-0322", "ast_sha256": "4f0a19daeea9532480a0006db2c192c3d111504a0421ab2e35195719423921d9"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE TABLE t (a UUID DEFAULT uuidv7(), b BYTEA, c DOUBLE PRECISION)", "id": "generated-0323", "ast_sha256": "4f0a19daeea9532480a0006db2c192c3d111504a0421ab2e35195719423921d9"}
+{"kind": "accept", "sql": "CREATE TABLE t (a TEXT NULL NOT NULL, b BIGINT UNIQUE, PRIMARY KEY (a ASC))", "id": "generated-0324", "ast_sha256": "0d6366a37223486b0978ecc8835b094efc6c9fc0d80776d690a89426adcc24d8"}
+{"kind": "accept", "sql": "-- lead\nCREATE TABLE t (a TEXT NULL NOT NULL, b BIGINT UNIQUE, PRIMARY KEY (a ASC))", "id": "generated-0325", "ast_sha256": "0d6366a37223486b0978ecc8835b094efc6c9fc0d80776d690a89426adcc24d8"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE TABLE t (a TEXT NULL NOT NULL, b BIGINT UNIQUE, PRIMARY KEY (a ASC))", "id": "generated-0326", "ast_sha256": "0d6366a37223486b0978ecc8835b094efc6c9fc0d80776d690a89426adcc24d8"}
+{"kind": "accept", "sql": "CREATE TABLE t (a TEXT PRIMARY KEY NULL)", "id": "generated-0327", "ast_sha256": "cb9cd2685235fcb0abc0478d755b59661b0505c21f7ea3e63c11466fb8ec188a"}
+{"kind": "accept", "sql": "-- lead\nCREATE TABLE t (a TEXT PRIMARY KEY NULL)", "id": "generated-0328", "ast_sha256": "cb9cd2685235fcb0abc0478d755b59661b0505c21f7ea3e63c11466fb8ec188a"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE TABLE t (a TEXT PRIMARY KEY NULL)", "id": "generated-0329", "ast_sha256": "cb9cd2685235fcb0abc0478d755b59661b0505c21f7ea3e63c11466fb8ec188a"}
+{"kind": "accept", "sql": "CREATE TABLE t (a TEXT, FOREIGN KEY (a) REFERENCES other(id) ON DELETE CASCADE ON UPDATE SET NULL)", "id": "generated-0330", "ast_sha256": "e06604eff5fc7a8f162668be203ca36057d553902c65537f6bb325e3240d04ec"}
+{"kind": "accept", "sql": "-- lead\nCREATE TABLE t (a TEXT, FOREIGN KEY (a) REFERENCES other(id) ON DELETE CASCADE ON UPDATE SET NULL)", "id": "generated-0331", "ast_sha256": "e06604eff5fc7a8f162668be203ca36057d553902c65537f6bb325e3240d04ec"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE TABLE t (a TEXT, FOREIGN KEY (a) REFERENCES other(id) ON DELETE CASCADE ON UPDATE SET NULL)", "id": "generated-0332", "ast_sha256": "e06604eff5fc7a8f162668be203ca36057d553902c65537f6bb325e3240d04ec"}
+{"kind": "accept", "sql": "CREATE TABLE t (a TEXT REFERENCES other)", "id": "generated-0333", "ast_sha256": "fc45692f2630f6b8559ecfe61138635d2f55e7d37480960adb40b7946b3ce1ce"}
+{"kind": "accept", "sql": "-- lead\nCREATE TABLE t (a TEXT REFERENCES other)", "id": "generated-0334", "ast_sha256": "fc45692f2630f6b8559ecfe61138635d2f55e7d37480960adb40b7946b3ce1ce"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE TABLE t (a TEXT REFERENCES other)", "id": "generated-0335", "ast_sha256": "fc45692f2630f6b8559ecfe61138635d2f55e7d37480960adb40b7946b3ce1ce"}
+{"kind": "accept", "sql": "CREATE TABLE t (a BIGINT) WITH ()", "id": "generated-0336", "ast_sha256": "b0830797c2101c452d25e80d2007b315326c24a29999b02a0a4fc5a6b2e158ef"}
+{"kind": "accept", "sql": "-- lead\nCREATE TABLE t (a BIGINT) WITH ()", "id": "generated-0337", "ast_sha256": "b0830797c2101c452d25e80d2007b315326c24a29999b02a0a4fc5a6b2e158ef"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE TABLE t (a BIGINT) WITH ()", "id": "generated-0338", "ast_sha256": "b0830797c2101c452d25e80d2007b315326c24a29999b02a0a4fc5a6b2e158ef"}
+{"kind": "Semantic", "sql": "CREATE TABLE t (a BIGINT) WITH (storage_mode = E'strict_append', partition_key='a',order_key='a')", "id": "generated-0339", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nCREATE TABLE t (a BIGINT) WITH (storage_mode = E'strict_append', partition_key='a',order_key='a')", "id": "generated-0340", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nCREATE TABLE t (a BIGINT) WITH (storage_mode = E'strict_append', partition_key='a',order_key='a')", "id": "generated-0341", "ast_sha256": null}
+{"kind": "accept", "sql": "CREATE INDEX ix ON t (a DESC NULLS FIRST,b ASC NULLS LAST)", "id": "generated-0342", "ast_sha256": "3dcf2a7c92649864cc53ed504afd60a587d717a0e6b6c920d3202a0f20ac4c9f"}
+{"kind": "accept", "sql": "-- lead\nCREATE INDEX ix ON t (a DESC NULLS FIRST,b ASC NULLS LAST)", "id": "generated-0343", "ast_sha256": "3dcf2a7c92649864cc53ed504afd60a587d717a0e6b6c920d3202a0f20ac4c9f"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE INDEX ix ON t (a DESC NULLS FIRST,b ASC NULLS LAST)", "id": "generated-0344", "ast_sha256": "3dcf2a7c92649864cc53ed504afd60a587d717a0e6b6c920d3202a0f20ac4c9f"}
+{"kind": "Semantic", "sql": "CREATE INDEX ON t (a)", "id": "generated-0345", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nCREATE INDEX ON t (a)", "id": "generated-0346", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nCREATE INDEX ON t (a)", "id": "generated-0347", "ast_sha256": null}
+{"kind": "Semantic", "sql": "CREATE INDEX s.ix ON t (a)", "id": "generated-0348", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nCREATE INDEX s.ix ON t (a)", "id": "generated-0349", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nCREATE INDEX s.ix ON t (a)", "id": "generated-0350", "ast_sha256": null}
+{"kind": "accept", "sql": "CREATE UNIQUE INDEX IF NOT EXISTS ix ON t (a)", "id": "generated-0351", "ast_sha256": "e3aeae54300f82f2a0de8bd58815c8b230632629555350d429db44dbfb085b37"}
+{"kind": "accept", "sql": "-- lead\nCREATE UNIQUE INDEX IF NOT EXISTS ix ON t (a)", "id": "generated-0352", "ast_sha256": "e3aeae54300f82f2a0de8bd58815c8b230632629555350d429db44dbfb085b37"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE UNIQUE INDEX IF NOT EXISTS ix ON t (a)", "id": "generated-0353", "ast_sha256": "e3aeae54300f82f2a0de8bd58815c8b230632629555350d429db44dbfb085b37"}
+{"kind": "Semantic", "sql": "CREATE INDEX ix ON t (a int8_ops)", "id": "generated-0354", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nCREATE INDEX ix ON t (a int8_ops)", "id": "generated-0355", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nCREATE INDEX ix ON t (a int8_ops)", "id": "generated-0356", "ast_sha256": null}
+{"kind": "Parse", "sql": "CREATE INDEX ix ON t (a USING <)", "id": "generated-0357", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nCREATE INDEX ix ON t (a USING <)", "id": "generated-0358", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nCREATE INDEX ix ON t (a USING <)", "id": "generated-0359", "ast_sha256": null}
+{"kind": "accept", "sql": "ALTER TABLE t ADD a TEXT DEFAULT 'x'", "id": "generated-0360", "ast_sha256": "1f1a8876b6bb9fd9185d288d8b96436ac63aa719f246123914b99880cdf637e4"}
+{"kind": "accept", "sql": "-- lead\nALTER TABLE t ADD a TEXT DEFAULT 'x'", "id": "generated-0361", "ast_sha256": "1f1a8876b6bb9fd9185d288d8b96436ac63aa719f246123914b99880cdf637e4"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nALTER TABLE t ADD a TEXT DEFAULT 'x'", "id": "generated-0362", "ast_sha256": "1f1a8876b6bb9fd9185d288d8b96436ac63aa719f246123914b99880cdf637e4"}
+{"kind": "accept", "sql": "ALTER TABLE t ADD COLUMN IF NOT EXISTS a VECTOR(3)", "id": "generated-0363", "ast_sha256": "5660204036a9cb586b0ceefd93cac191797abd699a05e198a2443635d709be97"}
+{"kind": "accept", "sql": "-- lead\nALTER TABLE t ADD COLUMN IF NOT EXISTS a VECTOR(3)", "id": "generated-0364", "ast_sha256": "5660204036a9cb586b0ceefd93cac191797abd699a05e198a2443635d709be97"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nALTER TABLE t ADD COLUMN IF NOT EXISTS a VECTOR(3)", "id": "generated-0365", "ast_sha256": "5660204036a9cb586b0ceefd93cac191797abd699a05e198a2443635d709be97"}
+{"kind": "Semantic", "sql": "ALTER TABLE t ADD a BIGINT, ADD b TEXT", "id": "generated-0366", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nALTER TABLE t ADD a BIGINT, ADD b TEXT", "id": "generated-0367", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nALTER TABLE t ADD a BIGINT, ADD b TEXT", "id": "generated-0368", "ast_sha256": null}
+{"kind": "Semantic", "sql": "ALTER TABLE t DROP COLUMN a", "id": "generated-0369", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nALTER TABLE t DROP COLUMN a", "id": "generated-0370", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nALTER TABLE t DROP COLUMN a", "id": "generated-0371", "ast_sha256": null}
+{"kind": "Parse", "sql": "INSERT INTO t VALUES ()", "id": "generated-0372", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nINSERT INTO t VALUES ()", "id": "generated-0373", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nINSERT INTO t VALUES ()", "id": "generated-0374", "ast_sha256": null}
+{"kind": "Parse", "sql": "INSERT INTO t () VALUES ()", "id": "generated-0375", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nINSERT INTO t () VALUES ()", "id": "generated-0376", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nINSERT INTO t () VALUES ()", "id": "generated-0377", "ast_sha256": null}
+{"kind": "Semantic", "sql": "INSERT INTO t VALUES (1)", "id": "generated-0378", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nINSERT INTO t VALUES (1)", "id": "generated-0379", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nINSERT INTO t VALUES (1)", "id": "generated-0380", "ast_sha256": null}
+{"kind": "Parse", "sql": "INSERT INTO t (a) DEFAULT VALUES", "id": "generated-0381", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nINSERT INTO t (a) DEFAULT VALUES", "id": "generated-0382", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nINSERT INTO t (a) DEFAULT VALUES", "id": "generated-0383", "ast_sha256": null}
+{"kind": "Semantic", "sql": "INSERT INTO t (a) VALUES (ROW(1))", "id": "generated-0384", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nINSERT INTO t (a) VALUES (ROW(1))", "id": "generated-0385", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nINSERT INTO t (a) VALUES (ROW(1))", "id": "generated-0386", "ast_sha256": null}
+{"kind": "Semantic", "sql": "INSERT INTO t (a) VALUES ROW(1)", "id": "generated-0387", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nINSERT INTO t (a) VALUES ROW(1)", "id": "generated-0388", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nINSERT INTO t (a) VALUES ROW(1)", "id": "generated-0389", "ast_sha256": null}
+{"kind": "Semantic", "sql": "INSERT INTO t (a) VALUES (+1)", "id": "generated-0390", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nINSERT INTO t (a) VALUES (+1)", "id": "generated-0391", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nINSERT INTO t (a) VALUES (+1)", "id": "generated-0392", "ast_sha256": null}
+{"kind": "accept", "sql": "INSERT INTO t (a) VALUES (-1)", "id": "generated-0393", "ast_sha256": "180d64a4749ae799f6026e5f67d70404097aecb161d40ffc3dc85ecceee9f722"}
+{"kind": "accept", "sql": "-- lead\nINSERT INTO t (a) VALUES (-1)", "id": "generated-0394", "ast_sha256": "180d64a4749ae799f6026e5f67d70404097aecb161d40ffc3dc85ecceee9f722"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nINSERT INTO t (a) VALUES (-1)", "id": "generated-0395", "ast_sha256": "180d64a4749ae799f6026e5f67d70404097aecb161d40ffc3dc85ecceee9f722"}
+{"kind": "Semantic", "sql": "INSERT INTO t (a) SELECT 1", "id": "generated-0396", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nINSERT INTO t (a) SELECT 1", "id": "generated-0397", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nINSERT INTO t (a) SELECT 1", "id": "generated-0398", "ast_sha256": null}
+{"kind": "Semantic", "sql": "INSERT t (a) VALUES (1)", "id": "generated-0399", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nINSERT t (a) VALUES (1)", "id": "generated-0400", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nINSERT t (a) VALUES (1)", "id": "generated-0401", "ast_sha256": null}
+{"kind": "Semantic", "sql": "INSERT INTO t (a) VALUES (1) ON CONFLICT DO NOTHING", "id": "generated-0402", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nINSERT INTO t (a) VALUES (1) ON CONFLICT DO NOTHING", "id": "generated-0403", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nINSERT INTO t (a) VALUES (1) ON CONFLICT DO NOTHING", "id": "generated-0404", "ast_sha256": null}
+{"kind": "accept", "sql": "INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a=EXCLUDED.a", "id": "generated-0405", "ast_sha256": "8d06d06ca9fc0dce7c1b44a5487d22055eff62ae3f5a26fd7680cb76b14203df"}
+{"kind": "accept", "sql": "-- lead\nINSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a=EXCLUDED.a", "id": "generated-0406", "ast_sha256": "8d06d06ca9fc0dce7c1b44a5487d22055eff62ae3f5a26fd7680cb76b14203df"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nINSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a=EXCLUDED.a", "id": "generated-0407", "ast_sha256": "8d06d06ca9fc0dce7c1b44a5487d22055eff62ae3f5a26fd7680cb76b14203df"}
+{"kind": "Semantic", "sql": "INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a=1 WHERE a=2", "id": "generated-0408", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nINSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a=1 WHERE a=2", "id": "generated-0409", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nINSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a=1 WHERE a=2", "id": "generated-0410", "ast_sha256": null}
+{"kind": "accept", "sql": "INSERT INTO t (a) VALUES (1) RETURNING a,b.c", "id": "generated-0411", "ast_sha256": "1864634f248a3eb77c8ef1ed7c82b08fc7bce9e1896d36ad87e9c2f52585046a"}
+{"kind": "accept", "sql": "-- lead\nINSERT INTO t (a) VALUES (1) RETURNING a,b.c", "id": "generated-0412", "ast_sha256": "1864634f248a3eb77c8ef1ed7c82b08fc7bce9e1896d36ad87e9c2f52585046a"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nINSERT INTO t (a) VALUES (1) RETURNING a,b.c", "id": "generated-0413", "ast_sha256": "1864634f248a3eb77c8ef1ed7c82b08fc7bce9e1896d36ad87e9c2f52585046a"}
+{"kind": "Semantic", "sql": "INSERT INTO t (a) VALUES (1) RETURNING a AS b", "id": "generated-0414", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nINSERT INTO t (a) VALUES (1) RETURNING a AS b", "id": "generated-0415", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nINSERT INTO t (a) VALUES (1) RETURNING a AS b", "id": "generated-0416", "ast_sha256": null}
+{"kind": "accept", "sql": "UPDATE t AS data SET a=b.c, b=1+a, c=a-1 WHERE data.a=$1", "id": "generated-0417", "ast_sha256": "3f11f325fab3fc1077f14662e734465d36fca4bc1506da2a521dc5650a0e8271"}
+{"kind": "accept", "sql": "-- lead\nUPDATE t AS data SET a=b.c, b=1+a, c=a-1 WHERE data.a=$1", "id": "generated-0418", "ast_sha256": "4676672fbb6b9fc2a9dc7a2b7134f1d5605213ddc08b8e573808a46f0b878bf5"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nUPDATE t AS data SET a=b.c, b=1+a, c=a-1 WHERE data.a=$1", "id": "generated-0419", "ast_sha256": "4676672fbb6b9fc2a9dc7a2b7134f1d5605213ddc08b8e573808a46f0b878bf5"}
+{"kind": "Semantic", "sql": "UPDATE t SET a=(b)", "id": "generated-0420", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nUPDATE t SET a=(b)", "id": "generated-0421", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nUPDATE t SET a=(b)", "id": "generated-0422", "ast_sha256": null}
+{"kind": "Semantic", "sql": "UPDATE t SET (a,b)=(1,2)", "id": "generated-0423", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nUPDATE t SET (a,b)=(1,2)", "id": "generated-0424", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nUPDATE t SET (a,b)=(1,2)", "id": "generated-0425", "ast_sha256": null}
+{"kind": "accept", "sql": "UPDATE t SET a=1 WHERE a==1", "id": "generated-0426", "ast_sha256": "64ae79861b11904b44b55cc43db351d1751dc4c4a6098d80d89ee4c55f6528ac"}
+{"kind": "accept", "sql": "-- lead\nUPDATE t SET a=1 WHERE a==1", "id": "generated-0427", "ast_sha256": "b94716a32b3ccb1980553d76d19615e20e31ca14124cb0dc9536e64a1bfd35d9"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nUPDATE t SET a=1 WHERE a==1", "id": "generated-0428", "ast_sha256": "b94716a32b3ccb1980553d76d19615e20e31ca14124cb0dc9536e64a1bfd35d9"}
+{"kind": "Semantic", "sql": "UPDATE t SET a=1 FROM other WHERE t.id=other.id", "id": "generated-0429", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nUPDATE t SET a=1 FROM other WHERE t.id=other.id", "id": "generated-0430", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nUPDATE t SET a=1 FROM other WHERE t.id=other.id", "id": "generated-0431", "ast_sha256": null}
+{"kind": "Semantic", "sql": "UPDATE t SET a=1 RETURNING a", "id": "generated-0432", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nUPDATE t SET a=1 RETURNING a", "id": "generated-0433", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nUPDATE t SET a=1 RETURNING a", "id": "generated-0434", "ast_sha256": null}
+{"kind": "accept", "sql": "DELETE FROM t AS data WHERE data.a=$1", "id": "generated-0435", "ast_sha256": "7f80f2febcc2a6f80457f9ed55b1856ff2a0a7f84895b8d4eb644078a39bc308"}
+{"kind": "accept", "sql": "-- lead\nDELETE FROM t AS data WHERE data.a=$1", "id": "generated-0436", "ast_sha256": "23ce789c17a17e5576d4ac48ed5380fbc1d110c2cc0916cb5247c1f126f0be90"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nDELETE FROM t AS data WHERE data.a=$1", "id": "generated-0437", "ast_sha256": "23ce789c17a17e5576d4ac48ed5380fbc1d110c2cc0916cb5247c1f126f0be90"}
+{"kind": "Semantic", "sql": "DELETE FROM t,t2", "id": "generated-0438", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nDELETE FROM t,t2", "id": "generated-0439", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nDELETE FROM t,t2", "id": "generated-0440", "ast_sha256": null}
+{"kind": "Semantic", "sql": "DELETE t FROM t", "id": "generated-0441", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nDELETE t FROM t", "id": "generated-0442", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nDELETE t FROM t", "id": "generated-0443", "ast_sha256": null}
+{"kind": "Parse", "sql": "DELETE t", "id": "generated-0444", "ast_sha256": null}
+{"kind": "Parse", "sql": "-- lead\nDELETE t", "id": "generated-0445", "ast_sha256": null}
+{"kind": "Parse", "sql": "/* 知識 /* inner */ */\nDELETE t", "id": "generated-0446", "ast_sha256": null}
+{"kind": "Semantic", "sql": "DELETE FROM t USING other WHERE t.a=other.a", "id": "generated-0447", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nDELETE FROM t USING other WHERE t.a=other.a", "id": "generated-0448", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nDELETE FROM t USING other WHERE t.a=other.a", "id": "generated-0449", "ast_sha256": null}
+{"kind": "Semantic", "sql": "DELETE FROM t RETURNING a", "id": "generated-0450", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nDELETE FROM t RETURNING a", "id": "generated-0451", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nDELETE FROM t RETURNING a", "id": "generated-0452", "ast_sha256": null}
+{"kind": "accept", "sql": "CREATE MATERIALIZED VIEW IF NOT EXISTS v AS SELECT a,count(*) AS n FROM t GROUP BY a", "id": "generated-0453", "ast_sha256": "24c6fc01ebff212b8c5469b7ee7fd567c30ef8183242dac46d2ab2c3115d8d52"}
+{"kind": "accept", "sql": "-- lead\nCREATE MATERIALIZED VIEW IF NOT EXISTS v AS SELECT a,count(*) AS n FROM t GROUP BY a", "id": "generated-0454", "ast_sha256": "fdac1b225d550dd1ef4cc9d965e9f558d7b82ddd585fdb84b8ccb1c3478028ff"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nCREATE MATERIALIZED VIEW IF NOT EXISTS v AS SELECT a,count(*) AS n FROM t GROUP BY a", "id": "generated-0455", "ast_sha256": "fdac1b225d550dd1ef4cc9d965e9f558d7b82ddd585fdb84b8ccb1c3478028ff"}
+{"kind": "Semantic", "sql": "CREATE VIEW v AS SELECT a FROM t", "id": "generated-0456", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nCREATE VIEW v AS SELECT a FROM t", "id": "generated-0457", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nCREATE VIEW v AS SELECT a FROM t", "id": "generated-0458", "ast_sha256": null}
+{"kind": "Semantic", "sql": "CREATE MATERIALIZED VIEW v(a) AS SELECT a FROM t", "id": "generated-0459", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nCREATE MATERIALIZED VIEW v(a) AS SELECT a FROM t", "id": "generated-0460", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nCREATE MATERIALIZED VIEW v(a) AS SELECT a FROM t", "id": "generated-0461", "ast_sha256": null}
+{"kind": "accept", "sql": "DROP MATERIALIZED VIEW IF EXISTS v RESTRICT", "id": "generated-0462", "ast_sha256": "1742972eb4ac1827bc36e1ab11b18e6da5ceb803b42b102dc14f044ec34cc285"}
+{"kind": "accept", "sql": "-- lead\nDROP MATERIALIZED VIEW IF EXISTS v RESTRICT", "id": "generated-0463", "ast_sha256": "1742972eb4ac1827bc36e1ab11b18e6da5ceb803b42b102dc14f044ec34cc285"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nDROP MATERIALIZED VIEW IF EXISTS v RESTRICT", "id": "generated-0464", "ast_sha256": "1742972eb4ac1827bc36e1ab11b18e6da5ceb803b42b102dc14f044ec34cc285"}
+{"kind": "Semantic", "sql": "DROP MATERIALIZED VIEW v CASCADE", "id": "generated-0465", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nDROP MATERIALIZED VIEW v CASCADE", "id": "generated-0466", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nDROP MATERIALIZED VIEW v CASCADE", "id": "generated-0467", "ast_sha256": null}
+{"kind": "Semantic", "sql": "DROP MATERIALIZED VIEW v,v2", "id": "generated-0468", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nDROP MATERIALIZED VIEW v,v2", "id": "generated-0469", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nDROP MATERIALIZED VIEW v,v2", "id": "generated-0470", "ast_sha256": null}
+{"kind": "Semantic", "sql": "DROP TABLE t", "id": "generated-0471", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nDROP TABLE t", "id": "generated-0472", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nDROP TABLE t", "id": "generated-0473", "ast_sha256": null}
+{"kind": "Semantic", "sql": "BEGIN", "id": "generated-0474", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nBEGIN", "id": "generated-0475", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nBEGIN", "id": "generated-0476", "ast_sha256": null}
+{"kind": "Semantic", "sql": "COMMIT", "id": "generated-0477", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nCOMMIT", "id": "generated-0478", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nCOMMIT", "id": "generated-0479", "ast_sha256": null}
+{"kind": "Semantic", "sql": "WITH q AS (SELECT 1 AS a) SELECT a FROM q", "id": "generated-0480", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nWITH q AS (SELECT 1 AS a) SELECT a FROM q", "id": "generated-0481", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nWITH q AS (SELECT 1 AS a) SELECT a FROM q", "id": "generated-0482", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SHOW TABLES", "id": "generated-0483", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSHOW TABLES", "id": "generated-0484", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSHOW TABLES", "id": "generated-0485", "ast_sha256": null}
+{"kind": "Semantic", "sql": "SET name = 1", "id": "generated-0486", "ast_sha256": null}
+{"kind": "Semantic", "sql": "-- lead\nSET name = 1", "id": "generated-0487", "ast_sha256": null}
+{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSET name = 1", "id": "generated-0488", "ast_sha256": null}
