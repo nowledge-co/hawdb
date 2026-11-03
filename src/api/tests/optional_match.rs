@@ -14,6 +14,8 @@
 
 use super::*;
 
+mod count_source;
+
 #[test]
 fn optional_match_count_after_node_match_covers_thread_message_count() {
     let mut db = Database::new();

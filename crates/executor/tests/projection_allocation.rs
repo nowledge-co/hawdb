@@ -3118,13 +3118,21 @@ fn full_node_lookup_key_copy_admitted_before_parameter_clone() {
     }
 }
 
-fn run_count_sum_source_admission(persisted: bool) {
-    run_blocking_source_admission(persisted, BlockingSource::CountSum);
+fn run_count_sum_source_admission(persisted: bool, requested: bool) {
+    run_blocking_source_admission(
+        persisted,
+        if requested {
+            BlockingSource::CountSumRequested
+        } else {
+            BlockingSource::CountSum
+        },
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
 enum BlockingSource {
     CountSum,
+    CountSumRequested,
     ThreadRepair,
     ThreadCountTarget,
     ShortestPath,
@@ -3310,18 +3318,29 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
     }
     assert_eq!(store.is_out_of_core(), persisted);
     let plan = match source {
-        BlockingSource::CountSum => PhysicalPlan::OptionalRelationshipCountSumExec {
-            variable: "n".into(),
-            label: "Memory".into(),
-            properties: BTreeMap::new(),
-            legs: vec![hawdb_plan_cypher::RelationshipCountLeg {
-                rel_type: "RELATES_TO".into(),
-                direction: hawdb_core::RelationshipDirection::Outgoing,
-                distinct: true,
-                filter: None,
-            }],
-            output: "count".into(),
-        },
+        BlockingSource::CountSum | BlockingSource::CountSumRequested => {
+            PhysicalPlan::OptionalRelationshipCountSumExec {
+                variable: "n".into(),
+                label: if matches!(source, BlockingSource::CountSumRequested) {
+                    "Other"
+                } else {
+                    "Memory"
+                }
+                .into(),
+                properties: if matches!(source, BlockingSource::CountSumRequested) {
+                    BTreeMap::from([("body".into(), Value::String("not-present".into()))])
+                } else {
+                    BTreeMap::new()
+                },
+                legs: vec![hawdb_plan_cypher::RelationshipCountLeg {
+                    rel_type: "RELATES_TO".into(),
+                    direction: hawdb_core::RelationshipDirection::Outgoing,
+                    distinct: true,
+                    filter: None,
+                }],
+                output: "count".into(),
+            }
+        }
         BlockingSource::ThreadRepair
         | BlockingSource::ThreadCountTarget
         | BlockingSource::ThreadKey
@@ -3444,6 +3463,10 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
         },
         ExecutionLimit::unlimited(),
         &mut |batch| {
+            if matches!(source, BlockingSource::CountSum) {
+                assert_eq!(batch.len(), 1);
+                assert_eq!(batch[0].values["count"], Value::Int(0));
+            }
             if matches!(source, BlockingSource::ThreadCountTarget) {
                 assert_eq!(batch.len(), 1);
                 assert_eq!(batch[0].values["legacy_messages"], Value::Int(1));
@@ -3463,7 +3486,7 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
     drop(window);
     if matches!(
         source,
-        BlockingSource::ThreadRepair | BlockingSource::ThreadCountTarget
+        BlockingSource::CountSum | BlockingSource::ThreadRepair | BlockingSource::ThreadCountTarget
     ) {
         assert!(
             result.is_ok(),
@@ -3477,7 +3500,10 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
     }
     assert_eq!(
         rows.get(),
-        usize::from(matches!(source, BlockingSource::ThreadCountTarget))
+        usize::from(matches!(
+            source,
+            BlockingSource::CountSum | BlockingSource::ThreadCountTarget
+        ))
     );
     assert_eq!(external.calls.get(), 0);
     assert_eq!(ledger.snapshot().used_bytes, 0);
@@ -3485,13 +3511,23 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
 }
 
 #[test]
-fn count_sum_admits_native_unused_payload_before_copy() {
-    run_count_sum_source_admission(false);
+fn count_sum_ignores_native_unused_payload_before_copy() {
+    run_count_sum_source_admission(false, false);
 }
 
 #[test]
-fn count_sum_admits_cold_unused_payload_before_decode() {
-    run_count_sum_source_admission(true);
+fn count_sum_ignores_cold_unused_payload_before_decode() {
+    run_count_sum_source_admission(true, false);
+}
+
+#[test]
+fn count_sum_admits_native_requested_payload_before_copy() {
+    run_count_sum_source_admission(false, true);
+}
+
+#[test]
+fn count_sum_admits_cold_requested_payload_before_decode() {
+    run_count_sum_source_admission(true, true);
 }
 
 #[test]
