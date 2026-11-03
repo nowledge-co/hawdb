@@ -1809,6 +1809,8 @@ impl SearchIndex {
                 &identity,
             ) {
                 Ok(projection) => {
+                    self.vector_scoring
+                        .validate(self.vector_index_descriptor.is_some(), true)?;
                     if let Some(binding) = &self.vector_index_descriptor {
                         vector_index::validate_projection(binding, projection.manifest())?;
                     }
@@ -2772,6 +2774,10 @@ impl SearchIndex {
         publication: Option<&out_of_core::SearchProjectionPublishLease>,
         task: &RuntimeTaskContext,
     ) -> Result<SearchCheckpointReport> {
+        self.vector_scoring.validate(
+            self.vector_index_descriptor.is_some(),
+            self.rabitq_checkpoint.is_some(),
+        )?;
         let Some(path) = &self.path else {
             return Ok(SearchCheckpointReport::in_memory(self.documents.len()));
         };

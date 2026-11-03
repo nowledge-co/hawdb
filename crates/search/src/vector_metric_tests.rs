@@ -636,6 +636,45 @@ fn squared_l2_refuses_conflicting_bindings_compression_and_corrupt_metadata() {
     }
 }
 
+#[test]
+fn squared_l2_checkpoint_refuses_conflicting_options_before_replacing_snapshot() {
+    let root = directory("squared-l2-checkpoint-refusal");
+    let mut index = SearchIndex::open(&root.0).unwrap();
+    index
+        .set_vector_scoring(SearchVectorScoring::LinearSquaredL2)
+        .unwrap();
+    index
+        .upsert(SearchDocument {
+            id: "memory:one".into(),
+            title: String::new(),
+            content: String::new(),
+            embedding: Some(vec![1.0, 0.5]),
+            metadata: BTreeMap::new(),
+        })
+        .unwrap();
+    index.checkpoint().unwrap();
+    let snapshot = root.0.join(SEARCH_SNAPSHOT_FILE);
+    let before = std::fs::read(&snapshot).unwrap();
+    index.set_rabitq_projection_build_options(Default::default());
+    let error = index.checkpoint().unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("ordinary exact/DiskANN projection"));
+    assert_eq!(std::fs::read(&snapshot).unwrap(), before);
+    drop(index);
+    let reopened = SearchIndex::open(&root.0).unwrap();
+    assert_eq!(
+        reopened.vector_scoring(),
+        SearchVectorScoring::LinearSquaredL2
+    );
+    assert_eq!(reopened.document_count(), 1);
+    let hits = reopened
+        .search_with_options_exact("", Some(&[1.0, 0.0]), SearchMode::Vector, options(1, None))
+        .unwrap()
+        .hits;
+    assert_eq!(hits[0].score, 0.875);
+}
+
 fn execution(exact: bool) -> VectorSearchExecutionOptions<'static> {
     if exact {
         VectorSearchExecutionOptions::default().with_exact_search()
