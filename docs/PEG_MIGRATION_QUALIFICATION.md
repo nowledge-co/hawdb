@@ -128,3 +128,18 @@ No qualified timing receipt or samples were produced, and no guard was weakened.
 This result cannot pass or fail the throughput gate. New committed-head fuzz,
 CI, MVCC and current-main public E2E evidence must retain their actual source
 scope; preceding 3f results are not substituted for them.
+
+
+## Current-main integration follow-up
+
+The candidate integrates main `4eeebdc242ca9d530b5ddd4cd18e45fd09325d36` without
+conflicts: UUID/unicode-width lock updates and the relationship-count source
+optimization. The parser and lock-validation sources remain identical to the
+qualified runtime; fresh strict checks and the four new embedded count-source
+queries, executor admission exits and allocation controls qualify the integration.
+All fourteen integration checks pass: exact formatting, strict workspace Clippy,
+full prek, query15/cache26, parsers255+114+36, storage7/concurrent18,
+count-source API4/executor1, projection allocation112, portable14 and minimal
+WASM strict Clippy. The local receipt is `hawdb-peg-main-1532-native-report.json`.
+Prior timings against 870a retain their source scope; committed-head fuzz, MVCC
+and timing against the new main snapshot remain pending.

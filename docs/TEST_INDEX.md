@@ -340,6 +340,26 @@ by the planner. Replay with `cargo test --locked -p hawdb
 row_bound_pattern_properties`, and `cargo test --locked -p hawdb-plan-cypher
 row_bound_pattern_properties`. No CI lane or timeout is added.
 
+Anchored optional relationship-count sums are covered by root
+`api::tests::optional_match::count_source` in the existing
+`//:hawdb_unit_general_tests` owner. Indexed and unindexed fixtures retain
+duplicate source keys, complete initial properties, parallel relationships,
+self-loops, directed/untyped legs and missing/NULL inputs. Source diagnostics
+require three indexed candidates versus five projected label candidates, with
+two matching sources and the same count sum. Unrelated labels and 32 KiB
+unrequested bodies remain outside a 16 KiB query-memory budget; a full-record
+control must refuse. Canonical reopen and a snapshot pinned across an
+update/checkpoint retain exact results. Executor
+`batch::tests::count_source` covers released admission after completion,
+consumer Stop/error, pre-read and mid-traversal cancellation, and source refusal.
+The existing executor `projection_allocation` oracle distinguishes native/cold
+unrequested payload success from requested-payload rejection before copy/decode;
+both retain the original large-allocation, external-call, ledger and store-state
+assertions.
+Replay with `cargo test --locked -p hawdb --lib relationship_count_source`
+and `cargo test --locked -p hawdb-executor --lib relationship_count_source`.
+No CI lane, profile, timeout or feature scope changes.
+
 General `shortestPath` / `allShortestPaths` coverage is owned by existing
 targets: executor `traversal::shortest_path_bfs::tests` (directions,
 deterministic single/all selection, parallel relationships, equal endpoints,

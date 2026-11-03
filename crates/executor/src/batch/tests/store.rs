@@ -302,6 +302,22 @@ impl GraphExecutionRead for ReadFixture {
         }
         Ok(ScanControl::Continue)
     }
+    fn projected_node_owned_admitted(
+        &self,
+        id: NodeId,
+        properties: &BTreeSet<String>,
+        admit: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<Option<ProjectedNodeRecord>> {
+        let Some(node) = self.nodes.iter().find(|node| node.id == id) else {
+            return Ok(None);
+        };
+        admit(hawdb_core::ids::projected_node_allocation_bytes(
+            node, properties,
+        ))?;
+        Ok(Some(hawdb_core::ids::project_node_record_ref(
+            node, properties,
+        )))
+    }
     fn visit_projected_nodes_admitted(
         &self,
         label: Option<LabelId>,

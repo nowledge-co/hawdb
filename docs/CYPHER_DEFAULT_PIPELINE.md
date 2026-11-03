@@ -101,6 +101,17 @@ keep candidate batches bounded. Row/payload budgets and cancellation still
 apply, but do not make a scan use an index. Moving a predicate above OPTIONAL
 MATCH to change its plan can discard the unmatched row and change the result.
 
+Anchored optional relationship-count sums keep their dedicated count operator,
+but source discovery reads only the properties in the initial node pattern.
+A single exact label and a declared non-NULL scalar equality index select
+projected index access; all initial source properties remain authoritative.
+Otherwise the operator uses a projected label scan, or the original label-union
+filter over a projected general scan. Unknown labels still produce a zero
+aggregate. Source scan reports count visited and matched source nodes, separately
+from relationship work and the final one-row aggregate. Key copies, projected
+source records and traversal state retain before-copy admission and cancellation;
+an incomplete source scan cannot publish a partial aggregate.
+
 ## Bounded relationship mutation input
 
 The atomic mutation binder accepts two independently bound, non-optional node
