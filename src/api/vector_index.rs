@@ -195,9 +195,11 @@ mod tests {
             node.target(),
             VectorIndexTarget::NodeProperty { .. }
         ));
-        assert!(source
+        let l2 = source
             .resolve_vector_index("l2", &sql_field, VectorDistance::Euclidean, backend())
-            .is_err());
+            .unwrap();
+        assert_eq!(l2.distance(), VectorDistance::Euclidean);
+        assert_eq!(l2.backend(), backend());
         let scalar = VectorIndexField::SqlColumn {
             table: "documents".into(),
             column: "id".into(),

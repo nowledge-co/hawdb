@@ -23,9 +23,9 @@ pub(crate) fn encode_vector(
     bit_width: RaBitQBitWidth,
     transformed: &mut [f32],
     packed: &mut Vec<u8>,
-) -> Result<RaBitQEncoding> {
-    normalize_and_transform(vector, transform_seed, transformed)?;
-    rabitq::encode(transformed, bit_width, packed)
+) -> Result<(RaBitQEncoding, f64)> {
+    let norm = normalize_and_transform(vector, transform_seed, transformed)?;
+    Ok((rabitq::encode(transformed, bit_width, packed)?, norm))
 }
 
 pub(crate) use rabitq::code_at;

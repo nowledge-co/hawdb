@@ -935,7 +935,7 @@ impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
             ));
         }
         self.vector_scoring
-            .validate(self.vector_index_binding.is_some(), false)?;
+            .validate(self.vector_index_binding.is_some())?;
         if let Some(encoded) = &self.vector_index_binding {
             let descriptor = crate::vector_index::decode(encoded.as_ref())?;
             if self.embedding_dimension != Some(descriptor.dimension().get() as usize) {
@@ -2368,7 +2368,10 @@ impl SearchOutOfCoreReader {
             query_embedding,
             mode,
             options,
-            SearchOutOfCoreExecutionContext::scalar(),
+            SearchOutOfCoreExecutionContext {
+                compressed_vector_search_mode: self.default_compressed_vector_search_mode(),
+                ..SearchOutOfCoreExecutionContext::scalar()
+            },
         )
     }
 
@@ -2483,7 +2486,7 @@ impl SearchOutOfCoreReader {
             options,
             SearchOutOfCoreExecutionContext {
                 access_control: Some(&access_control),
-                compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
+                compressed_vector_search_mode: self.default_compressed_vector_search_mode(),
                 vector_execution_options: VectorSearchExecutionOptions::default(),
             },
         )
@@ -2726,16 +2729,6 @@ impl SearchOutOfCoreReader {
             compressed_vector_search_mode,
             vector_execution_options,
         } = execution;
-        if !self.vector_scoring().is_default()
-            && mode != SearchMode::Text
-            && query_embedding.is_some()
-            && !vector_execution_options.exact
-            && compressed_vector_search_mode == CompressedVectorSearchMode::Required
-        {
-            return Err(HawDBError::Semantic(
-                "linear squared-L2 scoring does not support compressed vector search".into(),
-            ));
-        }
         let task_context = vector_execution_options.task_context;
         if let Some(task_context) = task_context {
             task_context.checkpoint().map_err(|reason| {
@@ -3786,11 +3779,15 @@ fn open_rabitq_projection(
     .map_err(vector_projection_error)?;
     active_manifest
         .vector_scoring
-        .validate(active_manifest.vector_index_binding.is_some(), true)?;
+        .validate(active_manifest.vector_index_binding.is_some())?;
     let artifact_manifest = projection.manifest();
     if let Some(encoded) = &active_manifest.vector_index_binding {
         let definition = crate::vector_index::decode(encoded)?;
         crate::vector_index::validate_projection(&definition, artifact_manifest)?;
+    } else if artifact_manifest.metric != active_manifest.vector_scoring.metric(None).into() {
+        return Err(HawDBError::StorageIntegrity(
+            "RaBitQ artifact metric differs from its projection".into(),
+        ));
     }
     let expected_identity = hawdb_vector_projection::ProjectionIdentity {
         generation: manifest.generation,

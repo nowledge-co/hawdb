@@ -50,12 +50,7 @@ impl ProjectionBuilder {
         let payload_bytes = self
             .segments
             .iter()
-            .map(|segment| {
-                segment.ids.len() * std::mem::size_of::<u64>()
-                    + segment.reconstruction_scales.len() * std::mem::size_of::<f32>()
-                    + segment.reconstruction_offsets.len() * std::mem::size_of::<f32>()
-                    + segment.codes.len()
-            })
+            .map(QuantizedSegment::payload_len)
             .sum::<usize>() as u64;
         let mut offset = 0u64;
         let segment_descriptors = self
@@ -63,10 +58,7 @@ impl ProjectionBuilder {
             .iter()
             .enumerate()
             .map(|(index, segment)| {
-                let payload_bytes = (segment.ids.len() * std::mem::size_of::<u64>()
-                    + segment.reconstruction_scales.len() * std::mem::size_of::<f32>()
-                    + segment.reconstruction_offsets.len() * std::mem::size_of::<f32>()
-                    + segment.codes.len()) as u64;
+                let payload_bytes = segment.payload_len() as u64;
                 let descriptor = SegmentDescriptor {
                     index,
                     base_ordinal: segment.base_ordinal,
@@ -150,7 +142,7 @@ impl BuildState {
             }
         }
         self.last_id = Some(id);
-        let encoding = encode_vector(
+        let (encoding, original_norm) = encode_vector(
             vector,
             self.config.transform_seed,
             self.config.bit_width,
@@ -164,6 +156,7 @@ impl BuildState {
         self.pending
             .reconstruction_offsets
             .push(encoding.reconstruction_offset);
+        self.pending.original_norms.push(original_norm);
         self.pending.codes.extend_from_slice(&self.packed);
         self.document_count = self.document_count.saturating_add(1);
         self.raw_vector_bytes = self
@@ -232,15 +225,22 @@ mod tests {
     #[test]
     fn builder_bounds_raw_intermediates_by_segment_budget() {
         let dimension = 64;
-        let row_bytes = 8 + 8 + dimension / 2;
-        let scratch_bytes = dimension * 4 + dimension / 2 + crate::model::BUILD_FIXED_WORKING_BYTES;
+        let row_bytes = 8 + 8 + 8 + dimension / 2;
+        let quantizer_bytes = dimension
+            * (std::mem::size_of::<f64>()
+                + std::mem::size_of::<usize>()
+                + std::mem::size_of::<(f64, usize)>());
+        let scratch_bytes = dimension * 4
+            + dimension / 2
+            + quantizer_bytes
+            + crate::model::BUILD_FIXED_WORKING_BYTES;
         let budget = scratch_bytes + row_bytes * 3;
         let config = ProjectionBuildConfig::new(dimension, ProjectionIdentity::new(1))
             .with_bit_width(RaBitQBitWidth::Four)
             .with_segment_rows(100)
             .with_max_working_bytes(budget);
         let mut builder = ProjectionBuilder::new(config).unwrap();
-        for id in 0..10 {
+        for id in 0..20 {
             let vector = (0..dimension)
                 .map(|value| (value as f32 + id as f32).sin())
                 .collect::<Vec<_>>();
@@ -248,9 +248,9 @@ mod tests {
         }
         let projection = builder.finish().unwrap();
 
-        assert_eq!(projection.manifest.document_count, 10);
+        assert_eq!(projection.manifest.document_count, 20);
         assert_eq!(projection.manifest.admitted_segment_rows, 3);
-        assert_eq!(projection.manifest.segments.len(), 4);
+        assert_eq!(projection.manifest.segments.len(), 7);
         assert!(projection.build_report.peak_working_bytes <= budget);
         assert!(projection.build_report.raw_vector_bytes > budget as u64);
     }

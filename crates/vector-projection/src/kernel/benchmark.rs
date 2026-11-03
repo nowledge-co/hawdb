@@ -97,7 +97,7 @@ struct ScanCase<'a> {
     filter: &'static str,
     allowed: Option<&'a [u64]>,
     workers: usize,
-    expected: &'a [(u64, u32)],
+    expected: &'a [(u64, u64)],
 }
 
 impl ScanCase<'_> {

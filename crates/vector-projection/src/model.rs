@@ -16,14 +16,14 @@ use crate::error::{ProjectionError, Result};
 use serde::{Deserialize, Serialize};
 
 pub const PROJECTION_PROTOCOL: &str = "hawdb-rabitq-projection";
-pub const PROJECTION_FORMAT_VERSION: u32 = 1;
+pub const PROJECTION_FORMAT_VERSION: u32 = 2;
 pub const DEFAULT_PROJECTION_BIT_WIDTH: u8 = 4;
 pub const PROJECTION_BIT_WIDTH: u8 = DEFAULT_PROJECTION_BIT_WIDTH;
 pub const PROJECTION_ALGORITHM: &str = "rabitq";
-pub const PROJECTION_TRANSFORM: &str = "signed_block_hadamard_v1";
+pub const PROJECTION_TRANSFORM: &str = "signed_block_hadamard_v2";
 pub const PROJECTION_QUANTIZER: &str = "rabitq_sign_then_refinement_scalar_4bit_v1";
 const ONE_BIT_PROJECTION_QUANTIZER: &str = "rabitq_sign_then_refinement_scalar_1bit_v1";
-pub const PROJECTION_CALIBRATION: &str = "none";
+pub const PROJECTION_CALIBRATION: &str = "inverse_alignment_v1";
 pub const DEFAULT_TRANSFORM_SEED: u64 = 0x534b_4549_4e56_5134;
 pub const DEFAULT_SEGMENT_ROWS: usize = 1_024;
 pub const DEFAULT_BUILD_MEMORY_BYTES: usize = 64 * 1024 * 1024;
@@ -81,10 +81,31 @@ pub(crate) fn encoded_vector_bytes(dimension: usize, bit_width: RaBitQBitWidth) 
         .saturating_add(bit_width.refinement_code_bytes(dimension))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Candidate ordering metric. Final public relevance is computed from raw vectors.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectionMetric {
+    #[default]
     Cosine,
+    SquaredL2,
+}
+
+impl From<hawdb_core::VectorDistance> for ProjectionMetric {
+    fn from(metric: hawdb_core::VectorDistance) -> Self {
+        match metric {
+            hawdb_core::VectorDistance::Cosine => Self::Cosine,
+            hawdb_core::VectorDistance::Euclidean => Self::SquaredL2,
+        }
+    }
+}
+
+impl From<ProjectionMetric> for hawdb_core::VectorDistance {
+    fn from(metric: ProjectionMetric) -> Self {
+        match metric {
+            ProjectionMetric::Cosine => Self::Cosine,
+            ProjectionMetric::SquaredL2 => Self::Euclidean,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +131,7 @@ impl ProjectionIdentity {
 pub struct ProjectionBuildConfig {
     pub dimension: usize,
     pub bit_width: RaBitQBitWidth,
+    pub metric: ProjectionMetric,
     pub segment_rows: usize,
     pub max_working_bytes: usize,
     pub transform_seed: u64,
@@ -121,11 +143,17 @@ impl ProjectionBuildConfig {
         Self {
             dimension,
             bit_width: RaBitQBitWidth::default(),
+            metric: ProjectionMetric::Cosine,
             segment_rows: DEFAULT_SEGMENT_ROWS,
             max_working_bytes: DEFAULT_BUILD_MEMORY_BYTES,
             transform_seed: DEFAULT_TRANSFORM_SEED,
             identity,
         }
+    }
+
+    pub fn with_metric(mut self, metric: ProjectionMetric) -> Self {
+        self.metric = metric;
+        self
     }
 
     pub fn with_segment_rows(mut self, segment_rows: usize) -> Self {
@@ -153,6 +181,10 @@ impl ProjectionBuildConfig {
         Ok(ProjectionBuildAdmission {
             configured_working_bytes: validated.max_working_bytes,
             peak_working_bytes: validated.peak_working_bytes,
+            quantization_working_bytes: crate::rabitq::scratch_bytes(
+                self.dimension,
+                self.bit_width,
+            ),
             requested_segment_rows: validated.requested_segment_rows,
             admitted_segment_rows: validated.admitted_segment_rows,
         })
@@ -172,11 +204,13 @@ impl ProjectionBuildConfig {
         let bytes_per_vector = encoded_vector_bytes(self.dimension, self.bit_width);
         let row_bytes = std::mem::size_of::<u64>()
             .saturating_add(2 * std::mem::size_of::<f32>())
+            .saturating_add(std::mem::size_of::<f64>())
             .saturating_add(bytes_per_vector);
         let scratch_bytes = self
             .dimension
             .saturating_mul(std::mem::size_of::<f32>())
             .saturating_add(bytes_per_vector)
+            .saturating_add(crate::rabitq::scratch_bytes(self.dimension, self.bit_width))
             .saturating_add(BUILD_FIXED_WORKING_BYTES);
         let available_for_rows = self.max_working_bytes.saturating_sub(scratch_bytes);
         let admitted_rows = (available_for_rows / row_bytes).min(self.segment_rows);
@@ -195,6 +229,7 @@ impl ProjectionBuildConfig {
             peak_working_bytes,
             bytes_per_vector,
             bit_width: self.bit_width,
+            metric: self.metric,
             transform_seed: self.transform_seed,
             identity: self.identity.clone(),
         })
@@ -205,6 +240,9 @@ impl ProjectionBuildConfig {
 pub struct ProjectionBuildAdmission {
     pub configured_working_bytes: usize,
     pub peak_working_bytes: usize,
+    /// Temporary quantizer capacity already included in `peak_working_bytes`.
+    /// Hosts may reserve it only around pushes, retaining the remaining state.
+    pub quantization_working_bytes: usize,
     pub requested_segment_rows: usize,
     pub admitted_segment_rows: usize,
 }
@@ -213,6 +251,7 @@ pub struct ProjectionBuildAdmission {
 pub(crate) struct ValidatedBuildConfig {
     pub dimension: usize,
     pub bit_width: RaBitQBitWidth,
+    pub metric: ProjectionMetric,
     pub requested_segment_rows: usize,
     pub admitted_segment_rows: usize,
     pub max_working_bytes: usize,
@@ -303,7 +342,7 @@ impl ProjectionManifest {
             format_version: PROJECTION_FORMAT_VERSION,
             bit_width: config.bit_width.bits(),
             algorithm: PROJECTION_ALGORITHM.to_string(),
-            metric: ProjectionMetric::Cosine,
+            metric: config.metric,
             transform: PROJECTION_TRANSFORM.to_string(),
             quantizer: config.bit_width.quantizer().to_string(),
             calibration: PROJECTION_CALIBRATION.to_string(),
@@ -331,13 +370,12 @@ impl ProjectionManifest {
         }
         if self.format_version != PROJECTION_FORMAT_VERSION {
             return Err(ProjectionError::CorruptArtifact(format!(
-                "unsupported format version {}",
+                "unsupported format version {}; rebuild the development RaBitQ index from raw vectors",
                 self.format_version
             )));
         }
         let bit_width = RaBitQBitWidth::from_bits(self.bit_width)?;
         if self.algorithm != PROJECTION_ALGORITHM
-            || self.metric != ProjectionMetric::Cosine
             || self.transform != PROJECTION_TRANSFORM
             || self.quantizer != bit_width.quantizer()
             || self.calibration != PROJECTION_CALIBRATION
@@ -408,16 +446,26 @@ pub(crate) struct QuantizedSegment {
     pub ids: Vec<u64>,
     pub reconstruction_scales: Vec<f32>,
     pub reconstruction_offsets: Vec<f32>,
+    pub original_norms: Vec<f64>,
     pub codes: Vec<u8>,
 }
 
 impl QuantizedSegment {
+    pub(crate) fn payload_len(&self) -> usize {
+        self.ids.len() * std::mem::size_of::<u64>()
+            + self.reconstruction_scales.len() * std::mem::size_of::<f32>()
+            + self.reconstruction_offsets.len() * std::mem::size_of::<f32>()
+            + self.original_norms.len() * std::mem::size_of::<f64>()
+            + self.codes.len()
+    }
+
     pub fn with_capacity(config: &ValidatedBuildConfig, base_ordinal: usize) -> Self {
         Self {
             base_ordinal,
             ids: Vec::with_capacity(config.admitted_segment_rows),
             reconstruction_scales: Vec::with_capacity(config.admitted_segment_rows),
             reconstruction_offsets: Vec::with_capacity(config.admitted_segment_rows),
+            original_norms: Vec::with_capacity(config.admitted_segment_rows),
             codes: Vec::with_capacity(
                 config
                     .admitted_segment_rows
@@ -436,6 +484,7 @@ impl QuantizedSegment {
             ids: Vec::new(),
             reconstruction_scales: Vec::new(),
             reconstruction_offsets: Vec::new(),
+            original_norms: Vec::new(),
             codes: Vec::new(),
         }
     }
@@ -484,6 +533,12 @@ impl InMemoryProjection {
                             .capacity()
                             .saturating_mul(std::mem::size_of::<f32>()),
                     )
+                    .saturating_add(
+                        segment
+                            .original_norms
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<f64>()),
+                    )
                     .saturating_add(segment.codes.capacity())
             },
         )
@@ -506,6 +561,7 @@ pub(crate) fn segment_payload_bytes(
     rows.saturating_mul(
         std::mem::size_of::<u64>()
             .saturating_add(2 * std::mem::size_of::<f32>())
+            .saturating_add(std::mem::size_of::<f64>())
             .saturating_add(encoded_vector_bytes(dimension, bit_width)),
     )
 }

@@ -16,9 +16,9 @@
 
 use super::SearchOutOfCoreGenerationBuildOptions;
 use crate::build_memory::{checked_add, checked_mul, BuildMemory};
-use crate::error::Result;
+use crate::error::{HawDBError, Result};
 use hawdb_executor::QueryMemoryLease;
-use hawdb_vector_projection::{ProjectionBuildAdmission, RaBitQBitWidth, SegmentDescriptor};
+use hawdb_vector_projection::{ProjectionBuildAdmission, SegmentDescriptor};
 use std::mem::size_of;
 use std::path::Path;
 
@@ -68,28 +68,18 @@ impl Admission {
         })
     }
 
-    pub(super) fn admit_state(
-        &mut self,
-        admission: ProjectionBuildAdmission,
-        dimension: usize,
-        bits: RaBitQBitWidth,
-    ) -> Result<()> {
-        // The component model covers the pending rows, transform and packed
-        // buffers. The scalar quantizer's temporary arrays are additional.
-        self.quantization_bytes = checked_mul(dimension, size_of::<f64>())?;
-        if bits == RaBitQBitWidth::Four {
-            // codes: usize per coordinate. RescaleEvent is { f64, usize } on
-            // supported 32/64-bit targets. Heap length never exceeds dimension;
-            // 3x includes old/new doubling overlap and its initial four slots.
-            self.quantization_bytes = checked_add(
-                self.quantization_bytes,
-                checked_add(
-                    checked_mul(dimension, size_of::<usize>())?,
-                    checked_mul(dimension.max(4), 3 * 16)?,
-                )?,
-            )?;
-        }
-        self.state.grow(admission.peak_working_bytes)?;
+    pub(super) fn admit_state(&mut self, admission: ProjectionBuildAdmission) -> Result<()> {
+        // Split the component's complete peak once: retained rows/transform
+        // live with the builder, while quantizer scratch competes with other
+        // stages only during a push. Never add it on top of the total peak.
+        let retained = admission
+            .peak_working_bytes
+            .checked_sub(admission.quantization_working_bytes)
+            .ok_or_else(|| {
+                HawDBError::Storage("RaBitQ scratch exceeds its build admission".into())
+            })?;
+        self.state.grow(retained)?;
+        self.quantization_bytes = admission.quantization_working_bytes;
         self.segment_rows = admission.admitted_segment_rows;
         Ok(())
     }

@@ -80,3 +80,6 @@ pub use scan::{
     CandidateSet, ProjectionHit, ProjectionSearchOptions, ProjectionSearchOutput,
     ProjectionSearchReport,
 };
+
+#[cfg(test)]
+mod metric_tests;

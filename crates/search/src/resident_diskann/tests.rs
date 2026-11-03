@@ -29,6 +29,57 @@ fn options() -> SearchQueryOptions {
 }
 
 #[test]
+fn empty_default_requests_do_not_construct_a_cold_diskann_cache() {
+    let mut index = SearchIndex::in_memory();
+    index.upsert(document(0, Some(vec![1.0, 0.0]))).unwrap();
+    for options in [
+        SearchQueryOptions {
+            limit: 0,
+            ..options()
+        },
+        SearchQueryOptions {
+            metadata_filters: BTreeMap::from([("group".into(), "missing".into())]),
+            ..options()
+        },
+    ] {
+        let result = index
+            .search_with_options("", Some(&[1.0, 0.0]), SearchMode::Vector, options)
+            .unwrap();
+        assert!(result.hits.is_empty());
+        assert_eq!(result.retrievers[0].backend, "scalar_vector_scan");
+        assert!(!index.resident_diskann.has_cached_projection(None).unwrap());
+    }
+    assert_default(&index);
+    let cached = index
+        .resident_diskann
+        .snapshot(&index, 2, Default::default())
+        .unwrap();
+    let result = index
+        .search_with_options(
+            "",
+            Some(&[1.0, 0.0]),
+            SearchMode::Vector,
+            SearchQueryOptions {
+                limit: 0,
+                ..options()
+            },
+        )
+        .unwrap();
+    assert!(result.hits.is_empty());
+    assert_eq!(
+        result.retrievers[0].backend,
+        "hawdb_diskann_candidate_projection"
+    );
+    assert!(Arc::ptr_eq(
+        &cached,
+        &index
+            .resident_diskann
+            .snapshot(&index, 2, Default::default())
+            .unwrap(),
+    ));
+}
+
+#[test]
 fn oversized_default_resident_graph_falls_back_and_checkpoints_complete_source() {
     let root = std::env::temp_dir().join(format!(
         "hawdb-resident-graph-over-cap-{}",

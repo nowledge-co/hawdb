@@ -34,6 +34,33 @@ use std::collections::BTreeSet;
 #[cfg(feature = "vector-search")]
 pub(crate) const DISKANN_NAVIGATION_BEAM: usize = 1024;
 
+pub(super) fn query_can_generate_candidates(
+    embedding: Option<&[f32]>,
+    dimension: Option<usize>,
+    metric: hawdb_core::VectorDistance,
+    options: VectorSearchExecutionOptions<'_>,
+) -> Result<bool> {
+    if let Some(task) = options.task_context {
+        crate::build_control::checkpoint(task)?;
+    }
+    let Some(embedding) =
+        embedding.filter(|query| !query.is_empty() && Some(query.len()) == dimension)
+    else {
+        return Ok(false);
+    };
+    let mut nonzero = metric != hawdb_core::VectorDistance::Cosine;
+    for chunk in embedding.chunks(4096) {
+        if let Some(task) = options.task_context {
+            crate::build_control::checkpoint(task)?;
+        }
+        if chunk.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Ok(false);
+        }
+        nonzero |= chunk.iter().any(|coordinate| *coordinate != 0.0);
+    }
+    Ok(nonzero)
+}
+
 pub(super) struct SearchVectorExecution {
     pub scores: BTreeMap<String, f64>,
     pub candidate_ids: Vec<String>,
@@ -253,16 +280,7 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
                     }
                     Err(error) => {
                         if required {
-                            self.fallback_reason_codes.push(
-                                SearchFallbackReasonCode::CompressedVectorProjectionUnavailable,
-                            );
-                            self.fallback_reasons.push(format!(
-                                "HawDB RaBitQ projection is required but candidate scan failed: {error}"
-                            ));
-                            Ok(VectorCandidateBatch {
-                                score_source: VectorScoreSource::Unavailable,
-                                candidates: Vec::new(),
-                            })
+                            Err(error)
                         } else {
                             self.fallback_reason_codes
                                 .push(SearchFallbackReasonCode::VectorIndexEmpty);
