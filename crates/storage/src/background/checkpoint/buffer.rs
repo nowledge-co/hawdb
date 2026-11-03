@@ -283,7 +283,8 @@ impl CheckpointBytes {
     }
 
     /// Copy the prefix of `bytes` that fits the admitted capacity, without
-    /// growing the allocation. The caller's I/O unit accounts for the copy.
+    /// growing the allocation. The copy runs before the caller starts the
+    /// I/O unit that writes the full block; it is bounded by that capacity.
     pub(crate) fn fill_within_capacity(&mut self, bytes: &[u8]) -> usize {
         let accepted = bytes.len().min(self.bytes.capacity() - self.bytes.len());
         self.bytes.extend_from_slice(&bytes[..accepted]);
