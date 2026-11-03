@@ -1,0 +1,4099 @@
+{
+  "reference_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e",
+  "reference_library_sha256": "9c61459cf030e6df33f1271fcc33b800e3e13e52d1707b853ee8add2dd6ad361",
+  "reference_rendered_sha256": "4a173cd39a2d7bba112b729f8bfe7ca37fcea6080ee668de1eedc820ebbbd9d5",
+  "source_records": 21944,
+  "corrected_records": 815,
+  "cases": [
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN 日本語",
+      "expected": "Err(Parse(\"expected identifier at byte 17 line 1 column 18 near `\\\\u{65e5}\\\\u{672c}\\\\u{8a9e}`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN 日本語",
+      "expected": "Err(Parse(\"expected identifier at byte 17 line 1 column 18 near `\\\\u{65e5}\\\\u{672c}\\\\u{8a9e}`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "SET SYSTEM.value = .5",
+      "expected": "Err(Parse(\"expected value at byte 19 line 1 column 20 near `.5`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL vector_search($q) RETURN node, rank,",
+      "expected": "Err(Parse(\"expected identifier at byte 41 line 1 column 42 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL vector_search($q) RETURN node, node_id, , rank",
+      "expected": "Err(Parse(\"expected identifier at byte 45 line 1 column 46 near `, rank`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL text_search($q) RETURN node, rank,",
+      "expected": "Err(Parse(\"expected identifier at byte 39 line 1 column 40 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL text_search($q) RETURN node, rank,",
+      "expected": "Err(Parse(\"expected identifier at byte 39 line 1 column 40 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL text_search($q) RETURN node, node_id, , rank",
+      "expected": "Err(Parse(\"expected identifier at byte 43 line 1 column 44 near `, rank`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL text_search($q) RETURN node, node_id, , rank",
+      "expected": "Err(Parse(\"expected identifier at byte 43 line 1 column 44 near `, rank`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL graph_seed_search($q, label := 'I') RETURN node, rank,",
+      "expected": "Err(Parse(\"expected identifier at byte 59 line 1 column 60 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL graph_seed_search($q, label := 'I') RETURN node, rank,",
+      "expected": "Err(Parse(\"expected identifier at byte 59 line 1 column 60 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL graph_seed_search($q, label := 'I') RETURN node, node_id, , rank",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near `, rank`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL graph_seed_search($q, label := 'I') RETURN node, node_id, , rank",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near `, rank`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_index_search('ix',$q,candidates:=8,topK:=2) RETURN node, rank,",
+      "expected": "Err(Parse(\"expected identifier at byte 74 line 1 column 75 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL vector_index_search('ix',$q,candidates:=8,topK:=2) RETURN node, rank,",
+      "expected": "Err(Parse(\"expected identifier at byte 74 line 1 column 75 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_index_search('ix',$q,candidates:=8,topK:=2) RETURN node, node_id, , rank",
+      "expected": "Err(Parse(\"expected identifier at byte 78 line 1 column 79 near `, rank`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL vector_index_search('ix',$q,candidates:=8,topK:=2) RETURN node, node_id, , rank",
+      "expected": "Err(Parse(\"expected identifier at byte 78 line 1 column 79 near `, rank`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g') RETURN node, rank,",
+      "expected": "Err(Parse(\"expected identifier at byte 38 line 1 column 39 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g') RETURN node, node_id, , rank",
+      "expected": "Err(Parse(\"expected identifier at byte 42 line 1 column 43 near `, rank`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL louvain('g') RETURN node, rank,",
+      "expected": "Err(Parse(\"expected identifier at byte 36 line 1 column 37 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL louvain('g') RETURN node, node_id, , rank",
+      "expected": "Err(Parse(\"expected identifier at byte 40 line 1 column 41 near `, rank`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "\n            MATCH (m:Memory)\n            WHERE m.created_at >= $cutoff AND (m.is_crystal IS NULL OR m.is_crystal = false)\n            RETURN m.id, m.title,",
+      "expected": "Err(Parse(\"expected identifier at byte 156 line 4 column 34 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "\n            MATCH (m:Memory)\n            WHERE m.created_at >= $cutoff AND (m.is_crystal IS NULL OR m.is_crystal = false)\n            RETURN m.id, m.title,",
+      "expected": "Err(Parse(\"expected identifier at byte 156 line 4 column 34 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "\n            MATCH (m:Memory)\n            WHERE m.created_at >= $cutoff AND (m.is_crystal IS NULL OR m.is_crystal = false)\n            RETURN m.id, m.title,; m.unit_type, m.importance, m.created_at,\n                   m.source, m.metadata,\n                   m.created_by_member_id, m.created_by_agent_key_id\n            ORDER BY m.created_at DESC\n            LIMIT 20\n            ",
+      "expected": "Err(Parse(\"expected identifier at byte 156 line 4 column 34 near `; m.unit_type, m.importa`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "\n            MATCH (m:Memory)\n            WHERE m.created_at >= $cutoff AND (m.is_crystal IS NULL OR m.is_crystal = false)\n            RETURN m.id, m.title,; m.unit_type, m.importance, m.created_at,\n                   m.source, m.metadata,\n                   m.created_by_member_id, m.created_by_agent_key_id\n            ORDER BY m.created_at DESC\n            LIMIT 20\n            ",
+      "expected": "Err(Parse(\"expected identifier at byte 156 line 4 column 34 near `; m.unit_type, m.importa`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL louvain('g') RETURN node, node_id, node_label,",
+      "expected": "Err(Parse(\"expected identifier at byte 51 line 1 column 52 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('EntityGraph', dampingFactor := 0.85, maxIterations := 20) RETURN node,",
+      "expected": "Err(Parse(\"expected identifier at byte 86 line 1 column 87 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('EntityGraph', dampingFactor := 0.85, maxIterations := 20) RETURN node,; pagerank_score",
+      "expected": "Err(Parse(\"expected identifier at byte 86 line 1 column 87 near `; pagerank_score`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampingFactor :=",
+      "expected": "Err(Parse(\"expected value at byte 36 line 1 column 37 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampingFactor :=",
+      "expected": "Err(Parse(\"expected value at byte 36 line 1 column 37 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampingFactor := ",
+      "expected": "Err(Parse(\"expected value at byte 37 line 1 column 38 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampingFactor := ",
+      "expected": "Err(Parse(\"expected value at byte 37 line 1 column 38 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampingFactor := 0.85) YIELD node RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 60 line 1 column 61 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampingFactor := 0.85) YIELD node RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 60 line 1 column 61 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampingFactor := 0.85) YIELD node RETURN ",
+      "expected": "Err(Parse(\"expected identifier at byte 61 line 1 column 62 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampingFactor := 0.85) YIELD node RETURN ",
+      "expected": "Err(Parse(\"expected identifier at byte 61 line 1 column 62 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 94 line 1 column 95 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 94 line 1 column 95 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 114 line 1 column 115 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 114 line 1 column 115 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 85 line 1 column 86 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 85 line 1 column 86 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 131 line 1 column 132 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 131 line 1 column 132 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 125 line 1 column 126 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 125 line 1 column 126 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 139 line 1 column 139 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 139 line 1 column 139 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 83 line 1 column 84 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 83 line 1 column 84 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 54 line 1 column 55 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 54 line 1 column 55 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 100 line 1 column 101 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 100 line 1 column 101 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 94 line 1 column 95 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 94 line 1 column 95 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 108 line 1 column 108 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 108 line 1 column 108 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 116 line 1 column 117 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 136 line 1 column 137 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 107 line 1 column 108 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 153 line 1 column 154 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 147 line 1 column 148 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 161 line 1 column 161 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 85 line 1 column 86 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 105 line 1 column 106 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 76 line 1 column 77 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 122 line 1 column 123 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 116 line 1 column 117 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 130 line 1 column 130 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 51 line 1 column 52 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 71 line 1 column 72 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 42 line 1 column 43 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 88 line 1 column 89 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 82 line 1 column 83 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 96 line 1 column 96 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 90 line 1 column 91 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 110 line 1 column 111 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 81 line 1 column 82 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 127 line 1 column 128 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 121 line 1 column 122 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 135 line 1 column 135 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 83 line 1 column 84 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 103 line 1 column 104 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 74 line 1 column 75 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 120 line 1 column 121 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 114 line 1 column 115 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CYPHER SYSTEM.cpu = 1 UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 128 line 1 column 128 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 110 line 1 column 111 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 130 line 1 column 131 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 101 line 1 column 102 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 147 line 1 column 148 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 141 line 1 column 142 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 155 line 1 column 155 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 79 line 1 column 80 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 99 line 1 column 100 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 70 line 1 column 71 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 116 line 1 column 117 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 110 line 1 column 111 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 124 line 1 column 124 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 45 line 1 column 46 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 65 line 1 column 66 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 36 line 1 column 37 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 82 line 1 column 83 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 76 line 1 column 77 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 90 line 1 column 90 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 84 line 1 column 85 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 104 line 1 column 105 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 75 line 1 column 76 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 121 line 1 column 122 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 115 line 1 column 116 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 129 line 1 column 129 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 77 line 1 column 78 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 97 line 1 column 98 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 68 line 1 column 69 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 114 line 1 column 115 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 108 line 1 column 109 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN ANALYZE UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 122 line 1 column 122 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 102 line 1 column 103 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 122 line 1 column 123 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 93 line 1 column 94 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 139 line 1 column 140 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 133 line 1 column 134 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CALL vector_search($q, topK := 2) YIELD node WITH node WITH node MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 147 line 1 column 147 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 71 line 1 column 72 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 91 line 1 column 92 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 62 line 1 column 63 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 108 line 1 column 109 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 102 line 1 column 103 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CREATE (:Item) WITH 1 AS x WITH x MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 116 line 1 column 116 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CYPHER SYSTEM.cpu =",
+      "expected": "Err(Parse(\"expected value at byte 27 line 1 column 28 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CYPHER SYSTEM.cpu = ",
+      "expected": "Err(Parse(\"expected value at byte 28 line 1 column 29 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CYPHER SYSTEM.cpu = 1 MATCH (:Item {name: '你好é'}) WHERE NOT (n.id =",
+      "expected": "Err(Parse(\"expected identifier at byte 80 line 1 column 76 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CYPHER SYSTEM.cpu = 1 MATCH (:Item {name: '你好é'}) WHERE NOT (n.id = ",
+      "expected": "Err(Parse(\"expected identifier at byte 81 line 1 column 77 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CYPHER SYSTEM.cpu = 1 MATCH (:Item {name: '你好é'}) WHERE NOT (n.id = $id) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 92 line 1 column 88 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CYPHER SYSTEM.cpu = 1 MATCH (:Item {name: '你好é'}) WHERE NOT (n.id = $id) RETURN ",
+      "expected": "Err(Parse(\"expected identifier at byte 93 line 1 column 89 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 37 line 1 column 38 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 57 line 1 column 58 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 74 line 1 column 75 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 68 line 1 column 69 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 82 line 1 column 82 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 76 line 1 column 77 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 96 line 1 column 97 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 67 line 1 column 68 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 113 line 1 column 114 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 107 line 1 column 108 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 121 line 1 column 121 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 69 line 1 column 70 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 89 line 1 column 90 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 60 line 1 column 61 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 106 line 1 column 107 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 100 line 1 column 101 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 114 line 1 column 114 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 49 line 1 column 50 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 49 line 1 column 50 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 66 line 1 column 67 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 66 line 1 column 67 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 60 line 1 column 61 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 60 line 1 column 61 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 74 line 1 column 74 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 74 line 1 column 74 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (e:Entity)\n             WHERE e.community_id = $cid\n             RETURN e.id, COALESCE(e.name, e.id), COALESCE(e.pagerank_score, e.confidence, ",
+      "expected": "Err(Parse(\"expected identifier at byte 149 line 3 column 92 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (e:Entity)\n             WHERE e.community_id = $cid\n             RETURN e.id, COALESCE(e.name, e.id), COALESCE(e.pagerank_score, e.confidence, ",
+      "expected": "Err(Parse(\"expected identifier at byte 149 line 3 column 92 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (e:Entity)\n             WHERE e.community_id = $cid\n             RETURN e.id, COALESCE(e.name, e.id), COALESCE(e.pagerank_score, e.confidence, ;0.5)",
+      "expected": "Err(Parse(\"expected identifier at byte 149 line 3 column 92 near `;0.5)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (e:Entity)\n             WHERE e.community_id = $cid\n             RETURN e.id, COALESCE(e.name, e.id), COALESCE(e.pagerank_score, e.confidence, ;0.5)",
+      "expected": "Err(Parse(\"expected identifier at byte 149 line 3 column 92 near `;0.5)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (l:Label)\n                 WHERE l.canonical_name = $c AND l.id <> $label_id\n                 RETURN ",
+      "expected": "Err(Parse(\"expected identifier at byte 107 line 3 column 25 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (l:Label)\n                 WHERE l.canonical_name = $c AND l.id <> $label_id\n                 RETURN ",
+      "expected": "Err(Parse(\"expected identifier at byte 107 line 3 column 25 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (l:Label)\n                 WHERE l.canonical_name = $c AND l.id <> $label_id\n                 RETURN ;l.id LIMIT 1",
+      "expected": "Err(Parse(\"expected identifier at byte 107 line 3 column 25 near `;l.id LIMIT 1`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (l:Label)\n                 WHERE l.canonical_name = $c AND l.id <> $label_id\n                 RETURN ;l.id LIMIT 1",
+      "expected": "Err(Parse(\"expected identifier at byte 107 line 3 column 25 near `;l.id LIMIT 1`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory {id: $memory_id})\n         RETURN m.id,\n                COALESCE(m.title, ''),\n               ",
+      "expected": "Err(Parse(\"expected identifier at byte 110 line 4 column 16 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory {id: $memory_id})\n         RETURN m.id,\n                COALESCE(m.title, ''),\n               ",
+      "expected": "Err(Parse(\"expected identifier at byte 110 line 4 column 16 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory {id: $memory_id})\n         RETURN m.id,\n                COALESCE(m.title, ''),\n               ; COALESCE(m.content, ''),\n                COALESCE(m.unit_type, '')",
+      "expected": "Err(Parse(\"expected identifier at byte 110 line 4 column 16 near `; COALESCE(m.content, \\\\'\\\\'`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory {id: $memory_id})\n         RETURN m.id,\n                COALESCE(m.title, ''),\n               ; COALESCE(m.content, ''),\n                COALESCE(m.unit_type, '')",
+      "expected": "Err(Parse(\"expected identifier at byte 110 line 4 column 16 near `; COALESCE(m.content, \\\\'\\\\'`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)\n         WHERE CASE WHEN m.space_id IS NULL OR m.space_id =",
+      "expected": "Err(Parse(\"expected identifier at byte 76 line 2 column 60 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)\n         WHERE CASE WHEN m.space_id IS NULL OR m.space_id =",
+      "expected": "Err(Parse(\"expected identifier at byte 76 line 2 column 60 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)\n         WHERE CASE WHEN m.space_id IS NULL OR m.space_id =; '' THEN 'default' ELSE m.space_id END = $space_id\n         RETURN m.id LIMIT 1",
+      "expected": "Err(Parse(\"expected identifier at byte 76 line 2 column 60 near `; \\\\'\\\\' THEN \\\\'default\\\\' ELSE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)\n         WHERE CASE WHEN m.space_id IS NULL OR m.space_id =; '' THEN 'default' ELSE m.space_id END = $space_id\n         RETURN m.id LIMIT 1",
+      "expected": "Err(Parse(\"expected identifier at byte 76 line 2 column 60 near `; \\\\'\\\\' THEN \\\\'default\\\\' ELSE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)\n         WHERE m.id = $id\n         OPTIONAL MATCH (m)-[r]-()\n         RETURN m.id, m.title, m.created_at, COUNT(r),\n",
+      "expected": "Err(Parse(\"expected identifier at byte 133 line 5 column 1 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)\n         WHERE m.id = $id\n         OPTIONAL MATCH (m)-[r]-()\n         RETURN m.id, m.title, m.created_at, COUNT(r),\n",
+      "expected": "Err(Parse(\"expected identifier at byte 133 line 5 column 1 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)\n         WHERE m.id = $id\n         OPTIONAL MATCH (m)-[r]-()\n         RETURN m.id, m.title, m.created_at, COUNT(r),\n                m.content, m.is_crystal, m.is_latest,\n                m.unit_type, m.importance, m.source, m.metadata,\n    ",
+      "expected": "Err(Parse(\"expected identifier at byte 256 line 7 column 5 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)\n         WHERE m.id = $id\n         OPTIONAL MATCH (m)-[r]-()\n         RETURN m.id, m.title, m.created_at, COUNT(r),\n                m.content, m.is_crystal, m.is_latest,\n                m.unit_type, m.importance, m.source, m.metadata,\n    ",
+      "expected": "Err(Parse(\"expected identifier at byte 256 line 7 column 5 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)\n         WHERE m.id = $id\n         OPTIONAL MATCH (m)-[r]-()\n         RETURN m.id, m.title, m.created_at, COUNT(r),\n                m.content, m.is_crystal, m.is_latest,\n                m.unit_type, m.importance, m.source, m.metadata,\n    ;            m.community_id",
+      "expected": "Err(Parse(\"expected identifier at byte 256 line 7 column 5 near `;            m.community`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)\n         WHERE m.id = $id\n         OPTIONAL MATCH (m)-[r]-()\n         RETURN m.id, m.title, m.created_at, COUNT(r),\n                m.content, m.is_crystal, m.is_latest,\n                m.unit_type, m.importance, m.source, m.metadata,\n    ;            m.community_id",
+      "expected": "Err(Parse(\"expected identifier at byte 256 line 7 column 5 near `;            m.community`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)\n         WHERE m.id = $id\n         OPTIONAL MATCH (m)-[r]-()\n         RETURN m.id, m.title, m.created_at, COUNT(r),\n;                m.content, m.is_crystal, m.is_latest,\n                m.unit_type, m.importance, m.source, m.metadata,\n                m.community_id",
+      "expected": "Err(Parse(\"expected identifier at byte 133 line 5 column 1 near `;                m.conte`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)\n         WHERE m.id = $id\n         OPTIONAL MATCH (m)-[r]-()\n         RETURN m.id, m.title, m.created_at, COUNT(r),\n;                m.content, m.is_crystal, m.is_latest,\n                m.unit_type, m.importance, m.source, m.metadata,\n                m.community_id",
+      "expected": "Err(Parse(\"expected identifier at byte 133 line 5 column 1 near `;                m.conte`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)\n         WHERE m.is_crystal IS NULL OR m.is_crystal =",
+      "expected": "Err(Parse(\"expected identifier at byte 70 line 2 column 54 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)\n         WHERE m.is_crystal IS NULL OR m.is_crystal =",
+      "expected": "Err(Parse(\"expected identifier at byte 70 line 2 column 54 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)\n         WHERE m.is_crystal IS NULL OR m.is_crystal =; false\n         RETURN COUNT(m)",
+      "expected": "Err(Parse(\"expected identifier at byte 70 line 2 column 54 near `; false\\\\n         RETURN `\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)\n         WHERE m.is_crystal IS NULL OR m.is_crystal =; false\n         RETURN COUNT(m)",
+      "expected": "Err(Parse(\"expected identifier at byte 70 line 2 column 54 near `; false\\\\n         RETURN `\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)-[:MENTIONS]->(e:Entity {id: $id})\n         RETURN m.id, m.title, m.content, m.is_crystal,\n                COALESCE(m.crystal_title, m.title) AS display_title,\n   ",
+      "expected": "Err(Parse(\"expected identifier at byte 179 line 4 column 4 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)-[:MENTIONS]->(e:Entity {id: $id})\n         RETURN m.id, m.title, m.content, m.is_crystal,\n                COALESCE(m.crystal_title, m.title) AS display_title,\n   ",
+      "expected": "Err(Parse(\"expected identifier at byte 179 line 4 column 4 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory)-[:MENTIONS]->(e:Entity {id: $id})\n         RETURN m.id, m.title, m.content, m.is_crystal,\n                COALESCE(m.crystal_title, m.title) AS display_title,\n   ;             m.importance\n         ORDER BY m.is_crystal DESC, m.importance DESC\n         LIMIT $limit",
+      "expected": "Err(Parse(\"expected identifier at byte 179 line 4 column 4 near `;             m.importan`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory)-[:MENTIONS]->(e:Entity {id: $id})\n         RETURN m.id, m.title, m.content, m.is_crystal,\n                COALESCE(m.crystal_title, m.title) AS display_title,\n   ;             m.importance\n         ORDER BY m.is_crystal DESC, m.importance DESC\n         LIMIT $limit",
+      "expected": "Err(Parse(\"expected identifier at byte 179 line 4 column 4 near `;             m.importan`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (memory:Memory)-[relationship:EXTRACTED_FROM]->(message:Message) WHERE relationship._nmem_source_table_id = $source_table_id AND relationship._nmem_source_offset = $source_offset RETURN relationship._nmem_source_table_id AS source_table_id, relationship._nmem_source_offset AS source_offset, memory.id AS memory_id, message.id AS message_id, ",
+      "expected": "Err(Parse(\"expected identifier at byte 348 line 1 column 349 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (memory:Memory)-[relationship:EXTRACTED_FROM]->(message:Message) WHERE relationship._nmem_source_table_id = $source_table_id AND relationship._nmem_source_offset = $source_offset RETURN relationship._nmem_source_table_id AS source_table_id, relationship._nmem_source_offset AS source_offset, memory.id AS memory_id, message.id AS message_id, ",
+      "expected": "Err(Parse(\"expected identifier at byte 348 line 1 column 349 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (memory:Memory)-[relationship:EXTRACTED_FROM]->(message:Message) WHERE relationship._nmem_source_table_id = $source_table_id AND relationship._nmem_source_offset = $source_offset RETURN relationship._nmem_source_table_id AS source_table_id, relationship._nmem_source_offset AS source_offset, memory.id AS memory_id, message.id AS message_id, ;relationship.extraction_confidence AS extraction_confidence, relationship.created_at AS created_at, relationship.properties AS properties LIMIT 2",
+      "expected": "Err(Parse(\"expected identifier at byte 348 line 1 column 349 near `;relationship.extraction`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (memory:Memory)-[relationship:EXTRACTED_FROM]->(message:Message) WHERE relationship._nmem_source_table_id = $source_table_id AND relationship._nmem_source_offset = $source_offset RETURN relationship._nmem_source_table_id AS source_table_id, relationship._nmem_source_offset AS source_offset, memory.id AS memory_id, message.id AS message_id, ;relationship.extraction_confidence AS extraction_confidence, relationship.created_at AS created_at, relationship.properties AS properties LIMIT 2",
+      "expected": "Err(Parse(\"expected identifier at byte 348 line 1 column 349 near `;relationship.extraction`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN - .5",
+      "expected": "Err(Parse(\"expected identifier at byte 19 line 1 column 20 near `.5`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN - .5",
+      "expected": "Err(Parse(\"expected identifier at byte 19 line 1 column 20 near `.5`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN - .5 AS value",
+      "expected": "Err(Parse(\"expected identifier at byte 19 line 1 column 20 near `.5 AS value`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN - .5 AS value",
+      "expected": "Err(Parse(\"expected identifier at byte 19 line 1 column 20 near `.5 AS value`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN - .5 ORDER BY - .5",
+      "expected": "Err(Parse(\"expected identifier at byte 19 line 1 column 20 near `.5 ORDER BY - .5`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN - .5 ORDER BY - .5",
+      "expected": "Err(Parse(\"expected identifier at byte 19 line 1 column 20 near `.5 ORDER BY - .5`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN - .5 WITH 1 AS x RETURN x",
+      "expected": "Err(Parse(\"expected identifier at byte 19 line 1 column 20 near `.5 WITH 1 AS x RETURN x`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN - .5 WITH 1 AS x RETURN x",
+      "expected": "Err(Parse(\"expected identifier at byte 19 line 1 column 20 near `.5 WITH 1 AS x RETURN x`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN -.5",
+      "expected": "Err(Parse(\"expected identifier at byte 18 line 1 column 19 near `.5`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN -.5",
+      "expected": "Err(Parse(\"expected identifier at byte 18 line 1 column 19 near `.5`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN -.5 AS value",
+      "expected": "Err(Parse(\"expected identifier at byte 18 line 1 column 19 near `.5 AS value`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN -.5 AS value",
+      "expected": "Err(Parse(\"expected identifier at byte 18 line 1 column 19 near `.5 AS value`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN -.5 ORDER BY -.5",
+      "expected": "Err(Parse(\"expected identifier at byte 18 line 1 column 19 near `.5 ORDER BY -.5`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN -.5 ORDER BY -.5",
+      "expected": "Err(Parse(\"expected identifier at byte 18 line 1 column 19 near `.5 ORDER BY -.5`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN -.5 WITH 1 AS x RETURN x",
+      "expected": "Err(Parse(\"expected identifier at byte 18 line 1 column 19 near `.5 WITH 1 AS x RETURN x`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN -.5 WITH 1 AS x RETURN x",
+      "expected": "Err(Parse(\"expected identifier at byte 18 line 1 column 19 near `.5 WITH 1 AS x RETURN x`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE.p",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `.p`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE.p",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `.p`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE.p AS value",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `.p AS value`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE.p AS value",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `.p AS value`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE.p ORDER BY CASE.p",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `.p ORDER BY CASE.p`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE.p ORDER BY CASE.p",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `.p ORDER BY CASE.p`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE.p WITH 1 AS x RETURN x",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `.p WITH 1 AS x RETURN x`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE.p WITH 1 AS x RETURN x",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `.p WITH 1 AS x RETURN x`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 31 line 1 column 32 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 31 line 1 column 32 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE $p IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE $p IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE (lower(n.p)) < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE (lower(n.p)) < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE (lower(n.p)) < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE (lower(n.p)) < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE (lower(n.p)) < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE (lower(n.p)) < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE (lower(n.p)) < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE (lower(n.p)) < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE (lower(n.p)) < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE (lower(n.p)) < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE (lower(n.p)) <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 36 line 1 column 37 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE (lower(n.p)) <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 36 line 1 column 37 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE (lower(n.p)) <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 42 line 1 column 43 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE (lower(n.p)) <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 42 line 1 column 43 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE (lower(n.p)) = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 35 line 1 column 36 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE (lower(n.p)) = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 35 line 1 column 36 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE (lower(n.p)) = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 41 line 1 column 42 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE (lower(n.p)) = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 41 line 1 column 42 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE (lower(n.p)) =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 30 line 1 column 31 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE (lower(n.p)) =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 30 line 1 column 31 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE (lower(n.p)) IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 36 line 1 column 37 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE (lower(n.p)) IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 36 line 1 column 37 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE (lower(n.p)) IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 42 line 1 column 43 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE (lower(n.p)) IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 42 line 1 column 43 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 31 line 1 column 32 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 31 line 1 column 32 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE -1 IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE -1 IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 31 line 1 column 32 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 31 line 1 column 32 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 31 line 1 column 32 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 31 line 1 column 32 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 24 line 1 column 25 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 24 line 1 column 25 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 30 line 1 column 31 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 30 line 1 column 31 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 19 line 1 column 20 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 19 line 1 column 20 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE 1 IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 31 line 1 column 32 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE 1 IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 31 line 1 column 32 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 69 line 1 column 70 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 69 line 1 column 70 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 58 line 1 column 59 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 58 line 1 column 59 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 58 line 1 column 59 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 58 line 1 column 59 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 58 line 1 column 59 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 58 line 1 column 59 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 58 line 1 column 59 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 58 line 1 column 59 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 58 line 1 column 59 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 58 line 1 column 59 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 69 line 1 column 70 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 69 line 1 column 70 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 62 line 1 column 63 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 62 line 1 column 63 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 68 line 1 column 69 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 68 line 1 column 69 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 57 line 1 column 58 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 57 line 1 column 58 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 69 line 1 column 70 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE WHEN n.p IS NULL THEN 1 ELSE 2 END IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 69 line 1 column 70 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p != $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p != $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p != $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p != $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p != CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p != CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p != [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p != [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p != [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p != [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p != n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p != n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p != n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p != n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p != timestamp() RETURN`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p != timestamp() RETURN`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p < = $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p < = $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p < = CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p < = CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p < = [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p < = [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p < = n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p < = n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p < = timestamp() RETUR`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p < = timestamp() RETUR`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p <> $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p <> $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p <> $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p <> $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p <> CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p <> CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p <> [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p <> [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p <> [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p <> [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p <> n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p <> n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p <> n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p <> n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p <> timestamp() RETURN`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p <> timestamp() RETURN`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p = $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p = $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p = CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p = CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p = [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p = [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p = n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p = n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p = timestamp() RETURN `\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p = timestamp() RETURN `\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p =~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p =~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p CONTAINS 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p CONTAINS \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p CONTAINS 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p CONTAINS \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p ENDS WITH 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p ENDS WITH \\\\'x\\\\' RETURN `\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p ENDS WITH 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p ENDS WITH \\\\'x\\\\' RETURN `\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p IN $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IN $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p IN $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IN $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IN CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IN CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p IN [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IN [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p IN [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IN [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p IN n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IN n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p IN n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IN n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IN timestamp() RETURN`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IN timestamp() RETURN`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p IS NOT NULL RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IS NOT NULL RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p IS NOT NULL RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IS NOT NULL RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p IS NULL RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IS NULL RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p IS NULL RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p IS NULL RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE CASE.p STARTS WITH 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p STARTS WITH \\\\'x\\\\' RETUR`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE CASE.p STARTS WITH 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near `.p STARTS WITH \\\\'x\\\\' RETUR`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 39 line 1 column 40 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 39 line 1 column 40 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 45 line 1 column 46 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 45 line 1 column 46 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 39 line 1 column 40 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 39 line 1 column 40 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 45 line 1 column 46 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 45 line 1 column 46 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 38 line 1 column 39 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 38 line 1 column 39 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 44 line 1 column 45 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 44 line 1 column 45 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 39 line 1 column 40 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 39 line 1 column 40 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 45 line 1 column 46 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE coalesce(n.p,0) IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 45 line 1 column 46 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE id(n) < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 36 line 1 column 37 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE id(n) < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 36 line 1 column 37 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE id(n) <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 35 line 1 column 36 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE id(n) <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 35 line 1 column 36 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE id(n) = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 34 line 1 column 35 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE id(n) = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 34 line 1 column 35 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE id(n) =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 23 line 1 column 24 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE id(n) =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 23 line 1 column 24 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE id(n) IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE id(n) IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE id(n) IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 35 line 1 column 36 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE id(n) IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 35 line 1 column 36 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 40 line 1 column 41 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 40 line 1 column 41 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 40 line 1 column 41 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 40 line 1 column 41 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE lower(n.p) IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 40 line 1 column 41 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE lower(n.p) IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 40 line 1 column 41 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 33 line 1 column 34 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 33 line 1 column 34 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 33 line 1 column 34 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 33 line 1 column 34 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE m.q IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 33 line 1 column 34 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE m.q IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 33 line 1 column 34 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 33 line 1 column 34 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 33 line 1 column 34 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 33 line 1 column 34 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 33 line 1 column 34 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 33 line 1 column 34 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 33 line 1 column 34 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 32 line 1 column 33 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 32 line 1 column 33 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 38 line 1 column 39 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 38 line 1 column 39 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size((n)) IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size((n)) IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 32 line 1 column 33 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 32 line 1 column 33 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 38 line 1 column 39 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 38 line 1 column 39 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p) IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p) IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 39 line 1 column 40 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 36 line 1 column 37 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 36 line 1 column 37 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 42 line 1 column 43 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 42 line 1 column 43 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 36 line 1 column 37 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 36 line 1 column 37 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 42 line 1 column 43 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 42 line 1 column 43 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 35 line 1 column 36 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 35 line 1 column 36 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 41 line 1 column 42 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 41 line 1 column 42 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 30 line 1 column 31 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 30 line 1 column 31 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 36 line 1 column 37 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 36 line 1 column 37 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE size(n.p)[0] IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 42 line 1 column 43 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE size(n.p)[0] IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 42 line 1 column 43 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 30 line 1 column 31 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p != CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 30 line 1 column 31 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 36 line 1 column 37 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p != timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 36 line 1 column 37 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p < = $p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `= $p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p < = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `= CASE.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p < = [1,2] RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `= [1,2] RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p < = n.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `= n.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p < = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 25 line 1 column 26 near `= timestamp() RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 30 line 1 column 31 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p <> CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 30 line 1 column 31 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 36 line 1 column 37 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p <> timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 36 line 1 column 37 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p = CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 35 line 1 column 36 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p = timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 35 line 1 column 36 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 24 line 1 column 25 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p =~ 'x' RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 24 line 1 column 25 near `~ \\\\'x\\\\' RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 30 line 1 column 31 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p IN CASE.p RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 30 line 1 column 31 near `.p RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE true.p IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 36 line 1 column 37 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE true.p IN timestamp() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 36 line 1 column 37 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n:Memory {id: $node_id}) RETURN ",
+      "expected": "Err(Parse(\"expected identifier at byte 39 line 1 column 40 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n:Memory {id: $node_id}) RETURN ",
+      "expected": "Err(Parse(\"expected identifier at byte 39 line 1 column 40 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n:Memory {id: $node_id}) RETURN ;n",
+      "expected": "Err(Parse(\"expected identifier at byte 39 line 1 column 40 near `;n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n:Memory {id: $node_id}) RETURN ;n",
+      "expected": "Err(Parse(\"expected identifier at byte 39 line 1 column 40 near `;n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (s:Source {id: $source_id})\n         RETURN s.original_name,\n                CASE WHEN s.space_id IS NULL OR s.space_id = '' THEN ",
+      "expected": "Err(Parse(\"expected identifier at byte 136 line 3 column 70 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (s:Source {id: $source_id})\n         RETURN s.original_name,\n                CASE WHEN s.space_id IS NULL OR s.space_id = '' THEN ",
+      "expected": "Err(Parse(\"expected identifier at byte 136 line 3 column 70 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (s:Source {id: $source_id})\n         RETURN s.original_name,\n                CASE WHEN s.space_id IS NULL OR s.space_id = '' THEN ;'default' ELSE s.space_id END,\n                s.file_path",
+      "expected": "Err(Parse(\"expected identifier at byte 136 line 3 column 70 near `;\\\\'default\\\\' ELSE s.space_`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (s:Source {id: $source_id})\n         RETURN s.original_name,\n                CASE WHEN s.space_id IS NULL OR s.space_id = '' THEN ;'default' ELSE s.space_id END,\n                s.file_path",
+      "expected": "Err(Parse(\"expected identifier at byte 136 line 3 column 70 near `;\\\\'default\\\\' ELSE s.space_`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread {id: $thread_uuid})\n             RETURN t.title, t.source, ",
+      "expected": "Err(Parse(\"expected identifier at byte 75 line 2 column 40 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread {id: $thread_uuid})\n             RETURN t.title, t.source, ",
+      "expected": "Err(Parse(\"expected identifier at byte 75 line 2 column 40 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread {id: $thread_uuid})\n             RETURN t.title, t.source, ;t.participants, t.project,\n                    t.workspace, t.tool_version, t.metadata\n             LIMIT 1",
+      "expected": "Err(Parse(\"expected identifier at byte 75 line 2 column 40 near `;t.participants, t.proje`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread {id: $thread_uuid})\n             RETURN t.title, t.source, ;t.participants, t.project,\n                    t.workspace, t.tool_version, t.metadata\n             LIMIT 1",
+      "expected": "Err(Parse(\"expected identifier at byte 75 line 2 column 40 near `;t.participants, t.proje`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread)\n                     WHERE t.thread_id = $sid OR t.id = $sid\n                     RETURN t.thread_id, ",
+      "expected": "Err(Parse(\"expected identifier at byte 119 line 3 column 42 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread)\n                     WHERE t.thread_id = $sid OR t.id = $sid\n                     RETURN t.thread_id, ",
+      "expected": "Err(Parse(\"expected identifier at byte 119 line 3 column 42 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread)\n                     WHERE t.thread_id = $sid OR t.id = $sid\n                     RETURN t.thread_id, ;t.title, t.source, t.created_at\n                     LIMIT 1",
+      "expected": "Err(Parse(\"expected identifier at byte 119 line 3 column 42 near `;t.title, t.source, t.cr`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread)\n                     WHERE t.thread_id = $sid OR t.id = $sid\n                     RETURN t.thread_id, ;t.title, t.source, t.created_at\n                     LIMIT 1",
+      "expected": "Err(Parse(\"expected identifier at byte 119 line 3 column 42 near `;t.title, t.source, t.cr`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread)\n             WHERE t.id IN $ids\n             RETURN t.id, COALESCE(t.title, t.source, 'Thread'),\n ",
+      "expected": "Err(Parse(\"expected identifier at byte 115 line 4 column 2 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread)\n             WHERE t.id IN $ids\n             RETURN t.id, COALESCE(t.title, t.source, 'Thread'),\n ",
+      "expected": "Err(Parse(\"expected identifier at byte 115 line 4 column 2 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread)\n             WHERE t.id IN $ids\n             RETURN t.id, COALESCE(t.title, t.source, 'Thread'),\n ;                   t.source, t.summary, t.message_count, t.project, t.workspace",
+      "expected": "Err(Parse(\"expected identifier at byte 115 line 4 column 2 near `;                   t.so`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread)\n             WHERE t.id IN $ids\n             RETURN t.id, COALESCE(t.title, t.source, 'Thread'),\n ;                   t.source, t.summary, t.message_count, t.project, t.workspace",
+      "expected": "Err(Parse(\"expected identifier at byte 115 line 4 column 2 near `;                   t.so`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread) WHERE t.thread_id = $id OR t.id =",
+      "expected": "Err(Parse(\"expected identifier at byte 50 line 1 column 51 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread) WHERE t.thread_id = $id OR t.id =",
+      "expected": "Err(Parse(\"expected identifier at byte 50 line 1 column 51 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread) WHERE t.thread_id = $id OR t.id =; $id RETURN t.title LIMIT 1",
+      "expected": "Err(Parse(\"expected identifier at byte 50 line 1 column 51 near `; $id RETURN t.title LIM`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread) WHERE t.thread_id = $id OR t.id =; $id RETURN t.title LIMIT 1",
+      "expected": "Err(Parse(\"expected identifier at byte 50 line 1 column 51 near `; $id RETURN t.title LIM`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH p = (a)-[e* ALL SHORTEST 1..3]-(b) WHERE a.id = ",
+      "expected": "Err(Parse(\"expected identifier at byte 54 line 1 column 55 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH p = (a)-[e* ALL SHORTEST 1..3]-(b) WHERE a.id = ",
+      "expected": "Err(Parse(\"expected identifier at byte 54 line 1 column 55 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH p = (a)-[e* ALL SHORTEST 1..3]-(b) WHERE a.id = ;$from_id AND b.id = $to_id RETURN properties(nodes(p), 'id') AS node_ids, properties(nodes(p), 'name') AS names, length(p) AS hops",
+      "expected": "Err(Parse(\"expected identifier at byte 54 line 1 column 55 near `;$from_id AND b.id = $to`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH p = (a)-[e* ALL SHORTEST 1..3]-(b) WHERE a.id = ;$from_id AND b.id = $to_id RETURN properties(nodes(p), 'id') AS node_ids, properties(nodes(p), 'name') AS names, length(p) AS hops",
+      "expected": "Err(Parse(\"expected identifier at byte 54 line 1 column 55 near `;$from_id AND b.id = $to`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 68 line 1 column 69 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 68 line 1 column 69 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 88 line 1 column 89 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 88 line 1 column 89 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 59 line 1 column 60 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 59 line 1 column 60 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 105 line 1 column 106 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 105 line 1 column 106 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 99 line 1 column 100 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 99 line 1 column 100 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 113 line 1 column 113 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MERGE (n:Item {id: 'x'}) WITH n WITH n MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 113 line 1 column 113 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND",
+      "expected": "Err(Parse(\"expected identifier at byte 6 line 1 column 7 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND",
+      "expected": "Err(Parse(\"expected identifier at byte 6 line 1 column 7 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND ",
+      "expected": "Err(Parse(\"expected identifier at byte 7 line 1 column 8 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND ",
+      "expected": "Err(Parse(\"expected identifier at byte 7 line 1 column 8 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 61 line 1 column 62 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 61 line 1 column 62 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 81 line 1 column 82 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) OPTIONAL MATCH ()-[:REL]->() RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 81 line 1 column 82 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 52 line 1 column 53 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 52 line 1 column 53 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 98 line 1 column 99 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE EXISTS { MATCH ()-[:REL]->() } MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 98 line 1 column 99 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 92 line 1 column 93 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE NOT ((:Item)-[:REL]->()) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 92 line 1 column 93 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 106 line 1 column 106 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [1,2] AS x WITH x WITH x MATCH (:Item) WHERE n.id = 'é;\\\"x' WITH n MATCH (__anon0) MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 106 line 1 column 106 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [[1],",
+      "expected": "Err(Parse(\"expected identifier at byte 12 line 1 column 13 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [[1],",
+      "expected": "Err(Parse(\"expected identifier at byte 12 line 1 column 13 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [[1], ",
+      "expected": "Err(Parse(\"expected identifier at byte 13 line 1 column 14 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [[1], ",
+      "expected": "Err(Parse(\"expected identifier at byte 13 line 1 column 14 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [[1], [2]] AS x WITH",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [[1], [2]] AS x WITH",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [[1], [2]] AS x WITH ",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [[1], [2]] AS x WITH ",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [[1], [2]] AS x WITH x WITH",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [[1], [2]] AS x WITH x WITH",
+      "expected": "Err(Parse(\"expected identifier at byte 34 line 1 column 35 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [[1], [2]] AS x WITH x WITH ",
+      "expected": "Err(Parse(\"expected identifier at byte 35 line 1 column 36 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [[1], [2]] AS x WITH x WITH ",
+      "expected": "Err(Parse(\"expected identifier at byte 35 line 1 column 36 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [[1], [2]] AS x WITH x WITH x MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 52 line 1 column 53 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [[1], [2]] AS x WITH x WITH x MATCH () RETURN",
+      "expected": "Err(Parse(\"expected identifier at byte 52 line 1 column 53 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [[1], [2]] AS x WITH x WITH x MATCH () RETURN ",
+      "expected": "Err(Parse(\"expected identifier at byte 53 line 1 column 54 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [[1], [2]] AS x WITH x WITH x MATCH () RETURN ",
+      "expected": "Err(Parse(\"expected identifier at byte 53 line 1 column 54 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE",
+      "expected": "Err(Parse(\"expected identifier at byte 21 line 1 column 22 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN CASE = 1 THEN 0 ELSE 1 END",
+      "expected": "Err(Parse(\"expected identifier at byte 32 line 1 column 33 near `= 1 THEN 0 ELSE 1 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN CASE = 1 THEN 0 ELSE 1 END",
+      "expected": "Err(Parse(\"expected identifier at byte 32 line 1 column 33 near `= 1 THEN 0 ELSE 1 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN CASE.p ELSE 0 END",
+      "expected": "Err(Parse(\"expected identifier at byte 44 line 1 column 45 near `.p ELSE 0 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN CASE.p ELSE 0 END",
+      "expected": "Err(Parse(\"expected identifier at byte 44 line 1 column 45 near `.p ELSE 0 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE()",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE()",
+      "expected": "Err(Parse(\"expected identifier at byte 22 line 1 column 23 near `)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p = CASE() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p = CASE() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN CASE() ELSE 0 END",
+      "expected": "Err(Parse(\"expected identifier at byte 45 line 1 column 46 near `) ELSE 0 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN CASE() ELSE 0 END",
+      "expected": "Err(Parse(\"expected identifier at byte 45 line 1 column 46 near `) ELSE 0 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN CASE() = 1 THEN 0 ELSE 1 END",
+      "expected": "Err(Parse(\"expected identifier at byte 32 line 1 column 33 near `) = 1 THEN 0 ELSE 1 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN CASE() = 1 THEN 0 ELSE 1 END",
+      "expected": "Err(Parse(\"expected identifier at byte 32 line 1 column 33 near `) = 1 THEN 0 ELSE 1 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN [CASE()]",
+      "expected": "Err(Parse(\"expected identifier at byte 23 line 1 column 24 near `)]`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN [CASE()]",
+      "expected": "Err(Parse(\"expected identifier at byte 23 line 1 column 24 near `)]`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) SET n.p = CAST()",
+      "expected": "Err(Parse(\"expected value at byte 25 line 1 column 26 near `)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) SET n.p = CAST()",
+      "expected": "Err(Parse(\"expected value at byte 25 line 1 column 26 near `)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p = CAST() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 27 line 1 column 28 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p = CAST() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 27 line 1 column 28 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN CAST() ELSE 0 END",
+      "expected": "Err(Parse(\"expected value at byte 45 line 1 column 46 near `) ELSE 0 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN CAST() ELSE 0 END",
+      "expected": "Err(Parse(\"expected value at byte 45 line 1 column 46 near `) ELSE 0 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN CAST() = 1 THEN 0 ELSE 1 END",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) = 1 THEN 0 ELSE 1 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN CAST() = 1 THEN 0 ELSE 1 END",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) = 1 THEN 0 ELSE 1 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Item {p: CAST()})",
+      "expected": "Err(Parse(\"expected value at byte 23 line 1 column 24 near `)})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Item {p: CAST()})",
+      "expected": "Err(Parse(\"expected value at byte 23 line 1 column 24 near `)})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN [CAST()]",
+      "expected": "Err(Parse(\"expected value at byte 23 line 1 column 24 near `)]`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN [CAST()]",
+      "expected": "Err(Parse(\"expected value at byte 23 line 1 column 24 near `)]`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) SET n.p = TIMESTAMP()",
+      "expected": "Err(Parse(\"expected value at byte 30 line 1 column 31 near `)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) SET n.p = TIMESTAMP()",
+      "expected": "Err(Parse(\"expected value at byte 30 line 1 column 31 near `)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p = TIMESTAMP() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p = TIMESTAMP() RETURN n",
+      "expected": "Err(Parse(\"expected value at byte 32 line 1 column 33 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN TIMESTAMP() ELSE 0 END",
+      "expected": "Err(Parse(\"expected value at byte 50 line 1 column 51 near `) ELSE 0 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN TIMESTAMP() ELSE 0 END",
+      "expected": "Err(Parse(\"expected value at byte 50 line 1 column 51 near `) ELSE 0 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN TIMESTAMP() = 1 THEN 0 ELSE 1 END",
+      "expected": "Err(Parse(\"expected value at byte 37 line 1 column 38 near `) = 1 THEN 0 ELSE 1 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN TIMESTAMP() = 1 THEN 0 ELSE 1 END",
+      "expected": "Err(Parse(\"expected value at byte 37 line 1 column 38 near `) = 1 THEN 0 ELSE 1 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Item {p: TIMESTAMP()})",
+      "expected": "Err(Parse(\"expected value at byte 28 line 1 column 29 near `)})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Item {p: TIMESTAMP()})",
+      "expected": "Err(Parse(\"expected value at byte 28 line 1 column 29 near `)})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN [TIMESTAMP()]",
+      "expected": "Err(Parse(\"expected value at byte 28 line 1 column 29 near `)]`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN [TIMESTAMP()]",
+      "expected": "Err(Parse(\"expected value at byte 28 line 1 column 29 near `)]`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN LOWER()",
+      "expected": "Err(Parse(\"expected identifier at byte 23 line 1 column 24 near `)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN LOWER()",
+      "expected": "Err(Parse(\"expected identifier at byte 23 line 1 column 24 near `)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p = LOWER() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p = LOWER() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN LOWER() ELSE 0 END",
+      "expected": "Err(Parse(\"expected identifier at byte 46 line 1 column 47 near `) ELSE 0 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN LOWER() ELSE 0 END",
+      "expected": "Err(Parse(\"expected identifier at byte 46 line 1 column 47 near `) ELSE 0 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN LOWER() = 1 THEN 0 ELSE 1 END",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `) = 1 THEN 0 ELSE 1 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN LOWER() = 1 THEN 0 ELSE 1 END",
+      "expected": "Err(Parse(\"expected identifier at byte 33 line 1 column 34 near `) = 1 THEN 0 ELSE 1 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN [LOWER()]",
+      "expected": "Err(Parse(\"expected identifier at byte 24 line 1 column 25 near `)]`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN [LOWER()]",
+      "expected": "Err(Parse(\"expected identifier at byte 24 line 1 column 25 near `)]`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN COALESCE()",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN COALESCE()",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) WHERE n.p = COALESCE() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) WHERE n.p = COALESCE() RETURN n",
+      "expected": "Err(Parse(\"expected identifier at byte 31 line 1 column 32 near `) RETURN n`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN COALESCE() ELSE 0 END",
+      "expected": "Err(Parse(\"expected identifier at byte 49 line 1 column 50 near `) ELSE 0 END`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN CASE WHEN n.p = 1 THEN COALESCE() ELSE 0 END",
+      "expected": "Err(Parse(\"expected identifier at byte 49 line 1 column 50 near `) ELSE 0 END`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n) RETURN [COALESCE()]",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `)]`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n) RETURN [COALESCE()]",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `)]`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY n.rank,",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY n.rank,",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY count(*),",
+      "expected": "Err(Parse(\"expected identifier at byte 65 line 1 column 66 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY count(*),",
+      "expected": "Err(Parse(\"expected identifier at byte 65 line 1 column 66 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY n.rank + 1,",
+      "expected": "Err(Parse(\"expected identifier at byte 67 line 1 column 68 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY n.rank + 1,",
+      "expected": "Err(Parse(\"expected identifier at byte 67 line 1 column 68 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY n.rank +",
+      "expected": "Err(Parse(\"expected identifier at byte 64 line 1 column 65 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY n.rank +",
+      "expected": "Err(Parse(\"expected identifier at byte 64 line 1 column 65 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY count(*) +",
+      "expected": "Err(Parse(\"expected identifier at byte 66 line 1 column 67 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY count(*) +",
+      "expected": "Err(Parse(\"expected identifier at byte 66 line 1 column 67 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY n.rank + 1 +",
+      "expected": "Err(Parse(\"expected identifier at byte 68 line 1 column 69 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY n.rank + 1 +",
+      "expected": "Err(Parse(\"expected identifier at byte 68 line 1 column 69 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY n.rank[",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY n.rank[",
+      "expected": "Err(Parse(\"expected identifier at byte 63 line 1 column 64 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY n.rank + 1[",
+      "expected": "Err(Parse(\"expected identifier at byte 67 line 1 column 68 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH p = (n:Item)-[r:LINK]->(m) RETURN n.rank ORDER BY n.rank + 1[",
+      "expected": "Err(Parse(\"expected identifier at byte 67 line 1 column 68 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row) RETURN toInteger()",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row) RETURN toInteger()",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row) RETURN toFloat()",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row) RETURN toFloat()",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row) RETURN toBoolean()",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row) RETURN toBoolean()",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row) RETURN toString()",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row) RETURN toString()",
+      "expected": "Err(Parse(\"expected identifier at byte 28 line 1 column 29 near `)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row) RETURN TOINTEGER()",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row) RETURN TOINTEGER()",
+      "expected": "Err(Parse(\"expected identifier at byte 29 line 1 column 30 near `)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row) RETURN ToFlOaT()",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row) RETURN ToFlOaT()",
+      "expected": "Err(Parse(\"expected identifier at byte 27 line 1 column 28 near `)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g',",
+      "expected": "Err(Parse(\"expected identifier at byte 19 line 1 column 20 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g',",
+      "expected": "Err(Parse(\"expected identifier at byte 19 line 1 column 20 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', ",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', ",
+      "expected": "Err(Parse(\"expected identifier at byte 20 line 1 column 21 near ``\"))"
+    }
+  ]
+}

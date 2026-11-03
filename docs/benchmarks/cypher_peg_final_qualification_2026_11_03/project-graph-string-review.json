@@ -1,0 +1,26 @@
+{
+  "group": "D070",
+  "records": 2,
+  "reference_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e",
+  "reference_source": "crates/cypher/src/parser/scalar.rs::parse_string",
+  "reference_source_sha256": "d141b980339cfbb95d243e12f88797f19a9d8c122f7fcb6ecd813164a7fc0fc1",
+  "mechanism": "Legacy parse_string takes any next character as a quote delimiter without validating it. At the non-string [1] option it treats [ as the quote and reports unterminated string only at EOF. The PEG lowering correctly requires a string token and rejects [1] at its start.",
+  "proposed_disposition": "Retain the existing strict string-token diagnostic for the two malformed inputs; no accepted-language/result change. Not an exact-repair case.",
+  "approved": false,
+  "examples": [
+    {
+      "index": 2790,
+      "entry": "statement",
+      "query": "CALL project_graph('g', ['I'], ['R'], [1])",
+      "reference": "2790\tErr(Parse(\"unterminated string at byte 42 line 1 column 43 near ``\"))",
+      "candidate": "2790\tErr(Parse(\"expected string at byte 38 line 1 column 39 near `[1])`\"))"
+    },
+    {
+      "index": 2791,
+      "entry": "pipeline",
+      "query": "CALL project_graph('g', ['I'], ['R'], [1])",
+      "reference": "2791\tErr(Parse(\"unterminated string at byte 42 line 1 column 43 near ``\"))",
+      "candidate": "2791\tErr(Parse(\"expected string at byte 38 line 1 column 39 near `[1])`\"))"
+    }
+  ]
+}

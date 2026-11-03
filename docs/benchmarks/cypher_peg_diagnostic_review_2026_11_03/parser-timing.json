@@ -1,0 +1,68 @@
+{
+  "equal_weighted_percent": 24.462213554363732,
+  "all_5_improve": true,
+  "case_mean_median_ns": {
+    "parent": [
+      2507.5,
+      3919.25,
+      4195,
+      1435.75,
+      3897
+    ],
+    "candidate": [
+      1814,
+      3503.25,
+      3996.25,
+      1023.25,
+      2482
+    ]
+  },
+  "paired_gains": [
+    22.90911893933554,
+    25.315859687671672,
+    24.619010212097404,
+    25.02923064931015
+  ],
+  "paired_mean": 24.46830487210369,
+  "t95_lower": 22.75284140050551,
+  "t95_upper": 26.18376834370187,
+  "cpu": {
+    "parent": 3.5236365000000003,
+    "candidate": 2.8484712500000007
+  },
+  "source_context": {
+    "prototype": true,
+    "base_head": "a6c936c2a380e17768352c227e9299cca3dd8e0f",
+    "tree": "3f7a61310f09ad4f1901a0ebe6845607d589ccc5",
+    "source_sha256": {
+      "crates/cypher/src/parser/frontend.rs": "ab9ac3f5325bc6b875663ba4e043af9c09e5a7452c5e0ad38760c872c6c338be",
+      "crates/cypher/src/parser/frontend/data.rs": "7bbc57e4dc8e39bd56944e8919332190957c0b77b78df7712c716a4c32259346",
+      "crates/cypher/src/parser/frontend/expressions.rs": "173efaea519755cc097d2f9d9fc050f6c420008f95c1a113840dba3836573144",
+      "crates/cypher/src/parser/frontend/lexer.rs": "35b536318d5db483288dc5dfde4c29c70215c577a0a0189098242dc7761357fe",
+      "crates/cypher/src/parser/frontend/patterns.rs": "0d3c0f5ffa5241c2bd92c817cfd4ab89fa559acfe4cc2dffaa4148c67cf5dbf8",
+      "crates/cypher/src/parser/frontend/predicates.rs": "44288801c661471555b099a8d2c8fa567c4ce2c76ed36ed104e498530895db9a",
+      "crates/cypher/src/parser/frontend/procedures.rs": "ca599c081ba100fe176f86b27550397ebfadcc5f498f2e0733e9fd0d4f6ead8e",
+      "crates/cypher/src/parser/frontend/projection.rs": "34ea4638dae1148a6ed7bc56c31acca7701e3df82fbdfbfda5a47f55e17ecf38",
+      "crates/cypher/src/parser/frontend/rust_peg.rs": "11fe157ab765b0c5eac5948596b7707e4a85ecdcc11be99509c0f758d576d09c",
+      "crates/cypher/src/parser/frontend/schema.rs": "3ae4b9986be7482f16e090ee0d6b5476683275196cfd4795881b1df523ced1f2",
+      "crates/cypher/src/parser/frontend/temporal.rs": "c6494ac61da23ed04f0e9fe242a118271c0dd3d595fde0b5432549d1e25755fe",
+      "crates/cypher/src/parser/frontend/transform.rs": "b0369028c3771747d461f7bc812219bb54b195a99a29f10c3f8238f2db9a0b75",
+      "crates/cypher/src/parser/frontend/tree.rs": "7eba632bf44b7f10e4bf7576ec0ce452ca748b953d3caf9ab95afcc3fe31dae9",
+      "crates/cypher/src/parser/frontend/values.rs": "2ae33a0634786f3b5bce483b15fbfd9468d2532968680605f99c4b928c3d6fdb"
+    },
+    "benchmark_source_sha256": "157a2939f9271b5332a0856b41057b33c85f65b0f50dd75995856d17f1cbd1df",
+    "reference_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e",
+    "artifacts": {
+      "parent": {
+        "path": "/private/tmp/hawdb-peg-rank-lowering-main-benchmark",
+        "sha256": "17e72dd167a3ae2ed286f843fe0aea13d22771ba24d548828b905545c725d255"
+      },
+      "candidate": {
+        "path": "/private/tmp/hawdb-peg-qualification-audit-parser-timing-candidate",
+        "sha256": "a35b75faecc0e576095e8d18892f02c392a1af544fd1c5ba9545600aa60c5f94"
+      }
+    },
+    "profile": "pinned default Cargo release; unchanged five queries,11 samples,20000 iterations,8 counterbalanced processes"
+  },
+  "interference_monitor": "v4; no observed compiler/test/benchmark workload; other host activity uncontrolled"
+}
