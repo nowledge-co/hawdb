@@ -114,7 +114,7 @@ cache/build bound before allocating it; invalid dimensions/non-finite requests
 and cancelled tasks cannot populate a cold cache. Zero queries remain valid
 for squared L2 and absent for cosine. Cache lock waits and each construction
 row honor the query task; cancellation discards the private partial builder. A
-query budget refusal leaves the cache unbuilt. Default queries with no eligible
+query budget refusal leaves the cache unbuilt. Default RaBitQ queries with no eligible
 vector or a zero-size page do not construct a candidate cache. Required scans propagate execution failures.
 Explicit exact execution bypasses approximate selection. Advanced calls that
 explicitly set `CompressedVectorSearchMode` retain Disabled/Preferred/Required
