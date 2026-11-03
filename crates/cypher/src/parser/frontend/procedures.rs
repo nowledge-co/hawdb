@@ -484,6 +484,32 @@ impl Transformer<'_> {
                     else {
                         return Err(self.error(node, "vector search RETURN must be id, score"));
                     };
+                    if let [item] = projection.items.as_slice() {
+                        // The matched projection is missing the second required
+                        // column. Locate the first lexical name inside its span
+                        // to retain the public missing-comma/identifier anchor.
+                        let start = item.span.expect("matched vector return item").start;
+                        let index = self
+                            .tokens
+                            .partition_point(|token| token.span().start < start);
+                        if self.tokens[index].kind != T::Word {
+                            return Err(self.error_at(start, "expected identifier"));
+                        }
+                        let following = self.tokens[index + 1];
+                        if following.kind == T::Comma {
+                            return Err(self.error_at(
+                                self.tokens[index + 2].span().start,
+                                "expected identifier",
+                            ));
+                        }
+                        let position = following.span().start;
+                        let after = position
+                            + self.input[position..]
+                                .chars()
+                                .next()
+                                .map_or(0, char::len_utf8);
+                        return Err(self.error_at(after, "expected ','"));
+                    }
                     let names = plain_columns(projection);
                     if names.as_deref().map(|items| {
                         items
@@ -492,7 +518,18 @@ impl Transformer<'_> {
                             .collect::<Vec<_>>()
                     }) != Some(vec!["id".into(), "score".into()])
                     {
-                        return Err(self.error(node, "vector search RETURN must be id, score"));
+                        // The public two-column contract is decided after the second
+                        // matched identifier, before any additional return columns.
+                        let position = projection
+                            .items
+                            .get(1)
+                            .or_else(|| projection.items.first())
+                            .and_then(|item| item.span)
+                            .expect("matched vector return column")
+                            .end;
+                        return Err(
+                            self.error_at(position, "vector search RETURN must be id, score")
+                        );
                     }
                 }
                 Ok(Statement::VectorSearch(search.clone()))

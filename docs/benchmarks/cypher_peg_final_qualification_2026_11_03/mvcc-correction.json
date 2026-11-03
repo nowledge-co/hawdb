@@ -1,0 +1,363 @@
+{
+  "base_head": "3f9271bc738035fff73d6a2cc890398ecf238b76",
+  "prototype": true,
+  "checks": [
+    {
+      "name": "format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all"
+      ],
+      "returncode": 0,
+      "wall_seconds": 6.2885012080000005
+    },
+    {
+      "name": "storage-final",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb-storage",
+        "--lib",
+        "locked_ranges::tests"
+      ],
+      "returncode": 0,
+      "wall_seconds": 84.417305666
+    },
+    {
+      "name": "concurrent-final",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb",
+        "--lib",
+        "api::concurrent::composite_lock_tests"
+      ],
+      "returncode": 0,
+      "wall_seconds": 129.4264255
+    },
+    {
+      "name": "replay",
+      "command": [
+        "cargo",
+        "run",
+        "--locked",
+        "--manifest-path",
+        "tools/mvcc-fuzz/Cargo.toml",
+        "--",
+        "replay",
+        "/private/tmp/hawdb-peg-qualification-mvcc-pessimistic-reports/46977-1793677699668335000/failure.mvcc",
+        "--log-directory",
+        "/private/tmp/hawdb-peg-mvcc-intent-replay-reports",
+        "--print-report"
+      ],
+      "returncode": 0,
+      "wall_seconds": 153.39099679100002,
+      "report": {
+        "command": "replay",
+        "completed_cases": 1,
+        "directory": "/private/tmp/hawdb-peg-mvcc-intent-replay-reports/54799-1793679304420592000",
+        "elapsed_ms": 17,
+        "families_by_first_terminal": null,
+        "format_version": 1,
+        "mode": null,
+        "pessimistic_outcomes": null,
+        "provenance": "runtime checkout HEAD; may include uncommitted changes; not build attestation",
+        "reduction_attempts": null,
+        "requested_cases": null,
+        "scope": "two optimistic snapshots; deterministic statement order; in-memory relational primary keys and broad predicates",
+        "seed": null,
+        "source_revision": "3f9271bc738035fff73d6a2cc890398ecf238b76",
+        "status": "passed",
+        "time_budget_seconds": null,
+        "wait_probe_ms": null
+      },
+      "report_sha256": "ec15f6eb4df590f9171cc69fbc9b01f4df6c57bef607a2774d027886e39be25d"
+    },
+    {
+      "name": "optimistic",
+      "command": [
+        "cargo",
+        "run",
+        "--locked",
+        "--manifest-path",
+        "tools/mvcc-fuzz/Cargo.toml",
+        "--",
+        "run",
+        "--seed",
+        "42",
+        "--seconds",
+        "30",
+        "--log-directory",
+        "/private/tmp/hawdb-peg-mvcc-intent-optimistic-reports",
+        "--print-report"
+      ],
+      "returncode": 0,
+      "wall_seconds": 30.674439833000008,
+      "report": {
+        "command": "run",
+        "completed_cases": 56234,
+        "directory": "/private/tmp/hawdb-peg-mvcc-intent-optimistic-reports/55209-1793679305117316000",
+        "elapsed_ms": 30000,
+        "families_by_first_terminal": [
+          [
+            3491,
+            3539
+          ],
+          [
+            3446,
+            3584
+          ],
+          [
+            1724,
+            5305
+          ],
+          [
+            3445,
+            3584
+          ],
+          [
+            1701,
+            5328
+          ],
+          [
+            3422,
+            3607
+          ],
+          [
+            3422,
+            3607
+          ],
+          [
+            3490,
+            3539
+          ]
+        ],
+        "format_version": 1,
+        "mode": "optimistic",
+        "pessimistic_outcomes": null,
+        "provenance": "runtime checkout HEAD; may include uncommitted changes; not build attestation",
+        "reduction_attempts": null,
+        "requested_cases": 1000000,
+        "scope": "two optimistic snapshots; deterministic statement order; in-memory relational primary keys and broad predicates",
+        "seed": 42,
+        "source_revision": "3f9271bc738035fff73d6a2cc890398ecf238b76",
+        "status": "passed",
+        "time_budget_seconds": 30,
+        "wait_probe_ms": null
+      },
+      "report_sha256": "669b0039898c8bd40be81bc8a38f2404071471b8187c9f5ebc8ea4b5c851f066"
+    },
+    {
+      "name": "pessimistic",
+      "command": [
+        "cargo",
+        "run",
+        "--locked",
+        "--manifest-path",
+        "tools/mvcc-fuzz/Cargo.toml",
+        "--",
+        "run",
+        "--mode",
+        "pessimistic",
+        "--seed",
+        "42",
+        "--seconds",
+        "30",
+        "--log-directory",
+        "/private/tmp/hawdb-peg-mvcc-intent-pessimistic-reports",
+        "--print-report"
+      ],
+      "returncode": 0,
+      "wall_seconds": 30.853237666999973,
+      "report": {
+        "command": "run",
+        "completed_cases": 164,
+        "directory": "/private/tmp/hawdb-peg-mvcc-intent-pessimistic-reports/55274-1793679335820213000",
+        "elapsed_ms": 30146,
+        "families_by_first_terminal": [
+          [
+            7,
+            7
+          ],
+          [
+            7,
+            7
+          ],
+          [
+            10,
+            4
+          ],
+          [
+            7,
+            7
+          ],
+          [
+            7,
+            7
+          ],
+          [
+            10,
+            4
+          ],
+          [
+            10,
+            4
+          ],
+          [
+            7,
+            7
+          ],
+          [
+            4,
+            9
+          ],
+          [
+            5,
+            8
+          ],
+          [
+            6,
+            7
+          ],
+          [
+            4,
+            9
+          ]
+        ],
+        "format_version": 1,
+        "mode": "pessimistic",
+        "pessimistic_outcomes": {
+          "aborted": 75,
+          "deadlock": 20,
+          "duplicate": 5,
+          "ok": 530,
+          "rows": 513,
+          "serialization": 60,
+          "waits": 88
+        },
+        "provenance": "runtime checkout HEAD; may include uncommitted changes; not build attestation",
+        "reduction_attempts": null,
+        "requested_cases": 1000000,
+        "scope": "two pessimistic transactions on worker threads; deterministic statement order; lock waits, deadlock victims, snapshot refresh and serialization aborts; in-memory relational primary keys and broad predicates",
+        "seed": 42,
+        "source_revision": "3f9271bc738035fff73d6a2cc890398ecf238b76",
+        "status": "passed",
+        "time_budget_seconds": 30,
+        "wait_probe_ms": 200
+      },
+      "report_sha256": "918c43624b108934a0042bc2f0ead8ab1bab82d5257b92773004c5e487db7f7e"
+    },
+    {
+      "name": "ranges",
+      "command": [
+        "cargo",
+        "run",
+        "--locked",
+        "--manifest-path",
+        "tools/mvcc-fuzz/Cargo.toml",
+        "--",
+        "ranges",
+        "run",
+        "--seed",
+        "42",
+        "--seconds",
+        "30",
+        "--log-directory",
+        "/private/tmp/hawdb-peg-mvcc-intent-ranges-reports",
+        "--print-report"
+      ],
+      "returncode": 0,
+      "wall_seconds": 30.73590220799997,
+      "report": {
+        "artifacts": "/private/tmp/hawdb-peg-mvcc-intent-ranges-reports/ranges-55333-1793679366714273000",
+        "completed": 34570,
+        "coverage": {
+          "discovery_escalation": [
+            3457,
+            689,
+            2768
+          ],
+          "escalation_stale": [
+            3457,
+            0,
+            3457
+          ],
+          "keyless_table": [
+            3457,
+            0,
+            3457
+          ],
+          "primary_interval": [
+            3457,
+            2222,
+            1235
+          ],
+          "primary_prefix": [
+            3457,
+            1091,
+            2366
+          ],
+          "reverse_rekey": [
+            3457,
+            765,
+            2692
+          ],
+          "secondary_interval": [
+            3457,
+            2220,
+            1237
+          ],
+          "secondary_primary": [
+            3457,
+            1947,
+            1510
+          ],
+          "secondary_rekey": [
+            3457,
+            790,
+            2667
+          ],
+          "stale_range": [
+            3457,
+            398,
+            3059
+          ]
+        },
+        "coverage_columns": [
+          "executed",
+          "verified_disjoint",
+          "verified_conflict"
+        ],
+        "families": [
+          "primary_prefix",
+          "primary_interval",
+          "secondary_interval",
+          "secondary_rekey",
+          "secondary_primary",
+          "reverse_rekey",
+          "keyless_table",
+          "stale_range",
+          "discovery_escalation",
+          "escalation_stale"
+        ],
+        "protocol": "hawdb-mvcc-ranges-v1",
+        "source_revision": "3f9271bc738035fff73d6a2cc890398ecf238b76",
+        "success": true,
+        "wait_scheduling_qualification": false
+      },
+      "report_sha256": "575079162609468dd0d5449ff259332f626b6101233fae96eedd6815763f681d"
+    }
+  ],
+  "source_sha256": {
+    "crates/storage/src/store/read_dependencies/locked_ranges.rs": "a9a959cf8f82ba1278fc294fb627d03e15f3996fef87b2239d8a7ba57c681918",
+    "crates/storage/src/store/read_dependencies/locked_ranges/tests.rs": "e8c6bc5049e1e82cb5cc33e78907475cb8525d57a5ad1e7a54936874e4b76b30",
+    "src/api/concurrent/composite_lock_tests.rs": "9eb1a080f051616850a498c4e266ec4001b1880eebc177a9c210f7e10bfa50cf"
+  },
+  "scope": "Focused correction of deterministic baseline MVCC defect. Original main and PEG failures are retained. Source-bound storage/API tests, exact replay and seed42 optimistic/pessimistic/range campaigns; not final workspace/fuzz/CI qualification.",
+  "pass": true
+}

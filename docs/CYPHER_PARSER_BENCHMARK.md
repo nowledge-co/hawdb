@@ -182,3 +182,23 @@ formatting uses one exactly sized output buffer and escaped context by display,
 retaining byte/line/column behavior. The163 heap controls introduce no parent
 regressions; previously reported valid-wide-query gaps remain. This source change
 requires final source-bound native, small-stack and published-head qualification.
+
+
+The [combined qualification candidate](benchmarks/cypher_peg_final_qualification_2026_11_03/README.md)
+further reduces private tokens from 12 to 8 bytes without changing byte admission,
+shared SQL tokens or ASTs. All 21,944 independent outcomes match; another 187
+exact old diagnostics are restored, leaving 2,336 indexed differences. All 195
+heap controls are nonincreasing against the preceding PEG runtime. Four wide
+metrics and sixteen boolean metrics still regress against former main; final
+throughput, stack, native and committed-head qualification remains pending.
+The record also preserves and corrects a pre-existing MVCC table-guard failure
+reproduced on both current main and the PEG head, with focused source-bound
+storage/API tests, exact replay and optimistic/pessimistic/range campaigns.
+
+
+The combined candidate now passes all native checks and eight small-stack
+checks at runtime tree `893beda491ac25bf584bcfe05b31b593a80671eb`. Its throughput
+attempt was interrupted during quiet-window process observation, before timing,
+while other compiler/test work was active. No timing threshold was weakened and
+no throughput result is claimed. All 73 remaining diagnostic groups have source
+mechanism proposals and complete paired review data; dispositions remain pending.

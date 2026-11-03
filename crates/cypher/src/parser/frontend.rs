@@ -192,6 +192,13 @@ fn render(input: &str, error: SyntaxError) -> HawDBError {
         );
     }
     let expected = error.expected.unwrap_or("a Cypher statement");
+    // Keep the matcher's distinct speculative value-token label for failure
+    // precedence, while presenting the established public value expectation.
+    let expected = if expected == "a Cypher value token" {
+        "value"
+    } else {
+        expected
+    };
     // Legacy fixed-character diagnostics point after the unexpected character.
     if matches!(
         expected,
@@ -222,6 +229,7 @@ fn render(input: &str, error: SyntaxError) -> HawDBError {
     if matches!(
         expected,
         "unexpected trailing input"
+            | "unterminated string"
             | "FIELDTERMINATOR requires a string literal"
             | "LOAD CSV FROM accepts only a string literal or parameter source"
     ) {

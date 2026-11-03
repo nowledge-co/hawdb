@@ -65,8 +65,21 @@ impl Transformer<'_> {
                 let range = self.tree.child(node, rule_id!("schema_range")).is_some();
                 let fulltext = self.tree.child(node, rule_id!("schema_fulltext")).is_some();
                 if properties.len() > 1 {
-                    if range || fulltext {
-                        return Err(self.error(node, "index expects one property"));
+                    if range {
+                        return Err(self.error_at(
+                            self.tree.span(node, self.tokens).end,
+                            "range index expects one property",
+                        ));
+                    }
+                    if fulltext {
+                        let keys = self.tree.node(child(rule_id!("schema_index_keys")));
+                        let comma = self.tokens[keys.start..keys.end]
+                            .iter()
+                            .find(|token| token.kind == super::lexer::TokenKind::Comma)
+                            .expect("matched multiple index keys");
+                        return Err(
+                            self.error_at(comma.span().end, "fulltext index expects one property")
+                        );
                     }
                     return Ok(Statement::CreateCompositeIndex(CreateCompositeIndex {
                         label,

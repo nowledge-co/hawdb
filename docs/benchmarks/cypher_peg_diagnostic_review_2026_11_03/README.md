@@ -1,108 +1,95 @@
-# Cypher diagnostic transition triage
+# Proposed PEG diagnostic dispositions
 
-The predicate/punctuation and diagnostic-buffer repair is based on
-`a6c936c2a380e17768352c227e9299cca3dd8e0f`. Fresh paired capture preserves all
-21,944 independent AST/span/class outcomes and every previously matching error.
-It restores1,590 more exact diagnostics, leaving2,523 indexed differences.
-Source and full-rendered hashes are in `transition-index.json`.
+All 2,336 remaining records are present in `transition-cases.jsonl`, with query,
+entry, independently captured reference and current rendered outcome. The index
+retains stable group IDs and binds source/output hashes. All 73 groups have a
+source-level mechanism review. None has maintainer approval.
 
-The prior4113-record derived index was checked against complete current parent
-capture before replacement. Each remaining group now has full paired examples.
-Buckets guide source review; they are not accepted behavior changes or approval.
+The shared proposal preserves first-farthest matching failures, complete-input
+recognition before typed validation, matched-construct semantic anchors, fatal
+bounded admission and precise compound-token adjacency. It explicitly permits
+different error wording/positions for the listed malformed inputs. It does not
+promise equivalent old/new VM work units or uniformly improved expected-token
+hints: some schema/family alternatives expose only the first or generic terminal.
+No formerly matching reference outcome is lost, all AST/span/class outcomes stay
+unchanged, and all 10,845 Parse locations/contexts pass independent recomputation.
 
-| Bucket | Records |
-| --- | ---: |
-| Admission and validation-order transitions | 1105 |
-| Context-specific expectation transitions | 1022 |
-| CASE keyword commitment | 180 |
-| Unlabelled terminal or alternative expectation | 128 |
-| Location-only transitions | 84 |
-| Identifier expectation and semantic validation order | 4 |
+Source anchors document mechanisms and error producers, not a runtime-selected
+rule trace. The full paired artifact makes the concrete proposed exceptions
+reviewable; it is not registered as an approved error-text golden.
 
-| Group | Records | Reference | Candidate | Review status |
-| --- | ---: | --- | --- | --- |
-| D001 | 619 | Cypher parser nesting exceeds limit of 32 | Cypher parser nesting exceeds limit or PEG resource budget | Pending source review |
-| D002 | 404 | Cypher parser nesting exceeds limit of 32 | Cypher parser nesting exceeds limit of 32 | Pending source review |
-| D003 | 226 | expected '=' | expected '.' | Pending source review |
-| D004 | 180 | expected identifier | expected CASE expression | Pending source review |
-| D005 | 143 | expected '=' | expected IS | Pending source review |
-| D006 | 128 | expected value | expected a Cypher value token | Pending source review |
-| D007 | 73 | expected value | expected CASE | Pending source review |
-| D008 | 72 | expected identifier | Cypher parser nesting exceeds limit of 32 | Pending source review |
-| D009 | 64 | expected ',' | expected ')' | Pending source review |
-| D010 | 56 | expected identifier | Cypher parser nesting exceeds limit or PEG resource budget | Pending source review |
-| D011 | 52 | expected '=' | unexpected trailing input | Pending source review |
-| D012 | 36 | expected identifier | expected shortestPath | Pending source review |
-| D013 | 32 | expected '=' | expected '=' | Pending source review |
-| D014 | 28 | expected ',' or '}' | expected '.' | Pending source review |
-| D015 | 28 | expected := | expected ':' | Pending source review |
-| D016 | 24 | arithmetic expression exceeds maximum nesting depth | arithmetic expression exceeds maximum nesting depth | Pending source review |
-| D017 | 20 | expected '=' | expected IN | Pending source review |
-| D018 | 19 | expected identifier | expected ':' | Pending source review |
-| D019 | 18 | COUNT(DISTINCT *) is not supported | COUNT(DISTINCT *) is not supported | Pending source review |
-| D020 | 18 | IS NULL in a projection requires a non-aggregate operand | IS NULL in a projection requires a non-aggregate operand | Pending source review |
-| D021 | 18 | expected '=' | expected a comparison | Pending source review |
-| D022 | 17 | expected '(' | expected INDEX | Pending source review |
-| D023 | 16 | expected ')' | expected '.' | Pending source review |
-| D024 | 14 | expected ',' | expected '.' | Pending source review |
-| D025 | 14 | expected END | expected '.' | Pending source review |
-| D026 | 14 | expected THEN | expected '.' | Pending source review |
-| D027 | 14 | unterminated string | expected ',' or '}' | Pending source review |
-| D028 | 12 | expected ',' or ']' | expected IN | Pending source review |
-| D029 | 12 | expected integer digits | expected '.' | Pending source review |
-| D030 | 8 | expected '(' | expected a Cypher schema token | Pending source review |
-| D031 | 8 | expected ')' | expected a Cypher schema token | Pending source review |
-| D032 | 8 | expected identifier | expected ',' or ']' | Pending source review |
-| D033 | 6 | expected '(' | expected '.' | Pending source review |
-| D034 | 6 | expected MATCH | expected '.' | Pending source review |
-| D035 | 6 | expected WHEN | expected '.' | Pending source review |
-| D036 | 6 | unexpected trailing input | aggregate list functions do not support postfixes | Pending source review |
-| D037 | 6 | unexpected trailing input | expected adjacent tokens | Pending source review |
-| D038 | 6 | unterminated string | expected ')' | Pending source review |
-| D039 | 5 | expected NODE or RELATIONSHIP | expected NODE | Pending source review |
-| D040 | 4 | bounded relationship pattern requires a finite max hop | expected adjacent tokens | Pending source review |
-| D041 | 4 | expected ',' or ']' | expected '.' | Pending source review |
-| D042 | 4 | expected identifier | expected END | Pending source review |
-| D043 | 4 | unexpected trailing input | expected ',' | Pending source review |
-| D044 | 3 | bounded relationship pattern requires a finite max hop | bounded relationship pattern requires a finite max hop | Pending source review |
-| D045 | 3 | expected ',' | vector search RETURN must be id, score | Pending source review |
-| D046 | 3 | vector search RETURN must be id, score | vector search RETURN must be id, score | Pending source review |
-| D047 | 2 | Cypher parser nesting exceeds limit of 32 | expected IS | Pending source review |
-| D048 | 2 | VECTOR dimension must be a positive u32 | VECTOR dimension must be a positive u32 | Pending source review |
-| D049 | 2 | expected ',' | expected identifier | Pending source review |
-| D050 | 2 | expected ',' | unsupported procedure option value | Pending source review |
-| D051 | 2 | expected ',' or ']' | expected a decimal point | Pending source review |
-| D052 | 2 | expected ',' or ']' | expected adjacent tokens | Pending source review |
-| D053 | 2 | expected ',' or '}' | expected a decimal point | Pending source review |
-| D054 | 2 | expected ',' or '}' | expected adjacent tokens | Pending source review |
-| D055 | 2 | expected '=' | expected ')' | Pending source review |
-| D056 | 2 | expected ']' | expected adjacent tokens | Pending source review |
-| D057 | 2 | expected := | expected '=' | Pending source review |
-| D058 | 2 | expected END | expected adjacent tokens | Pending source review |
-| D059 | 2 | expected identifier | expected ')' | Pending source review |
-| D060 | 2 | expected identifier | expected a graph algorithm | Pending source review |
-| D061 | 2 | expected identifier | expected scalar value | Pending source review |
-| D062 | 2 | expected string | expected ')' | Pending source review |
-| D063 | 2 | expected value | expected ')' | Pending source review |
-| D064 | 2 | projected node predicates are not supported | projected node predicates are not supported | Pending source review |
-| D065 | 2 | relationship min hop must not exceed max hop | relationship min hop must not exceed max hop | Pending source review |
-| D066 | 2 | shortest-path functions do not accept a nested SHORTEST selector | shortest-path functions do not accept a nested SHORTEST selector | Pending source review |
-| D067 | 2 | unexpected trailing input | expected a decimal point | Pending source review |
-| D068 | 2 | unexpected trailing input | expected the end of a property reference | Pending source review |
-| D069 | 2 | unexpected trailing input | unexpected trailing input | Pending source review |
-| D070 | 2 | unterminated string | expected string | Pending source review |
-| D071 | 2 | vector search RETURN must be id, score | expected identifier | Pending source review |
-| D072 | 1 | expected ',' | unexpected trailing input | Pending source review |
-| D073 | 1 | expected LABEL | expected a schema table, node label, or relationship type | Pending source review |
-| D074 | 1 | expected TYPE | expected a schema table, node label, or relationship type | Pending source review |
-| D075 | 1 | expected identifier | expected ',' or '}' | Pending source review |
-| D076 | 1 | expected identifier | unexpected trailing input | Pending source review |
-| D077 | 1 | expected identifier | vector search RETURN must be id, score | Pending source review |
-| D078 | 1 | expected schema object state | expected DELETE_ONLY | Pending source review |
-| D079 | 1 | fulltext index expects one property | index expects one property | Pending source review |
-| D080 | 1 | range index expects one property | index expects one property | Pending source review |
-| D081 | 1 | unexpected procedure RETURN column | expected ',' | Pending source review |
-| D082 | 1 | unexpected trailing input | vector search RETURN must be id, score | Pending source review |
-| D083 | 1 | vector search YIELD must be id, score | vector search YIELD must feed a MATCH read query | Pending source review |
-
-The unchanged five-query release benchmark is recorded in `parser-timing.json`: eight counterbalanced processes, 11 samples, 20,000 iterations; all five improve, with 24.4622 percent equal-weighted throughput gain against former main. The source hashes bind the measured runtime before documentation additions. Native checks pass, including 254 Cypher tests (one ignored), strict workspace Clippy, full prek, portable14 and minimal WASM strict Clippy. Final-head fuzz/CI/public E2E results are separate from this incremental evidence.
+| Group | Records | Review |
+| --- | ---: | --- |
+| D001 | 619 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D002 | 404 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D003 | 226 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D004 | 180 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D005 | 143 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D007 | 73 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D008 | 72 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D009 | 64 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D010 | 56 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D011 | 52 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D012 | 36 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D013 | 32 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D014 | 28 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D016 | 24 | Source mechanism reviewed; proposed construct-start anchor, maintainer disposition pending. |
+| D017 | 20 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D018 | 19 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D019 | 18 | Source mechanism reviewed; proposed construct-start anchor, maintainer disposition pending. |
+| D020 | 18 | Source mechanism reviewed; proposed construct-start anchor, maintainer disposition pending. |
+| D021 | 18 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D022 | 17 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D023 | 16 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D024 | 14 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D025 | 14 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D026 | 14 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D028 | 12 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D029 | 12 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D030 | 8 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D031 | 8 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D032 | 8 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D033 | 6 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D034 | 6 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D035 | 6 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D036 | 6 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D037 | 6 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D039 | 5 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D040 | 4 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D041 | 4 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D042 | 4 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D043 | 4 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D044 | 3 | Source mechanism reviewed; proposed construct-start anchor, maintainer disposition pending. |
+| D047 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D048 | 2 | Source mechanism reviewed; proposed construct-start anchor, maintainer disposition pending. |
+| D049 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D050 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D051 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D052 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D053 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D054 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D055 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D056 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D058 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D059 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D060 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D061 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D062 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D063 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D064 | 2 | Source mechanism reviewed; proposed construct-start anchor, maintainer disposition pending. |
+| D065 | 2 | Source mechanism reviewed; proposed construct-start anchor, maintainer disposition pending. |
+| D066 | 2 | Source mechanism reviewed; proposed construct-start anchor, maintainer disposition pending. |
+| D067 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D068 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D069 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D070 | 2 | Source mechanism reviewed; retain strict string-token rejection rather than the legacy non-quote delimiter bug, maintainer disposition pending. |
+| D071 | 2 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D072 | 1 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D073 | 1 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D074 | 1 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D075 | 1 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D076 | 1 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D078 | 1 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D081 | 1 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D082 | 1 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |
+| D083 | 1 | Source mechanism reviewed; shared-policy proposal pending maintainer disposition. |

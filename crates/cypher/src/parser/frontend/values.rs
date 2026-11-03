@@ -166,19 +166,13 @@ impl Transformer<'_> {
             }
             if ch == '\\' {
                 out.push(match chars.next() {
-                    Some('\\') => '\\',
-                    Some('\'') => '\'',
-                    Some('"') => '"',
-                    Some('n') => '\n',
-                    Some('r') => '\r',
-                    Some('t') => '\t',
-                    Some(ch) => {
-                        return Err(self.error_at(
+                    Some(ch) => super::lexer::decode_escape(ch).ok_or_else(|| {
+                        self.error_at(
                             self.tree.span(node, self.tokens).start + raw.len()
                                 - chars.as_str().len(),
                             &format!("unsupported escape sequence \\{ch}"),
-                        ))
-                    }
+                        )
+                    })?,
                     None => return Err(self.error(node, "unterminated escape sequence")),
                 });
             } else {

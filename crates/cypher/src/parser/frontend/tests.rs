@@ -672,11 +672,11 @@ fn csv_value_extensions_preserve_ordinary_property_diagnostics() {
     for (query, expected) in [
         (
             "CREATE (n:Item {value: .5})",
-            "expected a Cypher value token at byte 23 line 1 column 24 near `.5})`",
+            "expected value at byte 23 line 1 column 24 near `.5})`",
         ),
         (
             "CREATE (:Memory {id: ",
-            "expected a Cypher value token at byte 21 line 1 column 22 near ``",
+            "expected value at byte 21 line 1 column 22 near ``",
         ),
     ] {
         for error in [
@@ -749,6 +749,7 @@ fn diagnostic_repairs_preserve_independently_exported_main_messages_and_location
         include_str!("../../../fixtures/migration_main_1514_diagnostic_repairs_v2.json"),
         include_str!("../../../fixtures/migration_main_1514_diagnostic_repairs_v3.json"),
         include_str!("../../../fixtures/migration_main_1514_diagnostic_repairs_v4.json"),
+        include_str!("../../../fixtures/migration_main_1514_diagnostic_repairs_v5.json"),
     ] {
         let fixture: serde_json::Value = serde_json::from_str(input).unwrap();
         assert_eq!(
@@ -806,4 +807,22 @@ fn diagnostic_buffers_preserve_unicode_message_and_escaped_context() {
         )
         .to_string()
     );
+}
+
+#[test]
+fn project_graph_string_options_reject_non_string_tokens() {
+    let query = "CALL project_graph('g', ['I'], ['R'], [1])";
+    for result in [
+        crate::parse(query).map(|_| ()),
+        crate::parse_pipeline(query).map(|_| ()),
+    ] {
+        let error = result.unwrap_err();
+        let hawdb_core::HawDBError::Parse(message) = error else {
+            panic!("expected a string-token parse diagnostic");
+        };
+        assert_eq!(
+            message,
+            "expected string at byte 38 line 1 column 39 near `[1])`"
+        );
+    }
 }

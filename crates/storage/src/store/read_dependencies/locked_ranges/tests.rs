@@ -131,6 +131,61 @@ fn bounded_primary_and_secondary_versions_match_an_interval_oracle() {
 }
 
 #[test]
+fn table_guards_validate_same_value_and_absent_primary_write_intents() {
+    use crate::relational::{
+        RelationalComparisonOp, RelationalPredicate, RelationalUpdateAssignment,
+        RelationalUpdateValue,
+    };
+    for id in [1, 9] {
+        let (mut store, mut catalog) = fixture();
+        insert(&mut store, &mut catalog, 1, 4);
+        let captured = store.capture_read_dependencies(0, 0).unwrap();
+        let transaction = store.begin_mutation_transaction(&catalog);
+        store
+            .commit_mutation_transaction_and_relational(
+                &mut catalog,
+                transaction,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::UpdateWhere {
+                        table: "rows".into(),
+                        predicate: RelationalPredicate::Compare {
+                            column: "id".into(),
+                            op: RelationalComparisonOp::Eq,
+                            value: RelationalValue::BigInt(id),
+                        },
+                        assignments: vec![RelationalUpdateAssignment {
+                            column: "value".into(),
+                            value: RelationalUpdateValue::Value(RelationalValue::BigInt(0)),
+                        }],
+                    }],
+                },
+                MutationLimits::default(),
+            )
+            .unwrap();
+        for mode in [LockMode::Shared, LockMode::Exclusive] {
+            assert!(matches!(
+                store.validate_locked_snapshot(&captured, &[
+                    LockRequest::relational_table(mode, "rows")
+                ]),
+                Err(GraphReadDependencyError::Conflict(VersionConflict {
+                    key: VersionKey::RelationalRow { table, primary_key }, ..
+                })) if table == "rows" && primary_key == key(&[id])
+            ));
+        }
+        store
+            .validate_locked_snapshot(
+                &captured,
+                &[range(
+                    false,
+                    Bound::Included(key(&[2])),
+                    Bound::Included(key(&[2])),
+                )],
+            )
+            .unwrap();
+    }
+}
+
+#[test]
 fn payload_updates_rekeys_and_tombstones_invalidate_index_ranges() {
     use crate::relational::{
         RelationalComparisonOp, RelationalPredicate, RelationalUpdateAssignment,
@@ -293,6 +348,13 @@ fn narrow_seeks_ignore_unrelated_history_and_broad_validation_has_a_work_limit()
         store.validate_locked_snapshot(
             &captured,
             &[range(false, Bound::Unbounded, Bound::Unbounded)]
+        ),
+        Err(GraphReadDependencyError::CaptureRefused)
+    ));
+    assert!(matches!(
+        store.validate_locked_snapshot(
+            &captured,
+            &[LockRequest::relational_table(LockMode::Exclusive, "rows")]
         ),
         Err(GraphReadDependencyError::CaptureRefused)
     ));

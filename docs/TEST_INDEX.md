@@ -563,6 +563,12 @@ existing root concurrent CI owner. Storage's
 against the standard-library range oracle, payload/rekey/tombstone summaries,
 oversized-key barriers, source/history refusal, metadata admission and a
 65,537-stamp fixture with constant point-seek work and bounded broad validation.
+The table-guard regression also checks same-value and absent-key primary write
+intents under shared/exclusive table guards, disjoint point validation and the
+existing broad-work cap. The concurrent API regression checks the corresponding
+stale broad UPDATE without a wait in both residency modes. Its saved seed42/case147
+is `tools/mvcc-fuzz/cases/stale-broad-after-same-value.mvcc`; use the existing
+standalone tool's `replay` command. No new CI campaign or timeout is introduced.
 The existing storage CI owner runs it. Focused replay uses
 `cargo test --locked -p hawdb --lib lock_dependency_tests` and
 `cargo test --locked -p hawdb-storage --all-features --lib locked_ranges`.

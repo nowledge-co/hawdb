@@ -6,14 +6,16 @@ use hawdb_sql_syntax::Span;
 
 use super::parse_error;
 
-// Cypher admits at most 16 MiB, so byte offsets fit losslessly in u32.
-const _: () = assert!(super::MAX_CYPHER_INPUT_BYTES <= u32::MAX as usize);
+// A nonempty token is at most 16 MiB. Its length minus one fits in 24 bits;
+// the End token instead has length zero and retains its full u32 byte offset.
+const _: () = assert!(super::MAX_CYPHER_INPUT_BYTES <= 1 << 24);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub(super) enum TokenKind {
     Word,
     String,
+    UnterminatedString,
     Number,
     Parameter,
     LeftParen,
@@ -46,30 +48,62 @@ pub(super) enum TokenKind {
 pub(super) struct Token {
     pub(super) kind: TokenKind,
     start: u32,
-    end: u32,
+    length_minus_one: [u8; 3],
 }
+
+const _: () = assert!(std::mem::size_of::<Token>() == 8);
 
 impl Token {
     fn new(kind: TokenKind, span: Span) -> Self {
+        let length = span
+            .end
+            .checked_sub(span.start)
+            .expect("ordered Cypher token span");
+        let encoded = if kind == TokenKind::End {
+            assert_eq!(length, 0, "end token has no source bytes");
+            0
+        } else {
+            length.checked_sub(1).expect("nonempty Cypher token")
+        };
+        let bytes = u32::try_from(encoded)
+            .expect("bounded Cypher token length")
+            .to_le_bytes();
+        assert_eq!(bytes[3], 0, "Cypher token length fits in 24 bits");
         Self {
             kind,
             start: u32::try_from(span.start).expect("bounded Cypher token start"),
-            end: u32::try_from(span.end).expect("bounded Cypher token end"),
+            length_minus_one: [bytes[0], bytes[1], bytes[2]],
         }
     }
 
     pub(super) fn span(self) -> Span {
-        Span::new(self.start as usize, self.end as usize)
+        let start = self.start as usize;
+        let length = if self.kind == TokenKind::End {
+            0
+        } else {
+            let [a, b, c] = self.length_minus_one;
+            u32::from_le_bytes([a, b, c, 0]) as usize + 1
+        };
+        Span::new(start, start + length)
     }
 
     pub(super) fn text(self, input: &str) -> &str {
-        input
-            .get(self.start as usize..self.end as usize)
-            .unwrap_or_default()
+        let span = self.span();
+        input.get(span.start..span.end).unwrap_or_default()
     }
 
     pub(super) fn is_keyword(self, input: &str, keyword: &str) -> bool {
         self.kind == TokenKind::Word && self.text(input).eq_ignore_ascii_case(keyword)
+    }
+}
+
+pub(super) fn decode_escape(ch: char) -> Option<char> {
+    match ch {
+        '\\' | '\'' | '"' => Some(ch),
+        'n' => Some('\n'),
+        'r' => Some('\r'),
+        't' => Some('\t'),
+        _ => None,
     }
 }
 
@@ -109,20 +143,31 @@ pub(super) fn tokenize(input: &str) -> Result<Vec<Token>> {
             }
             TokenKind::Number
         } else if matches!(ch, '\'' | '"') {
-            // AST folding diagnoses escapes and unterminated strings with
-            // the original Cypher byte/line/column and context text.
+            // Preserve escapes for AST folding. The grammar diagnoses an
+            // unterminated token only when a string is admitted at this position.
+            let mut terminated = false;
+            let mut valid_escapes = true;
             while let Some((offset, next)) = chars.next() {
                 end = offset + next.len_utf8();
                 if next == ch {
+                    terminated = true;
                     break;
                 }
-                if next == '\\'
-                    && let Some((offset, escaped)) = chars.next()
-                {
-                    end = offset + escaped.len_utf8();
+                if next == '\\' {
+                    if let Some((offset, escaped)) = chars.next() {
+                        end = offset + escaped.len_utf8();
+                        valid_escapes &= decode_escape(escaped).is_some();
+                    } else {
+                        valid_escapes = false;
+                    }
                 }
             }
-            TokenKind::String
+            // Invalid escapes keep their original lowering-time diagnostic.
+            if terminated || !valid_escapes {
+                TokenKind::String
+            } else {
+                TokenKind::UnterminatedString
+            }
         } else {
             match ch {
                 '(' => TokenKind::LeftParen,
@@ -166,15 +211,15 @@ mod tests {
 
     #[test]
     fn compact_tokens_preserve_full_admitted_byte_offsets() {
-        assert_eq!(std::mem::size_of::<Token>(), 12);
+        assert_eq!(std::mem::size_of::<Token>(), 8);
         let end = super::super::MAX_CYPHER_INPUT_BYTES;
-        for span in [
-            Span::new(0, 0),
-            Span::new(end - 1, end),
-            Span::new(end, end),
-        ] {
+        for span in [Span::new(0, 1), Span::new(end - 1, end), Span::new(0, end)] {
             let token = Token::new(TokenKind::String, span);
             assert_eq!(token.span(), span);
+        }
+        for offset in [0, end - 1, end] {
+            let span = Span::new(offset, offset);
+            assert_eq!(Token::new(TokenKind::End, span).span(), span);
         }
     }
 
