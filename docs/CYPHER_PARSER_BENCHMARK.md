@@ -171,3 +171,14 @@ in all eleven wide cases. Cold/warm 256/512 KiB stack outcomes at optimization
 levels 1 and 3 match each build's own 8 MiB reference over all 21,944 inputs.
 The parser-throughput result does not establish current-main public E2E gains or
 complete diagnostic/resource readiness.
+
+
+A further diagnostic change restores1,590 independent reference outcomes while
+preserving every already matching message and all21,944 AST/span/rejection-class
+outcomes. The remaining2,523 differences are indexed with full paired examples
+for source review. Predicate/default, punctuation, delimiter and committed-EOF
+expectations remain PEG productions; no legacy parser is restored. Diagnostic
+formatting uses one exactly sized output buffer and escaped context by display,
+retaining byte/line/column behavior. The163 heap controls introduce no parent
+regressions; previously reported valid-wide-query gaps remain. This source change
+requires final source-bound native, small-stack and published-head qualification.

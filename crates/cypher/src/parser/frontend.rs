@@ -98,7 +98,48 @@ pub(super) fn parse_predicate(input: &str, columns: bool) -> Result<PropertyPred
     .where_or(root, 0, &mut 0, columns)
 }
 
+#[derive(Clone, Copy)]
+enum DiagnosticMessage<'a> {
+    Plain(&'a str),
+    Expected(&'a str),
+}
+
+impl DiagnosticMessage<'_> {
+    fn byte_len(self) -> usize {
+        match self {
+            Self::Plain(message) => message.len(),
+            Self::Expected(expected) => "expected ".len() + expected.len(),
+        }
+    }
+}
+
+impl std::fmt::Display for DiagnosticMessage<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Plain(message) => formatter.write_str(message),
+            Self::Expected(expected) => write!(formatter, "expected {expected}"),
+        }
+    }
+}
+
+struct NearFragment<'a>(&'a str);
+
+impl std::fmt::Display for NearFragment<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for ch in self.0.chars().take(24) {
+            write!(formatter, "{}", ch.escape_default())?;
+        }
+        Ok(())
+    }
+}
+
 fn parse_error(input: &str, position: usize, message: &str) -> HawDBError {
+    parse_diagnostic(input, position, DiagnosticMessage::Plain(message))
+}
+
+fn parse_diagnostic(input: &str, position: usize, message: DiagnosticMessage<'_>) -> HawDBError {
+    use std::fmt::Write as _;
+
     let mut line = 1;
     let mut column = 1;
     for ch in input[..position].chars() {
@@ -109,14 +150,36 @@ fn parse_error(input: &str, position: usize, message: &str) -> HawDBError {
             column += 1;
         }
     }
-    let near: String = input[position..]
+    let tail = &input[position..];
+    let escaped_bytes: usize = tail
         .chars()
         .take(24)
-        .flat_map(char::escape_default)
-        .collect();
-    HawDBError::Parse(format!(
+        .map(|ch| ch.escape_default().count())
+        .sum();
+    let digits = |value: usize| {
+        if value == 0 {
+            1
+        } else {
+            value.ilog10() as usize + 1
+        }
+    };
+    const SEPARATORS: usize =
+        " at byte ".len() + " line ".len() + " column ".len() + " near `".len() + "`".len();
+    let capacity = message.byte_len()
+        + SEPARATORS
+        + digits(position)
+        + digits(line)
+        + digits(column)
+        + escaped_bytes;
+    let near = NearFragment(tail);
+    let mut output = String::with_capacity(capacity);
+    write!(
+        output,
         "{message} at byte {position} line {line} column {column} near `{near}`"
-    ))
+    )
+    .expect("writing a diagnostic to a String cannot fail");
+    debug_assert_eq!(output.len(), capacity);
+    HawDBError::Parse(output)
 }
 
 fn render(input: &str, error: SyntaxError) -> HawDBError {
@@ -130,8 +193,29 @@ fn render(input: &str, error: SyntaxError) -> HawDBError {
     }
     let expected = error.expected.unwrap_or("a Cypher statement");
     // Legacy fixed-character diagnostics point after the unexpected character.
-    if matches!(expected, "','" | "'.'")
-        && let Some(ch) = input[position..].chars().next()
+    if matches!(
+        expected,
+        "'('"
+            | "')'"
+            | "'['"
+            | "']'"
+            | "'{'"
+            | "'}'"
+            | "':'"
+            | "','"
+            | "'.'"
+            | "'='"
+            | "'+'"
+            | "'-'"
+            | "'*'"
+            | "'/'"
+            | "'%'"
+            | "'<'"
+            | "'>'"
+            | "'!'"
+            | "'|'"
+            | "'^'"
+    ) && let Some(ch) = input[position..].chars().next()
     {
         position += ch.len_utf8();
     }
@@ -145,7 +229,7 @@ fn render(input: &str, error: SyntaxError) -> HawDBError {
     } else if position == 0 {
         parse_error(input, position, "expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, UNWIND, LOAD, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK")
     } else {
-        parse_error(input, position, &format!("expected {expected}"))
+        parse_diagnostic(input, position, DiagnosticMessage::Expected(expected))
     }
 }
 

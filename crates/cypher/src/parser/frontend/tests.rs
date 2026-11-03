@@ -17,11 +17,11 @@ fn incomplete_function_calls_preserve_the_following_token_diagnostic() {
     for (query, expected) in [
         (
             "MATCH ()-[r:MENTIONS]->() RETURN COUNT WITH x (r)",
-            "expected a Cypher value token at byte 39 line 1 column 40 near `WITH x (r)`",
+            "unexpected trailing input at byte 39 line 1 column 40 near `WITH x (r)`",
         ),
         (
             "MATCH (n) RETURN ID x",
-            "expected a Cypher value token at byte 20 line 1 column 21 near `x`",
+            "unexpected trailing input at byte 20 line 1 column 21 near `x`",
         ),
     ] {
         for result in [
@@ -748,6 +748,7 @@ fn diagnostic_repairs_preserve_independently_exported_main_messages_and_location
         include_str!("../../../fixtures/migration_main_1514_diagnostic_repairs_v1.json"),
         include_str!("../../../fixtures/migration_main_1514_diagnostic_repairs_v2.json"),
         include_str!("../../../fixtures/migration_main_1514_diagnostic_repairs_v3.json"),
+        include_str!("../../../fixtures/migration_main_1514_diagnostic_repairs_v4.json"),
     ] {
         let fixture: serde_json::Value = serde_json::from_str(input).unwrap();
         assert_eq!(
@@ -785,4 +786,24 @@ fn rank_case_lowering_preserves_independent_main_boundaries() {
     for case in cases {
         assert_frozen(case);
     }
+}
+
+#[test]
+fn diagnostic_buffers_preserve_unicode_message_and_escaped_context() {
+    let input = "é\nx";
+    let plain = super::parse_error(input, 2, "message🔥");
+    assert_eq!(
+        plain.to_string(),
+        hawdb_core::HawDBError::Parse("message🔥 at byte 2 line 1 column 2 near `\\nx`".to_owned())
+            .to_string()
+    );
+    let expected =
+        super::parse_diagnostic(input, 2, super::DiagnosticMessage::Expected("identifier"));
+    assert_eq!(
+        expected.to_string(),
+        hawdb_core::HawDBError::Parse(
+            "expected identifier at byte 2 line 1 column 2 near `\\nx`".to_owned()
+        )
+        .to_string()
+    );
 }
