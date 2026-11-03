@@ -107,6 +107,13 @@ pub(super) struct Output {
 }
 
 impl ResidentDiskAnn {
+    pub(super) fn has_cached_projection(
+        &self,
+        task: Option<&hawdb_core::RuntimeTaskContext>,
+    ) -> Result<bool> {
+        Ok(self.lock(task)?.is_some())
+    }
+
     pub(super) fn capture(&self) -> Self {
         Self {
             projection: Mutex::new(self.lock(None).expect("unpoisoned cache").clone()),

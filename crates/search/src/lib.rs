@@ -1924,11 +1924,12 @@ impl SearchIndex {
             return Ok(Some(Arc::clone(projection)));
         }
         if let Some(available) = max_working_bytes {
-            let required = RaBitQCandidateProjection::in_memory_capacity_bound(
+            let required = RaBitQCandidateProjection::in_memory_capacity_bound_with_context(
                 &self.documents,
                 self.rabitq_projection_identity(0),
                 self.rabitq_build_options,
-            );
+                task,
+            )?;
             task.map_or(Ok(()), crate::build_control::checkpoint)?;
             if required > available {
                 return Err(rabitq_projection::map_projection_error(
@@ -3843,13 +3844,20 @@ impl SearchIndex {
         self.vector_scoring
             .validate(self.vector_index_descriptor.is_some())?;
         #[cfg(feature = "vector-search")]
-        let default_without_candidates = self.rabitq_backend_selected()
-            && mode != SearchMode::Text
+        let default_without_candidates = mode != SearchMode::Text
             && matches!(vector_backend_request, VectorSearchBackendRequest::Default)
             && (limit == 0
                 || !filtered_documents
                     .iter()
-                    .any(|document| document.embedding.is_some()));
+                    .any(|document| document.embedding.is_some()))
+            && if self.rabitq_backend_selected() {
+                self.lock_rabitq_projection(vector_execution_options.task_context)?
+                    .is_none()
+            } else {
+                !self
+                    .resident_diskann
+                    .has_cached_projection(vector_execution_options.task_context)?
+            };
         #[cfg(not(feature = "vector-search"))]
         let default_without_candidates = false;
         let vector_backend_request = if vector_execution_options.exact || default_without_candidates
@@ -3864,7 +3872,6 @@ impl SearchIndex {
                 && self.rabitq_backend_selected()
                 && mode != SearchMode::Text
                 && query_can_generate_candidates
-                && limit != 0
             {
                 self.build_in_memory_rabitq_projection_with_context(
                     vector_execution_options.task_context,

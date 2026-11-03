@@ -8,7 +8,7 @@ checks enabled), two compile jobs and one test thread. The branch is based on
 main `38d5bfe550f67df7d89e3935cd3a718f9ab10e18`; the measured implementation and
 fixture hashes are in [source-sha256.txt](source-sha256.txt). No profile or
 machine configuration was changed. Initial test compilation took 2m16s; the
-final-source incremental compilation took 33.53s. The final probe ran in 1.66s.
+final-source incremental compilation took 37.66s. The final probe ran in 1.67s.
 Compilation is excluded from the numbers below.
 
 Replay from the repository root:
@@ -30,14 +30,14 @@ route latency, concurrent load or release-mode throughput.
 
 | Scoring | Bits | Window | Build ms | Query median ms | Recall at 10 | Raw vector bytes read |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| ProjectionMetric | 1 | 64 | 43.589 | 6.031 | 0.90 | 393216 |
-| ProjectionMetric | 1 | 256 | 43.589 | 6.616 | 1.00 | 1572864 |
-| ProjectionMetric | 4 | 64 | 386.491 | 38.199 | 1.00 | 393216 |
-| ProjectionMetric | 4 | 256 | 386.491 | 38.474 | 1.00 | 1572864 |
-| LinearSquaredL2 | 1 | 64 | 42.924 | 5.870 | 1.00 | 393216 |
-| LinearSquaredL2 | 1 | 256 | 42.924 | 6.599 | 1.00 | 1572864 |
-| LinearSquaredL2 | 4 | 64 | 383.143 | 36.794 | 1.00 | 393216 |
-| LinearSquaredL2 | 4 | 256 | 383.143 | 38.071 | 1.00 | 1572864 |
+| ProjectionMetric | 1 | 64 | 45.129 | 5.765 | 0.90 | 393216 |
+| ProjectionMetric | 1 | 256 | 45.129 | 6.594 | 1.00 | 1572864 |
+| ProjectionMetric | 4 | 64 | 385.364 | 38.188 | 1.00 | 393216 |
+| ProjectionMetric | 4 | 256 | 385.364 | 38.687 | 1.00 | 1572864 |
+| LinearSquaredL2 | 1 | 64 | 43.579 | 5.894 | 1.00 | 393216 |
+| LinearSquaredL2 | 1 | 256 | 43.579 | 6.492 | 1.00 | 1572864 |
+| LinearSquaredL2 | 4 | 64 | 384.121 | 38.522 | 1.00 | 393216 |
+| LinearSquaredL2 | 4 | 256 | 384.121 | 38.982 | 1.00 | 1572864 |
 
 For 2,048 rows the complete raw Float32 corpus is 12,582,912 bytes. The
 64-candidate queries rerank exactly 64 rows (393,216 bytes); 256-candidate

@@ -136,18 +136,31 @@ impl RaBitQCandidateProjection {
         identity: ProjectionIdentity,
         options: RaBitQCandidateProjectionBuildOptions,
     ) -> usize {
+        Self::in_memory_capacity_bound_with_context(documents, identity, options, None)
+            .unwrap_or(usize::MAX)
+    }
+
+    pub(crate) fn in_memory_capacity_bound_with_context(
+        documents: &impl crate::resident_documents::DocumentView,
+        identity: ProjectionIdentity,
+        options: RaBitQCandidateProjectionBuildOptions,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<usize> {
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         let mut count = 0usize;
         let mut ids = 0usize;
         let mut dimension = 0;
         for document in documents.values() {
+            task.map_or(Ok(()), crate::build_control::checkpoint)?;
             if let Some(embedding) = &document.embedding {
                 count = count.saturating_add(1);
                 dimension = dimension.max(embedding.len());
                 ids = ids.saturating_add(document.id.len().saturating_mul(2));
             }
         }
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         if count == 0 {
-            return 0;
+            return Ok(0);
         }
         let identity_bytes = identity
             .embedding_model
@@ -166,10 +179,11 @@ impl RaBitQCandidateProjection {
             hawdb_core::VectorDistance::Cosine,
         )
         .resource_admission() else {
-            return usize::MAX;
+            return Ok(usize::MAX);
         };
         let segments = count.div_ceil(admission.admitted_segment_rows);
-        ids.saturating_add(identity_bytes.saturating_mul(2))
+        Ok(ids
+            .saturating_add(identity_bytes.saturating_mul(2))
             .saturating_add(documents.len().saturating_mul(
                 crate::build_memory::MAP_ENTRY_BYTES + std::mem::size_of::<String>(),
             ))
@@ -180,7 +194,7 @@ impl RaBitQCandidateProjection {
                         .saturating_add(4096)
                         .saturating_mul(2),
                 ),
-            )
+            ))
     }
 
     pub(crate) fn retained_capacity_bytes(&self) -> usize {

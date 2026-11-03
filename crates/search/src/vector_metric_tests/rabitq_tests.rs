@@ -102,6 +102,48 @@ fn cold_rabitq_queries_validate_before_building_and_keep_l2_zero_queries_valid()
 }
 
 #[test]
+fn empty_default_requests_reuse_an_existing_rabitq_cache() {
+    let fixture = squared_l2_fixture();
+    for scoring in [
+        SearchVectorScoring::ProjectionMetric,
+        SearchVectorScoring::LinearSquaredL2,
+    ] {
+        let mut index = SearchIndex::in_memory();
+        index.set_vector_scoring(scoring).unwrap();
+        index.set_rabitq_projection_build_options(Default::default());
+        for row in &fixture.documents {
+            index.upsert(fixture.document(row)).unwrap();
+        }
+        index
+            .search_with_options(
+                "",
+                Some(&fixture.query),
+                SearchMode::Vector,
+                options(1, None),
+            )
+            .unwrap();
+        let cached = index.rabitq_projection().unwrap();
+        for options in [
+            options(0, None),
+            SearchQueryOptions {
+                metadata_filters: BTreeMap::from([("missing".into(), "value".into())]),
+                ..options(1, None)
+            },
+        ] {
+            let result = index
+                .search_with_options("", Some(&fixture.query), SearchMode::Vector, options)
+                .unwrap();
+            assert!(result.hits.is_empty());
+            assert_eq!(
+                result.retrievers[0].backend,
+                "hawdb_rabitq_candidate_projection"
+            );
+            assert!(Arc::ptr_eq(&cached, &index.rabitq_projection().unwrap()));
+        }
+    }
+}
+
+#[test]
 fn declared_rabitq_budget_failures_refuse_before_cache_build_or_partial_results() {
     let fixture = squared_l2_fixture();
     let mut index = SearchIndex::in_memory();
