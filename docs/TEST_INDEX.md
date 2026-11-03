@@ -477,6 +477,22 @@ also checks ordinary parameterized Cypher equality/IN/OR, fused projection plans
 ordered output and parameter rebinding under a 64-unit task budget. Its existing
 general root owner runs both default/minimal selections.
 
+Conjunctive Thread identity unions are covered by root
+`api::tests::thread_metadata_reads::union_residual` and optimizer
+`graph::tests::plan_structure::union_residual`, plus private access-path proof
+controls. Existing root general default/minimal and optimizer-graph CI owners
+retain these cases. The fixtures compare indexed/unindexed COALESCE and typed
+CASE/trim Space reads, parameter rebinding, native-node overlap deduplication,
+logical-id multiplicity, scope before LIMIT, missing indexes, the 64-lookup cap,
+complete residual predicates, cost competition, unsafe/UNKNOWN error fences,
+proof limits, unrequested 64 KiB bodies, typed query-memory refusals and canonical
+pinned snapshots across update/checkpoint/reopen. Replay with
+`cargo test --locked -p hawdb --lib union_residual` and
+`cargo test --locked -p hawdb-optimizer-graph --lib residual_union`.
+Candidate counters measure five unique matching identities in the synthetic
+fixture; they do not establish physical I/O or route latency. No test lane,
+feature matrix, profile, timeout or exclusive measurement gate changes.
+
 The `api::tests::materialized_views` family covers synchronous SQL view DDL,
 projection/group retractions, differential SELECT equality, admission refusals,
 rollback, concurrent commits, cascade deletes and WAL/checkpoint recovery.

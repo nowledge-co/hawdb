@@ -28,6 +28,8 @@ use hawdb_plan_cypher::{
 };
 use std::collections::BTreeMap;
 
+mod union_residual;
+
 #[test]
 fn physical_plan_metadata_describes_kind_class_and_children() {
     let plan = PhysicalPlan::ProjectExec {

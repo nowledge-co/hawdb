@@ -14,6 +14,8 @@
 
 use super::*;
 
+mod union_residual;
+
 const THREAD_PAGE_QUERY: &str = "MATCH (t:Thread) \
      WHERE t.source = $source \
        AND (t.space_id IS NULL OR t.space_id = '' OR t.space_id = $space_id) \

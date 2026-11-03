@@ -169,6 +169,50 @@ pub(super) fn exact_union_index_seek_candidate(
     ))
 }
 
+fn conjunction_union_index_seek_candidate(
+    predicates: &[Predicate],
+    full_predicate: &Predicate,
+    scan_variable: &str,
+    label: &str,
+    catalog: &OptimizerCatalog,
+) -> Option<AccessCandidate> {
+    if !predicates
+        .iter()
+        .any(|predicate| matches!(predicate, Predicate::Or(_) | Predicate::And(_)))
+    {
+        return None;
+    }
+    // UNKNOWN OR results can still evaluate later AND conjuncts. Check the
+    // entire predicate before pruning nodes that have NULL/missing keys.
+    if !super::union_safety::predicate_is_safe(full_predicate, scan_variable, label, catalog) {
+        return None;
+    }
+    let mut best = None;
+    visit_or_conjuncts(predicates, &mut |branches| {
+        if let Some((plan, decision)) = exact_union_index_seek_candidate(
+            branches,
+            full_predicate,
+            scan_variable,
+            label,
+            catalog,
+        ) {
+            let cost = estimate_physical_plan_cost(&plan, catalog).cost;
+            keep_best_candidate(&mut best, cost, plan, decision);
+        }
+    });
+    best.map(|(_, candidate)| candidate)
+}
+
+fn visit_or_conjuncts(parts: &[Predicate], visit: &mut impl FnMut(&[Predicate])) {
+    for part in parts {
+        match part {
+            Predicate::And(parts) => visit_or_conjuncts(parts, visit),
+            Predicate::Or(branches) => visit(branches),
+            _ => {}
+        }
+    }
+}
+
 fn composite_range_index_seek_candidate(
     predicates: &[Predicate],
     full_predicate: &Predicate,
@@ -318,6 +362,16 @@ pub(super) fn index_seek_from_conjunction(
         range_index_seek_candidate(predicates, full_predicate, scan_variable, label, catalog),
         "node_range_index_seek",
     );
+
+    if let Some(candidate) = conjunction_union_index_seek_candidate(
+        predicates,
+        full_predicate,
+        scan_variable,
+        label,
+        catalog,
+    ) {
+        evaluate_candidate(Some(candidate), "node_conjunction_index_union_seek");
+    }
 
     let alternative_count = candidates.len();
     stage_events.push(ACCESS_PATH_SELECTION_STAGE.trace(
