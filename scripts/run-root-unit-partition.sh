@@ -16,7 +16,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: $0 <unit-test-binary> <general|concurrent|checkpoint_headroom|checkpoint_lifecycle|checkpoint_large_commit|analytics|analytics_core|analytics_core_general|analytics_identity|analytics_rss|recovery> [libtest arguments]" >&2
+  echo "usage: $0 <unit-test-binary> <general|concurrent|checkpoint_headroom|checkpoint_lifecycle|checkpoint_large_commit|checkpoint_large_commit_interrupted|analytics|analytics_core|analytics_core_general|analytics_identity|analytics_rss|recovery> [libtest arguments]" >&2
   exit 64
 fi
 partition_binary="$1"
@@ -27,7 +27,7 @@ if [[ "${partition}" == analytics_identity ]]; then
 fi
 shift 2
 case "${partition}" in
-  general|concurrent|checkpoint_headroom|checkpoint_lifecycle|checkpoint_large_commit|analytics|analytics_core|analytics_core_general|analytics_identity|analytics_rss|recovery) ;;
+  general|concurrent|checkpoint_headroom|checkpoint_lifecycle|checkpoint_large_commit|checkpoint_large_commit_interrupted|analytics|analytics_core|analytics_core_general|analytics_identity|analytics_rss|recovery) ;;
   *) echo "unknown root unit partition: ${partition}" >&2; exit 64 ;;
 esac
 
@@ -53,6 +53,8 @@ while IFS= read -r entry; do
     *) continue ;;
   esac
   case "${case_name}" in
+    api::automatic_checkpoint::tests::relational_live_overlay::large_commit::interrupted::*)
+      case_owner=checkpoint_large_commit_interrupted ;;
     api::automatic_checkpoint::tests::relational_live_overlay::large_commit::*)
       case_owner=checkpoint_large_commit ;;
     api::automatic_checkpoint::tests::headroom::*|api::automatic_checkpoint::tests::relational_live_overlay::*|api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen|api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints)

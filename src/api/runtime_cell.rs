@@ -275,6 +275,9 @@ impl BranchRuntimeCell {
     /// the original rejection when no owner can drain (no background
     /// maintenance, a stopped or exhausted owner) or a wait completed no
     /// checkpoint, and with `BranchBusy` when the drain stops progressing.
+    /// `task_context` is checked before the wait and again after it, once the
+    /// drained generation is adopted and immediately before the retry, so a
+    /// task cancelled or past its deadline while waiting applies nothing.
     pub(super) fn commit_with_live_headroom<I>(
         &mut self,
         mut inputs: I,
@@ -286,6 +289,14 @@ impl BranchRuntimeCell {
         loop {
             let outcome = {
                 let mut access = self.get_mut_for_headroom(demand)?;
+                if demand.is_some() {
+                    // The drain wait can outlast the caller's cancellation or
+                    // deadline. Check again after adopting the drained
+                    // generation, immediately before the retry appends WAL;
+                    // a stopped task drops its inputs unapplied, and dropping
+                    // `access` releases the runtime and publication barrier.
+                    super::query_runtime::query_runtime_checkpoint(task_context)?;
+                }
                 commit(&mut access, inputs)
             }?;
             match outcome {

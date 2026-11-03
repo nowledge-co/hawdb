@@ -64,6 +64,7 @@ if [[ "${1:-}" == --list ]]; then
     fi
   fi
   echo 'api::automatic_checkpoint::tests::relational_live_overlay::large_commit::owned: test'
+  echo 'api::automatic_checkpoint::tests::relational_live_overlay::large_commit::interrupted::owned: test'
   if [[ "${PARTITION_PROBE_OVERLAP:-0}" == 1 ]]; then
     echo 'analytics::overlap: test'
     echo 'api::tests::query_execution::analytics::overlap: test'
@@ -86,7 +87,7 @@ exit "${PARTITION_PROBE_EXIT:-0}"
 EOF
 chmod +x "${fixture}/binary"
 
-for partition in general concurrent checkpoint_headroom checkpoint_lifecycle checkpoint_large_commit analytics analytics_core analytics_core_general analytics_identity analytics_rss recovery; do
+for partition in general concurrent checkpoint_headroom checkpoint_lifecycle checkpoint_large_commit checkpoint_large_commit_interrupted analytics analytics_core analytics_core_general analytics_identity analytics_rss recovery; do
   "${runner}" "${fixture}/binary" "${partition}" custom_filter --exact --skip user_skip
   cp "${PARTITION_PROBE_ARGS}" "${fixture}/args.${partition}"
   python3 - "${PARTITION_PROBE_ARGS}" "${partition}" <<'PY'
@@ -121,6 +122,9 @@ owners = {
     },
     "checkpoint_large_commit": {
         "api::automatic_checkpoint::tests::relational_live_overlay::large_commit::owned",
+    },
+    "checkpoint_large_commit_interrupted": {
+        "api::automatic_checkpoint::tests::relational_live_overlay::large_commit::interrupted::owned",
     },
 }
 all_names = set().union(*owners.values())
@@ -199,6 +203,7 @@ names = {
     "api::automatic_checkpoint::tests::relational_live_overlay::steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay",
     "api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay",
     "api::automatic_checkpoint::tests::relational_live_overlay::large_commit::owned",
+    "api::automatic_checkpoint::tests::relational_live_overlay::large_commit::interrupted::owned",
 }
 
 def selected(partition):
@@ -207,7 +212,7 @@ def selected(partition):
     return names - skips
 
 leaves = [selected(name) for name in [
-    "general", "concurrent", "checkpoint_headroom", "checkpoint_lifecycle", "checkpoint_large_commit", "analytics_core_general", "analytics_rss", "recovery"
+    "general", "concurrent", "checkpoint_headroom", "checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted", "analytics_core_general", "analytics_rss", "recovery"
 ]]
 assert set().union(*leaves) == names
 assert sum(map(len, leaves)) == len(names)

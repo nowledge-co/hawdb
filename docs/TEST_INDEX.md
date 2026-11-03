@@ -1031,18 +1031,32 @@ succeed, with no failed attempt, exact totals and reads after reopen (base
 `bd26dc4d` rejects the first, commit 22, before WAL append). A 30,000-line
 autocommit statement drains first too. A commit larger than the whole envelope
 is rejected, in a transaction and in autocommit, with the limits and its size
-named, no drain, an unchanged epoch and nothing written. On a concurrent handle,
-another writer and a reader keep succeeding while a 30,000-line transaction
-waits for its drain. A subprocess stop at `during_checkpoint_publication` and
-`after_manifest_publication` of the drain that a district requests recovers
-exactly the acknowledged commits, and the recovered handle admits the district.
-The `large_commit` cases run in their own
-`//:hawdb_unit_checkpoint_large_commit_tests` partition (one libtest thread,
-Bazel `exclusive`, the same 900-second deadline). Each drives several full
-checkpoints of a table near the default envelope, and inside
+named, no drain, an unchanged epoch and nothing written. The concurrent-handle
+and task cases hold the idle owner just before it starts the drain that a
+waiting district requested (no sleeps or free-running threads): on a concurrent
+handle a reader keeps its published view during the wait, and another writer
+queues behind the district and commits after it. A district whose task is
+cancelled (concurrent handle, admitted permit) or whose deadline passes (single
+handle) during that wait fails once the drain is adopted, with no new epoch or
+rows; the permit, the sequencer and the barrier are released and the same keys
+commit afterwards (`6f7c2e1c` commits both after the wait). A subprocess stop at
+`during_checkpoint_publication` and `after_manifest_publication` of the drain
+that a district requests recovers exactly the acknowledged commits, and the
+recovered handle admits the district. The `large_commit` cases run in their own
+`//:hawdb_unit_checkpoint_large_commit_tests` partition, and the interrupted
+ones (`large_commit::interrupted`: cancellation, deadline, process stop) in
+`//:hawdb_unit_checkpoint_large_commit_interrupted_tests` (each one libtest
+thread, Bazel `exclusive`, the same 900-second deadline). Each case drives full
+checkpoints of a table near the default envelope; inside
 `//:hawdb_unit_checkpoint_headroom_tests` they pushed that partition past its
-deadline in CI. Replay:
-`bazel test //:hawdb_unit_checkpoint_large_commit_tests`.
+deadline in CI, and one shared lane later did too, mostly from a free-running
+reader and writer competing with the drain. On an Apple M4 in the Cargo test
+profile the two lanes take about 98 s and 92 s (about 365 s together on
+efficiency cores only). Concurrent cases stage a district as 5,000-line
+statements: one 30,000-line statement in a concurrent transaction stages about
+four times slower than six smaller ones. Replay:
+`bazel test //:hawdb_unit_checkpoint_large_commit_tests
+//:hawdb_unit_checkpoint_large_commit_interrupted_tests`.
 Replay with `cargo test --locked
 -p hawdb --lib api::automatic_checkpoint::tests::relational_live_overlay`.
 

@@ -17,6 +17,8 @@
 
 use super::*;
 
+mod interrupted;
+
 /// One py-tpcc district: 3,000 orders of ten lines, about 45% of the default
 /// resident-byte envelope at 997 bytes per line.
 const DISTRICT_LINES: i64 = 30_000;
@@ -234,11 +236,105 @@ fn autocommit_statement_above_the_free_headroom_drains_first() {
     assert_order_lines(&mut db, lines + DISTRICT_LINES);
 }
 
-/// Another writer and a reader keep running while a district commit waits
-/// for its drain on a shared concurrent handle.
+/// Holds the idle checkpoint owner just before it starts the drain that a
+/// waiting commit requested, and reports when that commit starts waiting.
+/// Readers are not gated while the owner is idle; writers are.
+struct RequestedDrainPause {
+    control: Arc<Control>,
+    owner_paused: std::sync::mpsc::Receiver<()>,
+    resume_owner: std::sync::mpsc::Sender<()>,
+    writer_waiting: std::sync::mpsc::Receiver<Phase>,
+}
+
+impl RequestedDrainPause {
+    /// Install after the fill: below the trigger and the age limit nothing
+    /// is due, so the first drain the owner starts is the one the large
+    /// commit's declared size requests.
+    fn install(db: &Database) -> Self {
+        let control = db.runtime.checkpoint_control_for_test();
+        // Freeze the frontend policy clock so the writer's bounded drain
+        // waits cannot expire into `BranchBusy` while the owner is held.
+        control.set_frontend_time(Instant::now());
+        let (paused, owner_paused) = std::sync::mpsc::channel();
+        let (resume_owner, continuation) = std::sync::mpsc::channel();
+        let (waiting, writer_waiting) = std::sync::mpsc::channel();
+        {
+            let mut state = control.lock().unwrap();
+            assert_eq!(state.phase, Phase::Idle);
+            state.idle_start_probe = Some(Arc::new(OwnerPauseProbe {
+                paused,
+                resume: Mutex::new(continuation),
+            }));
+            state.frontend_wait_probe = Some(waiting);
+        }
+        Self {
+            control,
+            owner_paused,
+            resume_owner,
+            writer_waiting,
+        }
+    }
+
+    /// Returns once the writer, having passed its task check, waits for the
+    /// drain it requested and the owner holds that drain before it starts.
+    /// The paused owner gives up after 15 s, so callers release promptly.
+    fn wait_until_drain_is_held(&self) {
+        // Bounds only a broken run; neither receive is a timing assumption.
+        let bound = Duration::from_secs(600);
+        self.writer_waiting
+            .recv_timeout(bound)
+            .expect("the large commit must wait for its drain");
+        self.owner_paused
+            .recv_timeout(bound)
+            .expect("the large commit must make a drain due");
+        assert_eq!(self.control.lock().unwrap().phase, Phase::Idle);
+    }
+
+    fn release(self) {
+        self.resume_owner.send(()).unwrap();
+        self.control.lock().unwrap().frontend_wait_probe = None;
+        *self.control.frontend_clock.lock().unwrap() = None;
+    }
+}
+
+fn assert_line_absent(rows: crate::executor::QueryRows, line: i64) {
+    assert!(rows.is_empty(), "line {line} must not be committed");
+}
+
+fn line_query(line: i64) -> String {
+    let (order, number) = (line / 10, line % 10);
+    format!(
+        "SELECT ol_i_id FROM order_line WHERE ol_w_id = 1 AND ol_d_id = {} \
+         AND ol_o_id = {} AND ol_number = {number}",
+        order / 3_000 + 1,
+        order % 3_000,
+    )
+}
+
+/// Stages one district commit in a concurrent transaction, as statements of
+/// at most 5,000 lines: staging one statement there grows faster than its
+/// size, and only the commit's size matters to live admission.
+fn stage_district(
+    transaction: &mut crate::ConcurrentDatabaseTransaction,
+    lines: std::ops::Range<i64>,
+) {
+    for start in lines.clone().step_by(5_000) {
+        transaction
+            .query_sql(&order_lines_sql(start..(start + 5_000).min(lines.end)))
+            .unwrap();
+    }
+}
+
+/// Ticks another writer commits on the concurrent handle around the district.
+const TICKS: i64 = 20;
+
+/// While a district commit on a concurrent handle waits for the drain it
+/// requested, readers keep their published view and another writer queues
+/// behind the commit sequencer; both finish once the drain publishes. The
+/// owner holds that drain before publication, so the reads provably happen
+/// during the wait, without free-running threads competing with the drain.
 #[test]
 fn concurrent_writer_and_reader_progress_around_a_pre_drained_commit() {
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
     let fixture = Fixture::new();
     let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
     create_order_line(&mut db);
@@ -246,74 +342,44 @@ fn concurrent_writer_and_reader_progress_around_a_pre_drained_commit() {
         .unwrap();
     let lines = fill_order_lines(&mut db);
     let before = completed(&db);
+    let pause = RequestedDrainPause::install(&db);
     let db = db.into_concurrent();
-    let district_done = Arc::new(AtomicBool::new(false));
-    let reads = Arc::new(AtomicUsize::new(0));
-    let reads_during_district = Arc::new(AtomicUsize::new(0));
-    let ticks = 200;
+    // Readers use the published view; the first read publishes it.
+    assert_eq!(db.query_sql(&line_query(0)).unwrap().rows.len(), 1);
     std::thread::scope(|scope| {
         let district = scope.spawn(|| {
-            // Stops the reader even when this commit fails (as on main).
-            struct Done<'a>(&'a AtomicBool);
-            impl Drop for Done<'_> {
-                fn drop(&mut self) {
-                    self.0.store(true, Ordering::Release);
-                }
-            }
-            let _done = Done(&district_done);
-            let mut retries = 0;
-            loop {
-                let mut transaction = db
-                    .begin_transaction(crate::ConcurrentTransactionOptions::default())
-                    .unwrap();
-                transaction
-                    .query_sql(&order_lines_sql(lines..lines + DISTRICT_LINES))
-                    .unwrap();
-                match transaction.commit() {
-                    Ok(_) => break,
-                    Err(HawDBError::BranchBusy { .. }) if retries < 100 => retries += 1,
-                    Err(error) => panic!("district commit failed: {error}"),
-                }
-            }
+            let mut transaction = db
+                .begin_transaction(crate::ConcurrentTransactionOptions::default())
+                .unwrap();
+            stage_district(&mut transaction, lines..lines + DISTRICT_LINES);
+            transaction.commit().map(|_| ())
         });
+        pause.wait_until_drain_is_held();
+        for line in [0, lines - 1] {
+            let rows = db.query_sql(&line_query(line)).unwrap().rows.into_rows();
+            assert_eq!(rows.len(), 1, "line {line}");
+            assert_eq!(
+                rows[0].get("ol_i_id"),
+                Some(&Value::Int(line * 7_919 % 100_000))
+            );
+        }
+        assert_line_absent(db.query_sql(&line_query(lines)).unwrap().rows, lines);
         let writer = scope.spawn(|| {
-            let mut retries = 0;
-            let mut id = 0;
-            while id < ticks {
-                match db.query_sql_with_params(
+            for id in 0..TICKS {
+                db.query_sql_with_params(
                     "INSERT INTO ticks (id, payload) VALUES ($1, $2)",
                     &[Value::Int(id), Value::String(format!("tick-{id}"))],
-                ) {
-                    Ok(_) => id += 1,
-                    Err(HawDBError::BranchBusy { .. }) if retries < 100 => retries += 1,
-                    Err(error) => panic!("tick {id} failed: {error}"),
-                }
+                )
+                .unwrap_or_else(|error| panic!("tick {id} failed: {error}"));
             }
         });
-        let reader = scope.spawn(|| {
-            while !district_done.load(Ordering::Acquire) {
-                let rows = db
-                    .query_sql(
-                        "SELECT ol_i_id FROM order_line WHERE ol_w_id = 1 AND ol_d_id = 1 \
-                         AND ol_o_id = 0 AND ol_number = 0",
-                    )
-                    .unwrap()
-                    .rows
-                    .into_rows();
-                assert_eq!(rows.len(), 1);
-                assert_eq!(rows[0].get("ol_i_id"), Some(&Value::Int(0)));
-                reads.fetch_add(1, Ordering::Relaxed);
-                if !district_done.load(Ordering::Acquire) {
-                    reads_during_district.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-        });
-        let district = district.join();
+        pause.release();
+        district
+            .join()
+            .unwrap()
+            .unwrap_or_else(|error| panic!("district commit failed: {error}"));
         writer.join().unwrap();
-        reader.join().unwrap();
-        district.unwrap();
     });
-    assert!(reads_during_district.load(Ordering::Relaxed) > 0);
     let report = db.automatic_checkpoint_report().unwrap().unwrap();
     assert!(report.completed_checkpoints > before, "{report:?}");
     assert_eq!(report.failed_attempts, 0, "{report:?}");
@@ -322,85 +388,11 @@ fn concurrent_writer_and_reader_progress_around_a_pre_drained_commit() {
         .unwrap()
         .rows
         .into_rows();
-    assert_eq!(count[0].get("n"), Some(&Value::Int(ticks)));
+    assert_eq!(count[0].get("n"), Some(&Value::Int(TICKS)));
     drop(db);
     let mut reopened = Database::open_with_config(&fixture.0, config()).unwrap();
     let lines = lines + DISTRICT_LINES;
     assert_order_lines(&mut reopened, lines);
     reopened.checkpoint().unwrap();
     assert_order_line_totals(&mut reopened, lines);
-}
-
-const PREDRAIN_CHILD_ENV: &str = "HAWDB_TEST_LIVE_OVERLAY_PREDRAIN_CHILD";
-
-#[test]
-fn pre_drain_crash_child() {
-    if std::env::var_os(PREDRAIN_CHILD_ENV).is_none() {
-        return;
-    }
-    let root = PathBuf::from(std::env::var_os(CRASH_PATH_ENV).expect("crash database path"));
-    let point = std::env::var(CRASH_POINT_ENV).expect("crash point");
-    let mut db = Database::open_with_config(&root, config()).unwrap();
-    // The parent's schema checkpoint left no debt. The fill stays below the
-    // trigger, so the first checkpoint this child can publish is the drain a
-    // district commit requests before it applies.
-    let mut lines = fill_order_lines(&mut db);
-    let filled = row_byte_ratio(&db);
-    assert!((0.6..0.7).contains(&filled), "{filled}");
-    assert_eq!(debt(&db).relational_live.row_recovery_delta_entries, 0);
-    std::fs::write(acknowledged_path(&root), lines.to_string()).unwrap();
-    for _ in 0..5 {
-        insert_line_range(&mut db, lines..lines + DISTRICT_LINES).unwrap();
-        lines += DISTRICT_LINES;
-        std::fs::write(acknowledged_path(&root), lines.to_string()).unwrap();
-    }
-    panic!("crash failpoint {point} was not reached by a pre-commit drain");
-}
-
-#[test]
-fn crash_during_a_pre_commit_drain_recovers_every_acknowledged_commit() {
-    for point in [
-        "during_checkpoint_publication",
-        "after_manifest_publication",
-    ] {
-        let fixture = Fixture::new();
-        {
-            let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
-            create_order_line(&mut db);
-        }
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--exact")
-            .arg(
-                "api::automatic_checkpoint::tests::relational_live_overlay::large_commit::pre_drain_crash_child",
-            )
-            .arg("--nocapture")
-            .env(PREDRAIN_CHILD_ENV, "1")
-            .env(CRASH_PATH_ENV, &fixture.0)
-            .env(CRASH_POINT_ENV, point)
-            .status()
-            .unwrap();
-        assert_eq!(status.code(), Some(86), "child did not stop at {point}");
-        let acknowledged: i64 = std::fs::read_to_string(acknowledged_path(&fixture.0))
-            .unwrap()
-            .parse()
-            .unwrap();
-        let _ = std::fs::remove_file(acknowledged_path(&fixture.0));
-        // The district waiting for the drain never reached the WAL, so the
-        // recovered table holds exactly the acknowledged commits.
-        assert_eq!(
-            acknowledged,
-            FILL_COMMITS * ORDER_LINES_PER_COMMIT,
-            "{point}"
-        );
-        let mut reopened = Database::open_with_config(&fixture.0, config()).unwrap();
-        assert_order_lines(&mut reopened, acknowledged);
-        // The recovered handle admits the district, draining first when
-        // recovery replayed the fill into the live overlay.
-        insert_line_range(&mut reopened, acknowledged..acknowledged + DISTRICT_LINES)
-            .unwrap_or_else(|error| panic!("district after {point} recovery: {error}"));
-        let lines = acknowledged + DISTRICT_LINES;
-        assert_order_lines(&mut reopened, lines);
-        reopened.checkpoint().unwrap();
-        assert_order_line_totals(&mut reopened, lines);
-    }
 }
