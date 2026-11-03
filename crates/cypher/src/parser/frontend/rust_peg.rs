@@ -262,7 +262,7 @@ pub(super) const RULE_NAMES: &[&str] = &[
     "create",
     "alter",
 ];
-use hawdb_sql_syntax::TokenKind;
+use super::lexer::TokenKind;
 
 enum Either<A, B> {
     Left(A),
@@ -1399,7 +1399,7 @@ impl Builder<'_> {
             self.fatal = Some(
                 SyntaxError::new(
                     SyntaxErrorCode::ParserLimitExceeded,
-                    self.tokens[start].span,
+                    self.tokens[start].span(),
                 )
                 .expected("PEG nodes and edges within the parser limit"),
             );
@@ -1452,7 +1452,7 @@ impl Builder<'_> {
             self.fatal = Some(
                 SyntaxError::new(
                     SyntaxErrorCode::ParserLimitExceeded,
-                    self.tokens[start].span,
+                    self.tokens[start].span(),
                 )
                 .expected("PEG nodes and edges within the parser limit"),
             );
@@ -1477,7 +1477,7 @@ impl Builder<'_> {
             self.fatal = Some(
                 SyntaxError::new(
                     SyntaxErrorCode::ParserLimitExceeded,
-                    self.tokens[position].span,
+                    self.tokens[position].span(),
                 )
                 .expected("language nesting within the parser limit"),
             );
@@ -1504,13 +1504,13 @@ impl Builder<'_> {
     }
     fn adjacency_failure(&self, start: usize, end: usize) -> usize {
         (start.saturating_add(1)..end)
-            .find(|&i| self.tokens[i - 1].span.end != self.tokens[i].span.start)
+            .find(|&i| self.tokens[i - 1].span().end != self.tokens[i].span().start)
             .expect("non-adjacent pair")
     }
     fn adjacent(&self, start: usize, end: usize) -> bool {
         self.tokens[start..end]
             .windows(2)
-            .all(|x| x[0].span.end == x[1].span.start)
+            .all(|x| x[0].span().end == x[1].span().start)
     }
     fn node(
         &mut self,
@@ -1527,7 +1527,7 @@ impl Builder<'_> {
             self.fatal = Some(
                 SyntaxError::new(
                     SyntaxErrorCode::ParserLimitExceeded,
-                    self.tokens[start].span,
+                    self.tokens[start].span(),
                 )
                 .expected("PEG nodes and edges within the parser limit"),
             );
@@ -1982,9 +1982,9 @@ peg::parser! {
 
  rule optional_clause(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.is_keyword(cx.input, "OPTIONAL")] { () } / fail("OPTIONAL"))) (([token if token.is_keyword(cx.input, "MATCH")] { () } / fail("MATCH"))) c2:(p_patterns(depth.descend(0,0))) c3:((saved:diagnostic() begin:position!() result:(c:(p_where(depth.descend(0,0))) { Some(c) } / restore_absence(begin,saved) { None }) { result })) { (c2,c3) })) end:position!() {? cx.node(184,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
- rule unwind_clause(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.is_keyword(cx.input, "UNWIND")] { () } / fail("UNWIND"))) c1:((&([token if token.kind == TokenKind::LeftBracket || token.kind == TokenKind::Parameter(0)] / ([token if token.kind == TokenKind::Word] !([token if token.kind == TokenKind::LeftParen]))) value:v_value(depth.descend(0,0)) &([token if token.is_keyword(cx.input, "AS")]) { value } / x_case_scalar(depth.descend(0,0)))) (([token if token.is_keyword(cx.input, "AS")] { () } / fail("AS"))) c3:(v_identifier(depth.descend(0,0))) { (c1,c3) })) end:position!() {? cx.node(185,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
+ rule unwind_clause(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.is_keyword(cx.input, "UNWIND")] { () } / fail("UNWIND"))) c1:((&([token if token.kind == TokenKind::LeftBracket || token.kind == TokenKind::Parameter] / ([token if token.kind == TokenKind::Word] !([token if token.kind == TokenKind::LeftParen]))) value:v_value(depth.descend(0,0)) &([token if token.is_keyword(cx.input, "AS")]) { value } / x_case_scalar(depth.descend(0,0)))) (([token if token.is_keyword(cx.input, "AS")] { () } / fail("AS"))) c3:(v_identifier(depth.descend(0,0))) { (c1,c3) })) end:position!() {? cx.node(185,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
- rule load_clause(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.is_keyword(cx.input, "LOAD")] { () } / fail("LOAD"))) (([token if token.is_keyword(cx.input, "CSV")] { () } / fail("CSV"))) ((saved:diagnostic() begin:position!() result:(c:(((([token if token.is_keyword(cx.input, "WITH")] { () } / fail("WITH"))) (([token if token.is_keyword(cx.input, "HEADERS")] { () } / fail("HEADERS"))) { () })) { Some(c) } / restore_absence(begin,saved) { None }) { result })) (([token if token.is_keyword(cx.input, "FROM")] { () } / fail("FROM"))) ((saved:peek_mark() ((&(((([token if token.kind == TokenKind::Parameter(0)] { () } / fail("a Cypher value token"))) { () } / (([token if token.kind == TokenKind::String] { () } / fail("a Cypher value token"))) { () }))) restore(saved) { () } / restore(saved) fail("LOAD CSV FROM accepts only a string literal or parameter source")))) c5:(v_value(depth.descend(0,0))) (([token if token.is_keyword(cx.input, "AS")] { () } / fail("AS"))) c7:(v_identifier(depth.descend(0,0))) c8:((saved:diagnostic() begin:position!() result:(c:(((([token if token.is_keyword(cx.input, "FIELDTERMINATOR")] { () } / fail("FIELDTERMINATOR"))) ((saved:peek_mark() ((&(([token if token.kind == TokenKind::String] { () } / fail("a Cypher value token")))) restore(saved) { () } / restore(saved) fail("FIELDTERMINATOR requires a string literal")))) c2:(v_value(depth.descend(0,0))) { (c2,) })) { Some(c) } / restore_absence(begin,saved) { None }) { result })) { (c5,c7,c8) })) end:position!() {? cx.node(186,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
+ rule load_clause(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.is_keyword(cx.input, "LOAD")] { () } / fail("LOAD"))) (([token if token.is_keyword(cx.input, "CSV")] { () } / fail("CSV"))) ((saved:diagnostic() begin:position!() result:(c:(((([token if token.is_keyword(cx.input, "WITH")] { () } / fail("WITH"))) (([token if token.is_keyword(cx.input, "HEADERS")] { () } / fail("HEADERS"))) { () })) { Some(c) } / restore_absence(begin,saved) { None }) { result })) (([token if token.is_keyword(cx.input, "FROM")] { () } / fail("FROM"))) ((saved:peek_mark() ((&(((([token if token.kind == TokenKind::Parameter] { () } / fail("a Cypher value token"))) { () } / (([token if token.kind == TokenKind::String] { () } / fail("a Cypher value token"))) { () }))) restore(saved) { () } / restore(saved) fail("LOAD CSV FROM accepts only a string literal or parameter source")))) c5:(v_value(depth.descend(0,0))) (([token if token.is_keyword(cx.input, "AS")] { () } / fail("AS"))) c7:(v_identifier(depth.descend(0,0))) c8:((saved:diagnostic() begin:position!() result:(c:(((([token if token.is_keyword(cx.input, "FIELDTERMINATOR")] { () } / fail("FIELDTERMINATOR"))) ((saved:peek_mark() ((&(([token if token.kind == TokenKind::String] { () } / fail("a Cypher value token")))) restore(saved) { () } / restore(saved) fail("FIELDTERMINATOR requires a string literal")))) c2:(v_value(depth.descend(0,0))) { (c2,) })) { Some(c) } / restore_absence(begin,saved) { None }) { result })) { (c5,c7,c8) })) end:position!() {? cx.node(186,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
  rule create_clause(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.is_keyword(cx.input, "CREATE")] { () } / fail("CREATE"))) c1:(p_patterns(depth.descend(0,0))) { (c1,) })) end:position!() {? cx.node(187,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
@@ -2000,7 +2000,7 @@ peg::parser! {
 
  rule v_value(depth:Depth) -> NodeId = mark:capture_mark() begin:position!() saved:diagnostic() result:((enter(depth) start:position!() children:((a:(v_parameter(depth.descend(0,0))) { Either::Left(a) } / b:((a:(v_list(depth.descend(0,0))) { Either::Left(a) } / b:((a:(v_string(depth.descend(0,0))) { Either::Left(a) } / b:((a:(v_number(depth.descend(0,0))) { Either::Left(a) } / b:((a:(v_boolean(depth.descend(0,0))) { Either::Left(a) } / b:((a:(v_null(depth.descend(0,0))) { Either::Left(a) } / b:((a:(v_current_timestamp(depth.descend(0,0))) { Either::Left(a) } / b:((a:(v_timestamp(depth.descend(0,0))) { Either::Left(a) } / b:((a:(v_cast(depth.descend(0,0))) { Either::Left(a) } / b:((a:(v_temporal(depth.descend(1,0))) { Either::Left(a) } / b:(v_property(depth.descend(0,0))) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) end:position!() {? cx.node(193,start,end,children) }) / rewind_capture(mark,false) value_failure(begin,saved) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
- rule v_parameter(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.kind == TokenKind::Parameter(0)] { () } / fail("a Cypher value token"))) c1:(v_identifier(depth.descend(0,0))) { (c1,) })) end:position!() {? cx.node(194,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
+ rule v_parameter(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.kind == TokenKind::Parameter] { () } / fail("a Cypher value token"))) c1:(v_identifier(depth.descend(0,0))) { (c1,) })) end:position!() {? cx.node(194,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
  rule v_list(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.kind == TokenKind::LeftBracket] { () } / fail("a Cypher value token"))) c1:(v_list_contents(depth.descend(1,0))) (([token if token.kind == TokenKind::RightBracket] { () } / fail("a Cypher value token"))) { (c1,) })) end:position!() {? cx.node(195,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
@@ -2062,7 +2062,7 @@ peg::parser! {
 
  rule d_coalesce(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.is_keyword(cx.input, "COALESCE")] { () } / fail("COALESCE"))) c1:(((([token if token.kind == TokenKind::LeftParen] { () } / fail("a Cypher value token"))) c1:((c0:(d_ref(depth.descend(0,0))) (([token if token.kind == TokenKind::Comma] { () } / fail("a Cypher value token"))) c2:(v_value(depth.descend(0,0))) { (c0,c2) })) (([token if token.kind == TokenKind::RightParen] { () } / fail("a Cypher value token"))) { (c1,) })) c2:((saved:diagnostic() begin:position!() result:(c:(d_add(depth.descend(0,0))) { Some(c) } / restore_absence(begin,saved) { None }) { result })) { (c1,c2) })) end:position!() {? cx.node(224,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
- rule d_case_preserve(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(([token if token.is_keyword(cx.input, "CASE")] { () } / fail("CASE")) ([token if token.is_keyword(cx.input, "WHEN")] { () } / fail("WHEN")) &([token if token.kind == TokenKind::Parameter(0)]) incoming:v_value(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "IS")] { () } / fail("IS")) ([token if token.is_keyword(cx.input, "NULL")] { () } / fail("NULL")) ([token if token.is_keyword(cx.input, "THEN")] { () } / fail("THEN")) property:d_ref(depth.descend(0,0)) selected_branch:(a:(([token if token.is_keyword(cx.input, "ELSE")] { () } / fail("ELSE")) value:v_value(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "END")] { () } / fail("END")) { (incoming,property,value) }) { Either::Left(a) } / b:(([token if token.is_keyword(cx.input, "WHEN")] { () } / fail("WHEN")) preserve:v_value(depth.descend(0,0)) ([token if token.kind == TokenKind::Equal] { () } / fail("a Cypher value token")) truth:v_value(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "AND")] { () } / fail("AND")) existing:d_ref(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "IS")] { () } / fail("IS")) ([token if token.is_keyword(cx.input, "NOT")] { () } / fail("NOT")) ([token if token.is_keyword(cx.input, "NULL")] { () } / fail("NULL")) ([token if token.is_keyword(cx.input, "AND")] { () } / fail("AND")) compared:d_ref(depth.descend(0,0)) (([token if token.kind == TokenKind::Greater] { () } / fail("a Cypher value token")) / ([token if token.kind == TokenKind::Less] { () } / fail("a Cypher value token"))) compared_incoming:v_value(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "THEN")] { () } / fail("THEN")) selected:d_ref(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "ELSE")] { () } / fail("ELSE")) fallback:v_value(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "END")] { () } / fail("END")) { (incoming,property,preserve,truth,existing,compared,compared_incoming,selected,fallback) }) { Either::Right(b) }) { selected_branch }) end:position!() {? cx.node(225,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
+ rule d_case_preserve(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(([token if token.is_keyword(cx.input, "CASE")] { () } / fail("CASE")) ([token if token.is_keyword(cx.input, "WHEN")] { () } / fail("WHEN")) &([token if token.kind == TokenKind::Parameter]) incoming:v_value(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "IS")] { () } / fail("IS")) ([token if token.is_keyword(cx.input, "NULL")] { () } / fail("NULL")) ([token if token.is_keyword(cx.input, "THEN")] { () } / fail("THEN")) property:d_ref(depth.descend(0,0)) selected_branch:(a:(([token if token.is_keyword(cx.input, "ELSE")] { () } / fail("ELSE")) value:v_value(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "END")] { () } / fail("END")) { (incoming,property,value) }) { Either::Left(a) } / b:(([token if token.is_keyword(cx.input, "WHEN")] { () } / fail("WHEN")) preserve:v_value(depth.descend(0,0)) ([token if token.kind == TokenKind::Equal] { () } / fail("a Cypher value token")) truth:v_value(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "AND")] { () } / fail("AND")) existing:d_ref(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "IS")] { () } / fail("IS")) ([token if token.is_keyword(cx.input, "NOT")] { () } / fail("NOT")) ([token if token.is_keyword(cx.input, "NULL")] { () } / fail("NULL")) ([token if token.is_keyword(cx.input, "AND")] { () } / fail("AND")) compared:d_ref(depth.descend(0,0)) (([token if token.kind == TokenKind::Greater] { () } / fail("a Cypher value token")) / ([token if token.kind == TokenKind::Less] { () } / fail("a Cypher value token"))) compared_incoming:v_value(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "THEN")] { () } / fail("THEN")) selected:d_ref(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "ELSE")] { () } / fail("ELSE")) fallback:v_value(depth.descend(0,0)) ([token if token.is_keyword(cx.input, "END")] { () } / fail("END")) { (incoming,property,preserve,truth,existing,compared,compared_incoming,selected,fallback) }) { Either::Right(b) }) { selected_branch }) end:position!() {? cx.node(225,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
  rule d_case_decrement(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.is_keyword(cx.input, "CASE")] { () } / fail("CASE"))) (([token if token.is_keyword(cx.input, "WHEN")] { () } / fail("WHEN"))) c2:(d_ref(depth.descend(0,0))) (([token if token.kind == TokenKind::Greater] { () } / fail("a Cypher value token"))) c4:(v_value(depth.descend(0,0))) (([token if token.is_keyword(cx.input, "THEN")] { () } / fail("THEN"))) c6:(d_ref(depth.descend(0,0))) (([token if token.kind == TokenKind::Minus] { () } / fail("a Cypher value token"))) c8:(v_value(depth.descend(0,0))) (([token if token.is_keyword(cx.input, "ELSE")] { () } / fail("ELSE"))) c10:(v_value(depth.descend(0,0))) (([token if token.is_keyword(cx.input, "END")] { () } / fail("END"))) { (c2,c4,c6,c8,c10) })) end:position!() {? cx.node(226,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
@@ -2186,7 +2186,6 @@ fn recognize_inner<'a>(
                 matches!(
                     token.kind,
                     TokenKind::Word
-                        | TokenKind::QuotedIdentifier
                         | TokenKind::String
                         | TokenKind::Number
                         | TokenKind::RightParen
@@ -2227,7 +2226,7 @@ fn recognize_inner<'a>(
                 } else {
                     SyntaxErrorCode::UnexpectedToken
                 },
-                token.span,
+                token.span(),
             )
             .expected(error.expected)
             .found(token.text(input)))

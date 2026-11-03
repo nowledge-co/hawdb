@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Projection and aggregate grammar with direct AST lowering.
+use super::lexer::TokenKind as T;
 use super::Transformer;
 use crate::*;
 use hawdb_core::{ListFunction, Result, Value};
 use hawdb_sql_syntax::peg::NodeId;
-use hawdb_sql_syntax::TokenKind as T;
 impl Transformer<'_> {
     pub(super) fn projection_clause(
         &mut self,
@@ -324,7 +324,7 @@ impl Transformer<'_> {
         }
         let arg = self.tree.required(contents, rule_id!("r_sum"));
         let tokens = &self.tokens[self.tree.node(arg).start..self.tree.node(arg).end];
-        let ordinary_word = |token: &hawdb_sql_syntax::Token| {
+        let ordinary_word = |token: &super::lexer::Token| {
             token.kind == T::Word
                 && !["true", "false", "null"]
                     .iter()

@@ -3,11 +3,12 @@
 
 //! Cypher captures use token offsets within the existing 16 MiB input and
 //! 262144 node/edge budgets. Shared matcher memo heights are not stored here.
+use super::lexer::Token;
 use super::rust_peg::RULE_NAMES;
 use crate::{OrderItem, ReturnItem};
 use hawdb_core::Result;
 use hawdb_sql_syntax::peg::NodeId;
-use hawdb_sql_syntax::{Span, Token};
+use hawdb_sql_syntax::Span;
 use std::cell::RefCell;
 use std::ops::Range;
 
@@ -301,11 +302,11 @@ impl ParseTree {
     }
     pub(super) fn span(&self, node: NodeId, tokens: &[Token]) -> Span {
         let node = self.node(node);
-        let start = tokens[node.start].span.start;
+        let start = tokens[node.start].span().start;
         let end = if node.start == node.end {
             start
         } else {
-            tokens[node.end - 1].span.end
+            tokens[node.end - 1].span().end
         };
         Span::new(start, end)
     }

@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! WHERE recognition and index-compatible predicate AST construction.
+use super::lexer::TokenKind as T;
 use super::Transformer;
 use crate::*;
 use hawdb_core::{Result, Value};
 use hawdb_sql_syntax::peg::NodeId;
-use hawdb_sql_syntax::TokenKind as T;
 impl Transformer<'_> {
     pub(super) fn fold_where(
         &mut self,
@@ -357,7 +357,7 @@ impl Transformer<'_> {
                 if matches!(values.kind,
                     ValueExpressionKind::Parameter(_) | ValueExpressionKind::List(_))
                     && !values.kind.reads_row_binding());
-        if matches!(self.tokens[start].kind, T::Parameter(_) | T::LeftBracket)
+        if matches!(self.tokens[start].kind, T::Parameter | T::LeftBracket)
             && literal_values
             && let ScalarExpressionKind::Value(values) = right.kind
         {

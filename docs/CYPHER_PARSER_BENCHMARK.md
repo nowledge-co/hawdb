@@ -134,3 +134,40 @@ pairs, including four procedure-argument controls. The 163 existing allocation
 controls introduce no regression against the preceding PEG runtime; wide controls
 still have 14 regressing metrics against former main. Neither these controls nor
 this diagnostic change establishes complete resource or performance readiness.
+
+
+The Cypher lexer now owns a private token representation with lossless u32 byte
+offsets, justified by the existing 16 MiB admission limit. Named parameters carry
+no numeric ordinal in the lexer; AST lowering still reads their matched names.
+On the qualified native target, token storage falls from 24 to 12 bytes. The
+shared SQL token type and public ASTs are unchanged. Boundary tests cover the
+largest admitted offsets, EOF, UTF-8 text and parameter-token boundaries.
+
+The 21,944 independent AST/span/class outcomes match, and all 22,980 full
+rendered outputs equal the preceding PEG runtime. The 163 heap controls and 32
+additional boolean controls have no parent regressions. Against former main,
+wide-query regressing metrics decrease from 14 to 5; boolean regressing metrics
+decrease from 22 to 16. The remaining wide cases are a literal IN list (total and
+peak bytes), a property-heavy CREATE (allocation count), and rank CASE (total and
+peak bytes). Rank CASE changes from 51 allocations / 36,541 requested bytes /
+19,709 peak live bytes to 51 / 30,445 / 16,637. Former main is 105 / 26,239 /
+15,153, so requested/peak-byte readiness is still incomplete. Existing diagnostic
+differences and final-head performance qualification also remain open.
+
+
+An [eight-process parser comparison](benchmarks/cypher_peg_compact_tokens_2026_11_03/parser-timing.json)
+on the compact-token runtime preserves the original five queries, 11 samples and
+20,000 iterations. Equal-weighted throughput improves 25.7665 percent over former
+main; all five shapes improve. Four paired gains have a mean of 25.7939 percent
+and a small-sample 95 percent t interval of 22.2129 to 29.3750 percent. Mean CPU
+is 3.4610865 seconds former / 2.765941 seconds candidate. No compiler/test/benchmark
+interference was observed; other host activity was uncontrolled. These intervals
+describe this experiment. The unchanged-runtime tree and source hashes are bound
+in the report; final documentation adds the measurement artifacts.
+
+[Allocation evidence and reproduction sources](benchmarks/cypher_peg_compact_tokens_2026_11_03/README.md)
+retain all remaining regressing metrics. Retained AST bytes equal former main
+in all eleven wide cases. Cold/warm 256/512 KiB stack outcomes at optimization
+levels 1 and 3 match each build's own 8 MiB reference over all 21,944 inputs.
+The parser-throughput result does not establish current-main public E2E gains or
+complete diagnostic/resource readiness.

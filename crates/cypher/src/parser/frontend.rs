@@ -6,7 +6,8 @@
 
 use hawdb_core::{HawDBError, Result};
 use hawdb_sql_syntax::peg::{Limits, NodeId};
-use hawdb_sql_syntax::{SyntaxError, SyntaxErrorCode, Token};
+use hawdb_sql_syntax::{SyntaxError, SyntaxErrorCode};
+use lexer::Token;
 
 use super::{MAX_CYPHER_INPUT_BYTES, MAX_CYPHER_PARSER_DEPTH};
 use crate::*;

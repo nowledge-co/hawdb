@@ -16,7 +16,7 @@ impl Transformer<'_> {
             .any(|word| self.tokens[next].is_keyword(self.input, word))
         {
             return Err(self.error_at(
-                self.tokens[next].span.start,
+                self.tokens[next].span().start,
                 "computed UNWIND sources require a read pipeline",
             ));
         }

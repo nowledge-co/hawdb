@@ -229,7 +229,7 @@ impl<'a> Transformer<'a> {
                         .nth(2)
                         .expect("comparison property");
                     let preserve_older = self.tokens[self.tree.node(compared).end].kind
-                        == hawdb_sql_syntax::TokenKind::Less;
+                        == super::lexer::TokenKind::Less;
                     let incoming = values.remove(0);
                     let preserve = values.remove(0);
                     Ok(if preserve_older {

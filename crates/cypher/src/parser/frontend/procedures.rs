@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Procedure argument grammar and typed semantic lowering, without reparsing.
+use super::lexer::TokenKind as T;
 use hawdb_core::{Result, Value, VectorIndexQueryMode};
 use hawdb_sql_syntax::peg::NodeId;
-use hawdb_sql_syntax::TokenKind as T;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::Transformer;
@@ -542,8 +542,8 @@ impl Transformer<'_> {
                             let next_token = |position| {
                                 self.tokens[self
                                     .tokens
-                                    .partition_point(|token| token.span.start < position)]
-                                .span
+                                    .partition_point(|token| token.span().start < position)]
+                                .span()
                                 .start
                             };
                             if !columns[0].eq_ignore_ascii_case("node") {
@@ -583,7 +583,7 @@ impl Transformer<'_> {
                             let score = columns.get(index).ok_or_else(|| {
                                 self.error_at(
                                     trailing_comma
-                                        .map(|id| self.tokens[self.tree.node(id).end].span.start)
+                                        .map(|id| self.tokens[self.tree.node(id).end].span().start)
                                         .unwrap_or(self.input.len()),
                                     "expected identifier",
                                 )
@@ -638,13 +638,13 @@ impl Transformer<'_> {
             let span = item.span.expect("source return item");
             let start = self
                 .tokens
-                .partition_point(|token| token.span.start < span.start);
+                .partition_point(|token| token.span().start < span.start);
             let first = self.tokens[start];
             if matches!(
                 first.kind,
                 T::Number
                     | T::String
-                    | T::Parameter(_)
+                    | T::Parameter
                     | T::LeftBracket
                     | T::LeftParen
                     | T::Plus

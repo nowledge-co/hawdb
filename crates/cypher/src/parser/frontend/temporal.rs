@@ -32,7 +32,7 @@ impl Transformer<'_> {
             if scalar {
                 super::parse_error(
                     self.input,
-                    namespace.span.end,
+                    namespace.span().end,
                     &format!("unknown temporal function {}.*", namespace.text(self.input)),
                 )
             } else {
@@ -369,7 +369,7 @@ impl Transformer<'_> {
         let span = SourceSpan {
             start: self.tree.span(reference, self.tokens).start,
             end: self.tokens[self.tree.node(reference).end + usize::from(negated) + 1]
-                .span
+                .span()
                 .end,
         };
         Ok(AstNode::from_source(
@@ -394,7 +394,7 @@ impl Transformer<'_> {
                 let expression = self.captured_reference(refs[1], depth + 1)?;
                 let span = SourceSpan {
                     start: self.tree.span(lower, self.tokens).start,
-                    end: self.tokens[self.tree.node(refs[1]).end].span.end,
+                    end: self.tokens[self.tree.node(refs[1]).end].span().end,
                 };
                 let result =
                     AstNode::from_source(ScalarExpressionKind::Lower(Box::new(expression)), span);
