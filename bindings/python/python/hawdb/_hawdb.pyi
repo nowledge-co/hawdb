@@ -44,6 +44,7 @@ class Database:
         self, path: Optional[Union[str, "os.PathLike[str]"]] = None, read_only: bool = False,
         *, max_read_result_rows: Optional[int] = None,
         max_read_result_payload_bytes: Optional[int] = None,
+        namespace_durability_anchor: Optional[Union[str, "os.PathLike[str]"]] = None,
     ) -> None: ...
     @property
     def path(self) -> Optional[str]: ...
@@ -108,6 +109,7 @@ def open(
     path: Optional[Union[str, "os.PathLike[str]"]] = None, read_only: bool = False,
     *, max_read_result_rows: Optional[int] = None,
     max_read_result_payload_bytes: Optional[int] = None,
+    namespace_durability_anchor: Optional[Union[str, "os.PathLike[str]"]] = None,
 ) -> Database: ...
 def capabilities() -> Mapping[str, bool]:
     """Engine capabilities compiled into this extension (read-only)."""

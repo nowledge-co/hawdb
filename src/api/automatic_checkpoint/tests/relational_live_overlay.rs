@@ -488,17 +488,41 @@ fn steady_inserts_into_a_growing_table_keep_draining_the_live_overlay() {
     let mut peak_live_debt = [0u64; 4];
     let mut max_delta_entries = 0;
     let mut busy_retries = 0;
+    let started = Instant::now();
+    let mut last_log = started;
+    let mut logged_checkpoints = initial;
+    let initial_progress = db
+        .runtime
+        .checkpoint_control_for_test()
+        .work_progress
+        .load(Ordering::Relaxed);
     // Each drain folds about 47,000 lines (70% of the resident-byte envelope).
     // On c8d767cd the second drain's capture of the recovery delta plus the
     // live overlay is rejected three times, which stops automatic retries;
     // commit 48 (epoch 52) then fails with the #1464 admission error.
-    while db
-        .automatic_checkpoint_report()
-        .unwrap()
-        .unwrap()
-        .completed_checkpoints
-        < initial + 5
-    {
+    while {
+        let report = db.automatic_checkpoint_report().unwrap().unwrap();
+        let continuing = report.completed_checkpoints < initial + 5;
+        if continuing
+            && (commits == 0
+                || report.completed_checkpoints != logged_checkpoints
+                || last_log.elapsed() >= Duration::from_secs(5))
+        {
+            let control = db.runtime.checkpoint_control_for_test();
+            let diagnostics = {
+                let state = control.state.try_lock().ok();
+                wait_diagnostics(&control, state.as_deref(), started, initial_progress)
+            };
+            eprintln!(
+                "steady insert commits={commits}, busy_retries={busy_retries}; {diagnostics}; \
+                 report={report:?}; live={:?}",
+                debt(&db).relational_live,
+            );
+            last_log = Instant::now();
+            logged_checkpoints = report.completed_checkpoints;
+        }
+        continuing
+    } {
         assert!(commits < 240, "live-overlay pressure must drain five times");
         match insert_order_lines(&mut db, commits) {
             Ok(()) => commits += 1,
@@ -538,6 +562,11 @@ fn steady_inserts_into_a_growing_table_keep_draining_the_live_overlay() {
         }
     }
     let report = db.automatic_checkpoint_report().unwrap().unwrap();
+    eprintln!(
+        "steady insert verification elapsed={:?}, commits={commits}, \
+         busy_retries={busy_retries}, report={report:?}",
+        started.elapsed(),
+    );
     assert!(max_delta_entries > 0, "drains must overlap later commits");
     // Every rejected attempt left no trace: the table holds exactly the
     // acknowledged commits (checked below and after reopen).

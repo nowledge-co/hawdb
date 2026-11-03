@@ -29,6 +29,7 @@ use hawdb_plan_cypher::{LogicalPlan, Predicate};
 use std::collections::BTreeMap;
 
 mod candidates;
+mod union_safety;
 
 use candidates::{exact_union_index_seek_candidate, index_seek_from_conjunction};
 

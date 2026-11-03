@@ -497,6 +497,22 @@ also checks ordinary parameterized Cypher equality/IN/OR, fused projection plans
 ordered output and parameter rebinding under a 64-unit task budget. Its existing
 general root owner runs both default/minimal selections.
 
+Conjunctive Thread identity unions are covered by root
+`api::tests::thread_metadata_reads::union_residual` and optimizer
+`graph::tests::plan_structure::union_residual`, plus private access-path proof
+controls. Existing root general default/minimal and optimizer-graph CI owners
+retain these cases. The fixtures compare indexed/unindexed COALESCE and typed
+CASE/trim Space reads, parameter rebinding, native-node overlap deduplication,
+logical-id multiplicity, scope before LIMIT, missing indexes, the 64-lookup cap,
+complete residual predicates, cost competition, unsafe/UNKNOWN error fences,
+proof limits, unrequested 64 KiB bodies, typed query-memory refusals and canonical
+pinned snapshots across update/checkpoint/reopen. Replay with
+`cargo test --locked -p hawdb --lib union_residual` and
+`cargo test --locked -p hawdb-optimizer-graph --lib residual_union`.
+Candidate counters measure five unique matching identities in the synthetic
+fixture; they do not establish physical I/O or route latency. No test lane,
+feature matrix, profile, timeout or exclusive measurement gate changes.
+
 The `api::tests::materialized_views` family covers synchronous SQL view DDL,
 projection/group retractions, differential SELECT equality, admission refusals,
 rollback, concurrent commits, cascade deletes and WAL/checkpoint recovery.
@@ -628,14 +644,24 @@ nullable index version validation retains its existing table dependency.
 transaction kernels with diagnostic-only text, detecting accidental parser
 fallback. DDL, INSERT/RETURNING, UPDATE, DELETE and Strict Append preserve bound
 parameters, output refusal, earlier transaction work and publication. Root
-general and the native runtime lane own these cases. The relational crate's
+general and the native runtime lane own these cases.
+The same owner reuses a cached UPSERT across replacement values, transaction
+rollback and a second database with a different key type, proving that cached
+syntax still binds the current schema and parameters.
+The relational crate's
 prepared-mutation cases rebind current schemas/parameters and append routing;
 its existing manual statement compiler campaign reuses templates across inputs
 and compares independent typed writes. No new fuzz CI owner is introduced.
 
 `hawdb-sql::template_cache::tests` keeps branch-catalog inspection out of the
 selected branch's data-query cache without reparsing its returned template.
-The SQL crate unit owner covers eviction/hit behavior; the existing root recovery
+The same SQL crate unit owner covers separately bounded parsed DML retention,
+INSERT/UPSERT/UPDATE/DELETE reuse, SELECT isolation, disabled/oversized retention,
+churn and concurrent immutable hits. The mutation-retention child tests charge
+spare vector/string capacity and nested expressions. DML keeps current-state
+binding/compilation; only parse templates are retained (256 entries, 4 MiB total,
+256 KiB per entry, reduced or disabled by the existing entry configuration).
+The existing root recovery
 `branch_lifecycle` family preserves the ordinary database cache-isolation check.
 
 The executor `result_delivery::tests::borrowed` family checks native columnar
@@ -940,6 +966,19 @@ Brace notation describes several concrete labels; expand it before invoking
 Bazel. A family description does not imply every leaf belongs to every lane.
 
 ### Automatic-checkpoint frontend deadline controls
+
+The required `//:hawdb_unit_checkpoint_headroom_tests` label uses two native
+Bazel shards over the same checked root binary: the complete growing-table
+steady-insert regression in shard 0 and all other discovered controls in shard 1.
+Both retain exclusive scheduling, one libtest thread, the 900-second deadline,
+complete fixtures/assertions/retry bounds and ordinary features. The runner
+refuses invalid coordinates, empty selections and cross-shard substring overlap;
+`//:root_unit_partition_script_test` owns complete/disjoint inventory and protocol
+controls. Source-bound 31-case timings, both earlier Linux timeouts, progress
+diagnostics and local replay are in [checkpoint qualification](CHECKPOINT_HEADROOM_QUALIFICATION.md).
+This separates execution budgets and does not claim less total work or remote
+CI speedup. Issue [1512](https://github.com/nowledge-co/hawdb/issues/1512) retains
+independent progress/stability qualification.
 
 `//:hawdb_unit_checkpoint_headroom_tests` owns
 `api::automatic_checkpoint::tests::headroom` in the isolated default-feature root CI lane
@@ -1708,6 +1747,18 @@ surface as NotFound for the child. Preserve the requested absolute path in that
 refusal and leave the existing file untouched. The release profile and feature
 set match the existing Linux wheel lane.
 
+The same Python path family covers explicit `namespace_durability_anchor`
+forwarding through `open`, `Database` and DB-API `connect`: graph/SQL commit,
+writable/read-only reopen, string/PathLike boundaries, preservation of read
+ceilings, invalid-anchor refusal before project creation, conflicting live
+policy and refusal for in-memory opens. It uses the existing Bazel/Python
+Bindings lanes and profiles; replay `pytest tests/test_file.py -k namespace_anchor`
+and `pytest tests/test_dbapi.py -k namespace_anchor` from `bindings/python`
+with the corresponding installed wheel. The Python workflow retains the tested
+wheel by source SHA for manual host verification. CI's administrator process is
+separate from a native ordinary-user process receipt; boundary existence alone
+does not qualify physical power-loss persistence. Ref [#1255](https://github.com/nowledge-co/hawdb/issues/1255).
+
 The `registered_consumer_embedded` cases in
 `tests/support/embedded_consumer_coverage.rs` belong to `mvcc_staging_session`
 and its existing `registered_consumer` native-platform selection. Both default
@@ -1776,7 +1827,8 @@ in the existing TLA suite; native capacity-band tests own Tokio waiter renewal.
 - Both checkpoint targets are included through the existing required root unit
   suites. They reuse the ordinary root executable and global checked profile,
   each with one libtest thread, Bazel `exclusive` and the unchanged 900-second
-  deadline. Internal test-created concurrency remains intact. Automatic-checkpoint
+  deadline per invocation. The headroom label now owns the two native shards
+  documented above; the lifecycle target remains unsharded. Internal test-created concurrency remains intact. Automatic-checkpoint
   headroom CREATE failures retain the original success/refusal contract and phase,
   work-progress, wake/resource and libtest-concurrency diagnostics for
   [#1116](https://github.com/nowledge-co/hawdb/issues/1116); no caller retries or
