@@ -638,14 +638,24 @@ nullable index version validation retains its existing table dependency.
 transaction kernels with diagnostic-only text, detecting accidental parser
 fallback. DDL, INSERT/RETURNING, UPDATE, DELETE and Strict Append preserve bound
 parameters, output refusal, earlier transaction work and publication. Root
-general and the native runtime lane own these cases. The relational crate's
+general and the native runtime lane own these cases.
+The same owner reuses a cached UPSERT across replacement values, transaction
+rollback and a second database with a different key type, proving that cached
+syntax still binds the current schema and parameters.
+The relational crate's
 prepared-mutation cases rebind current schemas/parameters and append routing;
 its existing manual statement compiler campaign reuses templates across inputs
 and compares independent typed writes. No new fuzz CI owner is introduced.
 
 `hawdb-sql::template_cache::tests` keeps branch-catalog inspection out of the
 selected branch's data-query cache without reparsing its returned template.
-The SQL crate unit owner covers eviction/hit behavior; the existing root recovery
+The same SQL crate unit owner covers separately bounded parsed DML retention,
+INSERT/UPSERT/UPDATE/DELETE reuse, SELECT isolation, disabled/oversized retention,
+churn and concurrent immutable hits. The mutation-retention child tests charge
+spare vector/string capacity and nested expressions. DML keeps current-state
+binding/compilation; only parse templates are retained (256 entries, 4 MiB total,
+256 KiB per entry, reduced or disabled by the existing entry configuration).
+The existing root recovery
 `branch_lifecycle` family preserves the ordinary database cache-isolation check.
 
 The executor `result_delivery::tests::borrowed` family checks native columnar
