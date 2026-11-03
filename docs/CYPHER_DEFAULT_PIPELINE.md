@@ -54,6 +54,32 @@ at the WITH boundary; RETURN windows remain after lookup/aggregation. See
 [WITH semantics](CYPHER_WITH_SEMANTICS.md) and
 [cache eligibility](CYPHER_PLAN_CACHE_ELIGIBILITY.md).
 
+## Exact identity unions with residual filters
+
+A mandatory AND subtree can use the existing `IndexNodeUnionSeek` for a
+cross-property OR of scalar equalities/IN lists. Each arm must refer to the same
+node variable and have a declared scalar index; the existing 64-lookup ceiling
+and scan-versus-seek cost gate still apply. The union competes with ordinary
+conjunctive seeks. It deduplicates native node identities, and the complete
+original WHERE remains above it, including Space filtering before LIMIT.
+
+This covers Mem Thread identity reads with
+`(t.thread_id = $thread_id OR t.id = $thread_id)` plus a COALESCE Space equality.
+Canonical CASE/trim Space normalization can qualify when a public STRING
+property descriptor proves the input domain. Untyped/mixed properties retain
+ordinary evaluation for type-sensitive functions. A bounded whole-predicate
+proof rejects unsupported computation, wrong-variable references and proof
+budget overflow. UNKNOWN from a NULL/missing identity key can still evaluate a
+later AND conjunct, so checking only predicates before the OR is insufficient.
+No Boolean distribution or access extraction through NOT is performed.
+
+EXPLAIN retains `IndexNodeUnionSeek`; access-path decisions identify
+`node_conjunction_index_union_seek`, and execution reports the existing
+`OrUnion` candidate counts. Existing projected reads, deduplication admission,
+query budgets, cancellation and pinned-snapshot storage paths remain in use.
+The optimization establishes bounded candidate work in selective fixtures;
+physical I/O and endpoint latency need separate measurements.
+
 ## Row-bound node properties
 
 Read-only pipelines may start with a parameter or list-literal `UNWIND` source
