@@ -39,9 +39,24 @@ fn order_lines_sql(lines: std::ops::Range<i64>) -> String {
     )
 }
 
+/// Lines per INSERT statement. One statement of a whole district exceeds the
+/// SQL parser's memo limit, and only the commit's size matters to live
+/// admission, so a large commit is staged as several statements.
+const LINES_PER_STATEMENT: i64 = 5_000;
+
+/// The INSERT statements that stage `lines` in one transaction.
+fn order_line_statements(lines: std::ops::Range<i64>) -> impl Iterator<Item = String> {
+    let end = lines.end;
+    lines
+        .step_by(LINES_PER_STATEMENT as usize)
+        .map(move |start| order_lines_sql(start..(start + LINES_PER_STATEMENT).min(end)))
+}
+
 fn insert_line_range(db: &mut Database, lines: std::ops::Range<i64>) -> Result<()> {
     let mut transaction = db.begin_transaction()?;
-    transaction.query_sql(&order_lines_sql(lines))?;
+    for sql in order_line_statements(lines) {
+        transaction.query_sql(&sql)?;
+    }
     transaction.commit().map(|_| ())
 }
 
@@ -69,6 +84,19 @@ fn fill_order_lines(db: &mut Database) -> i64 {
         insert_order_lines(db, commit).unwrap();
     }
     FILL_COMMITS * ORDER_LINES_PER_COMMIT
+}
+
+/// Runs one autocommit statement, retrying only the bounded-wait
+/// `BranchBusy` that applies nothing (an unoptimized build can exceed it
+/// between builder work units).
+fn query_with_busy_retries(db: &mut Database, sql: &str) -> Result<()> {
+    for _ in 0..100 {
+        match db.query_sql(sql) {
+            Err(HawDBError::BranchBusy { .. }) => continue,
+            result => return result.map(|_| ()),
+        }
+    }
+    db.query_sql(sql).map(|_| ())
 }
 
 /// Commits `lines`, retrying only the bounded-wait `BranchBusy` that applies
@@ -144,6 +172,9 @@ fn district_sized_commits_above_the_free_headroom_drain_first_and_succeed() {
 
 const WIDE_COLUMNS: usize = 40;
 
+/// Wide rows per INSERT statement, within the SQL parser's memo limit.
+const WIDE_ROWS_PER_STATEMENT: i64 = 1_000;
+
 /// Rows of one primary key and forty BIGINT columns: about 2.7 KB each.
 fn wide_rows_sql(rows: std::ops::Range<i64>) -> String {
     let columns = (0..WIDE_COLUMNS)
@@ -181,15 +212,61 @@ fn a_commit_larger_than_the_whole_envelope_is_rejected_with_its_size_and_writes_
     let checkpoints = completed(&db);
     // 30,000 wide rows need about 80 MB: more than the 64 MiB envelope even
     // when the overlay is empty, so no drain can make room for them.
-    let sql = wide_rows_sql(0..30_000);
-    for explicit in [true, false] {
-        let error = if explicit {
-            let mut transaction = db.begin_transaction().unwrap();
-            transaction.query_sql(&sql).unwrap();
-            transaction.commit().unwrap_err()
-        } else {
-            db.query_sql(&sql).unwrap_err()
-        };
+    let mut transaction = db.begin_transaction().unwrap();
+    for start in (0..WIDE_ROWS).step_by(WIDE_ROWS_PER_STATEMENT as usize) {
+        transaction
+            .query_sql(&wide_rows_sql(start..start + WIDE_ROWS_PER_STATEMENT))
+            .unwrap();
+    }
+    let error = transaction.commit().unwrap_err();
+    assert_never_fits(&db, error, epoch, checkpoints);
+    let count = db
+        .query_sql("SELECT COUNT(*) AS n FROM wide")
+        .unwrap()
+        .rows
+        .into_rows();
+    assert_eq!(count[0].get("n"), Some(&Value::Int(0)));
+    assert_order_lines(&mut db, lines);
+    // The same rows committed in envelope-sized pieces and checkpointed; one
+    // autocommit UPDATE of all of them is again larger than the envelope.
+    for start in (0..WIDE_ROWS).step_by(WIDE_ROWS_PER_STATEMENT as usize) {
+        query_with_busy_retries(
+            &mut db,
+            &wide_rows_sql(start..start + WIDE_ROWS_PER_STATEMENT),
+        )
+        .unwrap();
+    }
+    db.checkpoint().unwrap();
+    let wide_sum = |db: &mut Database| {
+        db.query_sql("SELECT COUNT(*) AS n, SUM(c0) AS c0 FROM wide")
+            .unwrap()
+            .rows
+            .into_rows()
+    };
+    let staged = wide_sum(&mut db);
+    assert_eq!(staged[0].get("n"), Some(&Value::Int(WIDE_ROWS)));
+    let (epoch, checkpoints) = (db.commit_epoch().unwrap(), completed(&db));
+    let error = db
+        .query_sql(&format!(
+            "UPDATE wide SET c0 = c0 + 1 WHERE id >= 0 AND id < {WIDE_ROWS}"
+        ))
+        .unwrap_err();
+    assert_never_fits(&db, error, epoch, checkpoints);
+    assert_eq!(wide_sum(&mut db), staged);
+    // The handle keeps admitting commits that fit.
+    insert_order_lines(&mut db, FILL_COMMITS).unwrap();
+    let lines = lines + ORDER_LINES_PER_COMMIT;
+    drop(db);
+    let mut reopened = Database::open_with_config(&fixture.0, config()).unwrap();
+    assert_order_lines(&mut reopened, lines);
+    reopened.checkpoint().unwrap();
+    assert_order_line_totals(&mut reopened, lines);
+}
+
+/// Asserts that `error` is the live-overlay rejection of a commit larger than
+/// the whole envelope, and that it applied nothing and forced no drain.
+fn assert_never_fits(db: &Database, error: HawDBError, epoch: u64, checkpoints: u64) {
+    {
         let message = error.to_string();
         // The limit and the commit size are both named.
         assert!(
@@ -205,35 +282,52 @@ fn a_commit_larger_than_the_whole_envelope_is_rejected_with_its_size_and_writes_
         assert!(!db.storage_handle_poisoned().unwrap());
         assert_eq!(db.commit_epoch().unwrap(), epoch);
         // A commit that can never fit does not wait for or force a drain.
-        assert_eq!(completed(&db), checkpoints);
+        assert_eq!(completed(db), checkpoints);
     }
-    let count = db
-        .query_sql("SELECT COUNT(*) AS n FROM wide")
-        .unwrap()
-        .rows
-        .into_rows();
-    assert_eq!(count[0].get("n"), Some(&Value::Int(0)));
-    assert_order_lines(&mut db, lines);
-    // The handle keeps admitting commits that fit.
-    insert_order_lines(&mut db, FILL_COMMITS).unwrap();
-    let lines = lines + ORDER_LINES_PER_COMMIT;
-    drop(db);
-    let mut reopened = Database::open_with_config(&fixture.0, config()).unwrap();
-    assert_order_lines(&mut reopened, lines);
-    reopened.checkpoint().unwrap();
-    assert_order_line_totals(&mut reopened, lines);
 }
 
+const WIDE_ROWS: i64 = 30_000;
+
+/// First line of a district staged and checkpointed before the fill: lines
+/// 60,000..90,000 are exactly district 3, which the fill never reaches.
+const STAGED_DISTRICT_START: i64 = 60_000;
+
+/// One autocommit statement larger than the free headroom: an UPDATE of a
+/// whole checkpointed district. The statement text stays small, so the
+/// commit size, not the parser, is what the statement exercises.
 #[test]
 fn autocommit_statement_above_the_free_headroom_drains_first() {
     let fixture = Fixture::new();
     let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
-    let lines = fill_below_trigger(&mut db);
+    create_order_line(&mut db);
+    let staged = STAGED_DISTRICT_START..STAGED_DISTRICT_START + DISTRICT_LINES;
+    insert_line_range(&mut db, staged.clone()).unwrap();
+    db.checkpoint().unwrap();
+    let lines = fill_order_lines(&mut db);
     let before = completed(&db);
-    db.query_sql(&order_lines_sql(lines..lines + DISTRICT_LINES))
-        .unwrap();
+    query_with_busy_retries(
+        &mut db,
+        "UPDATE order_line SET ol_quantity = ol_quantity + 1 WHERE ol_w_id = 1 AND ol_d_id = 3",
+    )
+    .unwrap();
     assert!(completed(&db) > before);
-    assert_order_lines(&mut db, lines + DISTRICT_LINES);
+    // A district-wide read merges at most 16,384 live entries (#1480); fold
+    // the updated district before reading it back.
+    db.checkpoint().unwrap();
+    let rows = db
+        .query_sql(
+            "SELECT COUNT(*) AS n, SUM(ol_quantity) AS quantity FROM order_line \
+             WHERE ol_w_id = 1 AND ol_d_id = 3",
+        )
+        .unwrap()
+        .rows
+        .into_rows();
+    assert_eq!(rows[0].get("n"), Some(&Value::Int(DISTRICT_LINES)));
+    assert_eq!(
+        rows[0].get("quantity"),
+        Some(&Value::Int(DISTRICT_LINES * 6))
+    );
+    assert_order_lines(&mut db, lines);
 }
 
 /// Holds the idle checkpoint owner just before it starts the drain that a
@@ -312,16 +406,13 @@ fn line_query(line: i64) -> String {
 }
 
 /// Stages one district commit in a concurrent transaction, as statements of
-/// at most 5,000 lines: staging one statement there grows faster than its
-/// size, and only the commit's size matters to live admission.
+/// at most `LINES_PER_STATEMENT` lines.
 fn stage_district(
     transaction: &mut crate::ConcurrentDatabaseTransaction,
     lines: std::ops::Range<i64>,
 ) {
-    for start in lines.clone().step_by(5_000) {
-        transaction
-            .query_sql(&order_lines_sql(start..(start + 5_000).min(lines.end)))
-            .unwrap();
+    for sql in order_line_statements(lines) {
+        transaction.query_sql(&sql).unwrap();
     }
 }
 

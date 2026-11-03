@@ -119,9 +119,9 @@ fn a_commit_whose_deadline_expires_while_waiting_for_its_drain_applies_nothing()
         let writer = scope.spawn(move || {
             let result = {
                 let mut transaction = db.begin_transaction().unwrap();
-                transaction
-                    .query_sql(&order_lines_sql(lines..lines + DISTRICT_LINES))
-                    .unwrap();
+                for sql in order_line_statements(lines..lines + DISTRICT_LINES) {
+                    transaction.query_sql(&sql).unwrap();
+                }
                 // The deadline covers only the commit: its first attempt and
                 // the task check before the wait finish well inside it, and
                 // the test lets it pass while the drain is held.
