@@ -1880,25 +1880,75 @@ impl SearchIndex {
 
     #[cfg(feature = "vector-search")]
     fn build_in_memory_rabitq_projection(&self) -> Result<Option<Arc<RaBitQCandidateProjection>>> {
+        self.build_in_memory_rabitq_projection_with_context(None, None)
+    }
+
+    #[cfg(feature = "vector-search")]
+    fn lock_rabitq_projection(
+        &self,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<std::sync::MutexGuard<'_, Option<Arc<RaBitQCandidateProjection>>>> {
+        if task.is_none() {
+            return Ok(self
+                .rabitq_projection
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()));
+        }
+        loop {
+            task.map_or(Ok(()), crate::build_control::checkpoint)?;
+            match self.rabitq_projection.try_lock() {
+                Ok(guard) => return Ok(guard),
+                Err(std::sync::TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "vector-search")]
+    fn build_in_memory_rabitq_projection_with_context(
+        &self,
+        task: Option<&RuntimeTaskContext>,
+        max_working_bytes: Option<usize>,
+    ) -> Result<Option<Arc<RaBitQCandidateProjection>>> {
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         self.vector_scoring
             .validate(self.vector_index_descriptor.is_some())?;
         // Serialize the first build within a generation. Captured generations
         // reserve its complete build/cache capacity before a governed lease is
         // returned; concurrent readers must not allocate duplicate projections.
-        let mut cached = self
-            .rabitq_projection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut cached = self.lock_rabitq_projection(task)?;
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         if let Some(projection) = cached.as_ref() {
             return Ok(Some(Arc::clone(projection)));
+        }
+        if let Some(available) = max_working_bytes {
+            let required = RaBitQCandidateProjection::in_memory_capacity_bound(
+                &self.documents,
+                self.rabitq_projection_identity(0),
+                self.rabitq_build_options,
+            );
+            task.map_or(Ok(()), crate::build_control::checkpoint)?;
+            if required > available {
+                return Err(rabitq_projection::map_projection_error(
+                    hawdb_vector_projection::ProjectionError::ResourceBudgetExceeded {
+                        required,
+                        available,
+                    },
+                    "resident RaBitQ build/cache admission",
+                ));
+            }
         }
         let projection = RaBitQCandidateProjection::build_from_view(
             &self.documents,
             self.rabitq_projection_identity(0),
             self.rabitq_build_options,
             self.vector_metric(),
+            task,
         )?
         .map(Arc::new);
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         *cached = projection.clone();
         Ok(projection)
     }
@@ -3570,7 +3620,10 @@ impl SearchIndex {
         request: AdaptiveVectorSearchRequest,
         filtered_documents: &[&SearchDocument],
         embedding_dimension: usize,
-    ) -> PreparedAdaptiveVectorBackend {
+        execution: VectorSearchExecutionOptions<'_>,
+    ) -> Result<PreparedAdaptiveVectorBackend> {
+        let task = execution.task_context;
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         let document_count = self
             .documents
             .values()
@@ -3597,22 +3650,31 @@ impl SearchIndex {
             request.policy,
         );
         if preliminary.backend == AdaptiveVectorBackend::ScalarFlat {
-            return PreparedAdaptiveVectorBackend {
+            return Ok(PreparedAdaptiveVectorBackend {
                 decision: preliminary,
                 fallback_reason: None,
                 #[cfg(feature = "vector-search")]
                 projection: None,
-            };
+            });
         }
 
         #[cfg(feature = "vector-search")]
         {
-            let projection = self.rabitq_projection().or_else(|| {
+            let cached = self.lock_rabitq_projection(task)?.clone();
+            let projection = cached.or_else(|| {
                 self.path
                     .is_none()
-                    .then(|| self.build_in_memory_rabitq_projection().ok().flatten())
+                    .then(|| {
+                        self.build_in_memory_rabitq_projection_with_context(
+                            task,
+                            Some(execution.max_working_bytes),
+                        )
+                        .ok()
+                        .flatten()
+                    })
                     .flatten()
             });
+            task.map_or(Ok(()), crate::build_control::checkpoint)?;
             let covered_document_count = projection
                 .as_ref()
                 .map(|projection| {
@@ -3630,22 +3692,22 @@ impl SearchIndex {
                 request.policy,
             );
             let fallback_reason = adaptive_vector_fallback_reason(decision);
-            PreparedAdaptiveVectorBackend {
+            Ok(PreparedAdaptiveVectorBackend {
                 projection: (decision.backend == AdaptiveVectorBackend::QuantizedProjection)
                     .then_some(projection)
                     .flatten(),
                 decision,
                 fallback_reason,
-            }
+            })
         }
 
         #[cfg(not(feature = "vector-search"))]
         {
             let decision = select_adaptive_vector_backend(decision_input(false, 0), request.policy);
-            PreparedAdaptiveVectorBackend {
+            Ok(PreparedAdaptiveVectorBackend {
                 decision,
                 fallback_reason: adaptive_vector_fallback_reason(decision),
-            }
+            })
         }
     }
 
@@ -3703,6 +3765,12 @@ impl SearchIndex {
             capture_candidate_ids,
             vector_execution_options,
         } = strategy;
+        let query_can_generate_candidates = vector_execution::query_can_generate_candidates(
+            query_embedding,
+            self.embedding_dimension,
+            self.vector_metric(),
+            vector_execution_options,
+        )?;
         let query_terms = tokenize(query_text, &self.analyzer_lexicon);
         let mut vector_fallback_reason_codes = Vec::new();
         let mut vector_fallback_reasons = Vec::new();
@@ -3784,28 +3852,13 @@ impl SearchIndex {
             if matches!(vector_backend_request, VectorSearchBackendRequest::Default)
                 && self.rabitq_backend_selected()
                 && mode != SearchMode::Text
-                && query_embedding.is_some()
+                && query_can_generate_candidates
                 && limit != 0
             {
-                if let Some(projection) = self.rabitq_projection() {
-                    Some(projection)
-                } else {
-                    let required = RaBitQCandidateProjection::in_memory_capacity_bound(
-                        &self.documents,
-                        self.rabitq_projection_identity(0),
-                        self.rabitq_build_options,
-                    );
-                    if required > vector_execution_options.max_working_bytes {
-                        return Err(rabitq_projection::map_projection_error(
-                            hawdb_vector_projection::ProjectionError::ResourceBudgetExceeded {
-                                required,
-                                available: vector_execution_options.max_working_bytes,
-                            },
-                            "resident RaBitQ build/cache admission",
-                        ));
-                    }
-                    self.build_in_memory_rabitq_projection()?
-                }
+                self.build_in_memory_rabitq_projection_with_context(
+                    vector_execution_options.task_context,
+                    Some(vector_execution_options.max_working_bytes),
+                )?
             } else {
                 None
             };
@@ -3819,15 +3872,9 @@ impl SearchIndex {
                             required: true,
                         }
                     } else {
-                        let valid_query = query_embedding.is_some_and(|vector| {
-                            Some(vector.len()) == self.embedding_dimension
-                                && !vector.is_empty()
-                                && vector.iter().all(|coordinate| coordinate.is_finite())
-                                && vector.iter().any(|coordinate| *coordinate != 0.0)
-                        });
                         if !vector_execution_options.exact
                             && mode != SearchMode::Text
-                            && valid_query
+                            && query_can_generate_candidates
                         {
                             let candidate_limit = options
                             .offset
@@ -3863,7 +3910,7 @@ impl SearchIndex {
             }
             VectorSearchBackendRequest::Fixed(backend) => backend,
             VectorSearchBackendRequest::Adaptive(request)
-                if mode != SearchMode::Text && query_embedding.is_some() =>
+                if mode != SearchMode::Text && query_can_generate_candidates =>
             {
                 prepared_adaptive_backend = Some(
                     self.prepare_adaptive_vector_backend(
@@ -3871,7 +3918,8 @@ impl SearchIndex {
                         &filtered_documents,
                         self.embedding_dimension
                             .unwrap_or_else(|| query_embedding.map_or(0, <[f32]>::len)),
-                    ),
+                        vector_execution_options,
+                    )?,
                 );
                 prepared_adaptive_backend
                     .as_ref()

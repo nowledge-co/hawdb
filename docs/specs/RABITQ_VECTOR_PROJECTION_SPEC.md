@@ -110,8 +110,11 @@ use RaBitQ for a RaBitQ-only vector closure; missing or incompatible layers
 within that closure are errors. A mixed DiskANN/compatible-codec closure retains
 its existing scalar path and zero-cosine behavior. No implicit scalar fallback or empty successful result may hide a declared
 codec scan failure. Resident default construction admits the complete derived
-cache/build bound before allocating it; a query budget refusal leaves the cache
-unbuilt. Required scans propagate execution failures.
+cache/build bound before allocating it; invalid dimensions/non-finite requests
+and cancelled tasks cannot populate a cold cache. Zero queries remain valid
+for squared L2 and absent for cosine. Cache lock waits and each construction
+row honor the query task; cancellation discards the private partial builder. A
+query budget refusal leaves the cache unbuilt. Required scans propagate execution failures.
 Explicit exact execution bypasses approximate selection. Advanced calls that
 explicitly set `CompressedVectorSearchMode` retain Disabled/Preferred/Required
 semantics; an out-of-core execution context's default is Disabled. Query limits,

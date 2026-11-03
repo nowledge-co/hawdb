@@ -5,6 +5,80 @@ use super::*;
 use hawdb_vector_projection::{ProjectionMetric, RaBitQBitWidth};
 
 #[test]
+fn cold_rabitq_queries_validate_before_building_and_keep_l2_zero_queries_valid() {
+    let fixture = squared_l2_fixture();
+    for scoring in [
+        SearchVectorScoring::ProjectionMetric,
+        SearchVectorScoring::LinearSquaredL2,
+    ] {
+        let mut index = SearchIndex::in_memory();
+        index.set_vector_scoring(scoring).unwrap();
+        index.set_rabitq_projection_build_options(Default::default());
+        for row in &fixture.documents {
+            index.upsert(fixture.document(row)).unwrap();
+        }
+        let mut nan = fixture.query.clone();
+        nan[0] = f32::NAN;
+        let mut infinite = fixture.query.clone();
+        infinite[0] = f32::INFINITY;
+        for query in [vec![1.0], Vec::new(), nan, infinite] {
+            for compressed in [false, true] {
+                let result = if compressed {
+                    index.try_search_with_options_adaptive_vector_projection_context(
+                        "",
+                        Some(&query),
+                        SearchMode::Vector,
+                        options(1, None),
+                        AdaptiveVectorSearchOptions::new(CompressedVectorSearchMode::Required),
+                        VectorSearchExecutionOptions::default(),
+                    )
+                } else {
+                    index.search_with_options(
+                        "",
+                        Some(&query),
+                        SearchMode::Vector,
+                        options(1, None),
+                    )
+                };
+                if let Ok(result) = result {
+                    assert!(result.hits.is_empty());
+                }
+                assert!(
+                    index.rabitq_projection().is_none(),
+                    "{scoring:?}, dimension={}, first={:?}",
+                    query.len(),
+                    query.first()
+                );
+            }
+        }
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
+        cancellation.cancel();
+        let task = hawdb_core::RuntimeTaskContext::without_deadline(cancellation);
+        let result = index.try_search_with_options_context(
+            "",
+            Some(&fixture.query),
+            SearchMode::Vector,
+            options(1, None),
+            VectorSearchExecutionOptions::admitted(64 << 20, &task),
+        );
+        assert!(result.unwrap_err().to_string().contains("cancel"));
+        assert!(index.rabitq_projection().is_none());
+        let zero = vec![0.0; fixture.query.len()];
+        let result = index
+            .search_with_options("", Some(&zero), SearchMode::Vector, options(1, None))
+            .unwrap();
+        if scoring == SearchVectorScoring::LinearSquaredL2 {
+            assert_eq!(result.hits[0].id, "u-zero");
+            assert_eq!(result.hits[0].score, 1.0);
+            assert!(index.rabitq_projection().is_some());
+        } else {
+            assert!(result.hits.is_empty());
+            assert!(index.rabitq_projection().is_none());
+        }
+    }
+}
+
+#[test]
 fn declared_rabitq_budget_failures_refuse_before_cache_build_or_partial_results() {
     let fixture = squared_l2_fixture();
     let mut index = SearchIndex::in_memory();
