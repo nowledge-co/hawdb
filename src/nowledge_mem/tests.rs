@@ -7878,9 +7878,8 @@ fn embedded_vector_seed_preserves_ordinary_squared_l2_score() {
         let root = unique_nowledge_mem_test_dir("linear_squared_l2_seed");
         let mut graph =
             NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-        graph
-            .query("CREATE (:Memory {id: 'scaled'}), (:Memory {id: 'near'})")
-            .unwrap();
+        graph.query("CREATE (:Memory {id: 'scaled'})").unwrap();
+        graph.query("CREATE (:Memory {id: 'near'})").unwrap();
         let mut index = SearchIndex::open(&root).unwrap();
         index
             .set_vector_scoring(crate::SearchVectorScoring::LinearSquaredL2)
