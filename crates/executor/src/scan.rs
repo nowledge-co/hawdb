@@ -1346,6 +1346,23 @@ pub(crate) fn execute_node_column_lookup_owned(
     let mut allocate_keys =
         |bytes| crate::store::admit_graph_read(&key_account, context.task_context, bytes);
     let admission = hawdb_storage::read_view::GraphReadAdmission::new(&mut allocate_keys);
+    // A row limit keeps the per-row path, which stops reading at the limit;
+    // the batched access reads every match of the batch first (#1545).
+    if let Some(label_id) = exact_label
+        && context.execution_limit.output_rows.is_none()
+    {
+        return execute_batched_node_column_lookup(
+            spec,
+            input,
+            context,
+            observer,
+            BatchedLookup {
+                label_id,
+                label_ids: label_ids.as_deref(),
+                admission: &admission,
+            },
+        );
+    }
     let lookup_value_count = {
         let mut values = hawdb_storage::read_view::AdmittedKeySet::new(&admission)?;
         for binding in &input {
@@ -1361,20 +1378,6 @@ pub(crate) fn execute_node_column_lookup_owned(
         }
         values.len()
     };
-    if let Some(label_id) = exact_label {
-        return execute_batched_node_column_lookup(
-            spec,
-            input,
-            context,
-            observer,
-            BatchedLookup {
-                label_id,
-                label_ids: label_ids.as_deref(),
-                admission: &admission,
-                lookup_value_count,
-            },
-        );
-    }
     let mut unique_ids = hawdb_storage::read_view::AdmittedKeySet::new(&admission)?;
     let mut output = Vec::new();
     let mut allocations = owned::allocation_vector(context)?;
@@ -1499,16 +1502,8 @@ struct BatchedLookup<'a, 'b> {
     label_id: LabelId,
     label_ids: Option<&'a [LabelId]>,
     admission: &'a hawdb_storage::read_view::GraphReadAdmission<'b>,
-    lookup_value_count: usize,
 }
 
-/// One label access for every distinct lookup value, then an in-memory join.
-///
-/// The per-row path issued one `PropertyValues` access for each input row,
-/// which is a label scan per row when the property has no index (#1544). The
-/// matched records are admitted once by the scan; every output row is admitted
-/// separately, as on the per-row path. Output keeps input order, and the scan
-/// order of the matches for each value.
 /// A matched record and its scan admission, kept until the join completes.
 struct LookupMatch {
     node: NodeRecord,
@@ -1516,6 +1511,15 @@ struct LookupMatch {
     sequence: usize,
 }
 
+/// One label access for every distinct lookup value of an input batch, then an
+/// in-memory join.
+///
+/// The per-row path issues one `PropertyValues` access for each input row,
+/// which is a label scan per row when the property has no index (#1544). Here
+/// each input batch costs one access. The matched records stay admitted by the
+/// scan until the join completes, and every output row is admitted separately,
+/// as on the per-row path, so a batch holds its matches as well as its output.
+/// Output keeps input order, and the scan order of the matches for each value.
 fn execute_batched_node_column_lookup(
     spec: NodeColumnLookupSpec<'_>,
     input: Vec<Binding>,
@@ -1577,6 +1581,8 @@ fn execute_batched_node_column_lookup(
             &mut visit,
         )?;
     }
+    let lookup_value_count = values.len();
+    drop(values);
     let key = spec.property;
     fn property<'m>(record: &'m LookupMatch, key: &str) -> &'m Value {
         record
@@ -1668,7 +1674,7 @@ fn execute_batched_node_column_lookup(
     record_node_column_lookup_report(
         lookup.label_id,
         spec.property,
-        lookup.lookup_value_count,
+        lookup_value_count,
         unique_ids.len(),
         output.len(),
         context.store,

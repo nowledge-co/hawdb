@@ -344,17 +344,20 @@ Conjunctive row-sourced column lookups ([#1544](https://github.com/nowledge-co/h
 are owned by the existing `logical::pipeline::tests` planner target and root
 `api::tests::node_column_lookup_conjuncts` in `//:hawdb_unit_general_tests`.
 The planner case requires one `node.property = column` conjunct to become the
-`NodeColumnLookup` key with the remaining conjuncts as a residual filter, in
-any conjunct position and through nested conjunctions; optional MATCH, a
-fallible residual (a function call) and `column = property` keep the per-row
-scan. The root case compares the lookup with that scan, row for row and in
-order, for duplicate, NULL and missing keys, a second label sharing the
-property, residual filters and LIMIT, and checks that an optional conjunctive
-MATCH keeps its NULL rows. The existing `indexed_lookup` fallible-conjunct
-regression still requires the scan's error. Replay with `cargo test --locked
--p hawdb --lib node_column_lookup_conjuncts` and `cargo test --locked -p
-hawdb-plan-cypher --lib conjunctive_column_constraints`. No CI lane or timeout
-is added.
+`NodeColumnLookup` key with the remaining conjuncts as its node predicate, in
+any conjunct position and through nested conjunctions. Optional MATCH, a
+fallible residual (a function call), `column = property`, and another equality
+or membership test on the node (which an index could serve) keep the per-row
+scan. The root differential compares the lookup with that scan row for row and
+in order, without and with an index on the key, for duplicate, NULL, missing
+and mixed integer/float keys, a second label sharing the property, a residual
+on a missing property, and LIMIT. Further cases check that another indexed
+equality keeps the scan, that `LIMIT 1` reads one candidate (key-only and
+conjunctive), and that an optional conjunctive MATCH keeps its NULL rows. The
+existing `indexed_lookup` fallible-conjunct regression still requires the
+scan's error. Replay with `cargo test --locked -p hawdb --lib
+node_column_lookup_conjuncts` and `cargo test --locked -p hawdb-plan-cypher
+--lib conjunctive_column_constraints`. No CI lane or timeout is added.
 
 Anchored optional relationship-count sums are covered by root
 `api::tests::optional_match::count_source` in the existing

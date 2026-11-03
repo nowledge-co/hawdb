@@ -177,10 +177,10 @@ fn introduces_expand_bindings(
 /// column lookup operator instead of scanning every node and filtering it.
 ///
 /// A mandatory MATCH may carry further conjuncts: one `node.property = column`
-/// conjunct becomes the lookup key and the others filter the lookup output, so
+/// conjunct becomes the lookup key and the others its node predicate, so
 /// each upstream row no longer scans the label (#1544). The other conjuncts
-/// must be infallible. An optional MATCH keeps a lone key only: a filter above
-/// it would remove its required NULL row.
+/// must be infallible and must not include another equality on the node, which
+/// an index could serve. An optional MATCH still requires a lone key.
 fn column_node_lookup(program: &GraphMatchProgram, input: LogicalPlan) -> Option<LogicalPlan> {
     if !program.imports.is_empty() || !introduced_bindings_are_disjoint(program, &input) {
         return None;
@@ -200,16 +200,16 @@ fn column_node_lookup(program: &GraphMatchProgram, input: LogicalPlan) -> Option
     let key = conjuncts
         .iter()
         .position(|conjunct| lookup_key(conjunct, &node.variable).is_some())?;
+    // Planning has no index catalog. Another equality on the node may be the
+    // indexed one the per-row path would seek, so keep that path (#1545).
+    if conjuncts
+        .iter()
+        .enumerate()
+        .any(|(index, conjunct)| index != key && node_equality(conjunct, &node.variable))
+    {
+        return None;
+    }
     let (property, column) = lookup_key(conjuncts[key], &node.variable)?;
-    let lookup = LogicalPlan::NodeColumnLookup {
-        variable: node.variable.clone(),
-        label: node.label.clone(),
-        property: property.to_owned(),
-        column: column.to_owned(),
-        optional: program.optional,
-        node_visibility_predicate: None,
-        input: Box::new(input),
-    };
     let mut residual = conjuncts
         .into_iter()
         .enumerate()
@@ -219,19 +219,28 @@ fn column_node_lookup(program: &GraphMatchProgram, input: LogicalPlan) -> Option
     // The scan evaluates every conjunct on every candidate node, so a
     // conjunct that can fail surfaces its error even when the key matches no
     // node. Defer only conjuncts that cannot fail, keeping that contract.
-    if !residual.iter().all(infallible_predicate) {
+    if !residual
+        .iter()
+        .all(|conjunct| infallible_predicate(conjunct, &node.variable))
+    {
         return None;
     }
-    Some(match residual.len() {
-        0 => lookup,
-        1 => LogicalPlan::Filter {
-            predicate: residual.pop().expect("one residual conjunct"),
-            input: Box::new(lookup),
-        },
-        _ => LogicalPlan::Filter {
-            predicate: Predicate::And(residual),
-            input: Box::new(lookup),
-        },
+    // The remaining conjuncts become the lookup's node predicate, which it
+    // evaluates on each matched node before counting the row, so a row limit
+    // still stops the lookup. Visibility policies extend the same predicate.
+    let node_predicate = match residual.len() {
+        0 => None,
+        1 => residual.pop(),
+        _ => Some(Predicate::And(residual)),
+    };
+    Some(LogicalPlan::NodeColumnLookup {
+        variable: node.variable.clone(),
+        label: node.label.clone(),
+        property: property.to_owned(),
+        column: column.to_owned(),
+        optional: program.optional,
+        node_visibility_predicate: node_predicate,
+        input: Box::new(input),
     })
 }
 
@@ -249,38 +258,53 @@ fn flatten_conjuncts<'a>(predicate: &'a Predicate, conjuncts: &mut Vec<&'a Predi
 /// Predicates whose evaluation cannot raise an error on any binding; anything
 /// else keeps the per-row scan. Deliberately conservative: comparisons,
 /// string operators and function calls are excluded.
-fn infallible_predicate(predicate: &Predicate) -> bool {
+/// Only properties of the matched node itself are admitted, so no conjunct
+/// depends on another binding being declared.
+fn infallible_predicate(predicate: &Predicate, node: &str) -> bool {
     match predicate {
-        Predicate::And(predicates) | Predicate::Or(predicates) => {
-            predicates.iter().all(infallible_predicate)
-        }
-        Predicate::Not(predicate) => infallible_predicate(predicate),
-        Predicate::ConstantBool(_)
-        | Predicate::PropertyEq { .. }
-        | Predicate::PropertyNotEq { .. }
-        | Predicate::PropertyIn { .. }
-        | Predicate::PropertyIsNull { .. }
-        | Predicate::PropertyIsNotNull { .. }
+        Predicate::And(predicates) | Predicate::Or(predicates) => predicates
+            .iter()
+            .all(|predicate| infallible_predicate(predicate, node)),
+        Predicate::Not(predicate) => infallible_predicate(predicate, node),
+        Predicate::ConstantBool(_) => true,
+        Predicate::PropertyEq { variable, .. }
+        | Predicate::PropertyNotEq { variable, .. }
+        | Predicate::PropertyIn { variable, .. }
+        | Predicate::PropertyIsNull { variable, .. }
+        | Predicate::PropertyIsNotNull { variable, .. }
         // The pattern is validated at planning; non-strings do not match.
-        | Predicate::PropertyRegexMatch { .. } => true,
+        | Predicate::PropertyRegexMatch { variable, .. } => variable == node,
         Predicate::ExpressionEq { expression, value }
         | Predicate::ExpressionNotEq { expression, value } => {
-            infallible_expression(expression) && infallible_expression(value)
+            infallible_expression(expression, node) && infallible_expression(value, node)
         }
         _ => false,
     }
 }
 
-fn infallible_expression(expression: &ProjectionExpression) -> bool {
+fn infallible_expression(expression: &ProjectionExpression, node: &str) -> bool {
     match expression {
-        ProjectionExpression::Property { .. }
-        | ProjectionExpression::Column(_)
-        | ProjectionExpression::Literal(_)
-        | ProjectionExpression::DefaultIfNullOrEq { .. }
-        | ProjectionExpression::DefaultIfNull { .. } => true,
-        ProjectionExpression::Coalesce(expressions) => {
-            expressions.iter().all(infallible_expression)
+        ProjectionExpression::Column(_) | ProjectionExpression::Literal(_) => true,
+        ProjectionExpression::Property { variable, .. }
+        | ProjectionExpression::DefaultIfNullOrEq { variable, .. }
+        | ProjectionExpression::DefaultIfNull { variable, .. } => variable == node,
+        ProjectionExpression::Coalesce(expressions) => expressions
+            .iter()
+            .all(|expression| infallible_expression(expression, node)),
+        _ => false,
+    }
+}
+
+/// An equality or membership test on a plain property of `node`, in either
+/// orientation: the per-row path can seek such a conjunct through an index.
+fn node_equality(predicate: &Predicate, node: &str) -> bool {
+    let property = |expression: &ProjectionExpression| matches!(expression, ProjectionExpression::Property { variable, .. } if variable == node);
+    match predicate {
+        Predicate::PropertyEq { variable, .. } | Predicate::PropertyIn { variable, .. } => {
+            variable == node
         }
+        Predicate::ExpressionEq { expression, value } => property(expression) || property(value),
+        Predicate::ExpressionIn { expression, .. } => property(expression),
         _ => false,
     }
 }
