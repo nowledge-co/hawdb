@@ -819,25 +819,30 @@ fn vector_index_canonical_completion_rejects_late_builder_mutation() {
 
 #[test]
 fn vector_index_incremental_retains_explicit_rabitq_and_euclidean_zero_semantics() {
-    for euclidean in [false, true] {
+    for (euclidean, rabitq_bits) in [
+        (false, Some(1)),
+        (true, None),
+        (true, Some(1)),
+        (true, Some(4)),
+    ] {
         let fixture = Fixture::new();
         let mut db = fixture.database();
         db.query_sql("CREATE TABLE vectors (id BIGINT PRIMARY KEY, embedding VECTOR(2))")
             .unwrap();
-        let options = if euclidean {
-            VectorIndexBuildOptions {
-                distance: VectorDistance::Euclidean,
-                ..Default::default()
-            }
-        } else {
-            VectorIndexBuildOptions {
-                backend: VectorIndexBackend::RaBitQ {
-                    bit_width: 1,
+        let options = VectorIndexBuildOptions {
+            distance: if euclidean {
+                VectorDistance::Euclidean
+            } else {
+                VectorDistance::Cosine
+            },
+            backend: rabitq_bits.map_or_else(VectorIndexBackend::default, |bit_width| {
+                VectorIndexBackend::RaBitQ {
+                    bit_width,
                     segment_rows: 64,
                     transform_seed: 42,
-                },
-                ..Default::default()
-            }
+                }
+            }),
+            ..Default::default()
         };
         let first = if euclidean { [0.0, 0.0] } else { [1.0, 0.0] };
         for (id, vector) in [(1, first), (2, [0.0, 1.0])] {
