@@ -607,15 +607,32 @@ fn squared_l2_refuses_conflicting_bindings_compression_and_corrupt_metadata() {
         }
     )
     .is_err());
-    for header in [
-        "vector_scoring\tlinear_squared_l2\nvector_scoring\tlinear_squared_l2\n",
-        "vector_scoring\tunknown\n",
-        "vector_scoring\tlinear_squared_l2\nrabitq_checkpoint\t4\t16\t1\n",
+    let snapshot = |header: &str| {
+        let body = format!("HAWDB_SEARCH_PROJECTION_V1\n{header}");
+        format!("{body}checksum\t{}\n", checksum_bytes(body.as_bytes()))
+    };
+    let mut valid = SearchIndex::in_memory();
+    valid
+        .parse_snapshot_text(&snapshot("vector_scoring\tlinear_squared_l2\n"))
+        .unwrap();
+    assert_eq!(valid.vector_scoring(), SearchVectorScoring::LinearSquaredL2);
+    for (header, reason) in [
+        (
+            "vector_scoring\tlinear_squared_l2\nvector_scoring\tlinear_squared_l2\n",
+            "duplicate or misplaced vector scoring",
+        ),
+        (
+            "vector_scoring\tunknown\n",
+            "invalid search projection line",
+        ),
+        (
+            "vector_scoring\tlinear_squared_l2\nrabitq_checkpoint\t4\t16\t1\n",
+            "ordinary exact/DiskANN projection",
+        ),
     ] {
         let mut restored = SearchIndex::in_memory();
-        assert!(restored
-            .parse_snapshot_text(&format!("HAWDB_SEARCH_PROJECTION_V1\n{header}"))
-            .is_err());
+        let error = restored.parse_snapshot_text(&snapshot(header)).unwrap_err();
+        assert!(error.to_string().contains(reason), "{error}");
     }
 }
 
