@@ -31,6 +31,15 @@ case "${partition}" in
   *) echo "unknown root unit partition: ${partition}" >&2; exit 64 ;;
 esac
 
+total_shards="${TEST_TOTAL_SHARDS:-1}"
+shard_index="${TEST_SHARD_INDEX:-0}"
+if [[ ! "${total_shards}" =~ ^[12]$ || ! "${shard_index}" =~ ^[01]$ ]] ||
+  (( shard_index >= total_shards )) ||
+  [[ "${total_shards}" != 1 && "${partition}" != checkpoint_headroom ]]; then
+  echo 'invalid root unit shard coordinates' >&2
+  exit 64
+fi
+
 inventory="$(mktemp "${TEST_TMPDIR:-${TMPDIR:-/tmp}}/hawdb-unit-partition.XXXXXX")"
 trap 'rm -f "${inventory}"' EXIT
 "${partition_binary}" --list >"${inventory}"
@@ -76,6 +85,28 @@ if [[ ${owned_cases} -eq 0 ]]; then
   echo "root unit partition has no discovered cases: ${partition}" >&2
   exit 1
 fi
+if [[ "${total_shards}" == 2 ]]; then
+  # The source-bound timing inventory identifies this complete workload as
+  # most of the headroom lane. New controls inherit shard 1; renaming or losing
+  # the workload refuses an empty shard instead of silently omitting coverage.
+  growing_table_case=api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay
+  selected_names=()
+  for owned_name in "${owned_names[@]}"; do
+    if { [[ "${shard_index}" == 0 && "${owned_name}" == "${growing_table_case}" ]]; } ||
+      { [[ "${shard_index}" == 1 && "${owned_name}" != "${growing_table_case}" ]]; }; then
+      selected_names+=("${owned_name}")
+    else
+      partition_args+=(--skip "${owned_name}")
+      skipped_names+=("${owned_name}")
+    fi
+  done
+  if [[ ${#selected_names[@]} -eq 0 ]]; then
+    echo "root unit partition leaves an empty shard: ${partition} ${shard_index}/${total_shards}" >&2
+    exit 1
+  fi
+  echo "root unit shard ${partition} ${shard_index}/${total_shards}: ${#selected_names[@]}/${owned_cases} discovered cases"
+  owned_names=("${selected_names[@]}")
+fi
 if [[ ${#skipped_names[@]} -gt 0 ]]; then
   # Without --exact, libtest treats even complete --skip names as substrings.
   # Reject inventories that would silently suppress a case owned here.
@@ -88,6 +119,7 @@ if [[ ${#skipped_names[@]} -gt 0 ]]; then
     done
   done
 fi
+if [[ -n "${TEST_SHARD_STATUS_FILE:-}" ]]; then touch "${TEST_SHARD_STATUS_FILE}"; fi
 rm -f "${inventory}"
 trap - EXIT
 exec "${partition_args[@]}" "$@"

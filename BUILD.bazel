@@ -433,6 +433,9 @@ rust_test(
         # Evidence: https://github.com/nowledge-co/hawdb/issues/972 and
         # https://github.com/nowledge-co/hawdb/issues/1027.
         timeout = "eternal" if partition in ["concurrent", "analytics_rss"] else "long",
+        # Keep the growing-table workload out of the timing controls' shared
+        # deadline while retaining the same executable and serial isolation.
+        shard_count = 2 if partition == "checkpoint_headroom" else 0,
         # Wall-clock capacity and dense RSS fixtures must not compete with other
         # test executables here. External contention remains possible.
         tags = ["exclusive"] if partition in ["analytics_rss", "checkpoint_headroom", "checkpoint_lifecycle"] else [],
@@ -442,7 +445,11 @@ rust_test(
             partition,
             "--skip",
             _HAWDB_STORAGE_CRASH_MATRIX_TEST,
-        ] + (["--test-threads=1"] if partition in ["checkpoint_headroom", "checkpoint_lifecycle"] else []),
+        ] + (
+            ["--test-threads=1"] if partition in ["checkpoint_headroom", "checkpoint_lifecycle"] else []
+        ) + (
+            ["--nocapture"] if partition == "checkpoint_headroom" else []
+        ),
         data = [":hawdb_unit_test_binary"],
     )
     for partition in ["general", "concurrent", "checkpoint_headroom", "checkpoint_lifecycle", "analytics_core_general", "analytics_rss", "recovery"]

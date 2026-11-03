@@ -931,6 +931,19 @@ Bazel. A family description does not imply every leaf belongs to every lane.
 
 ### Automatic-checkpoint frontend deadline controls
 
+The required `//:hawdb_unit_checkpoint_headroom_tests` label uses two native
+Bazel shards over the same checked root binary: the complete growing-table
+steady-insert regression in shard 0 and all other discovered controls in shard 1.
+Both retain exclusive scheduling, one libtest thread, the 900-second deadline,
+complete fixtures/assertions/retry bounds and ordinary features. The runner
+refuses invalid coordinates, empty selections and cross-shard substring overlap;
+`//:root_unit_partition_script_test` owns complete/disjoint inventory and protocol
+controls. Source-bound 31-case timings, both earlier Linux timeouts, progress
+diagnostics and local replay are in [checkpoint qualification](CHECKPOINT_HEADROOM_QUALIFICATION.md).
+This separates execution budgets and does not claim less total work or remote
+CI speedup. Issue [1512](https://github.com/nowledge-co/hawdb/issues/1512) retains
+independent progress/stability qualification.
+
 `//:hawdb_unit_checkpoint_headroom_tests` owns
 `api::automatic_checkpoint::tests::headroom` in the isolated default-feature root CI lane
 (`background-maintenance` required). It retains the checked profile, 320-row
@@ -1766,7 +1779,8 @@ in the existing TLA suite; native capacity-band tests own Tokio waiter renewal.
 - Both checkpoint targets are included through the existing required root unit
   suites. They reuse the ordinary root executable and global checked profile,
   each with one libtest thread, Bazel `exclusive` and the unchanged 900-second
-  deadline. Internal test-created concurrency remains intact. Automatic-checkpoint
+  deadline per invocation. The headroom label now owns the two native shards
+  documented above; the lifecycle target remains unsharded. Internal test-created concurrency remains intact. Automatic-checkpoint
   headroom CREATE failures retain the original success/refusal contract and phase,
   work-progress, wake/resource and libtest-concurrency diagnostics for
   [#1116](https://github.com/nowledge-co/hawdb/issues/1116); no caller retries or

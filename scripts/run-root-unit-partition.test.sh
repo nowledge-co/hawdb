@@ -29,6 +29,10 @@ if [[ "${1:-}" == --list ]]; then
   if [[ "${PARTITION_PROBE_DISCOVERY_EXIT:-0}" != 0 ]]; then
     exit "${PARTITION_PROBE_DISCOVERY_EXIT}"
   fi
+  if [[ "${PARTITION_PROBE_ONLY_GROWING_TABLE:-0}" == 1 ]]; then
+    echo 'api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay: test'
+    exit 0
+  fi
   if [[ "${PARTITION_PROBE_EMPTY:-0}" == 0 ]]; then
     echo 'api::tests::concurrent_transactions::owned: test'
   fi
@@ -55,6 +59,9 @@ if [[ "${1:-}" == --list ]]; then
     echo 'api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen: test'
     echo 'api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints: test'
     echo 'api::automatic_checkpoint::tests::relational_live_overlay::steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay: test'
+    if [[ "${PARTITION_PROBE_EMPTY_GROWING_TABLE:-0}" == 0 ]]; then
+      echo 'api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay: test'
+    fi
   fi
   if [[ "${PARTITION_PROBE_OVERLAP:-0}" == 1 ]]; then
     echo 'analytics::overlap: test'
@@ -67,7 +74,10 @@ if [[ "${1:-}" == --list ]]; then
   if [[ "${PARTITION_PROBE_RSS_OVERLAP:-0}" == 1 ]]; then
     echo 'api::tests::graph_analytics::rss_child_extension: test'
   fi
-  echo '17 tests, 0 benchmarks'
+  if [[ "${PARTITION_PROBE_GROWING_TABLE_OVERLAP:-0}" == 1 ]]; then
+    echo 'api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay_extra: test'
+  fi
+  echo '18 tests, 0 benchmarks'
   exit 0
 fi
 printf '%s\n' "$@" >"${PARTITION_PROBE_ARGS}"
@@ -106,6 +116,7 @@ owners = {
         "api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen",
         "api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints",
         "api::automatic_checkpoint::tests::relational_live_overlay::steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay",
+        "api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay",
     },
 }
 all_names = set().union(*owners.values())
@@ -123,6 +134,41 @@ assert set(skips) == (all_names - owned) | {"user_skip"}, (sys.argv[2], set(skip
 assert args[-4:] == ["custom_filter", "--exact", "--skip", "user_skip"]
 PY
 done
+
+for shard_index in 0 1; do
+  env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX="${shard_index}" \
+    TEST_SHARD_STATUS_FILE="${fixture}/status.${shard_index}" \
+    "${runner}" "${fixture}/binary" checkpoint_headroom custom_filter --exact --skip user_skip
+  [[ -f "${fixture}/status.${shard_index}" ]]
+  cp "${PARTITION_PROBE_ARGS}" "${fixture}/args.headroom.${shard_index}"
+done
+
+python3 - "${fixture}" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+names = {
+    "api::automatic_checkpoint::tests::headroom::pending_idle",
+    "api::automatic_checkpoint::tests::headroom::capacity_wait::deadline",
+    "api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen",
+    "api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints",
+    "api::automatic_checkpoint::tests::relational_live_overlay::steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay",
+    "api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay",
+}
+selections = []
+for shard in range(2):
+    args = (root / f"args.headroom.{shard}").read_text().splitlines()
+    skips = {args[i + 1] for i, value in enumerate(args[:-1]) if value == "--skip"}
+    selections.append(names - skips)
+    assert args[-4:] == ["custom_filter", "--exact", "--skip", "user_skip"]
+assert selections[0] == {
+    "api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay"
+}
+assert selections[1] == names - selections[0]
+assert not selections[0] & selections[1]
+assert selections[0] | selections[1] == names
+PY
 
 python3 - "${fixture}" <<'PY'
 import pathlib
@@ -147,6 +193,7 @@ names = {
     "api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen",
     "api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints",
     "api::automatic_checkpoint::tests::relational_live_overlay::steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay",
+    "api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay",
 }
 
 def selected(partition):
@@ -177,6 +224,15 @@ expect_exit() {
 for partition in general checkpoint_headroom checkpoint_lifecycle; do
   expect_exit 42 env PARTITION_PROBE_EXIT=42 "${runner}" "${fixture}/binary" "${partition}"
 done
+expect_exit 42 env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX=0 PARTITION_PROBE_EXIT=42 "${runner}" "${fixture}/binary" checkpoint_headroom
+expect_exit 1 env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX=0 PARTITION_PROBE_EMPTY_GROWING_TABLE=1 "${runner}" "${fixture}/binary" checkpoint_headroom
+expect_exit 1 env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX=1 PARTITION_PROBE_ONLY_GROWING_TABLE=1 "${runner}" "${fixture}/binary" checkpoint_headroom
+expect_exit 1 env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX=1 PARTITION_PROBE_GROWING_TABLE_OVERLAP=1 "${runner}" "${fixture}/binary" checkpoint_headroom
+for coordinates in '0 0' '3 0' '2 2' '2 -1' 'invalid 0' '2 invalid' '1 1'; do
+  read -r total_shards shard_index <<<"${coordinates}"
+  expect_exit 64 env TEST_TOTAL_SHARDS="${total_shards}" TEST_SHARD_INDEX="${shard_index}" "${runner}" "${fixture}/binary" checkpoint_headroom
+done
+expect_exit 64 env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX=0 "${runner}" "${fixture}/binary" general
 expect_exit 1 env PARTITION_PROBE_EMPTY_HEADROOM=1 "${runner}" "${fixture}/binary" checkpoint_headroom
 expect_exit 1 env PARTITION_PROBE_EMPTY_LIFECYCLE=1 "${runner}" "${fixture}/binary" checkpoint_lifecycle
 expect_exit 17 env PARTITION_PROBE_DISCOVERY_EXIT=17 "${runner}" "${fixture}/binary" general
