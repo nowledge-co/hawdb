@@ -217,19 +217,30 @@ fn table_schema_with_work_context(
     schema_encoding::schema(&mut Controlled { encoder, work }, schema.into())
 }
 
+/// Values examined by one reachability unit; each is a constant-time tag test.
+pub(super) const REACHABILITY_VALUES_PER_UNIT: usize = 4096;
+
 pub(super) fn validate_reachability(
     state: &RelationalState,
     work: &CheckpointWorkContext,
 ) -> Result<(), RelationalError> {
     let mut reachable = BTreeSet::new();
     for segment in state.segments.values() {
-        for row in segment.rows.values() {
-            for value in row.values() {
-                let unit = work.start_unit().map_err(work_error)?;
+        // One unit per bounded group of values, not per value: each value is
+        // a tag test, so a per-value unit (two clock reads) dominated the scan.
+        let mut values = segment.rows.values().flat_map(RelationalRow::values);
+        loop {
+            let unit = work.start_unit().map_err(work_error)?;
+            let mut examined = 0;
+            for value in values.by_ref().take(REACHABILITY_VALUES_PER_UNIT) {
                 if let RelationalValue::Overflow(reference) = value {
                     reachable.insert(&reference.digest);
                 }
-                unit.finish();
+                examined += 1;
+            }
+            unit.finish();
+            if examined < REACHABILITY_VALUES_PER_UNIT {
+                break;
             }
         }
         work.checkpoint().map_err(work_error)?;
@@ -287,13 +298,51 @@ fn overflow_with_work_context<'a>(
     }
 }
 
-struct Payload<'a, W> {
+/// Upper bound of one staged payload block. It matches the 64 KiB bounded
+/// unit used by every other checkpoint writer: one block is one `write`, one
+/// hash update, one I/O wave and one QoS unit, so cancellation and QoS
+/// admission are observed at least once per 64 KiB of encoded output.
+pub(super) const PAYLOAD_BLOCK_BYTES: usize = 64 * 1024;
+/// Below this admitted size, staging saves too little to justify a lease.
+const MIN_PAYLOAD_BLOCK_BYTES: usize = 4 * 1024;
+
+/// Physical payload output. Every byte reaches the writer and the hasher in
+/// order, in blocks of at most `PAYLOAD_BLOCK_BYTES`.
+struct PayloadOutput<'a, W> {
     writer: &'a mut W,
-    max_payload_bytes: usize,
-    payload_bytes: usize,
     hasher: IntegrityHasher,
     io: CheckpointOutputIo,
     work: &'a CheckpointWorkContext,
+}
+
+impl<W: Write> PayloadOutput<'_, W> {
+    fn emit(&mut self, block: &[u8]) -> Result<(), RelationalError> {
+        let unit = self.work.start_unit().map_err(work_error)?;
+        let _wave = self.io.wave(self.work)?;
+        self.writer.write_all(block).map_err(|error| {
+            RelationalError::from_io("failed to stream relational checkpoint payload", error)
+        })?;
+        self.hasher.update(block);
+        unit.finish();
+        Ok(())
+    }
+}
+
+/// Encoder sink for the legacy row checkpoint payload.
+///
+/// The row grammar emits one `raw` call per field (a tag, then 1-16 bytes).
+/// Writing those straight to the file cost one `write(2)` and two QoS units
+/// per field. Fields are instead staged in an admitted block and leave it
+/// once per full block. Size admission (`payload_bytes`) is still checked per
+/// call, so the same field is refused at the same point; the digest covers the
+/// same bytes in the same order. A staged block is never written on drop: an
+/// error or stop abandons it, and the caller removes the temporary file.
+struct Payload<'a, W> {
+    output: PayloadOutput<'a, W>,
+    max_payload_bytes: usize,
+    /// Logical payload bytes accepted so far, written or staged.
+    payload_bytes: usize,
+    staged: Option<CheckpointBytes>,
 }
 
 impl<W: Write> schema_encoding::Sink for Payload<'_, W> {
@@ -303,8 +352,40 @@ impl<W: Write> schema_encoding::Sink for Payload<'_, W> {
 }
 
 impl<'a, W: Write> Payload<'a, W> {
+    fn new(
+        writer: &'a mut W,
+        max_payload_bytes: usize,
+        io: CheckpointOutputIo,
+        work: &'a CheckpointWorkContext,
+    ) -> Result<Self, RelationalError> {
+        // Leave half of the task's working-memory target for any other
+        // admitted allocation of the same task, and honour host pressure.
+        let target = work
+            .task_context()
+            .working_memory_target(work.memory_ceiling())
+            / 2;
+        let capacity = usize::try_from(target)
+            .unwrap_or(usize::MAX)
+            .min(PAYLOAD_BLOCK_BYTES);
+        let staged = if capacity >= MIN_PAYLOAD_BLOCK_BYTES {
+            CheckpointBytes::try_new_staging(capacity, work).map_err(work_error)?
+        } else {
+            None
+        };
+        Ok(Self {
+            output: PayloadOutput {
+                writer,
+                hasher: IntegrityHasher::new(),
+                io,
+                work,
+            },
+            max_payload_bytes,
+            payload_bytes: 0,
+            staged,
+        })
+    }
+
     fn write_all(&mut self, bytes: &[u8]) -> Result<(), RelationalError> {
-        let unit = self.work.start_unit().map_err(work_error)?;
         let next = self.payload_bytes.checked_add(bytes.len()).ok_or_else(|| {
             RelationalError::Admission("relational checkpoint size overflow".into())
         })?;
@@ -314,18 +395,43 @@ impl<'a, W: Write> Payload<'a, W> {
                 self.max_payload_bytes
             )));
         }
-        unit.finish();
-        for block in bytes.chunks(64 * 1024) {
-            let unit = self.work.start_unit().map_err(work_error)?;
-            let _wave = self.io.wave(self.work)?;
-            self.writer.write_all(block).map_err(|error| {
-                RelationalError::from_io("failed to stream relational checkpoint payload", error)
-            })?;
-            self.hasher.update(block);
-            self.payload_bytes += block.len();
-            unit.finish();
+        let Some(staged) = self.staged.as_mut() else {
+            // Unadmitted fallback: the original per-call write-through path.
+            for block in bytes.chunks(PAYLOAD_BLOCK_BYTES) {
+                self.output.emit(block)?;
+            }
+            self.payload_bytes = next;
+            return self.output.work.checkpoint().map_err(work_error);
+        };
+        let mut rest = bytes;
+        loop {
+            rest = &rest[staged.fill_within_capacity(rest)..];
+            if rest.is_empty() {
+                break;
+            }
+            // The block is full and more bytes follow.
+            self.output.emit(staged)?;
+            staged.clear();
         }
-        self.work.checkpoint().map_err(work_error)
+        self.payload_bytes = next;
+        Ok(())
+    }
+
+    /// Write every staged byte. Write errors surface here, before the header.
+    fn flush(&mut self) -> Result<(), RelationalError> {
+        if let Some(staged) = self.staged.as_mut().filter(|staged| !staged.is_empty()) {
+            self.output.emit(staged)?;
+            staged.clear();
+        }
+        self.output.work.checkpoint().map_err(work_error)
+    }
+
+    /// Flush and release the staging lease. Later sections write through, so
+    /// the lease is not held while they admit their own memory.
+    fn unstage(&mut self) -> Result<(), RelationalError> {
+        self.flush()?;
+        self.staged = None;
+        Ok(())
     }
 }
 
@@ -349,14 +455,7 @@ pub(crate) fn encode_relational_checkpoint_with_work_context<W: Write + Seek>(
         "failed to reserve relational checkpoint header",
         work,
     )?;
-    let mut payload = Payload {
-        writer,
-        max_payload_bytes: max_record_bytes - HEADER_BYTES,
-        payload_bytes: 0,
-        hasher: IntegrityHasher::new(),
-        io,
-        work,
-    };
+    let mut payload = Payload::new(writer, max_record_bytes - HEADER_BYTES, io, work)?;
     let unit = work.start_unit().map_err(work_error)?;
     let mut tables = Encoder::default();
     tables.count(state.schemas.len(), "checkpoint tables")?;
@@ -384,6 +483,8 @@ pub(crate) fn encode_relational_checkpoint_with_work_context<W: Write + Seek>(
             schema_encoding::row(&mut payload, row)?;
         }
     }
+    // Overflow segments are few, large and may admit file-backed reads.
+    payload.unstage()?;
     let unit = work.start_unit().map_err(work_error)?;
     let mut count = Encoder::default();
     count.count(
@@ -409,11 +510,11 @@ pub(crate) fn encode_relational_checkpoint_with_work_context<W: Write + Seek>(
         payload.write_all(&metadata.finish())?;
         payload.write_all(&envelope)?;
     }
+    payload.unstage()?;
     let unit = work.start_unit().map_err(work_error)?;
     let Payload {
-        writer,
+        output: PayloadOutput { writer, hasher, .. },
         payload_bytes: payload_len,
-        hasher,
         ..
     } = payload;
     let total_len = HEADER_BYTES
