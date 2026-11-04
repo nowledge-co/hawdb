@@ -13,7 +13,7 @@ pub mod sql;
 mod value;
 pub use value::typed_value_json;
 
-pub const QUERY_SHAPE_COUNT: usize = 12;
+pub const QUERY_SHAPE_COUNT: usize = 13;
 
 pub type Parameters = BTreeMap<String, Value>;
 

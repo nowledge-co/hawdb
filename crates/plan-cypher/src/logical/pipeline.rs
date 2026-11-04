@@ -1750,6 +1750,20 @@ fn bind_predicate(
                 value: bind(value)?,
             }
         }
+        PropertyPredicate::ExpressionRegexMatch {
+            expression,
+            pattern,
+        } => match bind_value(pattern, parameters)? {
+            Value::String(pattern) => Predicate::ExpressionRegexMatch {
+                expression: bind(expression)?,
+                pattern: ValidatedRegex::new(pattern)?,
+            },
+            value => {
+                return Err(HawDBError::Semantic(format!(
+                    "regex match predicate requires a string pattern, got {value:?}"
+                )));
+            }
+        },
         PropertyPredicate::ExpressionIn { expression, values } => {
             match bind_value(values, parameters)? {
                 Value::List(values) => Predicate::ExpressionIn {

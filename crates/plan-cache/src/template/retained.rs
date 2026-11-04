@@ -382,6 +382,10 @@ fn predicate_bytes(predicate: &Predicate) -> Option<usize> {
         P::ExpressionIn { expression, values } => {
             sum([expression_bytes(expression), vector(values, value_bytes)])
         }
+        P::ExpressionRegexMatch {
+            expression: _,
+            pattern: _,
+        } => None,
         P::RelationshipExists {
             variable,
             rel_type,

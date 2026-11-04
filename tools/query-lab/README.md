@@ -139,8 +139,9 @@ produced the following completed-execution coverage:
 All 864 queries completed. Nine selected CLI replays retained identical complete
 typed output. There were no natural failures, so the observed failure-replay
 rate is null; dedicated missing-column and output-refusal controls reproduce
-failures without treating them as agreement. The 2,160-record legacy inventory
-remains unchanged. Eight query-lab controls cover frozen inputs, repeated-result
+failures without treating them as agreement. The initial 2,160-record v5 extraction inventory remained unchanged. After
+synchronizing main, the committed inventory is independently frozen from
+`37c0c50ec` (campaign v6), preserving its scalar-regex shape and rewrite mapping. Eight query-lab controls cover frozen inputs, repeated-result
 and access-shape drift, NULL/bag multiplicity, setup failure and refusal.
 
 The constrained seed-42/24-cases/1,024-rows checked-profile cost replay completed

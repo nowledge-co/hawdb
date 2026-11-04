@@ -3,7 +3,7 @@
 
 use query_workloads::{generator::StateAwareCaseGenerator, sql::generate_sql_case};
 
-// Captured from the original Shiro generators at 612d010d4, before extraction.
+// Captured from the original Shiro generators at 37c0c50ec, before extraction.
 // All query/oracle/setup fields participate, including typed parameters and ASTs.
 #[test]
 fn legacy_seed_inventory_is_unchanged() {
@@ -26,5 +26,5 @@ fn legacy_seed_inventory_is_unchanged() {
             }
         }
     }
-    assert_eq!(digest, 0xc08b58b74c7bd59e);
+    assert_eq!(digest, 0x99dfc326a44f0002);
 }

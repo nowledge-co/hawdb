@@ -7,7 +7,7 @@ excludes this directory.
 
 The extracted Cypher AST/fixture generator and SQL shape generator retain their
 original seed/index mapping. `tests/legacy.rs` checks a frozen inventory of 2,160
-complete records from `612d010d4`: five seeds, 144 indices, Cypher and both SQL
+complete records from `37c0c50ec` (Shiro campaign v6, including scalar regex): five seeds, 144 indices, Cypher and both SQL
 index modes. Shiro continues to own execution, oracles, reduction and reporting.
 
 `smith` adds an opt-in, type-directed recursive predicate generator. Integer,

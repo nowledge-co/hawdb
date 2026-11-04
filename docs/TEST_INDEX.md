@@ -35,6 +35,32 @@ retain their evaluator path. Replacement sizing admits every piece before a
 single exact buffer allocation. Query memory/work caps and mutation atomicity
 remain required. Existing fixtures and execution lanes are retained.
 
+Cypher scalar-expression regex matching (`nowledge-co/hawdb#1550`) extends the
+existing expression-function and regex-cache owners without adding a target or
+lane. `hawdb-cypher` parser tests retain direct-property `=~` and cover generic
+string functions, parameter left operands, and parenthesized property/literal
+operands, including keyword-shaped parameter names and property keys;
+`api::tests::expression_functions` in `//:hawdb_unit_general_tests` covers the
+same dispatch paths plus literal and parameter patterns, NULL propagation across
+NOT/AND/OR, repeated left/pattern rebinding through success and typed failure,
+invalid regexes, deterministic instance fingerprints and exact cache variants,
+direct-property compatibility, durable reopen and concurrent reads. The
+plan-cache requested-allocation oracle
+keeps both property and scalar-expression regex programs source-only while
+retained and execution-owned after binding. Replay with `cargo test --locked -p
+hawdb-cypher parses_regex_match`, `cargo test --locked -p hawdb --lib
+scalar_expression_regex -- --test-threads=1`, and `cargo test --locked -p
+hawdb-plan-cache --test template_retention -- --test-threads=1`. A reviewed
+44-row parser transition fixture preserves the immutable historical rejection
+oracles. Shiro adds generic-function and keyword-identifier positive parser
+seeds, a typed plan-differential shape that alternates literal/parameter
+patterns, and capability-model references for matching plus
+invalid-pattern/non-string refusals. Replay with `cargo test
+--locked --manifest-path tools/shiro/Cargo.toml --lib scalar_regex` and the
+existing Bazel fuzz suites. Existing regex validation limits, query work/memory
+admission and cancellation checkpoints are unchanged; no new target or lane is
+introduced.
+
 [Bazel exclusive test scheduling](https://bazel.build/reference/be/common-definitions#common.tags)
 places this owner after build activity and non-exclusive tests.
 `//crates/executor:hawdb_executor_unit_tests` retains its full ordinary unit-test
@@ -523,8 +549,10 @@ controls. Existing root general default/minimal and optimizer-graph CI owners
 retain these cases. The fixtures compare indexed/unindexed COALESCE and typed
 CASE/trim Space reads, parameter rebinding, native-node overlap deduplication,
 logical-id multiplicity, scope before LIMIT, missing indexes, the 64-lookup cap,
-complete residual predicates, cost competition, unsafe/UNKNOWN error fences,
-proof limits, unrequested 64 KiB bodies, typed query-memory refusals and canonical
+complete residual predicates, cost competition, unsafe/UNKNOWN error fences
+(including non-string regex operands with missing union keys in both conjunct
+orders), proof limits, unrequested 64 KiB bodies, typed query-memory refusals and
+canonical
 pinned snapshots across update/checkpoint/reopen. Replay with
 `cargo test --locked -p hawdb --lib union_residual` and
 `cargo test --locked -p hawdb-optimizer-graph --lib residual_union`.
@@ -2689,7 +2717,7 @@ candidate-plan latency, cardinality diagnosis and coefficient-validation
 coverage. The manual workload prerequisite now has concrete owners:
 
 - `//tools/query-workloads:legacy_tests`: 2,160 frozen Cypher/SQL records from
-  `612d010d4`, protecting original seed/index and oracle-input mappings.
+  `37c0c50ec` (campaign v6, including scalar regex), protecting original seed/index and oracle-input mappings.
 - `//tools/query-workloads:query_workloads_tests`: bounded, typed recursive
   SQL generation, deterministic replay and supported syntax combinations.
 - `//tools/query-lab:query_lab_tests`: template/recursive execution on identical

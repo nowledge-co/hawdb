@@ -412,6 +412,9 @@ fn public_predicate(predicate: &Predicate, depth: usize) -> bool {
         | Predicate::ExpressionContains { expression, value } => {
             public_expression_at(expression, depth + 1) && public_expression_at(value, depth + 1)
         }
+        Predicate::ExpressionRegexMatch { expression, .. } => {
+            public_expression_at(expression, depth + 1)
+        }
         Predicate::ExpressionIn { expression, .. } => public_expression_at(expression, depth + 1),
     }
 }

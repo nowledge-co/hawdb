@@ -226,6 +226,10 @@ fn predicate_is_deterministic(predicate: &cypher::PropertyPredicate) -> bool {
         | Predicate::ExpressionContains { expression, value } => {
             scalar_is_deterministic(expression) && scalar_is_deterministic(value)
         }
+        Predicate::ExpressionRegexMatch {
+            expression,
+            pattern,
+        } => scalar_is_deterministic(expression) && value_is_deterministic(pattern),
         Predicate::RelationshipExists { .. }
         | Predicate::BoundRelationshipExists { .. }
         | Predicate::IsNull { .. }

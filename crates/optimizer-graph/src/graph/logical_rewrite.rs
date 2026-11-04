@@ -775,7 +775,8 @@ fn predicate_references_only_input_variables(
         | Predicate::ExpressionEq { .. }
         | Predicate::ExpressionNotEq { .. }
         | Predicate::ExpressionCompare { .. }
-        | Predicate::ExpressionContains { .. } => false,
+        | Predicate::ExpressionContains { .. }
+        | Predicate::ExpressionRegexMatch { .. } => false,
         Predicate::ExpressionIn { .. } => false,
     }
 }
