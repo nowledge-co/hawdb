@@ -61,7 +61,7 @@ const STATIC_SEEDS: &[(&str, &[u8])] = &[
     ("cypher_cap_set", b"MATCH (a:Memory {id: $left}), (b:Memory {id: $right}) SET a.latest = true, b.latest = true"),
     ("cypher_cap_temporal", b"UNWIND [1] AS one RETURN date('2026-10-30') + duration('P1D') AS tomorrow, datetime('2026-10-30T12:00+02:00') AS at"),
     ("cypher_cap_optional", b"MATCH (a:Memory) OPTIONAL MATCH (a)-[:MENTIONS]->(e:Entity) WITH a, e RETURN a.id, e.name"),
-    ("cypher_cap_scalar_regex", b"MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) =~ $pattern RETURN m.id"),
+    ("cypher_cap_scalar_regex", b"MATCH (m:Memory) WHERE regexp_replace(m.content, 'x', 'a') =~ $pattern RETURN m.id"),
     ("sql_cap_decimal", b"CREATE TABLE prices (id BIGINT PRIMARY KEY, amount DECIMAL(38,2) DEFAULT 1.235)"),
     ("sql_cap_decimal_cast", b"SELECT CAST(($1 + 0.2) * 10 / 3 AS DECIMAL(20,4)) AS amount"),
     ("sql_cap_keyless", b"CREATE TABLE events (bucket BIGINT, score BIGINT DEFAULT 7, note TEXT)"),

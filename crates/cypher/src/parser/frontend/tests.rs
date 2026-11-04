@@ -744,7 +744,7 @@ fn frozen_main_1550_scalar_regex_transitions_preserve_complete_ir() {
         assert_frozen(&expected);
         count += 1;
     }
-    assert_eq!(count, 20);
+    assert_eq!(count, 44);
 }
 
 #[test]

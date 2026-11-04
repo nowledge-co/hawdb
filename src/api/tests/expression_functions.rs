@@ -148,6 +148,39 @@ fn scalar_expression_regex_predicates_validate_execute_and_cache_patterns() {
         .rows,
         vec![BTreeMap::from([("id".into(), Value::Int(1))])]
     );
+    for (query, parameters, expected) in [
+        (
+            "MATCH (m:Memory) WHERE trim(m.content) =~ '^Graph' RETURN m.id AS id",
+            BTreeMap::new(),
+            vec![BTreeMap::from([("id".into(), Value::Int(1))])],
+        ),
+        (
+            "MATCH (m:Memory) WHERE regexp_replace(m.content, 'foundations', 'runtime') =~ 'runtime$' RETURN m.id AS id",
+            BTreeMap::new(),
+            vec![BTreeMap::from([("id".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE $value =~ '^a' RETURN row",
+            BTreeMap::from([("value".into(), Value::String("abc".into()))]),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+        (
+            "MATCH (m:Memory) WHERE (m.content) =~ '^Graph' RETURN m.id AS id",
+            BTreeMap::new(),
+            vec![BTreeMap::from([("id".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE ('abc') =~ '^a' RETURN row",
+            BTreeMap::new(),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+    ] {
+        assert_eq!(
+            db.query_with_params(query, &parameters).unwrap().rows,
+            expected,
+            "{query}"
+        );
+    }
 
     let graph = db
         .explain_query_with_params(query, &parameters("^graph"))

@@ -218,7 +218,10 @@ impl Transformer<'_> {
                 )
             }
             "w_word" | "w_scalar" | "w_parenthesized_expression" => {
-                let left = if let Some(scalar) = self.tree.child(selected, rule_id!("x_scalar")) {
+                let left = if let Some(sum) = self.tree.child(selected, rule_id!("r_sum")) {
+                    let expression = self.return_expression(sum, depth + 1)?;
+                    self.scalar_return_argument(expression, selected, depth + 1)?
+                } else if let Some(scalar) = self.tree.child(selected, rule_id!("x_scalar")) {
                     let start = self.tree.node(scalar).start;
                     if !columns
                         && self

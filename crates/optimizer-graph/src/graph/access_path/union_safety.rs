@@ -5,6 +5,8 @@
 //! admission remains runtime-owned; unsupported expression shapes are fences.
 
 use super::OptimizerCatalog;
+#[cfg(test)]
+use hawdb_core::ValidatedRegex;
 use hawdb_core::{PropertyType, SchemaObjectState, StringFunction, TableKind, Value};
 use hawdb_plan_cypher::{Predicate, ProjectionExpression, ScalarBinaryOp};
 
@@ -110,9 +112,9 @@ impl Proof<'_> {
                 self.expression(expression, depth + 1).is_some()
                     && self.expression(value, depth + 1).is_some()
             }
-            Predicate::ExpressionRegexMatch { expression, .. } => {
-                self.expression(expression, depth + 1).is_some()
-            }
+            Predicate::ExpressionRegexMatch { expression, .. } => self
+                .expression(expression, depth + 1)
+                .is_some_and(Kind::text),
             Predicate::ExpressionIn { expression, .. } => {
                 self.expression(expression, depth + 1).is_some()
             }
@@ -316,6 +318,37 @@ mod tests {
         assert!(!predicate_is_safe(
             &coalesce,
             "other",
+            "Thread",
+            &OptimizerCatalog::default()
+        ));
+    }
+
+    #[test]
+    fn residual_union_regex_requires_a_proven_text_domain() {
+        let regex = |expression| Predicate::ExpressionRegexMatch {
+            expression,
+            pattern: ValidatedRegex::new("^ok$").unwrap(),
+        };
+        for (kind, state, expected) in [
+            (PropertyType::String, SchemaObjectState::Public, true),
+            (PropertyType::String, SchemaObjectState::WriteOnly, false),
+            (PropertyType::Any, SchemaObjectState::Public, false),
+            (PropertyType::Int, SchemaObjectState::Public, false),
+        ] {
+            assert_eq!(
+                predicate_is_safe(&regex(property()), "t", "Thread", &catalog(kind, state)),
+                expected
+            );
+        }
+        assert!(predicate_is_safe(
+            &regex(ProjectionExpression::Literal(Value::Null)),
+            "t",
+            "Thread",
+            &OptimizerCatalog::default()
+        ));
+        assert!(!predicate_is_safe(
+            &regex(ProjectionExpression::Literal(Value::Int(1))),
+            "t",
             "Thread",
             &OptimizerCatalog::default()
         ));

@@ -62,7 +62,7 @@ Intentional behavior changes require review of the affected case and golden;
 do not regenerate expected values automatically in a test. Preserve case IDs,
 source text and historical provenance when adapting the harness to the new AST.
 
-`migration_main_1550_scalar_regex_peg_baseline_v1.jsonl` records the 20 reviewed
+`migration_main_1550_scalar_regex_peg_baseline_v1.jsonl` records the 44 reviewed
 statement/pipeline transitions introduced by issue #1550. The original
 expression/predicate and diagnostic fixtures remain immutable: scalar-expression
 left operands now parse as regex predicates, while binding and execution retain
