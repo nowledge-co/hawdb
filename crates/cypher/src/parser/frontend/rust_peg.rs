@@ -1512,6 +1512,8 @@ impl Builder<'_> {
             .windows(2)
             .all(|x| x[0].span().end == x[1].span().start)
     }
+    // Gate the generic scalar parser without changing diagnostics or charging
+    // its resource budget for ordinary non-regex predicates.
     fn has_scalar_regex_tail(&self, position: usize) -> bool {
         let mut parens = 0usize;
         let mut brackets = 0usize;
