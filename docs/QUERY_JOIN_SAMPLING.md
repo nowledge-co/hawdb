@@ -90,8 +90,10 @@ Property descriptor bounds and payload keys reuse canonical allocation preflight
 before decoding, including on cache hits. Preparation charges both the borrowed
 allocation pass and the decode pass; nested unrelated values cannot bypass this
 admission merely because the requested equality is scalar.
-Duration checks are cooperative and cannot interrupt one blocking filesystem
-read. Query task cancellation takes precedence over the sampling deadline.
+Duration checks are cooperative between entries/stages and cannot preempt an
+individual blocking filesystem read or codec step. Query task cancellation
+takes precedence over the sampling deadline; a decode stops on admission
+refusal rather than processing the rest of an unneeded block.
 The configured query memory ceiling and runtime memory target can tighten the
 scratch ceiling. Governed calls reserve that whole ceiling conservatively for
 the attempt and release it before execution. Probes/preparation charge the

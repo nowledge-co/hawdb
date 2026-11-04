@@ -176,6 +176,7 @@ impl<'a> JoinSamplingContext<'a> {
 
     pub(crate) fn checkpoint(&self) -> SamplingResult<()> {
         if let Some(task) = self.task {
+            task.check_work_limit()?;
             task.checkpoint().map_err(|reason| {
                 SamplingError::Storage(HawDBError::Execution(format!(
                     "runtime task stopped: {reason}"

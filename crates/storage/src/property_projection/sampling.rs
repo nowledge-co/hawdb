@@ -80,19 +80,29 @@ impl PersistentPropertyProjectionReader {
                             }
                         })?;
                     let mut largest_value = 0;
-                    super::ordered::walk_entries(
+                    let mut stopped = None;
+                    let inspected = super::ordered::walk_entries(
                         &read.payload,
                         self.manifest.generation,
                         &block,
                         None,
                         |_, encoded| {
+                            if let Err(error) = context.checkpoint() {
+                                stopped = Some(error);
+                                return Err(PersistentPropertyProjectionError::Source(
+                                    "join sampling allocation preflight stopped".into(),
+                                ));
+                            }
                             largest_value = largest_value.max(
                                 crate::canonical::standalone_value_allocation_bytes(encoded)?,
                             );
                             Ok(())
                         },
-                    )
-                    .map_err(|error| self.sampling_error(error))?;
+                    );
+                    if let Some(error) = stopped {
+                        return Err(error);
+                    }
+                    inspected.map_err(|error| self.sampling_error(error))?;
                     // Reuse the ordered-reader workspace bound: current value,
                     // first/previous keys and their validation copies coexist.
                     let workspace = largest_value
@@ -101,24 +111,31 @@ impl PersistentPropertyProjectionReader {
                         .ok_or(SamplingError::Refused(JoinSamplingRefusal::MemoryBudget))?;
                     context.memory(workspace)?;
                     let mut admission_error = None;
-                    decode_projection_block(
+                    let decoded = decode_projection_block(
                         &read.payload,
                         self.manifest.generation,
                         &block,
                         |value, id| {
-                            if value == *expected && admission_error.is_none() {
-                                match context.reserve(&mut ids, 1) {
-                                    Ok(()) => ids.push(id),
-                                    Err(error) => admission_error = Some(error),
+                            let admission = context.checkpoint().and_then(|()| {
+                                if value == *expected {
+                                    context.reserve(&mut ids, 1)?;
+                                    ids.push(id);
                                 }
+                                Ok(())
+                            });
+                            if let Err(error) = admission {
+                                admission_error = Some(error);
+                                return Err(PersistentPropertyProjectionError::Source(
+                                    "join sampling value decode stopped".into(),
+                                ));
                             }
                             Ok(())
                         },
-                    )
-                    .map_err(|error| self.sampling_error(error))?;
+                    );
                     if let Some(error) = admission_error {
                         return Err(error);
                     }
+                    decoded.map_err(|error| self.sampling_error(error))?;
                     context.checkpoint()
                 })();
                 match step {

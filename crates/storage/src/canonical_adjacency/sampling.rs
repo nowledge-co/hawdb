@@ -71,14 +71,25 @@ impl CanonicalSamplingPosting<'_> {
                         self.reader.sampling_error(error.into())
                     }
                 })?;
-            decode_block_inputs(&read.payload, self.reader.generation, block, |input| {
-                entries.push(crate::adjacency::OrderedAdjacencyEntry {
-                    neighbor_id: input.neighbor_id,
-                    relationship_id: input.relationship_id,
+            let mut stopped = None;
+            let decoded =
+                decode_block_inputs(&read.payload, self.reader.generation, block, |input| {
+                    if let Err(error) = context.checkpoint() {
+                        stopped = Some(error);
+                        return Err(CanonicalAdjacencyError::Source(
+                            "join sampling key decode stopped".into(),
+                        ));
+                    }
+                    entries.push(crate::adjacency::OrderedAdjacencyEntry {
+                        neighbor_id: input.neighbor_id,
+                        relationship_id: input.relationship_id,
+                    });
+                    Ok(())
                 });
-                Ok(())
-            })
-            .map_err(|error| self.reader.sampling_error(error))?;
+            if let Some(error) = stopped {
+                return Err(error);
+            }
+            decoded.map_err(|error| self.reader.sampling_error(error))?;
             selected.entries.set(entries).map_err(|_| {
                 SamplingError::Storage(hawdb_core::HawDBError::StorageIntegrity(
                     "sampling posting block was initialized twice".into(),
