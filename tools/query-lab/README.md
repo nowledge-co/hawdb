@@ -49,6 +49,70 @@ measures executable coverage and repeatability. It has no independent result
 oracle, so successful execution does not prove semantic correctness. Shiro's
 existing TLP/NoREC/metamorphic/plan oracles remain unchanged and separate.
 
+## Cardinality diagnostics
+
+Freeze a separate 77-case directed inventory, execute it through the same
+snapshot/budget/replay path, and analyze one validation observation per cell:
+
+```console
+cargo run --locked --manifest-path tools/query-lab/Cargo.toml -- freeze-ce /tmp/ce.json 7 128
+cargo run --locked --manifest-path tools/query-lab/Cargo.toml -- ce-run /tmp/ce.json /tmp/ce-base-run.json
+cargo run --locked --manifest-path tools/query-lab/Cargo.toml -- ce-report /tmp/ce.json /tmp/ce-base-run.json /tmp/ce-base-report.json
+```
+
+`freeze-ce` accepts 64 or 128 rows per populated table. Its versioned manifest
+retains stable case IDs, cohort/family labels and independently enumerated
+expected result counts. It freezes typed parameters, complete setup and budgets
+before execution, just like SQLsmith. Existing SQLsmith manifest hashes remain
+unchanged. `ce-report` also accepts existing SQLsmith/cost run records; those
+cases have no independent expected-result count. Repeated warmup/measurement
+rounds never multiply the CE sample weight.
+Later failed or unexecuted rounds censor that case's CE metrics rather than
+silently accepting its initial successful observation.
+
+Each report retains all frozen cases and physical access/join observations.
+Query-result counts are checked against fixture truth separately from CE.
+Estimated/actual counts are compared only at the same operator output boundary,
+with complete consumption. A residual predicate or aggregate without its own
+profile is not measured merely because its input scan has a profile.
+Missing observations, failed setup/execution, result-count mismatches, missing
+operator evidence, uninvoked operators and partial consumption remain visible.
+The independent oracle checks counts, not the complete semantics of result values.
+
+For positive counts, Q-error is `max(estimated / actual, actual / estimated)`;
+signed bias is `log2(estimated) - log2(actual)`. Zero/zero, zero actual and zero
+estimate are separate cohorts without smoothed Q-errors. An estimate of one on
+empty output is counted explicitly; it is compatible with a minimum-one floor
+but does not prove that provenance. Percentiles use nearest rank, report null
+for empty positive cohorts, and include p50/p90/p95/p99/max. Reports retain
+under/overestimation counts, cohort/family/operator breakdowns and the ten worst
+positive pairs. A large Q-error is diagnostic evidence, not a correctness or
+performance failure by itself.
+
+Run the candidate binary against **the same frozen manifest** into a new raw
+run file, then compare the two source-bound observations:
+
+```console
+cargo run --locked --manifest-path tools/query-lab/Cargo.toml -- ce-diff /tmp/ce.json /tmp/ce-base-run.json /tmp/ce-candidate-run.json /tmp/ce-diff.json
+```
+
+The comparison refuses foreign manifest identities and malformed/duplicate
+operator evidence. It retains the complete case inventory, including cases
+missing from one run. Complete typed results, executed access shapes and operator
+identities must agree before pairing. Changed actual counts and partial/absent
+observations are not scored as CE regressions. Paired Q-error distributions use
+the same positive pairs on both sides; zero-case changes are separate. Each
+input's canonical run-record digest and environment are retained. Checkout
+observations still do not attest the compiled engine: retain source revision,
+build configuration and binary with each run.
+
+Access shape is not a complete physical fingerprint, and these diagnostics do
+not re-cost plans, inject actual cardinalities, change statistics or establish
+plan regret. `ce-diff` returns success for a well-formed diagnostic even if it
+reports regressions or unpaired cases; inspect the comparison counts. `ce-report`
+returns failure when a frozen case lacks valid result/operator evidence while
+still writing its diagnostic artifact. All artifacts remain outside Git.
+
 ## Frozen cost baseline
 
 `freeze-cost` invokes the same generator with 32 nodes, depth four, at most two

@@ -359,6 +359,8 @@ pub fn run_with_progress(
         manifest_sha256: frozen.sha256.clone(),
         kind: if cost {
             "cost_baseline"
+        } else if m.protocol == query_workloads::cardinality::PROTOCOL {
+            "cardinality"
         } else {
             "sqlsmith_comparison"
         }
@@ -536,6 +538,9 @@ fn schedule(m: &Manifest, cost: bool) -> Vec<(usize, String)> {
 }
 
 fn summarize(m: &Manifest, attempts: &[Attempt], replays: &[Replay], cost: bool) -> Json {
+    if !cost && m.protocol == query_workloads::cardinality::PROTOCOL {
+        return json!({"kind":"cardinality","cases":m.cells.len(),"completed":attempts.iter().filter(|a| a.observation.status == Status::Completed).count(),"note":"use ce-report for operator-level error and ground-truth checks"});
+    }
     let mut cohorts = vec![];
     for mode in [Mode::Template, Mode::Recursive] {
         let cells = m

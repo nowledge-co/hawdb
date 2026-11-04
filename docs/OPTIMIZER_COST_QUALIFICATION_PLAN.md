@@ -31,6 +31,12 @@ parameters and budgets before execution; compares template/recursive validity,
 syntax combinations, executed access shapes and failure replay; and collects
 same-snapshot ordinary-plan cost baselines with three warmups/fifteen samples.
 
+Selected relational access/join CE diagnostics also consume frozen validation
+observations: directed distributions with independently counted query results,
+positive-only Q-error and signed bias, explicit zero/partial/missing coverage,
+and same-input paired reports. These do not provide complete predicate-level
+CE traces, frozen-plan observed-cardinality re-costing or candidate regret.
+
 These tools are independent, unpublished workspaces, excluded from library
 archives and ordinary CI. They do not complete phase 1 or phase 2: full physical
 identity, legal alternative selection, four-family coverage and source-qualified

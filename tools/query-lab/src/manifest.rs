@@ -1,6 +1,7 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
+use query_workloads::cardinality::{self, CaseMetadata};
 use query_workloads::smith::{self, Case, Fixture, Limits, Mode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,6 +18,8 @@ pub struct Cell {
     pub mode: Mode,
     pub case: Option<Case>,
     pub refusal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cardinality: Option<CaseMetadata>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,12 +76,14 @@ impl Frozen {
                         mode,
                         case: Some(case),
                         refusal: None,
+                        cardinality: None,
                     },
                     Err(refusal) => Cell {
                         index,
                         mode,
                         case: None,
                         refusal: Some(refusal),
+                        cardinality: None,
                     },
                 });
             }
@@ -99,6 +104,38 @@ impl Frozen {
             schedule_seed: seed ^ 0x5eed,
         })
     }
+    pub fn cardinality(seed: u64, rows: usize) -> Result<Self, String> {
+        let workload = cardinality::generate(seed, rows)?;
+        Self::seal(Manifest {
+            protocol: cardinality::PROTOCOL.into(),
+            seed,
+            limits: Limits {
+                max_output_rows: 1024,
+                max_output_bytes: 1_048_576,
+                ..Limits::default()
+            },
+            fixture: workload.fixture,
+            cells: workload
+                .cases
+                .into_iter()
+                .map(|(case, metadata)| Cell {
+                    index: case.index,
+                    mode: case.mode,
+                    case: Some(case),
+                    refusal: None,
+                    cardinality: Some(metadata),
+                })
+                .collect(),
+            attempt_timeout_ms: 5000,
+            campaign_timeout_ms: 120_000,
+            work_limit: 10_000_000,
+            memory_bytes: 256 * 1024 * 1024,
+            intermediate_row_limit: 1_000_000,
+            warmups: 3,
+            repetitions: 15,
+            schedule_seed: seed ^ 0x5eed,
+        })
+    }
     pub fn seal(manifest: Manifest) -> Result<Self, String> {
         let sha256 = digest(&serde_json::to_vec(&manifest).map_err(|e| e.to_string())?);
         let frozen = Self { sha256, manifest };
@@ -108,7 +145,7 @@ impl Frozen {
     pub fn validate(&self) -> Result<(), String> {
         let m = &self.manifest;
         m.limits.validate()?;
-        if m.protocol != smith::PROTOCOL
+        if (m.protocol != smith::PROTOCOL && m.protocol != cardinality::PROTOCOL)
             || m.cells.is_empty()
             || m.cells.len() > 1024
             || !(8..=100_000).contains(&m.fixture.rows)
@@ -125,7 +162,27 @@ impl Frozen {
             return Err("manifest protocol or campaign budget is invalid".into());
         }
         let mut ids = std::collections::BTreeSet::new();
+        let mut ce_ids = std::collections::BTreeSet::new();
         for cell in &m.cells {
+            match (&cell.cardinality, m.protocol.as_str()) {
+                (Some(meta), cardinality::PROTOCOL)
+                    if cell.mode == Mode::Template
+                        && cell.case.is_some()
+                        && !meta.id.is_empty()
+                        && meta.id.len() <= 256
+                        && !meta.cohort.is_empty()
+                        && meta.cohort.len() <= 128
+                        && !meta.family.is_empty()
+                        && meta.family.len() <= 128
+                        && meta.expected_result_rows <= m.limits.max_output_rows
+                        && ce_ids.insert(&meta.id) => {}
+                (None, smith::PROTOCOL) => {}
+                _ => {
+                    return Err(
+                        "invalid cardinality case metadata or duplicate case identity".into(),
+                    )
+                }
+            }
             if !ids.insert((cell.index, format!("{:?}", cell.mode))) {
                 return Err("duplicate manifest cell".into());
             }
@@ -156,7 +213,7 @@ impl Frozen {
                 Mode::Template => Mode::Recursive,
                 Mode::Recursive => Mode::Template,
             };
-            if !ids.contains(&(cell.index, format!("{peer:?}"))) {
+            if m.protocol == smith::PROTOCOL && !ids.contains(&(cell.index, format!("{peer:?}"))) {
                 return Err("manifest must retain both modes for every case index".into());
             }
         }

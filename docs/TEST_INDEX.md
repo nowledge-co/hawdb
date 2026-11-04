@@ -2719,12 +2719,18 @@ coverage. The manual workload prerequisite now has concrete owners:
 - `//tools/query-workloads:legacy_tests`: 2,160 frozen Cypher/SQL records from
   `37c0c50ec` (campaign v6, including scalar regex), protecting original seed/index and oracle-input mappings.
 - `//tools/query-workloads:query_workloads_tests`: bounded, typed recursive
-  SQL generation, deterministic replay and supported syntax combinations.
+  SQL generation, deterministic replay and supported syntax combinations;
+  independently enumerated directed CE populations, NULL counts and join
+  multiplicities (64/128 rows, 77 cases).
 - `//tools/query-lab:query_lab_tests`: template/recursive execution on identical
   fixtures, complete typed replay with NULL/multiplicity, parse/output-refusal
   negative controls, setup failure denominators and frozen same-snapshot cost
   sampling (three warmups/fifteen measurements). These small fixtures use the
   ordinary checked profile; release baselines are explicit manual commands.
+  CE controls additionally cover directed fixture truth and replay, zero/partial
+  observation accounting, missing/failed case denominators, duplicate/foreign
+  evidence refusal, A/A pairing and injected estimate/result/access changes.
+  They validate diagnostic classification, not a global Q-error performance gate.
 
 All three are included in local `//tools/shiro:shiro_tests`; no ordinary CI,
 schedule, profile override or performance gate is added. Cargo replay uses
