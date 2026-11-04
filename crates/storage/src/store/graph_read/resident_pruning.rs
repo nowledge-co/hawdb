@@ -589,6 +589,9 @@ mod tests {
                 property: "stat".into(),
                 value: Value::Int(1),
             },
+            PropertyFilter::IsNotNull {
+                property: "stat".into(),
+            },
             range,
         ];
         for source in [sources[3], sources[42], sources[299]] {
