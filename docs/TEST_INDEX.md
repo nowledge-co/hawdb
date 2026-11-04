@@ -26,6 +26,10 @@ or concurrent stress loops. The manual native `index_join_sampling` benchmark
 requires `qualification`; it measures same-checkpoint total query latency,
 including preparation and sampling, plus cold/warm and refusal controls. It
 remains outside CI and does not establish larger-than-RAM performance.
+The existing `//:hawdb_in_memory_portable_tests` owner and browser
+`tests/in_memory_portable.rs` entry exercise enabled sampling with the shared
+runtime clock, preserving browser timing support. Native default replay uses
+`//:hawdb_in_memory_portable_default_tests`; browser setup is in [WASM.md](WASM.md).
 
 Mem query-shaped compatibility (`nowledge-co/mem#9338`) is owned by
 `api::tests::mem_query_contract` in `//:hawdb_unit_general_tests` (the existing

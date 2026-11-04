@@ -6,9 +6,9 @@
 
 use crate::store::AdjacencyDirection;
 use crate::NodeId;
+use hawdb_core::time::{Duration, Instant};
 use hawdb_core::{HawDBError, LabelId, RelTypeId, RuntimeTaskContext, Value};
 use std::cell::{Cell, RefCell};
-use std::time::{Duration, Instant};
 
 /// Independent ceilings for one query's complete sampling attempt, including
 /// both candidate orientations. Physical reads are admitted before I/O; cached
