@@ -237,6 +237,8 @@ pub(crate) fn diskann_build_config(
             exponent: f64::from(value.exponent_milli) / 1000.0,
         }),
         max_working_bytes,
+        // The task's admitted CPU parallelism bounds the worker threads.
+        max_build_threads: std::num::NonZeroUsize::MAX,
     })
 }
 
