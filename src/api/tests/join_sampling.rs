@@ -197,3 +197,91 @@ fn sampling_refusal_and_ineligible_shapes_keep_ordinary_execution() {
         assert_eq!(tuples(candidate.query(query).unwrap()), tuples(baseline.query(query).unwrap()), "{query}");
     }
 }
+
+#[test]
+fn sampled_two_hop_reversal_preserves_self_loops_and_relationship_bindings() {
+    fn fixture(enabled: bool) -> Database {
+        let mut db = Database::new_with_config(DatabaseConfig {
+            join_sampling: enabled.then(limits),
+            ..Default::default()
+        });
+        {
+            let mut access = db.runtime.get_mut().unwrap();
+            let runtime = &mut *access;
+            let mut node = |id, kind| {
+                runtime
+                    .store
+                    .create_node(
+                        &mut runtime.catalog,
+                        "X",
+                        BTreeMap::from([
+                            ("id".into(), Value::Int(id)),
+                            ("kind".into(), Value::Int(kind)),
+                        ]),
+                    )
+                    .unwrap()
+            };
+            let a = node(0, 1);
+            let b = node(1, 1);
+            let cold = node(2, 0);
+            for (key, (source, target, kind)) in [
+                (a, a, "R"),
+                (a, a, "R"),
+                (b, a, "R"),
+                (a, a, "S"),
+                (a, a, "S"),
+                (a, b, "S"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                runtime
+                    .store
+                    .create_relationship(
+                        &mut runtime.catalog,
+                        source,
+                        target,
+                        kind,
+                        BTreeMap::from([("key".into(), Value::Int(key as i64))]),
+                    )
+                    .unwrap();
+            }
+            for _ in 0..16 {
+                runtime
+                    .store
+                    .create_relationship(&mut runtime.catalog, a, cold, "R", BTreeMap::new())
+                    .unwrap();
+            }
+            runtime
+                .store
+                .create_property_index(&mut runtime.catalog, "X", "kind")
+                .unwrap();
+        }
+        db
+    }
+    let query = "MATCH (a:X {kind: 1})-[r:R]->(b:X {kind: 1})-[s:S]->(c:X {kind: 1}) RETURN a.id AS a, b.id AS b, c.id AS c, r.key AS r, s.key AS s";
+    let mut baseline = fixture(false);
+    let mut candidate = fixture(true);
+    let values = |output: QueryOutput| {
+        let mut rows: Vec<Vec<_>> = output
+            .rows
+            .iter()
+            .map(|row| row.iter().map(|(_, value)| value.clone()).collect())
+            .collect();
+        rows.sort();
+        rows
+    };
+    let expected = values(baseline.query(query).unwrap());
+    assert_eq!(expected.len(), 9);
+    assert_eq!(values(candidate.query(query).unwrap()), expected);
+    let explain = candidate.explain_query(query).unwrap();
+    assert!(
+        explain
+            .trace
+            .decisions
+            .iter()
+            .any(|line| line.contains("selected=Some(\"reverse\")")),
+        "{:?}",
+        explain.trace.decisions
+    );
+}

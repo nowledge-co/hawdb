@@ -20,6 +20,21 @@ pub(super) struct SamplingReadKey {
     parameterized: bool,
 }
 
+#[cfg(test)]
+pub(super) fn retention_fixture() -> SamplingReadKey {
+    let mut values = Vec::with_capacity(16);
+    values.push(Value::String("v".repeat(256)));
+    SamplingReadKey {
+        epoch: 7,
+        checkpoint_epoch: Some(3),
+        generation: Some(2),
+        limits: JoinSamplingLimits::default(),
+        template_values: values.clone(),
+        values,
+        parameterized: false,
+    }
+}
+
 impl SamplingReadKey {
     pub(super) fn matches_snapshot<R: hawdb_storage::graph_engine::GraphReadEngine>(
         &self,

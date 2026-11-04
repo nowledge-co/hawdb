@@ -131,7 +131,7 @@ fn cached(
         normalized_query: query.to_owned(),
         parameters: parameterized.cache_key().clone(),
         environment: OptimizerEnvironmentKey {
-            sampling_read: None,
+            sampling_read: Some(join_sampling::retention_fixture()),
             schema: OptimizerSchemaKey::from_catalog(&Catalog::default()),
             proof_schema: Some(ProofSchemaKey {
                 public_tables: vec![hawdb_core::TableId(7); 32],

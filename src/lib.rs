@@ -381,6 +381,7 @@ pub use hawdb_runtime_tokio::{
 };
 pub use hawdb_search::{SearchQueryError, SearchQueryResult, SearchRetainedOutput};
 pub use hawdb_storage::file_descriptors::FileDescriptorMetrics;
+pub use hawdb_storage::join_sampling::JoinSamplingLimits;
 pub use hawdb_storage::projection_generation::{
     decode_projection_relational_member, encode_projection_relational_member,
     ProjectionGenerationBatchLimits, ProjectionGenerationBegin, ProjectionGenerationCursor,

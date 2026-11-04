@@ -17,7 +17,8 @@ hawdb-storage --lib join_sampling -- --test-threads=1`.
 binding/type boundaries and complete positive estimate validation; replay
 `cargo test --locked -p hawdb-optimizer-graph --lib join_sampling`.
 Root `api::tests::join_sampling` belongs to `//:hawdb_unit_general_tests` and
-checks complete result multisets, parameter-specific cache identity, pinned
+checks complete result multisets, self loops/relationship bindings,
+parameter-specific cache identity, pinned
 readers, resource fallback and unsupported shapes. Replay `cargo test --locked
 -p hawdb --lib api::tests::join_sampling -- --test-threads=1`, also with
 `--no-default-features`. Fixtures are finite semantic examples, not seed searches
@@ -157,7 +158,8 @@ rounding and caller-owned in-flight copies; these checks are not RSS or latency
 benchmarks. The facade's `api::plan_cache::retention_allocation` oracle belongs
 to `//:hawdb_unit_general_tests`: it observes complete private cache keys,
 physical IR, traces, shared metadata, proof-schema table/property IDs and EXISTS
-strings, both scoring-key forms and table capacity
+strings, sampled path statistics/parameter keys with spare capacities,
+both scoring-key forms and table capacity
 at 20/100/512 candidates, owned row-bound/nested list and path expressions, UNWIND source payloads, boxed shortest-path
 descriptors with spare string capacities (Any/All selection), temporal literals,
 thousands of boxed durations, temporal-function arguments, map literals and boxed

@@ -7,6 +7,18 @@ statistics for a small directed `MATCH` path. The default is `None`: hosts opt
 in after qualifying their workload. This is an embedded Rust configuration,
 not a new process, environment variable, query protocol or persisted format.
 
+Hosts configure this through the `hawdb` facade without depending on internal
+storage crates:
+
+```rust
+use hawdb::{Database, DatabaseConfig, JoinSamplingLimits};
+
+let db = Database::new_with_config(DatabaseConfig {
+    join_sampling: Some(JoinSamplingLimits::default()),
+    ..Default::default()
+});
+```
+
 ## Eligibility and plan choice
 
 The initial capability accepts one closed inner path of one or two fixed,

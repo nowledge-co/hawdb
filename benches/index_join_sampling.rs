@@ -4,10 +4,9 @@
 //! Manual native experiment over one shared checkpoint image. Fixture writes
 //! and opening are separate; each query includes preparation and full execution.
 
-use hawdb::{Database, DatabaseConfig, Value};
+use hawdb::{Database, DatabaseConfig, JoinSamplingLimits, Value};
 use hawdb_core::Catalog;
 use hawdb_storage::config::StorageResidencyMode;
-use hawdb_storage::join_sampling::JoinSamplingLimits;
 use hawdb_storage::store::{DurabilityPolicy, GraphStore, WalReplayConfig};
 use serde_json::json;
 use std::collections::BTreeMap;
