@@ -34,8 +34,13 @@ impl GraphStore {
         if let PropertyFilter::And(filters) = filter {
             let mut best: Option<AdmittedRelationshipCandidates> = None;
             for child in filters {
+                // A child no smaller than the best candidate cannot replace it,
+                // so it may stop building at that size.
+                let cap = best
+                    .as_ref()
+                    .map_or(max_keys, |best| best.ids.len().min(max_keys));
                 if let Some(candidate) =
-                    self.prune_resident_relationships_admitted(rel_type, child, max_keys, admit)?
+                    self.prune_resident_relationships_admitted(rel_type, child, cap, admit)?
                 {
                     if candidate.ids.is_empty() {
                         return Ok(Some(candidate));
@@ -143,32 +148,73 @@ impl GraphStore {
                     return Ok(None);
                 }
             }
-        } else {
-            for ((candidate_type, candidate_property, value), posting) in
-                self.relationship_property_index.iter()
-            {
-                descriptor.grow(0)?;
-                if *candidate_type != rel_type || Some(candidate_property) != property {
-                    continue;
-                }
-                let matches = match filter {
-                    PropertyFilter::Eq {
-                        value: expected, ..
-                    } => value == expected,
-                    PropertyFilter::NotEq {
-                        value: expected, ..
-                    } => value != expected,
-                    PropertyFilter::In { values, .. } => values.contains(value),
-                    PropertyFilter::IsNotNull { .. } => value != &Value::Null,
-                    PropertyFilter::Range { lower, upper, .. } => {
-                        range_bounds_match(value, lower.as_ref(), upper.as_ref())
+        } else if let Some(property) = property {
+            // Equality and membership read their exact keys; other filters read
+            // only this type's postings for the property. Scanning the whole
+            // index here made every source node pay for every relationship
+            // property entry (#1546).
+            let exact = match filter {
+                PropertyFilter::Eq { value, .. } => Some(std::slice::from_ref(value)),
+                PropertyFilter::In { values, .. } => Some(values.as_slice()),
+                _ => None,
+            };
+            if let Some(values) = exact {
+                for value in values {
+                    descriptor.grow(0)?;
+                    let Some(_key) = admit_key_copy(admit, property, value)? else {
+                        return Ok(None);
+                    };
+                    record_index_entry_visit();
+                    let Some(posting) = self.relationship_property_index.get(&(
+                        rel_type,
+                        property.clone(),
+                        value.clone(),
+                    )) else {
+                        continue;
+                    };
+                    // A posting larger than the cap cannot prune; reject it
+                    // before copying any identifier.
+                    if posting.len() > max_keys {
+                        return Ok(None);
                     }
-                    _ => unreachable!(),
-                };
-                if matches {
                     for id in posting.iter() {
                         if !insert(*id)? {
                             return Ok(None);
+                        }
+                    }
+                }
+            } else {
+                let Some(_key) = admit_key_copy(admit, property, &Value::Null)? else {
+                    return Ok(None);
+                };
+                // `property` followed by NUL is the least greater string, so the
+                // interval covers exactly this property's keys (and possibly a
+                // NULL key of that successor, which the property check skips).
+                let first = (rel_type, property.clone(), Value::Null);
+                let last = (rel_type, format!("{property}\u{0}"), Value::Null);
+                for ((candidate_type, candidate_property, value), posting) in
+                    self.relationship_property_index.range(&first, &last)
+                {
+                    descriptor.grow(0)?;
+                    record_index_entry_visit();
+                    if *candidate_type != rel_type || candidate_property != property {
+                        continue;
+                    }
+                    let matches = match filter {
+                        PropertyFilter::NotEq {
+                            value: expected, ..
+                        } => value != expected,
+                        PropertyFilter::IsNotNull { .. } => value != &Value::Null,
+                        PropertyFilter::Range { lower, upper, .. } => {
+                            range_bounds_match(value, lower.as_ref(), upper.as_ref())
+                        }
+                        _ => unreachable!(),
+                    };
+                    if matches {
+                        for id in posting.iter() {
+                            if !insert(*id)? {
+                                return Ok(None);
+                            }
                         }
                     }
                 }
@@ -224,6 +270,31 @@ impl GraphStore {
             _descriptor: descriptor,
         }))
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Relationship property index entries visited by pruning on this thread.
+    static INDEX_ENTRIES_VISITED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn record_index_entry_visit() {
+    #[cfg(test)]
+    INDEX_ENTRIES_VISITED.with(|visited| visited.set(visited.get() + 1));
+}
+
+/// Admits the owned copy of one probe key (property name and value).
+fn admit_key_copy(
+    admit: &mut dyn FnMut(usize) -> Result<Option<Box<dyn GraphReadAllocation>>>,
+    property: &str,
+    value: &Value,
+) -> Result<Option<Box<dyn GraphReadAllocation>>> {
+    let bytes = std::mem::size_of::<(RelTypeId, String, Value)>()
+        .saturating_add(property.len() + 1)
+        .saturating_add(
+            usize::try_from(crate::mutation::estimated_value_bytes(value)).unwrap_or(usize::MAX),
+        );
+    admit(bytes)
 }
 
 #[cfg(test)]
@@ -418,5 +489,148 @@ mod tests {
         assert_eq!(control, GraphScanControl::Stop);
         assert!(report.is_none());
         assert_eq!(calls, 1, "normal Stop must not invoke fallback admission");
+    }
+
+    /// Pruning reads only the probed keys, or this type's postings for the
+    /// property, and an AND stops building a child larger than its best
+    /// candidate (#1546).
+    #[test]
+    fn indexed_relationship_pruning_reads_only_the_probed_keys() {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::in_memory();
+        let hub = store
+            .create_node(&mut catalog, "Entity", BTreeMap::new())
+            .unwrap();
+        let mut sources = Vec::new();
+        for offset in 0..300_i64 {
+            let source = store
+                .create_node(&mut catalog, "Entity", BTreeMap::new())
+                .unwrap();
+            sources.push(source);
+            for (rel_type, state) in [("LINK", "active"), ("OTHER", "active")] {
+                store
+                    .create_relationship(
+                        &mut catalog,
+                        source,
+                        hub,
+                        rel_type,
+                        BTreeMap::from([
+                            ("table".into(), Value::Int(7)),
+                            ("offset".into(), Value::Int(offset)),
+                            ("state".into(), Value::String(state.into())),
+                            ("stat".into(), Value::Int(offset % 3)),
+                            ("statex".into(), Value::Int(offset)),
+                        ]),
+                    )
+                    .unwrap();
+            }
+        }
+        let rel_type = catalog.rel_type_id("LINK").unwrap();
+        let eq = |property: &str, value: Value| PropertyFilter::Eq {
+            property: property.into(),
+            value,
+        };
+        let mut admit = |bytes| {
+            Ok(Some(
+                Box::new(UnaccountedReadAllocation(bytes)) as Box<dyn GraphReadAllocation>
+            ))
+        };
+        let mut prune = |filter: &PropertyFilter, max_keys| {
+            INDEX_ENTRIES_VISITED.with(|visited| visited.set(0));
+            let candidate = store
+                .prune_resident_relationships_admitted(rel_type, filter, max_keys, &mut admit)
+                .unwrap()
+                .map(|candidate| candidate.ids.iter().copied().collect::<Vec<_>>());
+            (candidate, INDEX_ENTRIES_VISITED.with(std::cell::Cell::get))
+        };
+        // Mem's occurrence lookup: a common table id and a unique offset.
+        let occurrence = PropertyFilter::And(vec![
+            eq("table", Value::Int(7)),
+            eq("offset", Value::Int(42)),
+        ]);
+        let (candidate, visited) = prune(&occurrence, 1);
+        assert_eq!(candidate.map(|ids| ids.len()), Some(1));
+        assert!(visited <= 2, "visited {visited} index entries");
+        // The common posting alone exceeds a one-relationship cap at once.
+        let (candidate, visited) = prune(&eq("table", Value::Int(7)), 1);
+        assert_eq!(candidate, None);
+        assert_eq!(visited, 1);
+        // A range reads only this property's 300 keys, not `stat`/`statex`.
+        let range = PropertyFilter::Range {
+            property: "offset".into(),
+            lower: Some((Value::Int(10), true)),
+            upper: Some((Value::Int(19), true)),
+        };
+        let (candidate, visited) = prune(&range, usize::MAX);
+        assert_eq!(candidate.map(|ids| ids.len()), Some(10));
+        assert_eq!(visited, 300);
+        let (candidate, visited) = prune(
+            &PropertyFilter::IsNotNull {
+                property: "stat".into(),
+            },
+            usize::MAX,
+        );
+        assert_eq!(candidate.map(|ids| ids.len()), Some(300));
+        assert_eq!(visited, 3);
+        // Results still match the unpruned adjacency for every source.
+        let filters = [
+            occurrence.clone(),
+            eq("state", Value::String("active".into())),
+            PropertyFilter::In {
+                property: "offset".into(),
+                values: vec![
+                    Value::Int(3),
+                    Value::Int(3),
+                    Value::Int(299),
+                    Value::Int(900),
+                ],
+            },
+            PropertyFilter::NotEq {
+                property: "stat".into(),
+                value: Value::Int(1),
+            },
+            PropertyFilter::IsNotNull {
+                property: "stat".into(),
+            },
+            range,
+        ];
+        for source in [sources[3], sources[42], sources[299]] {
+            for filter in &filters {
+                let mut expected = Vec::new();
+                store
+                    .visit_adjacent_relationships_with_filter_owned(
+                        source,
+                        Some(rel_type),
+                        AdjacencyDirection::Outgoing,
+                        filter,
+                        |record| {
+                            expected.push(record.id);
+                            GraphScanControl::Continue
+                        },
+                    )
+                    .unwrap();
+                let mut actual = Vec::new();
+                let mut admit = |bytes| {
+                    Ok(Some(
+                        Box::new(UnaccountedReadAllocation(bytes)) as Box<dyn GraphReadAllocation>
+                    ))
+                };
+                store
+                    .visit_filtered_ordered_relationships_with_allocation(
+                        (source, Some(rel_type), AdjacencyDirection::Outgoing),
+                        filter,
+                        64 * 1024,
+                        &mut crate::read_view::ControlledGraphReadAllocator::new(&mut admit, None),
+                        |record| {
+                            actual.push(record.into_parts().0.id);
+                            Ok(GraphScanControl::Continue)
+                        },
+                    )
+                    .unwrap();
+                expected.sort_unstable();
+                actual.sort_unstable();
+                assert_eq!(actual, expected, "{filter:?}");
+            }
+        }
     }
 }
