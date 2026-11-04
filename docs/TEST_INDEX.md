@@ -2681,6 +2681,14 @@ and unchanged point/default-context controls. These are checked-profile unit
 cases in the existing crate lane; no fixture, feature matrix, timeout or
 execution lane changes. See [the cost model](OPTIMIZER_COST_MODEL.md).
 
+The proposed [cost qualification protocol](specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md)
+and [development plan](OPTIMIZER_COST_QUALIFICATION_PLAN.md) describe future
+candidate-plan latency, cardinality diagnosis and coefficient-validation
+coverage. No runner, test cases, execution lane or performance gate is added by
+these documents. Register concrete owners and replay commands here when the
+corresponding implementation lands; Shiro and measurement campaigns remain
+manual/local-only.
+
 
 ## Embedded architecture ownership (#1222)
 

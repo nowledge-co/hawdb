@@ -493,6 +493,28 @@ qualification justifies moving them.
   - Acceptance: active SQL/PGQ statements produce PostgreSQL-compatible rows
     and error classes without a separate executor or public `query_gql` API.
 
+## P1: Optimizer Cost Qualification
+
+The [proposed specification](docs/specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md)
+defines the evidence and acceptance contract; the
+[development plan](docs/OPTIMIZER_COST_QUALIFICATION_PLAN.md) defines phase
+dependencies and owners. This work supports [#216](https://github.com/nowledge-co/hawdb/issues/216).
+
+- [ ] Prove bounded legal-candidate selection and typed evidence on one pinned
+  Cypher read, including two distinct executed Sort/TopN alternatives and
+  complete result, fingerprint, cost and refusal evidence (phase 1).
+- [ ] Deliver the explicit offline four-family runner and supported SQL/Cypher
+  adapters, with frozen manifests, serial paired sampling, complete replay and
+  separate residency/cache/timing cohorts (phase 2).
+- [ ] Add within-query rank/regret metrics and frozen-plan observed-cardinality
+  diagnosis, retaining unsupported, partial, timed-out and refused cases
+  rather than counting them as successful coverage (phase 3).
+- [ ] Evaluate nonnegative coefficient fits against frozen holdouts after
+  diagnosis; qualify any default-policy change in a separate implementation PR
+  using the specification's semantic and paired performance gates (phase 4).
+- [ ] Extend the qualified protocol to active Mem join decisions and, separately,
+  quality-constrained exact/Filtered DiskANN selection (phase 5).
+
 ## P2: Deferred Delivery Governance
 
 - [ ] Adopt `main` branch protection when HawDB enters a release-candidate or

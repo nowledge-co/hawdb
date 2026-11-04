@@ -101,6 +101,13 @@ and changes only its cost line (total 4 to 6, CPU 1 to 2, random work 3 to 2).
 
 ## Verification surfaces
 
+The proposed [cost qualification specification](specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md)
+and [development plan](OPTIMIZER_COST_QUALIFICATION_PLAN.md) define future
+same-query candidate measurements, cardinality-error isolation and offline
+coefficient experiments. Their runner and calibration gates are not implemented
+by those documents. Existing tests below establish their stated arithmetic and
+execution contracts, not general agreement between cost ranking and latency.
+
 Ordinary tests compare component arithmetic, candidate permutations, covering
 and non-covering selection, saturation, scalar normalization and join scaling.
 The manual access campaign compares the selected cost with an independent

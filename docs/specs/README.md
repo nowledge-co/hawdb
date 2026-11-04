@@ -47,6 +47,7 @@ canonical contracts above govern supported behavior.
 
 | Proposal | Scope and adoption boundary |
 | --- | --- |
+| [`OPTIMIZER_COST_QUALIFICATION_SPEC.md`](OPTIMIZER_COST_QUALIFICATION_SPEC.md) | Proposed same-snapshot candidate-plan measurements, cardinality diagnosis and offline coefficient calibration for #216; the [development plan](../OPTIMIZER_COST_QUALIFICATION_PLAN.md) sequences implementation, and existing cost weights/qualification APIs remain authoritative |
 | [`SOURCE_COHERENT_SEARCH_CATCH_UP_SPEC.md`](SOURCE_COHERENT_SEARCH_CATCH_UP_SPEC.md) | Additive fixed-E private staging and complete-source verification for #1043; conservative full-source cost, all post-E writes refused, registered Consumer/host integration still unqualified |
 | [`MATERIALIZED_VIEWS_SPEC.md`](MATERIALIZED_VIEWS_SPEC.md) | Real-time graph/relational views: complete transaction deltas, incremental plans, online bootstrap and historical-epoch publication; phase one is Mem Memory/Space inventories plus Entity usage, read-only snapshot transactions and designated query-path acceptance; exact source epochs, derived state, serving indexes, and later Community/Source/Thread/search consumers require implementation and separate qualification |
 | [`MVCC_COW_EVOLUTION_SPEC.md`](MVCC_COW_EVOLUTION_SPEC.md) | Proposed COW snapshot/retention and persistent Consumer lifecycle work, followed by complete transaction read dependencies and separately qualified opt-in serializability; existing SI/publication contracts remain authoritative |
