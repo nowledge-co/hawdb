@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import textwrap
 import unittest
@@ -191,6 +192,24 @@ class PublisherVerificationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.capture_manifest()
         self.assertFalse(self.manifest.exists())
+
+
+class PackagingToolchainTests(unittest.TestCase):
+    def test_packaging_selects_the_installed_pinned_toolchain(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        toolchain = (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")
+        channel = re.search(r'^channel = "([^"]+)"$', toolchain, re.MULTILINE)[1]
+        # A default toolchain still lets the released source request development
+        # components. Packaging must select the installed toolchain explicitly.
+        environment = re.search(r"(?m)^env:\n((?:  .+\n)+)", workflow)
+        self.assertIsNotNone(environment, "Packaging needs a workflow toolchain override")
+        override = re.search(
+            r'^  RUSTUP_TOOLCHAIN: "([^"]+)"$', environment[1], re.MULTILINE
+        )
+        self.assertIsNotNone(override, "Packaging must set RUSTUP_TOOLCHAIN")
+        self.assertEqual(override[1], channel)
+        self.assertIn(f"uses: dtolnay/rust-toolchain@{channel}", workflow)
+        self.assertIn(f'rust-toolchain: "{channel}"', workflow)
 
 
 if __name__ == "__main__":

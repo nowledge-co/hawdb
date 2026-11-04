@@ -114,7 +114,11 @@ matrix, timeout or compilation profile changes.
 preflight and registry verification with temporary distributions and mocked
 PyPI responses. It covers publisher-created attestation sidecars, frozen
 pre-upload hashes, incomplete or conflicting uploads, delayed visibility and
-network failures without credentials, uploads or real sleeps. Replay with
+network failures without credentials, uploads or real sleeps.
+The same owner checks that packaging explicitly selects the installed Rust
+toolchain and that its override, installer and wheel builder agree with
+`rust-toolchain.toml`, preventing release preparation from requesting development
+components again. Replay with
 `bazel test //:pypi_publish_script_test`, or
 `python scripts/pypi-publish.test.py` with `packaging` installed. Actual Trusted
 Publishing and public-install smoke verification remain release-workflow gates.

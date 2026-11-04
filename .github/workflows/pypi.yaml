@@ -17,6 +17,11 @@ concurrency:
   group: pypi-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
+env:
+  # Reuse the installed packaging toolchain without requesting development
+  # components from the released source's rust-toolchain.toml.
+  RUSTUP_TOOLCHAIN: "1.97.1"
+
 jobs:
   sdist:
     name: Prepare released source
