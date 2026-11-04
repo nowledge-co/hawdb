@@ -546,6 +546,26 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                 stream_node_scan_batches(variable, label, None, context, execution_limit, emit)
             })
         }
+        PhysicalPlan::RelationshipSeededNodeScan {
+            variable,
+            label,
+            rel_type,
+            rel_properties,
+            direction,
+        } => dispatch.supported(|context, execution_limit, emit| {
+            stream_relationship_seeded_node_scan_batches(
+                RelationshipSeededScanSpec {
+                    variable,
+                    label,
+                    rel_type,
+                    rel_properties,
+                    direction: *direction,
+                },
+                context,
+                execution_limit,
+                emit,
+            )
+        }),
         PhysicalPlan::NodeProjectionScanExec {
             variable,
             label,

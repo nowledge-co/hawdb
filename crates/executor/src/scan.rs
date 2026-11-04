@@ -1745,7 +1745,7 @@ fn node_binding(variable: &str, node: NodeRecord) -> Binding {
     }
 }
 
-fn exact_scan_label_id(catalog: &Catalog, label: &str) -> Option<Option<LabelId>> {
+pub(crate) fn exact_scan_label_id(catalog: &Catalog, label: &str) -> Option<Option<LabelId>> {
     if label.is_empty() {
         return Some(None);
     }

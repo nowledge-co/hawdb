@@ -390,6 +390,15 @@ impl PhysicalPlan {
             PhysicalPlan::SeqNodeScan { variable, label } => {
                 format!("{pad}SeqNodeScan variable={variable} label={label}")
             }
+            PhysicalPlan::RelationshipSeededNodeScan {
+                variable,
+                label,
+                rel_type,
+                rel_properties,
+                direction,
+            } => format!(
+                "{pad}RelationshipSeededNodeScan variable={variable} label={label} rel={rel_type} direction={direction:?} properties={rel_properties:?}"
+            ),
             PhysicalPlan::NodeProjectionScanExec {
                 variable,
                 label,

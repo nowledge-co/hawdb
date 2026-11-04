@@ -29,6 +29,7 @@ mod ordered_composite;
 #[path = "graph_read/resident_pruning.rs"]
 mod resident_pruning;
 use admission::{AdmittedProjection, ProjectionAdmission, UnaccountedReadAllocation};
+pub use resident_pruning::{EndpointCandidates, RelationshipEndpoints};
 
 thread_local! {
     static ADJACENCY_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };

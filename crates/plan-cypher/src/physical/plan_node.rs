@@ -93,6 +93,9 @@ impl PhysicalPlan {
             PhysicalPlan::EmptyExec => PhysicalPlanKind::EmptyExec,
             PhysicalPlan::LoadCsvExec { .. } => PhysicalPlanKind::LoadCsvExec,
             PhysicalPlan::SeqNodeScan { .. } => PhysicalPlanKind::SeqNodeScan,
+            PhysicalPlan::RelationshipSeededNodeScan { .. } => {
+                PhysicalPlanKind::RelationshipSeededNodeScan
+            }
             PhysicalPlan::NodeProjectionScanExec { .. } => PhysicalPlanKind::NodeProjectionScanExec,
             PhysicalPlan::SourceSegmentScan { .. } => PhysicalPlanKind::SourceSegmentScan,
             PhysicalPlan::HashJoinExec { .. } => PhysicalPlanKind::HashJoinExec,
@@ -206,6 +209,7 @@ impl PhysicalPlan {
             | PhysicalPlan::EmptyExec
             | PhysicalPlan::LoadCsvExec { .. }
             | PhysicalPlan::SeqNodeScan { .. }
+            | PhysicalPlan::RelationshipSeededNodeScan { .. }
             | PhysicalPlan::NodeProjectionScanExec { .. }
             | PhysicalPlan::SourceSegmentScan { .. }
             | PhysicalPlan::IndexNodeSeek { .. }

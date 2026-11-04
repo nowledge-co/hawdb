@@ -554,6 +554,19 @@ impl RetainedHeapBytes for PhysicalPlan {
                 variable.retained_heap_bytes(),
                 label.retained_heap_bytes(),
             ]),
+            Self::RelationshipSeededNodeScan {
+                variable,
+                label,
+                rel_type,
+                rel_properties,
+                direction,
+            } => checked_retained_heap_sum([
+                variable.retained_heap_bytes(),
+                label.retained_heap_bytes(),
+                rel_type.retained_heap_bytes(),
+                rel_properties.retained_heap_bytes(),
+                direction.retained_heap_bytes(),
+            ]),
             Self::NodeProjectionScanExec {
                 variable,
                 label,

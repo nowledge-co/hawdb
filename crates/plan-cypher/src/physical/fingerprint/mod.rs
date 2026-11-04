@@ -841,6 +841,29 @@ impl PhysicalPlan {
                 write_identifier(output, label);
                 output.push(')');
             }
+            PhysicalPlan::RelationshipSeededNodeScan {
+                variable,
+                label,
+                rel_type,
+                rel_properties,
+                direction,
+            } => {
+                output.push_str("RelationshipSeededNodeScan(");
+                write_identifier(output, variable);
+                output.push(':');
+                write_identifier(output, label);
+                output.push(':');
+                write_identifier(output, rel_type);
+                output.push(':');
+                output.push_str(match direction {
+                    RelationshipDirection::Outgoing => "out",
+                    RelationshipDirection::Incoming => "in",
+                    RelationshipDirection::Undirected => "both",
+                });
+                output.push(',');
+                write_properties(output, rel_properties);
+                output.push(')');
+            }
             PhysicalPlan::NodeProjectionScanExec {
                 variable,
                 label,

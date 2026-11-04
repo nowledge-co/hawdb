@@ -109,7 +109,9 @@ pub(super) fn cost_operator(
         }
         PhysicalPlan::SourceSegmentScan { .. } => seek_startup(super::NODE_FULL_SCAN_STARTUP_COST),
         PhysicalPlan::NodeProjectionScanExec { access, .. } => access_startup(access, total),
-        PhysicalPlan::IndexNodeSeek { .. } => seek_startup(super::NODE_INDEX_EQ_STARTUP_COST),
+        PhysicalPlan::IndexNodeSeek { .. } | PhysicalPlan::RelationshipSeededNodeScan { .. } => {
+            seek_startup(super::NODE_INDEX_EQ_STARTUP_COST)
+        }
         PhysicalPlan::IndexNodeMultiSeek { values, .. } => seek_startup(values.len() as u64),
         PhysicalPlan::IndexNodeCompositeSeek { predicates, .. } => {
             seek_startup(predicates.len() as u64)

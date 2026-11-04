@@ -88,6 +88,7 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::NodeCountExec { .. }
         | PhysicalPlan::RelationshipCountExec { .. }
         | PhysicalPlan::SeqNodeScan { .. }
+        | PhysicalPlan::RelationshipSeededNodeScan { .. }
         | PhysicalPlan::NodeProjectionScanExec { .. }
         | PhysicalPlan::SourceSegmentScan { .. }
         | PhysicalPlan::GraphMatchExec { .. }

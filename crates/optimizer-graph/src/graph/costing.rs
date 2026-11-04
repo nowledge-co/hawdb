@@ -470,6 +470,20 @@ fn estimate_local_operator_cost(
             let rows = catalog.label_count(label);
             node_full_scan_work(rows)
         }
+        PhysicalPlan::RelationshipSeededNodeScan {
+            label,
+            rel_type,
+            rel_properties,
+            ..
+        } => {
+            // Seeds are distinct endpoints of the matching relationships, at
+            // most the label's nodes; each one is an index-located point read.
+            let matching = catalog
+                .estimate_expand_rows(label, rel_type, rel_properties, "", 1, 1)
+                .estimated_rows;
+            let rows = matching.min(catalog.label_count(label));
+            node_index_seek_work(rows, NODE_INDEX_EQ_STARTUP_COST)
+        }
         PhysicalPlan::NodeProjectionScanExec {
             label,
             access,

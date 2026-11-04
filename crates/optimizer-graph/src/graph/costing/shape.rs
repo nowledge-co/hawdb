@@ -169,6 +169,7 @@ impl<'p> RowShape<'p> {
                 }
             }
             PhysicalPlan::SeqNodeScan { label, .. }
+            | PhysicalPlan::RelationshipSeededNodeScan { label, .. }
             | PhysicalPlan::IndexNodeSeek { label, .. }
             | PhysicalPlan::IndexNodeMultiSeek { label, .. }
             | PhysicalPlan::IndexNodeUnionSeek { label, .. }

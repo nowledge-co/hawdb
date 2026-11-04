@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::*;
+use crate::graph_index::RelIdPropertyPostingList;
 use crate::read_view::{AdmittedKeySet, GraphReadAllocation};
 
 pub(super) struct AdmittedRelationshipCandidates {
@@ -270,6 +271,104 @@ impl GraphStore {
             _descriptor: descriptor,
         }))
     }
+}
+
+impl GraphStore {
+    /// Endpoint node ids of `rel_type` relationships whose properties equal
+    /// every entry of `properties`, read from the resident relationship
+    /// property index: the sources, the targets, or both. The ids are sorted
+    /// and distinct. `None` means the index cannot answer (a canonical base
+    /// exists, no property is given, or the smallest posting exceeds
+    /// `max_relationships`), so the caller keeps its node-first path (#1548).
+    pub fn relationship_property_endpoint_candidates(
+        &self,
+        rel_type: RelTypeId,
+        properties: &BTreeMap<String, Value>,
+        endpoints: RelationshipEndpoints,
+        max_relationships: usize,
+        admit: &mut dyn FnMut(usize) -> Result<Option<Box<dyn GraphReadAllocation>>>,
+    ) -> Result<Option<EndpointCandidates>> {
+        if self.canonical_base.is_some() || properties.is_empty() {
+            return Ok(None);
+        }
+        let mut smallest: Option<&RelIdPropertyPostingList> = None;
+        for (property, value) in properties {
+            let Some(_key) = admit_key_copy(admit, property, value)? else {
+                return Ok(None);
+            };
+            record_index_entry_visit();
+            let Some(posting) =
+                self.relationship_property_index
+                    .get(&(rel_type, property.clone(), value.clone()))
+            else {
+                // No relationship carries this value: no endpoint can match.
+                let Some(allocation) = admit(0)? else {
+                    return Ok(None);
+                };
+                return Ok(Some((Vec::new(), allocation)));
+            };
+            if smallest.is_none_or(|smallest| posting.len() < smallest.len()) {
+                smallest = Some(posting);
+            }
+        }
+        let smallest = smallest.expect("at least one property was probed");
+        if smallest.len() > max_relationships {
+            return Ok(None);
+        }
+        let per_relationship = match endpoints {
+            RelationshipEndpoints::Both => 2,
+            RelationshipEndpoints::Sources | RelationshipEndpoints::Targets => 1,
+        };
+        let bytes = smallest
+            .len()
+            .saturating_mul(per_relationship)
+            .saturating_mul(std::mem::size_of::<NodeId>());
+        let Some(allocation) = admit(bytes)? else {
+            return Ok(None);
+        };
+        let mut ids = Vec::with_capacity(smallest.len().saturating_mul(per_relationship));
+        for id in smallest.iter() {
+            let Some(record) = self.relationships.get(id) else {
+                return Err(HawDBError::Execution(format!(
+                    "relationship property index references missing relationship {}",
+                    id.0
+                )));
+            };
+            if record.rel_type != rel_type
+                || properties
+                    .iter()
+                    .any(|(property, value)| record.properties.get(property) != Some(value))
+            {
+                continue;
+            }
+            if matches!(
+                endpoints,
+                RelationshipEndpoints::Sources | RelationshipEndpoints::Both
+            ) {
+                ids.push(record.source);
+            }
+            if matches!(
+                endpoints,
+                RelationshipEndpoints::Targets | RelationshipEndpoints::Both
+            ) {
+                ids.push(record.target);
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        Ok(Some((ids, allocation)))
+    }
+}
+
+/// Sorted distinct endpoint ids and the permit that admitted them.
+pub type EndpointCandidates = (Vec<NodeId>, Box<dyn GraphReadAllocation>);
+
+/// Which endpoints of the matching relationships a caller seeds from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationshipEndpoints {
+    Sources,
+    Targets,
+    Both,
 }
 
 #[cfg(test)]

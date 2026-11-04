@@ -319,6 +319,11 @@ pub(super) fn physical_plan_node_label<'a>(
             variable: plan_variable,
             label,
         }
+        | PhysicalPlan::RelationshipSeededNodeScan {
+            variable: plan_variable,
+            label,
+            ..
+        }
         | PhysicalPlan::IndexNodeSeek {
             variable: plan_variable,
             label,

@@ -83,6 +83,13 @@ fn non_ordering_properties(plan: &PhysicalPlan) -> PhysicalProperties {
             memory_budget: MemoryBudgetClass::RowLinear,
             ..PhysicalProperties::default()
         },
+        PhysicalPlan::RelationshipSeededNodeScan { .. } => PhysicalProperties {
+            distribution: Distribution::Single,
+            scan_pruning: ScanPruningSupport::Index,
+            vector_precision: VectorPrecision::NotVector,
+            memory_budget: MemoryBudgetClass::RowLinear,
+            ..PhysicalProperties::default()
+        },
         PhysicalPlan::NodeProjectionScanExec {
             label,
             access,

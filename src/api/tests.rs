@@ -162,6 +162,7 @@ mod relational_range;
 mod relational_update_delete_outcomes;
 mod relationship_patterns;
 mod relationship_property_mutations;
+mod relationship_property_seeds;
 mod relationship_reads;
 mod result_column_order;
 mod row_bound_pattern_properties;

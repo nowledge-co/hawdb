@@ -85,6 +85,7 @@ pub enum PhysicalPlanKind {
     EmptyExec,
     LoadCsvExec,
     SeqNodeScan,
+    RelationshipSeededNodeScan,
     NodeProjectionScanExec,
     SourceSegmentScan,
     NodeCartesianProductExec,
@@ -195,6 +196,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::EmptyExec,
             PhysicalPlanKind::LoadCsvExec,
             PhysicalPlanKind::SeqNodeScan,
+            PhysicalPlanKind::RelationshipSeededNodeScan,
             PhysicalPlanKind::NodeProjectionScanExec,
             PhysicalPlanKind::SourceSegmentScan,
             PhysicalPlanKind::NodeCartesianProductExec,
@@ -289,6 +291,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::EmptyExec => "EmptyExec",
             PhysicalPlanKind::LoadCsvExec => "LoadCsvExec",
             PhysicalPlanKind::SeqNodeScan => "SeqNodeScan",
+            PhysicalPlanKind::RelationshipSeededNodeScan => "RelationshipSeededNodeScan",
             PhysicalPlanKind::NodeProjectionScanExec => "NodeProjectionScanExec",
             PhysicalPlanKind::SourceSegmentScan => "SourceSegmentScan",
             PhysicalPlanKind::HashJoinExec => "HashJoinExec",
@@ -363,6 +366,7 @@ impl PhysicalPlanKind {
             | PhysicalPlanKind::DeleteRelationshipTargetNodes
             | PhysicalPlanKind::CreateRelationship => PhysicalPlanClass::Mutation,
             PhysicalPlanKind::SeqNodeScan
+            | PhysicalPlanKind::RelationshipSeededNodeScan
             | PhysicalPlanKind::NodeProjectionScanExec
             | PhysicalPlanKind::SourceSegmentScan
             | PhysicalPlanKind::NodeColumnLookupExec
