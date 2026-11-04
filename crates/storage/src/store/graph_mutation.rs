@@ -379,10 +379,12 @@ impl GraphStore {
         if !request.source_label.is_empty() && source_label_id.is_none() {
             return Ok(Vec::new());
         }
-        let Some(old_target_label_id) = catalog.label_id(&request.old_target_label) else {
+        let Some(old_target_label_id) = endpoint_label_id(catalog, &request.old_target_label)
+        else {
             return Ok(Vec::new());
         };
-        let Some(new_target_label_id) = catalog.label_id(&request.new_target_label) else {
+        let Some(new_target_label_id) = endpoint_label_id(catalog, &request.new_target_label)
+        else {
             return Ok(Vec::new());
         };
         let Some(old_rel_type_id) = catalog.rel_type_id(&request.old_rel_type) else {
@@ -413,7 +415,7 @@ impl GraphStore {
                         .nodes
                         .get(&relationship.target)
                         .map(|node| {
-                            node.labels.contains(&old_target_label_id)
+                            old_target_label_id.is_none_or(|label| node.labels.contains(&label))
                                 && request
                                     .old_target_filter
                                     .as_ref()
@@ -431,7 +433,7 @@ impl GraphStore {
         }
         let target_ids = self.matching_node_ids(
             catalog,
-            Some(new_target_label_id),
+            new_target_label_id,
             request.new_target_filter.as_ref(),
         )?;
         let mut next_rel_id = self.next_rel_id;
@@ -482,7 +484,8 @@ impl GraphStore {
         if !request.old_source_label.is_empty() && old_source_label_id.is_none() {
             return Ok(Vec::new());
         }
-        let Some(old_target_label_id) = catalog.label_id(&request.old_target_label) else {
+        let Some(old_target_label_id) = endpoint_label_id(catalog, &request.old_target_label)
+        else {
             return Ok(Vec::new());
         };
         let new_source_label_id = optional_label_id(catalog, &request.new_source_label);
@@ -517,7 +520,7 @@ impl GraphStore {
                         .nodes
                         .get(&relationship.target)
                         .map(|node| {
-                            node.labels.contains(&old_target_label_id)
+                            old_target_label_id.is_none_or(|label| node.labels.contains(&label))
                                 && request
                                     .old_target_filter
                                     .as_ref()
@@ -820,27 +823,28 @@ impl GraphStore {
         catalog: &mut Catalog,
         request: RelationshipDeleteRequest,
     ) -> Result<Vec<RelId>> {
-        let Some(source_label_id) = catalog.label_id(&request.source_label) else {
+        let Some(source_label_id) = endpoint_label_id(catalog, &request.source_label) else {
             return Ok(Vec::new());
         };
-        let Some(target_label_id) = catalog.label_id(&request.target_label) else {
+        let Some(target_label_id) = endpoint_label_id(catalog, &request.target_label) else {
             return Ok(Vec::new());
         };
         let Some(rel_type_id) = catalog.rel_type_id(&request.rel_type) else {
             return Ok(Vec::new());
         };
-        let source_ids = self
-            .matching_node_ids(catalog, Some(source_label_id), request.filter.as_ref())?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        if source_ids.is_empty() {
+        // `None`: an unconstrained source matches every relationship.
+        let source_ids = (source_label_id.is_some() || request.filter.is_some())
+            .then(|| self.matching_node_ids(catalog, source_label_id, request.filter.as_ref()))
+            .transpose()?
+            .map(|ids| ids.into_iter().collect::<BTreeSet<_>>());
+        if source_ids.as_ref().is_some_and(BTreeSet::is_empty) {
             return Ok(Vec::new());
         }
         let target_ids = request
             .target_filter
             .as_ref()
             .map(|filter| {
-                self.matching_node_ids(catalog, Some(target_label_id), Some(filter))
+                self.matching_node_ids(catalog, target_label_id, Some(filter))
                     .map(|ids| ids.into_iter().collect::<BTreeSet<_>>())
             })
             .transpose()?;
@@ -851,7 +855,9 @@ impl GraphStore {
         for relationship in self.relationship_records_owned() {
             let relationship = relationship?;
             if relationship.rel_type != rel_type_id
-                || !source_ids.contains(&relationship.source)
+                || source_ids
+                    .as_ref()
+                    .is_some_and(|ids| !ids.contains(&relationship.source))
                 || request.rel_filter.as_ref().is_some_and(|filter| {
                     !property_filter_matches(filter, relationship.id.0, &relationship.properties)
                 })
@@ -859,7 +865,7 @@ impl GraphStore {
                 continue;
             }
             let target_matches = self.node_owned(relationship.target)?.is_some_and(|target| {
-                target.labels.contains(&target_label_id)
+                target_label_id.is_none_or(|label| target.labels.contains(&label))
                     && target_ids
                         .as_ref()
                         .is_none_or(|ids| ids.contains(&relationship.target))
@@ -918,25 +924,28 @@ impl GraphStore {
         request: &RelationshipTargetNodeDelete,
         max_ids: usize,
     ) -> Result<Vec<NodeId>> {
-        let Some(source_label_id) = optional_label_id(catalog, &request.source_label) else {
+        let Some(source_label_id) = endpoint_label_id(catalog, &request.source_label) else {
             return Ok(Vec::new());
         };
-        let Some(target_label_id) = optional_label_id(catalog, &request.target_label) else {
+        let Some(target_label_id) = endpoint_label_id(catalog, &request.target_label) else {
             return Ok(Vec::new());
         };
         let Some(rel_type_id) = catalog.rel_type_id(&request.rel_type) else {
             return Ok(Vec::new());
         };
-        let source_ids = self
-            .matching_node_ids_bounded(
-                Some(source_label_id),
-                request.source_filter.as_ref(),
-                max_ids,
-                "max_mutation_affected_rows",
-            )?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        if source_ids.is_empty() {
+        // `None`: an unconstrained source matches every relationship.
+        let source_ids = (source_label_id.is_some() || request.source_filter.is_some())
+            .then(|| {
+                self.matching_node_ids_bounded(
+                    source_label_id,
+                    request.source_filter.as_ref(),
+                    max_ids,
+                    "max_mutation_affected_rows",
+                )
+            })
+            .transpose()?
+            .map(|ids| ids.into_iter().collect::<BTreeSet<_>>());
+        if source_ids.as_ref().is_some_and(BTreeSet::is_empty) {
             return Ok(Vec::new());
         }
         let target_ids = request
@@ -944,7 +953,7 @@ impl GraphStore {
             .as_ref()
             .map(|filter| {
                 self.matching_node_ids_bounded(
-                    Some(target_label_id),
+                    target_label_id,
                     Some(filter),
                     max_ids,
                     "max_mutation_affected_rows",
@@ -958,7 +967,9 @@ impl GraphStore {
         let mut ids = BTreeSet::new();
         let mut callback_error = None;
         self.visit_relationships_owned(Some(rel_type_id), |relationship| {
-            if !source_ids.contains(&relationship.source)
+            if source_ids
+                .as_ref()
+                .is_some_and(|ids| !ids.contains(&relationship.source))
                 || request.rel_filter.as_ref().is_some_and(|filter| {
                     !property_filter_matches(filter, relationship.id.0, &relationship.properties)
                 })
@@ -969,7 +980,9 @@ impl GraphStore {
                 return GraphScanControl::Continue;
             }
             match self.node_owned(relationship.target) {
-                Ok(Some(target)) if target.labels.contains(&target_label_id) => {
+                Ok(Some(target))
+                    if target_label_id.is_none_or(|label| target.labels.contains(&label)) =>
+                {
                     ids.insert(relationship.target);
                     if ids.len() > max_ids {
                         callback_error = Some(HawDBError::Execution(format!(
@@ -1000,26 +1013,29 @@ impl GraphStore {
         pending_relationships: &[PendingRelationship],
         max_ids: usize,
     ) -> Result<Vec<NodeId>> {
-        let Some(source_label_id) = optional_label_id(catalog, &request.source_label) else {
+        let Some(source_label_id) = endpoint_label_id(catalog, &request.source_label) else {
             return Ok(Vec::new());
         };
-        let Some(target_label_id) = optional_label_id(catalog, &request.target_label) else {
+        let Some(target_label_id) = endpoint_label_id(catalog, &request.target_label) else {
             return Ok(Vec::new());
         };
         let Some(rel_type_id) = catalog.rel_type_id(&request.rel_type) else {
             return Ok(Vec::new());
         };
-        let source_ids = self
-            .matching_node_ids_with_pending_bounded(
-                Some(source_label_id),
-                request.source_filter.as_ref(),
-                pending_nodes,
-                max_ids,
-                "max_mutation_affected_rows",
-            )?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        if source_ids.is_empty() {
+        // `None`: an unconstrained source matches every relationship.
+        let source_ids = (source_label_id.is_some() || request.source_filter.is_some())
+            .then(|| {
+                self.matching_node_ids_with_pending_bounded(
+                    source_label_id,
+                    request.source_filter.as_ref(),
+                    pending_nodes,
+                    max_ids,
+                    "max_mutation_affected_rows",
+                )
+            })
+            .transpose()?
+            .map(|ids| ids.into_iter().collect::<BTreeSet<_>>());
+        if source_ids.as_ref().is_some_and(BTreeSet::is_empty) {
             return Ok(Vec::new());
         }
         let target_ids = request
@@ -1027,7 +1043,7 @@ impl GraphStore {
             .as_ref()
             .map(|filter| {
                 self.matching_node_ids_with_pending_bounded(
-                    Some(target_label_id),
+                    target_label_id,
                     Some(filter),
                     pending_nodes,
                     max_ids,
@@ -1044,7 +1060,7 @@ impl GraphStore {
             pending_relationships
         {
             if *pending_rel_type_id != rel_type_id
-                || !source_ids.contains(source)
+                || source_ids.as_ref().is_some_and(|ids| !ids.contains(source))
                 || request.rel_filter.as_ref().is_some_and(|filter| {
                     !property_filter_matches(filter, relationship_id.0, properties)
                 })
@@ -1100,37 +1116,39 @@ impl GraphStore {
         catalog: &mut Catalog,
         update: RelationshipPropertiesUpdate,
     ) -> Result<Vec<RelId>> {
-        let Some(source_label_id) = catalog.label_id(&update.source_label) else {
+        let Some(source_label_id) = endpoint_label_id(catalog, &update.source_label) else {
             return Ok(Vec::new());
         };
-        let Some(target_label_id) = catalog.label_id(&update.target_label) else {
+        let Some(target_label_id) = endpoint_label_id(catalog, &update.target_label) else {
             return Ok(Vec::new());
         };
         let Some(rel_type_id) = catalog.rel_type_id(&update.rel_type) else {
             return Ok(Vec::new());
         };
-        let source_ids = self
-            .matching_node_ids(catalog, Some(source_label_id), update.filter.as_ref())?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        if source_ids.is_empty() {
+        // `None`: an unconstrained source matches every relationship.
+        let source_ids = (source_label_id.is_some() || update.filter.is_some())
+            .then(|| self.matching_node_ids(catalog, source_label_id, update.filter.as_ref()))
+            .transpose()?
+            .map(|ids| ids.into_iter().collect::<BTreeSet<_>>());
+        if source_ids.as_ref().is_some_and(BTreeSet::is_empty) {
             return Ok(Vec::new());
         }
         let mut ids = Vec::new();
         for relationship in self.relationship_records_owned() {
             let relationship = relationship?;
             if relationship.rel_type != rel_type_id
-                || !source_ids.contains(&relationship.source)
+                || source_ids
+                    .as_ref()
+                    .is_some_and(|ids| !ids.contains(&relationship.source))
                 || update.rel_filter.as_ref().is_some_and(|filter| {
                     !property_filter_matches(filter, relationship.id.0, &relationship.properties)
                 })
             {
                 continue;
             }
-            if self
-                .node_owned(relationship.target)?
-                .is_some_and(|target| target.labels.contains(&target_label_id))
-            {
+            if self.node_owned(relationship.target)?.is_some_and(|target| {
+                target_label_id.is_none_or(|label| target.labels.contains(&label))
+            }) {
                 ids.push(relationship.id);
             }
         }
