@@ -938,6 +938,8 @@ pub struct VectorSearchExecutionOptions<'a> {
     pub task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
     capture_candidate_ids: bool,
     exact: bool,
+    navigation_beam: Option<NonZeroUsize>,
+    candidate_window: Option<NonZeroUsize>,
 }
 
 impl<'a> VectorSearchExecutionOptions<'a> {
@@ -953,6 +955,8 @@ impl<'a> VectorSearchExecutionOptions<'a> {
             task_context,
             capture_candidate_ids: false,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         }
     }
 
@@ -982,6 +986,49 @@ impl<'a> VectorSearchExecutionOptions<'a> {
         self.capture_candidate_ids = true;
         self
     }
+
+    /// DiskANN navigation beam for this query (default 1024), never below the
+    /// requested result count. A smaller beam trades recall for speed. The
+    /// traversal stays bounded by `max_working_bytes`, and a beam whose
+    /// workspace does not fit is refused, not truncated.
+    pub fn with_navigation_beam(mut self, beam: NonZeroUsize) -> Self {
+        self.navigation_beam = Some(beam);
+        self
+    }
+
+    /// Approximate candidates generated and reranked for this query: the
+    /// RaBitQ rerank depth and DiskANN candidate count. Without it, the window
+    /// is `max(limit, rank_window, 128)` (out of core, at most
+    /// `max_vector_candidates`). The window never goes below the limit or rank
+    /// window. A window below the default 128 does less work but can lower
+    /// recall, because fewer approximate candidates reach the exact rerank.
+    /// Out of core, a window above the reader's `max_vector_candidates` is
+    /// refused; resident search stays bounded by its working memory.
+    pub fn with_candidate_window(mut self, window: NonZeroUsize) -> Self {
+        self.candidate_window = Some(window);
+        self
+    }
+
+    #[cfg(feature = "vector-search")]
+    pub(crate) fn navigation_beam(&self, top_k: usize) -> usize {
+        top_k.max(self.navigation_beam.map_or(
+            crate::vector_execution::DISKANN_NAVIGATION_BEAM,
+            NonZeroUsize::get,
+        ))
+    }
+
+    #[cfg(feature = "vector-search")]
+    pub(crate) fn candidate_window(&self) -> Option<usize> {
+        self.candidate_window.map(NonZeroUsize::get)
+    }
+
+    /// The resident DiskANN candidate floor: the per-query window, or the
+    /// default navigation window.
+    #[cfg(feature = "vector-search")]
+    pub(crate) fn resident_candidate_window(&self) -> usize {
+        self.candidate_window()
+            .unwrap_or(hawdb_vector_projection::diskann::DiskAnnSearchOptions::default().beam_width)
+    }
 }
 
 impl Default for VectorSearchExecutionOptions<'_> {
@@ -993,6 +1040,8 @@ impl Default for VectorSearchExecutionOptions<'_> {
             task_context: None,
             capture_candidate_ids: false,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         }
     }
 }
@@ -1135,6 +1184,8 @@ impl<'a> AdaptiveVectorExecutionControls<'a> {
             task_context: None,
             capture_candidate_ids: false,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         },
     };
     const PERSISTED: Self = Self {
@@ -1147,6 +1198,8 @@ impl<'a> AdaptiveVectorExecutionControls<'a> {
             task_context: None,
             capture_candidate_ids: false,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         },
     };
     const RECALL_CANDIDATES: Self = Self {
@@ -1159,6 +1212,8 @@ impl<'a> AdaptiveVectorExecutionControls<'a> {
             task_context: None,
             capture_candidate_ids: true,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         },
     };
 
@@ -3930,13 +3985,10 @@ impl SearchIndex {
                             && query_can_generate_candidates
                         {
                             let candidate_limit = options
-                            .offset
-                            .saturating_add(limit)
-                            .max(options.rank_window.unwrap_or(0))
-                            .max(
-                                hawdb_vector_projection::diskann::DiskAnnSearchOptions::default()
-                                    .beam_width,
-                            );
+                                .offset
+                                .saturating_add(limit)
+                                .max(options.rank_window.unwrap_or(0))
+                                .max(vector_execution_options.resident_candidate_window());
                             if self.resident_diskann.admits_default_search(
                                 self,
                                 &filtered_documents,

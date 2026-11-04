@@ -540,3 +540,129 @@ fn required_rerank_preserves_checksum_budget_and_cancellation_guards() {
     }
     fs::remove_dir_all(path).unwrap();
 }
+
+#[cfg(feature = "vector-search")]
+fn vector_report(output: &SearchOutOfCoreOutput) -> &crate::SearchRetrieverReport {
+    output
+        .result
+        .retrievers
+        .iter()
+        .find(|report| report.name == "vector")
+        .unwrap()
+}
+
+/// Per-query navigation beam and candidate window (#1470): defaults are
+/// unchanged, a smaller beam or window does less graph work, the beam never
+/// drops below the result count, and the window stays within the reader's
+/// `max_vector_candidates`.
+#[cfg(feature = "vector-search")]
+#[test]
+fn graph_navigation_beam_and_candidate_window_are_per_query() {
+    let documents = corpus(300);
+    let graph = build("vector-query-options", &documents, Some(true));
+    let reader = SearchOutOfCoreReader::open(&graph).unwrap();
+    let query = embedding(2064);
+    let search = |execution: VectorSearchExecutionOptions<'_>, limit: usize| {
+        reader.search_with_options_compressed_vector_projection_execution_options(
+            "",
+            Some(&query),
+            SearchMode::Vector,
+            options(limit, None),
+            crate::CompressedVectorSearchMode::Disabled,
+            execution,
+        )
+    };
+    let default = search(VectorSearchExecutionOptions::default(), 10).unwrap();
+    let explicit_default = search(
+        VectorSearchExecutionOptions::default()
+            .with_navigation_beam(NonZeroUsize::new(1024).unwrap())
+            .with_candidate_window(NonZeroUsize::new(128).unwrap()),
+        10,
+    )
+    .unwrap();
+    assert_eq!(hits(&explicit_default), hits(&default));
+    assert_eq!(
+        vector_report(&explicit_default).candidate_scan_payload_bytes_read,
+        vector_report(&default).candidate_scan_payload_bytes_read
+    );
+    assert_eq!(vector_report(&default).generated_candidate_count, 128);
+
+    // A narrow beam reads less of the graph and still returns the limit.
+    let narrow = search(
+        VectorSearchExecutionOptions::default()
+            .with_navigation_beam(NonZeroUsize::new(16).unwrap()),
+        10,
+    )
+    .unwrap();
+    assert_eq!(narrow.result.hits.len(), 10);
+    assert!(
+        vector_report(&narrow).candidate_scan_payload_bytes_read
+            < vector_report(&default).candidate_scan_payload_bytes_read
+    );
+    // A beam below the candidate count is raised to it: beam 1 equals beam
+    // equal to the window.
+    let one = search(
+        VectorSearchExecutionOptions::default()
+            .with_navigation_beam(NonZeroUsize::MIN)
+            .with_candidate_window(NonZeroUsize::new(16).unwrap()),
+        10,
+    )
+    .unwrap();
+    let sixteen = search(
+        VectorSearchExecutionOptions::default()
+            .with_navigation_beam(NonZeroUsize::new(16).unwrap())
+            .with_candidate_window(NonZeroUsize::new(16).unwrap()),
+        10,
+    )
+    .unwrap();
+    assert_eq!(hits(&one), hits(&sixteen));
+    assert_eq!(
+        vector_report(&one).candidate_scan_payload_bytes_read,
+        vector_report(&sixteen).candidate_scan_payload_bytes_read
+    );
+
+    // The window sets the generated candidates, never below the limit.
+    assert_eq!(vector_report(&sixteen).generated_candidate_count, 16);
+    let below_limit = search(
+        VectorSearchExecutionOptions::default()
+            .with_candidate_window(NonZeroUsize::new(4).unwrap()),
+        10,
+    )
+    .unwrap();
+    assert_eq!(below_limit.result.hits.len(), 10);
+    assert_eq!(vector_report(&below_limit).generated_candidate_count, 10);
+    // A window covering the corpus is exhaustive and matches brute force,
+    // once the reader admits that many candidates.
+    let wide_reader = SearchOutOfCoreReader::open_with_config(
+        &graph,
+        SearchOutOfCoreConfig {
+            max_vector_candidates: NonZeroUsize::new(300).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let wide = wide_reader
+        .search_with_options_compressed_vector_projection_execution_options(
+            "",
+            Some(&query),
+            SearchMode::Vector,
+            options(10, None),
+            crate::CompressedVectorSearchMode::Disabled,
+            VectorSearchExecutionOptions::default()
+                .with_candidate_window(NonZeroUsize::new(300).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(hits(&wide), reference(&documents, &query, |_| true, 10));
+    // Above the reader's candidate limit the query is refused, not truncated.
+    let error = search(
+        VectorSearchExecutionOptions::default()
+            .with_candidate_window(NonZeroUsize::new(5_000).unwrap()),
+        10,
+    )
+    .map(|_| ())
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("max_vector_candidates"), "{error}");
+    drop((reader, wide_reader));
+    fs::remove_dir_all(graph).unwrap();
+}

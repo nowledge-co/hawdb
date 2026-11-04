@@ -446,10 +446,16 @@ impl SearchOutOfCoreReader {
                     options.query,
                 );
             }
+            // A per-query window replaces the default navigation window; the
+            // reader's candidate limit still applies below.
             let navigation_window =
-                hawdb_vector_projection::diskann::DiskAnnSearchOptions::default()
-                    .beam_width
-                    .min(self.config.max_vector_candidates.get());
+                vector_execution_options
+                    .candidate_window()
+                    .unwrap_or_else(|| {
+                        hawdb_vector_projection::diskann::DiskAnnSearchOptions::default()
+                            .beam_width
+                            .min(self.config.max_vector_candidates.get())
+                    });
             let candidate_limit = retained_limit
                 .unwrap_or(1)
                 .max(options.candidate_window.unwrap_or(0))
@@ -739,6 +745,29 @@ impl SearchOutOfCoreReader {
                 .into(),
             ));
         }
+        if let Some(window) = vector_execution_options
+            .candidate_window()
+            .filter(|window| *window > self.config.max_vector_candidates.get())
+        {
+            return Err(RabitqScanError::Budget(
+                hawdb_core::ResourceBudgetError {
+                    resource: hawdb_core::ResourceBudgetKind::MetadataEntries,
+                    scope: hawdb_core::ResourceBudgetScope::Operator,
+                    owner: "vector candidate window".into(),
+                    memory_class: None,
+                    requested: window as u64,
+                    used: 0,
+                    budget: self.config.max_vector_candidates.get() as u64,
+                    budget_option: "SearchOutOfCoreConfig.max_vector_candidates",
+                    message: format!(
+                        "per-query vector candidate window {window} exceeds \
+                         SearchOutOfCoreConfig.max_vector_candidates {}",
+                        self.config.max_vector_candidates
+                    ),
+                }
+                .into(),
+            ));
+        }
         let candidate_limit = policy.candidate_limit;
         if candidate_limit < minimum_candidates
             || candidate_limit > self.config.max_vector_candidates.get()
@@ -872,6 +901,9 @@ impl SearchOutOfCoreReader {
                     query_embedding,
                     candidate_limit.min(projection.manifest().document_count.max(1)),
                     search_options,
+                    vector_execution_options.navigation_beam(
+                        candidate_limit.min(projection.manifest().document_count.max(1)),
+                    ),
                 )
                 .map_err(RabitqScanError::projection)?;
             // Returned hits are covered by the separately retained candidate
