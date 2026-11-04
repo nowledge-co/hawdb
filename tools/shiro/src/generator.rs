@@ -15,7 +15,7 @@
 use crate::predicate_rewrite::PredicateRewriteKind;
 use crate::query_ast::{
     GeneratedSchema, MatchPattern, NodePattern, OrderItem, PatternDirection, PropertyExpression,
-    QueryAst, QueryPredicate, ReturnItem,
+    QueryAst, QueryPredicate, RegexPattern, ReturnItem,
 };
 use crate::{
     FuzzCase, GraphPredicateRewriteCase, GraphTlpCase, MetamorphicCase, MetamorphicRelation,
@@ -43,7 +43,9 @@ impl StateAwareCaseGenerator {
         let graph = GeneratedGraphState::from_seed(seed);
         let query = graph.plan_differential_query(seed, index);
         let metamorphic = graph.metamorphic_case(index_enabled, &query.ast);
-        let rewrite_kind = PredicateRewriteKind::for_case(index + index / crate::QUERY_SHAPE_COUNT);
+        let rewrite_kind = PredicateRewriteKind::for_case(
+            index % crate::QUERY_SHAPE_COUNT + index / crate::QUERY_SHAPE_COUNT,
+        );
         let graph_tlp = graph.graph_tlp_cases(seed, rewrite_kind);
 
         FuzzCase {
@@ -418,7 +420,7 @@ impl GeneratedGraphState {
                     parameters,
                 },
             ),
-            _ => (
+            11 => (
                 "missing_or_null",
                 QueryAst {
                     matches: vec![memory()],
@@ -437,6 +439,30 @@ impl GeneratedGraphState {
                     parameters,
                 },
             ),
+            _ => {
+                let regex = if seed & 8 == 0 { "^present$" } else { "^$" };
+                let pattern = if seed & 16 == 0 {
+                    parameters.insert("pattern".to_string(), Value::String(regex.to_string()));
+                    RegexPattern::Parameter("pattern")
+                } else {
+                    RegexPattern::Literal(regex)
+                };
+                (
+                    "scalar_regex_filter",
+                    QueryAst {
+                        matches: vec![memory()],
+                        predicate: Some(QueryPredicate::ScalarRegex {
+                            property: PropertyExpression::new("m", "optional_note"),
+                            pattern,
+                        }),
+                        returns: vec![ReturnItem::property("m", "id", "id")],
+                        distinct: false,
+                        order_by: vec![OrderItem::ascending("id")],
+                        limit: None,
+                        parameters,
+                    },
+                )
+            }
         };
 
         let schema = GeneratedSchema::nowledge_fixture();

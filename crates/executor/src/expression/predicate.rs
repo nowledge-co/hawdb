@@ -357,6 +357,21 @@ fn evaluate_predicate_truth(
                 _ => PredicateTruth::False,
             }
         }
+        Predicate::ExpressionRegexMatch {
+            expression,
+            pattern,
+        } => {
+            let actual = evaluate(expression)?;
+            match actual.as_ref() {
+                Value::Null => PredicateTruth::Unknown,
+                Value::String(actual) => PredicateTruth::from_bool(pattern.is_match(actual)),
+                actual => {
+                    return Err(HawDBError::Execution(format!(
+                        "regex match predicate requires a string left operand, got {actual:?}"
+                    )))
+                }
+            }
+        }
         Predicate::ExpressionIn { expression, values } => {
             let actual = evaluate(expression)?;
             predicate_in_truth(Some(actual.as_ref()), values)
@@ -575,6 +590,7 @@ pub fn property_filter_from_predicate(predicate: &Predicate) -> Result<PropertyF
         }
         Predicate::ExpressionCompare { .. }
         | Predicate::ExpressionContains { .. }
+        | Predicate::ExpressionRegexMatch { .. }
         | Predicate::ExpressionIn { .. }
         | Predicate::ConstantBool(_)
         | Predicate::RelationshipExists { .. }
@@ -692,7 +708,8 @@ pub fn predicate_references_only_variable(predicate: &Predicate, variable: &str)
         | Predicate::ExpressionEq { .. }
         | Predicate::ExpressionNotEq { .. }
         | Predicate::ExpressionCompare { .. }
-        | Predicate::ExpressionContains { .. } => false,
+        | Predicate::ExpressionContains { .. }
+        | Predicate::ExpressionRegexMatch { .. } => false,
         Predicate::ExpressionIn { .. } => false,
     }
 }

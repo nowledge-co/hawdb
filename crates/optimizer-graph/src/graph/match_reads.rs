@@ -445,6 +445,9 @@ fn predicate(predicate: &Predicate, demand: &mut Demand) {
             self::expression(expression, demand);
             self::expression(value, demand);
         }
+        Predicate::ExpressionRegexMatch { expression, .. } => {
+            self::expression(expression, demand);
+        }
         Predicate::ExpressionIn { expression, .. } => self::expression(expression, demand),
     }
 }

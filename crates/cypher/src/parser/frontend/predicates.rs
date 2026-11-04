@@ -276,6 +276,12 @@ impl Transformer<'_> {
                 if let Some(in_node) = self.tree.child(tail, rule_id!("w_in")) {
                     return self.in_predicate(selected, left, in_node, depth, None);
                 }
+                if let Some(pattern) = self.tree.child(tail, rule_id!("v_value")) {
+                    return Ok(PropertyPredicate::ExpressionRegexMatch {
+                        expression: left,
+                        pattern: self.value(pattern, depth)?,
+                    });
+                }
                 if let Some(comparisons) =
                     self.tree.child(tail, rule_id!("w_expression_comparisons"))
                 {

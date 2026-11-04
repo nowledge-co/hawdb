@@ -37,8 +37,10 @@ campaign runs the original nine complementary oracles plus the operator relation
 - The plan-differential oracle applies mutations once, pins one read snapshot, and executes the
   same parameterized Cypher query through memo child resolution and deterministic direct child
   resolution. Both modes now share the physical lowerer; this checks child wiring and directive
-  handling, not independent lowering implementations. Agreement cannot detect a shared lowering
-  bug, so the TLP, predicate-rewrite, and metamorphic oracles remain necessary.
+  handling, not independent lowering implementations. Its typed query shapes include nested
+  `LOWER(COALESCE(property, '')) =~ pattern` predicates with alternating literal and parameter
+  patterns. Agreement cannot detect a shared lowering bug, so the TLP, predicate-rewrite, and
+  metamorphic oracles remain necessary.
 - The Graph TLP oracle evaluates `Q`, `Q WHERE p`, `Q WHERE NOT p`, and a constrained
   `Q WHERE nullable_operand IS NULL` partition on one pinned snapshot. The generated predicate is
   a single comparison against a non-null parameter, so the null-operand partition is exactly the
@@ -136,7 +138,7 @@ separately. Plan counters describe the initial fixture, not every later step.
 Failures retain typed rows, queries/parameters, plans for result mismatches,
 the transaction step, complete setup and operation sequence. Reduction removes
 whole transactions on fresh databases and retains only the same failure
-signature. The campaign protocol is `shiro-multi-oracle-fuzz-v5`; older progress
+signature. The campaign protocol is `shiro-multi-oracle-fuzz-v6`; older progress
 files cannot resume with the stronger oracle. Maintenance replay bundles use
 `shiro-sql-maintenance-v2` and describe explicit commit/rollback boundaries.
 
@@ -256,8 +258,10 @@ phase-specific failure signatures.
   values beyond binary64 integer precision, defaults, scale-varying range
   parameters, arithmetic, division/precision refusals, rollback and pinned reads.
 - Cypher pipelines: row-dependent nested `list_append`/`UNWIND`, multi-`WITH`,
-  `DISTINCT`, nullable/empty/duplicate aliases, parameter rebinding, and normalized
-  `regexp_replace`/`LOWER` grouping against a small host reference.
+  `DISTINCT`, nullable/empty/duplicate aliases, parameter rebinding, normalized
+  `regexp_replace`/`LOWER` grouping, and scalar-expression regex matching against a small host
+  reference. Literal/parameter patterns, invalid regexes, non-string patterns, and non-string
+  evaluated left operands are checked with phase- and class-specific refusals.
 - Cypher mutations: distinct/aliased/missing bindings in multi-binding `SET`,
   assignment ordering, Unicode whitespace `trim` and `CASE` isolation.
 - Temporal: typed date min/max `CASE SET`, NULL preservation, parameter rebinding
@@ -290,14 +294,17 @@ Replay and shrink emit the full report to stdout. Shrinking deletes input values
 and then tries zero values, rebuilding a fresh fixture and retaining only the
 same failure signature. Passing cases cannot be shrunk. A reproduced mismatch
 returns exit 1; malformed/unsupported replay returns exit 2. Legacy campaign
-seed/index replay remains available; v4 progress cannot resume as v5 coverage.
+seed/index replay remains available; v5 progress cannot resume as v6 coverage.
 
 The parser byte campaign uses a corpus derived from the Cypher, relational SQL, and SQL/PGQ test
 suites. It keeps the non-ASCII keyword-probe and excessive-nesting regressions as exact seeds, then
 alternates arbitrary byte strings with deterministic byte mutations of the corpus. Every input is
 bounded and runs all four frontend entry points on an explicitly bounded worker stack. Parser
-acceptance and rejection are both valid for mutations; the new exact positive capability seeds must be accepted by their intended frontend. A panic or stack overflow fails the campaign. The stable
-seed and case index reproduce the exact bytes under `shiro-parser-v2`. The expanded corpus changes the seed/index mapping from v1; replay an old report with its original source revision:
+acceptance and rejection are both valid for mutations; the exact positive capability seeds,
+including scalar-expression regex matching, must be accepted by their intended frontend. A panic
+or stack overflow fails the campaign. The stable seed and case index reproduce the exact bytes
+under `shiro-parser-v3`. The expanded corpus changes the seed/index mapping from v2; replay an old
+report with its original source revision:
 
 ```console
 make fuzz-parser FUZZ_SEED=7 FUZZ_CASES=256

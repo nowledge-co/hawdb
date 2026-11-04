@@ -80,6 +80,10 @@ pub enum Predicate {
         expression: ProjectionExpression,
         value: ProjectionExpression,
     },
+    ExpressionRegexMatch {
+        expression: ProjectionExpression,
+        pattern: ValidatedRegex,
+    },
     ExpressionIn {
         expression: ProjectionExpression,
         values: Vec<Value>,
@@ -713,6 +717,13 @@ impl hawdb_core::RetainedHeapBytes for Predicate {
                     hawdb_core::RetainedHeapBytes::retained_heap_bytes(value),
                 ])
             }
+            Self::ExpressionRegexMatch {
+                expression,
+                pattern,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(expression),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(pattern),
+            ]),
             Self::ExpressionIn { expression, values } => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(expression),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(values),

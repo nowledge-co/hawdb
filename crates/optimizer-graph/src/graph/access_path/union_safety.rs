@@ -110,6 +110,9 @@ impl Proof<'_> {
                 self.expression(expression, depth + 1).is_some()
                     && self.expression(value, depth + 1).is_some()
             }
+            Predicate::ExpressionRegexMatch { expression, .. } => {
+                self.expression(expression, depth + 1).is_some()
+            }
             Predicate::ExpressionIn { expression, .. } => {
                 self.expression(expression, depth + 1).is_some()
             }

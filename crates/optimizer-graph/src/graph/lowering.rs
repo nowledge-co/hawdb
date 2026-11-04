@@ -1938,6 +1938,9 @@ fn collect_predicate_properties(
             collect_projection_properties(expression, variable, required)
                 && collect_projection_properties(value, variable, required)
         }
+        Predicate::ExpressionRegexMatch { expression, .. } => {
+            collect_projection_properties(expression, variable, required)
+        }
         Predicate::ExpressionIn { expression, .. } => {
             collect_projection_properties(expression, variable, required)
         }

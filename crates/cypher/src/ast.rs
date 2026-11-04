@@ -359,6 +359,10 @@ pub enum PropertyPredicate {
         expression: ScalarExpression,
         value: ScalarExpression,
     },
+    ExpressionRegexMatch {
+        expression: ScalarExpression,
+        pattern: ValueExpression,
+    },
     ExpressionIn {
         expression: ScalarExpression,
         values: ValueExpression,

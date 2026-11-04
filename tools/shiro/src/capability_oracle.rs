@@ -172,6 +172,44 @@ impl Run {
         )
     }
 
+    fn cypher_refusal(
+        &mut self,
+        db: &mut Database,
+        phase: &str,
+        query: &str,
+        params: &[(&str, Value)],
+        expected_class: &str,
+        message: &str,
+    ) -> Result<()> {
+        let params: BTreeMap<_, _> = params
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.clone()))
+            .collect();
+        let output = db.query_with_params(query, &params);
+        self.trace.push(json!({
+            "phase": phase,
+            "language": "cypher",
+            "query": query,
+            "parameters": crate::parameters_json(&params),
+            "expected_error_class": expected_class,
+            "expected_error_contains": message,
+            "actual": format!("{output:?}"),
+        }));
+        match output {
+            Err(error)
+                if crate::error_class(&error) == expected_class
+                    && error.to_string().contains(message) =>
+            {
+                self.verified.insert(phase.into());
+                Ok(())
+            }
+            _ => Err(Failure {
+                signature: format!("{phase}:refusal"),
+                evidence: json!({"actual": format!("{output:?}")}),
+            }),
+        }
+    }
+
     fn equal(
         &mut self,
         phase: &str,
@@ -406,6 +444,24 @@ mod tests {
                 let report = report(&case);
                 assert_eq!(report["success"], true, "{report:#}");
             }
+        }
+    }
+
+    #[test]
+    fn scalar_regex_capability_model_covers_matches_and_typed_refusals() {
+        let case = Case::generate(7, 1);
+        assert_eq!(FAMILIES[case.family], "cypher_pipeline");
+        let report = report(&case);
+        assert_eq!(report["success"], true, "{report:#}");
+        let verified = report["verified"].as_array().unwrap();
+        for phase in [
+            "scalar_regex_parameter",
+            "scalar_regex_literal",
+            "scalar_regex_invalid_pattern",
+            "scalar_regex_non_string_pattern",
+            "scalar_regex_non_string_left",
+        ] {
+            assert!(verified.iter().any(|value| value == phase), "{phase}");
         }
     }
 

@@ -35,6 +35,28 @@ retain their evaluator path. Replacement sizing admits every piece before a
 single exact buffer allocation. Query memory/work caps and mutation atomicity
 remain required. Existing fixtures and execution lanes are retained.
 
+Cypher scalar-expression regex matching (`nowledge-co/hawdb#1550`) extends the
+existing expression-function and regex-cache owners without adding a target or
+lane. `hawdb-cypher` parser tests retain direct-property `=~` and cover
+`LOWER(COALESCE(property, '')) =~ $pattern`; `api::tests::expression_functions`
+in `//:hawdb_unit_general_tests` covers literal and parameter patterns, NULL
+propagation, typed operand/pattern failures, invalid regexes, deterministic
+instance fingerprints and exact cache variants, direct-property compatibility,
+durable reopen and concurrent reads. The plan-cache requested-allocation oracle
+keeps both property and scalar-expression regex programs source-only while
+retained and execution-owned after binding. Replay with `cargo test --locked -p
+hawdb-cypher parses_regex_match`, `cargo test --locked -p hawdb --lib
+scalar_expression_regex -- --test-threads=1`, and `cargo test --locked -p
+hawdb-plan-cache --test template_retention -- --test-threads=1`. A reviewed
+20-row parser transition fixture preserves the immutable historical rejection
+oracles. Shiro adds a positive parser seed, a typed plan-differential shape that
+alternates literal/parameter patterns, and capability-model references for
+matching plus invalid-pattern/non-string refusals. Replay with `cargo test
+--locked --manifest-path tools/shiro/Cargo.toml --lib scalar_regex` and the
+existing Bazel fuzz suites. Existing regex validation limits, query work/memory
+admission and cancellation checkpoints are unchanged; no new target or lane is
+introduced.
+
 [Bazel exclusive test scheduling](https://bazel.build/reference/be/common-definitions#common.tags)
 places this owner after build activity and non-exclusive tests.
 `//crates/executor:hawdb_executor_unit_tests` retains its full ordinary unit-test

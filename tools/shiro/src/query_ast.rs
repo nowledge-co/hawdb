@@ -201,6 +201,16 @@ pub(crate) enum QueryPredicate {
     In(PropertyExpression, &'static str),
     GreaterThanOrEqual(PropertyExpression, &'static str),
     IsNull(PropertyExpression),
+    ScalarRegex {
+        property: PropertyExpression,
+        pattern: RegexPattern,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RegexPattern {
+    Literal(&'static str),
+    Parameter(&'static str),
 }
 
 impl QueryPredicate {
@@ -214,6 +224,13 @@ impl QueryPredicate {
                 format!("{} >= ${parameter}", property.render())
             }
             Self::IsNull(property) => format!("{} IS NULL", property.render()),
+            Self::ScalarRegex { property, pattern } => {
+                let pattern = match pattern {
+                    RegexPattern::Literal(pattern) => format!("'{pattern}'"),
+                    RegexPattern::Parameter(parameter) => format!("${parameter}"),
+                };
+                format!("LOWER(COALESCE({}, '')) =~ {pattern}", property.render())
+            }
         }
     }
 }
@@ -538,6 +555,17 @@ fn validate_predicate(
         QueryPredicate::IsNull(property) => {
             property_type(*property, schema, variables)?;
             Ok(())
+        }
+        QueryPredicate::ScalarRegex { property, pattern } => {
+            if property_type(*property, schema, variables)? != ScalarType::String {
+                return Err("scalar regex requires a string property".to_string());
+            }
+            match pattern {
+                RegexPattern::Literal(_) => Ok(()),
+                RegexPattern::Parameter(parameter) => {
+                    validate_parameter_type(parameter, ScalarType::String, parameters, false)
+                }
+            }
         }
     }
 }

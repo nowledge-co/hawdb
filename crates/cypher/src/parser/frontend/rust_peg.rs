@@ -1689,7 +1689,33 @@ peg::parser! {
 
  rule w_parenthesized_expression(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.kind == TokenKind::LeftParen] { () } / fail("'('"))) ((saved:peek_mark() ((&(((([token if { token.kind == TokenKind::Word && { let word = token.text(cx.input); match word.len() { 7 => word.eq_ignore_ascii_case("toFloat"), 8 => word.eq_ignore_ascii_case("toString"), 9 => word.eq_ignore_ascii_case("toInteger") || word.eq_ignore_ascii_case("toBoolean"), _ => false } } }] { () } / fail("toInteger"))) { () } / (([token if { token.kind == TokenKind::Word && { let word = token.text(cx.input); match word.len() { 4 => word.eq_ignore_ascii_case("CASE") || word.eq_ignore_ascii_case("LEFT") || word.eq_ignore_ascii_case("SIZE") || word.eq_ignore_ascii_case("HEAD") || word.eq_ignore_ascii_case("LAST") || word.eq_ignore_ascii_case("TAIL"), 5 => word.eq_ignore_ascii_case("LOWER") || word.eq_ignore_ascii_case("RANGE"), 7 => word.eq_ignore_ascii_case("REVERSE"), 8 => word.eq_ignore_ascii_case("COALESCE"), _ => false } } }] { () } / fail("CASE"))) { () }))) restore(saved) { () } / restore(saved) fail("a parenthesized scalar")))) c2:(x_scalar(depth.descend(0,1))) (([token if token.kind == TokenKind::RightParen] { () } / fail("')'"))) ((saved:peek_mark() ((&(((([token if token.kind == TokenKind::Equal] { () } / fail("'='"))) { () } / (([token if token.kind == TokenKind::Less] { () } / fail("'<'"))) { () } / (([token if token.kind == TokenKind::Greater] { () } / fail("'>'"))) { () } / (([token if token.is_keyword(cx.input, "CONTAINS")] { () } / fail("CONTAINS"))) { () } / (([token if token.is_keyword(cx.input, "IN")] { () } / fail("IN"))) { () }))) restore(saved) { () } / restore(saved) fail("a comparison")))) c5:(w_expression_tail(depth.descend(0,0))) { (c2,c5) })) end:position!() {? cx.node(36,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
- rule w_expression_tail(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:((a:(x_is_null(depth.descend(0,0))) { Either::Left(a) } / b:((a:(w_in(depth.descend(0,0))) { Either::Left(a) } / b:((a:(((([token if token.is_keyword(cx.input, "CONTAINS")] { () } / fail("CONTAINS"))) c1:(x_scalar(depth.descend(0,1))) { (c1,) })) { Either::Left(a) } / b:(w_expression_comparisons(depth.descend(0,0))) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) end:position!() {? cx.node(37,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
+ rule w_expression_tail(depth:Depth) -> NodeId =
+     mark:capture_mark()
+     result:(
+         (enter(depth)
+          start:position!()
+          children:(
+              node:x_is_null(depth.descend(0,0)) { (node,) }
+              / node:w_in(depth.descend(0,0)) { (node,) }
+              / ((begin:position!()
+                  children:(([token if token.kind == TokenKind::Equal]
+                             [token if token.kind == TokenKind::Tilde]) { () })
+                  end:position!()
+                  {? if cx.adjacent(begin,end) {
+                      Ok(children)
+                  } else {
+                      cx.failure(cx.adjacency_failure(begin,end), "adjacent tokens")
+                  } })
+                 pattern:v_value(depth.descend(0,0)) { (pattern,) })
+              / ([token if token.is_keyword(cx.input, "CONTAINS")]
+                 value:x_scalar(depth.descend(0,1)) { (value,) })
+              / node:w_expression_comparisons(depth.descend(0,0)) { (node,) }
+          )
+          end:position!()
+          {? cx.node(37,start,end,children) })
+         / rewind_capture(mark,false)
+           rejected:expected!("matching Cypher rule") { rejected }
+     ) { result }
 
  rule w_comparisons(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:((c0:(x_comparison_op(depth.descend(0,0))) c1:(w_right(depth.descend(0,0))) c2:((saved:diagnostic() begin:position!() result:(c:(w_following(depth.descend(0,0))) { c } / failed:repetition_stop(begin,saved) { failed }) { result })*) { (c0,c1,c2) })) end:position!() {? cx.node(38,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 

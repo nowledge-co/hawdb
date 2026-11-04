@@ -422,6 +422,7 @@ fn predicate_reads_relationships(predicate: &crate::planner::Predicate) -> bool 
         | P::ExpressionNotEq { .. }
         | P::ExpressionCompare { .. }
         | P::ExpressionContains { .. }
+        | P::ExpressionRegexMatch { .. }
         | P::PropertyListContains { .. }
         | P::PropertyListContainsLower { .. }
         | P::PropertyContains { .. }

@@ -120,6 +120,119 @@ fn lower_expression_predicates_cover_nowledge_grep_filters() {
 }
 
 #[test]
+fn scalar_expression_regex_predicates_validate_execute_and_cache_patterns() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 1, content: 'Graph foundations'})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 2, content: 'Runtime strategy'})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 3})").unwrap();
+
+    let query = "MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) =~ $pattern RETURN m.id AS id ORDER BY id";
+    let parameters = |pattern: &str| {
+        BTreeMap::from([("pattern".to_string(), Value::String(pattern.to_string()))])
+    };
+    for (pattern, expected) in [
+        ("^graph", Value::Int(1)),
+        ("^runtime", Value::Int(2)),
+        ("^$", Value::Int(3)),
+    ] {
+        let output = db.query_with_params(query, &parameters(pattern)).unwrap();
+        assert_eq!(output.rows, vec![BTreeMap::from([("id".into(), expected)])]);
+    }
+    assert_eq!(
+        db.query(
+            "MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) =~ '^graph' RETURN m.id AS id"
+        )
+        .unwrap()
+        .rows,
+        vec![BTreeMap::from([("id".into(), Value::Int(1))])]
+    );
+
+    let graph = db
+        .explain_query_with_params(query, &parameters("^graph"))
+        .unwrap();
+    let runtime = db
+        .explain_query_with_params(query, &parameters("^runtime"))
+        .unwrap();
+    assert_eq!(graph.plan_cache_lookup, PlanCacheLookup::Hit);
+    assert_eq!(runtime.plan_cache_lookup, PlanCacheLookup::Hit);
+    assert_ne!(
+        graph.physical_plan.instance_fingerprint(),
+        runtime.physical_plan.instance_fingerprint()
+    );
+
+    let invalid = db
+        .query("MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) =~ '[' RETURN m.id")
+        .unwrap_err();
+    assert!(matches!(invalid, HawDBError::Semantic(_)), "{invalid:?}");
+    let non_string_pattern = db
+        .query_with_params(
+            query,
+            &BTreeMap::from([("pattern".to_string(), Value::Int(7))]),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(non_string_pattern, HawDBError::Semantic(_)),
+        "{non_string_pattern:?}"
+    );
+    let non_string_left = db
+        .query("MATCH (m:Memory) WHERE COALESCE(m.id, '') =~ '^1$' RETURN m.id")
+        .unwrap_err();
+    assert!(
+        matches!(non_string_left, HawDBError::Execution(_)),
+        "{non_string_left:?}"
+    );
+    assert!(db
+        .query("MATCH (m:Memory) WHERE m.id =~ '^1$' RETURN m.id")
+        .unwrap()
+        .rows
+        .is_empty());
+}
+
+#[test]
+fn scalar_expression_regex_survives_reopen_and_concurrent_reads() {
+    let path = super::unique_test_dir("scalar_expression_regex");
+    {
+        let mut db = Database::open(&path).unwrap();
+        db.query("CREATE (:Memory {id: 1, content: 'Graph foundations'})")
+            .unwrap();
+        db.query("CREATE (:Memory {id: 2, content: 'Runtime strategy'})")
+            .unwrap();
+    }
+
+    let db = Database::open(&path).unwrap().into_concurrent();
+    let handles = [("^graph", 1), ("^runtime", 2)]
+        .into_iter()
+        .map(|(pattern, id)| {
+            let db = db.clone();
+            std::thread::spawn(move || {
+                let query = format!(
+                    "MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) =~ '{pattern}' RETURN m.id AS id"
+                );
+                (db.query(&query).unwrap().rows, id)
+            })
+        })
+        .collect::<Vec<_>>();
+    for handle in handles {
+        let (rows, id) = handle.join().unwrap();
+        assert_eq!(rows, vec![BTreeMap::from([("id".into(), Value::Int(id))])]);
+    }
+    drop(db);
+
+    let mut reopened = Database::open(&path).unwrap();
+    assert_eq!(
+        reopened
+            .query("MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) =~ '^graph' RETURN m.id AS id")
+            .unwrap()
+            .rows,
+        vec![BTreeMap::from([("id".into(), Value::Int(1))])]
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn generic_case_executes_branch_expressions_with_changed_parameters() {
     let mut db = Database::new();
     db.query("CREATE (:Item {id: 1, name: 'FIRST', enabled: true})")

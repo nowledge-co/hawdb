@@ -234,6 +234,9 @@ fn collect_predicate(predicate: &Predicate, needed: &mut BTreeSet<String>) {
             native_projection(expression, needed);
             native_projection(value, needed);
         }
+        Predicate::ExpressionRegexMatch { expression, .. } => {
+            native_projection(expression, needed);
+        }
         Predicate::ExpressionIn { expression, .. } => native_projection(expression, needed),
         Predicate::RelationshipExists { variable, .. }
         | Predicate::IdEq { variable, .. }

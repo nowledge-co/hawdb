@@ -3823,6 +3823,33 @@ fn parses_regex_match_predicate() {
 }
 
 #[test]
+fn parses_regex_match_with_scalar_expression_left_operand() {
+    let statement =
+        parse("MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) =~ $pattern RETURN m.id")
+            .unwrap();
+    let Statement::Pipeline(query) = statement else {
+        panic!("expected match return");
+    };
+    assert_eq!(
+        pipeline_predicate(&query, 0),
+        Some(PropertyPredicate::ExpressionRegexMatch {
+            expression: AstNode::synthetic(ScalarExpressionKind::Lower(Box::new(
+                AstNode::synthetic(ScalarExpressionKind::Coalesce(vec![
+                    AstNode::synthetic(ScalarExpressionKind::Property {
+                        variable: "m".to_string(),
+                        property: "content".to_string(),
+                    }),
+                    AstNode::synthetic(ScalarExpressionKind::Value(AstNode::synthetic(
+                        ValueExpressionKind::Literal(Value::String(String::new()))
+                    ))),
+                ]))
+            ))),
+            pattern: AstNode::synthetic(ValueExpressionKind::Parameter("pattern".to_string())),
+        })
+    );
+}
+
+#[test]
 fn parses_and_predicates() {
     let statement =
         parse("MATCH (m:Memory) WHERE m.created_at >= 10 AND m.created_at < 20 RETURN m.title")

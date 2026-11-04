@@ -247,6 +247,9 @@ fn predicate_names(predicate: &Predicate, names: &mut BTreeSet<String>) {
             expression_names(expression, names);
             expression_names(value, names);
         }
+        Predicate::ExpressionRegexMatch { expression, .. } => {
+            expression_names(expression, names);
+        }
         Predicate::ExpressionIn { expression, .. } => expression_names(expression, names),
     }
 }
