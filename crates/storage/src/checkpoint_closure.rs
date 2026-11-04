@@ -20,7 +20,8 @@
 
 use crate::file_io as fs;
 use crate::immutable_object::{
-    ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference, ObjectReferenceWriter,
+    BlockWork, ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference,
+    ObjectReferenceWriter,
 };
 use crate::sealed_root::{
     CheckpointArtifactBinding, SealedRoot, SealedRootError, SealedWalReference,
@@ -49,10 +50,12 @@ pub(crate) struct ClosureArtifactDigest {
     pub reference: ObjectReference,
 }
 
+/// With a checkpoint work context, takes one work unit per 64 KiB block.
 pub(crate) fn digest_closure_artifact(
     path: &Path,
     kind: ObjectKind,
     operation: &str,
+    work: BlockWork<'_>,
 ) -> hawdb_core::Result<ClosureArtifactDigest> {
     use std::io::{Read, Write};
 
@@ -73,16 +76,19 @@ pub(crate) fn digest_closure_artifact(
     let mut content = hawdb_integrity::IntegrityHasher::new();
     let mut buffer = vec![0; 64 * 1024];
     loop {
-        let length = file
-            .read(&mut buffer)
-            .map_err(|error| closure_io_error(path, operation, error))?;
+        let length = work.block(hawdb_core::HawDBError::from_storage_error, || {
+            let length = file
+                .read(&mut buffer)
+                .map_err(|error| closure_io_error(path, operation, error))?;
+            identity
+                .write_all(&buffer[..length])
+                .map_err(|_| changed())?;
+            content.update(&buffer[..length]);
+            Ok(length)
+        })?;
         if length == 0 {
             break;
         }
-        identity
-            .write_all(&buffer[..length])
-            .map_err(|_| changed())?;
-        content.update(&buffer[..length]);
     }
     let reference = identity.finish().map_err(|_| changed())?;
     Ok(ClosureArtifactDigest {
@@ -177,6 +183,15 @@ impl CheckpointClosurePlan {
         self,
         store: &mut ImmutableObjectStore,
     ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
+        self.publish_with_work(store, BlockWork::default())
+    }
+
+    /// [`Self::publish`] with one checkpoint work unit per streamed block.
+    pub(crate) fn publish_with_work(
+        self,
+        store: &mut ImmutableObjectStore,
+        work: BlockWork<'_>,
+    ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
         let missing = ALL_FAMILIES
             .into_iter()
             .filter(|family| !self.completed_families.contains(family))
@@ -184,7 +199,7 @@ impl CheckpointClosurePlan {
         if !missing.is_empty() {
             return Err(CheckpointClosureError::Incomplete { missing });
         }
-        publish_checkpoint_closure_with_bound_duplicates(store, &self.inputs)
+        publish_checkpoint_closure_inner(store, &self.inputs, true, work)
     }
 
     fn complete_family(
@@ -273,20 +288,14 @@ pub fn publish_checkpoint_closure(
     store: &mut ImmutableObjectStore,
     inputs: &[CheckpointArtifactInput],
 ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
-    publish_checkpoint_closure_inner(store, inputs, false)
-}
-
-fn publish_checkpoint_closure_with_bound_duplicates(
-    store: &mut ImmutableObjectStore,
-    inputs: &[CheckpointArtifactInput],
-) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
-    publish_checkpoint_closure_inner(store, inputs, true)
+    publish_checkpoint_closure_inner(store, inputs, false, BlockWork::default())
 }
 
 fn publish_checkpoint_closure_inner(
     store: &mut ImmutableObjectStore,
     inputs: &[CheckpointArtifactInput],
     retain_duplicate_bindings: bool,
+    work: BlockWork<'_>,
 ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
     if inputs.is_empty() {
         return Err(CheckpointClosureError::Empty);
@@ -312,7 +321,7 @@ fn publish_checkpoint_closure_inner(
         if references.insert(input.reference) {
             total_bytes = total_bytes.saturating_add(input.reference.byte_length);
             store
-                .publish_file(input.reference, &input.path)
+                .publish_file_with_work(input.reference, &input.path, work)
                 .map_err(|error| match error {
                     ImmutableObjectError::Io {
                         operation: "open immutable object source" | "read immutable object source",

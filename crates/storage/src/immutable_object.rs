@@ -37,6 +37,43 @@ const DEFAULT_MAX_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_MAX_STREAMED_OBJECT_BYTES: u64 = crate::config::DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES;
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 
+/// Charges one checkpoint work unit and one I/O wave per streamed block while
+/// a checkpoint publishes or validates an object, so the phase is cancellable,
+/// scheduled, and visible as progress to writers waiting on checkpoint
+/// capacity (#1527). Without a context the block runs unchanged.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct BlockWork<'a>(pub(crate) Option<&'a crate::background::CheckpointWorkContext>);
+
+impl BlockWork<'_> {
+    pub(crate) fn block<T, E>(
+        self,
+        admission: impl Fn(crate::background::CheckpointWorkError) -> E,
+        operation: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        let Some(work) = self.0 else {
+            return operation();
+        };
+        let unit = work.start_unit().map_err(&admission)?;
+        let result = {
+            let _wave = work.io_wave().map_err(&admission)?;
+            operation()
+        };
+        if result.is_ok() {
+            unit.finish();
+        }
+        result
+    }
+}
+
+/// The work context records the typed error for its classifier; the object
+/// layer reports it as an ordinary I/O failure of the block.
+fn block_work_error(error: crate::background::CheckpointWorkError) -> ImmutableObjectError {
+    ImmutableObjectError::Io {
+        operation: "admit checkpoint object work",
+        source: io::Error::other(error.to_string()),
+    }
+}
+
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -795,11 +832,22 @@ impl ImmutableObjectStore {
         validate_reference(reference, payload, self.max_object_bytes)?;
         let destination = self.prepare_kind_directory(reference)?;
         if destination.exists() {
-            return self.validate_existing(reference, Some(payload), &destination);
+            return self.validate_existing(
+                reference,
+                Some(payload),
+                &destination,
+                BlockWork::default(),
+            );
         }
 
         let staging = self.stage_payload(payload)?;
-        let install_result = self.install_staged(reference, Some(payload), &staging, &destination);
+        let install_result = self.install_staged(
+            reference,
+            Some(payload),
+            &staging,
+            &destination,
+            BlockWork::default(),
+        );
         if install_result.is_err() {
             let _ = fs::remove_file(&staging);
         }
@@ -816,6 +864,17 @@ impl ImmutableObjectStore {
         reference: ObjectReference,
         source: &Path,
     ) -> Result<PublishOutcome, ImmutableObjectError> {
+        self.publish_file_with_work(reference, source, BlockWork::default())
+    }
+
+    /// [`Self::publish_file`] with one checkpoint work unit per streamed block
+    /// of staging, read-back and reuse validation.
+    pub(crate) fn publish_file_with_work(
+        &mut self,
+        reference: ObjectReference,
+        source: &Path,
+        work: BlockWork<'_>,
+    ) -> Result<PublishOutcome, ImmutableObjectError> {
         if self.poisoned {
             return Err(ImmutableObjectError::PublisherPoisoned);
         }
@@ -830,11 +889,11 @@ impl ImmutableObjectStore {
         }
         let destination = self.prepare_kind_directory(reference)?;
         if destination.exists() {
-            return self.validate_existing(reference, None, &destination);
+            return self.validate_existing(reference, None, &destination, work);
         }
 
-        let staging = self.stage_file(reference, source)?;
-        let install_result = self.install_staged(reference, None, &staging, &destination);
+        let staging = self.stage_file(reference, source, work)?;
+        let install_result = self.install_staged(reference, None, &staging, &destination, work);
         if install_result.is_err() {
             let _ = fs::remove_file(&staging);
         }
@@ -903,6 +962,7 @@ impl ImmutableObjectStore {
         &self,
         reference: ObjectReference,
         source: &Path,
+        work: BlockWork<'_>,
     ) -> Result<PathBuf, ImmutableObjectError> {
         let mut input = map_io("open immutable object source", File::open(source))?;
         let staging_directory = self.root.join(OBJECTS_DIRECTORY).join(STAGING_DIRECTORY);
@@ -920,19 +980,22 @@ impl ImmutableObjectStore {
             )?;
             let mut buffer = vec![0; STREAM_BUFFER_BYTES];
             loop {
-                let length = map_io("read immutable object source", input.read(&mut buffer))?;
+                let length = work.block(block_work_error, || {
+                    let length = map_io("read immutable object source", input.read(&mut buffer))?;
+                    // A source longer than its reference fails here instead of
+                    // growing the staged object past the admitted length.
+                    identity
+                        .write_all(&buffer[..length])
+                        .map_err(|_| ImmutableObjectError::ReferenceMismatch)?;
+                    map_io(
+                        "write immutable object staging file",
+                        file.write_all(&buffer[..length]),
+                    )?;
+                    Ok(length)
+                })?;
                 if length == 0 {
                     break;
                 }
-                // A source longer than its reference fails here instead of
-                // growing the staged object past the admitted length.
-                identity
-                    .write_all(&buffer[..length])
-                    .map_err(|_| ImmutableObjectError::ReferenceMismatch)?;
-                map_io(
-                    "write immutable object staging file",
-                    file.write_all(&buffer[..length]),
-                )?;
             }
             if identity.finish()? != reference {
                 return Err(ImmutableObjectError::ReferenceMismatch);
@@ -953,12 +1016,14 @@ impl ImmutableObjectStore {
         payload: Option<&[u8]>,
         staging: &Path,
         destination: &Path,
+        work: BlockWork<'_>,
     ) -> Result<PublishOutcome, ImmutableObjectError> {
         validate_file(
             staging,
             reference,
             payload,
             self.payload_limit(reference, payload),
+            work,
         )?;
         match fs::hard_link(staging, destination) {
             Ok(()) => {
@@ -973,7 +1038,7 @@ impl ImmutableObjectStore {
                 Ok(PublishOutcome::Published)
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                self.validate_existing(reference, payload, destination)
+                self.validate_existing(reference, payload, destination, work)
             }
             Err(error) => Err(ImmutableObjectError::Io {
                 operation: "install immutable object exclusively",
@@ -987,6 +1052,7 @@ impl ImmutableObjectStore {
         reference: ObjectReference,
         payload: Option<&[u8]>,
         path: &Path,
+        work: BlockWork<'_>,
     ) -> Result<PublishOutcome, ImmutableObjectError> {
         let metadata = map_io("read immutable object metadata", fs::symlink_metadata(path))?;
         if !metadata.file_type().is_file() {
@@ -999,6 +1065,7 @@ impl ImmutableObjectStore {
             reference,
             payload,
             self.payload_limit(reference, payload),
+            work,
         )?;
         // A previous publisher may have installed complete bytes but failed its
         // final namespace barrier. Acknowledging reuse must close that window.
@@ -1127,6 +1194,7 @@ fn validate_file(
     reference: ObjectReference,
     expected: Option<&[u8]>,
     max_object_bytes: u64,
+    work: BlockWork<'_>,
 ) -> Result<(), ImmutableObjectError> {
     let corrupt = || ImmutableObjectError::ExistingObjectCorrupt {
         path: path.to_path_buf(),
@@ -1147,18 +1215,21 @@ fn validate_file(
     let mut buffer = vec![0; STREAM_BUFFER_BYTES];
     let mut offset = 0_usize;
     loop {
-        let length = map_io("read immutable object", file.read(&mut buffer))?;
+        let length = work.block(block_work_error, || {
+            let length = map_io("read immutable object", file.read(&mut buffer))?;
+            let end = offset.checked_add(length).ok_or_else(corrupt)?;
+            if end as u64 > reference.byte_length
+                || expected.is_some_and(|expected| expected[offset..end] != buffer[..length])
+            {
+                return Err(corrupt());
+            }
+            hasher.update(&buffer[..length]);
+            offset = end;
+            Ok(length)
+        })?;
         if length == 0 {
             break;
         }
-        let end = offset.checked_add(length).ok_or_else(corrupt)?;
-        if end as u64 > reference.byte_length
-            || expected.is_some_and(|expected| expected[offset..end] != buffer[..length])
-        {
-            return Err(corrupt());
-        }
-        hasher.update(&buffer[..length]);
-        offset = end;
     }
     if offset as u64 != reference.byte_length || hasher.finish().sha256 != reference.sha256 {
         return Err(corrupt());
@@ -1229,6 +1300,9 @@ fn fail_next_publication_sync() -> PublicationSyncFailureGuard {
     });
     PublicationSyncFailureGuard
 }
+
+#[cfg(test)]
+mod work_tests;
 
 #[cfg(test)]
 mod tests {

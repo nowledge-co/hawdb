@@ -420,6 +420,14 @@ impl DurableManifest {
     /// descendants are added by their validated family readers before a root
     /// is published.
     pub fn manifest_artifact_inputs(self, root: &Path) -> Result<Vec<CheckpointArtifactInput>> {
+        self.manifest_artifact_inputs_with_work(root, crate::immutable_object::BlockWork::default())
+    }
+
+    pub(crate) fn manifest_artifact_inputs_with_work(
+        self,
+        root: &Path,
+        work: crate::immutable_object::BlockWork<'_>,
+    ) -> Result<Vec<CheckpointArtifactInput>> {
         self.validate()?;
         let generation = self.checkpoint_generation.ok_or_else(|| {
             HawDBError::Storage("manifest artifact inputs require a checkpoint generation".into())
@@ -432,7 +440,8 @@ impl DurableManifest {
                     path.display()
                 )));
             };
-            let digest = digest_closure_artifact(&path, kind, "read manifest-bound artifact")?;
+            let digest =
+                digest_closure_artifact(&path, kind, "read manifest-bound artifact", work)?;
             if digest.byte_length != byte_length {
                 return Err(HawDBError::Storage(format!(
                     "manifest-bound artifact {} length differs from its binding",

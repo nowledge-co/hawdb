@@ -254,7 +254,9 @@ impl GraphStore {
     pub(super) fn prepare_checkpoint_branch_root(
         &self,
         manifest: DurableManifest,
+        work: Option<&crate::background::CheckpointWorkContext>,
     ) -> Result<Option<PreparedCheckpointBranchRoot>> {
+        let work = crate::immutable_object::BlockWork(work);
         let durable = self.durable.as_ref().ok_or_else(|| {
             HawDBError::StorageIntegrity("checkpoint root has no durable store".into())
         })?;
@@ -285,10 +287,10 @@ impl GraphStore {
         objects
             .publish(durable_manifest, &manifest_bytes)
             .map_err(HawDBError::from_storage_error)?;
-        let plan = durable.checkpoint_closure_plan(manifest)?;
+        let plan = durable.checkpoint_closure_plan_with_work(manifest, work)?;
         let checkpoint_bindings = checkpoint_artifact_bindings(&durable.root_path, plan.inputs())?;
         let closure = plan
-            .publish(&mut objects)
+            .publish_with_work(&mut objects, work)
             .map_err(HawDBError::from_storage_error)?;
         let root = SealedRoot {
             checkpoint_epoch: manifest.checkpoint_commit_epoch,
