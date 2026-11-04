@@ -482,7 +482,10 @@ py_test(
     name = "pypi_publish_script_test",
     size = "small",
     srcs = ["scripts/pypi-publish.test.py"],
-    data = [".github/workflows/pypi.yaml"],
+    data = [
+        ".github/workflows/pypi.yaml",
+        "rust-toolchain.toml",
+    ],
     legacy_create_init = False,
     main = "scripts/pypi-publish.test.py",
     deps = [requirement("packaging")],

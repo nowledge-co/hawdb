@@ -23,7 +23,7 @@ HawDB is a Rust library. Published releases are on crates.io. The repository pin
 
 ```toml
 [dependencies]
-hawdb = "0.26"
+hawdb = "0.27"
 ```
 
 To follow the repository tip instead of a release:
