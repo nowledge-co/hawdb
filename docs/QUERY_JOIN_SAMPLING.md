@@ -113,6 +113,9 @@ query counts. Alternate baseline/candidate order across independent processes.
 JSON lines separate setup/open, first-call and warm wall time, parsing,
 planning including sampling, sampling time, cache hits/misses and selected plans.
 Do not add sampling time to planning a second time.
+The uniform control has degree four everywhere and distributes each selected
+source population across the complete target population. Its exact one/two-hop
+count is `hot_rows`; the skewed workload's exact count is `4 * hot_rows`.
 
 Report wins and regressions, cold storage-cache first calls, warm calls,
 point/no-index/budget-refusal controls and first-build cost. `OutOfCore` denotes

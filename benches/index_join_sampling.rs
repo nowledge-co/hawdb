@@ -60,7 +60,9 @@ fn populate(
     for id in 0..4 * hot {
         let degree = if id < hot && skewed { 16 } else { 4 };
         for offset in 0..degree {
-            let target = if id < hot && offset < 4 {
+            let target = if !skewed {
+                (id * 4 + offset) % (4 * hot)
+            } else if id < hot && offset < 4 {
                 (id * 4 + offset) % hot
             } else {
                 hot + (id * 16 + offset) % (3 * hot)
@@ -77,7 +79,9 @@ fn populate(
     if two {
         for id in 0..4 * hot {
             for offset in 0..4 {
-                let target = if id < hot && offset == 0 {
+                let target = if !skewed {
+                    (id * 4 + offset) % (4 * hot)
+                } else if id < hot && offset == 0 {
                     id
                 } else {
                     hot + (id * 4 + offset) % (3 * hot)
@@ -135,7 +139,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "MATCH (a:A {kind: $kind})-[:R]->(b:B {kind: $kind}) RETURN count(*) AS total"
     };
     let params = BTreeMap::from([("kind".into(), Value::Int(1)), ("id".into(), Value::Int(0))]);
-    let expected = if args[0] == "point" { 1 } else { 4 * hot };
+    let expected = if args[0] == "point" {
+        1
+    } else if args[4] == "uniform" {
+        hot
+    } else {
+        4 * hot
+    };
     let order = if args.get(5).is_some_and(|arg| arg == "candidate-first") {
         [true, false]
     } else {
