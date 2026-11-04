@@ -174,6 +174,9 @@ impl JoinSamplingShape {
         value_ok: &impl Fn(&Value) -> bool,
     ) -> Option<Self> {
         let root = path_root(plan, 0)?;
+        if !has_expand(root, 0) {
+            return None;
+        }
         let mut nodes = Vec::new();
         let mut hops = Vec::new();
         let mut predicates = BTreeMap::new();
@@ -277,6 +280,14 @@ impl JoinSamplingShape {
 
 fn name_ok(name: &str) -> bool {
     !name.is_empty() && name.len() <= 128
+}
+
+fn has_expand(plan: &LogicalPlan, depth: usize) -> bool {
+    match plan {
+        LogicalPlan::Expand { .. } => true,
+        LogicalPlan::Filter { input, .. } if depth < 8 => has_expand(input, depth + 1),
+        _ => false,
+    }
 }
 
 fn scalar_ok(value: &Value) -> bool {

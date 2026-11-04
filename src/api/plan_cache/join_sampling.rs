@@ -54,9 +54,12 @@ pub(super) fn bind<S: crate::executor::ExecutionStore>(
     parameters: &BTreeMap<String, Value>,
     parameterized: bool,
 ) -> Result<Option<BoundSampling>> {
-    let Some(limits) = context.config.join_sampling else {
+    let Some(mut limits) = context.config.join_sampling else {
         return Ok(None);
     };
+    limits.max_retained_bytes = limits
+        .max_retained_bytes
+        .min(context.config.execution_memory.query_memory_bytes.get());
     // Restricted populations need their own scoped sampling contract. Preserve
     // the ordinary access-control/scoring paths until that exists.
     if context.access_control.is_some() || context.scoring.is_some() {

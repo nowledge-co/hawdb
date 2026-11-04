@@ -76,6 +76,11 @@ and conservative posting-map charges. It is not process RSS or allocator
 rounding; immutable storage caches retain their separate limits.
 Duration checks are cooperative and cannot interrupt one blocking filesystem
 read. Query task cancellation takes precedence over the sampling deadline.
+The configured query memory ceiling and runtime memory target can tighten the
+scratch ceiling. Governed calls reserve that whole ceiling conservatively for
+the attempt and release it before execution. Probes/preparation charge the
+parent task's work budget. Physical misses acquire one nonblocking runtime I/O
+permit held through the attempt; saturated admission falls back without spinning.
 
 Budget/unsupported refusals fall back. Corruption and query cancellation remain
 errors, not apparently successful fallbacks. Refusal must not poison a healthy

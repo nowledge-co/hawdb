@@ -73,6 +73,7 @@ pub enum JoinSamplingRefusal {
     ReadByteBudget,
     ReadOperationBudget,
     MemoryBudget,
+    IoAdmission,
     Deadline,
     EmptySample,
     Arithmetic,
@@ -140,16 +141,29 @@ pub struct JoinSamplingContext<'a> {
     started: Instant,
     task: Option<&'a RuntimeTaskContext>,
     bridge_error: RefCell<Option<SamplingError>>,
+    io_permit: RefCell<Option<Box<dyn hawdb_core::RuntimeIoWavePermit>>>,
 }
 
 impl<'a> JoinSamplingContext<'a> {
     pub fn new(limits: JoinSamplingLimits, task: Option<&'a RuntimeTaskContext>) -> Self {
+        let mut limits = limits;
+        if let Some(task) = task {
+            let ceiling =
+                task.memory_reservation()
+                    .map_or(limits.max_retained_bytes as u64, |reservation| {
+                        reservation
+                            .memory_bytes()
+                            .min(limits.max_retained_bytes as u64)
+                    });
+            limits.max_retained_bytes = task.working_memory_target(ceiling) as usize;
+        }
         Self {
             limits,
             work: Cell::new(JoinSamplingWork::default()),
             started: Instant::now(),
             task,
             bridge_error: RefCell::new(None),
+            io_permit: RefCell::new(None),
         }
     }
 
@@ -183,6 +197,9 @@ impl<'a> JoinSamplingContext<'a> {
             self.limits.max_probes,
             JoinSamplingRefusal::ProbeBudget,
         )?;
+        if let Some(task) = self.task {
+            task.charge_work(1)?;
+        }
         self.work.set(work);
         Ok(())
     }
@@ -196,6 +213,9 @@ impl<'a> JoinSamplingContext<'a> {
             self.limits.max_prepared_entries,
             JoinSamplingRefusal::PreparationBudget,
         )?;
+        if let Some(task) = self.task {
+            task.charge_work(entries)?;
+        }
         self.work.set(work);
         Ok(())
     }
@@ -215,6 +235,25 @@ impl<'a> JoinSamplingContext<'a> {
             self.limits.max_read_bytes,
             JoinSamplingRefusal::ReadByteBudget,
         )?;
+        let needs_io_permit = self.io_permit.borrow().is_none();
+        if let Some(task) = self.task
+            && needs_io_permit
+        {
+            match task.try_acquire_io_wave(std::num::NonZeroUsize::MIN) {
+                Ok(hawdb_core::RuntimeIoWaveTryAcquire::Acquired(permit)) => {
+                    *self.io_permit.borrow_mut() = permit;
+                }
+                Ok(hawdb_core::RuntimeIoWaveTryAcquire::Pending)
+                | Err(hawdb_core::RuntimeIoWaveError::ReservationExceeded { .. }) => {
+                    return Err(SamplingError::Refused(JoinSamplingRefusal::IoAdmission));
+                }
+                Err(hawdb_core::RuntimeIoWaveError::Stopped(reason)) => {
+                    return Err(SamplingError::Storage(HawDBError::Execution(format!(
+                        "join sampling I/O stopped: {reason}"
+                    ))));
+                }
+            }
+        }
         work.read_operations = operations;
         work.read_bytes = total;
         self.work.set(work);
@@ -231,6 +270,21 @@ impl<'a> JoinSamplingContext<'a> {
             .ok_or(SamplingError::Refused(JoinSamplingRefusal::MemoryBudget))?;
         self.work.set(work);
         Ok(())
+    }
+
+    pub(crate) fn reserve_runtime_memory(
+        &self,
+    ) -> SamplingResult<Option<Box<dyn hawdb_core::RuntimeMemoryPermit>>> {
+        self.checkpoint()?;
+        self.task.map_or(Ok(None), |task| {
+            task.reserve_working_memory(self.limits.max_retained_bytes as u64)
+                .map_err(|error| match error {
+                    hawdb_core::RuntimeMemoryError::Stopped(reason) => SamplingError::Storage(
+                        HawDBError::Execution(format!("join sampling memory stopped: {reason}")),
+                    ),
+                    _ => SamplingError::Refused(JoinSamplingRefusal::MemoryBudget),
+                })
+        })
     }
 
     pub(crate) fn reserve<T>(&self, values: &mut Vec<T>, additional: usize) -> SamplingResult<()> {

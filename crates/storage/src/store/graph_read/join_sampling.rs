@@ -51,7 +51,9 @@ impl GraphStore {
     ) -> Result<JoinSamplingReport> {
         self.ensure_usable()?;
         let context = JoinSamplingContext::new(limits, task);
-        let result = self.sample_join_path_inner(request, &context);
+        let result = context
+            .reserve_runtime_memory()
+            .and_then(|_permit| self.sample_join_path_inner(request, &context));
         let (estimates, refusal) = match result {
             Ok(estimates) => (Some(estimates), None),
             Err(SamplingError::Refused(reason)) => (None, Some(reason)),
@@ -612,5 +614,115 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
+        let task = hawdb_core::RuntimeTaskContext::default().with_work_limit(0);
+        assert!(fixture
+            .store
+            .sample_join_path(&fixture.request, limits(), Some(&task))
+            .is_err());
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct Ledger {
+        memory: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        io: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        io_acquisitions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[derive(Debug)]
+    struct MemoryLease(Ledger, u64);
+    impl hawdb_core::RuntimeMemoryPermit for MemoryLease {
+        fn bytes(&self) -> u64 {
+            self.1
+        }
+    }
+    impl Drop for MemoryLease {
+        fn drop(&mut self) {
+            self.0
+                .memory
+                .fetch_sub(self.1 as usize, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl hawdb_core::RuntimeMemoryController for Ledger {
+        fn reserve(
+            &self,
+            bytes: u64,
+            ceiling: u64,
+        ) -> std::result::Result<
+            Box<dyn hawdb_core::RuntimeMemoryPermit>,
+            hawdb_core::RuntimeMemoryError,
+        > {
+            assert!(bytes <= ceiling);
+            self.memory
+                .fetch_add(bytes as usize, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::new(MemoryLease(self.clone(), bytes)))
+        }
+    }
+
+    #[derive(Debug)]
+    struct IoLease(Ledger);
+    impl Drop for IoLease {
+        fn drop(&mut self) {
+            self.0.io.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl hawdb_core::RuntimeIoWaveController for Ledger {
+        fn try_acquire(
+            &self,
+            slots: std::num::NonZeroUsize,
+            _task: &hawdb_core::RuntimeTaskContext,
+        ) -> std::result::Result<
+            Option<Box<dyn hawdb_core::RuntimeIoWavePermit>>,
+            hawdb_core::RuntimeIoWaveError,
+        > {
+            use std::sync::atomic::Ordering::SeqCst;
+            assert_eq!(slots.get(), 1);
+            assert!(
+                self.memory.load(SeqCst) > 0,
+                "scratch reservation must precede physical I/O"
+            );
+            if self.io.compare_exchange(0, 1, SeqCst, SeqCst).is_err() {
+                return Ok(None);
+            }
+            self.io_acquisitions.fetch_add(1, SeqCst);
+            Ok(Some(Box::new(IoLease(self.clone()))))
+        }
+        fn acquire(
+            &self,
+            _slots: std::num::NonZeroUsize,
+            _task: &hawdb_core::RuntimeTaskContext,
+        ) -> std::result::Result<
+            Box<dyn hawdb_core::RuntimeIoWavePermit>,
+            hawdb_core::RuntimeIoWaveError,
+        > {
+            panic!("optional sampling must not block waiting for I/O capacity");
+        }
+    }
+
+    #[test]
+    fn join_sampling_keeps_runtime_memory_and_io_custody_and_yields_when_busy() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let fixture = fixture(true);
+        let ledger = std::sync::Arc::new(Ledger::default());
+        let task = hawdb_core::RuntimeTaskContext::default()
+            .with_memory_controller(ledger.clone())
+            .with_io_wave_controller(ledger.clone());
+        ledger.io.store(1, SeqCst);
+        let refused = fixture
+            .store
+            .sample_join_path(&fixture.request, limits(), Some(&task))
+            .unwrap();
+        assert_eq!(refused.refusal, Some(JoinSamplingRefusal::IoAdmission));
+        assert_eq!(refused.work.read_operations, 0);
+        assert_eq!(ledger.memory.load(SeqCst), 0);
+        ledger.io.store(0, SeqCst);
+        let report = fixture
+            .store
+            .sample_join_path(&fixture.request, limits(), Some(&task))
+            .unwrap();
+        assert!(report.estimates.is_some());
+        assert!(report.work.read_operations > 0);
+        assert_eq!(ledger.io_acquisitions.load(SeqCst), 1);
+        assert_eq!(ledger.memory.load(SeqCst), 0);
+        assert_eq!(ledger.io.load(SeqCst), 0);
     }
 }
