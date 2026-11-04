@@ -124,15 +124,41 @@ pub struct NodePatternKind {
     pub properties: BTreeMap<String, ValueExpression>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RelationshipPatternKind {
     pub variable: Option<String>,
+    /// The single type, or the first type of a disjunction; empty for an
+    /// untyped pattern.
     pub rel_type: String,
+    /// Every type of a disjunction `[:A|B]`, in source order and without
+    /// duplicates; empty unless the pattern names two or more types.
+    pub rel_type_disjunction: Vec<String>,
     pub properties: BTreeMap<String, ValueExpression>,
     pub direction: RelationshipDirection,
     pub min_hops: usize,
     pub max_hops: usize,
     pub search: PathSearch,
+}
+
+// Written by hand so a pattern without a disjunction keeps the derived output:
+// frozen parser corpora digest the AST's `Debug` text.
+impl std::fmt::Debug for RelationshipPatternKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("RelationshipPatternKind");
+        debug
+            .field("variable", &self.variable)
+            .field("rel_type", &self.rel_type);
+        if !self.rel_type_disjunction.is_empty() {
+            debug.field("rel_type_disjunction", &self.rel_type_disjunction);
+        }
+        debug
+            .field("properties", &self.properties)
+            .field("direction", &self.direction)
+            .field("min_hops", &self.min_hops)
+            .field("max_hops", &self.max_hops)
+            .field("search", &self.search)
+            .finish()
+    }
 }
 
 /// Path-selection mode of a relationship pattern.

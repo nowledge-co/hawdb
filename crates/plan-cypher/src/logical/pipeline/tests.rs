@@ -1192,3 +1192,90 @@ fn row_bound_pattern_properties_reuse_lookup_and_optional_predicates() {
         BTreeMap::from([("active".into(), Value::Bool(true))])
     );
 }
+
+fn graph_match_steps(plan: &LogicalPlan, steps: &mut Vec<GraphMatchStep>) {
+    match plan {
+        LogicalPlan::GraphMatch { program, input } => {
+            steps.extend(program.steps.iter().cloned());
+            if let Some(input) = input {
+                graph_match_steps(input, steps);
+            }
+        }
+        LogicalPlan::Project { input, .. }
+        | LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Aggregate { input, .. }
+        | LogicalPlan::Distinct { input }
+        | LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Limit { input, .. } => graph_match_steps(input, steps),
+        _ => {}
+    }
+}
+
+#[test]
+fn relationship_type_disjunctions_stay_generic_graph_matches() {
+    let text = |plan: &LogicalPlan| format!("{plan:?}");
+    for query in [
+        "MATCH (a:N)-[:A|B]->(b) RETURN b.id",
+        "MATCH (a:N)-[r:A|:B]-(b) RETURN r",
+        "MATCH (a:N)-[:A|B*0..]->(b) RETURN b.id",
+        "MATCH (a:N) MATCH (a)-[:A|B]->(b) RETURN b.id",
+        "MATCH (a:N) OPTIONAL MATCH (a)-[:A|B]->(b) RETURN a.id, b.id",
+        "MATCH (a:N) OPTIONAL MATCH (a)-[r:A|B]->() RETURN a.id, count(r) AS n",
+        "MATCH (a:N) OPTIONAL MATCH (a)-[r:A|B]->(b) RETURN count(b) AS n",
+    ] {
+        let plan = plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap();
+        let rendered = text(&plan);
+        // No single-type operator may stand in for the disjunction.
+        for single in [
+            "Expand { source_variable",
+            "OptionalDegree",
+            "RelationshipCount",
+        ] {
+            assert!(!rendered.contains(single), "{query}: {rendered}");
+        }
+        let mut steps = Vec::new();
+        graph_match_steps(&plan, &mut steps);
+        let disjunctions = steps
+            .iter()
+            .filter_map(GraphMatchStep::rel_type_disjunction)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            disjunctions,
+            vec![&["A".to_string(), "B".to_string()][..]],
+            "{query}"
+        );
+        assert!(rendered.contains("rel_types: A|B"), "{query}: {rendered}");
+    }
+    // A single type keeps its earlier plan text and normalization.
+    let single = plan_normalized_pipeline_query(
+        "MATCH (a:N) MATCH (a)-[:A]->(b) RETURN b.id",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let rendered = text(&single);
+    assert!(rendered.contains("Expand { source_variable"), "{rendered}");
+    assert!(!rendered.contains("rel_types"), "{rendered}");
+}
+
+#[test]
+fn relationship_type_disjunctions_are_rejected_outside_match_reads() {
+    for query in [
+        "MATCH (a:N {id: 1}), (b:N {id: 2}) CREATE (a)-[:A|B]->(b)",
+        "MATCH (a:N {id: 1}), (b:N {id: 2}) MERGE (a)-[:A|B]->(b)",
+        "MATCH ()-[r:A|B]->() DELETE r",
+        "MATCH (a:N)-[r:A|B]->() SET r.w = 1",
+        "MATCH (a:N)-[:A|B]->(b) SET b.w = 1",
+        "MATCH (a:N {id: 1}), (b:N {id: 2}) MATCH p = shortestPath((a)-[:A|B*]->(b)) RETURN p",
+        "MATCH p = (a:N)-[:A|B* ALL SHORTEST 1..3]->(b:N) WHERE id(a) = 1 AND id(b) = 2 RETURN length(p) AS hops",
+    ] {
+        let error = plan_pipeline_query(query, &BTreeMap::new())
+            .err()
+            .unwrap_or_else(|| panic!("{query} planned"));
+        assert!(
+            error
+                .to_string()
+                .contains("relationship type disjunction :A|B is not supported"),
+            "{query}: {error}"
+        );
+    }
+}

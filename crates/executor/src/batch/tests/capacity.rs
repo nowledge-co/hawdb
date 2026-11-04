@@ -123,6 +123,7 @@ fn plan(parent: Parent, window: usize) -> PhysicalPlan {
                     source: "seed".into(),
                     relationship: None,
                     rel_type: "MENTIONS".into(),
+                    rel_types: Vec::new(),
                     properties: BTreeMap::new(),
                     direction: RelationshipDirection::Outgoing,
                     min_hops: 1,

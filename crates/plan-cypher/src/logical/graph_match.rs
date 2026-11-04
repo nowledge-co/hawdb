@@ -67,13 +67,20 @@ pub struct GraphMatchNode {
     pub properties: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum GraphMatchStep {
     Node(GraphMatchNode),
     Expand {
         source: String,
         relationship: Option<String>,
+        /// The single relationship type, or the first type of a disjunction;
+        /// empty matches every type.
         rel_type: String,
+        /// Every type of a disjunction `[:A|B]` in source order, without
+        /// duplicates; empty unless the pattern names two or more types, in
+        /// which case `rel_type` is its first entry. Readers that only handle
+        /// one type must check [`GraphMatchStep::rel_type_disjunction`].
+        rel_types: Vec<String>,
         properties: BTreeMap<String, Value>,
         direction: RelationshipDirection,
         min_hops: usize,
@@ -82,6 +89,80 @@ pub enum GraphMatchStep {
     },
     /// Binds `path` to the shortest path(s) between two already bound nodes.
     ShortestPath(Box<GraphMatchShortestPath>),
+}
+
+impl GraphMatchStep {
+    /// The types of an `Expand` step's disjunction, or `None` for a node,
+    /// shortest-path, single-type or untyped step.
+    pub fn rel_type_disjunction(&self) -> Option<&[String]> {
+        match self {
+            Self::Expand { rel_types, .. } if !rel_types.is_empty() => Some(rel_types),
+            _ => None,
+        }
+    }
+}
+
+impl GraphMatchProgram {
+    /// Whether any step matches a relationship type disjunction.
+    pub fn has_rel_type_disjunction(&self) -> bool {
+        self.steps
+            .iter()
+            .any(|step| step.rel_type_disjunction().is_some())
+    }
+}
+
+/// The relationship types an expand step reads: the disjunction when there is
+/// one, else `rel_type` alone (empty for an untyped step).
+pub fn expand_rel_types<'a>(rel_type: &'a str, rel_types: &'a [String]) -> Vec<&'a str> {
+    if rel_types.is_empty() {
+        if rel_type.is_empty() {
+            Vec::new()
+        } else {
+            vec![rel_type]
+        }
+    } else {
+        rel_types.iter().map(String::as_str).collect()
+    }
+}
+
+// Written by hand so a step without a disjunction keeps the derived output:
+// plan corpora compare the logical plan's `Debug` text.
+impl std::fmt::Debug for GraphMatchStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Node(node) => f.debug_tuple("Node").field(node).finish(),
+            Self::Expand {
+                source,
+                relationship,
+                rel_type,
+                rel_types,
+                properties,
+                direction,
+                min_hops,
+                max_hops,
+                target,
+            } => {
+                let mut debug = f.debug_struct("Expand");
+                debug
+                    .field("source", source)
+                    .field("relationship", relationship)
+                    .field("rel_type", rel_type);
+                if !rel_types.is_empty() {
+                    // EXPLAIN prints steps with `Debug`; show the pattern's
+                    // own spelling of the disjunction.
+                    debug.field("rel_types", &format_args!("{}", rel_types.join("|")));
+                }
+                debug
+                    .field("properties", properties)
+                    .field("direction", direction)
+                    .field("min_hops", min_hops)
+                    .field("max_hops", max_hops)
+                    .field("target", target)
+                    .finish()
+            }
+            Self::ShortestPath(path) => f.debug_tuple("ShortestPath").field(path).finish(),
+        }
+    }
 }
 
 /// Upper bound for unbounded shortest-path patterns such as `[:KNOWS*]`, and
@@ -160,6 +241,7 @@ impl hawdb_core::RetainedHeapBytes for GraphMatchStep {
                 source,
                 relationship,
                 rel_type,
+                rel_types,
                 properties,
                 direction,
                 min_hops,
@@ -169,6 +251,7 @@ impl hawdb_core::RetainedHeapBytes for GraphMatchStep {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(source),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(relationship),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(rel_type),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(rel_types),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(properties),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(direction),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(min_hops),

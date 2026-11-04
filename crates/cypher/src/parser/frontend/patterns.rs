@@ -107,14 +107,23 @@ impl Transformer<'_> {
                 .tree
                 .child(body, rule_id!("p_variable"))
                 .map(|id| self.text(id).to_owned());
-            let rel_type = self
-                .tree
-                .child(body, rule_id!("p_rel_type"))
-                .map(|id| {
-                    self.text(self.tree.required(id, rule_id!("v_identifier")))
-                        .to_owned()
-                })
-                .unwrap_or_default();
+            let mut rel_types = Vec::<String>::new();
+            if let Some(id) = self.tree.child(body, rule_id!("p_rel_type")) {
+                for &child in self.tree.children(id) {
+                    if self.tree.rule_id(child) == rule_id!("v_identifier") {
+                        let name = self.text(child).to_owned();
+                        if !rel_types.contains(&name) {
+                            rel_types.push(name);
+                        }
+                    }
+                }
+            }
+            let rel_type = rel_types.first().cloned().unwrap_or_default();
+            let rel_type_disjunction = if rel_types.len() > 1 {
+                rel_types
+            } else {
+                Vec::new()
+            };
             let mut search = PathSearch::All;
             let (mut min_hops, mut max_hops) = (1, 1);
             if let Some(hops) = self.tree.child(body, rule_id!("p_hops")) {
@@ -180,6 +189,7 @@ impl Transformer<'_> {
                 RelationshipPatternKind {
                     variable,
                     rel_type,
+                    rel_type_disjunction,
                     properties,
                     direction,
                     min_hops,

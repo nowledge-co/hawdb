@@ -4145,3 +4145,46 @@ fn parses_match_expand_comma_match_merge_relationship_with_predicate() {
     assert!(pipeline_predicate(&query, 0).is_some());
     assert_eq!(on_create.len(), 3);
 }
+
+#[test]
+fn parses_relationship_type_disjunctions() {
+    for (query, types) in [
+        ("MATCH (a)-[:A|B]->(b) RETURN b", vec!["A", "B"]),
+        ("MATCH (a)-[:A|:B|C]->(b) RETURN b", vec!["A", "B", "C"]),
+        ("MATCH (a)-[r:A|B*1..3]->(b) RETURN b", vec!["A", "B"]),
+        ("MATCH (a)-[:A|A]->(b) RETURN b", vec![]),
+        ("MATCH (a)-[:A]->(b) RETURN b", vec![]),
+    ] {
+        let debug = format!("{:?}", parse(query).unwrap());
+        if types.is_empty() {
+            // Single-type patterns keep their pre-disjunction Debug text.
+            assert!(!debug.contains("rel_type_disjunction"), "{query}: {debug}");
+        } else {
+            let expected = format!(
+                "rel_type_disjunction: [{}]",
+                types
+                    .iter()
+                    .map(|name| format!("{name:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            assert!(debug.contains(&expected), "{query}: {debug}");
+        }
+        assert!(debug.contains("rel_type: \"A\""), "{query}: {debug}");
+    }
+    for query in [
+        "MATCH (a)-[:A|]->(b) RETURN b",
+        "MATCH (a)-[:|B]->(b) RETURN b",
+        "MATCH (a)-[A|B]->(b) RETURN b",
+    ] {
+        assert!(parse(query).is_err(), "{query}");
+    }
+    // Existence predicates test one type; a disjunction must not shrink to it.
+    for query in [
+        "MATCH (a) WHERE (a)-[:A|B]->() RETURN a",
+        "MATCH (a), (b) WHERE NOT EXISTS { MATCH (a)-[:A|B]->(b) } RETURN a",
+    ] {
+        let error = parse(query).unwrap_err().to_string();
+        assert!(error.contains("disjunction"), "{query}: {error}");
+    }
+}

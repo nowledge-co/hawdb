@@ -206,6 +206,9 @@ fn bind_pipeline(
                 | ClauseKind::Delete { .. }
         )
     });
+    if has_mutation {
+        reject_mutation_rel_type_disjunction(query)?;
+    }
     if has_mutation
         && matches!(
             query.clauses.first().map(|clause| &clause.kind),
@@ -364,10 +367,12 @@ fn bind_optional_count_leg(
     let Some(variable) = &relationship.variable else {
         return None;
     };
+    // A count leg reads one type; a disjunction keeps the general MATCH.
     if relationship.search != PathSearch::All
         || relationship.min_hops != 1
         || relationship.max_hops != 1
         || !relationship.properties.is_empty()
+        || !relationship.rel_type_disjunction.is_empty()
     {
         return None;
     }
@@ -668,6 +673,7 @@ fn thread_repair_optional_expand<'a>(
         || !pattern.first.properties.is_empty()
         || relationship.variable.is_some()
         || relationship.rel_type.is_empty()
+        || !relationship.rel_type_disjunction.is_empty()
         || !relationship.properties.is_empty()
         || relationship.direction != RelationshipDirection::Outgoing
         || relationship.search != PathSearch::All
@@ -1074,10 +1080,12 @@ fn optional_degree_match<'a>(
         return None;
     };
     let relationship = &step.relationship;
+    // OptionalDegree counts one type; a disjunction keeps the general MATCH.
     if pattern.variable.is_some()
         || relationship.search != PathSearch::All
         || relationship.min_hops != 1
         || relationship.max_hops != 1
+        || !relationship.rel_type_disjunction.is_empty()
     {
         return None;
     }
@@ -1132,6 +1140,40 @@ fn is_unaliased_variable(item: &ReturnItem, variable: &str) -> bool {
             ReturnExpressionKind::Value(expression)
                 if matches!(&expression.kind, ScalarExpressionKind::Variable(name) if name == variable)
         )
+}
+
+/// Fails when `relationship` names a type disjunction `[:A|B]` in a `context`
+/// that reads or writes one type only, rather than silently using its first.
+pub(crate) fn reject_rel_type_disjunction(
+    relationship: &RelationshipPattern,
+    context: &str,
+) -> Result<()> {
+    if relationship.rel_type_disjunction.is_empty() {
+        return Ok(());
+    }
+    Err(HawDBError::Semantic(format!(
+        "relationship type disjunction :{} is not supported in {context}",
+        relationship.rel_type_disjunction.join("|")
+    )))
+}
+
+/// Mutation pipelines bind their patterns with single-type operators, and
+/// openCypher creates or merges a relationship with exactly one type, so a
+/// type disjunction anywhere in a writing query is rejected.
+fn reject_mutation_rel_type_disjunction(query: &QueryPipeline) -> Result<()> {
+    for clause in &query.clauses {
+        let patterns = match &clause.kind {
+            ClauseKind::Match { patterns, .. } | ClauseKind::Create(patterns) => {
+                patterns.as_slice()
+            }
+            ClauseKind::Merge { pattern, .. } => std::slice::from_ref(pattern),
+            _ => continue,
+        };
+        for step in patterns.iter().flat_map(|pattern| &pattern.steps) {
+            reject_rel_type_disjunction(&step.relationship, "queries that write data")?;
+        }
+    }
+    Ok(())
 }
 
 // GraphMatch's bounded traversal represents endpoints, not a relationship
@@ -1328,6 +1370,7 @@ fn bind_read_clauses(
                             source,
                             relationship: relationship.variable.clone(),
                             rel_type: relationship.rel_type.clone(),
+                            rel_types: relationship.rel_type_disjunction.clone(),
                             properties: bind_properties(&relationship.properties, parameters)?,
                             direction: relationship.direction,
                             min_hops: relationship.min_hops,

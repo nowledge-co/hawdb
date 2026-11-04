@@ -47,6 +47,7 @@ pub(super) fn bind_shortest_path_pipeline(
     let source = &pattern.first;
     let target = &step.target;
     let relationship = &step.relationship;
+    reject_rel_type_disjunction(relationship, "ALL SHORTEST path reads")?;
     if relationship.search != PathSearch::AllShortest {
         return Err(unsupported("path projection requires ALL SHORTEST"));
     }
@@ -321,6 +322,7 @@ pub(super) fn bind_shortest_path_match(
             ));
         };
         let relationship = &step.relationship;
+        reject_rel_type_disjunction(relationship, "shortestPath patterns")?;
         if relationship.variable.is_some() {
             return Err(unsupported(
                 "shortestPath does not bind relationship variables; use relationships(path)",
@@ -568,6 +570,7 @@ fn bind_ordinary_pattern(
             source,
             relationship: relationship.variable.clone(),
             rel_type: relationship.rel_type.clone(),
+            rel_types: relationship.rel_type_disjunction.clone(),
             properties: bind_properties(&relationship.properties, parameters)?,
             direction: relationship.direction,
             min_hops: relationship.min_hops,

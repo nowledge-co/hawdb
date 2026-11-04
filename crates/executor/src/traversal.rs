@@ -762,30 +762,72 @@ pub fn visit_bounded_expand_targets(
     )
 }
 
-/// Like [`visit_bounded_expand_targets`], but also excludes relationships
-/// already bound by the enclosing pattern and reports each trail's
-/// relationships so the caller can keep the whole match isomorphic. Given
-/// `target_properties`, it reads only each endpoint's identity, labels and
-/// those properties.
+/// A bounded trail search over relationships of any of `rel_type_ids`; one
+/// trail may mix them. Empty `rel_type_ids` follows no relationship, so only
+/// a zero-hop trail can match.
+#[derive(Clone, Copy)]
+pub(crate) struct BoundedTrailSpec<'a> {
+    pub source: NodeId,
+    pub rel_type_ids: &'a [RelTypeId],
+    pub direction: RelationshipDirection,
+    pub target_label_ids: Option<&'a [LabelId]>,
+    pub min_hops: usize,
+    pub max_hops: usize,
+}
+
+/// Like [`visit_bounded_expand_targets`], but over a set of relationship
+/// types, also excluding relationships already bound by the enclosing pattern
+/// and reporting each trail's relationships so the caller can keep the whole
+/// match isomorphic. Given `target_properties`, it reads only each endpoint's
+/// identity, labels and those properties.
 pub(crate) fn visit_bounded_expand_trails(
     store: &dyn GraphExecutionRead,
-    spec: BoundedExpandSpec<'_>,
+    spec: BoundedTrailSpec<'_>,
     excluded: &BTreeSet<RelId>,
     target_properties: Option<&BTreeSet<String>>,
     memory: AdjacencyReadMemory<'_>,
     task_context: Option<&RuntimeTaskContext>,
     consumer: &mut TrailConsumer<'_>,
 ) -> Result<ScanControl> {
-    let mut spec = ResolvedBoundedExpandSpec::typed(spec, Some(excluded));
-    spec.target_properties = target_properties;
-    visit_bounded_expand_inner(store, spec, memory, task_context, consumer)
+    visit_bounded_expand_inner(
+        store,
+        ResolvedBoundedExpandSpec {
+            source: spec.source,
+            rel_type_ids: TrailTypes::Set(spec.rel_type_ids),
+            direction: spec.direction,
+            target_label_ids: spec.target_label_ids,
+            min_hops: spec.min_hops,
+            max_hops: spec.max_hops,
+            excluded: Some(excluded),
+            target_properties,
+        },
+        memory,
+        task_context,
+        consumer,
+    )
+}
+
+/// The relationship types a bounded trail follows. Neither variant is a
+/// wildcard: an empty set follows nothing.
+#[derive(Clone, Copy)]
+enum TrailTypes<'a> {
+    One(RelTypeId),
+    Set(&'a [RelTypeId]),
+}
+
+impl TrailTypes<'_> {
+    fn as_slice(&self) -> &[RelTypeId] {
+        match self {
+            Self::One(id) => std::slice::from_ref(id),
+            Self::Set(ids) => ids,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 struct ResolvedBoundedExpandSpec<'a> {
     source: NodeId,
-    // None means this typed relationship does not exist, never a wildcard.
-    rel_type_id: Option<RelTypeId>,
+    rel_type_ids: TrailTypes<'a>,
     direction: RelationshipDirection,
     target_label_ids: Option<&'a [LabelId]>,
     min_hops: usize,
@@ -799,7 +841,7 @@ impl<'a> ResolvedBoundedExpandSpec<'a> {
     fn typed(spec: BoundedExpandSpec<'a>, excluded: Option<&'a BTreeSet<RelId>>) -> Self {
         Self {
             source: spec.source,
-            rel_type_id: Some(spec.rel_type_id),
+            rel_type_ids: TrailTypes::One(spec.rel_type_id),
             direction: spec.direction,
             target_label_ids: spec.target_label_ids,
             min_hops: spec.min_hops,
@@ -823,7 +865,7 @@ pub(crate) fn visit_zero_hop_expand_target(
         store,
         ResolvedBoundedExpandSpec {
             source,
-            rel_type_id: None,
+            rel_type_ids: TrailTypes::Set(&[]),
             direction: RelationshipDirection::Outgoing,
             target_label_ids,
             min_hops: 0,
@@ -931,9 +973,17 @@ fn visit_bounded_expand_inner(
             if depth == self.spec.max_hops {
                 return Ok(ScanControl::Continue);
             }
-            let Some(rel_type_id) = self.spec.rel_type_id else {
-                return Ok(ScanControl::Continue);
-            };
+            // A trail may mix the types; each hop reads every type in turn.
+            let rel_type_ids = self.spec.rel_type_ids;
+            for &rel_type_id in rel_type_ids.as_slice() {
+                if self.visit_type(current, rel_type_id)? == ScanControl::Stop {
+                    return Ok(ScanControl::Stop);
+                }
+            }
+            Ok(ScanControl::Continue)
+        }
+
+        fn visit_type(&mut self, current: NodeId, rel_type_id: RelTypeId) -> Result<ScanControl> {
             match self.spec.direction {
                 RelationshipDirection::Outgoing => {
                     self.visit_direction(current, rel_type_id, AdjacencyDirection::Outgoing, false)
