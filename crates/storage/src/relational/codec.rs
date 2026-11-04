@@ -44,6 +44,8 @@ pub(crate) mod schema_encoding;
 #[cfg(test)]
 mod decimal_tests;
 #[cfg(test)]
+mod read_ahead_tests;
+#[cfg(test)]
 mod vector_schema_tests;
 
 #[cfg(test)]
@@ -733,7 +735,7 @@ pub(crate) fn validate_relational_checkpoint_file_format(
         input.verify_remaining()?;
         return Err(error);
     }
-    let mut decoder = Decoder::new(input, limits, false);
+    let mut decoder = Decoder::new(ReadAheadFileInput::new(input), limits, false);
     let table_count = decoder.count(limits.max_tables, "checkpoint tables")?;
     for _ in 0..table_count {
         let name = decoder.string()?;
@@ -804,7 +806,7 @@ pub fn decode_relational_checkpoint_file_with_index_load(
     reader.register(RELATIONAL_CHECKPOINT_ARTIFACT_ID, path);
     decode_relational_checkpoint_from_decoder(
         epoch,
-        Decoder::new(input, limits, false),
+        Decoder::new(ReadAheadFileInput::new(input), limits, false),
         limits,
         OverflowDecodeStorage::File(Arc::new(reader)),
         index_load,
@@ -1581,6 +1583,91 @@ trait DecodeInput {
             self.read_exact(&mut buffer[..count])?;
         }
         self.finish()
+    }
+}
+
+/// Read-ahead for the ordinary (uncontrolled) checkpoint decode and format
+/// validation passes. The decoder pulls fields of a few bytes each; reading
+/// them straight from `FileDecodeInput` costs one positioned read and one
+/// checksum update per field (#1440). This reads and hashes the payload in
+/// blocks of at most `READ_AHEAD_BYTES`, the block size of the controlled
+/// `CheckpointFileInput`, and serves fields from the block. The block is
+/// a fixed allocation, not charged to a memory owner: the ordinary path has
+/// none, like the WAL reader's `BufReader`.
+struct ReadAheadFileInput {
+    inner: FileDecodeInput,
+    buffer: Vec<u8>,
+    buffer_position: usize,
+    consumed: usize,
+}
+
+impl ReadAheadFileInput {
+    const READ_AHEAD_BYTES: usize = 64 * 1024;
+
+    fn new(inner: FileDecodeInput) -> Self {
+        Self {
+            buffer: Vec::with_capacity(inner.payload_len.min(Self::READ_AHEAD_BYTES)),
+            inner,
+            buffer_position: 0,
+            consumed: 0,
+        }
+    }
+
+    fn refill(&mut self) -> Result<(), RelationalError> {
+        let length = self
+            .inner
+            .payload_len
+            .saturating_sub(self.inner.offset)
+            .min(Self::READ_AHEAD_BYTES);
+        self.buffer.resize(length, 0);
+        self.inner.read_exact(&mut self.buffer)?;
+        self.buffer_position = 0;
+        Ok(())
+    }
+}
+
+impl DecodeInput for ReadAheadFileInput {
+    fn codec_version(&self) -> Option<u16> {
+        self.inner.codec_version()
+    }
+
+    fn len(&self) -> usize {
+        self.inner.payload_len
+    }
+
+    fn position(&self) -> usize {
+        self.consumed
+    }
+
+    fn read_exact(&mut self, output: &mut [u8]) -> Result<(), RelationalError> {
+        // Check the whole request first, so truncation and overflow keep the
+        // diagnostics and logical offsets of the unbuffered input.
+        let end = self
+            .consumed
+            .checked_add(output.len())
+            .ok_or_else(|| RelationalError::Corruption("durable decoder offset overflow".into()))?;
+        if end > self.len() {
+            return Err(RelationalError::Corruption(
+                "truncated relational durable payload".into(),
+            ));
+        }
+        let mut written = 0;
+        while written < output.len() {
+            if self.buffer_position == self.buffer.len() {
+                self.refill()?;
+            }
+            let length = (output.len() - written).min(self.buffer.len() - self.buffer_position);
+            output[written..written + length]
+                .copy_from_slice(&self.buffer[self.buffer_position..self.buffer_position + length]);
+            self.buffer_position += length;
+            written += length;
+        }
+        self.consumed = end;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), RelationalError> {
+        self.inner.finish()
     }
 }
 
