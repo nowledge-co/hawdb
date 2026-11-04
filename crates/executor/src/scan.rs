@@ -26,7 +26,7 @@ mod binding_tests;
 
 use crate::binding::{
     binding_memory_bytes, binding_memory_bytes_with_parts, binding_payload_bytes_with_parts,
-    projected_node_binding_memory_bytes, Binding,
+    node_memory_bytes, projected_node_binding_memory_bytes, Binding,
 };
 use crate::expression::{
     evaluate_predicate_with_context, evaluate_projection_borrowed, prepare_borrowed_projection,
@@ -1346,6 +1346,23 @@ pub(crate) fn execute_node_column_lookup_owned(
     let mut allocate_keys =
         |bytes| crate::store::admit_graph_read(&key_account, context.task_context, bytes);
     let admission = hawdb_storage::read_view::GraphReadAdmission::new(&mut allocate_keys);
+    // A row limit keeps the per-row path, which stops reading at the limit;
+    // the batched access reads every match of the batch first (#1545).
+    if let Some(label_id) = exact_label
+        && context.execution_limit.output_rows.is_none()
+    {
+        return execute_batched_node_column_lookup(
+            spec,
+            input,
+            context,
+            observer,
+            BatchedLookup {
+                label_id,
+                label_ids: label_ids.as_deref(),
+                admission: &admission,
+            },
+        );
+    }
     let lookup_value_count = {
         let mut values = hawdb_storage::read_view::AdmittedKeySet::new(&admission)?;
         for binding in &input {
@@ -1475,6 +1492,194 @@ pub(crate) fn execute_node_column_lookup_owned(
             observer,
         );
     }
+    Ok(OwnedLookupBindings {
+        bindings: output,
+        allocations,
+    })
+}
+
+struct BatchedLookup<'a, 'b> {
+    label_id: LabelId,
+    label_ids: Option<&'a [LabelId]>,
+    admission: &'a hawdb_storage::read_view::GraphReadAdmission<'b>,
+}
+
+/// A matched record and its scan admission, kept until the join completes.
+struct LookupMatch {
+    node: NodeRecord,
+    _allocation: Box<dyn hawdb_storage::read_view::GraphReadAllocation>,
+    sequence: usize,
+}
+
+/// One label access for every distinct lookup value of an input batch, then an
+/// in-memory join.
+///
+/// The per-row path issues one `PropertyValues` access for each input row,
+/// which is a label scan per row when the property has no index (#1544). Here
+/// each input batch costs one access. The matched records stay admitted by the
+/// scan until the join completes, and every output row is admitted separately,
+/// as on the per-row path, so a batch holds its matches as well as its output.
+/// Output keeps input order, and the scan order of the matches for each value.
+fn execute_batched_node_column_lookup(
+    spec: NodeColumnLookupSpec<'_>,
+    input: Vec<Binding>,
+    context: NodeScanContext<'_>,
+    observer: &dyn ExecutionObserver,
+    lookup: BatchedLookup<'_, '_>,
+) -> Result<OwnedLookupBindings> {
+    let mut values = hawdb_storage::read_view::AdmittedKeySet::new(lookup.admission)?;
+    for binding in &input {
+        let value = binding
+            .values
+            .get(spec.column)
+            .expect("lookup column was validated");
+        if value != &Value::Null {
+            values.try_insert(value)?;
+        }
+    }
+    let mut matches = hawdb_storage::read_view::AdmittedVec::new(lookup.admission)?;
+    if !values.is_empty() {
+        let _access_copy = owned::admit_access_copy(
+            context.memory_account,
+            context.task_context,
+            std::iter::once(spec.property),
+            values.iter().copied(),
+        )?;
+        let access = NodeProjectionAccess::PropertyValues {
+            property: spec.property.to_owned(),
+            values: values.iter().map(|value| (*value).clone()).collect(),
+        };
+        let mut admit = |bytes: usize| {
+            crate::store::admit_graph_read(context.memory_account, context.task_context, bytes)
+                .map(Some)
+        };
+        let mut visit = |record: hawdb_storage::read_view::AdmittedNodeRecord| {
+            runtime_checkpoint(context.task_context)?;
+            let (node, allocation) = record.into_parts();
+            let matched = node_matches_label_pattern(&node, lookup.label_ids)
+                && node
+                    .properties
+                    .get(spec.property)
+                    .is_some_and(|value| values.contains(value));
+            if matched {
+                let sequence = matches.as_slice().len();
+                matches.try_push(LookupMatch {
+                    node,
+                    _allocation: allocation,
+                    sequence,
+                })?;
+            }
+            Ok(ScanControl::Continue)
+        };
+        context.store.visit_nodes_by_access_with_allocation(
+            lookup.label_id,
+            &access,
+            &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                &mut admit,
+                context.task_context,
+            ),
+            &mut visit,
+        )?;
+    }
+    let lookup_value_count = values.len();
+    drop(values);
+    let key = spec.property;
+    fn property<'m>(record: &'m LookupMatch, key: &str) -> &'m Value {
+        record
+            .node
+            .properties
+            .get(key)
+            .expect("matched records carry the lookup property")
+    }
+    matches.as_mut_slice().sort_unstable_by(|left, right| {
+        property(left, key)
+            .cmp(property(right, key))
+            .then(left.sequence.cmp(&right.sequence))
+    });
+    let matched = matches.as_slice();
+    let mut unique_ids = hawdb_storage::read_view::AdmittedKeySet::new(lookup.admission)?;
+    for record in matched {
+        unique_ids.try_insert(record.node.id)?;
+    }
+    let mut output = Vec::new();
+    let mut allocations = owned::allocation_vector(context)?;
+    let mut tracker = OperatorMemoryTracker::new(context.memory_account.budget_bytes());
+    'rows: for binding in input {
+        runtime_checkpoint(context.task_context)?;
+        let expected = binding
+            .values
+            .get(spec.column)
+            .expect("lookup column was validated");
+        let mut found = false;
+        if expected != &Value::Null {
+            let start = matched.partition_point(|record| property(record, key) < expected);
+            for record in matched[start..]
+                .iter()
+                .take_while(|record| property(record, key) == expected)
+            {
+                let node = &record.node;
+                let mut next = binding.clone();
+                next.nodes.insert(spec.variable.to_owned(), node.clone());
+                if let Some(predicate) = spec.node_visibility_predicate
+                    && !evaluate_predicate_with_context(
+                        predicate,
+                        context.catalog,
+                        context.store,
+                        &next,
+                        observer,
+                        AdjacencyReadMemory {
+                            budget_bytes: context.memory_account.budget_bytes().get(),
+                            account: Some(context.memory_account),
+                        },
+                        context.task_context,
+                    )?
+                {
+                    continue;
+                }
+                let allocation = crate::store::admit_graph_read(
+                    context.memory_account,
+                    context.task_context,
+                    node_memory_bytes(node)
+                        .saturating_add(binding_memory_bytes(&binding))
+                        .saturating_add(1024 + spec.variable.len()),
+                )?;
+                allocations.try_push(allocation)?;
+                push_bounded_operator_binding(
+                    "NodeColumnLookupExec",
+                    &mut output,
+                    next,
+                    &mut tracker,
+                )?;
+                found = true;
+                if context.execution_limit.is_reached(output.len()) {
+                    break 'rows;
+                }
+            }
+        }
+        if spec.optional && !found {
+            let allocation = crate::store::admit_graph_read(
+                context.memory_account,
+                context.task_context,
+                binding_memory_bytes(&binding).saturating_add(1024 + spec.variable.len()),
+            )?;
+            let mut next = binding;
+            set_null_node_binding(&mut next, spec.variable);
+            allocations.try_push(allocation)?;
+            push_bounded_operator_binding("NodeColumnLookupExec", &mut output, next, &mut tracker)?;
+            if context.execution_limit.is_reached(output.len()) {
+                break;
+            }
+        }
+    }
+    record_node_column_lookup_report(
+        lookup.label_id,
+        spec.property,
+        lookup_value_count,
+        unique_ids.len(),
+        output.len(),
+        context.store,
+        observer,
+    );
     Ok(OwnedLookupBindings {
         bindings: output,
         allocations,

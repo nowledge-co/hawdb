@@ -129,12 +129,14 @@ fn stream_node_column_lookup_batches(
             if remaining == 0 {
                 return Ok(BatchControl::Stop);
             }
+            // An unlimited parent stays unlimited, so the lookup may batch
+            // its access; a limit keeps the per-row early stop.
             let bindings = execute_node_column_lookup(
                 spec,
                 batch,
                 context,
                 ExecutionLimit {
-                    output_rows: Some(remaining),
+                    output_rows: execution_limit.output_rows.map(|_| remaining),
                 },
             )?;
             let (permits, _permit_storage) = bindings.allocations.into_parts();

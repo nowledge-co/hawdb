@@ -586,6 +586,90 @@ fn normalizes_column_constrained_node_matches_to_node_column_lookups() {
 }
 
 #[test]
+fn conjunctive_column_constraints_lookup_one_key_with_a_node_predicate() {
+    // The key need not be the first conjunct, and nested conjunctions flatten.
+    for query in [
+        "MATCH (a:Source) WITH a.id AS source_id, a.space AS space \
+         MATCH (b:Memory) WHERE b.source_id = source_id AND b.space <> space AND b.kind =~ 'x.*' \
+         RETURN b.id",
+        "MATCH (a:Source) WITH a.id AS source_id \
+         MATCH (b:Memory) WHERE b.kind =~ 'x.*' AND (b.source_id = source_id AND b.live IS NOT NULL) \
+         RETURN b.id",
+    ] {
+        let plan = plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap();
+        let LogicalPlan::Project { input, .. } = plan else {
+            panic!("expected projection: {query}")
+        };
+        assert!(
+            matches!(
+                &*input,
+                LogicalPlan::NodeColumnLookup {
+                    property,
+                    column,
+                    optional: false,
+                    node_visibility_predicate: Some(_),
+                    ..
+                } if property == "source_id" && column == "source_id"
+            ),
+            "{query}: {input:?}"
+        );
+    }
+    // A filter above an optional lookup would drop its NULL row.
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (a:Source) WITH a.id AS source_id \
+         OPTIONAL MATCH (b:Memory) WHERE b.source_id = source_id AND b.live = true RETURN b.id",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(
+        !format!("{plan:?}").contains("NodeColumnLookup {"),
+        "{plan:?}"
+    );
+    // Another equality on the node may be the indexed one the scan would seek.
+    for other in [
+        "b.live = true",
+        "b.space = source_id",
+        "source_id = b.space",
+        "b.live IN [true]",
+    ] {
+        let plan = plan_normalized_pipeline_query(
+            &format!(
+                "MATCH (a:Source) WITH a.id AS source_id \
+                 MATCH (b:Memory) WHERE b.source_id = source_id AND {other} RETURN b.id"
+            ),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(
+            !format!("{plan:?}").contains("NodeColumnLookup {"),
+            "{other}: {plan:?}"
+        );
+    }
+    // A residual that can fail keeps the scan, which evaluates it on every node.
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (a:Source) WITH a.id AS source_id \
+         MATCH (b:Memory) WHERE b.source_id = source_id AND head(b.tags) = 1 RETURN b.id",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(
+        !format!("{plan:?}").contains("NodeColumnLookup {"),
+        "{plan:?}"
+    );
+    // Without a `property = column` conjunct there is nothing to look up.
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (a:Source) WITH a.id AS source_id \
+         MATCH (b:Memory) WHERE source_id = b.source_id AND b.live = true RETURN b.id",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(
+        !format!("{plan:?}").contains("NodeColumnLookup {"),
+        "{plan:?}"
+    );
+}
+
+#[test]
 fn normalizes_predicate_free_optional_matches_to_optional_expands() {
     let plan = plan_normalized_pipeline_query(
         "MATCH (m:Memory) OPTIONAL MATCH (m)-[:HAS_LABEL]->(l:Label) \
