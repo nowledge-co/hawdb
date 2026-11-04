@@ -14,7 +14,7 @@
 
 use std::thread;
 
-pub const PARSER_FUZZ_PROTOCOL: &str = "shiro-parser-v2";
+pub const PARSER_FUZZ_PROTOCOL: &str = "shiro-parser-v4";
 const MAX_INPUT_BYTES: usize = 16 * 1024;
 const PARSER_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
 
@@ -61,6 +61,8 @@ const STATIC_SEEDS: &[(&str, &[u8])] = &[
     ("cypher_cap_set", b"MATCH (a:Memory {id: $left}), (b:Memory {id: $right}) SET a.latest = true, b.latest = true"),
     ("cypher_cap_temporal", b"UNWIND [1] AS one RETURN date('2026-10-30') + duration('P1D') AS tomorrow, datetime('2026-10-30T12:00+02:00') AS at"),
     ("cypher_cap_optional", b"MATCH (a:Memory) OPTIONAL MATCH (a)-[:MENTIONS]->(e:Entity) WITH a, e RETURN a.id, e.name"),
+    ("cypher_cap_scalar_regex", b"MATCH (m:Memory) WHERE regexp_replace(m.content, 'x', 'a') =~ $pattern RETURN m.id"),
+    ("cypher_cap_scalar_regex_keyword_identifier", b"UNWIND [1] AS row WITH row WHERE $value.order =~ $pattern RETURN row"),
     ("sql_cap_decimal", b"CREATE TABLE prices (id BIGINT PRIMARY KEY, amount DECIMAL(38,2) DEFAULT 1.235)"),
     ("sql_cap_decimal_cast", b"SELECT CAST(($1 + 0.2) * 10 / 3 AS DECIMAL(20,4)) AS amount"),
     ("sql_cap_keyless", b"CREATE TABLE events (bucket BIGINT, score BIGINT DEFAULT 7, note TEXT)"),
@@ -312,6 +314,24 @@ mod tests {
             .any(|case| case.seed_name == Some("postgres_deep_nesting")));
         for case in &cases {
             run_parser_fuzz_case(case).expect("seeded parser case must not panic");
+        }
+    }
+
+    #[test]
+    fn scalar_regex_seeds_are_positive_and_replayable() {
+        for name in [
+            "cypher_cap_scalar_regex",
+            "cypher_cap_scalar_regex_keyword_identifier",
+        ] {
+            let index = STATIC_SEEDS
+                .iter()
+                .position(|(seed_name, _)| *seed_name == name)
+                .unwrap();
+            let left = generate_parser_fuzz_case(7, index);
+            let right = generate_parser_fuzz_case(7, index);
+            assert_eq!(left, right);
+            assert_eq!(left.seed_name, Some(name));
+            assert!(run_parser_fuzz_case(&left).unwrap().cypher_accepted);
         }
     }
 

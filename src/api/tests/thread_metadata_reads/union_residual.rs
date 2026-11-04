@@ -193,6 +193,21 @@ fn residual_union_preserves_errors_before_and_after_unknown_or() {
             .unwrap_err()
             .to_string()
             .contains("trim() requires string arguments"));
+        let union = "(t.thread_id = $thread_id OR t.id = $thread_id)";
+        let regex = "COALESCE(t.space_id, 0) =~ '^ok$'";
+        for predicate in [
+            format!("{regex} AND {union}"),
+            format!("{union} AND {regex}"),
+        ] {
+            let query = format!("MATCH (t:Thread) WHERE {predicate} RETURN t.id");
+            let plan = db.explain_query_with_params(&query, &parameters).unwrap();
+            assert!(!plan.physical_plan.explain(0).contains("IndexNodeUnionSeek"));
+            assert!(db
+                .query_with_params(&query, &parameters)
+                .unwrap_err()
+                .to_string()
+                .contains("regex match predicate requires a string left operand"));
+        }
     }
 }
 

@@ -124,14 +124,14 @@ mod capability_parity_tests {
     }
 }
 
-pub const CAMPAIGN_PROTOCOL: &str = "shiro-multi-oracle-fuzz-v5";
+pub const CAMPAIGN_PROTOCOL: &str = "shiro-multi-oracle-fuzz-v6";
 pub const GRAPH_PREDICATE_REWRITE_PROTOCOL: &str = "hawdb-graph-predicate-rewrite-fuzz-v1";
 pub const GRAPH_TLP_AGGREGATE_PROTOCOL: &str = "hawdb-graph-tlp-aggregate-fuzz-v1";
 pub const GRAPH_TLP_PROTOCOL: &str = "hawdb-graph-tlp-fuzz-v1";
 pub const METAMORPHIC_PROTOCOL: &str = "hawdb-graph-metamorphic-fuzz-v1";
-pub const PLAN_DIFFERENTIAL_PROTOCOL: &str = "hawdb-plan-differential-fuzz-v1";
+pub const PLAN_DIFFERENTIAL_PROTOCOL: &str = "hawdb-plan-differential-fuzz-v2";
 pub const REPLAY_BUNDLE_PROTOCOL: &str = "shiro-multi-oracle-replay-v2";
-pub(crate) const QUERY_SHAPE_COUNT: usize = 12;
+pub(crate) const QUERY_SHAPE_COUNT: usize = 13;
 const DEFAULT_CASE_COUNT: usize = 128;
 const MAX_CASE_COUNT: usize = 10_000;
 const MAX_REDUCTION_ATTEMPTS: usize = 64;
@@ -245,6 +245,7 @@ impl CapabilityProfile {
                 "aggregate",
                 "top_n",
                 "missing_or_null",
+                "scalar_regex_filter",
             ],
             compares_duplicates: true,
             compares_missing_and_null: true,
@@ -2638,6 +2639,32 @@ mod tests {
         assert_eq!(
             json["oracle_protocols"]["sql_join_rewrite"],
             SQL_JOIN_REWRITE_PROTOCOL
+        );
+    }
+
+    #[test]
+    fn scalar_regex_plan_differential_fuzzes_literal_and_parameter_patterns() {
+        let mut generator = StateAwareCaseGenerator::new(7);
+        let mut literal = false;
+        let mut parameter = false;
+        for index in 0..QUERY_SHAPE_COUNT * 32 {
+            let case = generator.case(index);
+            if case.shape != "scalar_regex_filter" {
+                continue;
+            }
+            literal |= case.query.cypher.contains(" =~ '");
+            parameter |= case.query.cypher.contains(" =~ $pattern");
+            hawdb::cypher::parse(&case.query.cypher).unwrap();
+            assert!(
+                PlanDifferentialOracle.evaluate(&case).is_equivalent(),
+                "{}",
+                case.query.cypher
+            );
+        }
+        assert!(literal, "scalar regex literal pattern was not generated");
+        assert!(
+            parameter,
+            "scalar regex parameter pattern was not generated"
         );
     }
 

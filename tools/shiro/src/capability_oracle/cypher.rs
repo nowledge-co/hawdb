@@ -87,6 +87,71 @@ pub(super) fn pipeline(case: &Case, run: &mut Run) -> Result<()> {
         .map(|(source, count)| row(&[("source", text(source)), ("count", Value::Int(count))]))
         .collect::<Vec<_>>();
     run.equal("normalized_group", &actual, &expected, true)?;
+
+    const SCALAR_REGEX: &str = "MATCH (e:Entity) WHERE LOWER(COALESCE(e.name, '')) =~ $pattern RETURN e.id AS id ORDER BY id";
+    let (pattern, select_negative, select_nonnegative) = match case.variant % 3 {
+        0 => ("^alpha$", true, false),
+        1 => ("^other$", false, true),
+        _ => ("^(alpha|other)$", true, true),
+    };
+    let mut expected = case
+        .values
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| {
+            (value.is_negative() && select_negative) || (!value.is_negative() && select_nonnegative)
+        })
+        .map(|(index, _)| row(&[("id", text(format!("item-{index}")))]))
+        .collect::<Vec<_>>();
+    expected.sort_by(|left, right| left["id"].cmp(&right["id"]));
+    let actual = run.cypher(
+        &mut db,
+        "scalar_regex_parameter",
+        SCALAR_REGEX,
+        &[("pattern", text(pattern))],
+    )?;
+    run.equal("scalar_regex_parameter", &actual, &expected, true)?;
+
+    let mut expected_literal = case
+        .values
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| value.is_negative())
+        .map(|(index, _)| row(&[("id", text(format!("item-{index}")))]))
+        .collect::<Vec<_>>();
+    expected_literal.sort_by(|left, right| left["id"].cmp(&right["id"]));
+    let actual = run.cypher(
+        &mut db,
+        "scalar_regex_literal",
+        "MATCH (e:Entity) WHERE LOWER(COALESCE(e.name, '')) =~ '^alpha$' RETURN e.id AS id ORDER BY id",
+        &[],
+    )?;
+    run.equal("scalar_regex_literal", &actual, &expected_literal, true)?;
+    run.cypher_refusal(
+        &mut db,
+        "scalar_regex_invalid_pattern",
+        SCALAR_REGEX,
+        &[("pattern", text("["))],
+        "semantic",
+        "invalid regex pattern",
+    )?;
+    run.cypher_refusal(
+        &mut db,
+        "scalar_regex_non_string_pattern",
+        SCALAR_REGEX,
+        &[("pattern", Value::Int(7))],
+        "semantic",
+        "requires a string pattern",
+    )?;
+    run.cypher_refusal(
+        &mut db,
+        "scalar_regex_non_string_left",
+        "UNWIND [1] AS value WITH value WHERE COALESCE(value, 0) =~ '^1$' RETURN value",
+        &[],
+        "execution",
+        "requires a string left operand",
+    )?;
+
     let values = case
         .values
         .iter()

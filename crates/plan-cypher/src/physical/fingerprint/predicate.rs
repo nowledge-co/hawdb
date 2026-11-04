@@ -209,6 +209,16 @@ pub(super) fn write_predicate(output: &mut String, predicate: &Predicate) {
             write_projection_expression(output, value);
             output.push(')');
         }
+        Predicate::ExpressionRegexMatch {
+            expression,
+            pattern,
+        } => {
+            output.push_str("ExpressionRegexMatch(");
+            write_projection_expression(output, expression);
+            output.push_str(" =~ ");
+            write_identifier(output, pattern.as_str());
+            output.push(')');
+        }
         Predicate::ExpressionIn { expression, values } => {
             output.push_str("ExpressionIn(");
             write_projection_expression(output, expression);

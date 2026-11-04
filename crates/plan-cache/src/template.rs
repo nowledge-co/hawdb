@@ -581,6 +581,9 @@ fn folded_predicate_parameters(statement: &cypher::Statement) -> BTreeSet<String
                 exact.insert(left.clone());
                 collect_value(right, exact);
             }
+            P::ExpressionRegexMatch { pattern, .. } | P::RegexMatch { pattern, .. } => {
+                collect_value(pattern, exact);
+            }
             P::RelationshipExists { .. }
             | P::BoundRelationshipExists { .. }
             | P::IdEq { .. }
@@ -600,7 +603,6 @@ fn folded_predicate_parameters(statement: &cypher::Statement) -> BTreeSet<String
             | P::Contains { .. }
             | P::StartsWith { .. }
             | P::EndsWith { .. }
-            | P::RegexMatch { .. }
             // Nullness is already fixed by the complete parameter shape.
             | P::ParameterIsNull { .. }
             | P::ParameterIsNotNull { .. }
@@ -1021,6 +1023,9 @@ fn marker_use_in_predicate(predicate: &Predicate, name: &str) -> MarkerUse {
         | Predicate::ExpressionContains { expression, value } => {
             marker_use_in_projection_expression(expression, name, false)
                 .combine(marker_use_in_projection_expression(value, name, false))
+        }
+        Predicate::ExpressionRegexMatch { expression, .. } => {
+            marker_use_in_projection_expression(expression, name, false)
         }
         Predicate::ExpressionIn { expression, values } => {
             marker_use_in_projection_expression(expression, name, false)
@@ -1638,6 +1643,21 @@ fn bind_predicate(predicate: &mut Predicate, parameters: BindingAction<'_>) -> R
                 found.set(true);
             }
         },
+        Predicate::ExpressionRegexMatch {
+            expression,
+            pattern,
+        } => {
+            bind_projection_expression(expression, parameters)?;
+            match parameters {
+                BindingAction::Execute(_) | BindingAction::PrepareRegex => {
+                    pattern.prepare_for_execution()?
+                }
+                BindingAction::RetainRegex(found) => {
+                    pattern.retain_source_only();
+                    found.set(true);
+                }
+            }
+        }
         Predicate::IdEq { value, .. }
         | Predicate::IdNotEq { value, .. }
         | Predicate::IdCompare { value, .. }

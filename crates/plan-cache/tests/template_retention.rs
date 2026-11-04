@@ -158,7 +158,7 @@ fn charges_cover_actual_template_and_churn_allocations() {
         assert!(warmup.is_match("warmup"));
         drop(warmup);
         let statement = hawdb_cypher::parse(
-            "MATCH (n:Memory) WHERE NOT (n.id =~ '(memory|thread)-[0-9]+') RETURN n.id AS id",
+            "MATCH (n:Memory) WHERE n.id =~ '(memory|thread)-[0-9]+' AND LOWER(COALESCE(n.id, '')) =~ '^(memory|thread)-[0-9]+$' RETURN n.id AS id",
         )
         .unwrap();
         let window = Window::new();

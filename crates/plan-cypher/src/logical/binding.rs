@@ -989,6 +989,18 @@ pub(super) fn plan_predicate(
                 value: plan_scalar_expression(scope, value, parameters)?,
             })
         }
+        PropertyPredicate::ExpressionRegexMatch {
+            expression,
+            pattern,
+        } => match bind_value(pattern, parameters)? {
+            Value::String(pattern) => Ok(Predicate::ExpressionRegexMatch {
+                expression: plan_scalar_expression(scope, expression, parameters)?,
+                pattern: ValidatedRegex::new(pattern)?,
+            }),
+            value => Err(HawDBError::Semantic(format!(
+                "regex match predicate requires a string pattern, got {value:?}"
+            ))),
+        },
         PropertyPredicate::ExpressionIn { expression, values } => {
             match bind_value(values, parameters)? {
                 Value::List(values) => Ok(Predicate::ExpressionIn {
@@ -1362,7 +1374,8 @@ pub(super) fn collect_predicate_variables(
         PropertyPredicate::ExpressionEq { expression, .. }
         | PropertyPredicate::ExpressionNotEq { expression, .. }
         | PropertyPredicate::ExpressionCompare { expression, .. }
-        | PropertyPredicate::ExpressionContains { expression, .. } => {
+        | PropertyPredicate::ExpressionContains { expression, .. }
+        | PropertyPredicate::ExpressionRegexMatch { expression, .. } => {
             collect_scalar_expression_variables(expression, variables);
             let value = match predicate {
                 PropertyPredicate::ExpressionEq { value, .. }
@@ -1412,6 +1425,7 @@ pub(super) fn predicate_variable(predicate: &PropertyPredicate) -> Option<&str> 
         | PropertyPredicate::ExpressionNotEq { .. }
         | PropertyPredicate::ExpressionCompare { .. }
         | PropertyPredicate::ExpressionContains { .. }
+        | PropertyPredicate::ExpressionRegexMatch { .. }
         | PropertyPredicate::ExpressionIn { .. }
         | PropertyPredicate::ParameterIsNull { .. }
         | PropertyPredicate::ParameterIsNotNull { .. }

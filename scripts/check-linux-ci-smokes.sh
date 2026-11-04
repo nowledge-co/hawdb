@@ -71,7 +71,7 @@ run_fuzz_smokes() {
     2> "$root/storage.stderr"
   "$optimizer_fuzz" \
     --seed 7 \
-    --cases 12 \
+    --cases 13 \
     --log-directory "$root" \
     > "$root/optimizer.stdout" \
     2> "$root/optimizer.stderr"
@@ -87,7 +87,7 @@ run_fuzz_smokes() {
   python3 - \
     "$root/shiro-append-seed-7-cases-8-steps-64-cur.json" \
     "$root/shiro-storage-seed-7-cases-32-cur.json" \
-    "$root/shiro-query-seed-7-cases-12-cur.json" <<'PY'
+    "$root/shiro-query-seed-7-cases-13-cur.json" <<'PY'
 import json
 import sys
 
@@ -108,9 +108,9 @@ assert storage["seed"] == 7
 assert storage["requested_case_count"] == 32
 assert storage["failed_case_count"] == 0
 assert storage["success"] is True
-assert optimizer["protocol"] == "shiro-multi-oracle-fuzz-v5"
+assert optimizer["protocol"] == "shiro-multi-oracle-fuzz-v6"
 assert optimizer["seed"] == 7
-assert optimizer["requested_case_count"] == 12
+assert optimizer["requested_case_count"] == 13
 assert optimizer["failed_case_count"] == 0
 assert optimizer["success"] is True
 capabilities = optimizer["capability_coverage"]
@@ -121,16 +121,16 @@ assert set(capabilities["families"]) == {
     "decimal_arithmetic", "cypher_pipeline", "cypher_binding_set",
     "temporal_case", "keyless_bag",
 }
-assert sum(family["executed"] for family in capabilities["families"].values()) == 12
+assert sum(family["executed"] for family in capabilities["families"].values()) == 13
 for family in capabilities["families"].values():
     assert family["executed"] == family["verified"] > 0
 maintenance = optimizer["sql_maintenance_coverage"]
-assert maintenance["attempted"] == 12
-assert maintenance["passed"] == 12
+assert maintenance["attempted"] == 13
+assert maintenance["passed"] == 13
 assert maintenance["failed"] == 0
 assert maintenance["index_range_plans"] > 0
-assert maintenance["operations"]["overflow_rejection"] == 12
-assert maintenance["storage_profiles"] == {"memory": 4, "disk_shadow": 4, "disk_demand_paged": 4}
+assert maintenance["operations"]["overflow_rejection"] == 13
+assert maintenance["storage_profiles"] == {"memory": 5, "disk_shadow": 4, "disk_demand_paged": 4}
 assert maintenance["recovery"]["initial_wal_replays"] == 8
 assert maintenance["recovery"]["checkpoint_reopens"] == 24
 assert maintenance["recovery"]["checkpoint_wal_replays"] >= 8

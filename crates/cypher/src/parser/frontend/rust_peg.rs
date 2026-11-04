@@ -1512,6 +1512,76 @@ impl Builder<'_> {
             .windows(2)
             .all(|x| x[0].span().end == x[1].span().start)
     }
+    // Gate the generic scalar parser without changing diagnostics or charging
+    // its resource budget for ordinary non-regex predicates.
+    fn has_scalar_regex_tail(&self, position: usize) -> bool {
+        let mut parens = 0usize;
+        let mut brackets = 0usize;
+        let mut braces = 0usize;
+        let mut index = position;
+        while let Some(token) = self.tokens.get(index) {
+            let nested = parens != 0 || brackets != 0 || braces != 0;
+            if !nested {
+                // A keyword-shaped parameter name or property key remains an
+                // identifier; only standalone words can end this predicate.
+                let scalar_identifier = index > position
+                    && matches!(
+                        self.tokens[index - 1].kind,
+                        TokenKind::Parameter | TokenKind::Dot
+                    )
+                    && self.adjacent(index - 1, index + 1);
+                match token.kind {
+                    TokenKind::Equal => {
+                        return self
+                            .tokens
+                            .get(index + 1)
+                            .is_some_and(|next| next.kind == TokenKind::Tilde)
+                            && self.adjacent(index, index + 2);
+                    }
+                    TokenKind::Less | TokenKind::Greater | TokenKind::NotEqual => return false,
+                    TokenKind::Word
+                        if !scalar_identifier
+                            && [
+                                "AND", "OR", "XOR", "IS", "IN", "CONTAINS", "STARTS", "ENDS",
+                                "RETURN", "WITH", "ORDER", "LIMIT", "SKIP", "OFFSET",
+                            ]
+                            .iter()
+                            .any(|keyword| token.is_keyword(self.input, keyword)) =>
+                    {
+                        return false;
+                    }
+                    TokenKind::Semicolon | TokenKind::End => return false,
+                    _ => {}
+                }
+            }
+            match token.kind {
+                TokenKind::LeftParen => parens += 1,
+                TokenKind::RightParen => {
+                    let Some(next) = parens.checked_sub(1) else {
+                        return false;
+                    };
+                    parens = next;
+                }
+                TokenKind::LeftBracket => brackets += 1,
+                TokenKind::RightBracket => {
+                    let Some(next) = brackets.checked_sub(1) else {
+                        return false;
+                    };
+                    brackets = next;
+                }
+                TokenKind::LeftBrace => braces += 1,
+                TokenKind::RightBrace => {
+                    let Some(next) = braces.checked_sub(1) else {
+                        return false;
+                    };
+                    braces = next;
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        false
+    }
     fn node(
         &mut self,
         rule: u16,
@@ -1572,6 +1642,7 @@ peg::parser! {
  rule capture_mark() -> (usize,usize,usize) = {(cx.nodes.len(),cx.edges.len(),cx.projections.len())}
  rule rewind_capture(mark:(usize,usize,usize),projection:bool) = {cx.rewind(mark,projection);}
  rule diagnostic() -> Option<Diagnostic> = { cx.farthest }
+ rule scalar_regex_tail_ahead() = position:position!() {? if cx.has_scalar_regex_tail(position) { Ok(()) } else { Err("a scalar regex predicate") } }
  rule peek_mark() -> Option<Diagnostic> = {cx.peek_depth+=1;cx.farthest}
  rule eager_projection() = {? if cx.peek_depth==0 && cx.eager_projection {Ok(())} else {Err("deferred projection fold")} }
  rule restore(saved:Option<Diagnostic>) = {cx.peek_depth=cx.peek_depth.checked_sub(1).expect("balanced lookahead");cx.farthest=saved; }
@@ -1687,9 +1758,93 @@ peg::parser! {
 
  rule w_scalar(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:((c0:((a:((((saved:peek_mark() ((&(((([token if matches!(token.kind, TokenKind::String | TokenKind::UnterminatedString)] { () } / fail("a Cypher value token"))) { () } / (([token if token.kind == TokenKind::Number] { () } / fail("integer digits"))) { () } / (([token if token.kind == TokenKind::Minus] { () } / fail("'-'"))) { () } / (([token if { token.kind == TokenKind::Word && { let word = token.text(cx.input); match word.len() { 4 => word.eq_ignore_ascii_case("TRUE") || word.eq_ignore_ascii_case("NULL"), 5 => word.eq_ignore_ascii_case("FALSE"), _ => false } } }] { () } / fail("TRUE"))) { () }))) restore(saved) { () } / restore(saved) fail("a literal operand")))) c1:(x_case_scalar(depth.descend(0,0))) { (c1,) })) { Either::Left(a) } / b:((((saved:peek_mark() ((&((a:(([token if token.is_keyword(cx.input, "CASE")] { () } / fail("CASE"))) { Either::Left(a) } / b:((a:((c0:(x_temporal_name(depth.descend(0,0))) (([token if token.kind == TokenKind::LeftParen] { () } / fail("'('"))) { (c0,) })) { Either::Left(a) } / b:((a:(((([token if { token.kind == TokenKind::Word && { let word = token.text(cx.input); match word.len() { 7 => word.eq_ignore_ascii_case("toFloat"), 8 => word.eq_ignore_ascii_case("toString"), 9 => word.eq_ignore_ascii_case("toInteger") || word.eq_ignore_ascii_case("toBoolean"), _ => false } } }] { () } / fail("toInteger"))) (([token if token.kind == TokenKind::LeftParen] { () } / fail("'('"))) { () })) { Either::Left(a) } / b:((a:((c0:(w_reference(depth.descend(0,0))) c1:((a:(([token if token.kind == TokenKind::Dot] { () } / fail("'.'"))) { Either::Left(a) } / b:((a:(([token if token.kind == TokenKind::LeftParen] { () } / fail("'('"))) { Either::Left(a) } / b:((a:(([token if token.kind == TokenKind::LeftBracket] { () } / fail("'['"))) { Either::Left(a) } / b:((a:(r_sum_op(depth.descend(0,0))) { Either::Left(a) } / b:(r_product_op(depth.descend(0,0))) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) { (c0,c1) })) { Either::Left(a) } / b:((a:((begin:position!() children:(((([token if { token.kind == TokenKind::Word && { let word = token.text(cx.input); match word.len() { 4 => word.eq_ignore_ascii_case("LEFT") || word.eq_ignore_ascii_case("SIZE") || word.eq_ignore_ascii_case("HEAD") || word.eq_ignore_ascii_case("LAST") || word.eq_ignore_ascii_case("TAIL"), 5 => word.eq_ignore_ascii_case("LOWER") || word.eq_ignore_ascii_case("NODES") || word.eq_ignore_ascii_case("RANGE"), 6 => word.eq_ignore_ascii_case("LENGTH"), 7 => word.eq_ignore_ascii_case("REVERSE"), 8 => word.eq_ignore_ascii_case("COALESCE"), 10 => word.eq_ignore_ascii_case("JSON_VALUE"), 13 => word.eq_ignore_ascii_case("RELATIONSHIPS"), _ => false } } }] { () } / fail("COALESCE"))) (([token if token.kind == TokenKind::LeftParen] { () } / fail("'('"))) { () })) end:position!() {? if cx.adjacent(begin,end) { Ok(children) } else { cx.failure(cx.adjacency_failure(begin,end),"adjacent tokens") } })) { Either::Left(a) } / b:((a:((c0:(w_reference(depth.descend(0,0))) (([token if token.kind == TokenKind::LeftBracket] { () } / fail("'['"))) { (c0,) })) { Either::Left(a) } / b:((c0:(v_identifier(depth.descend(0,0))) (([token if token.kind == TokenKind::LeftBracket] { () } / fail("'['"))) { (c0,) })) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) }))) restore(saved) { () } / restore(saved) fail("a scalar operand")))) c1:(x_case_scalar(depth.descend(0,0))) { (c1,) })) { Either::Right(b) })) c1:((saved:diagnostic() begin:position!() result:(c:(w_expression_tail(depth.descend(0,0))) { Some(c) } / restore_absence(begin,saved) { None }) { result })) { (c0,c1) })) end:position!() {? cx.node(35,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
- rule w_parenthesized_expression(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:(((([token if token.kind == TokenKind::LeftParen] { () } / fail("'('"))) ((saved:peek_mark() ((&(((([token if { token.kind == TokenKind::Word && { let word = token.text(cx.input); match word.len() { 7 => word.eq_ignore_ascii_case("toFloat"), 8 => word.eq_ignore_ascii_case("toString"), 9 => word.eq_ignore_ascii_case("toInteger") || word.eq_ignore_ascii_case("toBoolean"), _ => false } } }] { () } / fail("toInteger"))) { () } / (([token if { token.kind == TokenKind::Word && { let word = token.text(cx.input); match word.len() { 4 => word.eq_ignore_ascii_case("CASE") || word.eq_ignore_ascii_case("LEFT") || word.eq_ignore_ascii_case("SIZE") || word.eq_ignore_ascii_case("HEAD") || word.eq_ignore_ascii_case("LAST") || word.eq_ignore_ascii_case("TAIL"), 5 => word.eq_ignore_ascii_case("LOWER") || word.eq_ignore_ascii_case("RANGE"), 7 => word.eq_ignore_ascii_case("REVERSE"), 8 => word.eq_ignore_ascii_case("COALESCE"), _ => false } } }] { () } / fail("CASE"))) { () }))) restore(saved) { () } / restore(saved) fail("a parenthesized scalar")))) c2:(x_scalar(depth.descend(0,1))) (([token if token.kind == TokenKind::RightParen] { () } / fail("')'"))) ((saved:peek_mark() ((&(((([token if token.kind == TokenKind::Equal] { () } / fail("'='"))) { () } / (([token if token.kind == TokenKind::Less] { () } / fail("'<'"))) { () } / (([token if token.kind == TokenKind::Greater] { () } / fail("'>'"))) { () } / (([token if token.is_keyword(cx.input, "CONTAINS")] { () } / fail("CONTAINS"))) { () } / (([token if token.is_keyword(cx.input, "IN")] { () } / fail("IN"))) { () }))) restore(saved) { () } / restore(saved) fail("a comparison")))) c5:(w_expression_tail(depth.descend(0,0))) { (c2,c5) })) end:position!() {? cx.node(36,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
+ rule w_legacy_scalar_expression(depth:Depth) -> (NodeId, NodeId) =
+     ([token if token.kind == TokenKind::LeftParen] / fail("'('"))
+     &(
+         [token if { token.kind == TokenKind::Word && { let word = token.text(cx.input); match word.len() { 7 => word.eq_ignore_ascii_case("toFloat"), 8 => word.eq_ignore_ascii_case("toString"), 9 => word.eq_ignore_ascii_case("toInteger") || word.eq_ignore_ascii_case("toBoolean"), _ => false } } }]
+         / [token if { token.kind == TokenKind::Word && { let word = token.text(cx.input); match word.len() { 4 => word.eq_ignore_ascii_case("CASE") || word.eq_ignore_ascii_case("LEFT") || word.eq_ignore_ascii_case("SIZE") || word.eq_ignore_ascii_case("HEAD") || word.eq_ignore_ascii_case("LAST") || word.eq_ignore_ascii_case("TAIL"), 5 => word.eq_ignore_ascii_case("LOWER") || word.eq_ignore_ascii_case("RANGE"), 7 => word.eq_ignore_ascii_case("REVERSE"), 8 => word.eq_ignore_ascii_case("COALESCE"), _ => false } } }]
+         / fail("a parenthesized scalar")
+     )
+     scalar:x_scalar(depth.descend(0,1))
+     ([token if token.kind == TokenKind::RightParen] / fail("')'"))
+     &(
+         [token if token.kind == TokenKind::Equal]
+         / [token if token.kind == TokenKind::Less]
+         / [token if token.kind == TokenKind::Greater]
+         / [token if token.is_keyword(cx.input, "CONTAINS")]
+         / [token if token.is_keyword(cx.input, "IN")]
+         / fail("a comparison")
+     )
+     tail:w_expression_tail(depth.descend(0,0))
+     { (scalar, tail) }
 
- rule w_expression_tail(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:((a:(x_is_null(depth.descend(0,0))) { Either::Left(a) } / b:((a:(w_in(depth.descend(0,0))) { Either::Left(a) } / b:((a:(((([token if token.is_keyword(cx.input, "CONTAINS")] { () } / fail("CONTAINS"))) c1:(x_scalar(depth.descend(0,1))) { (c1,) })) { Either::Left(a) } / b:(w_expression_comparisons(depth.descend(0,0))) { Either::Right(b) })) { Either::Right(b) })) { Either::Right(b) })) end:position!() {? cx.node(37,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
+ rule w_parenthesized_expression(depth:Depth) -> NodeId =
+     mark:capture_mark()
+     result:(
+         (enter(depth)
+          start:position!()
+          children:(
+              legacy:w_legacy_scalar_expression(depth.descend(0,0)) { legacy }
+              / (scalar_regex_tail_ahead()
+                 expression:r_sum(depth.descend(0,0))
+                 tail:w_regex_expression_tail(depth.descend(0,0)) { (expression,tail) })
+          )
+          end:position!()
+          {? cx.node(36,start,end,children) })
+         / rewind_capture(mark,false)
+           rejected:expected!("matching Cypher rule") { rejected }
+     ) { result }
+
+ rule w_regex_expression_tail(depth:Depth) -> NodeId =
+     mark:capture_mark()
+     result:(
+         (enter(depth)
+          start:position!()
+          children:(
+              (begin:position!()
+               children:(([token if token.kind == TokenKind::Equal]
+                          [token if token.kind == TokenKind::Tilde]) { () })
+               end:position!()
+               {? if cx.adjacent(begin,end) {
+                   Ok(children)
+               } else {
+                   cx.failure(cx.adjacency_failure(begin,end), "adjacent tokens")
+               } })
+              pattern:v_value(depth.descend(0,0)) { (pattern,) }
+          )
+          end:position!()
+          {? cx.node(37,start,end,children) })
+         / rewind_capture(mark,false)
+           rejected:expected!("matching Cypher rule") { rejected }
+     ) { result }
+
+ rule w_expression_tail(depth:Depth) -> NodeId =
+     mark:capture_mark()
+     result:(
+         (enter(depth)
+          start:position!()
+          children:(
+              node:x_is_null(depth.descend(0,0)) { (node,) }
+              / node:w_in(depth.descend(0,0)) { (node,) }
+              / ((begin:position!()
+                  children:(([token if token.kind == TokenKind::Equal]
+                             [token if token.kind == TokenKind::Tilde]) { () })
+                  end:position!()
+                  {? if cx.adjacent(begin,end) {
+                      Ok(children)
+                  } else {
+                      cx.failure(cx.adjacency_failure(begin,end), "adjacent tokens")
+                  } })
+                 pattern:v_value(depth.descend(0,0)) { (pattern,) })
+              / ([token if token.is_keyword(cx.input, "CONTAINS")]
+                 value:x_scalar(depth.descend(0,1)) { (value,) })
+              / node:w_expression_comparisons(depth.descend(0,0)) { (node,) }
+          )
+          end:position!()
+          {? cx.node(37,start,end,children) })
+         / rewind_capture(mark,false)
+           rejected:expected!("matching Cypher rule") { rejected }
+     ) { result }
 
  rule w_comparisons(depth:Depth) -> NodeId = mark:capture_mark() result:((enter(depth) start:position!() children:((c0:(x_comparison_op(depth.descend(0,0))) c1:(w_right(depth.descend(0,0))) c2:((saved:diagnostic() begin:position!() result:(c:(w_following(depth.descend(0,0))) { c } / failed:repetition_stop(begin,saved) { failed }) { result })*) { (c0,c1,c2) })) end:position!() {? cx.node(38,start,end,children) }) / rewind_capture(mark,false) rejected:expected!("matching Cypher rule") {rejected}) {result}
 
