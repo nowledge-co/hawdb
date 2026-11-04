@@ -303,8 +303,8 @@ bounded and runs all four frontend entry points on an explicitly bounded worker 
 acceptance and rejection are both valid for mutations; the exact positive capability seeds,
 including scalar-expression regex matching, must be accepted by their intended frontend. A panic
 or stack overflow fails the campaign. The stable seed and case index reproduce the exact bytes
-under `shiro-parser-v3`. The expanded corpus changes the seed/index mapping from v2; replay an old
-report with its original source revision:
+under `shiro-parser-v4`. The keyword-shaped scalar-regex identifier seed changes the seed/index
+mapping from v3; replay an old report with its original source revision:
 
 ```console
 make fuzz-parser FUZZ_SEED=7 FUZZ_CASES=256

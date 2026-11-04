@@ -1522,6 +1522,14 @@ impl Builder<'_> {
         while let Some(token) = self.tokens.get(index) {
             let nested = parens != 0 || brackets != 0 || braces != 0;
             if !nested {
+                // A keyword-shaped parameter name or property key remains an
+                // identifier; only standalone words can end this predicate.
+                let scalar_identifier = index > position
+                    && matches!(
+                        self.tokens[index - 1].kind,
+                        TokenKind::Parameter | TokenKind::Dot
+                    )
+                    && self.adjacent(index - 1, index + 1);
                 match token.kind {
                     TokenKind::Equal => {
                         return self
@@ -1532,12 +1540,13 @@ impl Builder<'_> {
                     }
                     TokenKind::Less | TokenKind::Greater | TokenKind::NotEqual => return false,
                     TokenKind::Word
-                        if [
-                            "AND", "OR", "XOR", "IS", "IN", "CONTAINS", "STARTS", "ENDS", "RETURN",
-                            "WITH", "ORDER", "LIMIT", "SKIP", "OFFSET",
-                        ]
-                        .iter()
-                        .any(|keyword| token.is_keyword(self.input, keyword)) =>
+                        if !scalar_identifier
+                            && [
+                                "AND", "OR", "XOR", "IS", "IN", "CONTAINS", "STARTS", "ENDS",
+                                "RETURN", "WITH", "ORDER", "LIMIT", "SKIP", "OFFSET",
+                            ]
+                            .iter()
+                            .any(|keyword| token.is_keyword(self.input, keyword)) =>
                     {
                         return false;
                     }

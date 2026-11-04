@@ -165,6 +165,43 @@ fn scalar_expression_regex_predicates_validate_execute_and_cache_patterns() {
             vec![BTreeMap::from([("row".into(), Value::Int(1))])],
         ),
         (
+            "UNWIND [1] AS row WITH row WHERE $order =~ '^a' RETURN row",
+            BTreeMap::from([("order".into(), Value::String("alpha".into()))]),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE $contains =~ '^a' RETURN row",
+            BTreeMap::from([("contains".into(), Value::String("alpha".into()))]),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE $value.order =~ '^a' RETURN row",
+            BTreeMap::from([(
+                "value".into(),
+                Value::Map(BTreeMap::from([(
+                    "order".into(),
+                    Value::String("alpha".into()),
+                )])),
+            )]),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE ($order) =~ '^a' RETURN row",
+            BTreeMap::from([("order".into(), Value::String("alpha".into()))]),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE ($value.order) =~ '^a' RETURN row",
+            BTreeMap::from([(
+                "value".into(),
+                Value::Map(BTreeMap::from([(
+                    "order".into(),
+                    Value::String("alpha".into()),
+                )])),
+            )]),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+        (
             "MATCH (m:Memory) WHERE (m.content) =~ '^Graph' RETURN m.id AS id",
             BTreeMap::new(),
             vec![BTreeMap::from([("id".into(), Value::Int(1))])],
@@ -181,6 +218,99 @@ fn scalar_expression_regex_predicates_validate_execute_and_cache_patterns() {
             "{query}"
         );
     }
+
+    for (query, expected) in [
+        (
+            "MATCH (m:Memory) WHERE LOWER(m.content) =~ '^graph' RETURN m.id AS id ORDER BY id",
+            vec![BTreeMap::from([("id".into(), Value::Int(1))])],
+        ),
+        (
+            "MATCH (m:Memory) WHERE NOT LOWER(m.content) =~ '^graph' RETURN m.id AS id ORDER BY id",
+            vec![BTreeMap::from([("id".into(), Value::Int(2))])],
+        ),
+        (
+            "MATCH (m:Memory) WHERE (LOWER(m.content) =~ '^graph') AND m.id = 3 RETURN m.id AS id ORDER BY id",
+            vec![],
+        ),
+        (
+            "MATCH (m:Memory) WHERE (LOWER(m.content) =~ '^graph') OR m.id = 3 RETURN m.id AS id ORDER BY id",
+            vec![
+                BTreeMap::from([("id".into(), Value::Int(1))]),
+                BTreeMap::from([("id".into(), Value::Int(3))]),
+            ],
+        ),
+    ] {
+        assert_eq!(db.query(query).unwrap().rows, expected, "{query}");
+    }
+
+    let rebound_query = "UNWIND [1] AS row WITH row WHERE $value =~ $pattern RETURN row";
+    let rebound_parameters =
+        |value, pattern| BTreeMap::from([("value".into(), value), ("pattern".into(), pattern)]);
+    let row = vec![BTreeMap::from([("row".into(), Value::Int(1))])];
+    assert_eq!(
+        db.query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::String("alpha".into()), Value::String("^a".into())),
+        )
+        .unwrap()
+        .rows,
+        row
+    );
+    assert!(db
+        .query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::String("beta".into()), Value::String("^a".into())),
+        )
+        .unwrap()
+        .rows
+        .is_empty());
+    assert!(db
+        .query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::Null, Value::String("^a".into())),
+        )
+        .unwrap()
+        .rows
+        .is_empty());
+    let rebound_non_string_left = db
+        .query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::Int(7), Value::String("^a".into())),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(rebound_non_string_left, HawDBError::Execution(_)),
+        "{rebound_non_string_left:?}"
+    );
+    let rebound_invalid_pattern = db
+        .query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::String("alpha".into()), Value::String("[".into())),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(rebound_invalid_pattern, HawDBError::Semantic(_)),
+        "{rebound_invalid_pattern:?}"
+    );
+    let rebound_non_string_pattern = db
+        .query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::String("alpha".into()), Value::Int(7)),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(rebound_non_string_pattern, HawDBError::Semantic(_)),
+        "{rebound_non_string_pattern:?}"
+    );
+    assert_eq!(
+        db.query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::String("again".into()), Value::String("^a".into())),
+        )
+        .unwrap()
+        .rows,
+        row
+    );
 
     let graph = db
         .explain_query_with_params(query, &parameters("^graph"))

@@ -3855,6 +3855,11 @@ fn parses_regex_match_from_every_bounded_scalar_dispatch_path() {
         "MATCH (n) WHERE trim(n.value) =~ '^a' RETURN n",
         "MATCH (n) WHERE regexp_replace(n.value, 'x', 'a') =~ '^a' RETURN n",
         "UNWIND [1] AS row WITH row WHERE $value =~ '^a' RETURN row",
+        "UNWIND [1] AS row WITH row WHERE $order =~ '^a' RETURN row",
+        "UNWIND [1] AS row WITH row WHERE $contains =~ '^a' RETURN row",
+        "UNWIND [1] AS row WITH row WHERE $value.order =~ '^a' RETURN row",
+        "UNWIND [1] AS row WITH row WHERE ($order) =~ '^a' RETURN row",
+        "UNWIND [1] AS row WITH row WHERE ($value.order) =~ '^a' RETURN row",
         "MATCH (n) WHERE (n.value) =~ '^a' RETURN n",
         "MATCH (n) WHERE ('abc') =~ '^a' RETURN n",
     ] {

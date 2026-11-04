@@ -39,21 +39,23 @@ Cypher scalar-expression regex matching (`nowledge-co/hawdb#1550`) extends the
 existing expression-function and regex-cache owners without adding a target or
 lane. `hawdb-cypher` parser tests retain direct-property `=~` and cover generic
 string functions, parameter left operands, and parenthesized property/literal
-operands; `api::tests::expression_functions` in `//:hawdb_unit_general_tests`
-covers the same dispatch paths plus literal and parameter patterns, NULL
-propagation, typed operand/pattern failures, invalid regexes, deterministic
-instance fingerprints and exact cache variants, direct-property compatibility,
-durable reopen and concurrent reads. The plan-cache requested-allocation oracle
+operands, including keyword-shaped parameter names and property keys;
+`api::tests::expression_functions` in `//:hawdb_unit_general_tests` covers the
+same dispatch paths plus literal and parameter patterns, NULL propagation across
+NOT/AND/OR, repeated left/pattern rebinding through success and typed failure,
+invalid regexes, deterministic instance fingerprints and exact cache variants,
+direct-property compatibility, durable reopen and concurrent reads. The
+plan-cache requested-allocation oracle
 keeps both property and scalar-expression regex programs source-only while
 retained and execution-owned after binding. Replay with `cargo test --locked -p
 hawdb-cypher parses_regex_match`, `cargo test --locked -p hawdb --lib
 scalar_expression_regex -- --test-threads=1`, and `cargo test --locked -p
 hawdb-plan-cache --test template_retention -- --test-threads=1`. A reviewed
 44-row parser transition fixture preserves the immutable historical rejection
-oracles. Shiro adds a generic-function positive parser seed, a typed
-plan-differential shape that alternates literal/parameter patterns, and
-capability-model references for matching plus invalid-pattern/non-string
-refusals. Replay with `cargo test
+oracles. Shiro adds generic-function and keyword-identifier positive parser
+seeds, a typed plan-differential shape that alternates literal/parameter
+patterns, and capability-model references for matching plus
+invalid-pattern/non-string refusals. Replay with `cargo test
 --locked --manifest-path tools/shiro/Cargo.toml --lib scalar_regex` and the
 existing Bazel fuzz suites. Existing regex validation limits, query work/memory
 admission and cancellation checkpoints are unchanged; no new target or lane is
