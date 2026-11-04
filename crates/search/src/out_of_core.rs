@@ -321,10 +321,13 @@ pub struct SearchOutOfCoreConfig {
     pub max_candidate_spill_bytes: NonZeroU64,
     pub max_candidate_block_bytes: NonZeroU64,
     pub max_score_entries: NonZeroUsize,
-    /// Scored lexical terms per query. A longer analyzed query keeps its
-    /// lowest-document-frequency (highest-IDF) terms and reports the
-    /// reduction as `text_query_terms_reduced` instead of failing.
+    /// Scored lexical terms per query; `lexical_query_term_policy` decides
+    /// what a longer analyzed query does.
     pub max_lexical_query_terms: NonZeroUsize,
+    /// What a query above `max_lexical_query_terms` does: refused by default,
+    /// or reduced to its most selective terms and reported as
+    /// `text_query_terms_reduced` when the host opts in.
+    pub lexical_query_term_policy: crate::LexicalQueryTermPolicy,
     /// Distinct analyzed lexical terms admitted before that selection. It
     /// bounds query normalization and statistics reads; exceeding it fails.
     /// Values below `max_lexical_query_terms` are raised to it.
@@ -358,6 +361,7 @@ impl Default for SearchOutOfCoreConfig {
                 crate::lexical_projection::DEFAULT_MAX_QUERY_TERMS,
             )
             .unwrap(),
+            lexical_query_term_policy: crate::LexicalQueryTermPolicy::Exact,
             max_lexical_query_analyzed_terms: NonZeroUsize::new(
                 crate::lexical_projection::DEFAULT_MAX_QUERY_ANALYZED_TERMS,
             )
@@ -1675,6 +1679,7 @@ impl SearchOutOfCoreSegmentReader {
             max_spill_bytes: config.max_reanalysis_spill_bytes,
             max_query_score_entries: config.max_score_entries,
             max_query_terms: config.max_lexical_query_terms,
+            query_term_policy: config.lexical_query_term_policy,
             max_query_analyzed_terms: config.max_lexical_query_analyzed_terms,
             ..LexicalProjectionConfig::default()
         };

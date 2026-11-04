@@ -147,6 +147,13 @@ impl SearchOutOfCoreReader {
             .lexical_projection
             .tokenize_accounted(query_text, &self.analyzer_lexicon, max_term_bytes, context)?;
         report.normalized_term_count = terms.terms.len();
+        crate::lexical_projection::refuse_exact_overflow(
+            terms.terms.len(),
+            self.primary_segment().lexical_projection.max_query_terms(),
+            self.primary_segment()
+                .lexical_projection
+                .query_term_policy(),
+        )?;
         let mut statistics = AccountedCorpusStatistics::aggregate(
             self.segments
                 .iter()
@@ -173,6 +180,9 @@ impl SearchOutOfCoreReader {
         report.dropped_term_count = crate::lexical_projection::retain_most_selective_terms(
             &mut terms.terms,
             self.primary_segment().lexical_projection.max_query_terms(),
+            self.primary_segment()
+                .lexical_projection
+                .query_term_policy(),
             |term| statistics.statistics.document_frequency(term),
             Some(context),
         )?

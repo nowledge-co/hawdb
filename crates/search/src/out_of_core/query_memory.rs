@@ -221,11 +221,21 @@ impl SearchOutOfCoreReader {
         if terms.len() <= limit.get() {
             return Ok(QueryTermSelection::unchanged(terms.len(), limit));
         }
+        crate::lexical_projection::refuse_exact_overflow(
+            terms.len(),
+            limit,
+            self.primary_segment()
+                .lexical_projection
+                .query_term_policy(),
+        )?;
         let statistics = self.query_statistics(terms, context)?;
         let statistics = statistics.get();
         retain_most_selective_terms(
             terms,
             limit,
+            self.primary_segment()
+                .lexical_projection
+                .query_term_policy(),
             |term| statistics.document_frequency(term),
             context,
         )

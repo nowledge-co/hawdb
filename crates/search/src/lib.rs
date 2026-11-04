@@ -87,6 +87,7 @@ mod identifier;
 #[doc(hidden)]
 pub mod knowledge_retrieval_pipeline;
 mod lexical_projection;
+pub use lexical_projection::LexicalQueryTermPolicy;
 mod lexical_readiness;
 #[cfg(all(test, feature = "full-text-search"))]
 mod lexical_snapshot_test_gate;
@@ -1690,6 +1691,21 @@ impl SearchIndex {
             publication,
         );
         Ok(index)
+    }
+
+    /// What a lexical query above the scored-term cap does on this resident
+    /// index; [`LexicalQueryTermPolicy::Exact`] by default. Under `Exact`,
+    /// projection-backed search and text seeds refuse such a query, while
+    /// snapshot-free search scores every analyzed term. Not persisted.
+    pub fn with_lexical_query_term_policy(mut self, policy: LexicalQueryTermPolicy) -> Self {
+        self.lexical_config.query_term_policy = policy;
+        self
+    }
+
+    /// Sets the resident policy in place. Like [`Self::with_lexical_query_term_policy`]
+    /// it is not persisted: a reopened index starts at `Exact`.
+    pub fn set_lexical_query_term_policy(&mut self, policy: LexicalQueryTermPolicy) {
+        self.lexical_config.query_term_policy = policy;
     }
 
     pub fn with_analyzer_lexicon(mut self, analyzer_lexicon: SearchAnalyzerLexicon) -> Self {
@@ -4047,6 +4063,7 @@ impl SearchIndex {
                 &mut query_terms,
                 delta,
                 self.lexical_config.max_term_bytes,
+                self.lexical_config.query_term_policy,
                 None,
             )?;
             if selection.reduced() {

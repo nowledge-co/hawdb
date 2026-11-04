@@ -58,7 +58,9 @@ pub(super) use query_context::{QueryContext, ScoringInputs};
 mod corpus_query;
 pub(super) use corpus_query::AccountedCorpusStatistics;
 mod query_term_selection;
-pub(crate) use query_term_selection::{retain_most_selective_terms, QueryTermSelection};
+pub(crate) use query_term_selection::{
+    refuse_exact_overflow, retain_most_selective_terms, QueryTermSelection,
+};
 mod raw_query;
 mod spill_control;
 #[cfg(test)]
@@ -240,6 +242,21 @@ pub(crate) const DEFAULT_MAX_QUERY_TERMS: usize = 64;
 /// Default cap on distinct analyzed terms before scored-term selection.
 pub(crate) const DEFAULT_MAX_QUERY_ANALYZED_TERMS: usize = 1024;
 
+/// How a lexical query with more scored terms than `max_query_terms` is
+/// treated. The cap bounds scoring work and stream memory per query.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LexicalQueryTermPolicy {
+    /// Refuse the query: results are complete BM25 for the supplied query,
+    /// or an error naming the cap.
+    #[default]
+    Exact,
+    /// Score the `max_query_terms` most selective terms (lowest corpus
+    /// document frequency, then term bytes) and report
+    /// `text_query_terms_reduced`. Lossy by design: documents matching only
+    /// the dropped terms are not candidates.
+    MostSelective,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct LexicalProjectionConfig {
     pub max_manifest_bytes: NonZeroU64,
@@ -252,8 +269,10 @@ pub(super) struct LexicalProjectionConfig {
     pub max_term_bytes: NonZeroU64,
     pub max_document_tokens: NonZeroUsize,
     pub max_document_source_bytes: NonZeroU64,
-    /// Scored terms per query. Longer queries keep their most selective terms.
+    /// Scored terms per query.
     pub max_query_terms: NonZeroUsize,
+    /// What a query above `max_query_terms` does; refused by default.
+    pub query_term_policy: LexicalQueryTermPolicy,
     /// Distinct analyzed terms admitted before selection; exceeding it fails.
     pub max_query_analyzed_terms: NonZeroUsize,
     pub query_memory_bytes: NonZeroU64,
@@ -296,6 +315,7 @@ impl Default for LexicalProjectionConfig {
             max_document_tokens: NonZeroUsize::new(1_000_000).unwrap(),
             max_document_source_bytes: NonZeroU64::new(4 * 1024 * 1024).unwrap(),
             max_query_terms: NonZeroUsize::new(DEFAULT_MAX_QUERY_TERMS).unwrap(),
+            query_term_policy: LexicalQueryTermPolicy::Exact,
             max_query_analyzed_terms: NonZeroUsize::new(DEFAULT_MAX_QUERY_ANALYZED_TERMS).unwrap(),
             query_memory_bytes: NonZeroU64::new(128 * 1024 * 1024).unwrap(),
             max_query_score_entries: NonZeroUsize::new(1_000_000).unwrap(),

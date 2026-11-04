@@ -156,6 +156,12 @@ impl SearchIndex {
                 _memory: None,
             });
         }
+        // Refuse before any corpus statistics are read (#1476).
+        crate::lexical_projection::refuse_exact_overflow(
+            query_terms.len(),
+            self.lexical_config.max_query_terms,
+            self.lexical_config.query_term_policy,
+        )?;
 
         if let Some((projection, delta)) = self.lexical_snapshot() {
             let term_ref_bytes = query_terms
@@ -171,6 +177,7 @@ impl SearchIndex {
                 &mut terms,
                 &delta,
                 self.lexical_config.max_term_bytes,
+                self.lexical_config.query_term_policy,
                 Some(context),
             )?;
             let scored = projection.score_terms_with_stable_filter(
@@ -254,6 +261,7 @@ impl SearchIndex {
             let selection = crate::lexical_projection::retain_most_selective_terms(
                 &mut selected,
                 self.lexical_config.max_query_terms,
+                self.lexical_config.query_term_policy,
                 |term| document_frequency[query_terms[term]] as u64,
                 Some(context),
             )?;
@@ -816,6 +824,8 @@ mod tests {
     #[test]
     fn resident_long_text_seed_scores_its_most_selective_terms() {
         let mut index = SearchIndex::in_memory();
+        // These cases score the most selective terms (opt-in).
+        index.set_lexical_query_term_policy(crate::LexicalQueryTermPolicy::MostSelective);
         for row in long_query_rows() {
             index.upsert_projection_row(row).unwrap();
         }
@@ -921,6 +931,8 @@ mod tests {
     #[test]
     fn resident_search_and_seed_refuse_analyzed_term_overflow() {
         let mut index = SearchIndex::in_memory();
+        // These cases score the most selective terms (opt-in).
+        index.set_lexical_query_term_policy(crate::LexicalQueryTermPolicy::MostSelective);
         for row in long_query_rows() {
             index.upsert_projection_row(row).unwrap();
         }
@@ -1011,7 +1023,42 @@ mod tests {
         }
         index.checkpoint().unwrap();
         drop(index);
-        let index = SearchIndex::open(&path).unwrap();
+        // A reopened projection-backed index starts at `Exact` and refuses
+        // the long query in both search and seeds.
+        let exact = SearchIndex::open(&path).unwrap();
+        assert!(exact.lexical_snapshot().is_some());
+        let options = SearchQueryOptions {
+            limit: 24,
+            offset: 0,
+            rank_window: None,
+            fusion_weights: SearchFusionWeights::default(),
+            metadata_filters: BTreeMap::new(),
+            policy_epoch: None,
+        };
+        let error = exact
+            .try_search_with_options(&long_query_text(), None, SearchMode::Text, options)
+            .map(|_| ())
+            .unwrap_err();
+        assert!(error.to_string().contains("max_query_terms"), "{error}");
+        let budget = NonZeroUsize::new(16 << 20).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let account = ledger.account(QueryMemoryClass::ExternalRead, "exact seed", budget);
+        let error = exact
+            .text_seed_scores_with_context(
+                &long_query_text(),
+                &BTreeMap::new(),
+                24,
+                &account,
+                &RuntimeTaskContext::default(),
+            )
+            .map(|_| ())
+            .unwrap_err();
+        assert!(error.to_string().contains("max_query_terms"), "{error}");
+        drop((account, exact));
+        // The policy is an open-time setting; it is not persisted.
+        let index = SearchIndex::open(&path)
+            .unwrap()
+            .with_lexical_query_term_policy(crate::LexicalQueryTermPolicy::MostSelective);
         assert!(index.lexical_snapshot().is_some());
         let query = long_query_text();
         let analyzed = crate::tokenize(&query, &index.analyzer_lexicon).len();
@@ -1133,5 +1180,92 @@ mod tests {
         assert_eq!(ledger.snapshot().used_bytes, 0);
         // The explicit host-side count still analyzes the whole input.
         assert!(index.analyzer_lexicon.analyzed_query_term_count(&query) > words);
+    }
+
+    /// With a scored cap of one, a common term plus a rare one is refused by
+    /// default; the opt-in reduction scores only the rare term, so documents
+    /// matching only the common term are omitted although the result window
+    /// has room (#1476).
+    #[test]
+    fn exact_policy_refuses_and_most_selective_drops_the_common_term() {
+        let mut index = SearchIndex::in_memory();
+        for number in 0..6 {
+            index
+                .upsert_projection_row(SearchProjectionRow {
+                    kind: SearchProjectionKind::Memory,
+                    external_id: format!("{number:02}"),
+                    title: String::new(),
+                    body: if number == 0 { "common rare" } else { "common" }.into(),
+                    embedding: None,
+                    source_id: None,
+                    metadata: BTreeMap::new(),
+                })
+                .unwrap();
+        }
+        let search = |index: &SearchIndex| {
+            index.try_search_with_options(
+                "common rare",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+            )
+        };
+        let seed = |index: &SearchIndex| {
+            let budget = NonZeroUsize::new(4 << 20).unwrap();
+            let ledger = QueryMemoryLedger::new(budget);
+            let account = ledger.account(QueryMemoryClass::ExternalRead, "policy seed", budget);
+            index
+                .text_seed_scores_with_context(
+                    "common rare",
+                    &BTreeMap::new(),
+                    10,
+                    &account,
+                    &RuntimeTaskContext::default(),
+                )
+                .map(|output| output.scores().keys().cloned().collect::<Vec<_>>())
+        };
+        let analyzed = crate::tokenize("common rare", &index.analyzer_lexicon).len();
+        assert!(analyzed >= 2, "{analyzed}");
+        index.lexical_config.max_query_terms = NonZeroUsize::new(1).unwrap();
+        // Snapshot-free resident search keeps its pre-cap behaviour under
+        // Exact: every analyzed term is scored. The seed path refuses.
+        let uncapped = search(&index).unwrap();
+        assert_eq!(uncapped.hits.len(), 6);
+        assert!(!uncapped
+            .fallback_reason_codes
+            .contains(&SearchFallbackReasonCode::TextQueryTermsReduced));
+        let error = seed(&index).map(|_| ()).unwrap_err();
+        assert!(error.to_string().contains("max_query_terms"), "{error}");
+        // Complete BM25 for the supplied query, once the cap admits it.
+        index.lexical_config.max_query_terms = NonZeroUsize::new(analyzed).unwrap();
+        let exact = search(&index).unwrap();
+        assert_eq!(exact.hits.len(), 6);
+        assert!(!exact
+            .fallback_reason_codes
+            .contains(&SearchFallbackReasonCode::TextQueryTermsReduced));
+        assert_eq!(seed(&index).unwrap().len(), 6);
+        // The reduction keeps the rare term and reports the dropped one.
+        index.lexical_config.max_query_terms = NonZeroUsize::new(1).unwrap();
+        index.set_lexical_query_term_policy(crate::LexicalQueryTermPolicy::MostSelective);
+        let reduced = search(&index).unwrap();
+        assert_eq!(
+            reduced
+                .hits
+                .iter()
+                .map(|hit| hit.external_id.clone().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec!["00".to_string()]
+        );
+        assert!(reduced
+            .fallback_reason_codes
+            .contains(&SearchFallbackReasonCode::TextQueryTermsReduced));
+        assert_eq!(seed(&index).unwrap().len(), 1);
     }
 }

@@ -65,11 +65,29 @@ impl std::fmt::Display for QueryTermSelection {
 
 /// Retains at most `limit` terms, preferring the lowest document frequency.
 ///
+/// Under [`LexicalQueryTermPolicy::Exact`], refuses a query with more scored
+/// terms than `limit`. Callers check before reading corpus statistics, so the
+/// refusal costs no I/O and is not masked by a budget, I/O or cancellation
+/// error from those reads.
+pub(crate) fn refuse_exact_overflow(
+    analyzed: usize,
+    limit: NonZeroUsize,
+    policy: LexicalQueryTermPolicy,
+) -> Result<()> {
+    if policy == LexicalQueryTermPolicy::Exact && analyzed > limit.get() {
+        return Err(HawDBError::Storage(format!(
+            "lexical query produced {analyzed} terms, exceeding {limit} (max_query_terms)"
+        )));
+    }
+    Ok(())
+}
+
 /// `document_frequency` must report the corpus statistics BM25 will use, so
 /// the retained terms score exactly as a query containing only them.
 pub(crate) fn retain_most_selective_terms<T: Borrow<str> + Ord>(
     terms: &mut BTreeSet<T>,
     limit: NonZeroUsize,
+    policy: LexicalQueryTermPolicy,
     document_frequency: impl Fn(&str) -> u64,
     context: Option<QueryContext<'_>>,
 ) -> Result<QueryTermSelection> {
@@ -77,6 +95,7 @@ pub(crate) fn retain_most_selective_terms<T: Borrow<str> + Ord>(
     if analyzed <= limit.get() {
         return Ok(QueryTermSelection::unchanged(analyzed, limit));
     }
+    refuse_exact_overflow(analyzed, limit, policy)?;
     query_context::check(context)?;
     let rank = |term: &str| match document_frequency(term) {
         0 => u64::MAX,
@@ -125,6 +144,10 @@ impl LexicalProjectionReader {
         self.config.max_query_terms
     }
 
+    pub(crate) const fn query_term_policy(&self) -> LexicalQueryTermPolicy {
+        self.config.query_term_policy
+    }
+
     /// Fits a single-generation query to the scored-term cap using the
     /// generation's document frequencies projected through `delta`.
     pub(crate) fn fit_query_terms<T: Borrow<str> + Ord>(
@@ -132,12 +155,14 @@ impl LexicalProjectionReader {
         terms: &mut BTreeSet<T>,
         delta: &LexicalMiniDelta,
         max_term_bytes: NonZeroU64,
+        policy: LexicalQueryTermPolicy,
         context: Option<QueryContext<'_>>,
     ) -> Result<QueryTermSelection> {
         let limit = self.config.max_query_terms;
         if terms.len() <= limit.get() {
             return Ok(QueryTermSelection::unchanged(terms.len(), limit));
         }
+        refuse_exact_overflow(terms.len(), limit, policy)?;
         let accounted;
         let local;
         let statistics = match context {
@@ -154,6 +179,7 @@ impl LexicalProjectionReader {
         retain_most_selective_terms(
             terms,
             limit,
+            policy,
             |term| {
                 delta.projected_document_frequency(term, statistics.document_frequency(term)) as u64
             },

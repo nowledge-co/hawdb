@@ -54,7 +54,7 @@ fn checkpointed(name: &str) -> PathBuf {
 #[test]
 fn long_and_suffix_heavy_queries_are_scored_in_every_mode() {
     let path = checkpointed("long-query-modes");
-    let reader = SearchOutOfCoreReader::open(&path).unwrap();
+    let reader = reduced_reader(&path);
     let embedding = [1.0, 0.5];
     for query in [long_query().as_str(), SENTENCE] {
         let modes: &[(SearchMode, Option<usize>)] = &[
@@ -120,7 +120,7 @@ fn ranking(scores: &BTreeMap<String, f64>) -> Vec<(String, f64)> {
 #[test]
 fn long_query_scores_exactly_its_most_selective_terms() {
     let path = checkpointed("long-query-selection");
-    let reader = SearchOutOfCoreReader::open(&path).unwrap();
+    let reader = reduced_reader(&path);
     let query = long_query();
     let analyzed = reader.query_terms(&query, None).unwrap().values;
     let limit = reader.config().max_lexical_query_terms.get();
@@ -252,6 +252,7 @@ fn lexical_query_term_caps_are_configurable_and_analyzed_overflow_fails_closed()
     let query = long_query();
     let config = SearchOutOfCoreConfig {
         max_lexical_query_terms: NonZeroUsize::new(4).unwrap(),
+        lexical_query_term_policy: crate::LexicalQueryTermPolicy::MostSelective,
         ..SearchOutOfCoreConfig::default()
     };
     let reader =
@@ -303,6 +304,7 @@ fn lexical_query_term_caps_are_configurable_and_analyzed_overflow_fails_closed()
     // The analyzed cap is never below the scored cap.
     let config = SearchOutOfCoreConfig {
         max_lexical_query_terms: NonZeroUsize::new(4096).unwrap(),
+        lexical_query_term_policy: crate::LexicalQueryTermPolicy::MostSelective,
         max_lexical_query_analyzed_terms: NonZeroUsize::new(1).unwrap(),
         ..SearchOutOfCoreConfig::default()
     };
@@ -316,5 +318,99 @@ fn lexical_query_term_caps_are_configurable_and_analyzed_overflow_fails_closed()
         .result
         .fallback_reason_codes
         .contains(&SearchFallbackReasonCode::TextQueryTermsReduced));
+    fs::remove_dir_all(path).unwrap();
+}
+
+/// The long-query cases score the most selective terms (opt-in).
+fn reduced_reader(path: &std::path::Path) -> SearchOutOfCoreReader {
+    SearchOutOfCoreReader::open_with_config_and_analyzer(
+        path,
+        SearchOutOfCoreConfig {
+            lexical_query_term_policy: crate::LexicalQueryTermPolicy::MostSelective,
+            ..SearchOutOfCoreConfig::default()
+        },
+        Default::default(),
+    )
+    .unwrap()
+}
+
+/// By default a query above the scored-term cap is refused.
+#[test]
+fn default_policy_refuses_queries_above_the_scored_term_cap() {
+    let path = checkpointed("long-query-default-refuses");
+    let reader = SearchOutOfCoreReader::open(&path).unwrap();
+    let query = (0..reader.config().max_lexical_query_terms.get() + 8)
+        .map(|k| format!("term{k}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let error = reader
+        .search_with_options(&query, None, SearchMode::Text, options(5, None))
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("max_query_terms"), "{error}");
+}
+
+/// `Exact` refuses before any corpus statistics are read. The seed's query
+/// tokenization is accounted, so its budget is the peak an `Exact` refusal
+/// needs; `MostSelective` reads statistics past that peak and hits the budget.
+#[test]
+fn exact_refusal_reads_no_corpus_statistics() {
+    let path = checkpointed("long-query-exact-no-statistics");
+    let query = long_query();
+    let task = crate::RuntimeTaskContext::default();
+    let exact = SearchOutOfCoreReader::open(&path).unwrap();
+    let reduced = reduced_reader(&path);
+
+    // Term selection reads statistics only through the account.
+    let tiny = NonZeroUsize::new(1).unwrap();
+    let ledger = hawdb_executor::QueryMemoryLedger::new(tiny);
+    let memory = ledger.account(
+        hawdb_executor::QueryMemoryClass::BlockingState,
+        "exact refusal",
+        tiny,
+    );
+    let context = crate::lexical_projection::QueryContext {
+        memory: &memory,
+        task: &task,
+        execution: None,
+        io_scope: None,
+    };
+    for (reader, refused) in [(&exact, true), (&reduced, false)] {
+        let mut terms = reader.query_terms(&query, None).unwrap().values;
+        let error = reader
+            .select_query_terms(&mut terms, Some(context))
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error.contains("max_query_terms"), refused, "{error}");
+    }
+    drop(memory);
+
+    // Producer seeds: the budget is exactly the Exact refusal's peak.
+    let seed = |reader: &SearchOutOfCoreReader, budget: NonZeroUsize| {
+        let ledger = hawdb_executor::QueryMemoryLedger::new(budget);
+        let memory = ledger.account(
+            hawdb_executor::QueryMemoryClass::BlockingState,
+            "exact seed refusal",
+            budget,
+        );
+        let error = reader
+            .text_seed_scores_with_context(&query, 48, &memory, &task, |_| Ok(true))
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        drop(memory);
+        (error, ledger.snapshot().peak_bytes)
+    };
+    let (error, peak) = seed(&exact, NonZeroUsize::new(16 << 20).unwrap());
+    assert!(error.contains("max_query_terms"), "{error}");
+    let budget = NonZeroUsize::new(peak.max(1)).unwrap();
+    let (error, _) = seed(&exact, budget);
+    assert!(error.contains("max_query_terms"), "{error}");
+    let (error, _) = seed(&reduced, budget);
+    assert!(
+        !error.contains("max_query_terms") && error.contains("budget"),
+        "{error}"
+    );
     fs::remove_dir_all(path).unwrap();
 }
