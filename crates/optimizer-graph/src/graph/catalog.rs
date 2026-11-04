@@ -23,6 +23,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod joint;
 
+/// Hop estimates stop here. The executor enumerates at most this many hops of
+/// one trail, and an unbounded pattern (`max_hops == usize::MAX`) is refused
+/// beyond it (#1489), so deeper hops contribute no rows.
+const MAX_ESTIMATED_HOPS: usize = 256;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ExpandEstimate {
     pub(super) path_count: Option<u64>,
@@ -672,7 +677,13 @@ impl OptimizerCatalog {
     ) -> Option<u64> {
         let mut total = 0_u64;
         let mut found = false;
-        for hop in min_hops..=max_hops.max(min_hops) {
+        // Not `clamp`: `min_hops` may exceed the estimate limit.
+        let last_hop = if max_hops > MAX_ESTIMATED_HOPS {
+            MAX_ESTIMATED_HOPS.max(min_hops)
+        } else {
+            max_hops.max(min_hops)
+        };
+        for hop in min_hops..=last_hop {
             if let Some(count) = counts.get(&(
                 source_label.to_string(),
                 rel_type.to_string(),
@@ -1157,7 +1168,7 @@ impl OptimizerCatalog {
         let mut estimated_rows = 0_u64;
         let mut hop_rows = one_hop.max(1);
         let mut hop_estimates = Vec::new();
-        for hop in 1..=max_hops.max(1) {
+        for hop in 1..=max_hops.clamp(1, MAX_ESTIMATED_HOPS) {
             let exact_hop_rows = self
                 .bounded_path_counts
                 .get(&(

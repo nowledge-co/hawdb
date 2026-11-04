@@ -38,6 +38,10 @@ fn frozen_plan_text(case: &Value) -> String {
     expected
 }
 
+/// Corpus cases #1489 moves from parser rejection to acceptance; see the
+/// parser corpus test of the same name.
+const MAIN_1489_UNBOUNDED_TRANSITIONS: [&str; 1] = ["owner-0094"];
+
 #[test]
 fn migration_corpus_preserves_bindings_and_logical_plans() {
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
@@ -52,6 +56,19 @@ fn migration_corpus_preserves_bindings_and_logical_plans() {
         *outcomes.entry(kind.to_owned()).or_insert(0usize) += 1;
         let statement = hawdb_cypher::parse(query);
         if kind == "parse_rejected" {
+            // #1489 admits unbounded variable-length patterns: the reviewed
+            // case now parses and plans a variable-length expand.
+            if MAIN_1489_UNBOUNDED_TRANSITIONS.contains(&id) {
+                let statement = statement.unwrap_or_else(|error| panic!("{id}: {error}"));
+                let plan = crate::plan_with_params(&statement, &parameters(&case["parameters"]))
+                    .unwrap_or_else(|error| panic!("{id}: {error}"));
+                let text = format!("{plan:?}");
+                assert!(
+                    text.contains(&format!("max_hops: {}", usize::MAX)),
+                    "{id}: {text}"
+                );
+                continue;
+            }
             if let Some(change) = migration["parser_stage_changes"].get(id) {
                 let statement = statement.unwrap_or_else(|error| panic!("{id}: {error}"));
                 let error = crate::plan_with_params(&statement, &parameters(&case["parameters"]))

@@ -19,12 +19,18 @@ const CASES: &str = include_str!("../../fixtures/migration_corpus_v1.jsonl");
 const DEFAULT_PIPELINE: &str = include_str!("../../fixtures/migration_default_pipeline_v1.json");
 const MANIFEST: &str = include_str!("../../fixtures/migration_manifest_v1.json");
 
+/// Reviewed corpus cases that #1489 moves from parser rejection to
+/// acceptance: unbounded variable-length relationship patterns. Their frozen
+/// outcome stays recorded as rejected; the transition is asserted here.
+const MAIN_1489_UNBOUNDED_TRANSITIONS: [&str; 1] = ["owner-0094"];
+
 #[test]
 fn migration_corpus_preserves_parser_outcomes_and_source_inventory() {
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
     let migration: Value = serde_json::from_str(DEFAULT_PIPELINE).unwrap();
     let stage_changes = migration["parser_stage_changes"].as_object().unwrap();
     let mut requalified = BTreeSet::new();
+    let mut requalified_1489 = BTreeSet::new();
     let mut current_outcomes = BTreeMap::new();
     let mut ids = BTreeSet::new();
     let mut origins = BTreeMap::new();
@@ -44,7 +50,11 @@ fn migration_corpus_preserves_parser_outcomes_and_source_inventory() {
         } else {
             "rejected"
         };
-        if let Some(change) = stage_changes.get(id) {
+        if MAIN_1489_UNBOUNDED_TRANSITIONS.contains(&id) {
+            assert_eq!(case["parse"], "rejected", "{id}");
+            assert_eq!(outcome, "accepted", "{id} at {source}: {parsed:?}");
+            requalified_1489.insert(id.to_string());
+        } else if let Some(change) = stage_changes.get(id) {
             assert_eq!(case["parse"], change["prior_parse"], "{id}");
             assert_eq!(outcome, change["parse"], "{id} at {source}: {parsed:?}");
             assert!(matches!(parsed, Ok(crate::Statement::Pipeline(_))), "{id}");
@@ -80,11 +90,19 @@ fn migration_corpus_preserves_parser_outcomes_and_source_inventory() {
     );
     assert_eq!(stage_changes.len(), requalified.len());
     assert_eq!(
+        requalified_1489,
+        MAIN_1489_UNBOUNDED_TRANSITIONS
+            .iter()
+            .map(|id| id.to_string())
+            .collect()
+    );
+    let transitioned = requalified.len() + requalified_1489.len();
+    assert_eq!(
         current_outcomes["accepted"],
-        outcomes["accepted"] + requalified.len()
+        outcomes["accepted"] + transitioned
     );
     assert_eq!(
-        current_outcomes["rejected"] + requalified.len(),
+        current_outcomes["rejected"] + transitioned,
         outcomes["rejected"]
     );
     assert_eq!(ids.len(), 1427);

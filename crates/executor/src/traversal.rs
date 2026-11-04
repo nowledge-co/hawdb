@@ -717,6 +717,17 @@ pub(crate) fn visit_one_hop_relationship_records(
 
 const MAX_STREAMING_EXPAND_RECURSION_DEPTH: usize = 256;
 
+/// `max_hops` of an unbounded variable-length pattern (`*`, `*n..`). Its
+/// trails stay finite because no trail repeats a relationship, but they are
+/// enumerated depth-first, so a trail that would grow past
+/// [`MAX_STREAMING_EXPAND_RECURSION_DEPTH`] hops is refused instead of being
+/// truncated (#1489). The refusal is conservative: it fires on the first
+/// eligible relationship beyond the limit, before that relationship's target
+/// is checked against the pattern's labels. On dense cyclic graphs the number
+/// of trails within the limit can grow exponentially, exactly as for an
+/// explicit `*1..256`; cancellation and the query memory budget bound it.
+pub const UNBOUNDED_EXPAND_MAX_HOPS: usize = usize::MAX;
+
 /// Receives a trail endpoint, its hop count and the trail's relationships.
 pub(crate) type TrailConsumer<'a> =
     dyn FnMut(NodeRecord, usize, &[RelId]) -> Result<ScanControl> + 'a;
@@ -833,16 +844,21 @@ fn visit_bounded_expand_inner(
     task_context: Option<&RuntimeTaskContext>,
     consumer: &mut TrailConsumer<'_>,
 ) -> Result<ScanControl> {
-    if spec.max_hops > MAX_STREAMING_EXPAND_RECURSION_DEPTH {
+    let unbounded = spec.max_hops == UNBOUNDED_EXPAND_MAX_HOPS;
+    if !unbounded && spec.max_hops > MAX_STREAMING_EXPAND_RECURSION_DEPTH {
         return Err(HawDBError::Execution(format!(
             "AdjacencyExpandExec max_hops {} exceeds streaming recursion limit {MAX_STREAMING_EXPAND_RECURSION_DEPTH}",
             spec.max_hops
         )));
     }
+    let depth_limit = if unbounded {
+        MAX_STREAMING_EXPAND_RECURSION_DEPTH
+    } else {
+        spec.max_hops
+    };
     // Each depth holds a recursion frame plus one trail relationship id.
     let traversal_frame_bytes = std::mem::size_of::<(NodeId, usize, RelId)>();
-    let traversal_state_bytes = spec
-        .max_hops
+    let traversal_state_bytes = depth_limit
         .saturating_add(1)
         .saturating_mul(traversal_frame_bytes);
     if traversal_state_bytes > memory.budget_bytes {
@@ -859,6 +875,9 @@ fn visit_bounded_expand_inner(
         task_context: Option<&'a RuntimeTaskContext>,
         consumer: &'b mut TrailConsumer<'b>,
         relationships: Vec<RelId>,
+        /// Set for an unbounded pattern: extending a trail of this many hops
+        /// is refused, never skipped.
+        unbounded_depth_limit: Option<usize>,
     }
 
     impl Trail<'_, '_> {
@@ -964,6 +983,16 @@ fn visit_bounded_expand_inner(
                     AdjacencyDirection::Outgoing => relationship.target,
                     AdjacencyDirection::Incoming => relationship.source,
                 };
+                if self
+                    .unbounded_depth_limit
+                    .is_some_and(|limit| self.relationships.len() == limit)
+                {
+                    return Err(HawDBError::Execution(format!(
+                        "unbounded variable-length pattern has a trail longer than \
+                         {MAX_STREAMING_EXPAND_RECURSION_DEPTH} relationships; give the \
+                         pattern an upper bound"
+                    )));
+                }
                 self.relationships.push(relationship.id);
                 let control = self.visit_depth(next);
                 self.relationships.pop();
@@ -989,7 +1018,8 @@ fn visit_bounded_expand_inner(
         memory,
         task_context,
         consumer,
-        relationships: Vec::with_capacity(spec.max_hops),
+        relationships: Vec::with_capacity(depth_limit),
+        unbounded_depth_limit: unbounded.then_some(depth_limit),
     }
     .visit_depth(spec.source)
 }

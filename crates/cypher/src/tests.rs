@@ -1695,10 +1695,30 @@ fn parses_anonymous_relationship_endpoints() {
 }
 
 #[test]
-fn rejects_unbounded_relationship_match() {
-    let error =
-        parse("MATCH (m:Memory)-[:MENTIONS*]->(e:Entity) RETURN e.name AS name").unwrap_err();
-    assert!(error.to_string().contains("finite max hop"));
+fn parses_unbounded_relationship_match() {
+    for (query, min_hops) in [
+        (
+            "MATCH (m:Memory)-[:MENTIONS*]->(e:Entity) RETURN e.name AS name",
+            1,
+        ),
+        (
+            "MATCH (m:Memory)-[:MENTIONS*0..]->(e:Entity) RETURN e.name AS name",
+            0,
+        ),
+        (
+            "MATCH (m:Memory)-[:MENTIONS*2..]->(e:Entity) RETURN e.name AS name",
+            2,
+        ),
+    ] {
+        let Statement::Pipeline(pipeline) = parse(query).unwrap() else {
+            panic!("{query}");
+        };
+        let debug = format!("{pipeline:?}");
+        assert!(
+            debug.contains(&format!("min_hops: {min_hops}, max_hops: {}", usize::MAX)),
+            "{query}: {debug}"
+        );
+    }
 }
 
 #[test]

@@ -577,6 +577,12 @@ impl PhysicalPlan {
                         }
                     })
                     .unwrap_or_default();
+                // An unbounded pattern prints as `n..`.
+                let max_hops = if *max_hops == usize::MAX {
+                    String::new()
+                } else {
+                    max_hops.to_string()
+                };
                 format!(
                     "{pad}AdjacencyExpandExec source={source_variable}:{source_label}{rel} direction={arrow} properties={rel_properties:?} hops={min_hops}..{max_hops} optional={optional}{budget} target={target_variable}:{target_label}"
                 )
