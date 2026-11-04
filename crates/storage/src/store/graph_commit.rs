@@ -1252,25 +1252,31 @@ impl GraphStore {
                     rel_filter,
                 } => {
                     if let (Some(source_label_id), Some(target_label_id), Some(rel_type_id)) = (
-                        working_catalog.label_id(&source_label),
-                        working_catalog.label_id(&target_label),
+                        endpoint_label_id(&working_catalog, &source_label),
+                        endpoint_label_id(&working_catalog, &target_label),
                         working_catalog.rel_type_id(&rel_type),
                     ) {
-                        let source_ids = self
-                            .matching_node_ids_with_pending_bounded(
-                                Some(source_label_id),
-                                filter.as_ref(),
-                                &pending_nodes,
-                                remaining_mutation_affected_rows(rows.len(), limits)?,
-                                "max_mutation_affected_rows",
-                            )?
-                            .into_iter()
-                            .collect::<BTreeSet<_>>();
+                        // `None`: an unconstrained source matches every relationship.
+                        let source_ids = (source_label_id.is_some() || filter.is_some())
+                            .then(|| {
+                                self.matching_node_ids_with_pending_bounded(
+                                    source_label_id,
+                                    filter.as_ref(),
+                                    &pending_nodes,
+                                    remaining_mutation_affected_rows(rows.len(), limits)?,
+                                    "max_mutation_affected_rows",
+                                )
+                            })
+                            .transpose()?
+                            .map(|ids| ids.into_iter().collect::<BTreeSet<_>>());
+                        let source_matches = |source: &NodeId| {
+                            source_ids.as_ref().is_none_or(|ids| ids.contains(source))
+                        };
                         let target_ids = target_filter
                             .as_ref()
                             .map(|filter| {
                                 self.matching_node_ids_with_pending_bounded(
-                                    Some(target_label_id),
+                                    target_label_id,
                                     Some(filter),
                                     &pending_nodes,
                                     remaining_mutation_affected_rows(rows.len(), limits)?,
@@ -1285,7 +1291,7 @@ impl GraphStore {
                         for relationship in self.relationship_records_owned() {
                             let relationship = relationship?;
                             if relationship.rel_type != rel_type_id
-                                || !source_ids.contains(&relationship.source)
+                                || !source_matches(&relationship.source)
                             {
                                 continue;
                             }
@@ -1305,7 +1311,8 @@ impl GraphStore {
                             let target_matches = self
                                 .node_owned(relationship.target)?
                                 .map(|target| {
-                                    target.labels.contains(&target_label_id)
+                                    target_label_id
+                                        .is_none_or(|label| target.labels.contains(&label))
                                         && target_ids
                                             .as_ref()
                                             .map(|ids| ids.contains(&relationship.target))
@@ -1334,7 +1341,7 @@ impl GraphStore {
                             &pending_relationships
                         {
                             if *pending_rel_type_id != rel_type_id
-                                || !source_ids.contains(source)
+                                || !source_matches(source)
                                 || rel_filter.as_ref().is_some_and(|filter| {
                                     !property_filter_matches(filter, relationship_id.0, properties)
                                 })
@@ -1610,12 +1617,12 @@ impl GraphStore {
                         continue;
                     }
                     let Some(old_target_label_id) =
-                        working_catalog.label_id(&request.old_target_label)
+                        endpoint_label_id(&working_catalog, &request.old_target_label)
                     else {
                         continue;
                     };
                     let Some(new_target_label_id) =
-                        working_catalog.label_id(&request.new_target_label)
+                        endpoint_label_id(&working_catalog, &request.new_target_label)
                     else {
                         continue;
                     };
@@ -1634,7 +1641,7 @@ impl GraphStore {
                             rel_type_id: old_rel_type_id,
                             source_label_id,
                             source_filter: request.source_filter.as_ref(),
-                            target_label_id: Some(old_target_label_id),
+                            target_label_id: old_target_label_id,
                             target_filter: request.old_target_filter.as_ref(),
                             rel_properties: &request.old_rel_filter,
                         },
@@ -1645,7 +1652,7 @@ impl GraphStore {
                     .collect::<BTreeSet<_>>();
                     let target_ids = self
                         .matching_node_ids_with_pending_bounded(
-                            Some(new_target_label_id),
+                            new_target_label_id,
                             request.new_target_filter.as_ref(),
                             &pending_nodes,
                             remaining_rows,
@@ -1740,7 +1747,7 @@ impl GraphStore {
                         continue;
                     }
                     let Some(old_target_label_id) =
-                        working_catalog.label_id(&request.old_target_label)
+                        endpoint_label_id(&working_catalog, &request.old_target_label)
                     else {
                         continue;
                     };
@@ -1764,7 +1771,7 @@ impl GraphStore {
                             rel_type_id: old_rel_type_id,
                             source_label_id: old_source_label_id,
                             source_filter: request.old_source_filter.as_ref(),
-                            target_label_id: Some(old_target_label_id),
+                            target_label_id: old_target_label_id,
                             target_filter: request.old_target_filter.as_ref(),
                             rel_properties: &request.old_rel_filter,
                         },

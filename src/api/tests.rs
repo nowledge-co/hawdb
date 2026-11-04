@@ -202,6 +202,7 @@ mod thread_metadata_reads;
 mod transaction_compaction;
 mod transaction_control;
 mod transaction_merge;
+mod unlabeled_endpoint_mutations;
 
 #[test]
 fn database_instance_identity_rejects_poisoned_store() {

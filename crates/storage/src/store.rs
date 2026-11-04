@@ -3009,6 +3009,17 @@ fn optional_label_id(catalog: &Catalog, label: &str) -> Option<LabelId> {
     }
 }
 
+/// Resolves an endpoint label of a relationship mutation's pattern. An
+/// unlabeled pattern node (`""`) matches any node: `Some(None)`. A label the
+/// catalog does not know matches no node: `None`.
+fn endpoint_label_id(catalog: &Catalog, label: &str) -> Option<Option<LabelId>> {
+    if label.is_empty() {
+        Some(None)
+    } else {
+        catalog.label_id(label).map(Some)
+    }
+}
+
 fn pending_node_index(pending_nodes: &[PendingNode], id: NodeId) -> Option<usize> {
     // Allocation appends increasing IDs; deletion retains the order and may leave gaps.
     pending_nodes
@@ -3028,25 +3039,30 @@ fn apply_set_relationship_properties_mutation(
     limits: MutationLimits,
 ) -> Result<()> {
     let (Some(source_label_id), Some(target_label_id), Some(rel_type_id)) = (
-        catalog.label_id(&update.source_label),
-        catalog.label_id(&update.target_label),
+        endpoint_label_id(catalog, &update.source_label),
+        endpoint_label_id(catalog, &update.target_label),
         catalog.rel_type_id(&update.rel_type),
     ) else {
         return Ok(());
     };
-    let source_ids = store
-        .matching_node_ids_with_pending_bounded(
-            Some(source_label_id),
-            update.filter.as_ref(),
-            pending_nodes,
-            remaining_mutation_affected_rows(rows.len(), limits)?,
-            "max_mutation_affected_rows",
-        )?
-        .into_iter()
-        .collect::<BTreeSet<_>>();
+    // `None`: an unconstrained source matches every relationship.
+    let source_ids = (source_label_id.is_some() || update.filter.is_some())
+        .then(|| {
+            store.matching_node_ids_with_pending_bounded(
+                source_label_id,
+                update.filter.as_ref(),
+                pending_nodes,
+                remaining_mutation_affected_rows(rows.len(), limits)?,
+                "max_mutation_affected_rows",
+            )
+        })
+        .transpose()?
+        .map(|ids| ids.into_iter().collect::<BTreeSet<_>>());
+    let source_matches =
+        |source: &NodeId| source_ids.as_ref().is_none_or(|ids| ids.contains(source));
     for relationship in store.relationship_records_owned() {
         let relationship = relationship?;
-        if relationship.rel_type != rel_type_id || !source_ids.contains(&relationship.source) {
+        if relationship.rel_type != rel_type_id || !source_matches(&relationship.source) {
             continue;
         }
         if update
@@ -3062,7 +3078,7 @@ fn apply_set_relationship_properties_mutation(
         let target_matches = store
             .node_owned(relationship.target)?
             .map(|target| {
-                target.labels.contains(&target_label_id)
+                target_label_id.is_none_or(|label| target.labels.contains(&label))
                     && update
                         .target_filter
                         .as_ref()
@@ -3096,7 +3112,7 @@ fn apply_set_relationship_properties_mutation(
     }
     for (relationship_id, source, target, pending_rel_type_id, properties) in pending_relationships
     {
-        if *pending_rel_type_id != rel_type_id || !source_ids.contains(source) {
+        if *pending_rel_type_id != rel_type_id || !source_matches(source) {
             continue;
         }
         if update
@@ -3138,11 +3154,11 @@ fn node_matches_label_and_filter(
     store: &GraphStore,
     pending_nodes: &[PendingNode],
     id: NodeId,
-    label_id: LabelId,
+    label_id: Option<LabelId>,
     filter: Option<&PropertyFilter>,
 ) -> Result<bool> {
     if let Some(node) = store.node_owned(id)? {
-        return Ok(node.labels.contains(&label_id)
+        return Ok(label_id.is_none_or(|label| node.labels.contains(&label))
             && filter
                 .map(|filter| property_filter_matches(filter, id.0, &node.properties))
                 .unwrap_or(true));
@@ -3150,7 +3166,7 @@ fn node_matches_label_and_filter(
     Ok(pending_node_index(pending_nodes, id)
         .map(|index| &pending_nodes[index])
         .map(|(_, pending_label_id, properties)| {
-            *pending_label_id == label_id
+            label_id.is_none_or(|label| *pending_label_id == label)
                 && filter
                     .map(|filter| property_filter_matches(filter, id.0, properties))
                     .unwrap_or(true)
