@@ -86,6 +86,10 @@ a cache insertion racing admission can conservatively consume a credit.
 Scratch accounting includes requested vector capacities, decoded-block scratch
 and conservative posting-map charges. It is not process RSS or allocator
 rounding; immutable storage caches retain their separate limits.
+Property descriptor bounds and payload keys reuse canonical allocation preflight
+before decoding, including on cache hits. Preparation charges both the borrowed
+allocation pass and the decode pass; nested unrelated values cannot bypass this
+admission merely because the requested equality is scalar.
 Duration checks are cooperative and cannot interrupt one blocking filesystem
 read. Query task cancellation takes precedence over the sampling deadline.
 The configured query memory ceiling and runtime memory target can tighten the

@@ -10,6 +10,7 @@ Bounded index join sampling ([contract](QUERY_JOIN_SAMPLING.md), issue #1560)
 extends existing owners without a new CI lane or compilation profile.
 `//crates/storage:hawdb_storage_tests` owns resident/canonical duplicate fanout,
 ordinal reuse, read admission/cache reuse, snapshot retention, overlay refusal,
+descriptor/payload nested-value allocation refusal on hot caches,
 empty-sample fallback, parent work limits, nonblocking runtime I/O and scratch
 reservation ownership, and cancellation. Replay `cargo test --locked -p
 hawdb-storage --lib join_sampling -- --test-threads=1`.

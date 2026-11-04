@@ -36,6 +36,9 @@ impl PersistentPropertyProjectionReader {
             |key, value| {
                 let step = (|| {
                     context.prepare(1)?;
+                    let descriptor_bytes = super::ordered::descriptor_memory(value, property, 0)
+                        .map_err(|error| self.sampling_error(error))?;
+                    context.memory(descriptor_bytes)?;
                     let block =
                         PersistentPropertyProjectionBlockDescriptor::decode_descriptor_tree_entry(
                             key, value,
@@ -46,6 +49,9 @@ impl PersistentPropertyProjectionReader {
                     if expected < &block.min_key || expected > &block.max_key {
                         return Ok(());
                     }
+                    context.prepare(block.entry_count as usize)?;
+                    // Both the allocation preflight and value decode examine
+                    // every entry; neither pass is hidden from admission.
                     context.prepare(block.entry_count as usize)?;
                     let scratch = usize::try_from(block.length.get())
                         .ok()
@@ -73,6 +79,27 @@ impl PersistentPropertyProjectionReader {
                                 self.sampling_error(error.into())
                             }
                         })?;
+                    let mut largest_value = 0;
+                    super::ordered::walk_entries(
+                        &read.payload,
+                        self.manifest.generation,
+                        &block,
+                        None,
+                        |_, encoded| {
+                            largest_value = largest_value.max(
+                                crate::canonical::standalone_value_allocation_bytes(encoded)?,
+                            );
+                            Ok(())
+                        },
+                    )
+                    .map_err(|error| self.sampling_error(error))?;
+                    // Reuse the ordered-reader workspace bound: current value,
+                    // first/previous keys and their validation copies coexist.
+                    let workspace = largest_value
+                        .checked_mul(6)
+                        .and_then(|bytes| bytes.checked_add(block.property.len().checked_mul(4)?))
+                        .ok_or(SamplingError::Refused(JoinSamplingRefusal::MemoryBudget))?;
+                    context.memory(workspace)?;
                     let mut admission_error = None;
                     decode_projection_block(
                         &read.payload,

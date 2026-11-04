@@ -254,7 +254,7 @@ impl GraphStore {
             let candidate_rows = sampled_rows(candidates)?;
             hops.push(JoinHopSample {
                 candidate_rows,
-                output_rows: sampled_rows(population)?,
+                output_rows: sampled_rows(population)?.min(candidate_rows),
             });
             work_rows = work_rows
                 .checked_add(candidate_rows)
@@ -315,6 +315,10 @@ mod tests {
     }
 
     fn fixture(persistent: bool) -> Fixture {
+        fixture_with_projection_values(persistent, &[])
+    }
+
+    fn fixture_with_projection_values(persistent: bool, extra_values: &[Value]) -> Fixture {
         let directory = persistent.then(|| {
             std::env::temp_dir().join(format!(
                 "hawdb-join-sampling-{}",
@@ -348,6 +352,15 @@ mod tests {
         let a = [node("A"), node("A"), node("A")];
         let b = [node("B"), node("B")];
         let c = node("C");
+        for value in extra_values {
+            store
+                .create_node(
+                    &mut catalog,
+                    "A",
+                    BTreeMap::from([("kind".into(), value.clone())]),
+                )
+                .unwrap();
+        }
         for (source, target, kind) in [
             (a[0], b[0], "R"),
             (a[0], b[0], "R"),
@@ -557,6 +570,59 @@ mod tests {
         assert_eq!(cached.estimates, warmed.estimates);
         assert_eq!(cached.work.read_bytes, 0);
         fixture.store.ensure_usable().unwrap();
+    }
+
+    #[test]
+    fn join_sampling_admits_nested_projection_allocations_even_on_cache_hits() {
+        let large = Value::List(vec![Value::Null; 128]);
+        // First cover a large descriptor bound, then a large interior key
+        // whose shallow maximum does not reveal the payload decode cost.
+        for values in [
+            vec![large.clone()],
+            vec![large, Value::List(vec![Value::Int(1)])],
+        ] {
+            let fixture = fixture_with_projection_values(true, &values);
+            let warmed = fixture
+                .store
+                .sample_join_path(
+                    &fixture.request,
+                    JoinSamplingLimits {
+                        max_probes: 1,
+                        ..limits()
+                    },
+                    None,
+                )
+                .unwrap();
+            assert_eq!(warmed.refusal, Some(JoinSamplingRefusal::ProbeBudget));
+            let refused = fixture
+                .store
+                .sample_join_path(
+                    &fixture.request,
+                    JoinSamplingLimits {
+                        max_retained_bytes: 8 * 1024,
+                        max_read_bytes: 0,
+                        ..limits()
+                    },
+                    None,
+                )
+                .unwrap();
+            assert_eq!(refused.refusal, Some(JoinSamplingRefusal::MemoryBudget));
+            assert_eq!(
+                refused.work.probes, 1,
+                "refuse in the first domain before decoding an oversized value"
+            );
+            assert_eq!(
+                refused.work.read_operations, 0,
+                "cached reads still require allocation admission"
+            );
+            assert!(refused.estimates.is_none());
+            assert!(fixture
+                .store
+                .sample_join_path(&fixture.request, limits(), None)
+                .unwrap()
+                .estimates
+                .is_some());
+        }
     }
 
     #[test]
