@@ -3,6 +3,13 @@
 `shiro` is a development-only correctness harness over HawDB's public embedded API. The
 production `hawdb` crate does not depend on it.
 
+Opt-in `shiro sqlsmith` compares bounded template and recursive SQL generation
+on a fixed fixture. It shares the unpublished [query-workloads](../query-workloads/README.md)
+generator and [query-lab](../query-lab/README.md) freeze/compare/replay runner.
+`shiro sqlsmith --help` lists commands. Existing default campaigns and seed/index
+mappings remain unchanged; SQLsmith is a separate execution/repeatability
+experiment, not additional semantic oracle coverage.
+
 Opt-in optimizer qualification compares one identical statement/parameter set
 on a pinned snapshot with optional rule disabling, Applied-event assertions and
 bounded seeded ranking changes. It records the actual executed trace, preserves

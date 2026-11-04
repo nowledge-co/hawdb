@@ -1,7 +1,8 @@
 # Optimizer cost qualification development plan
 
-Status: proposed, 2026-11-04; implementation is pending. This delivery adds the
-design and backlog only. The
+Status: candidate qualification proposed, 2026-11-04. The shared workload
+generator and frozen ordinary-plan baseline are implemented as manual tools;
+the candidate-selection and qualification phases below remain pending. The
 [specification](specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md) defines acceptance;
 [TODO](../TODO.md) is the single actionable checklist. Related work:
 [#216](https://github.com/nowledge-co/hawdb/issues/216).
@@ -9,8 +10,9 @@ design and backlog only. The
 ## Approach and delivery boundaries
 
 Extend the existing typed embedded qualification path with narrowly bounded
-legal-candidate selection and reusable evidence. Reuse Shiro's private
-fixture/replay/result comparison for an explicit offline campaign. This keeps
+legal-candidate selection and reusable evidence. Reuse the unpublished
+`tools/query-workloads` generator from Shiro and `tools/query-lab`; keep
+execution/replay in the latter's explicit offline runner. This keeps
 one parser/planner/executor path and avoids introducing a production hint
 language or a second executor. Existing cost perturbation is a useful control,
 but its limited choice coverage cannot stand in for candidate selection.
@@ -19,6 +21,20 @@ Land each stage directly against main after its prerequisite is available.
 Keep later stages unimplemented until their entry gates hold. Each stage owns
 its focused engine tests and source-bound evidence; schema, runtime admission
 and physical-plan legality remain governed by the existing contracts.
+
+## Available workload prerequisite
+
+[Query workloads](../tools/query-workloads/README.md) preserves the existing
+Cypher/SQL generator inventory and adds bounded type-directed SQLsmith
+predicates. [Query lab](../tools/query-lab/README.md) freezes setup, queries,
+parameters and budgets before execution; compares template/recursive validity,
+syntax combinations, executed access shapes and failure replay; and collects
+same-snapshot ordinary-plan cost baselines with three warmups/fifteen samples.
+
+These tools are independent, unpublished workspaces, excluded from library
+archives and ordinary CI. They do not complete phase 1 or phase 2: full physical
+identity, legal alternative selection, four-family coverage and source-qualified
+regret remain missing. No cost coefficients or production APIs change.
 
 ## Phase 1: Evidence and a minimal candidate-selection proof
 
@@ -33,7 +49,7 @@ selection rather than widening production optimizer controls.
 
 Likely owners are `crates/cascades/src/qualification.rs`,
 `src/api/optimizer_qualification.rs`, the existing optimizer lowerers and explain
-records, with tool-only serialization/replay under `tools/shiro/`. Final type
+records, with tool-only serialization/replay under `tools/query-lab/`. Final type
 names and source boundaries must follow the current code during implementation.
 Do not expose an arbitrary physical-plan execution API.
 

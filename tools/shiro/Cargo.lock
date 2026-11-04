@@ -867,6 +867,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "query-lab"
+version = "0.0.0"
+dependencies = [
+ "hawdb",
+ "query-workloads",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "query-workloads"
+version = "0.0.0"
+dependencies = [
+ "hawdb-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1027,6 +1047,8 @@ version = "0.0.0"
 dependencies = [
  "hawdb",
  "hawdb-fuzz-contracts",
+ "query-lab",
+ "query-workloads",
  "serde_json",
 ]
 

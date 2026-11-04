@@ -12,6 +12,8 @@ exclude = [
   "/experiments/bftree-mvcc/**",
   "/tools/mvcc-fuzz/**",
   "/tools/shiro/**",
+  "/tools/query-workloads/**",
+  "/tools/query-lab/**",
   "/tests/pg-regress/**",
   "/crates/fuzz/**",
   "/crates/test-contracts/**",
