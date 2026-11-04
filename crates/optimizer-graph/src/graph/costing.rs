@@ -691,6 +691,7 @@ fn estimate_local_operator_cost(
             target_label,
             min_hops,
             max_hops,
+            input,
             ..
         } => {
             let input_cost = inputs[0].expect("unary input cost");
@@ -703,11 +704,18 @@ fn estimate_local_operator_cost(
                 *max_hops,
             );
             let source_rows = catalog.label_count(source_label).max(1);
-            let scaled_rows = expand_estimate
-                .estimated_rows
-                .saturating_mul(input_cost.estimated_rows.max(1))
-                .div_ceil(source_rows)
-                .max(1);
+            // Seeded sources already are the matching relationships' endpoints,
+            // so the expand yields its whole-label estimate, not a fraction.
+            let scaled_rows = if matches!(**input, PhysicalPlan::RelationshipSeededNodeScan { .. })
+            {
+                expand_estimate.estimated_rows.max(1)
+            } else {
+                expand_estimate
+                    .estimated_rows
+                    .saturating_mul(input_cost.estimated_rows.max(1))
+                    .div_ceil(source_rows)
+                    .max(1)
+            };
             input_cost.with_random_io(
                 scaled_rows,
                 input_cost.estimated_rows.saturating_add(scaled_rows),

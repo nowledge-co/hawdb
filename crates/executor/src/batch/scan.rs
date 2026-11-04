@@ -822,44 +822,81 @@ pub(super) fn stream_relationship_seeded_node_scan_batches(
         );
     };
     let label_ids = label_ids_for_pattern(context.catalog, spec.label);
+    let batch_rows = context.memory.batch_rows.get();
+    let batch_payload_bytes = context.memory.batch_payload_bytes.get();
     let mut emitted = 0usize;
-    for chunk in ids.chunks(context.memory.batch_rows.get()) {
+    let mut batch: Vec<Binding> = Vec::new();
+    let mut batch_bytes = 0usize;
+    let mut permits: Vec<Box<dyn hawdb_storage::read_view::GraphReadAllocation>> = Vec::new();
+    for id in &ids {
         runtime_checkpoint(context.task_context)?;
-        let mut batch = Vec::with_capacity(chunk.len());
-        let mut permits = Vec::with_capacity(chunk.len());
-        for id in chunk {
-            if execution_limit.is_reached(emitted.saturating_add(batch.len())) {
-                break;
-            }
-            let mut admit =
-                |bytes| admit_graph_read(&source_account, context.task_context, bytes).map(Some);
-            match context.store.node_with_allocation(
-                *id,
-                label_ids.as_deref(),
-                &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
-                    &mut admit,
-                    context.task_context,
-                ),
-            )? {
-                hawdb_storage::read_view::AdmittedNodeRead::Node(record) => {
-                    let (node, permit) = record.into_parts();
-                    permits.push(permit);
-                    batch.push(crate::scan::single_node_binding(spec.variable, node));
-                }
-                hawdb_storage::read_view::AdmittedNodeRead::Missing => {}
-                hawdb_storage::read_view::AdmittedNodeRead::Stopped => {
-                    return Ok(BatchControl::Stop);
-                }
-            }
+        if execution_limit.is_reached(emitted.saturating_add(batch.len())) {
+            break;
         }
-        emitted = emitted.saturating_add(batch.len());
-        if !batch.is_empty() && emit(batch)? == BatchControl::Stop {
-            return Ok(BatchControl::Stop);
-        }
-        if execution_limit.is_reached(emitted) {
-            return Ok(BatchControl::Stop);
+        let mut attempt = 0;
+        let read = loop {
+            // Emitting releases the batch's point-read permits. As in the
+            // label scan, a full batch (rows or bytes) or a tight account
+            // emits first, then this node is read again.
+            let mut flush_first = batch.len() >= batch_rows;
+            let read = if flush_first {
+                None
+            } else {
+                let mut admit = |bytes: usize| {
+                    let bytes = bytes.saturating_add(1024 + spec.variable.len());
+                    if !batch.is_empty()
+                        && (!source_account.can_reserve(bytes)
+                            || batch_bytes.saturating_add(bytes) > batch_payload_bytes)
+                    {
+                        flush_first = true;
+                        return Ok(None);
+                    }
+                    admit_graph_read(&source_account, context.task_context, bytes).map(Some)
+                };
+                let read = context.store.node_with_allocation(
+                    *id,
+                    label_ids.as_deref(),
+                    &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                        &mut admit,
+                        context.task_context,
+                    ),
+                )?;
+                (!flush_first).then_some(read)
+            };
+            if let Some(read) = read {
+                break read;
+            }
+            attempt += 1;
+            if attempt > 1 {
+                return Err(HawDBError::Execution(
+                    "relationship-seeded scan could not admit a node after emitting".into(),
+                ));
+            }
+            emitted = emitted.saturating_add(batch.len());
+            batch_bytes = 0;
+            let control = emit(std::mem::take(&mut batch))?;
+            permits.clear();
+            if control == BatchControl::Stop {
+                return Ok(BatchControl::Stop);
+            }
+        };
+        match read {
+            hawdb_storage::read_view::AdmittedNodeRead::Node(record) => {
+                let (node, permit) = record.into_parts();
+                batch_bytes = batch_bytes.saturating_add(permit.bytes());
+                permits.push(permit);
+                batch.push(crate::scan::single_node_binding(spec.variable, node));
+            }
+            hawdb_storage::read_view::AdmittedNodeRead::Missing => {}
+            hawdb_storage::read_view::AdmittedNodeRead::Stopped => {
+                return Ok(BatchControl::Stop);
+            }
         }
     }
+    if !batch.is_empty() && emit(batch)? == BatchControl::Stop {
+        return Ok(BatchControl::Stop);
+    }
+    drop(permits);
     Ok(BatchControl::Continue)
 }
 
@@ -890,7 +927,14 @@ fn relationship_property_seeds(
     // Seeding pays one point read per candidate; past the label's node count
     // the scan is the cheaper access.
     let max_relationships = context.store.node_count_for_label(label_id);
-    let mut admit = |bytes| admit_graph_read(source_account, context.task_context, bytes).map(Some);
+    // A seed list the account cannot hold falls back to the label scan,
+    // which admits node by node instead of failing the query.
+    let mut admit = |bytes| {
+        if !source_account.can_reserve(bytes) {
+            return Ok(None);
+        }
+        admit_graph_read(source_account, context.task_context, bytes).map(Some)
+    };
     let Some((ids, permit)) = context.store.relationship_property_endpoint_candidates(
         rel_type_id,
         spec.rel_properties,

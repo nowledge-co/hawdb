@@ -20,6 +20,11 @@ use super::*;
 
 fn database() -> Database {
     let mut db = Database::new();
+    populate(&mut db);
+    db
+}
+
+fn populate(db: &mut Database) {
     for id in 0..60_i64 {
         db.query_with_params(
             "CREATE (:Entity {id: $id})",
@@ -65,7 +70,6 @@ fn database() -> Database {
         create("Entity", "Other", "RELATES_TO", offset, offset, offset);
         create("Entity", "Entity", "LINK", offset, offset + 1, offset);
     }
-    db
 }
 
 fn rows(db: &mut Database, query: &str) -> Vec<Vec<Value>> {
@@ -232,4 +236,163 @@ fn relationship_property_seeds_fall_back_without_a_resident_index() {
             || report.rel_type_id.is_none()),
         "{reports:?}"
     );
+}
+
+const SEEDED: &str =
+    "MATCH (s:Entity)-[r:RELATES_TO]->(t:Entity) WHERE r.table = $t AND r.offset = $o \
+                      RETURN s.id, r.offset, t.id";
+const NODE_FIRST: &str = "MATCH (s:Entity) WITH s MATCH (s)-[r:RELATES_TO]->(t:Entity) \
+                          WHERE r.table = $t AND r.offset = $o RETURN s.id, r.offset, t.id";
+
+fn occurrence(t: i64, o: i64) -> BTreeMap<String, Value> {
+    BTreeMap::from([("t".into(), Value::Int(t)), ("o".into(), Value::Int(o))])
+}
+
+fn values(output: QueryOutput) -> Vec<Vec<Value>> {
+    output
+        .rows
+        .into_rows()
+        .into_iter()
+        .map(|row| row.values().cloned().collect())
+        .collect()
+}
+
+/// Mem's parameterized WHERE form seeds, and a cached plan rebinds the
+/// relationship properties for every parameter set.
+#[test]
+fn parameterized_conjuncts_seed_and_rebind_cached_plans() {
+    let mut db = database();
+    let explain = db
+        .query_with_params(&format!("EXPLAIN {SEEDED}"), &occurrence(7, 4))
+        .unwrap();
+    let Value::String(plan) = &explain.rows[0]["plan"] else {
+        panic!("missing plan")
+    };
+    assert!(plan.contains("RelationshipSeededNodeScan"), "{plan}");
+    for (t, o) in [(7, 4), (7, 11), (7, 999), (8, 4), (7, 89), (7, 4)] {
+        let parameters = occurrence(t, o);
+        let seeded = values(db.query_with_params(SEEDED, &parameters).unwrap());
+        let node_first = values(db.query_with_params(NODE_FIRST, &parameters).unwrap());
+        assert_eq!(seeded, node_first, "{t}:{o}");
+    }
+}
+
+/// Uncommitted creates, deletes and updates are visible to the seeded scan
+/// inside the writing transaction, and a pinned snapshot keeps its view.
+#[test]
+fn transaction_writes_and_snapshots_match_the_node_first_expand() {
+    let mut db = database();
+    let mut snapshot = db.begin_read_transaction().unwrap();
+    let mut transaction = db.begin_transaction().unwrap();
+    for write in [
+        "MATCH (a:Entity {id: 1}), (b:Entity {id: 2}) CREATE (a)-[:RELATES_TO {table: 7, offset: 500}]->(b)",
+        "MATCH (a:Entity)-[r:RELATES_TO {offset: 4}]->(b:Entity) DELETE r",
+        "MATCH (a:Entity)-[r:RELATES_TO {offset: 6}]->(b:Entity) SET r.offset = 600",
+    ] {
+        transaction.query(write).unwrap();
+    }
+    for offset in [500, 4, 6, 600, 5] {
+        let parameters = occurrence(7, offset);
+        let seeded = values(transaction.query_with_params(SEEDED, &parameters).unwrap());
+        let node_first = values(
+            transaction
+                .query_with_params(NODE_FIRST, &parameters)
+                .unwrap(),
+        );
+        assert_eq!(seeded, node_first, "transaction offset {offset}");
+        assert_eq!(
+            seeded.is_empty(),
+            offset == 4 || offset == 6,
+            "transaction offset {offset}"
+        );
+    }
+    transaction.commit().unwrap();
+    for offset in [500, 4, 6, 600] {
+        let parameters = occurrence(7, offset);
+        let seeded = values(snapshot.query_with_params(SEEDED, &parameters).unwrap());
+        let node_first = values(snapshot.query_with_params(NODE_FIRST, &parameters).unwrap());
+        assert_eq!(seeded, node_first, "snapshot offset {offset}");
+        assert_eq!(
+            seeded.is_empty(),
+            offset == 500 || offset == 600,
+            "snapshot offset {offset}"
+        );
+    }
+}
+
+/// An undirected self-loop is returned once per traversal direction, as the
+/// node-first expand returns it, and a label union keeps the label scan.
+#[test]
+fn undirected_self_loops_and_label_unions_match_the_node_first_expand() {
+    let mut db = database();
+    db.query(
+        "MATCH (a:Entity {id: 50}), (b:Entity {id: 50}) \
+         CREATE (a)-[:RELATES_TO {table: 7, offset: 777}]->(b)",
+    )
+    .unwrap();
+    for (seeded, node_first) in [
+        (
+            "MATCH (s:Entity)-[r:RELATES_TO {offset: 777}]-(t:Entity) RETURN s.id, t.id",
+            "MATCH (s:Entity) WITH s MATCH (s)-[r:RELATES_TO {offset: 777}]-(t:Entity) RETURN s.id, t.id",
+        ),
+        (
+            "MATCH (s:Entity:Other)-[r:RELATES_TO {offset: 5}]->(t:Entity) RETURN s.id, t.id",
+            "MATCH (s:Entity:Other) WITH s MATCH (s)-[r:RELATES_TO {offset: 5}]->(t:Entity) RETURN s.id, t.id",
+        ),
+    ] {
+        let expected = rows(&mut db, node_first);
+        assert!(!expected.is_empty(), "{node_first}");
+        assert_eq!(rows(&mut db, seeded), expected, "{seeded}");
+    }
+}
+
+/// Under a tight query and batch budget the seeded scan falls back or emits
+/// smaller batches; it never fails where the node-first expand succeeds.
+#[test]
+fn tight_memory_budgets_match_the_node_first_expand() {
+    for (query_bytes, batch_bytes) in [(65_536, 4_096), (24_576, 1_024), (16_384, 512)] {
+        let mut db = Database::new_with_config(DatabaseConfig {
+            execution_memory: crate::executor::ExecutionMemoryConfig {
+                query_memory_bytes: std::num::NonZeroUsize::new(query_bytes).unwrap(),
+                batch_rows: std::num::NonZeroUsize::new(2).unwrap(),
+                batch_payload_bytes: std::num::NonZeroUsize::new(batch_bytes).unwrap(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        populate(&mut db);
+        for parameters in [occurrence(7, 4), occurrence(7, 30)] {
+            let seeded = db.query_with_params(SEEDED, &parameters).map(values);
+            let node_first = db.query_with_params(NODE_FIRST, &parameters).map(values);
+            match (seeded, node_first) {
+                (Ok(seeded), Ok(node_first)) => assert_eq!(seeded, node_first),
+                // Both refuse: the per-row ceiling applies to either plan.
+                (Err(_), Err(_)) => {}
+                (seeded, node_first) => panic!(
+                    "budget {query_bytes}/{batch_bytes}: seeded {:?}, node-first {:?}",
+                    seeded.map(|rows| rows.len()),
+                    node_first.map(|rows| rows.len())
+                ),
+            }
+        }
+    }
+    // A wide-label scan of many seeds under a small batch budget.
+    let mut db = Database::new_with_config(DatabaseConfig {
+        execution_memory: crate::executor::ExecutionMemoryConfig {
+            batch_rows: std::num::NonZeroUsize::new(64).unwrap(),
+            batch_payload_bytes: std::num::NonZeroUsize::new(2_048).unwrap(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    populate(&mut db);
+    let seeded = rows(
+        &mut db,
+        "MATCH (s:Entity)-[r:RELATES_TO {table: 7}]->(t:Entity) RETURN s.id, r.offset",
+    );
+    let node_first = rows(
+        &mut db,
+        "MATCH (s:Entity) WITH s MATCH (s)-[r:RELATES_TO {table: 7}]->(t:Entity) RETURN s.id, r.offset",
+    );
+    assert_eq!(seeded, node_first);
 }

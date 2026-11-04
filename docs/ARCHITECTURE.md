@@ -920,6 +920,7 @@ properties kept as separate contracts:
 Core physical operators:
 
 - `SeqNodeScan`
+- `RelationshipSeededNodeScan`
 - `IndexNodeSeek`
 - `IndexNodeCompositeSeek`
 - `IndexNodeTextSeek`
@@ -1010,6 +1011,9 @@ Implementation rules:
 - `NodeScan` to `SeqNodeScan`
 - `NodeScan + property predicate` to `IndexNodeSeek`
 - `Expand` to `AdjacencyExpand`
+- the source `SeqNodeScan` of a mandatory single-hop `AdjacencyExpand` with
+  relationship property equalities to `RelationshipSeededNodeScan` when fewer
+  relationships are estimated to match than the label has nodes
 - selective pattern fragment to `HashJoin`
 - correlated pattern fragment to `NestedLoopApply`
 - mutation logical nodes to `MutationExec`

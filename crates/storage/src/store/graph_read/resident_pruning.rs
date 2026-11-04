@@ -329,7 +329,7 @@ impl GraphStore {
         let mut ids = Vec::with_capacity(smallest.len().saturating_mul(per_relationship));
         for id in smallest.iter() {
             let Some(record) = self.relationships.get(id) else {
-                return Err(HawDBError::Execution(format!(
+                return Err(HawDBError::StorageIntegrity(format!(
                     "relationship property index references missing relationship {}",
                     id.0
                 )));
