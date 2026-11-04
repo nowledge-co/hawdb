@@ -3495,6 +3495,14 @@ fn estimated_relationship_record_bytes_with_visit<E>(
 }
 
 impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
+    fn sample_join_path(
+        &self,
+        request: &crate::join_sampling::JoinSamplingRequest,
+        limits: crate::join_sampling::JoinSamplingLimits,
+        task: Option<&hawdb_core::RuntimeTaskContext>,
+    ) -> hawdb_core::Result<crate::join_sampling::JoinSamplingReport> {
+        GraphStore::sample_join_path(self, request, limits, task)
+    }
     fn storage_version(&self) -> &'static str {
         GraphStore::storage_version(self)
     }

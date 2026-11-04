@@ -1243,6 +1243,7 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                 access_control,
                 optimizer_search,
                 scoring,
+                task_context: self.task_context.as_ref(),
             },
         )
     }

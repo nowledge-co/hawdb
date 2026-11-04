@@ -54,7 +54,14 @@ pub(super) fn rewrite_logical_plan_with_catalog(
     catalog: &super::OptimizerCatalog,
     options: crate::OptimizerQualificationOptions,
 ) -> LogicalRewriteOutput {
-    let mut output = rewrite_logical_plan(plan);
+    let sampled = super::join_sampling::rewrite(plan, catalog);
+    let mut output = rewrite_logical_plan(sampled.as_ref().unwrap_or(plan));
+    if sampled.is_some() {
+        output.events.push(RuleEvent::applied(
+            "transformation:sampled_match_orientation",
+            "both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+        ));
+    }
     output.plan = super::proofs::rewrite(output.plan, catalog, options, &mut output.events);
     let applied = output
         .events

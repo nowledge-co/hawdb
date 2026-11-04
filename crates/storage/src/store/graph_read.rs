@@ -24,6 +24,8 @@ use hawdb_core::ids::{
 };
 #[path = "graph_read/admission.rs"]
 mod admission;
+#[path = "graph_read/join_sampling.rs"]
+mod join_sampling;
 #[path = "graph_read/ordered_composite.rs"]
 mod ordered_composite;
 #[path = "graph_read/resident_pruning.rs"]

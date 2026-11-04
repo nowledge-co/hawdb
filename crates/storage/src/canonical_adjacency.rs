@@ -43,6 +43,8 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+mod sampling;
+pub(crate) use sampling::CanonicalSamplingPosting;
 
 const ARTIFACT_HEADER: &[u8; 16] = b"HAWDBADJACENCY01";
 const BLOCK_HEADER: &[u8; 8] = b"SKNADJ01";

@@ -98,6 +98,7 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
                 access_control: options.access_control,
                 optimizer_search: search,
                 scoring: options.scoring,
+                task_context: options.task_context,
             },
         )?;
         if executor::is_mutation_plan(&optimized.physical_plan)?

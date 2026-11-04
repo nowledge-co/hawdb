@@ -23,6 +23,8 @@ mod access_path;
 mod cardinality;
 mod catalog;
 mod costing;
+#[doc(hidden)]
+pub mod join_sampling;
 mod logical_rewrite;
 mod lowering;
 mod match_reads;

@@ -1,0 +1,135 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
+//! Bounded equality-domain preparation without hydrating canonical node rows.
+
+use super::*;
+use crate::join_sampling::{
+    JoinSamplingContext, JoinSamplingRefusal, SamplingError, SamplingResult,
+};
+use crate::scan::AdmittedSegmentReadError;
+
+impl PersistentPropertyProjectionReader {
+    pub(crate) fn sampling_equality_ids(
+        &self,
+        label: LabelId,
+        property: &str,
+        expected: &Value,
+        context: &JoinSamplingContext<'_>,
+    ) -> SamplingResult<Vec<NodeId>> {
+        self.ensure_healthy()
+            .map_err(|error| self.sampling_error(error))?;
+        let kind = PersistentPropertyProjectionKind::Equality;
+        if !self.manifest.supports(label, property, kind) {
+            return Err(SamplingError::Refused(JoinSamplingRefusal::Unsupported));
+        }
+        let mut ids = Vec::new();
+        let mut failure = None;
+        let prefix = property_projection_descriptor_prefix(kind, label, property);
+        let admit = |bytes| context.bridge_read(bytes);
+        let visit = |bytes| context.bridge_visit(bytes);
+        let result = self.descriptor_reader.scan_prefix_admitted(
+            &prefix,
+            GraphDescriptorTreeReadLimits::default(),
+            &admit,
+            &visit,
+            |key, value| {
+                let step = (|| {
+                    context.prepare(1)?;
+                    let block =
+                        PersistentPropertyProjectionBlockDescriptor::decode_descriptor_tree_entry(
+                            key, value,
+                        )
+                        .map_err(|error| self.sampling_error(error))?;
+                    self.validate_selected_descriptor(&block, kind, label, property)
+                        .map_err(|error| self.sampling_error(error))?;
+                    if expected < &block.min_key || expected > &block.max_key {
+                        return Ok(());
+                    }
+                    context.prepare(block.entry_count as usize)?;
+                    let scratch = usize::try_from(block.length.get())
+                        .ok()
+                        .and_then(|bytes| bytes.checked_mul(2))
+                        .ok_or(SamplingError::Refused(JoinSamplingRefusal::MemoryBudget))?;
+                    context.memory(scratch)?;
+                    if block.length.get() > self.max_block_bytes.get() {
+                        return Err(SamplingError::Refused(JoinSamplingRefusal::MemoryBudget));
+                    }
+                    let read = self
+                        .range_reader
+                        .read_range_admitted(
+                            &SegmentReadRange {
+                                artifact_id: self.manifest.artifact_id,
+                                segment_ids: vec![block.block_id],
+                                offset: block.offset,
+                                length: block.length,
+                                content_digest: Some(block.content_digest),
+                            },
+                            |bytes| context.read(bytes),
+                        )
+                        .map_err(|error| match error {
+                            AdmittedSegmentReadError::Admission(error) => error,
+                            AdmittedSegmentReadError::Read(error) => {
+                                self.sampling_error(error.into())
+                            }
+                        })?;
+                    let mut admission_error = None;
+                    decode_projection_block(
+                        &read.payload,
+                        self.manifest.generation,
+                        &block,
+                        |value, id| {
+                            if value == *expected && admission_error.is_none() {
+                                match context.reserve(&mut ids, 1) {
+                                    Ok(()) => ids.push(id),
+                                    Err(error) => admission_error = Some(error),
+                                }
+                            }
+                            Ok(())
+                        },
+                    )
+                    .map_err(|error| self.sampling_error(error))?;
+                    if let Some(error) = admission_error {
+                        return Err(error);
+                    }
+                    context.checkpoint()
+                })();
+                match step {
+                    Ok(()) => Ok(GraphDescriptorTreeScanControl::Continue),
+                    Err(error) => {
+                        failure = Some(error);
+                        Ok(GraphDescriptorTreeScanControl::Stop)
+                    }
+                }
+            },
+        );
+        if let Err(error) = result {
+            return Err(
+                if matches!(&error, GraphDescriptorTreeError::Admission(_)) {
+                    context.descriptor_error(error)
+                } else {
+                    self.sampling_error(error.into())
+                },
+            );
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        ids.sort_unstable();
+        if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(
+                self.sampling_error(PersistentPropertyProjectionError::Corrupt(
+                    "equality sampling domain contains duplicate node identities".into(),
+                )),
+            );
+        }
+        context.checkpoint()?;
+        Ok(ids)
+    }
+
+    fn sampling_error(&self, error: PersistentPropertyProjectionError) -> SamplingError {
+        let message = error.to_string();
+        self.poison_on_physical_failure::<()>(&Err(error));
+        SamplingError::Storage(hawdb_core::HawDBError::StorageIntegrity(message))
+    }
+}
