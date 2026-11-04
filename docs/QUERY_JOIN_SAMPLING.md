@@ -51,6 +51,9 @@ The optimizer records `transformation:sampled_match_orientation` and a
 `join sampling:` decision containing epoch, direction, refusal, predicted work
 and actual sampling counters. Statistics attach to a cloned query catalog,
 never the shared statistics catalog.
+Orientation currently uses an explicit logical rewrite over the two endpoints.
+It does not enumerate every starting node or both orientations inside the memo;
+broader cost-based enumeration remains follow-up work in #1560.
 
 ## Storage cost and bounds
 
@@ -100,8 +103,9 @@ the attempt and release it before execution. Probes/preparation charge the
 parent task's work budget. Physical misses acquire one nonblocking runtime I/O
 permit held through the attempt; saturated admission falls back without spinning.
 
-Budget/unsupported refusals fall back. Corruption and query cancellation remain
-errors, not apparently successful fallbacks. Refusal must not poison a healthy
+Local sampling-budget/unsupported refusals fall back. Corruption, parent task
+work-budget exhaustion and query cancellation remain query errors.
+Refusal must not poison a healthy
 descriptor or posting reader.
 
 ## Cache and snapshot identity
