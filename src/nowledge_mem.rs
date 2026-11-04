@@ -2072,7 +2072,8 @@ fn vector_fallback_reason_code(
         SearchFallbackReasonCode::QueryEmbeddingMissing => {
             Some(hawdb_executor::VectorFallbackReasonCode::QueryEmbeddingMissing)
         }
-        SearchFallbackReasonCode::TextQueryEmpty => None,
+        SearchFallbackReasonCode::TextQueryEmpty
+        | SearchFallbackReasonCode::TextQueryTermsReduced => None,
     }
 }
 

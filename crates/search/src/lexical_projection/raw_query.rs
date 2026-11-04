@@ -69,11 +69,8 @@ impl LexicalProjectionReader {
                     context.checkpoint()?;
                     admit_term_bytes(term.len() as u64, max_term_bytes)?;
                     if !output.terms.contains(term.as_str()) {
-                        if output.terms.len() >= self.config.max_query_terms.get() {
-                            return Err(HawDBError::Storage(format!(
-                                "lexical query produced more than {} terms",
-                                self.config.max_query_terms
-                            )));
+                        if output.terms.len() >= self.config.analyzed_query_term_limit() {
+                            return Err(self.config.analyzed_query_term_error());
                         }
                         let requested = (term.len() as u64).saturating_add(32);
                         let next_bytes = logical_bytes.saturating_add(requested);

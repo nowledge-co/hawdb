@@ -87,6 +87,7 @@ mod identifier;
 #[doc(hidden)]
 pub mod knowledge_retrieval_pipeline;
 mod lexical_projection;
+pub use lexical_projection::LexicalQueryTermPolicy;
 mod lexical_readiness;
 #[cfg(all(test, feature = "full-text-search"))]
 mod lexical_snapshot_test_gate;
@@ -574,6 +575,9 @@ pub enum SearchFallbackReasonCode {
     DiskAnnCacheBudgetExceeded,
     QueryEmbeddingMissing,
     TextQueryEmpty,
+    /// The analyzed text query exceeded the scored-term cap; only its most
+    /// selective (lowest document frequency) terms were scored.
+    TextQueryTermsReduced,
 }
 
 impl SearchFallbackReasonCode {
@@ -590,6 +594,7 @@ impl SearchFallbackReasonCode {
             SearchFallbackReasonCode::DiskAnnCacheBudgetExceeded => "diskann_cache_budget_exceeded",
             SearchFallbackReasonCode::QueryEmbeddingMissing => "query_embedding_missing",
             SearchFallbackReasonCode::TextQueryEmpty => "text_query_empty",
+            SearchFallbackReasonCode::TextQueryTermsReduced => "text_query_terms_reduced",
         }
     }
 }
@@ -612,6 +617,7 @@ impl FromStr for SearchFallbackReasonCode {
             }
             "query_embedding_missing" => Ok(SearchFallbackReasonCode::QueryEmbeddingMissing),
             "text_query_empty" => Ok(SearchFallbackReasonCode::TextQueryEmpty),
+            "text_query_terms_reduced" => Ok(SearchFallbackReasonCode::TextQueryTermsReduced),
             _ => Err("unknown search fallback reason code"),
         }
     }
@@ -1341,6 +1347,15 @@ pub struct SearchAnalyzerLexicon {
 }
 
 impl SearchAnalyzerLexicon {
+    /// Distinct analyzed terms `text` produces as a lexical query.
+    ///
+    /// Hosts can compare this with the analyzed-term cap (default 1024) before
+    /// submitting a query. Unlike query admission, it analyzes all of `text`
+    /// without that cap, so its cost grows with the input.
+    pub fn analyzed_query_term_count(&self, text: &str) -> usize {
+        tokenize(text, self).len()
+    }
+
     pub fn empty() -> Self {
         Self {
             alias_rules: Vec::new(),
@@ -1676,6 +1691,21 @@ impl SearchIndex {
             publication,
         );
         Ok(index)
+    }
+
+    /// What a lexical query above the scored-term cap does on this resident
+    /// index; [`LexicalQueryTermPolicy::Exact`] by default. Under `Exact`,
+    /// projection-backed search and text seeds refuse such a query, while
+    /// snapshot-free search scores every analyzed term. Not persisted.
+    pub fn with_lexical_query_term_policy(mut self, policy: LexicalQueryTermPolicy) -> Self {
+        self.lexical_config.query_term_policy = policy;
+        self
+    }
+
+    /// Sets the resident policy in place. Like [`Self::with_lexical_query_term_policy`]
+    /// it is not persisted: a reopened index starts at `Exact`.
+    pub fn set_lexical_query_term_policy(&mut self, policy: LexicalQueryTermPolicy) {
+        self.lexical_config.query_term_policy = policy;
     }
 
     pub fn with_analyzer_lexicon(mut self, analyzer_lexicon: SearchAnalyzerLexicon) -> Self {
@@ -3772,7 +3802,12 @@ impl SearchIndex {
             self.vector_metric(),
             vector_execution_options,
         )?;
-        let query_terms = tokenize(query_text, &self.analyzer_lexicon);
+        // Text-scoring modes stop analyzing once the analyzed-term cap is passed.
+        let mut query_terms = if mode == SearchMode::Vector {
+            tokenize(query_text, &self.analyzer_lexicon)
+        } else {
+            tokenize_query_bounded(query_text, &self.analyzer_lexicon, &self.lexical_config)?
+        };
         let mut vector_fallback_reason_codes = Vec::new();
         let mut vector_fallback_reasons = Vec::new();
         if let Some(reason) = vector_backend_fallback_reason {
@@ -4000,7 +4035,7 @@ impl SearchIndex {
             }
         };
         let text_available = !query_terms.is_empty();
-        let (text_fallback_reason_codes, text_fallback_reasons) =
+        let (mut text_fallback_reason_codes, mut text_fallback_reasons) =
             if !text_available && mode != SearchMode::Vector {
                 (
                     vec![SearchFallbackReasonCode::TextQueryEmpty],
@@ -4020,6 +4055,35 @@ impl SearchIndex {
         #[cfg(all(test, feature = "full-text-search"))]
         if lexical_snapshot.is_some() {
             lexical_snapshot_test_gate::pause_after_capture();
+        }
+        // The segmented projection bounds scored terms; long queries keep
+        // their most selective terms instead of failing the whole search.
+        if let Some((projection, delta)) = &lexical_snapshot {
+            let selection = projection.fit_query_terms(
+                &mut query_terms,
+                delta,
+                self.lexical_config.max_term_bytes,
+                self.lexical_config.query_term_policy,
+                None,
+            )?;
+            if selection.reduced() {
+                text_fallback_reason_codes.push(SearchFallbackReasonCode::TextQueryTermsReduced);
+                text_fallback_reasons.push(selection.to_string());
+            }
+        }
+        // Without a projection, resident BM25 applies the same caps and the
+        // same selection as the resident text seed over the filtered corpus.
+        if text_available && mode != SearchMode::Vector && lexical_snapshot.is_none() {
+            let selection = resident_bm25::select_query_terms(
+                &mut query_terms,
+                filtered_documents.iter().copied(),
+                &self.analyzer_lexicon,
+                &self.lexical_config,
+            )?;
+            if selection.reduced() {
+                text_fallback_reason_codes.push(SearchFallbackReasonCode::TextQueryTermsReduced);
+                text_fallback_reasons.push(selection.to_string());
+            }
         }
         let mut text_corpus =
             if text_available && mode != SearchMode::Vector && lexical_snapshot.is_none() {
@@ -7596,6 +7660,28 @@ fn tokenize(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> BTreeSet<St
     tokenize_list(text, analyzer_lexicon).into_iter().collect()
 }
 
+/// Distinct query terms, refusing as soon as they would exceed the analyzed
+/// cap. Like the out-of-core normalizer, refusal costs O(cap) analysis rather
+/// than tokenizing the remainder of an oversized query.
+fn tokenize_query_bounded(
+    text: &str,
+    analyzer_lexicon: &SearchAnalyzerLexicon,
+    config: &LexicalProjectionConfig,
+) -> Result<BTreeSet<String>> {
+    let limit = config.analyzed_query_term_limit();
+    let mut terms = BTreeSet::new();
+    analyzer_stream::visit_token_list(text, analyzer_lexicon, |term, _| {
+        if !terms.contains(&term) {
+            if terms.len() >= limit {
+                return Err(config.analyzed_query_term_error());
+            }
+            terms.insert(term);
+        }
+        Ok(())
+    })?;
+    Ok(terms)
+}
+
 fn tokenize_list(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec<String> {
     analyzer_stream::collect_token_list(text, analyzer_lexicon)
 }
@@ -10541,6 +10627,10 @@ mod tests {
                 "query_embedding_missing",
             ),
             (SearchFallbackReasonCode::TextQueryEmpty, "text_query_empty"),
+            (
+                SearchFallbackReasonCode::TextQueryTermsReduced,
+                "text_query_terms_reduced",
+            ),
         ];
 
         for (code, name) in cases {
