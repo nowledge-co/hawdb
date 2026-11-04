@@ -75,7 +75,7 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
     use std::collections::BTreeMap;
     use std::sync::OnceLock;
     type TransitionMap = BTreeMap<(String, String), serde_json::Value>;
-    static TRANSITIONS: OnceLock<[TransitionMap; 6]> = OnceLock::new();
+    static TRANSITIONS: OnceLock<[TransitionMap; 7]> = OnceLock::new();
     // Keep each earlier oracle immutable. Main #1411 changes row bindings and
     // read-only UNWIND; #1403 expands ORDER BY and changes aggregate sort ASTs.
     // #1382 adds temporal syntax and generic scalar/postfix behavior. Every
@@ -83,6 +83,7 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
     // #1428 admits boolean predicates and row-bound UNWIND sources.
     // #1514 adds Mem string functions, computed UNWIND and CASE SET branches.
     // #1550 admits bounded scalar expressions on the left of regex predicates.
+    // #1489 admits unbounded variable-length relationship patterns.
     let transitions = TRANSITIONS.get_or_init(|| {
         [
             include_str!("../../../fixtures/migration_main_1411_peg_baseline_v1.jsonl"),
@@ -96,6 +97,9 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
             include_str!("../../../fixtures/migration_main_1514_mem_peg_baseline_v1.jsonl"),
             include_str!(
                 "../../../fixtures/migration_main_1550_scalar_regex_peg_baseline_v1.jsonl"
+            ),
+            include_str!(
+                "../../../fixtures/migration_main_1489_unbounded_var_length_peg_baseline_v1.jsonl"
             ),
         ]
         .map(|fixture| {
@@ -745,6 +749,22 @@ fn frozen_main_1550_scalar_regex_transitions_preserve_complete_ir() {
         count += 1;
     }
     assert_eq!(count, 44);
+}
+
+#[test]
+fn frozen_main_1489_unbounded_var_length_transitions_preserve_complete_ir() {
+    let mut count = 0;
+    for line in include_str!(
+        "../../../fixtures/migration_main_1489_unbounded_var_length_peg_baseline_v1.jsonl"
+    )
+    .lines()
+    {
+        let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(expected["previous_kind"], "Parse");
+        assert_frozen(&expected);
+        count += 1;
+    }
+    assert_eq!(count, 2);
 }
 
 #[test]

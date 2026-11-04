@@ -68,6 +68,11 @@ expression/predicate and diagnostic fixtures remain immutable: scalar-expression
 left operands now parse as regex predicates, while binding and execution retain
 responsibility for rejecting non-string patterns and evaluated operands.
 
+`migration_main_1489_unbounded_var_length_peg_baseline_v1.jsonl` records the 2
+reviewed statement/pipeline transitions introduced by issue #1489: an unbounded
+variable-length relationship pattern (`*`, `*n..`) now parses. Execution
+enumerates its trails and refuses one longer than the streaming depth limit.
+
 Run the default owner and complete local fuzz surface:
 
 ```sh

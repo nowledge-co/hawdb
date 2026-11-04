@@ -203,6 +203,7 @@ mod thread_metadata_reads;
 mod transaction_compaction;
 mod transaction_control;
 mod transaction_merge;
+mod unbounded_var_length;
 mod unlabeled_endpoint_mutations;
 
 #[test]

@@ -412,7 +412,6 @@ mod tests {
             );
         }
         for query in [
-            "MATCH (a)-[:LINK*]->(b) RETURN a",
             "MATCH p = shortestPath((a)-[:LINK* ALL SHORTEST]->(b)) RETURN a",
             "MATCH p = shortestPath((a)) RETURN a",
             "MATCH p = shortestPath((a)-[:LINK*]->(b) RETURN a",
@@ -452,7 +451,6 @@ mod tests {
             "MATCH (n:Item)",
             "MATCH (n:Item) WITH n",
             "MATCH (n:Item) RETURN n MATCH (m:Item)",
-            "MATCH (n:Item)-[:LINK*]->(m:Item) RETURN m",
             "MATCH (n:Item) RETURN n LIMIT",
         ] {
             assert!(parse_pipeline(query).is_err(), "{query}");

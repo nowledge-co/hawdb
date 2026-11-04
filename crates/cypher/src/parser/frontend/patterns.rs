@@ -160,18 +160,8 @@ impl Transformer<'_> {
                 } else {
                     max_hops = UNBOUNDED_MAX_HOPS;
                 }
-                if (if range.is_some() {
-                    max.is_none()
-                } else {
-                    min.is_none()
-                }) && !search.is_shortest()
-                    && function.is_none()
-                {
-                    return Err(self.error(
-                        hops,
-                        "bounded relationship pattern requires a finite max hop",
-                    ));
-                }
+                // `*` and `*n..` are unbounded: trails stay finite because a
+                // trail never repeats a relationship (#1489).
                 if min_hops > max_hops {
                     return Err(self.error(hops, "relationship min hop must not exceed max hop"));
                 }
