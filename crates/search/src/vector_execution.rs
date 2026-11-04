@@ -105,7 +105,7 @@ pub(super) fn execute_search_vector_plan(
         #[cfg(feature = "vector-search")]
         VectorSearchBackend::DiskAnn { .. } => limit
             .max(rank_window.unwrap_or(0))
-            .max(hawdb_vector_projection::diskann::DiskAnnSearchOptions::default().beam_width),
+            .max(vector_execution_options.resident_candidate_window()),
         _ => limit.max(rank_window.unwrap_or(0)).max(1),
     };
     let logical = VectorSearchLogicalPlan {

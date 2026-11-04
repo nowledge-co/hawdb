@@ -554,7 +554,7 @@ fn query_memory<'a>(
                 .saturating_mul(2),
         );
     let graph_options = DiskAnnSearchOptions {
-        beam_width: limit.max(crate::vector_execution::DISKANN_NAVIGATION_BEAM),
+        beam_width: options.navigation_beam(limit),
         max_working_bytes: options.max_working_bytes.saturating_sub(retained_bytes),
         task: options.task_context,
         ..Default::default()

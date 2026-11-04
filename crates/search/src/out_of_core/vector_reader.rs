@@ -144,17 +144,20 @@ impl Projection {
             _ => true,
         }
     }
+    /// `navigation_beam` is the DiskANN traversal beam; RaBitQ layers
+    /// ignore it.
     pub(super) fn search(
         &self,
         query: &[f32],
         top_k: usize,
         options: ProjectionSearchOptions<'_>,
+        navigation_beam: usize,
     ) -> hawdb_vector_projection::Result<ProjectionSearchOutput> {
         match self {
             Self::Ordinary(value) => value.search(query, top_k, options),
             Self::Admitted(value) => value.search(query, top_k, options),
-            Self::DiskAnn(value) => value.search(query, top_k, options),
-            Self::AdmittedDiskAnn(value) => value.search(query, top_k, options),
+            Self::DiskAnn(value) => value.search(query, top_k, options, navigation_beam),
+            Self::AdmittedDiskAnn(value) => value.search(query, top_k, options, navigation_beam),
         }
     }
 }
