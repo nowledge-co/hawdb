@@ -354,6 +354,13 @@ pub(super) fn relational_query_limits_with_payload(
                     .expect("relational row query byte budget is non-zero"),
                 ..hawdb_storage::relational::RelationalRowPageDemandReadLimits::default()
             },
+            // Each merged uncheckpointed entry is a row the statement reads,
+            // so it gets the same limit as checkpointed rows instead of a
+            // fixed entry count (#1480). The two are counted separately, so a
+            // statement may read up to that many of each. The merge streams;
+            // `max_overlay_bytes` bounds what it holds at once.
+            max_overlay_entries: NonZeroUsize::new(max_row_read_rows)
+                .expect("relational overlay entry budget is non-zero"),
             ..hawdb_storage::relational::RelationalRowPageSnapshotReadLimits::default()
         },
     }

@@ -158,6 +158,7 @@ mod relational_explain_output;
 mod relational_from_scopes;
 mod relational_having;
 mod relational_ordering;
+mod relational_overlay_scans;
 mod relational_projection_expressions;
 mod relational_range;
 mod relational_update_delete_outcomes;
