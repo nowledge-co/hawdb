@@ -112,6 +112,7 @@ pub(super) fn apply(
             cpu = cpu.saturating_add(visited.saturating_mul(work));
         }
         PhysicalPlan::SeqNodeScan { label, .. }
+        | PhysicalPlan::RelationshipSeededNodeScan { label, .. }
         | PhysicalPlan::IndexNodeSeek { label, .. }
         | PhysicalPlan::IndexNodeMultiSeek { label, .. }
         | PhysicalPlan::IndexNodeUnionSeek { label, .. }

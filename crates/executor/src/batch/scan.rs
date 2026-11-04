@@ -16,6 +16,7 @@
 
 use super::*;
 use crate::observer::ExecutionObserver;
+use crate::store::admit_graph_read;
 use hawdb_core::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope};
 use std::cell::Cell;
 
@@ -683,82 +684,83 @@ pub(super) fn stream_adjacency_expand_batches(
     let mut output_lease = output_account.reserve(0)?;
     let mut output = Vec::new();
     let mut output_bytes = 0usize;
-    let control =
-        execute_binding_batches(input, context, ExecutionLimit::unlimited(), &mut |batch| {
+    let mut expand_batch = |batch: BindingBatch| -> Result<BatchControl> {
+        runtime_checkpoint(context.task_context)?;
+        for binding in batch {
             runtime_checkpoint(context.task_context)?;
-            for binding in batch {
-                runtime_checkpoint(context.task_context)?;
-                graph_expansion.record_seed();
-                let spec = AdjacencyExpandSpec {
-                    source_variable,
-                    rel_variable: rel_variable.as_deref(),
-                    rel_properties,
-                    direction: *direction,
-                    target_variable,
-                    min_hops: *min_hops,
-                    max_hops: *max_hops,
-                    optional: *optional,
-                };
-                let mut visit_candidate = ExpandBatchConsumer {
-                    context,
-                    execution_limit,
-                    graph_expansion: &mut graph_expansion,
-                    output: &mut output,
-                    output_bytes: &mut output_bytes,
-                    output_lease: &mut output_lease,
-                    emit,
-                };
-                let source_label_mismatch =
-                    binding.nodes.get(source_variable).is_some_and(|node| {
-                        !node_matches_label_pattern(node, source_label_ids.as_deref())
-                    });
-                let expand_control = if source_label_mismatch {
-                    crate::scan::stream_unmatched_expand_binding(
-                        &binding,
-                        &spec,
-                        &mut visit_candidate,
-                    )?
-                } else if unknown_relationship_type {
-                    crate::scan::stream_zero_hop_expand_binding(
-                        &binding,
-                        &spec,
-                        crate::scan::ZeroHopExpandContext {
-                            store,
-                            target_label_ids: target_label_ids.as_deref(),
-                            filters: &filters,
-                            memory: crate::store::AdjacencyReadMemory {
-                                budget_bytes: memory.query_memory_bytes.get(),
-                                account: Some(&source_account),
-                            },
-                            task_context: context.task_context,
+            graph_expansion.record_seed();
+            let spec = AdjacencyExpandSpec {
+                source_variable,
+                rel_variable: rel_variable.as_deref(),
+                rel_properties,
+                direction: *direction,
+                target_variable,
+                min_hops: *min_hops,
+                max_hops: *max_hops,
+                optional: *optional,
+            };
+            let mut visit_candidate = ExpandBatchConsumer {
+                context,
+                execution_limit,
+                graph_expansion: &mut graph_expansion,
+                output: &mut output,
+                output_bytes: &mut output_bytes,
+                output_lease: &mut output_lease,
+                emit,
+            };
+            let source_label_mismatch = binding
+                .nodes
+                .get(source_variable)
+                .is_some_and(|node| !node_matches_label_pattern(node, source_label_ids.as_deref()));
+            let expand_control = if source_label_mismatch {
+                crate::scan::stream_unmatched_expand_binding(&binding, &spec, &mut visit_candidate)?
+            } else if unknown_relationship_type {
+                crate::scan::stream_zero_hop_expand_binding(
+                    &binding,
+                    &spec,
+                    crate::scan::ZeroHopExpandContext {
+                        store,
+                        target_label_ids: target_label_ids.as_deref(),
+                        filters: &filters,
+                        memory: crate::store::AdjacencyReadMemory {
+                            budget_bytes: memory.query_memory_bytes.get(),
+                            account: Some(&source_account),
                         },
-                        &mut visit_candidate,
-                    )?
-                } else {
-                    stream_expand_binding_admitted(
-                        &binding,
-                        spec,
-                        crate::scan::ExpandReadContext {
-                            rel_type_id,
-                            target_label_ids: target_label_ids.as_deref(),
-                            filters: &filters,
-                            store,
-                            memory: crate::store::AdjacencyReadMemory {
-                                budget_bytes: memory.query_memory_bytes.get(),
-                                account: Some(&source_account),
-                            },
-                            task_context: context.task_context,
-                            observer: context.observer,
+                        task_context: context.task_context,
+                    },
+                    &mut visit_candidate,
+                )?
+            } else {
+                stream_expand_binding_admitted(
+                    &binding,
+                    spec,
+                    crate::scan::ExpandReadContext {
+                        rel_type_id,
+                        target_label_ids: target_label_ids.as_deref(),
+                        filters: &filters,
+                        store,
+                        memory: crate::store::AdjacencyReadMemory {
+                            budget_bytes: memory.query_memory_bytes.get(),
+                            account: Some(&source_account),
                         },
-                        &mut visit_candidate,
-                    )?
-                };
-                if expand_control == crate::store::ScanControl::Stop {
-                    return Ok(BatchControl::Stop);
-                }
+                        task_context: context.task_context,
+                        observer: context.observer,
+                    },
+                    &mut visit_candidate,
+                )?
+            };
+            if expand_control == crate::store::ScanControl::Stop {
+                return Ok(BatchControl::Stop);
             }
-            Ok(BatchControl::Continue)
-        })?;
+        }
+        Ok(BatchControl::Continue)
+    };
+    let control = execute_binding_batches(
+        input,
+        context,
+        ExecutionLimit::unlimited(),
+        &mut expand_batch,
+    )?;
     graph_expansion.set_reranked_seed_count(context.observer.current_vector_rerank_count());
     if !output.is_empty() {
         output_lease.reset();
@@ -783,6 +785,188 @@ pub(super) fn stream_adjacency_expand_batches(
         graph_expansion.returned_count(),
     );
     Ok(control)
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct RelationshipSeededScanSpec<'a> {
+    pub(super) variable: &'a str,
+    pub(super) label: &'a str,
+    pub(super) rel_type: &'a str,
+    pub(super) rel_properties: &'a BTreeMap<String, Value>,
+    pub(super) direction: RelationshipDirection,
+}
+
+/// The `label` nodes that are endpoints of the matching relationships, from
+/// the resident relationship property index in node-id order (#1548). When
+/// the index cannot answer, or the posting exceeds the label's node count,
+/// this is the full label scan.
+pub(super) fn stream_relationship_seeded_node_scan_batches(
+    spec: RelationshipSeededScanSpec<'_>,
+    context: BatchReadContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    runtime_checkpoint(context.task_context)?;
+    let source_account = context
+        .kernel_context()
+        .source_account("RelationshipSeededNodeScan");
+    let seeds = relationship_property_seeds(spec, context, &source_account)?;
+    let Some((ids, _permit)) = seeds else {
+        return stream_node_scan_batches(
+            spec.variable,
+            spec.label,
+            None,
+            context,
+            execution_limit,
+            emit,
+        );
+    };
+    let label_ids = label_ids_for_pattern(context.catalog, spec.label);
+    let batch_rows = context.memory.batch_rows.get();
+    let batch_payload_bytes = context.memory.batch_payload_bytes.get();
+    let mut emitted = 0usize;
+    let mut batch: Vec<Binding> = Vec::new();
+    let mut batch_bytes = 0usize;
+    let mut permits: Vec<Box<dyn hawdb_storage::read_view::GraphReadAllocation>> = Vec::new();
+    for id in &ids {
+        runtime_checkpoint(context.task_context)?;
+        if execution_limit.is_reached(emitted.saturating_add(batch.len())) {
+            break;
+        }
+        let mut attempt = 0;
+        let read = loop {
+            // Emitting releases the batch's point-read permits. As in the
+            // label scan, a full batch (rows or bytes) or a tight account
+            // emits first, then this node is read again.
+            let mut flush_first = batch.len() >= batch_rows;
+            let read = if flush_first {
+                None
+            } else {
+                let mut admit = |bytes: usize| {
+                    let bytes = bytes.saturating_add(1024 + spec.variable.len());
+                    if !batch.is_empty()
+                        && (!source_account.can_reserve(bytes)
+                            || batch_bytes.saturating_add(bytes) > batch_payload_bytes)
+                    {
+                        flush_first = true;
+                        return Ok(None);
+                    }
+                    admit_graph_read(&source_account, context.task_context, bytes).map(Some)
+                };
+                let read = context.store.node_with_allocation(
+                    *id,
+                    label_ids.as_deref(),
+                    &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                        &mut admit,
+                        context.task_context,
+                    ),
+                )?;
+                (!flush_first).then_some(read)
+            };
+            if let Some(read) = read {
+                break read;
+            }
+            attempt += 1;
+            if attempt > 1 {
+                return Err(HawDBError::Execution(
+                    "relationship-seeded scan could not admit a node after emitting".into(),
+                ));
+            }
+            emitted = emitted.saturating_add(batch.len());
+            batch_bytes = 0;
+            let control = emit(std::mem::take(&mut batch))?;
+            permits.clear();
+            if control == BatchControl::Stop {
+                return Ok(BatchControl::Stop);
+            }
+        };
+        match read {
+            hawdb_storage::read_view::AdmittedNodeRead::Node(record) => {
+                let (node, permit) = record.into_parts();
+                batch_bytes = batch_bytes.saturating_add(permit.bytes());
+                permits.push(permit);
+                batch.push(crate::scan::single_node_binding(spec.variable, node));
+            }
+            hawdb_storage::read_view::AdmittedNodeRead::Missing => {}
+            hawdb_storage::read_view::AdmittedNodeRead::Stopped => {
+                return Ok(BatchControl::Stop);
+            }
+        }
+    }
+    if !batch.is_empty() && emit(batch)? == BatchControl::Stop {
+        return Ok(BatchControl::Stop);
+    }
+    drop(permits);
+    Ok(BatchControl::Continue)
+}
+
+/// Endpoint ids of the matching relationships, or `None` to scan the label.
+fn relationship_property_seeds(
+    spec: RelationshipSeededScanSpec<'_>,
+    context: BatchReadContext<'_>,
+    source_account: &crate::QueryMemoryAccount,
+) -> Result<Option<hawdb_storage::store::EndpointCandidates>> {
+    let Some(rel_type_id) = context.catalog.rel_type_id(spec.rel_type) else {
+        return Ok(None);
+    };
+    if spec.rel_properties.is_empty()
+        || context
+            .task_context
+            .is_some_and(RuntimeTaskContext::has_work_limit)
+    {
+        return Ok(None);
+    }
+    let Some(label_id) = crate::scan::exact_scan_label_id(context.catalog, spec.label) else {
+        return Ok(None);
+    };
+    let endpoints = match spec.direction {
+        RelationshipDirection::Outgoing => hawdb_storage::store::RelationshipEndpoints::Sources,
+        RelationshipDirection::Incoming => hawdb_storage::store::RelationshipEndpoints::Targets,
+        RelationshipDirection::Undirected => hawdb_storage::store::RelationshipEndpoints::Both,
+    };
+    // Seeding pays one point read per candidate; past the label's node count
+    // the scan is the cheaper access.
+    let max_relationships = context.store.node_count_for_label(label_id);
+    // A seed list the account cannot hold falls back to the label scan,
+    // which admits node by node instead of failing the query.
+    let mut admit = |bytes| {
+        if !source_account.can_reserve(bytes) {
+            return Ok(None);
+        }
+        admit_graph_read(source_account, context.task_context, bytes).map(Some)
+    };
+    let Some((ids, permit)) = context.store.relationship_property_endpoint_candidates(
+        rel_type_id,
+        spec.rel_properties,
+        endpoints,
+        max_relationships,
+        &mut admit,
+    )?
+    else {
+        return Ok(None);
+    };
+    let property = spec
+        .rel_properties
+        .keys()
+        .next()
+        .expect("relationship properties were checked non-empty")
+        .clone();
+    context
+        .observer
+        .record_scan_pruning_report(hawdb_storage::scan::ScanPruningReport {
+            target_kind: hawdb_storage::scan::ScanPruningTargetKind::Node,
+            label_id,
+            rel_type_id: Some(rel_type_id),
+            strategy: hawdb_storage::scan::ScanPruningStrategy::PropertyEq { property },
+            pruned: true,
+            exact_empty: ids.is_empty(),
+            candidate_count_before_pruning: max_relationships,
+            pruned_candidate_count: max_relationships.saturating_sub(ids.len()),
+            candidate_count_before_filter: ids.len(),
+            output_count: ids.len(),
+            filtered_out_count: 0,
+        });
+    Ok(Some((ids, permit)))
 }
 
 struct ExpandBatchConsumer<'a, 'context> {

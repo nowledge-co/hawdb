@@ -1083,6 +1083,19 @@ fn lower_logical(
                     payload_byte_limit: usize::MAX,
                 }
             });
+            let input = relationship_seeded_source(
+                input,
+                RelationshipSeedCandidate {
+                    source_variable,
+                    rel_type,
+                    rel_properties,
+                    direction: *direction,
+                    single_hop: *min_hops == 1 && *max_hops == 1,
+                    optional: *optional,
+                },
+                catalog,
+                decisions,
+            );
             PhysicalPlan::AdjacencyExpandExec {
                 source_variable: source_variable.clone(),
                 source_label: source_label.clone(),
@@ -2219,4 +2232,62 @@ fn push_cartesian_product_cost_decision(
         right_cost.cost,
         cost.cost
     ));
+}
+
+struct RelationshipSeedCandidate<'a> {
+    source_variable: &'a str,
+    rel_type: &'a str,
+    rel_properties: &'a BTreeMap<String, Value>,
+    direction: RelationshipDirection,
+    single_hop: bool,
+    optional: bool,
+}
+
+/// Replace a plain source label scan under a mandatory single-hop expand with
+/// relationship constraints by the relationship-seeded scan when fewer
+/// relationships are estimated to match than the label has nodes (#1548).
+/// The expand drops every source without a matching relationship, so only
+/// the seeded sources can produce rows.
+fn relationship_seeded_source(
+    input: PhysicalPlan,
+    candidate: RelationshipSeedCandidate<'_>,
+    catalog: &OptimizerCatalog,
+    decisions: &mut Vec<String>,
+) -> PhysicalPlan {
+    let PhysicalPlan::SeqNodeScan { variable, label } = &input else {
+        return input;
+    };
+    if variable != candidate.source_variable
+        || !candidate.single_hop
+        || candidate.optional
+        || candidate.rel_type.is_empty()
+        || candidate.rel_properties.is_empty()
+    {
+        return input;
+    }
+    let matching = catalog
+        .estimate_expand_rows(
+            label,
+            candidate.rel_type,
+            candidate.rel_properties,
+            "",
+            1,
+            1,
+        )
+        .estimated_rows;
+    let nodes = catalog.label_count(label);
+    if matching >= nodes {
+        return input;
+    }
+    decisions.push(format!(
+        "seed {variable}:{label} from {} relationship properties ({matching} estimated of {nodes} nodes)",
+        candidate.rel_type
+    ));
+    PhysicalPlan::RelationshipSeededNodeScan {
+        variable: variable.clone(),
+        label: label.clone(),
+        rel_type: candidate.rel_type.to_owned(),
+        rel_properties: candidate.rel_properties.clone(),
+        direction: candidate.direction,
+    }
 }

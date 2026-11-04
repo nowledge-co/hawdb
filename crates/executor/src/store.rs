@@ -226,6 +226,25 @@ pub trait GraphExecutionRead {
         ))
     }
 
+    /// Endpoint ids of `rel_type` relationships whose properties equal all of
+    /// `properties`, from a resident relationship property index (#1548).
+    /// `None` keeps the caller's node-first path; readers without such an
+    /// index use this default.
+    fn relationship_property_endpoint_candidates(
+        &self,
+        _rel_type: RelTypeId,
+        _properties: &std::collections::BTreeMap<String, hawdb_core::Value>,
+        _endpoints: hawdb_storage::store::RelationshipEndpoints,
+        _max_relationships: usize,
+        _admit: &mut dyn FnMut(
+            usize,
+        ) -> Result<
+            Option<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+        >,
+    ) -> Result<Option<hawdb_storage::store::EndpointCandidates>> {
+        Ok(None)
+    }
+
     /// Full relationship point ownership with a transferable before-copy permit.
     fn relationship_with_allocation(
         &self,

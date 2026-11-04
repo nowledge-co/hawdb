@@ -130,6 +130,7 @@ pub use graph_read::{
 };
 #[path = "store/read_dependencies.rs"]
 mod read_dependencies;
+pub use graph_read::{EndpointCandidates, RelationshipEndpoints};
 pub use read_dependencies::ReadDependencyValidationFailures;
 #[doc(hidden)]
 pub use read_dependencies::{GraphReadDependencies, GraphReadDependencyError};

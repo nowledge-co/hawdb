@@ -372,6 +372,19 @@ pub enum PhysicalPlan {
         variable: String,
         label: String,
     },
+    /// The `label` nodes that are endpoints of `rel_type` relationships whose
+    /// properties equal `rel_properties`, on the side `direction` expands
+    /// from, read from the resident relationship property index in node-id
+    /// order (#1548). Without that index it is a full label scan. Only a
+    /// mandatory single-hop expand of `variable` over the same relationship
+    /// constraints uses it, since the expand drops every other node.
+    RelationshipSeededNodeScan {
+        variable: String,
+        label: String,
+        rel_type: String,
+        rel_properties: BTreeMap<String, Value>,
+        direction: RelationshipDirection,
+    },
     /// Fused required-property node scan, local predicate, and optional scalar projection.
     ///
     /// Storage decodes only `required_properties`. A non-empty `items` list

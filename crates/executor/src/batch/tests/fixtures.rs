@@ -493,6 +493,16 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             true,
         ),
         (
+            PhysicalPlan::RelationshipSeededNodeScan {
+                variable: String::new(),
+                label: String::new(),
+                rel_type: String::new(),
+                rel_properties: BTreeMap::new(),
+                direction: RelationshipDirection::Outgoing,
+            },
+            true,
+        ),
+        (
             PhysicalPlan::NodeProjectionScanExec {
                 variable: String::new(),
                 label: String::new(),

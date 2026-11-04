@@ -78,6 +78,9 @@ impl<'a> PlanBindings<'a> {
                 bindings.property_columns.remove(variable.as_str());
             }
             PhysicalPlan::SeqNodeScan { variable, label }
+            | PhysicalPlan::RelationshipSeededNodeScan {
+                variable, label, ..
+            }
             | PhysicalPlan::IndexNodeSeek {
                 variable, label, ..
             }

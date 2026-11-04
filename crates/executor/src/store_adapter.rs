@@ -104,6 +104,28 @@ impl GraphExecutionRead for GraphStore {
         GraphStore::node_with_allocation(self, id, label_ids, admit)
     }
 
+    fn relationship_property_endpoint_candidates(
+        &self,
+        rel_type: RelTypeId,
+        properties: &std::collections::BTreeMap<String, hawdb_core::Value>,
+        endpoints: hawdb_storage::store::RelationshipEndpoints,
+        max_relationships: usize,
+        admit: &mut dyn FnMut(
+            usize,
+        ) -> Result<
+            Option<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+        >,
+    ) -> Result<Option<hawdb_storage::store::EndpointCandidates>> {
+        GraphStore::relationship_property_endpoint_candidates(
+            self,
+            rel_type,
+            properties,
+            endpoints,
+            max_relationships,
+            admit,
+        )
+    }
+
     fn relationship_with_allocation(
         &self,
         id: RelId,

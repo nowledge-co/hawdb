@@ -1341,6 +1341,9 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) ->
             bind_value_map(rel_properties, parameters)?;
             bind_physical_plan(input, parameters)?;
         }
+        PhysicalPlan::RelationshipSeededNodeScan { rel_properties, .. } => {
+            bind_value_map(rel_properties, parameters)?;
+        }
         PhysicalPlan::OptionalDegreeExec {
             rel_properties,
             target_properties,
