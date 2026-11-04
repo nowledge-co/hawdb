@@ -735,7 +735,7 @@ impl CheckpointCandidate {
             work.checkpoint().map_err(HawDBError::from_storage_error)?;
             let store = self.store.as_mut().expect("candidate owns a runtime");
             let manifest = self.bootstrap_manifest.expect("mounted candidate manifest");
-            self.branch_root = store.prepare_checkpoint_branch_root(manifest)?;
+            self.branch_root = store.prepare_checkpoint_branch_root(manifest, Some(work))?;
             self.bootstrap_stage = BootstrapStage::BranchPrepared;
         }
         if self.bootstrap_stage == BootstrapStage::BranchPrepared {
