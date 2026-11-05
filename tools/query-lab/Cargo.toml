@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 query-workloads = { path = "../query-workloads" }
-hawdb = { path = "../..", version = "0.26.0", default-features = false }
+hawdb = { path = "../..", version = "0.27.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = { version = "0.11", default-features = false }
