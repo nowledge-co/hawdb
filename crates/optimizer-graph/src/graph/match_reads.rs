@@ -508,6 +508,17 @@ fn expression(expression: &ProjectionExpression, demand: &mut Demand) {
             demand.property(&rank.variable, &rank.aliases_property);
         }
         ProjectionExpression::Literal(_) | ProjectionExpression::LocalVariable { .. } => {}
+        // The pattern matches labels and properties of the enclosing records
+        // it copies, and its body may read any of them. Its other variables
+        // are its own.
+        ProjectionExpression::Pattern(pattern) => {
+            for name in pattern.graph_variables.iter().chain(&pattern.columns) {
+                demand.whole(name);
+            }
+            for (_, argument) in &pattern.arguments {
+                self::expression(argument, demand);
+            }
+        }
         ProjectionExpression::Coalesce(_)
         | ProjectionExpression::VectorDistance { .. }
         | ProjectionExpression::JsonValue { .. }
@@ -528,6 +539,7 @@ fn expression(expression: &ProjectionExpression, demand: &mut Demand) {
         | ProjectionExpression::Reduce(_)
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => {
             expression.all_children(|child| {
                 self::expression(child, demand);

@@ -663,6 +663,22 @@ pub enum ScalarExpressionKind {
         endpoint: hawdb_core::RelationshipEndpoint,
         variable: String,
     },
+    /// A pattern used as a boolean expression, such as
+    /// `NOT (a)-[:KNOWS]-(b)`: true when the pattern has at least one match.
+    ///
+    /// Bound variables correlate with the enclosing scope; anonymous and
+    /// unbound pattern variables are scoped to the pattern.
+    PatternPredicate(Box<MatchPattern>),
+    /// `[pattern WHERE predicate | projection]`: the list of `projection`
+    /// over every match of `pattern` that satisfies `predicate`.
+    ///
+    /// Variables the pattern introduces are visible only to `predicate` and
+    /// `projection`; bound variables correlate with the enclosing scope.
+    PatternComprehension {
+        pattern: Box<MatchPattern>,
+        predicate: Option<Box<ScalarExpression>>,
+        projection: Box<ScalarExpression>,
+    },
 }
 
 /// A projection or grouping expression, with aggregation explicit in its type.
@@ -908,6 +924,11 @@ impl ScalarExpressionKind {
                 .flatten()
                 .map(Box::as_ref)
                 .all(visit),
+            Self::PatternComprehension {
+                predicate,
+                projection,
+                ..
+            } => predicate.iter().map(Box::as_ref).all(&mut visit) && visit(projection),
             _ => true,
         }
     }

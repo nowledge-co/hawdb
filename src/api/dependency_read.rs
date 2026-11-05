@@ -215,6 +215,12 @@ pub(super) fn collect_node_dependencies(
             "prepared source read requires an adjacency predicate collector".into(),
         ));
     }
+    if operator_expressions_read_graph(plan) {
+        return Err(HawDBError::Execution(
+            "prepared source read has a pattern expression; its dependency collector is not available"
+                .into(),
+        ));
+    }
     if let P::FilterExec { predicate, input } = plan {
         if let Some((variable, label)) = complete_node_source(input)
             && let Some(values) = graph_match::ids(predicate, variable)
@@ -409,6 +415,17 @@ fn predicate_reads_relationships(predicate: &crate::planner::Predicate) -> bool 
         P::And(parts) | P::Or(parts) => parts.iter().any(predicate_reads_relationships),
         P::Not(inner) => predicate_reads_relationships(inner),
         P::RelationshipExists { .. } | P::BoundRelationshipExists { .. } => true,
+        P::ExpressionEq { expression, value }
+        | P::ExpressionNotEq { expression, value }
+        | P::ExpressionCompare {
+            expression, value, ..
+        }
+        | P::ExpressionContains { expression, value } => {
+            expression_reads_graph(expression) || expression_reads_graph(value)
+        }
+        P::ExpressionIn { expression, .. } | P::ExpressionRegexMatch { expression, .. } => {
+            expression_reads_graph(expression)
+        }
         P::ConstantBool(_)
         | P::IdEq { .. }
         | P::IdNotEq { .. }
@@ -417,12 +434,6 @@ fn predicate_reads_relationships(predicate: &crate::planner::Predicate) -> bool 
         | P::PropertyEq { .. }
         | P::PropertyNotEq { .. }
         | P::PropertyCompare { .. }
-        | P::ExpressionEq { .. }
-        | P::ExpressionIn { .. }
-        | P::ExpressionNotEq { .. }
-        | P::ExpressionCompare { .. }
-        | P::ExpressionContains { .. }
-        | P::ExpressionRegexMatch { .. }
         | P::PropertyListContains { .. }
         | P::PropertyListContainsLower { .. }
         | P::PropertyContains { .. }
@@ -432,6 +443,74 @@ fn predicate_reads_relationships(predicate: &crate::planner::Predicate) -> bool 
         | P::PropertyIsNull { .. }
         | P::PropertyIsNotNull { .. }
         | P::PropertyIn { .. } => false,
+    }
+}
+
+/// Whether evaluating `expression` reads the graph beyond the row: a pattern
+/// expression, or a relationship endpoint read by id.
+fn expression_reads_graph(expression: &hawdb_plan_cypher::ProjectionExpression) -> bool {
+    use hawdb_plan_cypher::ProjectionExpression as E;
+    matches!(
+        expression,
+        E::Pattern(_)
+            | E::RelationshipValueEndpoint { .. }
+            | E::RelationshipEndpoint {
+                endpoints: None,
+                ..
+            }
+    ) || !expression.all_children(|child| !expression_reads_graph(child))
+}
+
+/// Whether an expression inside `predicate` reads the graph beyond the row.
+fn predicate_expressions_read_graph(predicate: &crate::planner::Predicate) -> bool {
+    use crate::planner::Predicate as P;
+    match predicate {
+        P::And(parts) | P::Or(parts) => parts.iter().any(predicate_expressions_read_graph),
+        P::Not(inner) => predicate_expressions_read_graph(inner),
+        P::ExpressionEq { .. }
+        | P::ExpressionNotEq { .. }
+        | P::ExpressionCompare { .. }
+        | P::ExpressionContains { .. }
+        | P::ExpressionIn { .. }
+        | P::ExpressionRegexMatch { .. } => predicate_reads_relationships(predicate),
+        _ => false,
+    }
+}
+
+/// Whether the projection, grouping or ordering expressions of `plan` itself
+/// read the graph beyond its input rows.
+fn operator_expressions_read_graph(plan: &PhysicalPlan) -> bool {
+    use hawdb_plan_cypher::{AggregateTarget, SortKey};
+    use PhysicalPlan as P;
+    let sort_keys = |items: &[hawdb_plan_cypher::SortItem]| {
+        items.iter().any(|item| {
+            matches!(&item.key, SortKey::Expression(expression) if expression_reads_graph(expression))
+        })
+    };
+    let projections = |items: &[hawdb_plan_cypher::Projection]| {
+        items
+            .iter()
+            .any(|item| expression_reads_graph(&item.expression))
+    };
+    match plan {
+        P::ProjectExec { items, .. } | P::NodeProjectionScanExec { items, .. } => {
+            projections(items)
+        }
+        P::AggregateExec {
+            group_keys, items, ..
+        } => {
+            projections(group_keys)
+                || items.iter().any(|item| {
+                    matches!(&item.target, AggregateTarget::Expression(expression)
+                        if expression_reads_graph(expression))
+                })
+        }
+        P::SortExec { items, .. } | P::TopNExec { items, .. } => sort_keys(items),
+        P::GraphMatchExec { program, .. } => program
+            .predicate
+            .as_ref()
+            .is_some_and(predicate_expressions_read_graph),
+        _ => false,
     }
 }
 

@@ -1,7 +1,10 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
+mod graph_match;
 pub mod sql;
+
+pub use graph_match::*;
 
 use hawdb_core::{RelationshipDirection, ValidatedRegex, Value};
 
@@ -327,9 +330,78 @@ pub enum ProjectionExpression {
         /// The two node variables of the single-hop pattern step that binds
         /// `variable`, in pattern order. The stored source or target is the
         /// one whose id matches; no other row variable is consulted. Planning
-        /// resolves them after binding; `None` only before that pass.
+        /// resolves them after binding. `None` when no such step binds it,
+        /// as for a relationship a pattern expression introduces: the
+        /// executor then reads the node from the graph by its id.
         endpoints: Option<[String; 2]>,
     },
+    /// `startNode(r)` or `endNode(r)` of a relationship value, such as an
+    /// element of `relationships(p)`: the stored source or target of the
+    /// stored relationship the value names, read from the graph. A value
+    /// that names no stored relationship with the same endpoints fails, so a
+    /// map cannot pass for a relationship. NULL for a NULL value.
+    RelationshipValueEndpoint {
+        endpoint: hawdb_core::RelationshipEndpoint,
+        relationship: Box<ProjectionExpression>,
+        /// A node visibility policy over [`ENDPOINT_VISIBILITY_VARIABLE`];
+        /// an endpoint it does not admit is NULL.
+        visibility: Option<Box<Predicate>>,
+    },
+    /// A pattern predicate or pattern comprehension: a correlated MATCH
+    /// evaluated once per evaluation of the expression.
+    Pattern(Box<PatternProjection>),
+}
+
+/// The variable a [`ProjectionExpression::RelationshipValueEndpoint`]
+/// visibility predicate reads; no query can write the name.
+pub const ENDPOINT_VISIBILITY_VARIABLE: &str = "#endpoint";
+
+/// A pattern predicate (`projection` is `None`) or a pattern comprehension.
+///
+/// The executor runs `program` as a correlated MATCH over a row holding only
+/// what the pattern and its body read: `graph_variables` copied from the
+/// enclosing row and `arguments` evaluated in the enclosing scope. Each match
+/// that satisfies `predicate` makes a predicate true, or contributes one
+/// `projection` to a comprehension's list. A NULL bound variable matches
+/// nothing, so the predicate is false and the list empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatternProjection {
+    /// Introduces the variables the pattern binds first; its imports read
+    /// the `arguments` columns.
+    pub program: GraphMatchProgram,
+    /// Node and relationship variables of the enclosing row that the
+    /// pattern or its body reads.
+    pub graph_variables: Vec<String>,
+    /// Enclosing values matched as graph entities, such as a list
+    /// comprehension element: each import column of `program` with the
+    /// enclosing-scope expression that produces it.
+    pub arguments: Vec<(String, ProjectionExpression)>,
+    /// Enclosing row columns that `predicate` and `projection` read, as
+    /// [`ProjectionExpression::LocalVariable`].
+    pub columns: Vec<String>,
+    /// Evaluated over each match; only TRUE keeps it.
+    pub predicate: Option<ProjectionExpression>,
+    /// Evaluated over each kept match of a comprehension.
+    pub projection: Option<ProjectionExpression>,
+}
+
+impl PatternProjection {
+    /// Expressions in evaluation order: arguments, predicate, projection.
+    pub fn expressions(&self) -> impl Iterator<Item = &ProjectionExpression> {
+        self.arguments
+            .iter()
+            .map(|(_, expression)| expression)
+            .chain(self.predicate.iter())
+            .chain(self.projection.iter())
+    }
+
+    fn expressions_mut(&mut self) -> impl Iterator<Item = &mut ProjectionExpression> {
+        self.arguments
+            .iter_mut()
+            .map(|(_, expression)| expression)
+            .chain(self.predicate.iter_mut())
+            .chain(self.projection.iter_mut())
+    }
 }
 
 /// A `reduce` fold. `accumulator` and `variable` are visible only to
@@ -498,6 +570,8 @@ impl ProjectionExpression {
                 .flatten()
                 .map(Box::as_ref)
                 .all(visit),
+            Self::RelationshipValueEndpoint { relationship, .. } => visit(relationship),
+            Self::Pattern(pattern) => pattern.expressions().all(visit),
             _ => true,
         }
     }
@@ -606,6 +680,12 @@ impl ProjectionExpression {
                 }
                 if let Some(end) = end {
                     visit(end)?;
+                }
+            }
+            Self::RelationshipValueEndpoint { relationship, .. } => visit(relationship)?,
+            Self::Pattern(pattern) => {
+                for expression in pattern.expressions_mut() {
+                    visit(expression)?;
                 }
             }
             _ => {}
@@ -1147,9 +1227,29 @@ impl hawdb_core::RetainedHeapBytes for ProjectionExpression {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(variable),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(endpoints),
             ]),
+            Self::RelationshipValueEndpoint {
+                endpoint,
+                relationship,
+                visibility,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(endpoint),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(relationship),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(visibility),
+            ]),
+            Self::Pattern(pattern) => hawdb_core::RetainedHeapBytes::retained_heap_bytes(pattern),
         }
     }
 }
+
+// Retained query ownership: PatternProjection.
+hawdb_core::impl_retained_heap_for_struct!(PatternProjection {
+    program,
+    graph_variables,
+    arguments,
+    columns,
+    predicate,
+    projection,
+});
 
 // Retained query ownership: PathFunction.
 impl hawdb_core::RetainedHeapBytes for PathFunction {

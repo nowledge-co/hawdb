@@ -373,6 +373,16 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
             public_name(&reduce.accumulator) && public_name(&reduce.variable)
         }
         ProjectionExpression::LocalVariable { name, .. } => public_name(name),
+        ProjectionExpression::RelationshipValueEndpoint { .. } => true,
+        ProjectionExpression::Pattern(pattern) => {
+            pattern.graph_variables.iter().all(|name| public_name(name))
+                && pattern.columns.iter().all(|name| public_name(name))
+                && pattern
+                    .program
+                    .introduced
+                    .iter()
+                    .all(|name| public_name(name))
+        }
     };
     own_names && expression.all_children(|child| public_expression_at(child, depth + 1))
 }

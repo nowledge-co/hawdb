@@ -155,30 +155,8 @@ pub(crate) fn stream_graph_match(
     limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    if program.steps.len() > MAX_MATCH_STEPS {
-        return Err(HawDBError::Execution(
-            "MATCH exceeds maximum pattern depth".to_string(),
-        ));
-    }
     // Validate before reading input so empty streams cannot bypass shape checks.
-    for step in &program.steps {
-        if let GraphMatchStep::Expand {
-            relationship,
-            rel_type,
-            properties,
-            min_hops,
-            max_hops,
-            ..
-        } = step
-            && (*min_hops != 1 || *max_hops != 1)
-            && (relationship.is_some() || !properties.is_empty() || rel_type.is_empty())
-        {
-            return Err(HawDBError::Execution(
-                "bounded MATCH expansion requires a typed pattern without relationship bindings"
-                    .to_string(),
-            ));
-        }
-    }
+    validate_program(program)?;
     let placed = PlacedPredicate::new(program)?;
     if limit.is_reached(0) {
         return Ok(BatchControl::Stop);
@@ -201,13 +179,14 @@ pub(crate) fn stream_graph_match(
         placed,
         deferred: Cell::new(false),
         store,
-        context,
+        context: context.into(),
         account: &account,
         source_account: &source_account,
         indexed: indexed_node::IndexedNodeStats::default(),
         // Seed scoring reads the candidate's properties and annotates each
         // hop, so it keeps whole records and per-step row copies.
         scoring: context.observer.seed_graph_scoring_input().is_some(),
+        candidate: None,
     };
     let mut emitted = 0;
     let mut append = |binding: &Binding| {
@@ -281,6 +260,88 @@ pub(crate) fn stream_graph_match(
     Ok(control)
 }
 
+/// What a correlated match reads besides its store and memory accounts.
+#[derive(Clone, Copy)]
+pub(crate) struct MatchContext<'a> {
+    pub(crate) catalog: &'a hawdb_core::Catalog,
+    pub(crate) observer: &'a dyn crate::observer::ExecutionObserver,
+    pub(crate) task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
+    /// The budget of adjacency and record reads.
+    pub(crate) query_memory_bytes: std::num::NonZeroUsize,
+    /// The budget of shortest-path search state.
+    pub(crate) blocking_operator_bytes: std::num::NonZeroUsize,
+}
+
+impl<'a> From<BatchExecutionContext<'a>> for MatchContext<'a> {
+    fn from(context: BatchExecutionContext<'a>) -> Self {
+        Self {
+            catalog: context.catalog,
+            observer: context.observer,
+            task_context: context.task_context,
+            query_memory_bytes: context.memory.query_memory_bytes,
+            blocking_operator_bytes: context.memory.blocking_operator_bytes,
+        }
+    }
+}
+
+/// Runs `program` once over `input`, as one MATCH over one incoming row, and
+/// calls `emit` with each complete match. The program must not be optional
+/// and its predicate, if any, is evaluated without placement. State and the
+/// records read are charged to `account`, and `candidate` is called for
+/// every candidate node or partial match the program visits.
+pub(crate) fn visit_correlated_matches(
+    program: &GraphMatchProgram,
+    store: &dyn GraphExecutionRead,
+    context: MatchContext<'_>,
+    account: &QueryMemoryAccount,
+    input: &Binding,
+    candidate: &dyn Fn() -> Result<()>,
+    emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
+) -> Result<ScanControl> {
+    validate_program(program)?;
+    let runtime = MatchRuntime {
+        program,
+        placed: PlacedPredicate::new(program)?,
+        deferred: Cell::new(false),
+        store,
+        context,
+        account,
+        source_account: account,
+        indexed: indexed_node::IndexedNodeStats::default(),
+        scoring: false,
+        candidate: Some(candidate),
+    };
+    let (mut binding, _leases) = runtime.prepare(input)?;
+    runtime.visit(0, &mut binding, &mut BTreeSet::new(), emit)
+}
+
+fn validate_program(program: &GraphMatchProgram) -> Result<()> {
+    if program.steps.len() > MAX_MATCH_STEPS {
+        return Err(HawDBError::Execution(
+            "MATCH exceeds maximum pattern depth".to_string(),
+        ));
+    }
+    for step in &program.steps {
+        if let GraphMatchStep::Expand {
+            relationship,
+            rel_type,
+            properties,
+            min_hops,
+            max_hops,
+            ..
+        } = step
+            && (*min_hops != 1 || *max_hops != 1)
+            && (relationship.is_some() || !properties.is_empty() || rel_type.is_empty())
+        {
+            return Err(HawDBError::Execution(
+                "bounded MATCH expansion requires a typed pattern without relationship bindings"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 struct MatchRuntime<'a> {
     indexed: indexed_node::IndexedNodeStats<'a>,
     program: &'a GraphMatchProgram,
@@ -292,10 +353,13 @@ struct MatchRuntime<'a> {
     /// no error the end-of-match evaluation would not have raised.
     deferred: Cell<bool>,
     store: &'a dyn GraphExecutionRead,
-    context: BatchExecutionContext<'a>,
+    context: MatchContext<'a>,
     account: &'a QueryMemoryAccount,
     source_account: &'a QueryMemoryAccount,
     scoring: bool,
+    /// Charged for each visited candidate when the program runs inside an
+    /// expression, whose work is bounded per evaluation.
+    candidate: Option<&'a dyn Fn() -> Result<()>>,
 }
 
 /// The rest of a one-hop step after its relationship is bound.
@@ -379,7 +443,7 @@ impl MatchRuntime<'_> {
 
     fn adjacency_memory(&self) -> AdjacencyReadMemory<'_> {
         AdjacencyReadMemory {
-            budget_bytes: self.context.memory.query_memory_bytes.get(),
+            budget_bytes: self.context.query_memory_bytes.get(),
             account: Some(self.source_account),
         }
     }
@@ -532,6 +596,7 @@ impl MatchRuntime<'_> {
         emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
         runtime_checkpoint(self.context.task_context)?;
+        self.charge_candidate()?;
         let conjuncts = self
             .placed
             .early
@@ -557,6 +622,10 @@ impl MatchRuntime<'_> {
             }
         }
         self.visit_step(index, row, used, emit)
+    }
+
+    fn charge_candidate(&self) -> Result<()> {
+        self.candidate.map_or(Ok(()), |candidate| candidate())
     }
 
     fn conjunct_holds(&self, conjunct: &Predicate, row: &Binding) -> Result<bool> {
@@ -648,6 +717,7 @@ impl MatchRuntime<'_> {
                 let matched = Cell::new(0usize);
                 let mut bind = |node: NodeRecord| {
                     runtime_checkpoint(self.context.task_context)?;
+                    self.charge_candidate()?;
                     visited.set(visited.get().saturating_add(1));
                     if !self.node_matches(pattern, &node) {
                         return Ok(ScanControl::Continue);
@@ -1161,7 +1231,7 @@ impl MatchRuntime<'_> {
         let task_context = self.context.task_context;
         let memory = self.adjacency_memory();
         let mut tracker = OperatorMemoryTracker::with_account(
-            self.context.memory.blocking_operator_bytes,
+            self.context.blocking_operator_bytes,
             self.account.clone(),
         );
         let mut checkpoint = || runtime_checkpoint(task_context);
@@ -1302,6 +1372,7 @@ impl MatchRuntime<'_> {
         emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
         let (target, hop) = observed_target;
+        self.charge_candidate()?;
         if row.values.get(&pattern.variable) == Some(&Value::Null) {
             return Ok(ScanControl::Continue);
         }

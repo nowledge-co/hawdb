@@ -316,6 +316,7 @@ impl<'a> BatchReadContext<'a> {
             memory_ledger: self.memory_ledger,
             task_context: self.task_context,
             observer: self.observer,
+            graph: Some(self.store),
         }
     }
 }

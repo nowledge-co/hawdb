@@ -93,6 +93,7 @@ impl Fixture {
             memory_ledger: &self.ledger,
             task_context: None,
             observer: &self.reports,
+            graph: None,
         }
     }
 

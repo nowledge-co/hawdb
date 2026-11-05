@@ -272,17 +272,19 @@ fn prepare_projection_values<'a>(
     working: &QueryMemoryAccount,
     prepared: &'a PreparedProjectionExpressions<'a>,
 ) -> Result<(BTreeMap<String, ProjectedValue<'a>>, QueryMemoryLease)> {
+    let graph = context.expression_graph();
     prepare_borrowed_projection(
         items,
         working,
         context.observer.seed_graph_scoring_input().map(|_| binding),
         |expression| {
-            prepared.evaluate(
+            prepared.evaluate_in_graph(
                 expression,
                 context.catalog,
                 binding,
                 Some(working),
                 context.observer,
+                graph.as_ref(),
             )
         },
     )

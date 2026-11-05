@@ -193,8 +193,9 @@ impl AggregateState {
         item: &Aggregation,
         catalog: &Catalog,
         binding: &Binding,
+        graph: Option<&ExpressionGraph<'_>>,
     ) -> Result<MemoryDelta> {
-        self.update_input(aggregate_input(item, catalog, binding)?)
+        self.update_input(aggregate_input(item, catalog, binding, graph)?)
     }
 
     fn update_input(&mut self, input: AggregateInput) -> Result<MemoryDelta> {
@@ -468,6 +469,7 @@ fn aggregate_input(
     item: &Aggregation,
     catalog: &Catalog,
     binding: &Binding,
+    graph: Option<&ExpressionGraph<'_>>,
 ) -> Result<AggregateInput> {
     Ok(match &item.target {
         AggregateTarget::Ranked { .. } => {
@@ -519,7 +521,9 @@ fn aggregate_input(
         AggregateTarget::Property { .. } => aggregate_property_value(&item.target, binding)
             .map_or(AggregateInput::Missing, AggregateInput::Value),
         AggregateTarget::Expression(expression) => {
-            match evaluate_projection_expression(expression, catalog, binding)? {
+            match evaluate_projection_in_graph(expression, catalog, binding, None, graph)?
+                .into_owned()
+            {
                 Value::Null => AggregateInput::Missing,
                 value => AggregateInput::Value(value),
             }
@@ -565,10 +569,15 @@ impl<'a> GroupAccumulator<'a> {
             )
     }
 
-    fn update(&mut self, catalog: &Catalog, binding: &Binding) -> Result<MemoryDelta> {
+    fn update(
+        &mut self,
+        catalog: &Catalog,
+        binding: &Binding,
+        graph: Option<&ExpressionGraph<'_>>,
+    ) -> Result<MemoryDelta> {
         let mut delta = MemoryDelta::default();
         for (state, item) in self.states.iter_mut().zip(self.items) {
-            delta.combine(state.update(item, catalog, binding)?);
+            delta.combine(state.update(item, catalog, binding, graph)?);
         }
         Ok(delta)
     }
@@ -702,6 +711,7 @@ struct AggregateExecutionContext<'a> {
     memory_ledger: &'a QueryMemoryLedger,
     execution_limit: ExecutionLimit,
     task_context: Option<&'a RuntimeTaskContext>,
+    graph: Option<ExpressionGraph<'a>>,
 }
 
 impl PartialEq for GroupMergeEntry {
@@ -755,12 +765,18 @@ pub fn stream_aggregate_batches(
         "AggregateExec",
         context.memory.blocking_operator_bytes,
     );
+    // Expressions over the graph charge reads to this operator's state.
+    let graph_account = primary_account.clone();
+    let graph = context
+        .expression_graph()
+        .map(|graph| graph.with_account(&graph_account));
     let BlockingExecutionContext {
         catalog,
         memory,
         memory_ledger,
         task_context,
         observer,
+        graph: _,
     } = context;
     runtime_checkpoint(task_context)?;
     if group_keys.is_empty() {
@@ -776,7 +792,13 @@ pub fn stream_aggregate_batches(
         source.execute(input, ExecutionLimit::unlimited(), &mut |batch| {
             runtime_checkpoint(task_context)?;
             for binding in &batch {
-                update_group_accumulator(&mut accumulator, catalog, binding, &mut tracker)?;
+                update_group_accumulator(
+                    &mut accumulator,
+                    catalog,
+                    binding,
+                    &mut tracker,
+                    graph.as_ref(),
+                )?;
                 input_rows = input_rows.saturating_add(1);
             }
             Ok(BatchControl::Continue)
@@ -818,6 +840,7 @@ pub fn stream_aggregate_batches(
                 memory_ledger,
                 execution_limit,
                 task_context,
+                graph,
             },
             memory,
             observer,
@@ -847,10 +870,10 @@ pub fn stream_aggregate_batches(
             let PreparedKey {
                 mut allocation,
                 values: key,
-            } = key_memory.group(group_keys, catalog, &binding, task_context)?;
+            } = key_memory.group(group_keys, catalog, &binding, task_context, graph.as_ref())?;
             let inputs = items
                 .iter()
-                .map(|item| aggregate_input(item, catalog, &binding))
+                .map(|item| aggregate_input(item, catalog, &binding, graph.as_ref()))
                 .collect::<Result<Vec<_>>>()?;
             let row = BufferedGroupRow { ordinal, inputs };
             let key_bytes = buffered_key_bytes(&key);
@@ -909,6 +932,7 @@ pub fn stream_aggregate_batches(
             memory_ledger,
             execution_limit,
             task_context,
+            graph: None,
         };
         return aggregate_buffered_groups(groups, tracker, aggregate_context, emit);
     }
@@ -946,6 +970,7 @@ pub fn stream_aggregate_batches(
         memory_ledger,
         execution_limit,
         task_context,
+        graph: None,
     };
     merge_group_runs(&runs, &spill_budget, aggregate_context, emit)
 }
@@ -1085,6 +1110,7 @@ fn aggregate_buffered_groups(
         memory_ledger,
         execution_limit,
         task_context,
+        graph: _,
     } = context;
     runtime_checkpoint(task_context)?;
     let mut tracker = OperatorMemoryTracker::with_blocking_account(
@@ -1156,6 +1182,7 @@ fn merge_group_runs(
         memory_ledger,
         execution_limit,
         task_context,
+        graph: _,
     } = context;
     runtime_checkpoint(task_context)?;
     let mut accumulator_tracker = OperatorMemoryTracker::with_blocking_account(
@@ -1303,8 +1330,9 @@ fn update_group_accumulator(
     catalog: &Catalog,
     binding: &Binding,
     tracker: &mut OperatorMemoryTracker,
+    graph: Option<&ExpressionGraph<'_>>,
 ) -> Result<()> {
-    let delta = accumulator.update(catalog, binding)?;
+    let delta = accumulator.update(catalog, binding, graph)?;
     tracker.release(delta.released_bytes);
     if tracker.would_exceed(delta.added_bytes) {
         return Err(tracker.state_error(
@@ -1512,7 +1540,7 @@ mod tests {
             Value::Int(5),
         ] {
             state
-                .update(&item, &catalog, &Binding::scalar("x", value))
+                .update(&item, &catalog, &Binding::scalar("x", value), None)
                 .unwrap();
         }
         assert_eq!(state.finish(), Value::Int(2));
@@ -1522,6 +1550,7 @@ mod tests {
                 &item,
                 &catalog,
                 &Binding::scalar("x", Value::String("a".into())),
+                None,
             )
             .unwrap_err();
         assert!(error.to_string().contains("numeric"), "{error}");

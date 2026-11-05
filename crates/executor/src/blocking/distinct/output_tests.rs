@@ -101,6 +101,7 @@ fn assert_output_payload_is_bounded(spilled: bool) {
             memory_ledger: &ledger,
             task_context: None,
             observer: &reports,
+            graph: None,
         },
         ExecutionLimit::unlimited(),
         &mut |batch| {
@@ -175,6 +176,7 @@ fn output_preserves_mixed_schema_order_and_batches_variable_widths() {
                 memory_ledger: &ledger,
                 task_context: None,
                 observer: &reports,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |batch| {
@@ -243,6 +245,7 @@ fn assert_capped_output_releases_state(spilled: bool) {
                     memory_ledger: &ledger,
                     task_context: None,
                     observer: &reports,
+                    graph: None,
                 },
                 ExecutionLimit {
                     output_rows: Some(cap),
@@ -296,6 +299,7 @@ fn empty_distinct_does_not_require_output_admission() {
             memory_ledger: &ledger,
             task_context: None,
             observer: &reports,
+            graph: None,
         },
         ExecutionLimit::unlimited(),
         &mut |_| panic!("empty distinct must not emit"),
@@ -328,6 +332,7 @@ fn distinct_output_releases_state_and_runs_on_stop_error_and_cancellation() {
                     memory_ledger: &ledger,
                     task_context: Some(&task),
                     observer: &reports,
+                    graph: None,
                 },
                 ExecutionLimit::unlimited(),
                 &mut |batch| {
@@ -386,6 +391,7 @@ fn distinct_rejects_an_oversized_transfer_row_and_releases_all_state() {
                 memory_ledger: &ledger,
                 task_context: None,
                 observer: &reports,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |_| panic!("oversized output must not emit"),

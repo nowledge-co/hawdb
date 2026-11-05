@@ -4,8 +4,9 @@
 //! Admit scalar working memory and retain owned keys until operator handoff.
 
 use super::{
-    binding_id, binding_property, evaluate_projection_borrowed, Binding, Catalog, ProjectedValue,
-    Projection, Result, RuntimeTaskContext, SortDirection, SortItem, SortKey, Value,
+    binding_id, binding_property, evaluate_projection_in_graph, Binding, Catalog, ExpressionGraph,
+    ProjectedValue, Projection, Result, RuntimeTaskContext, SortDirection, SortItem, SortKey,
+    Value,
 };
 use crate::pipeline::runtime_checkpoint;
 use crate::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease};
@@ -51,6 +52,7 @@ impl KeyMemory {
         catalog: &Catalog,
         binding: &Binding,
         task_context: Option<&RuntimeTaskContext>,
+        graph: Option<&ExpressionGraph<'_>>,
     ) -> Result<PreparedKey<Vec<Value>>> {
         runtime_checkpoint(task_context)?;
         let mut allocation = self
@@ -59,11 +61,12 @@ impl KeyMemory {
         let mut values = Vec::with_capacity(items.len());
         for item in items {
             runtime_checkpoint(task_context)?;
-            let value = evaluate_projection_borrowed(
+            let value = evaluate_projection_in_graph(
                 &item.expression,
                 catalog,
                 binding,
                 Some(&self.evaluation),
+                graph,
             )?;
             values.push(value.into_owned_accounted(&mut allocation)?);
         }
@@ -96,11 +99,14 @@ impl KeyMemory {
                 SortKey::Id { variable } => {
                     ProjectedValue::scalar(binding_id(binding, variable).unwrap_or(Value::Null))
                 }
-                SortKey::Expression(expression) => evaluate_projection_borrowed(
+                // Planning projects pattern expressions in ORDER BY keys to
+                // columns first, so a sort key never reads the graph.
+                SortKey::Expression(expression) => evaluate_projection_in_graph(
                     expression,
                     catalog,
                     binding,
                     Some(&self.evaluation),
+                    None,
                 )?,
                 SortKey::Column(name) => binding
                     .values
@@ -117,6 +123,7 @@ impl KeyMemory {
 
 #[cfg(test)]
 mod tests {
+    use super::super::evaluate_projection_borrowed;
     use super::*;
     use crate::QueryMemoryLedger;
     use hawdb_plan_cypher::ProjectionExpression;
@@ -188,12 +195,14 @@ mod tests {
                     name: "second".into(),
                 },
             ];
-            assert!(memory.group(&items, &catalog, &binding, None).is_err());
+            assert!(memory
+                .group(&items, &catalog, &binding, None, None)
+                .is_err());
             assert_eq!(ledger.snapshot().used_bytes, 0);
             let context = RuntimeTaskContext::default();
             context.cancellation().cancel();
             let error = memory
-                .group(&items, &catalog, &binding, Some(&context))
+                .group(&items, &catalog, &binding, Some(&context), None)
                 .err()
                 .unwrap();
             assert!(

@@ -357,6 +357,7 @@ pub(super) fn execute_graph_transaction_plan(
                             transaction.catalog(),
                             transaction.store(),
                             mutation_limits,
+                            &runtime.config.execution_memory,
                             task_context,
                         )?
                     } else {
@@ -368,6 +369,7 @@ pub(super) fn execute_graph_transaction_plan(
                                     transaction.catalog(),
                                     transaction.store(),
                                     mutation_limits,
+                                    &runtime.config.execution_memory,
                                     task_context,
                                 )? {
                                     Some(command) => Some(command),

@@ -19,7 +19,7 @@
 use super::staged::StagedMutations;
 use super::{mutation_command, node_set_assignment, node_set_value};
 use crate::binding::{map_payload_bytes, value_payload_bytes, Binding};
-use crate::expression::{evaluate_predicate, project_value};
+use crate::expression::{evaluate_predicate_with_context, project_value};
 use crate::load_csv::{open_load_csv, CsvImportPolicy, CsvRows};
 use crate::memory::DEFAULT_EXECUTION_BATCH_ROWS;
 use crate::observer::NoopExecutionObserver;
@@ -126,6 +126,7 @@ pub fn execute_mutation_with_store_output_limits(
             store,
             limits,
             output_limits,
+            memory,
             task_context,
         );
     }
@@ -137,9 +138,14 @@ pub fn execute_mutation_with_store_output_limits(
             "physical plan is not an executable mutation".to_string(),
         )),
         Err(error) => {
-            if let Some(rows) =
-                execute_node_mutation_with_limits(plan, catalog, store, limits, task_context)?
-            {
+            if let Some(rows) = execute_node_mutation_with_limits(
+                plan,
+                catalog,
+                store,
+                limits,
+                memory,
+                task_context,
+            )? {
                 Ok(rows)
             } else {
                 Err(error)
@@ -641,9 +647,11 @@ fn execute_node_mutation_with_limits(
     catalog: &mut Catalog,
     store: &mut dyn GraphExecutionWrite,
     limits: MutationLimits,
+    memory: &ExecutionMemoryConfig,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Option<Vec<Row>>> {
-    let Some((ids, action)) = node_mutation_targets(plan, catalog, store, limits, task_context)?
+    let Some((ids, action)) =
+        node_mutation_targets(plan, catalog, store, limits, memory, task_context)?
     else {
         return Ok(None);
     };
@@ -678,9 +686,11 @@ pub fn materialize_node_mutation(
     catalog: &Catalog,
     store: &dyn GraphExecutionRead,
     limits: MutationLimits,
+    memory: &ExecutionMemoryConfig,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Option<GraphMutation>> {
-    let Some((ids, action)) = node_mutation_targets(plan, catalog, store, limits, task_context)?
+    let Some((ids, action)) =
+        node_mutation_targets(plan, catalog, store, limits, memory, task_context)?
     else {
         return Ok(None);
     };
@@ -706,6 +716,7 @@ fn node_mutation_targets(
     catalog: &Catalog,
     store: &dyn GraphExecutionRead,
     limits: MutationLimits,
+    memory: &ExecutionMemoryConfig,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Option<(Vec<NodeId>, NodeMutationPreflightAction)>> {
     runtime_checkpoint(task_context)?;
@@ -757,6 +768,7 @@ fn node_mutation_targets(
         _ => return Ok(None),
     };
     let label_ids = label_ids_for_pattern(catalog, label);
+    let predicate_memory = PreflightPredicateMemory::new(memory);
     let mut ids = Vec::with_capacity(limits.max_affected_rows.get().min(1024));
     let mut visited = 0usize;
     store.visit_nodes_owned(None, &mut |node| {
@@ -773,7 +785,7 @@ fn node_mutation_targets(
             relationships: BTreeMap::new().into(),
         };
         if let Some(predicate) = predicate
-            && !evaluate_predicate(predicate, catalog, store, &binding, &NoopExecutionObserver)?
+            && !predicate_memory.holds(predicate, catalog, store, &binding, task_context)?
         {
             return Ok(ScanControl::Continue);
         }
@@ -795,6 +807,50 @@ fn node_mutation_targets(
     Ok(Some((ids, action)))
 }
 
+/// The statement's memory account for preflight predicates: their adjacency
+/// reads and pattern expressions are charged to it and stop with the task.
+struct PreflightPredicateMemory {
+    budget_bytes: usize,
+    account: crate::QueryMemoryAccount,
+}
+
+impl PreflightPredicateMemory {
+    fn new(memory: &ExecutionMemoryConfig) -> Self {
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        Self {
+            budget_bytes: memory.query_memory_bytes.get(),
+            account: ledger.account_with_budget_option(
+                crate::QueryMemoryClass::ExternalRead,
+                "mutation preflight predicate",
+                memory.query_memory_bytes,
+                "ExecutionMemoryConfig.query_memory_bytes",
+            ),
+        }
+    }
+
+    fn holds(
+        &self,
+        predicate: &Predicate,
+        catalog: &Catalog,
+        store: &dyn GraphExecutionRead,
+        binding: &Binding,
+        task_context: Option<&RuntimeTaskContext>,
+    ) -> Result<bool> {
+        evaluate_predicate_with_context(
+            predicate,
+            catalog,
+            store,
+            binding,
+            &NoopExecutionObserver,
+            crate::store::AdjacencyReadMemory {
+                budget_bytes: self.budget_bytes,
+                account: Some(&self.account),
+            },
+            task_context,
+        )
+    }
+}
+
 enum NodeMutationPreflightAction {
     Set(Vec<NodeSetAssignment>),
     Delete { detach: bool },
@@ -811,6 +867,7 @@ fn execute_set_node_properties_return_with_limits(
     store: &mut dyn GraphExecutionWrite,
     limits: MutationLimits,
     output_limits: OutputLimits,
+    memory: &ExecutionMemoryConfig,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<Row>> {
     let assignments = assignments
@@ -818,6 +875,7 @@ fn execute_set_node_properties_return_with_limits(
         .map(node_set_assignment)
         .collect::<Vec<_>>();
     let label_ids = label_ids_for_pattern(catalog, label);
+    let predicate_memory = PreflightPredicateMemory::new(memory);
     let mut ids = Vec::with_capacity(limits.max_affected_rows.get().min(1024));
     let mut projected_rows = Vec::new();
     let mut projected_payload_bytes = 0usize;
@@ -836,12 +894,12 @@ fn execute_set_node_properties_return_with_limits(
             relationships: BTreeMap::new().into(),
         };
         if let Some(predicate) = predicate
-            && !evaluate_predicate(
+            && !predicate_memory.holds(
                 predicate,
                 catalog,
-                store,
+                &*store,
                 &original_binding,
-                &NoopExecutionObserver,
+                task_context,
             )?
         {
             return Ok(ScanControl::Continue);

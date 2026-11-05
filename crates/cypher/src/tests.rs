@@ -181,6 +181,7 @@ mod load_csv;
 mod math_reduce_endpoints;
 mod migration_corpus;
 mod order_by_expressions;
+mod pattern_expressions;
 mod source_spans;
 mod temporal;
 
@@ -4180,12 +4181,19 @@ fn parses_relationship_type_disjunctions() {
     ] {
         assert!(parse(query).is_err(), "{query}");
     }
-    // Existence predicates test one type; a disjunction must not shrink to it.
-    for query in [
-        "MATCH (a) WHERE (a)-[:A|B]->() RETURN a",
-        "MATCH (a), (b) WHERE NOT EXISTS { MATCH (a)-[:A|B]->(b) } RETURN a",
-    ] {
-        let error = parse(query).unwrap_err().to_string();
-        assert!(error.contains("disjunction"), "{query}: {error}");
-    }
+    // The one-hop existence predicates test one type; a disjunction must not
+    // shrink to it. A pattern predicate keeps the whole disjunction (#1488).
+    let error = parse("MATCH (a), (b) WHERE NOT EXISTS { MATCH (a)-[:A|B]->(b) } RETURN a")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("disjunction"), "{error}");
+    let debug = format!(
+        "{:?}",
+        parse("MATCH (a) WHERE (a)-[:A|B]->() RETURN a").unwrap()
+    );
+    assert!(
+        debug.contains("PatternPredicate")
+            && debug.contains("rel_type_disjunction: [\"A\", \"B\"]"),
+        "{debug}"
+    );
 }

@@ -495,6 +495,7 @@ fn row_unwind_refuses_large_output_before_copying() {
             memory_ledger: &ledger,
             task_context: None,
             observer: &NoopExecutionObserver,
+            graph: None,
         },
         ExecutionLimit::unlimited(),
         &mut |_| panic!("over-budget output"),

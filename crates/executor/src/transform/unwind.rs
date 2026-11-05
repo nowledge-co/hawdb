@@ -4,7 +4,7 @@
 //! Expand a list for each upstream row without materializing the input relation.
 
 use super::*;
-use crate::expression::evaluate_projection_borrowed;
+use crate::expression::evaluate_projection_in_graph;
 use crate::pipeline::AccountedBindingBatch;
 use hawdb_core::{HawDBError, Value};
 
@@ -22,6 +22,7 @@ pub fn stream_unwind_rows_batches(
         return Ok(BatchControl::Stop);
     }
     let working = context.source_account("UnwindRowsExec expressions");
+    let graph = context.expression_graph();
     let mut output = AccountedBindingBatch::with_ledger(
         "UnwindRowsExec",
         context.memory.batch_rows.get(),
@@ -42,11 +43,12 @@ pub fn stream_unwind_rows_batches(
                     "UNWIND variable '{variable}' is already bound"
                 )));
             }
-            let value = evaluate_projection_borrowed(
+            let value = evaluate_projection_in_graph(
                 expression,
                 context.catalog,
                 &binding,
                 Some(&working),
+                graph.as_ref(),
             )?;
             let values = match value.as_ref() {
                 Value::List(values) => values,

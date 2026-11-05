@@ -65,9 +65,19 @@ pub struct BatchExecutionContext<'a> {
     pub memory_ledger: &'a QueryMemoryLedger,
     pub task_context: Option<&'a RuntimeTaskContext>,
     pub observer: &'a dyn ExecutionObserver,
+    /// The graph snapshot that expressions such as pattern predicates read.
+    /// Kernels over plain value rows leave it `None`; such expressions then
+    /// fail rather than read anything else.
+    pub graph: Option<&'a dyn crate::store::GraphExecutionRead>,
 }
 
-impl BatchExecutionContext<'_> {
+impl<'a> BatchExecutionContext<'a> {
+    /// Graph access for expressions evaluated under this context.
+    pub(crate) fn expression_graph(&self) -> Option<crate::expression::ExpressionGraph<'a>> {
+        self.graph
+            .map(|store| crate::expression::ExpressionGraph::new(store, *self))
+    }
+
     pub(crate) fn source_account(&self, operator: &'static str) -> QueryMemoryAccount {
         self.source_account_retaining(operator, self.operator_account(operator))
     }

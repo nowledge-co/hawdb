@@ -440,6 +440,24 @@ impl Transformer<'_> {
         anonymous: &mut usize,
     ) -> Result<PropertyPredicate> {
         let wrapper = node;
+        if self.tree.rule_id(node) == rule_id!("w_graph") {
+            // A pattern predicate is an existential subquery over the whole
+            // pattern. The one-hop check from a bound node to an anonymous,
+            // property-free node keeps its dedicated adjacency predicate.
+            // Anonymous names keep the clause numbering, which later clauses
+            // continue.
+            let pattern = self.pattern(wrapper, depth, anonymous)?;
+            if let Some(predicate) = one_hop_existence(&pattern) {
+                return Ok(predicate);
+            }
+            return Ok(PropertyPredicate::ExpressionEq {
+                expression: self.source(
+                    node,
+                    ScalarExpressionKind::PatternPredicate(Box::new(pattern)),
+                ),
+                value: true_scalar(),
+            });
+        }
         let pattern = self.pattern(wrapper, depth, anonymous)?;
         let [step] = pattern.steps.as_slice() else {
             return Err(self.error(
@@ -469,40 +487,51 @@ impl Transformer<'_> {
                 "relationship existence predicates support one-hop types",
             ));
         }
-        if self.tree.rule_id(node) == rule_id!("w_bound") {
-            if !pattern.first.label.is_empty() || !pattern.first.properties.is_empty() {
-                return Err(self.error(
-                    node,
-                    "EXISTS relationship subqueries require bound source variables",
-                ));
-            }
-            if !step.target.label.is_empty() || !step.target.properties.is_empty() {
-                return Err(self.error(
-                    node,
-                    "EXISTS relationship subqueries require bound target variables",
-                ));
-            }
-            Ok(PropertyPredicate::BoundRelationshipExists {
-                source_variable: pattern.first.variable.clone(),
-                rel_type: step.relationship.rel_type.clone(),
-                direction: step.relationship.direction,
-                target_variable: step.target.variable.clone(),
-            })
-        } else {
-            if !step.target.properties.is_empty() {
-                return Err(self.error(
-                    node,
-                    "relationship existence predicates do not support target properties",
-                ));
-            }
-            Ok(PropertyPredicate::RelationshipExists {
-                variable: pattern.first.variable.clone(),
-                rel_type: step.relationship.rel_type.clone(),
-                direction: step.relationship.direction,
-                target_label: step.target.label.clone(),
-            })
+        if !pattern.first.label.is_empty() || !pattern.first.properties.is_empty() {
+            return Err(self.error(
+                node,
+                "EXISTS relationship subqueries require bound source variables",
+            ));
         }
+        if !step.target.label.is_empty() || !step.target.properties.is_empty() {
+            return Err(self.error(
+                node,
+                "EXISTS relationship subqueries require bound target variables",
+            ));
+        }
+        Ok(PropertyPredicate::BoundRelationshipExists {
+            source_variable: pattern.first.variable.clone(),
+            rel_type: step.relationship.rel_type.clone(),
+            direction: step.relationship.direction,
+            target_variable: step.target.variable.clone(),
+        })
     }
+}
+/// `(a)-[:R]->(:Label)`: one untyped or single-type hop with no bounds,
+/// properties or bindings beyond the bound source, to a node no other
+/// variable names.
+fn one_hop_existence(pattern: &MatchPattern) -> Option<PropertyPredicate> {
+    let [step] = pattern.steps.as_slice() else {
+        return None;
+    };
+    let relationship = &step.relationship;
+    let simple = pattern.variable.is_none()
+        && pattern.first.label.is_empty()
+        && pattern.first.properties.is_empty()
+        && !pattern.first.anonymous
+        && relationship.variable.is_none()
+        && relationship.rel_type_disjunction.is_empty()
+        && relationship.properties.is_empty()
+        && relationship.search == PathSearch::All
+        && (relationship.min_hops, relationship.max_hops) == (1, 1)
+        && step.target.anonymous
+        && step.target.properties.is_empty();
+    simple.then(|| PropertyPredicate::RelationshipExists {
+        variable: pattern.first.variable.clone(),
+        rel_type: relationship.rel_type.clone(),
+        direction: relationship.direction,
+        target_label: step.target.label.clone(),
+    })
 }
 fn true_scalar() -> ScalarExpression {
     AstNode::synthetic(ScalarExpressionKind::Value(AstNode::synthetic(

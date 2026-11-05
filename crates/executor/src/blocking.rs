@@ -17,7 +17,7 @@
 use crate::binding::{binding_memory_bytes, value_memory_bytes, Binding, TopNBinding};
 use crate::expression::{
     binding_has_variable, binding_identity_key, binding_property, binding_value,
-    evaluate_projection_expression, insert_projected_value, KeyMemory, PreparedKey,
+    evaluate_projection_in_graph, insert_projected_value, ExpressionGraph, KeyMemory, PreparedKey,
 };
 use crate::kernel::{ensure_operator_item_fits, OperatorMemoryTracker, SpillBudgetTracker};
 use crate::observer::ExecutionObserver;
@@ -437,6 +437,7 @@ mod tests {
                 memory_ledger: &memory_ledger,
                 task_context: None,
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |batch| {
@@ -479,6 +480,7 @@ mod tests {
                 memory_ledger: &memory_ledger,
                 task_context: None,
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |batch| {
@@ -528,6 +530,7 @@ mod tests {
                 memory_ledger: &memory_ledger,
                 task_context: None,
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |batch| {
@@ -586,6 +589,7 @@ mod tests {
                 memory_ledger: &memory_ledger,
                 task_context: None,
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit {
                 output_rows: Some(2),

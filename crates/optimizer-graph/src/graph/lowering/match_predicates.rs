@@ -296,6 +296,15 @@ fn expression_names(expression: &ProjectionExpression, names: &mut BTreeSet<Stri
         }
         // A comprehension's own element reads no row column.
         ProjectionExpression::LocalVariable { .. } | ProjectionExpression::Literal(_) => {}
+        // The subquery reads these enclosing variables and columns; the rest
+        // of its body reads only its own variables and those locals.
+        ProjectionExpression::Pattern(pattern) => {
+            names.extend(pattern.graph_variables.iter().cloned());
+            names.extend(pattern.columns.iter().cloned());
+            for (_, argument) in &pattern.arguments {
+                expression_names(argument, names);
+            }
+        }
         ProjectionExpression::Coalesce(_)
         | ProjectionExpression::VectorDistance { .. }
         | ProjectionExpression::JsonValue { .. }
@@ -316,6 +325,7 @@ fn expression_names(expression: &ProjectionExpression, names: &mut BTreeSet<Stri
         | ProjectionExpression::Reduce(_)
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => {
             expression.all_children(|child| {
                 expression_names(child, names);

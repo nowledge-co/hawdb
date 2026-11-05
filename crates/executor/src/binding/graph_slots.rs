@@ -116,6 +116,21 @@ impl<T: Clone> GraphSlots<T> {
             }
         }
     }
+    /// Copies `name`'s slot from `other`, sharing its record. False when
+    /// `other` has no such slot.
+    pub(crate) fn insert_shared(&mut self, other: &Self, name: &str) -> bool {
+        let Ok(source) = other.position(name) else {
+            return false;
+        };
+        let (key, value) = &other.entries()[source];
+        let position = self.position(name);
+        let slots = self.entries_mut();
+        match position {
+            Ok(i) => slots[i] = (Arc::clone(key), Arc::clone(value)),
+            Err(i) => slots.insert(i, (Arc::clone(key), Arc::clone(value))),
+        }
+        true
+    }
     /// Remove a replaced variable without copying its record payload.
     pub(crate) fn without(&self, name: Option<&str>) -> Self {
         let mut slots = self.clone();

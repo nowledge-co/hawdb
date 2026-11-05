@@ -109,6 +109,14 @@ impl Transformer<'_> {
                 let (variable, property) = self.identifier_pair(node);
                 ScalarExpressionKind::Property { variable, property }
             }
+            // `not(condition)` in function-call form, such as a RETURN item;
+            // a parenthesized condition is a primary only after `NOT`. A
+            // bare `NOT` stays a boolean connective, never an operand.
+            "x_condition_paren" => {
+                let inner =
+                    self.case_boolean(self.tree.required(node, rule_id!("x_or")), depth + 1)?;
+                ScalarExpressionKind::Not(Box::new(self.source(node, inner.kind)))
+            }
             "x_identity" => {
                 let variable = self
                     .text(self.tree.required(node, rule_id!("v_identifier")))
@@ -244,9 +252,42 @@ impl Transformer<'_> {
                             .iter()
                             .copied()
                         {
-                            elements.push(self.case_boolean(child, depth)?);
+                            let element = self.case_boolean(child, depth)?;
+                            // As in a projection, a pattern is not a value.
+                            if matches!(element.kind, ScalarExpressionKind::PatternPredicate(_)) {
+                                return Err(self.error(
+                                    child,
+                                    "a pattern is not a list element; use a pattern comprehension [pattern | expression]",
+                                ));
+                            }
+                            elements.push(element);
                         }
                         ScalarExpressionKind::List(elements)
+                    }
+                    Some("x_comprehension")
+                        if let Some(pattern) = self.tree.child(list, rule_id!("w_graph")) =>
+                    {
+                        let pattern = Box::new(self.expression_pattern(pattern, depth)?);
+                        let predicate = self
+                            .tree
+                            .child(list, rule_id!("x_comprehension_where"))
+                            .map(|id| {
+                                self.case_boolean(self.tree.required(id, rule_id!("x_or")), depth)
+                                    .map(Box::new)
+                            })
+                            .transpose()?;
+                        let projection = self
+                            .tree
+                            .required(list, rule_id!("x_comprehension_projection"));
+                        let projection = Box::new(self.case_scalar(
+                            self.tree.required(projection, rule_id!("x_case_scalar")),
+                            depth,
+                        )?);
+                        ScalarExpressionKind::PatternComprehension {
+                            pattern,
+                            predicate,
+                            projection,
+                        }
                     }
                     Some("x_comprehension") => {
                         let variable = self
@@ -489,6 +530,10 @@ impl Transformer<'_> {
         let base = self.tree.required(node, rule_id!("x_condition_base"));
         let selected = self.tree.children(base)[0];
         let left = match self.tree.node(selected).name {
+            Some("w_graph") => {
+                let pattern = Box::new(self.expression_pattern(selected, depth + 1)?);
+                self.source(selected, ScalarExpressionKind::PatternPredicate(pattern))
+            }
             Some("x_condition_paren") => {
                 let inner =
                     self.case_boolean(self.tree.required(selected, rule_id!("x_or")), depth + 1)?;
@@ -573,6 +618,15 @@ impl Transformer<'_> {
             }
             _ => unreachable!("condition suffix"),
         })
+    }
+    /// The pattern of a pattern predicate or comprehension. Its anonymous
+    /// variables are scoped to the pattern, so they are numbered on their own.
+    pub(super) fn expression_pattern(
+        &mut self,
+        node: NodeId,
+        depth: usize,
+    ) -> Result<MatchPattern> {
+        self.pattern(node, depth, &mut 0)
     }
     pub(super) fn comparison_operator(&self, node: NodeId) -> ScalarBinaryOp {
         match self.text(node) {

@@ -295,7 +295,9 @@ pub(super) fn scalar_expression_is_scoped(
         ScalarExpressionKind::Id(_)
         | ScalarExpressionKind::RelationshipType(_)
         | ScalarExpressionKind::RelationshipEndpoint { .. }
-        | ScalarExpressionKind::DatePart { .. } => false,
+        | ScalarExpressionKind::DatePart { .. }
+        | ScalarExpressionKind::PatternPredicate(_)
+        | ScalarExpressionKind::PatternComprehension { .. } => false,
     }
 }
 

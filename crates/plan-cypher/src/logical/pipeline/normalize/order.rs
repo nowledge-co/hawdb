@@ -265,9 +265,12 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => {
             expression.all_children(|child| has_native_bindings(child, input))
         }
+        // The body reads variables the pattern introduces, which no input binds.
+        ProjectionExpression::Pattern(_) => false,
         // A comprehension element is bound by its enclosing expression.
         ProjectionExpression::LocalVariable { .. } => true,
         ProjectionExpression::CaseEntitySearchRank(rank) => {

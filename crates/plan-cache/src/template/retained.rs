@@ -276,6 +276,17 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
                     .map_or(Some(0), expression_bytes),
             ])
         }),
+        E::RelationshipValueEndpoint {
+            relationship,
+            visibility,
+            ..
+        } => sum([
+            boxed(relationship.as_ref(), expression_bytes),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(visibility),
+        ]),
+        E::Pattern(pattern) => boxed(pattern.as_ref(), |pattern| {
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(pattern)
+        }),
         E::Reduce(reduce) => boxed(reduce.as_ref(), |reduce| {
             sum([
                 Some(reduce.accumulator.capacity()),

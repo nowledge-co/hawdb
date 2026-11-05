@@ -843,6 +843,14 @@ pub(super) fn plan_projection_with_columns(
             plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
             "map".to_string(),
         ),
+        ScalarExpressionKind::PatternPredicate(_) => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "pattern".to_string(),
+        ),
+        ScalarExpressionKind::PatternComprehension { .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "pattern_comprehension".to_string(),
+        ),
     };
     Ok(Projection {
         expression,
@@ -1648,10 +1656,13 @@ pub(super) fn plan_scalar_expression_with_columns(
         ),
         ScalarExpressionKind::RelationshipEndpoint { endpoint, variable } => {
             if column_scope.contains(variable) {
-                return Err(HawDBError::Semantic(format!(
-                    "{}() requires a relationship variable bound by MATCH; '{variable}' is a projected value",
-                    endpoint.function_name()
-                )));
+                // A relationship value, such as an element of
+                // `relationships(p)`, records the ids of its endpoints.
+                return Ok(ProjectionExpression::RelationshipValueEndpoint {
+                    endpoint: *endpoint,
+                    relationship: Box::new(ProjectionExpression::Column(variable.clone())),
+                    visibility: None,
+                });
             }
             if !scope.contains(variable) {
                 return Err(HawDBError::Semantic(format!(
@@ -1741,6 +1752,32 @@ pub(super) fn plan_scalar_expression_with_columns(
                 key: key.clone(),
             })
         }
+        ScalarExpressionKind::PatternPredicate(pattern) => {
+            super::pattern_expression::plan_pattern_expression(
+                scope,
+                column_scope,
+                super::pattern_expression::PatternParts {
+                    pattern,
+                    predicate: None,
+                    projection: None,
+                },
+                parameters,
+            )
+        }
+        ScalarExpressionKind::PatternComprehension {
+            pattern,
+            predicate,
+            projection,
+        } => super::pattern_expression::plan_pattern_expression(
+            scope,
+            column_scope,
+            super::pattern_expression::PatternParts {
+                pattern,
+                predicate: predicate.as_deref(),
+                projection: Some(projection),
+            },
+            parameters,
+        ),
         ScalarExpressionKind::MapLiteral(entries) => Ok(ProjectionExpression::MapLiteral(
             entries
                 .iter()
@@ -1882,7 +1919,7 @@ fn plan_reduce(
     })))
 }
 
-fn bind_list_local(expression: &mut ProjectionExpression, variable: &str) -> Result<()> {
+pub(super) fn bind_list_local(expression: &mut ProjectionExpression, variable: &str) -> Result<()> {
     match expression {
         ProjectionExpression::Column(column) if column == variable => {
             *expression = ProjectionExpression::LocalVariable {
