@@ -11,6 +11,8 @@ static PARSE_CALLS: AtomicU64 = AtomicU64::new(0);
 static PARSE_NANOS: AtomicU64 = AtomicU64::new(0);
 static PLAN_CALLS: AtomicU64 = AtomicU64::new(0);
 static PLAN_NANOS: AtomicU64 = AtomicU64::new(0);
+static SAMPLING_CALLS: AtomicU64 = AtomicU64::new(0);
+static SAMPLING_NANOS: AtomicU64 = AtomicU64::new(0);
 
 /// Completed shared-runtime parses and plan preparation attempts, including
 /// errors. Preparation includes cache lookup/binding and optimization on misses;
@@ -23,6 +25,10 @@ pub struct QueryPreparationMetricsSnapshot {
     pub cypher_parse_nanos: u64,
     pub cypher_plan_calls: u64,
     pub cypher_plan_nanos: u64,
+    /// Returned sampling reports, including budget/unsupported refusals.
+    pub join_sampling_calls: u64,
+    /// Sampling duration is a subset of `cypher_plan_nanos`, not additive.
+    pub join_sampling_nanos: u64,
 }
 
 /// Observe preparation across all handles in this process. Take window snapshots
@@ -34,6 +40,8 @@ pub fn query_preparation_metrics() -> QueryPreparationMetricsSnapshot {
         cypher_parse_nanos: PARSE_NANOS.load(Ordering::Relaxed),
         cypher_plan_calls: PLAN_CALLS.load(Ordering::Relaxed),
         cypher_plan_nanos: PLAN_NANOS.load(Ordering::Relaxed),
+        join_sampling_calls: SAMPLING_CALLS.load(Ordering::Relaxed),
+        join_sampling_nanos: SAMPLING_NANOS.load(Ordering::Relaxed),
     }
 }
 
@@ -46,6 +54,11 @@ fn add(counter: &AtomicU64, value: u64) {
 pub(super) fn record_parse(nanos: u64) {
     add(&PARSE_NANOS, nanos);
     add(&PARSE_CALLS, 1);
+}
+
+pub(super) fn record_join_sampling(nanos: u64) {
+    add(&SAMPLING_NANOS, nanos);
+    add(&SAMPLING_CALLS, 1);
 }
 
 pub(super) struct PlanPreparationTiming(Instant);

@@ -50,6 +50,9 @@ pub struct DatabaseConfig {
     pub csv_import_limits: executor::CsvImportLimits,
     /// Maximum memo groups available to graph and relational optimizer search.
     pub max_optimizer_groups: Option<usize>,
+    /// Opt-in bounded cardinality probes for eligible indexed inner MATCH paths.
+    /// None preserves ordinary planning. Activation requires workload qualification.
+    pub join_sampling: Option<hawdb_storage::join_sampling::JoinSamplingLimits>,
     /// Maximum memo expressions available to relational join enumeration.
     pub max_relational_join_expressions: Option<usize>,
     pub recovery_mode: RecoveryMode,
@@ -211,6 +214,7 @@ impl Default for DatabaseConfig {
             csv_import_root: None,
             csv_import_limits: executor::CsvImportLimits::default(),
             max_optimizer_groups: None,
+            join_sampling: None,
             max_relational_join_expressions: None,
             recovery_mode: RecoveryMode::default(),
             max_wal_replay_entries: Some(hawdb_storage::config::DEFAULT_MAX_WAL_REPLAY_ENTRIES),

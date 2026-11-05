@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub(super) mod determinism;
+mod join_sampling;
 mod output_schema;
 #[cfg(test)]
 mod retention_allocation;
@@ -77,6 +78,7 @@ pub(super) struct PlanCacheContext<'a, S = GraphStore> {
     pub(super) access_control: Option<&'a QueryAccessControlContext>,
     pub(super) optimizer_search: OptimizerSearchDirective,
     pub(super) scoring: Option<BoundScoringRequest<'a>>,
+    pub(super) task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
 }
 
 pub(super) struct OptimizedQueryPlan {
@@ -115,6 +117,7 @@ pub(super) struct CachedPlan {
     trace: OptimizerTrace,
     has_parameter_slots: bool,
     has_source_regexes: bool,
+    sampled_statistics: Option<hawdb_optimizer::graph::join_sampling::SampledMatchStatistics>,
 }
 
 pub(super) type PlanCache = LfuCache<PlanCacheKey, Arc<CachedPlan>>;
@@ -297,6 +300,7 @@ impl ProofSchemaKey {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct OptimizerEnvironmentKey {
+    sampling_read: Option<join_sampling::SamplingReadKey>,
     schema: OptimizerSchemaKey,
     proof_schema: Option<ProofSchemaKey>,
     // Query-local point estimates do not depend on published advanced statistics.
@@ -466,6 +470,11 @@ struct OptimizerCatalogAccess {
 }
 
 impl OptimizerEnvironmentKey {
+    pub(super) fn matches_sampling_parameters(&self, parameters: &BTreeMap<String, Value>) -> bool {
+        self.sampling_read
+            .as_ref()
+            .is_none_or(|sampling| sampling.matches_parameters(parameters))
+    }
     fn ordered_composite_proofs(&self) -> impl Iterator<Item = OrderedCompositeCapability> + '_ {
         self.ordered_composite_indexes
             .iter()
@@ -481,7 +490,10 @@ impl OptimizerEnvironmentKey {
         catalog: &Catalog,
         store: &R,
     ) -> bool {
-        self.schema == OptimizerSchemaKey::from_catalog(catalog)
+        self.sampling_read
+            .as_ref()
+            .is_none_or(|sampling| sampling.matches_snapshot(store))
+            && self.schema == OptimizerSchemaKey::from_catalog(catalog)
             && self
                 .proof_schema
                 .as_ref()
@@ -574,6 +586,7 @@ impl OptimizerPlanningCache {
             self.ensure_statistics(catalog, store, false, None);
         }
         OptimizerEnvironmentKey {
+            sampling_read: None,
             schema: OptimizerSchemaKey::from_catalog(catalog),
             proof_schema: tracks_properties.then(|| ProofSchemaKey::from_catalog(catalog)),
             statistics_generation: (!skip_advanced_statistics)
@@ -676,6 +689,7 @@ impl OptimizerPlanningCache {
             statistics.advanced_statistics_complete
         ));
         let environment = OptimizerEnvironmentKey {
+            sampling_read: None,
             schema: OptimizerSchemaKey::from_catalog(catalog),
             proof_schema: tracks_properties.then(|| ProofSchemaKey::from_catalog(catalog)),
             statistics_generation: Some(self.statistics_generation),
@@ -828,7 +842,23 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
     let fixed_leaf_statistics = parameterized
         .as_ref()
         .is_some_and(|plan| matches!(plan.logical(), LogicalPlan::GraphAlgorithm { .. }));
-    let environment_hint = (cache_mode == PlanCacheMode::Use).then(|| {
+    let uncached_logical = parameterized
+        .is_none()
+        .then(|| planner::plan_with_params(statement_body(statement), parameters))
+        .transpose()?;
+    let bound_sampling = join_sampling::bind(
+        &context,
+        parameterized
+            .as_ref()
+            .map(|plan| plan.logical())
+            .or(uncached_logical.as_ref())
+            .expect("a bound logical plan is available"),
+        parameters,
+        parameterized
+            .as_ref()
+            .is_some_and(|plan| plan.slot_count() > 0),
+    )?;
+    let mut environment_hint = (cache_mode == PlanCacheMode::Use).then(|| {
         context.planning_cache.borrow_mut().environment_hint(
             context.catalog,
             context.store,
@@ -838,6 +868,9 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
                 .is_some_and(|plan| tracks_property_proofs(plan.logical())),
         )
     });
+    if let (Some(environment), Some(sampling)) = (&mut environment_hint, &bound_sampling) {
+        environment.sampling_read = Some(sampling.key.clone());
+    }
     let mut key = parameterized
         .as_ref()
         .filter(|_| physical_cache_mode == PlanCacheMode::Use)
@@ -875,6 +908,7 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
                 &physical_plan,
                 trace_mode,
                 &context,
+                cached.sampled_statistics.as_ref(),
             );
             trace
                 .decisions
@@ -907,7 +941,7 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
     let mut logical = if let Some(parameterized) = &parameterized {
         parameterized.logical().clone()
     } else {
-        planner::plan_with_params(statement_body(statement), parameters)?
+        uncached_logical.expect("uncached planning was performed above")
     };
     let output_columns = output_schema::logical_output_columns(&logical, context.scoring);
     if let Some(access_control) = context.access_control {
@@ -917,18 +951,26 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
             cache_mode == PlanCacheMode::Use,
         );
     }
-    let catalog_access = optimizer_catalog_access_for_logical(
+    let mut catalog_access = optimizer_catalog_access_for_logical(
         &context,
         &logical,
         point_statistics.as_ref(),
         environment_hint.as_ref(),
     );
+    let sampled_statistics = if let Some(sampling) = &bound_sampling {
+        catalog_access.environment.sampling_read = Some(sampling.key.clone());
+        let (statistics, decision) = sampling.collect(&context)?;
+        catalog_access.decisions.push(decision);
+        statistics
+    } else {
+        None
+    };
     // Shape proofs are needed only on an ordered-query miss. Point queries and
     // all cache hits retain the shared catalog without cloning it.
     let has_parameter_slots = parameterized
         .as_ref()
         .is_some_and(|plan| plan.slot_count() > 0);
-    let query_catalog = (has_parameter_slots
+    let mut query_catalog = (has_parameter_slots
         && catalog_access
             .environment
             .ordered_composite_indexes
@@ -947,6 +989,14 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
                 parameters,
             ))
     });
+    if let Some(statistics) = &sampled_statistics {
+        query_catalog = Some(
+            query_catalog
+                .take()
+                .unwrap_or_else(|| catalog_access.catalog.as_ref().clone())
+                .with_sampled_match_statistics(statistics.clone()),
+        );
+    }
     let planning_catalog = query_catalog.as_ref().unwrap_or(&catalog_access.catalog);
     let logical_root = LogicalPlanRoot::new(logical);
     let physical_root = query_optimizer
@@ -974,7 +1024,7 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
         query_optimizer.refresh_trace_for_physical_plan(
             &mut trace,
             &physical_template,
-            &catalog_access.catalog,
+            planning_catalog,
         );
     }
     trace.decisions.extend(catalog_access.decisions);
@@ -1007,7 +1057,7 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
         PlanTraceMode::Bound => query_optimizer.refresh_trace_for_physical_plan(
             &mut trace,
             &physical_plan,
-            &catalog_access.catalog,
+            planning_catalog,
         ),
     }
     record_access_control_plan_decision(&mut trace, context.access_control);
@@ -1019,6 +1069,7 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
             trace: cached_trace.expect("cached trace exists in physical cache use mode"),
             has_parameter_slots,
             has_source_regexes: false,
+            sampled_statistics: sampled_statistics.clone(),
         });
         // Walk immutable ownership outside the host cache lock. Unknown or
         // overflowing retained allocations refuse admission without changing
@@ -1167,6 +1218,7 @@ fn optimizer_catalog_access_for_logical<S: crate::executor::ExecutionStore>(
     let environment = environment_hint
         .cloned()
         .unwrap_or_else(|| OptimizerEnvironmentKey {
+            sampling_read: None,
             schema: OptimizerSchemaKey::from_catalog(context.catalog),
             proof_schema: None,
             statistics_generation: Some(context.planning_cache.borrow().statistics_generation),
@@ -1208,6 +1260,7 @@ fn refresh_plan_trace<S: crate::executor::ExecutionStore>(
     physical_plan: &PhysicalPlan,
     trace_mode: PlanTraceMode,
     context: &PlanCacheContext<'_, S>,
+    sampled_statistics: Option<&hawdb_optimizer::graph::join_sampling::SampledMatchStatistics>,
 ) {
     match trace_mode {
         PlanTraceMode::Template => refresh_materialized_plan_trace(trace, physical_plan),
@@ -1226,7 +1279,17 @@ fn refresh_plan_trace<S: crate::executor::ExecutionStore>(
             } else {
                 optimizer_catalog_access(context, true).catalog
             };
-            optimizer.refresh_trace_for_physical_plan(trace, physical_plan, &catalog);
+            let sampled_catalog = sampled_statistics.map(|statistics| {
+                catalog
+                    .as_ref()
+                    .clone()
+                    .with_sampled_match_statistics(statistics.clone())
+            });
+            optimizer.refresh_trace_for_physical_plan(
+                trace,
+                physical_plan,
+                sampled_catalog.as_ref().unwrap_or(&catalog),
+            );
             trace.decisions.push(
                 "selected physical plan estimates refreshed for bound parameters".to_string(),
             );
@@ -1703,6 +1766,7 @@ mod tests {
             access_control: None,
             optimizer_search: OptimizerSearchDirective::Auto,
             scoring: None,
+            task_context: None,
         };
         let parameters = BTreeMap::from([("id".into(), Value::Int(1))]);
         let keys = [
@@ -2853,7 +2917,8 @@ hawdb_core::impl_retained_heap_for_struct!(CachedPlan {
     physical_template,
     trace,
     has_parameter_slots,
-    has_source_regexes
+    has_source_regexes,
+    sampled_statistics
 });
 
 // Retained query ownership: PlanCacheKey.
@@ -2890,6 +2955,7 @@ hawdb_core::impl_retained_heap_for_struct!(ProofSchemaKey {
 });
 
 hawdb_core::impl_retained_heap_for_struct!(OptimizerEnvironmentKey {
+    sampling_read,
     schema,
     proof_schema,
     statistics_generation,

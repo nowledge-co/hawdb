@@ -48,6 +48,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 mod ordered;
+mod sampling;
 pub(crate) use ordered::CompositeOrder;
 
 const ARTIFACT_HEADER: &[u8; 16] = b"HAWDBPROPINDEX01";

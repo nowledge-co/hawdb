@@ -638,9 +638,16 @@ fn estimate_local_operator_cost(
             )
         }
         PhysicalPlan::IndexNodeSeek {
-            label, property, ..
+            variable,
+            label,
+            property,
+            ..
         } => {
-            let rows = catalog.estimate_property_index_eq_rows(label, property);
+            let rows = catalog
+                .sampled_match
+                .as_ref()
+                .and_then(|statistics| statistics.seed_rows(variable, label, property))
+                .unwrap_or_else(|| catalog.estimate_property_index_eq_rows(label, property));
             node_index_seek_work(rows, NODE_INDEX_EQ_STARTUP_COST)
         }
         PhysicalPlan::IndexNodeMultiSeek {
@@ -685,6 +692,8 @@ fn estimate_local_operator_cost(
             node_index_seek_work(rows, NODE_INDEX_TEXT_STARTUP_COST)
         }
         PhysicalPlan::AdjacencyExpandExec {
+            source_variable,
+            target_variable,
             source_label,
             rel_type,
             rel_properties,
@@ -706,8 +715,13 @@ fn estimate_local_operator_cost(
             let source_rows = catalog.label_count(source_label).max(1);
             // Seeded sources already are the matching relationships' endpoints,
             // so the expand yields its whole-label estimate, not a fraction.
-            let scaled_rows = if matches!(**input, PhysicalPlan::RelationshipSeededNodeScan { .. })
-            {
+            let sampled_rows = catalog
+                .sampled_match
+                .as_ref()
+                .and_then(|statistics| statistics.expansion(source_variable, target_variable));
+            let scaled_rows = if let Some(rows) = sampled_rows {
+                rows
+            } else if matches!(**input, PhysicalPlan::RelationshipSeededNodeScan { .. }) {
                 expand_estimate.estimated_rows.max(1)
             } else {
                 expand_estimate
@@ -728,14 +742,20 @@ fn estimate_local_operator_cost(
         }
         PhysicalPlan::FilterExec { predicate, input } => {
             let input_cost = inputs[0].expect("unary input cost");
-            let rows = estimate_filter_rows(
-                predicate,
-                input,
-                input_cost.estimated_rows,
-                catalog,
-                bindings,
-                statistics,
-            );
+            let rows = catalog
+                .sampled_match
+                .as_ref()
+                .and_then(|sample| sample.filtered_rows(predicate, input))
+                .unwrap_or_else(|| {
+                    estimate_filter_rows(
+                        predicate,
+                        input,
+                        input_cost.estimated_rows,
+                        catalog,
+                        bindings,
+                        statistics,
+                    )
+                });
             input_cost.with_cpu(rows, input_cost.estimated_rows, 0)
         }
         PhysicalPlan::ProjectExec { .. } => {

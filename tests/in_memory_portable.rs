@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! The same public-facade contract runs natively and in a real browser.
-use hawdb::{Database, DatabaseConfig, RuntimeTaskContext, Value};
+use hawdb::{Database, DatabaseConfig, JoinSamplingLimits, RuntimeTaskContext, Value};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -21,6 +21,33 @@ use std::time::Duration;
 use wasm_bindgen_test::{wasm_bindgen_test as test, wasm_bindgen_test_configure};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 wasm_bindgen_test_configure!(run_in_dedicated_worker);
+
+#[test]
+fn bounded_join_sampling_uses_the_shared_runtime_clock() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        join_sampling: Some(JoinSamplingLimits {
+            max_duration: Duration::from_secs(10),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    db.query("CREATE (:SamplingSource {key: 1})-[:SAMPLED]->(:SamplingTarget {key: 1})")
+        .unwrap();
+    db.query("CREATE INDEX ON :SamplingSource(key)").unwrap();
+    db.query("CREATE INDEX ON :SamplingTarget(key)").unwrap();
+    let query = "MATCH (a:SamplingSource {key: 1})-[:SAMPLED]->(b:SamplingTarget {key: 1}) RETURN count(*) AS total";
+    let explain = db.explain_query(query).unwrap();
+    assert!(
+        explain
+            .trace
+            .decisions
+            .iter()
+            .any(|line| line.starts_with("join sampling:") && line.contains("refusal=None")),
+        "{:?}",
+        explain.trace.decisions
+    );
+    assert_eq!(db.query(query).unwrap().rows[0]["total"], Value::Int(1));
+}
 
 #[test]
 fn writes_parameters_traversal_and_error_recovery_share_one_database() {

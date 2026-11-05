@@ -79,6 +79,7 @@ mod graph_meta;
 mod graph_rag_schema_guidance;
 mod hidden_row_id;
 mod induced_edge_reads;
+mod join_sampling;
 mod joint_ndv_statistics;
 mod knowledge_community_entity_visibility;
 mod knowledge_community_memories;

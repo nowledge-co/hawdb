@@ -248,6 +248,7 @@ pub(super) fn prepare_graph_transaction_plan(
             access_control: execution.access_control,
             optimizer_search,
             scoring: execution.scoring,
+            task_context,
         },
     )
 }

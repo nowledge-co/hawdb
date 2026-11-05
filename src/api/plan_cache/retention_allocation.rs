@@ -131,6 +131,7 @@ fn cached(
         normalized_query: query.to_owned(),
         parameters: parameterized.cache_key().clone(),
         environment: OptimizerEnvironmentKey {
+            sampling_read: Some(join_sampling::retention_fixture()),
             schema: OptimizerSchemaKey::from_catalog(&Catalog::default()),
             proof_schema: Some(ProofSchemaKey {
                 public_tables: vec![hawdb_core::TableId(7); 32],
@@ -197,6 +198,7 @@ fn cached(
         trace,
         has_parameter_slots: parameterized.slot_count() > 0,
         has_source_regexes: false,
+        sampled_statistics: Some(sampling_retention_fixture()),
     });
     let charge = key
         .retained_heap_bytes()
@@ -204,6 +206,41 @@ fn cached(
         .checked_add(value.retained_heap_bytes().unwrap())
         .unwrap();
     (key, value, charge)
+}
+
+fn sampling_retention_fixture() -> hawdb_optimizer::graph::join_sampling::SampledMatchStatistics {
+    use hawdb_optimizer::graph::join_sampling::{
+        JoinSamplingShape, SampledMatchStatistics, SampledPath, SamplingHop, SamplingNode,
+    };
+    let mut nodes = Vec::with_capacity(8);
+    for variable in ["a", "b"] {
+        nodes.push(SamplingNode {
+            variable: variable.repeat(128),
+            label: "retained_label".repeat(8),
+            property: "retained_property".repeat(8),
+            value: Value::String("v".repeat(256)),
+        });
+    }
+    let mut hops = Vec::with_capacity(8);
+    hops.push(SamplingHop {
+        variable: Some("r".repeat(128)),
+        rel_type: "R".repeat(128),
+        direction: hawdb_core::RelationshipDirection::Outgoing,
+    });
+    let path = || {
+        let mut hops = Vec::with_capacity(8);
+        hops.push((100, 20));
+        SampledPath {
+            seed_rows: 10,
+            work_rows: 110,
+            hops,
+        }
+    };
+    SampledMatchStatistics {
+        shape: JoinSamplingShape { nodes, hops },
+        forward: path(),
+        reverse: path(),
+    }
 }
 
 #[test]

@@ -480,6 +480,7 @@ thread_local! {
 /// structural bound that pruning work follows the rows a transaction changed,
 /// not the size of the database, is asserted on this counter.
 #[doc(hidden)]
+#[cfg(any(test, debug_assertions))]
 pub fn relational_overflow_reachability_rows_visited() -> u64 {
     REACHABILITY_ROWS_VISITED.with(std::cell::Cell::get)
 }

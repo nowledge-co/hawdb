@@ -6,6 +6,32 @@ authoritative; this is a map of test families, not an exhaustive list of every
 Rust test function. Update it when changing a family's scope, build profile,
 execution lane, fixture size, isolation or known failure mode.
 
+Bounded index join sampling ([contract](QUERY_JOIN_SAMPLING.md), issue #1560)
+extends existing owners without a new CI lane or compilation profile.
+`//crates/storage:hawdb_storage_tests` owns resident/canonical duplicate fanout,
+ordinal reuse, read admission/cache reuse, snapshot retention, overlay refusal,
+descriptor/payload nested-value allocation refusal on hot caches,
+empty-sample fallback, parent work limits, nonblocking runtime I/O and scratch
+reservation ownership, and cancellation. Replay `cargo test --locked -p
+hawdb-storage --lib join_sampling -- --test-threads=1`.
+`//crates/optimizer-graph:hawdb_optimizer_graph_tests` owns legal shape reversal,
+binding/type boundaries and complete positive estimate validation; replay
+`cargo test --locked -p hawdb-optimizer-graph --lib join_sampling`.
+Root `api::tests::join_sampling` belongs to `//:hawdb_unit_general_tests` and
+checks complete result multisets, self loops/relationship bindings,
+parameter-specific cache identity, pinned
+readers, resource fallback and unsupported shapes. Replay `cargo test --locked
+-p hawdb --lib api::tests::join_sampling -- --test-threads=1`, also with
+`--no-default-features`. Fixtures are finite semantic examples, not seed searches
+or concurrent stress loops. The manual native `index_join_sampling` benchmark
+requires `qualification`; it measures same-checkpoint total query latency,
+including preparation and sampling, plus cold/warm and refusal controls. It
+remains outside CI and does not establish larger-than-RAM performance.
+The existing `//:hawdb_in_memory_portable_tests` owner and browser
+`tests/in_memory_portable.rs` entry exercise enabled sampling with the shared
+runtime clock, preserving browser timing support. Native default replay uses
+`//:hawdb_in_memory_portable_default_tests`; browser setup is in [WASM.md](WASM.md).
+
 Mem query-shaped compatibility (`nowledge-co/mem#9338`) is owned by
 `api::tests::mem_query_contract` in `//:hawdb_unit_general_tests` (the existing
 required native general lane). The finite fixtures cover C1-C5 execution,
@@ -137,7 +163,8 @@ rounding and caller-owned in-flight copies; these checks are not RSS or latency
 benchmarks. The facade's `api::plan_cache::retention_allocation` oracle belongs
 to `//:hawdb_unit_general_tests`: it observes complete private cache keys,
 physical IR, traces, shared metadata, proof-schema table/property IDs and EXISTS
-strings, both scoring-key forms and table capacity
+strings, sampled path statistics/parameter keys with spare capacities,
+both scoring-key forms and table capacity
 at 20/100/512 candidates, owned row-bound/nested list and path expressions, UNWIND source payloads, boxed shortest-path
 descriptors with spare string capacities (Any/All selection), temporal literals,
 thousands of boxed durations, temporal-function arguments, map literals and boxed
