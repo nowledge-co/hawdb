@@ -1435,6 +1435,38 @@ pub(super) fn predicate_variable(predicate: &PropertyPredicate) -> Option<&str> 
     }
 }
 
+fn collect_value_variables(value: &ValueExpression, variables: &mut BTreeSet<String>) {
+    match &value.kind {
+        ValueExpressionKind::Binding(variable)
+        | ValueExpressionKind::BindingProperty { variable, .. }
+        | ValueExpressionKind::BindingIndex { variable, .. } => {
+            variables.insert(variable.clone());
+        }
+        ValueExpressionKind::List(values) => {
+            for value in values {
+                collect_value_variables(value, variables);
+            }
+        }
+        ValueExpressionKind::Map(entries) => {
+            for value in entries.values() {
+                collect_value_variables(value, variables);
+            }
+        }
+        ValueExpressionKind::Timestamp(value)
+        | ValueExpressionKind::Conversion {
+            argument: value, ..
+        } => collect_value_variables(value, variables),
+        ValueExpressionKind::Temporal { arguments, .. } => {
+            for value in arguments {
+                collect_value_variables(value, variables);
+            }
+        }
+        ValueExpressionKind::Literal(_)
+        | ValueExpressionKind::Parameter(_)
+        | ValueExpressionKind::CurrentTimestamp => {}
+    }
+}
+
 pub(super) fn collect_scalar_expression_variables(
     expression: &ScalarExpression,
     variables: &mut BTreeSet<String>,
@@ -1514,6 +1546,38 @@ pub(super) fn collect_scalar_expression_variables(
         }
         ScalarExpressionKind::Path(path) => {
             variables.insert(path.path_variable().to_string());
+        }
+        // A pattern variable is either bound by the enclosing scope or
+        // introduced by the pattern, which is not known here. Only the
+        // variables the pattern does not name are certainly enclosing ones.
+        ScalarExpressionKind::PatternPredicate(pattern)
+        | ScalarExpressionKind::PatternComprehension { pattern, .. } => {
+            let pattern = &pattern.kind;
+            let nodes = || {
+                std::iter::once(&pattern.first).chain(pattern.steps.iter().map(|step| &step.target))
+            };
+            let mut body = BTreeSet::new();
+            expression.kind.all_children(|child| {
+                collect_scalar_expression_variables(child, &mut body);
+                true
+            });
+            for value in nodes().flat_map(|node| node.properties.values()).chain(
+                pattern
+                    .steps
+                    .iter()
+                    .flat_map(|step| step.relationship.properties.values()),
+            ) {
+                collect_value_variables(value, &mut body);
+            }
+            for node in nodes() {
+                body.remove(&node.variable);
+            }
+            for step in &pattern.steps {
+                if let Some(variable) = &step.relationship.variable {
+                    body.remove(variable);
+                }
+            }
+            variables.extend(body);
         }
         ScalarExpressionKind::Case { .. }
         | ScalarExpressionKind::Binary { .. }

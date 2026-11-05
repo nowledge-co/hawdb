@@ -569,6 +569,7 @@ mod tests {
                     memory_ledger: &ledger,
                     task_context: None,
                     observer: &NoopExecutionObserver,
+                    graph: None,
                 },
                 ExecutionLimit::unlimited(),
                 &mut |batch| {

@@ -1976,6 +1976,7 @@ fn collect_projection_properties(
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => expression
             .all_children(|child| collect_projection_properties(child, variable, required)),
         // Comprehension elements are values, never graph bindings.
@@ -1990,7 +1991,9 @@ fn collect_projection_properties(
         | ProjectionExpression::ColumnDefaultIfNullOrEq { .. }
         | ProjectionExpression::ColumnValueDefaultIfNull { .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { .. }
-        | ProjectionExpression::CaseColumnSearchRank(_) => false,
+        | ProjectionExpression::CaseColumnSearchRank(_)
+        // A pattern matches whole records of the variables it copies.
+        | ProjectionExpression::Pattern(_) => false,
         ProjectionExpression::Id { variable: current } => current == variable,
         ProjectionExpression::Literal(_) => true,
         ProjectionExpression::Property {

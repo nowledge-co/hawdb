@@ -448,6 +448,7 @@ fn collect_projection_columns(
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => {
             expression.all_children(|child| collect_projection_columns(child, columns))
         }
@@ -490,7 +491,9 @@ fn collect_projection_columns(
         | ProjectionExpression::CasePropertyEqualsRank { .. }
         | ProjectionExpression::CaseLowerPropertyDefault { .. }
         | ProjectionExpression::CaseCoalesceDifferenceFloorZero { .. }
-        | ProjectionExpression::CaseEntitySearchRank(_) => false,
+        | ProjectionExpression::CaseEntitySearchRank(_)
+        // A pattern reads the graph and variables it introduces.
+        | ProjectionExpression::Pattern(_) => false,
     }
 }
 
@@ -512,9 +515,12 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => {
             !expression.all_children(|child| !projection_expression_references_column(child))
         }
+        // Its body reads enclosing columns as locals.
+        ProjectionExpression::Pattern(_) => true,
         ProjectionExpression::LocalVariable { .. } => false,
         ProjectionExpression::Column(_)
         | ProjectionExpression::ColumnDefaultIfNullOrEq { .. }

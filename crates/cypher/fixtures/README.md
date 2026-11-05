@@ -73,6 +73,17 @@ reviewed statement/pipeline transitions introduced by issue #1489: an unbounded
 variable-length relationship pattern (`*`, `*n..`) now parses. Execution
 enumerates its trails and refuses one longer than the streaming depth limit.
 
+`migration_main_1488_pattern_predicates_peg_baseline_v1.jsonl` records the 87
+reviewed statement/pipeline transitions introduced by issue #1488. Each case was
+already accepted and stays accepted with a new AST: a `WHERE` pattern predicate
+whose source node is anonymous (`NOT ((:Item)-[:REL]->())`, `()-[:R*1]->()`)
+used to become the one-hop existence predicate over that anonymous name, which
+no row binds, so it was always false. It is now an existential subquery over the
+whole pattern. The one-hop predicate is kept only from a bound, unlabeled source
+to an anonymous target; named targets, labeled sources, multi-hop paths, type
+disjunctions and relationship properties are part of the pattern. No frozen
+case changes between rejection and acceptance.
+
 Run the default owner and complete local fuzz surface:
 
 ```sh

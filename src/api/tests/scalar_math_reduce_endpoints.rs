@@ -265,12 +265,17 @@ fn start_and_end_node_return_the_stored_direction() {
         error(&mut db, "MATCH (p:Person {id: 1}) RETURN startNode(p) AS s")
             .contains("startNode(p) requires 'p' to be bound by a single-hop relationship pattern")
     );
-    assert!(error(
+    // A relationship value reads its stored endpoints from the graph (#1488).
+    let row = single_row(
         &mut db,
-        "MATCH p = shortestPath((a:Person {id: 1})-[:KNOWS*..3]-(b:Person {id: 3})) \
-         RETURN [r IN relationships(p) | startNode(r)] AS s"
-    )
-    .contains("startNode() requires a relationship variable bound by MATCH"));
+        "MATCH p = shortestPath((a:Person {id: 3})-[:KNOWS*..3]-(b:Person {id: 1})) \
+         RETURN [r IN relationships(p) | startNode(r).id] AS s, \
+         [r IN relationships(p) | endNode(r).id] AS e",
+    );
+    assert_eq!(
+        (row["s"].clone(), row["e"].clone()),
+        (ints(&[2, 1]), ints(&[3, 2]))
+    );
 }
 
 #[test]

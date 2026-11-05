@@ -837,6 +837,28 @@ fn values_marker_use<'a>(values: impl IntoIterator<Item = &'a Value>, name: &str
     }
 }
 
+fn marker_use_in_program(program: &hawdb_plan_cypher::GraphMatchProgram, name: &str) -> MarkerUse {
+    let mut marker_use = MarkerUse::None;
+    for step in &program.steps {
+        let node = match step {
+            GraphMatchStep::Node(node) => node,
+            GraphMatchStep::Expand {
+                target, properties, ..
+            } => {
+                marker_use = marker_use.combine(values_marker_use(properties.values(), name));
+                target
+            }
+            // Hop bounds and types are literals; endpoints are Node steps.
+            GraphMatchStep::ShortestPath(_) => continue,
+        };
+        marker_use = marker_use.combine(values_marker_use(node.properties.values(), name));
+    }
+    if let Some(predicate) = &program.predicate {
+        marker_use = marker_use.combine(marker_use_in_predicate(predicate, name));
+    }
+    marker_use
+}
+
 fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
     match plan {
         LogicalPlan::Unwind { rows, .. } => values_marker_use(rows, name),
@@ -848,30 +870,12 @@ fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
         LogicalPlan::NodeCartesianProduct { left, right } => {
             marker_use_in_logical_plan(left, name).combine(marker_use_in_logical_plan(right, name))
         }
-        LogicalPlan::GraphMatch { program, input } => {
-            let mut marker_use = input.as_ref().map_or(MarkerUse::None, |input| {
+        LogicalPlan::GraphMatch { program, input } => input
+            .as_ref()
+            .map_or(MarkerUse::None, |input| {
                 marker_use_in_logical_plan(input, name)
-            });
-            for step in &program.steps {
-                let node = match step {
-                    GraphMatchStep::Node(node) => node,
-                    GraphMatchStep::Expand {
-                        target, properties, ..
-                    } => {
-                        marker_use =
-                            marker_use.combine(values_marker_use(properties.values(), name));
-                        target
-                    }
-                    // Hop bounds and types are literals; endpoints are Node steps.
-                    GraphMatchStep::ShortestPath(_) => continue,
-                };
-                marker_use = marker_use.combine(values_marker_use(node.properties.values(), name));
-            }
-            if let Some(predicate) = &program.predicate {
-                marker_use = marker_use.combine(marker_use_in_predicate(predicate, name));
-            }
-            marker_use
-        }
+            })
+            .combine(marker_use_in_program(program, name)),
         LogicalPlan::NodeColumnLookup {
             input,
             node_visibility_predicate,
@@ -1137,6 +1141,28 @@ fn marker_use_in_projection_expression(
             });
             result
         }
+        ProjectionExpression::RelationshipValueEndpoint {
+            relationship,
+            visibility,
+            ..
+        } => visibility
+            .as_deref()
+            .map_or(MarkerUse::None, |visibility| {
+                marker_use_in_predicate(visibility, name)
+            })
+            .combine(marker_use_in_projection_expression(
+                relationship,
+                name,
+                safe,
+            )),
+        ProjectionExpression::Pattern(pattern) => {
+            let mut result = marker_use_in_program(&pattern.program, name);
+            expression.all_children(|child| {
+                result = result.combine(marker_use_in_projection_expression(child, name, safe));
+                true
+            });
+            result
+        }
 
         ProjectionExpression::Literal(value) => values_marker_use([value], name),
         ProjectionExpression::Coalesce(expressions) => {
@@ -1285,20 +1311,7 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) ->
             bind_physical_plan(right, parameters)?;
         }
         PhysicalPlan::GraphMatchExec { program, input } => {
-            for step in &mut program.steps {
-                let node = match step {
-                    GraphMatchStep::Node(node) => node,
-                    GraphMatchStep::Expand {
-                        target, properties, ..
-                    } => {
-                        bind_value_map(properties, parameters)?;
-                        target
-                    }
-                    GraphMatchStep::ShortestPath(_) => continue,
-                };
-                bind_value_map(&mut node.properties, parameters)?;
-            }
-            bind_optional_predicate(&mut program.predicate, parameters)?;
+            bind_program(program, parameters)?;
             if let Some(input) = input {
                 bind_physical_plan(input, parameters)?;
             }
@@ -1776,6 +1789,21 @@ fn bind_projection_expression(
         | ProjectionExpression::PropertyAccess { .. }
         | ProjectionExpression::MapLiteral(_) => expression
             .try_for_each_child_mut(|child| bind_projection_expression(child, parameters))?,
+        ProjectionExpression::RelationshipValueEndpoint {
+            relationship,
+            visibility,
+            ..
+        } => {
+            if let Some(visibility) = visibility {
+                bind_predicate(visibility, parameters)?;
+            }
+            bind_projection_expression(relationship, parameters)?;
+        }
+        ProjectionExpression::Pattern(pattern) => {
+            bind_program(&mut pattern.program, parameters)?;
+            expression
+                .try_for_each_child_mut(|child| bind_projection_expression(child, parameters))?
+        }
 
         ProjectionExpression::Literal(value) => bind_value(value, parameters)?,
         ProjectionExpression::Coalesce(expressions) => {
@@ -1854,6 +1882,26 @@ fn bind_projection_expression(
         _ => {}
     }
     Ok(())
+}
+
+fn bind_program(
+    program: &mut hawdb_plan_cypher::GraphMatchProgram,
+    parameters: BindingAction<'_>,
+) -> Result<()> {
+    for step in &mut program.steps {
+        let node = match step {
+            GraphMatchStep::Node(node) => node,
+            GraphMatchStep::Expand {
+                target, properties, ..
+            } => {
+                bind_value_map(properties, parameters)?;
+                target
+            }
+            GraphMatchStep::ShortestPath(_) => continue,
+        };
+        bind_value_map(&mut node.properties, parameters)?;
+    }
+    bind_optional_predicate(&mut program.predicate, parameters)
 }
 
 fn bind_value_map(

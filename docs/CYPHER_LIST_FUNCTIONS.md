@@ -129,3 +129,69 @@ Every newly built list (`range`, `tail`, `reverse`, slices, comprehension
 results and row-evaluated list literals) reserves query working memory for its header, element slots and
 copied payloads before the elements are stored. Results derived from an
 already computed list reuse that list's reservation.
+
+## Pattern predicates and pattern comprehensions
+
+A pattern is a boolean expression wherever a condition is accepted: in
+`WHERE`, with `NOT`, `AND` and `OR`, in `CASE WHEN` and in comprehension
+predicates (LDBC IC10's
+`[p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)]`). A
+`RETURN`/`WITH` item can negate one in function-call form, as in LDBC IC7's
+`not((liker)-[:KNOWS]-(person)) AS isNew`. A bare `NOT` remains a boolean
+connective, so `1 + NOT x` and `a = NOT b AND c` are rejected. A pattern is
+an existential subquery over the whole pattern: true when the pattern has at
+least one match, otherwise false. As in openCypher, a bare pattern is not a
+value, so `RETURN (a)-->(b) AS x` and `[(a)-->(b), 1]` are rejected.
+
+`[pattern WHERE predicate | projection]` is the list of `projection` over the
+matches of `pattern` that satisfy the optional `predicate` (only `true`
+keeps a match). Its element order is unspecified. LDBC IC14 nests one inside
+`reduce` inside a list comprehension over `relationships(path)`.
+
+Both run as a correlated MATCH, through the same runtime as a MATCH clause,
+once per evaluation. A pattern variable that the enclosing scope binds
+(a row variable, a column such as a node carried through `WITH`, or a list
+comprehension or `reduce` element) correlates with it; any other variable,
+and every anonymous node, is introduced by the pattern and visible only
+inside it. Relationships are unique within the pattern, as in MATCH, and
+bounded variable-length relationships are supported as in MATCH. Matching
+starts at the first bound node, so `[(p:Post)-[:HAS_CREATOR]->(a) | p]`
+expands from `a` rather than scanning posts. Path variables, shortest paths
+and unbounded variable-length relationships are rejected inside pattern
+expressions. Row-dependent node properties (`(b {id: a.id})`) become
+predicate conjuncts.
+
+A node or relationship bound to NULL (an unmatched OPTIONAL MATCH) matches
+nothing: the predicate is false, so `NOT pattern` is true, and the
+comprehension is `[]`. The openCypher TCK has no scenario for this case.
+HawDB uses the semantics of the equivalent `EXISTS { MATCH ... }` subquery.
+A Neo4j staff member called a NULL pattern comprehension result for a NULL
+outer variable a bug
+([community thread](https://community.neo4j.com/t/pattern-comprehension-possible-bug-handling-null-variables/19549)).
+
+`WHERE (x)-[:R]->()` over a node the clause binds natively uses the one-hop
+adjacency check; over a node value carried by `WITH` (for example an UNWIND
+element) it runs as the pattern expression, so both spellings agree.
+
+`startNode(r)` and `endNode(r)` also accept relationship values, such as the
+elements of `relationships(p)` or a relationship carried through `WITH`. The
+value must name a stored relationship with the same endpoints; any other map
+fails rather than being read as a relationship. The stored source or target
+is then read from the graph, a NULL value returns NULL, and a relationship
+deleted since the value was read fails as MATCH does for a bound node that
+disappeared.
+
+Under a node access-control policy, every pattern program nested in an
+expression admits only visible nodes, as a MATCH clause does, and an
+endpoint the policy hides reads as NULL.
+
+The produced lists, imported values and records read are charged to the
+query memory account (in mutation preflight, the statement's account), every
+candidate node or partial match a pattern visits is a list work unit, so a
+pattern that scans is bounded even when nothing matches, and evaluation
+checks the task's cancellation between candidates. `ORDER BY` keys are planned
+over the projected names first, so an alias wins over an input variable of
+the same name; a key that reads the graph is computed into a column before
+sorting.
+Plan-derived prepared source reads refuse pattern expressions, whose reads
+their dependency collector cannot see.

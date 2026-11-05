@@ -352,18 +352,29 @@ fn writes_reject_relationship_type_disjunctions() {
         "MATCH (b:N) WHERE b.w IS NOT NULL RETURN b.id AS id"
     )
     .is_empty());
-    // Shortest paths and existence predicates test a single type.
-    for query in [
-        "MATCH (a:N {id: 0}), (b:N {id: 5}) MATCH p = shortestPath((a)-[:A|B*]->(b)) RETURN length(p) AS id",
-        "MATCH (a:N) WHERE (a)-[:A|B]->() RETURN a.id AS id",
-    ] {
-        let error = db
-            .query(query)
-            .err()
-            .unwrap_or_else(|| panic!("{query} succeeded"));
-        assert!(
-            error.to_string().contains("disjunction"),
-            "{query}: {error}"
-        );
-    }
+    // Shortest paths test a single type.
+    let query = "MATCH (a:N {id: 0}), (b:N {id: 5}) MATCH p = shortestPath((a)-[:A|B*]->(b)) RETURN length(p) AS id";
+    let error = db
+        .query(query)
+        .err()
+        .unwrap_or_else(|| panic!("{query} succeeded"));
+    assert!(
+        error.to_string().contains("disjunction"),
+        "{query}: {error}"
+    );
+    // A pattern predicate matches the whole disjunction (#1488).
+    assert_eq!(
+        ids(
+            &mut db,
+            "MATCH (a:N) WHERE (a)-[:A|B]->() RETURN a.id AS id"
+        ),
+        ids(&mut db, "MATCH (a:N)-[:A|B]->() RETURN DISTINCT a.id AS id")
+    );
+    assert_eq!(
+        ids(
+            &mut db,
+            "MATCH (a:N) WHERE (a)-[:A|B]->() RETURN a.id AS id"
+        ),
+        [0, 1, 3, 4, 5]
+    );
 }

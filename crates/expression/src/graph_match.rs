@@ -1,7 +1,12 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-use super::*;
+//! Correlated MATCH programs, shared by MATCH clauses and the pattern
+//! expressions that run one per evaluation.
+
+use super::Predicate;
+use hawdb_core::{RelationshipDirection, Value};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Bound graph work for one MATCH clause; its predicate belongs inside the optional boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]

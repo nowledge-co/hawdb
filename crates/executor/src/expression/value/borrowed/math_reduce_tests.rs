@@ -286,8 +286,10 @@ fn relationship_endpoints_select_the_stored_source_and_target() {
         variable: "r".to_string(),
         endpoints: None,
     };
+    // Unresolved endpoints are read from the graph by id, which this
+    // evaluation without graph access cannot do.
     let error = evaluate(&unresolved, &binding).unwrap_err().to_string();
-    assert!(error.contains("endpoint nodes to be bound"), "{error}");
+    assert!(error.contains("require graph access"), "{error}");
     binding.nodes = Default::default();
     let error = evaluate(&endpoint(RelationshipEndpoint::End, "r"), &binding)
         .unwrap_err()

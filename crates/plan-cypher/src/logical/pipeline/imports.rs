@@ -172,6 +172,10 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         ProjectionExpression::CaseEntitySearchRank(rank) => {
             needed.insert(rank.variable.clone());
         }
+        // The subquery row copies these from the enclosing row's records.
+        ProjectionExpression::Pattern(pattern) => {
+            needed.extend(pattern.graph_variables.iter().cloned());
+        }
         ProjectionExpression::Literal(_)
         | ProjectionExpression::Coalesce(_)
         | ProjectionExpression::JsonValue { .. }
@@ -201,6 +205,7 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         | ProjectionExpression::Path { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => {}
     }
 }

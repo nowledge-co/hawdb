@@ -136,6 +136,9 @@ pub(in crate::api) fn scalar_is_deterministic(expression: &cypher::ScalarExpress
         Scalar::CaseCoalesceDifferenceFloorZero { terms, .. } => terms
             .iter()
             .all(|term| value_is_deterministic(&term.default)),
+        Scalar::PatternPredicate(pattern) | Scalar::PatternComprehension { pattern, .. } => {
+            match_is_deterministic(std::slice::from_ref(pattern.as_ref()), None)
+        }
         Scalar::Variable(_)
         | Scalar::Property { .. }
         | Scalar::Id(_)

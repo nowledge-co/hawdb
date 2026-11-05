@@ -24,7 +24,10 @@ use std::borrow::Cow;
 mod list;
 #[cfg(test)]
 mod math_reduce_tests;
+mod pattern;
 mod temporal;
+
+pub(crate) use pattern::ExpressionGraph;
 
 pub(crate) struct ProjectedValue<'a> {
     value: Cow<'a, Value>,
@@ -156,6 +159,19 @@ pub(crate) fn evaluate_projection_borrowed<'a>(
     binding: &'a Binding,
     account: Option<&QueryMemoryAccount>,
 ) -> Result<ProjectedValue<'a>> {
+    evaluate_projection_in_graph(expression, catalog, binding, account, None)
+}
+
+/// Evaluates `expression` with read access to the graph snapshot, which
+/// pattern expressions and `startNode`/`endNode` of relationship values
+/// need. Without it they fail.
+pub(crate) fn evaluate_projection_in_graph<'a>(
+    expression: &'a ProjectionExpression,
+    catalog: &'a Catalog,
+    binding: &'a Binding,
+    account: Option<&QueryMemoryAccount>,
+    graph: Option<&ExpressionGraph<'_>>,
+) -> Result<ProjectedValue<'a>> {
     evaluate_scoped(
         expression,
         catalog,
@@ -163,6 +179,7 @@ pub(crate) fn evaluate_projection_borrowed<'a>(
         None,
         account,
         &ListWork::default(),
+        graph,
     )
 }
 
@@ -236,9 +253,10 @@ fn evaluate_scoped<'a>(
     locals: Option<&'a ListLocals<'a>>,
     account: Option<&QueryMemoryAccount>,
     work: &ListWork,
+    graph: Option<&ExpressionGraph<'_>>,
 ) -> Result<ProjectedValue<'a>> {
     let evaluate =
-        |expression| evaluate_scoped(expression, catalog, binding, locals, account, work);
+        |expression| evaluate_scoped(expression, catalog, binding, locals, account, work, graph);
     match expression {
         ProjectionExpression::Case {
             operand,
@@ -337,8 +355,15 @@ fn evaluate_scoped<'a>(
                     parent: locals,
                 };
                 if let Some(predicate) = &comprehension.predicate {
-                    let truth =
-                        evaluate_scoped(predicate, catalog, binding, Some(&frame), account, work)?;
+                    let truth = evaluate_scoped(
+                        predicate,
+                        catalog,
+                        binding,
+                        Some(&frame),
+                        account,
+                        work,
+                        graph,
+                    )?;
                     let keep = match truth.as_ref() {
                         Value::Bool(value) => *value,
                         Value::Null => false,
@@ -361,6 +386,7 @@ fn evaluate_scoped<'a>(
                         Some(&frame),
                         account,
                         work,
+                        graph,
                     )?)?,
                     None => output.push_cloned(value)?,
                 }
@@ -371,7 +397,7 @@ fn evaluate_scoped<'a>(
             .apply(evaluate(argument)?.as_ref())
             .map(ProjectedValue::scalar),
         ProjectionExpression::Reduce(reduce) => {
-            evaluate_reduce(reduce, catalog, binding, locals, account, work)
+            evaluate_reduce(reduce, catalog, binding, locals, account, work, graph)
         }
         ProjectionExpression::RelationshipEndpoint {
             endpoint,
@@ -384,6 +410,30 @@ fn evaluate_scoped<'a>(
             catalog,
             binding,
             account,
+            graph,
+        ),
+        ProjectionExpression::RelationshipValueEndpoint {
+            endpoint,
+            relationship,
+            visibility,
+        } => pattern::relationship_value_endpoint(
+            *endpoint,
+            evaluate(relationship)?.as_ref(),
+            visibility.as_deref(),
+            catalog,
+            account,
+            graph,
+        ),
+        ProjectionExpression::Pattern(pattern) => pattern::evaluate(
+            pattern,
+            pattern::Scope {
+                catalog,
+                binding,
+                locals,
+                account,
+                work,
+            },
+            graph,
         ),
         ProjectionExpression::LocalVariable { name, property } => {
             let value = locals.and_then(|locals| locals.get(name)).ok_or_else(|| {
@@ -864,6 +914,7 @@ fn evaluate_reduce<'a>(
     locals: Option<&'a ListLocals<'a>>,
     account: Option<&QueryMemoryAccount>,
     work: &ListWork,
+    graph: Option<&ExpressionGraph<'_>>,
 ) -> Result<ProjectedValue<'a>> {
     // A computed value keeps the reservation it was built under; a borrowed
     // or inline one is charged before it is copied.
@@ -886,8 +937,16 @@ fn evaluate_reduce<'a>(
             }
         }
     };
-    let initial = evaluate_scoped(&reduce.initial, catalog, binding, locals, account, work)?;
-    let list = evaluate_scoped(&reduce.list, catalog, binding, locals, account, work)?;
+    let initial = evaluate_scoped(
+        &reduce.initial,
+        catalog,
+        binding,
+        locals,
+        account,
+        work,
+        graph,
+    )?;
+    let list = evaluate_scoped(&reduce.list, catalog, binding, locals, account, work, graph)?;
     let values = match list.as_ref() {
         Value::Null => return Ok(ProjectedValue::scalar(Value::Null)),
         Value::List(values) => values,
@@ -918,6 +977,7 @@ fn evaluate_reduce<'a>(
             Some(&element),
             account,
             work,
+            graph,
         )?;
         let (value, lease) = own(next)?;
         accumulated = value;
@@ -941,6 +1001,7 @@ fn relationship_endpoint<'a>(
     catalog: &'a Catalog,
     binding: &'a Binding,
     account: Option<&QueryMemoryAccount>,
+    graph: Option<&ExpressionGraph<'_>>,
 ) -> Result<ProjectedValue<'a>> {
     let name = endpoint.function_name();
     let Some(relationship) = binding.relationships.get(variable) else {
@@ -960,6 +1021,11 @@ fn relationship_endpoint<'a>(
         hawdb_core::RelationshipEndpoint::Start => relationship.source,
         hawdb_core::RelationshipEndpoint::End => relationship.target,
     };
+    // No pattern step binds `r` beside its endpoints, as for a relationship
+    // copied into a pattern expression: read the node by its id.
+    if endpoints.is_none() {
+        return pattern::stored_node(name, id, catalog, account, graph);
+    }
     let node = endpoints
         .into_iter()
         .flatten()

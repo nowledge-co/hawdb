@@ -98,6 +98,7 @@ fn with_context<T>(
         memory_ledger: &ledger,
         task_context: None,
         observer: &NoopExecutionObserver,
+        graph: None,
     });
     let snapshot = ledger.snapshot();
     assert_eq!(snapshot.used_bytes, 0);

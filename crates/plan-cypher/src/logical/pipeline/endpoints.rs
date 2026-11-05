@@ -112,7 +112,56 @@ fn bind_with(
         })?);
         return Ok(());
     }
+    if let ProjectionExpression::Pattern(pattern) = expression {
+        // The subquery row holds the pattern's own steps and the enclosing
+        // graph variables it copies, not the enclosing steps' endpoints. An
+        // enclosing relationship's endpoints are read from the graph by id.
+        let program = pattern.program.clone();
+        let graph_variables = pattern.graph_variables.clone();
+        let inner = |relationship: &str| program_endpoints(&program, relationship);
+        for (_, argument) in &mut pattern.arguments {
+            bind_with(argument, lookup)?;
+        }
+        for body in pattern
+            .predicate
+            .iter_mut()
+            .chain(pattern.projection.iter_mut())
+        {
+            bind_body(body, &inner, &graph_variables)?;
+        }
+        return Ok(());
+    }
     expression.try_for_each_child_mut(|child| bind_with(child, lookup))
+}
+
+/// Resolves endpoints inside a pattern expression's body: a relationship the
+/// pattern binds uses its step, one copied from the enclosing row stays
+/// unresolved and is read by id.
+fn bind_body(
+    expression: &mut ProjectionExpression,
+    lookup: &dyn Fn(&str) -> Option<[String; 2]>,
+    graph_variables: &[String],
+) -> Result<()> {
+    if let ProjectionExpression::RelationshipEndpoint {
+        variable,
+        endpoints: endpoints @ None,
+        ..
+    } = expression
+        && graph_variables.contains(variable)
+    {
+        *endpoints = lookup(variable);
+        return Ok(());
+    }
+    if matches!(
+        expression,
+        ProjectionExpression::RelationshipEndpoint { .. }
+    ) {
+        return bind_with(expression, lookup);
+    }
+    if let ProjectionExpression::Pattern(_) = expression {
+        return bind_with(expression, lookup);
+    }
+    expression.try_for_each_child_mut(|child| bind_body(child, lookup, graph_variables))
 }
 
 /// The nearest step at or below `plan` that binds `relationship`.

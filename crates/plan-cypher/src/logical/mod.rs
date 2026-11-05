@@ -26,18 +26,18 @@ use hawdb_cypher::{
 };
 pub use hawdb_ddl::{SchemaObjectState, SchemaPropertyType, SchemaTableKind};
 pub use hawdb_expression::{
-    CaseColumnSearchRankProjection, CaseEntitySearchRankProjection,
-    CoalesceDifferenceProjectionTerm, ComparisonOp, DatePart, ListComprehensionProjection,
-    PathFunction, Predicate, ProjectionExpression, ReduceProjection, ScalarBinaryOp, SortDirection,
-    SortItem, SortKey,
+    expand_rel_types, CaseColumnSearchRankProjection, CaseEntitySearchRankProjection,
+    CoalesceDifferenceProjectionTerm, ComparisonOp, DatePart, GraphBindingImport, GraphEntityKind,
+    GraphMatchNode, GraphMatchProgram, GraphMatchShortestPath, GraphMatchStep,
+    ListComprehensionProjection, PathFunction, PatternProjection, Predicate, ProjectionExpression,
+    ReduceProjection, ScalarBinaryOp, ShortestPathSelection, SortDirection, SortItem, SortKey,
+    ENDPOINT_VISIBILITY_VARIABLE, MAX_SHORTEST_PATH_HOPS,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 mod arithmetic;
-mod graph_match;
 mod pipeline;
 mod visibility;
-pub use graph_match::*;
 pub use pipeline::{
     plan_normalized_pipeline_query, plan_parsed_pipeline_query, plan_pipeline_query,
     unique_projection_names,
@@ -51,6 +51,9 @@ mod list_tests;
 mod load_csv_tests;
 #[cfg(test)]
 mod math_reduce_endpoint_tests;
+mod pattern_expression;
+#[cfg(test)]
+mod pattern_expression_tests;
 mod projection;
 mod statement;
 mod temporal;

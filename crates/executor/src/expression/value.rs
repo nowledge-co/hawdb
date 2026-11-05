@@ -17,7 +17,9 @@ use super::*;
 use hawdb_plan_cypher::ScalarBinaryOp;
 
 mod borrowed;
-pub(crate) use borrowed::{evaluate_projection_borrowed, ProjectedValue};
+pub(crate) use borrowed::{
+    evaluate_projection_borrowed, evaluate_projection_in_graph, ExpressionGraph, ProjectedValue,
+};
 
 pub fn insert_projected_value<V>(values: &mut BTreeMap<String, V>, name: &str, value: V) {
     let mut candidate = name.to_string();

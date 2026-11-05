@@ -240,6 +240,7 @@ impl BindingBatchSource<()> for DistinctBatchSource<'_> {
                 memory_ledger: self.memory_ledger,
                 task_context: self.task_context,
                 observer: self.observer,
+                graph: None,
             },
             execution_limit,
             emit,
@@ -406,6 +407,7 @@ pub(super) fn execute_blocking_projection<'a>(
                     memory_ledger,
                     task_context,
                     observer: &observer,
+                    graph: None,
                 },
                 ExecutionLimit {
                     output_rows: Some(offset.saturating_add(detection_limit)),
@@ -647,6 +649,7 @@ pub(super) fn execute_relational_order(
             memory_ledger,
             task_context,
             observer,
+            graph: None,
         },
         ExecutionLimit {
             output_rows: Some(limit),

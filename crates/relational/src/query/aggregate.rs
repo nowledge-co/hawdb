@@ -393,6 +393,7 @@ pub(super) fn execute_single_count_distinct<'a>(
             memory_ledger,
             task_context,
             observer: &observer,
+            graph: None,
         },
         ExecutionLimit::unlimited(),
         &mut |batch| {

@@ -327,6 +327,7 @@ fn run_refused(items: Vec<Projection>, external_id: String, watched_bytes: usize
         memory_ledger: &ledger,
         task_context: None,
         observer: &observer,
+        graph: None,
     };
     let callbacks = Cell::new(0);
     let result = stream_projection_batches(
@@ -1126,6 +1127,7 @@ fn text_projection_shrinks_borrowed_payload_and_skips_unused_branches() {
         memory_ledger: &ledger,
         task_context: None,
         observer: &observer,
+        graph: None,
     };
     let rows = Cell::new(0);
     let result = stream_projection_batches(
@@ -1202,6 +1204,7 @@ fn text_projection_batches_actual_payload_with_exact_rows_and_stop() {
             memory_ledger: &ledger,
             task_context: None,
             observer: &observer,
+            graph: None,
         };
         let rows = Cell::new(0);
         let result = stream_projection_batches(
@@ -1386,6 +1389,7 @@ fn projection_cancel_guard(optimized: bool) {
                 memory_ledger: &ledger,
                 task_context: Some(&task),
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut emit,
@@ -4525,6 +4529,7 @@ fn grouped_evidence_admits_id_copies_before_allocation_and_keeps_output_owned() 
                 memory_ledger: &ledger,
                 task_context: None,
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |rows| {
@@ -4591,6 +4596,7 @@ fn grouped_evidence_checks_final_callback_cancellation_and_preserves_consumer_er
                 memory_ledger: &ledger,
                 task_context: Some(&task),
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |rows| {
@@ -4662,6 +4668,7 @@ fn grouped_evidence_reuses_a_wide_scalar_group_key_without_recopying_it() {
             memory_ledger: &ledger,
             task_context: None,
             observer: &observer,
+            graph: None,
         },
         ExecutionLimit::unlimited(),
         &mut |rows| {

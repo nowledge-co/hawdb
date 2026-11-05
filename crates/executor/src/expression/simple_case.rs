@@ -4,8 +4,10 @@
 //! Query-owned dispatch for simple CASE with constant string keys. Values and
 //! result expressions remain borrowed from the bound physical plan.
 
+#[cfg(test)]
+use super::evaluate_projection_borrowed;
 use super::{
-    evaluate_projection_borrowed, Binding, Catalog, ProjectedValue, Projection,
+    evaluate_projection_in_graph, Binding, Catalog, ExpressionGraph, ProjectedValue, Projection,
     ProjectionExpression,
 };
 use crate::observer::ExecutionObserver;
@@ -110,6 +112,7 @@ impl<'plan> PreparedProjectionExpressions<'plan> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn evaluate<'a>(
         &'a self,
         expression: &'a ProjectionExpression,
@@ -118,8 +121,20 @@ impl<'plan> PreparedProjectionExpressions<'plan> {
         account: Option<&QueryMemoryAccount>,
         observer: &dyn ExecutionObserver,
     ) -> Result<ProjectedValue<'a>> {
+        self.evaluate_in_graph(expression, catalog, binding, account, observer, None)
+    }
+
+    pub(crate) fn evaluate_in_graph<'a>(
+        &'a self,
+        expression: &'a ProjectionExpression,
+        catalog: &'a Catalog,
+        binding: &'a Binding,
+        account: Option<&QueryMemoryAccount>,
+        observer: &dyn ExecutionObserver,
+        graph: Option<&ExpressionGraph<'_>>,
+    ) -> Result<ProjectedValue<'a>> {
         let evaluate =
-            |expression| evaluate_projection_borrowed(expression, catalog, binding, account);
+            |expression| evaluate_projection_in_graph(expression, catalog, binding, account, graph);
         let Some(dispatch) = self
             .cases
             .iter()

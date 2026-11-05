@@ -87,6 +87,7 @@ fn assert_spilled_output_has_its_own_account(top_n: bool) {
         memory_ledger: &ledger,
         task_context: None,
         observer: &NoopExecutionObserver,
+        graph: None,
     };
     let mut output = Vec::new();
     let mut emit = |batch: BindingBatch| {
@@ -213,6 +214,7 @@ fn null_ordered_ids(
         memory_ledger: &ledger,
         task_context: None,
         observer: &NoopExecutionObserver,
+        graph: None,
     };
     let mut output = Vec::new();
     let mut emit = |batch: BindingBatch| {
@@ -318,6 +320,7 @@ fn check_in_memory_output_exit(top_n: bool, exit: Exit) {
         memory_ledger: &ledger,
         task_context: Some(&task),
         observer: &NoopExecutionObserver,
+        graph: None,
     };
     let mut output = Vec::new();
     let mut emit = |batch: BindingBatch| {
@@ -433,6 +436,7 @@ fn capped_resident_sort_and_top_n_release_discarded_rows_before_parent_admission
                 memory_ledger: &ledger,
                 task_context: None,
                 observer: &NoopExecutionObserver,
+                graph: None,
             };
             let mut output = Vec::new();
             let mut emit = |batch: BindingBatch| {
@@ -591,6 +595,7 @@ fn run_case(
         memory_ledger: &ledger,
         task_context: Some(&task),
         observer: &NoopExecutionObserver,
+        graph: None,
     };
     let input = PhysicalPlan::SeqNodeScan {
         variable: "n".to_string(),
@@ -1204,6 +1209,7 @@ fn active_sort_releases_rows_and_capacity_under_host_pressure() {
             memory_ledger: &ledger,
             task_context: Some(&task),
             observer: &NoopExecutionObserver,
+            graph: None,
         },
     );
     let binding = |key| {
@@ -1442,6 +1448,7 @@ fn top_n_keeps_its_cutoff_under_sustained_pressure() {
                 memory_ledger: &ledger,
                 task_context: Some(&task),
                 observer: &NoopExecutionObserver,
+                graph: None,
             },
         );
         for index in 0..4096 {

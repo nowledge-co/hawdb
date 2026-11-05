@@ -159,7 +159,7 @@ fn reduce_rejects_shadowing_and_out_of_scope_locals() {
 }
 
 #[test]
-fn relationship_endpoints_require_a_graph_relationship_variable() {
+fn relationship_endpoints_plan_over_variables_and_values() {
     let items = projections(
         "MATCH (a)-[r]->(b) RETURN startNode(r), endNode(r).id AS e",
         &["a", "r", "b"],
@@ -184,12 +184,24 @@ fn relationship_endpoints_require_a_graph_relationship_variable() {
     assert!(
         error("MATCH (a) RETURN startNode(q) AS s", &["a"], &[]).contains("unknown variable 'q'")
     );
-    assert!(error(
+    // A relationship value, such as a list element, reads its endpoint from
+    // the graph by the id it records (#1488).
+    let items = projections(
         "MATCH (a) RETURN [r IN rs | endNode(r)] AS s",
         &["a"],
-        &["rs"]
-    )
-    .contains("endNode() requires a relationship variable bound by MATCH"));
+        &["rs"],
+    );
+    let ProjectionExpression::ListComprehension(comprehension) = &items[0].expression else {
+        panic!("expected a comprehension: {items:?}");
+    };
+    assert_eq!(
+        comprehension.projection,
+        Some(ProjectionExpression::RelationshipValueEndpoint {
+            endpoint: RelationshipEndpoint::End,
+            relationship: Box::new(local("r")),
+            visibility: None,
+        })
+    );
 }
 
 #[test]
@@ -209,10 +221,6 @@ fn relationship_endpoints_resolve_to_the_binding_step_nodes() {
             r#"RelationshipEndpoint { endpoint: End, variable: "r", endpoints: Some(["y", "x"]) }"#,
         ),
         (
-            "MATCH (a)-[r:R]-(b) WITH a, r, b ORDER BY startNode(r).id RETURN a",
-            r#"RelationshipEndpoint { endpoint: Start, variable: "r", endpoints: Some(["a", "b"]) }"#,
-        ),
-        (
             "MATCH (p) OPTIONAL MATCH (p)-[r:R]->(q) RETURN endNode(r) AS e",
             r#"RelationshipEndpoint { endpoint: End, variable: "r", endpoints: Some(["p", "q"]) }"#,
         ),
@@ -221,6 +229,15 @@ fn relationship_endpoints_resolve_to_the_binding_step_nodes() {
         assert!(plan.contains(expected), "{query}: {plan}");
         assert!(!plan.contains("endpoints: None"), "{query}: {plan}");
     }
+    // After WITH, ORDER BY reads the projected relationship value, whose
+    // endpoint is read from the graph (#1488: the projected scope wins).
+    let sorted =
+        plan("MATCH (a)-[r:R]-(b) WITH a, r, b ORDER BY startNode(r).id RETURN a").unwrap();
+    assert!(
+        sorted
+            .contains(r#"RelationshipValueEndpoint { endpoint: Start, relationship: Column("r")"#),
+        "{sorted}"
+    );
     // A variable-length relationship variable is rejected before resolution.
     let error = plan("MATCH (a)-[r:R*1..2]->(b) RETURN startNode(r) AS s")
         .unwrap_err()

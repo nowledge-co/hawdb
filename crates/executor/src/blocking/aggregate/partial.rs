@@ -108,12 +108,13 @@ fn partial_states_for_binding(
     items: &[Aggregation],
     catalog: &Catalog,
     binding: &Binding,
+    graph: Option<&ExpressionGraph<'_>>,
 ) -> Result<Vec<AggregateState>> {
     items
         .iter()
         .map(|item| {
             let mut state = AggregateState::new(item);
-            state.update(item, catalog, binding)?;
+            state.update(item, catalog, binding, graph)?;
             Ok(state)
         })
         .collect()
@@ -177,9 +178,20 @@ pub(super) fn stream_partial_aggregate_batches(
             let PreparedKey {
                 mut allocation,
                 values,
-            } = key_memory.group(group_keys, context.catalog, &binding, context.task_context)?;
+            } = key_memory.group(
+                group_keys,
+                context.catalog,
+                &binding,
+                context.task_context,
+                context.graph.as_ref(),
+            )?;
             let key = HashedKey::new(values, &key_hasher);
-            let incoming = partial_states_for_binding(items, context.catalog, &binding)?;
+            let incoming = partial_states_for_binding(
+                items,
+                context.catalog,
+                &binding,
+                context.graph.as_ref(),
+            )?;
 
             if let Some(group) = groups.get(&key) {
                 let previous_bytes = group.memory_bytes(&key.key);

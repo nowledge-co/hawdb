@@ -467,6 +467,44 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             }
             output.push(')');
         }
+        ProjectionExpression::RelationshipValueEndpoint {
+            endpoint,
+            relationship,
+            visibility,
+        } => {
+            output.push_str(endpoint.function_name());
+            output.push_str("_value(");
+            write_projection_expression(output, relationship);
+            if let Some(visibility) = visibility {
+                output.push_str(",visible=");
+                super::predicate::write_predicate(output, visibility);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::Pattern(pattern) => {
+            output.push_str("pattern(");
+            super::graph_match::write_program(output, &pattern.program);
+            output.push_str(",graph=");
+            super::common::write_identifier_list(output, &pattern.graph_variables);
+            output.push_str(",arguments=");
+            for (column, argument) in &pattern.arguments {
+                write_identifier(output, column);
+                output.push(':');
+                write_projection_expression(output, argument);
+                output.push(';');
+            }
+            output.push_str(",columns=");
+            super::common::write_identifier_list(output, &pattern.columns);
+            output.push_str(",where=");
+            if let Some(predicate) = &pattern.predicate {
+                write_projection_expression(output, predicate);
+            }
+            output.push_str(",map=");
+            if let Some(projection) = &pattern.projection {
+                write_projection_expression(output, projection);
+            }
+            output.push(')');
+        }
         ProjectionExpression::LocalVariable { name, property } => {
             output.push_str("local(");
             write_identifier(output, name);
