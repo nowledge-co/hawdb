@@ -29,6 +29,7 @@ rust_library(
     deps = ["@crate_index//:serde_json"] + [
         "//:hawdb",
         "//crates/fuzz-contracts:hawdb_fuzz_contracts",
+        "//tools/query-workloads:query_workloads",
     ],
 )
 
@@ -88,6 +89,9 @@ test_suite(
     tags = ["manual"],
     name = "shiro_tests",
     tests = [
+        "//tools/query-workloads:query_workloads_tests",
+        "//tools/query-workloads:legacy_tests",
+        "//tools/query-lab:query_lab_tests",
         ":shiro_append_replay_tests",
         ":shiro_append_seed_7_tests",
         ":shiro_fast_tests",
@@ -260,7 +264,7 @@ rust_binary(
     crate_root = "src/main.rs",
     srcs = ["src/main.rs", "src/qualification_cli.rs"],
     edition = "2024",
-    deps = ["@crate_index//:serde_json"] + [":shiro_core"],
+    deps = ["@crate_index//:serde_json"] + [":shiro_core", "//tools/query-lab:query_lab"],
 
 )
 
@@ -271,6 +275,6 @@ rust_test(
     srcs = ["src/main.rs", "src/qualification_cli.rs"],
     data = [":shiro"],
     edition = "2024",
-    deps = ["@crate_index//:serde_json"] + [":shiro_core"],
+    deps = ["@crate_index//:serde_json"] + [":shiro_core", "//tools/query-lab:query_lab"],
 
 )

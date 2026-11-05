@@ -250,12 +250,16 @@ optimizer-graph, optimizer-relational, executor and root owners as applicable.
 Keep complete feature selections and default/minimal contracts. Update
 [TEST_INDEX](../TEST_INDEX.md) when executable ownership is added or changed.
 
-Reuse Shiro's private fixture/replay/comparison support for the explicit offline
-runner where suitable. Shiro, its tests, fuzz campaigns and the performance
+Reuse the private `tools/query-workloads` generator from Shiro and the explicit
+offline `tools/query-lab` runner where suitable. These are independent unpublished
+tool workspaces, excluded from the production graph and library archives. Shiro, its tests, fuzz campaigns and the performance
 campaign remain outside ordinary CI and scheduled jobs. Production HawDB must
 not depend on the tool or shell out to it. A CLI is a thin wrapper over typed
-Rust qualification; this proposal neither creates a new crate nor registers
-new CI lanes.
+Rust qualification; the shared tool libraries do not add production crates or
+CI lanes. The initial SQLsmith/frozen-baseline adapter does not qualify candidate
+selection, complete physical identity or alternative-plan regret. See the
+[tool scope](../../tools/query-lab/README.md) and
+[development plan](../OPTIMIZER_COST_QUALIFICATION_PLAN.md).
 
 ## Reference methods
 

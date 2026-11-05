@@ -19,7 +19,7 @@ pub use hawdb::optimizer::{
     OptimizerSearchDirective, OptionalOptimizerRule,
 };
 use hawdb::{HawDBError, Value};
-use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use serde_json::{json, Value as JsonValue};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -131,94 +131,16 @@ pub const GRAPH_TLP_PROTOCOL: &str = "hawdb-graph-tlp-fuzz-v1";
 pub const METAMORPHIC_PROTOCOL: &str = "hawdb-graph-metamorphic-fuzz-v1";
 pub const PLAN_DIFFERENTIAL_PROTOCOL: &str = "hawdb-plan-differential-fuzz-v2";
 pub const REPLAY_BUNDLE_PROTOCOL: &str = "shiro-multi-oracle-replay-v2";
-pub(crate) const QUERY_SHAPE_COUNT: usize = 13;
+#[cfg(test)]
+pub(crate) use query_workloads::QUERY_SHAPE_COUNT;
 const DEFAULT_CASE_COUNT: usize = 128;
 const MAX_CASE_COUNT: usize = 10_000;
 const MAX_REDUCTION_ATTEMPTS: usize = 64;
 
-pub type Parameters = BTreeMap<String, Value>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResultSemantics {
-    Ordered,
-    Bag,
-}
-
-impl ResultSemantics {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Ordered => "ordered",
-            Self::Bag => "bag",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Mutation {
-    pub cypher: String,
-    pub parameters: Parameters,
-}
-
-impl Mutation {
-    pub fn new(cypher: impl Into<String>) -> Self {
-        Self {
-            cypher: cypher.into(),
-            parameters: Parameters::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FuzzCase {
-    pub seed: u64,
-    pub shape: String,
-    pub mutations: Vec<Mutation>,
-    pub query: QueryInvocation,
-    pub(crate) query_ast: QueryAst,
-    pub graph_tlp: GraphTlpCase,
-    pub graph_tlp_aggregate: GraphTlpCase,
-    pub graph_predicate_rewrite: GraphPredicateRewriteCase,
-    pub metamorphic: MetamorphicCase,
-    pub index_enabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueryInvocation {
-    pub cypher: String,
-    pub parameters: Parameters,
-    pub result_semantics: ResultSemantics,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphTlpCase {
-    pub name: String,
-    pub original: QueryInvocation,
-    pub predicate_true: QueryInvocation,
-    pub predicate_false: QueryInvocation,
-    pub predicate_null: QueryInvocation,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphPredicateRewriteCase {
-    pub name: String,
-    pub original: QueryInvocation,
-    pub rewritten: QueryInvocation,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MetamorphicCase {
-    pub graph_isomorphism: MetamorphicRelation,
-    pub direction_reversal: Option<MetamorphicRelation>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MetamorphicRelation {
-    pub name: &'static str,
-    pub applicability_guard: &'static str,
-    pub mutations: Vec<Mutation>,
-    pub query: QueryInvocation,
-    pub identifier_prefix_to_strip: Option<String>,
-}
+pub use query_workloads::{
+    FuzzCase, GraphPredicateRewriteCase, GraphTlpCase, MetamorphicCase, MetamorphicRelation,
+    Mutation, Parameters, QueryInvocation, ResultSemantics,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityProfile {
@@ -2333,47 +2255,7 @@ fn row_json(row: &Row) -> JsonValue {
     )
 }
 
-fn typed_value_json(value: &Value) -> JsonValue {
-    match value {
-        Value::Null => json!({"type": "null"}),
-        Value::Bool(value) => json!({"type": "bool", "value": value}),
-        Value::Int(value) => json!({"type": "int", "value": value}),
-        Value::Decimal(value) => json!({"type": "decimal", "value": value.to_string()}),
-        Value::Float(value) => json!({
-            "type": "float",
-            "bits": format!("{:016x}", value.to_bits()),
-        }),
-        Value::String(value) => json!({"type": "string", "value": value}),
-        Value::Uuid(value) => json!({"type": "uuid", "value": value.to_string()}),
-        Value::Date(_)
-        | Value::LocalTime(_)
-        | Value::LocalDateTime(_)
-        | Value::DateTime(_)
-        | Value::Duration(_) => json!({
-            "type": &hawdb::temporal::json_tag(value).expect("temporal value")[1..],
-            "value": value.to_string(),
-        }),
-        Value::Vector(value) => json!({
-            "type": "vector",
-            "hex": value.encoded().iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
-        }),
-        Value::Binary(value) => json!({
-            "type": "binary",
-            "hex": value.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
-        }),
-        Value::List(values) => json!({
-            "type": "list",
-            "values": values.iter().map(typed_value_json).collect::<Vec<_>>(),
-        }),
-        Value::Map(values) => {
-            let values = values
-                .iter()
-                .map(|(key, value)| (key.clone(), typed_value_json(value)))
-                .collect::<JsonMap<_, _>>();
-            json!({"type": "map", "values": values})
-        }
-    }
-}
+use query_workloads::typed_value_json;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuzzError {
