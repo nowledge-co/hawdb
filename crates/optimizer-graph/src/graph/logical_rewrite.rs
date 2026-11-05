@@ -54,7 +54,12 @@ pub(super) fn rewrite_logical_plan_with_catalog(
     catalog: &super::OptimizerCatalog,
     options: crate::OptimizerQualificationOptions,
 ) -> LogicalRewriteOutput {
-    let mut output = rewrite_logical_plan(plan);
+    // Choose chain starts first; the fixed-point rewrite then pushes each
+    // lifted conjunct down to the expansion that binds it.
+    let mut start_events = Vec::new();
+    let started = super::chain_start::rewrite(plan.clone(), catalog, options, &mut start_events);
+    let mut output = rewrite_logical_plan(&started);
+    output.events.splice(0..0, start_events);
     output.plan = super::proofs::rewrite(output.plan, catalog, options, &mut output.events);
     let applied = output
         .events

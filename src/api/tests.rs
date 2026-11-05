@@ -60,6 +60,7 @@ mod community_memberships;
 mod community_reads;
 mod comparison_chains;
 mod concurrent_transactions;
+mod cost_based_start;
 mod crystal_reads;
 mod crystal_source;
 mod cypher_order_by_nulls;
