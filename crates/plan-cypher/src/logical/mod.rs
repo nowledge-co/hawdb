@@ -28,8 +28,8 @@ pub use hawdb_ddl::{SchemaObjectState, SchemaPropertyType, SchemaTableKind};
 pub use hawdb_expression::{
     CaseColumnSearchRankProjection, CaseEntitySearchRankProjection,
     CoalesceDifferenceProjectionTerm, ComparisonOp, DatePart, ListComprehensionProjection,
-    PathFunction, Predicate, ProjectionExpression, ScalarBinaryOp, SortDirection, SortItem,
-    SortKey,
+    PathFunction, Predicate, ProjectionExpression, ReduceProjection, ScalarBinaryOp, SortDirection,
+    SortItem, SortKey,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -49,6 +49,8 @@ mod case;
 mod list_tests;
 #[cfg(test)]
 mod load_csv_tests;
+#[cfg(test)]
+mod math_reduce_endpoint_tests;
 mod projection;
 mod statement;
 mod temporal;

@@ -170,6 +170,7 @@ mod result_column_order;
 mod row_bound_pattern_properties;
 mod row_goal_planning;
 mod runtime_capabilities;
+mod scalar_math_reduce_endpoints;
 mod schema_indexes;
 mod schema_migrations;
 mod search_projection_delta_facade;

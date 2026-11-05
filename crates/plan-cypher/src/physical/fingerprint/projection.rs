@@ -433,6 +433,40 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             }
             output.push(')');
         }
+        ProjectionExpression::NumericFunction { function, argument } => {
+            output.push_str("numeric_function(");
+            output.push_str(function.function_name());
+            output.push(',');
+            write_projection_expression(output, argument);
+            output.push(')');
+        }
+        ProjectionExpression::Reduce(reduce) => {
+            output.push_str("reduce(");
+            write_identifier(output, &reduce.accumulator);
+            output.push('=');
+            write_projection_expression(output, &reduce.initial);
+            output.push(',');
+            write_identifier(output, &reduce.variable);
+            output.push_str(",in=");
+            write_projection_expression(output, &reduce.list);
+            output.push_str(",map=");
+            write_projection_expression(output, &reduce.expression);
+            output.push(')');
+        }
+        ProjectionExpression::RelationshipEndpoint {
+            endpoint,
+            variable,
+            endpoints,
+        } => {
+            output.push_str(endpoint.function_name());
+            output.push('(');
+            write_identifier(output, variable);
+            for node in endpoints.iter().flatten() {
+                output.push(',');
+                write_identifier(output, node);
+            }
+            output.push(')');
+        }
         ProjectionExpression::LocalVariable { name, property } => {
             output.push_str("local(");
             write_identifier(output, name);

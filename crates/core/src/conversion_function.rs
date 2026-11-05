@@ -185,7 +185,7 @@ fn format_float(value: f64) -> String {
     }
 }
 
-fn type_name(value: ValueRef<'_>) -> &'static str {
+pub(crate) fn type_name(value: ValueRef<'_>) -> &'static str {
     match value {
         ValueRef::Null => "NULL",
         ValueRef::Bool(_) => "BOOLEAN",

@@ -641,6 +641,28 @@ pub enum ScalarExpressionKind {
         function: hawdb_core::ConversionFunction,
         argument: Box<ScalarExpression>,
     },
+    /// `abs`, `ceil`, `floor`, `round`, `sign` or `sqrt`.
+    NumericFunction {
+        function: hawdb_core::NumericFunction,
+        argument: Box<ScalarExpression>,
+    },
+    /// `reduce(accumulator = initial, variable IN list | expression)`.
+    ///
+    /// `initial` and `list` are evaluated in the enclosing scope;
+    /// `accumulator` and `variable` are scoped to `expression` and must not
+    /// shadow a variable or column already visible to the call.
+    Reduce {
+        accumulator: String,
+        initial: Box<ScalarExpression>,
+        variable: String,
+        list: Box<ScalarExpression>,
+        expression: Box<ScalarExpression>,
+    },
+    /// `startNode(r)` or `endNode(r)` of a relationship variable.
+    RelationshipEndpoint {
+        endpoint: hawdb_core::RelationshipEndpoint,
+        variable: String,
+    },
 }
 
 /// A projection or grouping expression, with aggregation explicit in its type.
@@ -844,7 +866,17 @@ impl ScalarExpressionKind {
             | Self::Conversion {
                 argument: expression,
                 ..
+            }
+            | Self::NumericFunction {
+                argument: expression,
+                ..
             } => visit(expression),
+            Self::Reduce {
+                initial,
+                list,
+                expression,
+                ..
+            } => visit(initial) && visit(list) && visit(expression),
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {

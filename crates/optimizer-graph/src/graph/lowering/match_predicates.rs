@@ -272,6 +272,15 @@ fn expression_names(expression: &ProjectionExpression, names: &mut BTreeSet<Stri
         ProjectionExpression::CaseEntitySearchRank(rank) => {
             names.insert(rank.variable.clone());
         }
+        // The endpoint is read from one of the binding step's node variables.
+        ProjectionExpression::RelationshipEndpoint {
+            variable,
+            endpoints,
+            ..
+        } => {
+            names.insert(variable.clone());
+            names.extend(endpoints.iter().flatten().cloned());
+        }
         // Columns and path values live in the same row namespace as graph
         // variables; a path column is bound by its shortest-path step.
         ProjectionExpression::Column(column)
@@ -303,6 +312,8 @@ fn expression_names(expression: &ProjectionExpression, names: &mut BTreeSet<Stri
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
         | ProjectionExpression::MapLiteral(_) => {

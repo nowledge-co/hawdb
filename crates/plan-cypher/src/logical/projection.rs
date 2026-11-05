@@ -807,6 +807,18 @@ pub(super) fn plan_projection_with_columns(
             plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
             "list_comprehension".to_string(),
         ),
+        ScalarExpressionKind::NumericFunction { function, .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            function.function_name().to_string(),
+        ),
+        ScalarExpressionKind::Reduce { .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "reduce".to_string(),
+        ),
+        ScalarExpressionKind::RelationshipEndpoint { endpoint, variable } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            format!("{}({variable})", endpoint.function_name()),
+        ),
         ScalarExpressionKind::ListIndex { .. } => (
             plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
             "list_index".to_string(),
@@ -1605,6 +1617,54 @@ pub(super) fn plan_scalar_expression_with_columns(
             },
             parameters,
         ),
+        ScalarExpressionKind::NumericFunction { function, argument } => {
+            Ok(ProjectionExpression::NumericFunction {
+                function: *function,
+                argument: Box::new(plan_scalar_expression_with_columns(
+                    scope,
+                    column_scope,
+                    argument,
+                    parameters,
+                )?),
+            })
+        }
+        ScalarExpressionKind::Reduce {
+            accumulator,
+            initial,
+            variable,
+            list,
+            expression,
+        } => plan_reduce(
+            scope,
+            column_scope,
+            ReduceParts {
+                accumulator,
+                initial,
+                variable,
+                list,
+                expression,
+            },
+            parameters,
+        ),
+        ScalarExpressionKind::RelationshipEndpoint { endpoint, variable } => {
+            if column_scope.contains(variable) {
+                return Err(HawDBError::Semantic(format!(
+                    "{}() requires a relationship variable bound by MATCH; '{variable}' is a projected value",
+                    endpoint.function_name()
+                )));
+            }
+            if !scope.contains(variable) {
+                return Err(HawDBError::Semantic(format!(
+                    "unknown variable '{variable}' in return item"
+                )));
+            }
+            // The binding pattern step is resolved once the plan is built.
+            Ok(ProjectionExpression::RelationshipEndpoint {
+                endpoint: *endpoint,
+                variable: variable.clone(),
+                endpoints: None,
+            })
+        }
         ScalarExpressionKind::Conversion { function, argument } => {
             Ok(ProjectionExpression::Conversion {
                 function: *function,
@@ -1764,6 +1824,62 @@ fn plan_list_comprehension(
             projection: parts.projection.map(bind_body).transpose()?,
         },
     )))
+}
+
+struct ReduceParts<'a> {
+    accumulator: &'a str,
+    initial: &'a ScalarExpression,
+    variable: &'a str,
+    list: &'a ScalarExpression,
+    expression: &'a ScalarExpression,
+}
+
+/// Plans `reduce(accumulator = initial, variable IN list | expression)`.
+///
+/// `initial` and `list` are planned in the enclosing scope. As for list
+/// comprehensions, neither local name may shadow a visible variable or
+/// column, and the two names must differ; inside `expression` both are
+/// planned as columns and rebound to [`ProjectionExpression::LocalVariable`].
+fn plan_reduce(
+    scope: &BTreeSet<String>,
+    column_scope: &BTreeSet<String>,
+    parts: ReduceParts<'_>,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<ProjectionExpression> {
+    let ReduceParts {
+        accumulator,
+        variable,
+        ..
+    } = parts;
+    for name in [accumulator, variable] {
+        if scope.contains(name) || column_scope.contains(name) {
+            return Err(HawDBError::Semantic(format!(
+                "reduce() variable '{name}' shadows a variable that is already in scope; use a different name"
+            )));
+        }
+    }
+    if accumulator == variable {
+        return Err(HawDBError::Semantic(format!(
+            "reduce() accumulator and list variable must differ, both are '{variable}'"
+        )));
+    }
+    let initial =
+        plan_scalar_expression_with_columns(scope, column_scope, parts.initial, parameters)?;
+    let list = plan_scalar_expression_with_columns(scope, column_scope, parts.list, parameters)?;
+    let mut body_columns = column_scope.clone();
+    body_columns.insert(accumulator.to_string());
+    body_columns.insert(variable.to_string());
+    let mut expression =
+        plan_scalar_expression_with_columns(scope, &body_columns, parts.expression, parameters)?;
+    bind_list_local(&mut expression, accumulator)?;
+    bind_list_local(&mut expression, variable)?;
+    Ok(ProjectionExpression::Reduce(Box::new(ReduceProjection {
+        accumulator: accumulator.to_string(),
+        initial,
+        variable: variable.to_string(),
+        list,
+        expression,
+    })))
 }
 
 fn bind_list_local(expression: &mut ProjectionExpression, variable: &str) -> Result<()> {

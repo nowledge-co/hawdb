@@ -328,6 +328,7 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         | ProjectionExpression::Property { variable, .. }
         | ProjectionExpression::Id { variable }
         | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::RelationshipEndpoint { variable, .. }
         | ProjectionExpression::DatePart { variable, .. }
         | ProjectionExpression::DefaultIfNullOrEq { variable, .. }
         | ProjectionExpression::DefaultIfNull { variable, .. }
@@ -360,12 +361,16 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
         | ProjectionExpression::MapLiteral(_) => true,
         ProjectionExpression::ListComprehension(comprehension) => {
             public_name(&comprehension.variable)
+        }
+        ProjectionExpression::Reduce(reduce) => {
+            public_name(&reduce.accumulator) && public_name(&reduce.variable)
         }
         ProjectionExpression::LocalVariable { name, .. } => public_name(name),
     };

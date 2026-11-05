@@ -91,9 +91,13 @@ impl Transformer<'_> {
                     self.text(self.tree.required(node, rule_id!("v_identifier"))),
                 )
                 .expect("matched conversion function"),
-                argument: Box::new(
-                    self.scalar(self.tree.required(node, rule_id!("x_scalar")), depth)?,
-                ),
+                // A single operand keeps its historical capture; arithmetic
+                // arguments such as `toFloat(a - b)` use the sum rule.
+                argument: Box::new(match self.tree.child(node, rule_id!("x_scalar")) {
+                    Some(argument) => self.scalar(argument, depth)?,
+                    None => self
+                        .case_scalar(self.tree.required(node, rule_id!("x_case_scalar")), depth)?,
+                }),
             },
             "x_temporal" => self.temporal_scalar(node, depth)?,
             "x_map" => ScalarExpressionKind::MapLiteral(self.scalar_map(node, depth)?),
@@ -109,11 +113,13 @@ impl Transformer<'_> {
                 let variable = self
                     .text(self.tree.required(node, rule_id!("v_identifier")))
                     .to_owned();
-                if self
-                    .text(self.tree.required(node, rule_id!("x_identity_name")))
-                    .eq_ignore_ascii_case("ID")
-                {
+                let name = self.text(self.tree.required(node, rule_id!("x_identity_name")));
+                if name.eq_ignore_ascii_case("ID") {
                     ScalarExpressionKind::Id(variable)
+                } else if let Some(endpoint) =
+                    hawdb_core::RelationshipEndpoint::from_function_name(name)
+                {
+                    ScalarExpressionKind::RelationshipEndpoint { endpoint, variable }
                 } else {
                     ScalarExpressionKind::RelationshipType(variable)
                 }
@@ -176,7 +182,11 @@ impl Transformer<'_> {
             }
             "x_list_function" => {
                 let name = self.text(self.tree.required(node, rule_id!("x_list_function_name")));
+                if name.eq_ignore_ascii_case("reduce") {
+                    return self.reduce(node, depth);
+                }
                 let string_function = hawdb_core::StringFunction::from_function_name(name);
+                let numeric_function = hawdb_core::NumericFunction::from_function_name(name);
                 let list_function = ListFunction::from_function_name(name);
                 let mut arguments = Vec::new();
                 for arg in self
@@ -193,6 +203,11 @@ impl Transformer<'_> {
                     ScalarExpressionKind::StringFunction {
                         function,
                         arguments,
+                    }
+                } else if let Some(function) = numeric_function {
+                    ScalarExpressionKind::NumericFunction {
+                        function,
+                        argument: Box::new(self.numeric_argument(node, function, arguments)?),
                     }
                 } else {
                     let function = list_function.expect("list function");
@@ -344,6 +359,51 @@ impl Transformer<'_> {
             elements.push(self.captured_reference(tree.children(*child)[0], captured_depth + 2)?);
         }
         Ok(Some(ScalarExpressionKind::List(elements)))
+    }
+    /// `reduce(accumulator = initial, variable IN list | expression)`.
+    fn reduce(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpressionKind> {
+        let names = self
+            .iter_named_children(node, rule_id!("v_identifier"))
+            .map(|id| self.text(id).to_owned())
+            .collect::<Vec<_>>();
+        let operands = self
+            .iter_named_children(node, rule_id!("x_case_scalar"))
+            .collect::<Vec<_>>();
+        let (Ok([accumulator, variable]), [initial, list, expression]) =
+            (<[String; 2]>::try_from(names), operands.as_slice())
+        else {
+            return Err(self.error(
+                node,
+                "reduce() requires `accumulator = initial, variable IN list | expression`",
+            ));
+        };
+        let (initial, list, expression) = (*initial, *list, *expression);
+        Ok(ScalarExpressionKind::Reduce {
+            accumulator,
+            initial: Box::new(self.case_scalar(initial, depth)?),
+            variable,
+            list: Box::new(self.case_scalar(list, depth)?),
+            expression: Box::new(self.case_scalar(expression, depth)?),
+        })
+    }
+    pub(super) fn numeric_argument<T>(
+        &self,
+        node: NodeId,
+        function: hawdb_core::NumericFunction,
+        arguments: Vec<T>,
+    ) -> Result<T> {
+        let count = arguments.len();
+        let mut arguments = arguments.into_iter();
+        match (arguments.next(), arguments.next()) {
+            (Some(argument), None) => Ok(argument),
+            _ => Err(self.error_at(
+                self.tree.span(node, self.tokens).end,
+                &format!(
+                    "{}() expects 1 argument(s), got {count}",
+                    function.function_name()
+                ),
+            )),
+        }
     }
     pub(super) fn string_arity(
         &self,

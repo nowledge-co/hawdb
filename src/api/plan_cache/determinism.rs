@@ -154,6 +154,9 @@ pub(in crate::api) fn scalar_is_deterministic(expression: &cypher::ScalarExpress
         | Scalar::List(_)
         | Scalar::ListIndex { .. }
         | Scalar::Conversion { .. }
+        | Scalar::NumericFunction { .. }
+        | Scalar::Reduce { .. }
+        | Scalar::RelationshipEndpoint { .. }
         | Scalar::ListSlice { .. }
         | Scalar::Path(_)
         | Scalar::PropertyAccess { .. }
