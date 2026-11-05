@@ -232,6 +232,19 @@ const CASES: &[Case] = &[
                  RETURN f.id AS f, c.id AS c",
         moves: false,
     },
+    Case {
+        // The guard and the division it protects both read `f`, so they run
+        // in the same step after the start moves, and must keep their order:
+        // otherwise `f.id % 3 = 0` rows would divide by zero.
+        name: "guarded division keeps its guard first",
+        query: "MATCH (f:Person)-[:WORK_AT]->(c:Organisation)-[:IS_LOCATED_IN]->(p:Place {name: $name}) \
+                WHERE f.id % 3 <> 0 AND c.id / (f.id % 3) >= 0 \
+                RETURN f.id AS f, c.id AS c, p.id AS p",
+        forced: "MATCH (p:Place {name: $name})<-[:IS_LOCATED_IN]-(c:Organisation)<-[:WORK_AT]-(f:Person) \
+                 WHERE f.id % 3 <> 0 AND c.id / (f.id % 3) >= 0 \
+                 RETURN f.id AS f, c.id AS c, p.id AS p",
+        moves: true,
+    },
 ];
 
 #[test]
@@ -371,4 +384,23 @@ fn a_statistics_change_replans_the_start() {
     assert_eq!(multiset(&output.rows), vec!["f=Int(1)".to_string()]);
     assert!(db.plan_cache_stats().unwrap().misses > before.misses);
     assert!(decided(&db));
+}
+
+#[test]
+fn the_guarded_division_case_errors_without_its_guard() {
+    // Keeps the guarded-division case meaningful: without the guard the same
+    // pattern divides by zero, so a guard evaluated after the division
+    // would fail the query.
+    let mut db = random_graph(1);
+    let unguarded =
+        "MATCH (f:Person)-[:WORK_AT]->(c:Organisation)-[:IS_LOCATED_IN]->(p:Place {name: $name}) \
+                     WHERE c.id / (f.id % 3) >= 0 RETURN f.id AS f";
+    let results = (0..PLACES)
+        .map(|place| {
+            let parameters =
+                BTreeMap::from([("name".to_string(), Value::String(format!("P{place}")))]);
+            db.query_with_params(unguarded, &parameters).is_err()
+        })
+        .collect::<Vec<_>>();
+    assert!(results.iter().any(|failed| *failed), "{results:?}");
 }
