@@ -16,7 +16,8 @@ use super::*;
 use hawdb_core::{RelationshipDirection, Value};
 use hawdb_plan_cypher::{
     ComparisonOp, GraphBindingImport, GraphEntityKind, GraphMatchNode, GraphMatchShortestPath,
-    ListComprehensionProjection, PathFunction, ScalarBinaryOp, ShortestPathSelection,
+    ListComprehensionProjection, PathFunction, ProjectionExpression, ScalarBinaryOp,
+    ShortestPathSelection,
 };
 
 fn node(variable: &str) -> GraphMatchNode {
@@ -77,6 +78,8 @@ fn program(imports: &[&str], introduced: &[&str], steps: Vec<GraphMatchStep>) ->
         predicate_steps: Vec::new(),
         edge_predicates: Vec::new(),
         optional: false,
+        hash_join: None,
+        id_set_conjuncts: Vec::new(),
     }
 }
 

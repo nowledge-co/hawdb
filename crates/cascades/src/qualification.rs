@@ -12,14 +12,21 @@ pub enum OptionalOptimizerRule {
     SingletonGroup,
     /// Starts a pattern path at a selective index-seekable node (#1485).
     CostBasedPatternStart,
+    /// Runs a correlated MATCH as a hash join on its imported node (#1485).
+    GraphMatchHashJoin,
+    /// Checks `node IN column` against the list's id set before reading the
+    /// node (#1485).
+    GraphMatchIdSetSemiJoin,
 }
 
 impl OptionalOptimizerRule {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::RedundantOrdering,
         Self::RedundantDistinct,
         Self::SingletonGroup,
         Self::CostBasedPatternStart,
+        Self::GraphMatchHashJoin,
+        Self::GraphMatchIdSetSemiJoin,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -28,6 +35,8 @@ impl OptionalOptimizerRule {
             Self::RedundantDistinct => "transformation:proof_redundant_distinct",
             Self::SingletonGroup => "transformation:proof_singleton_group",
             Self::CostBasedPatternStart => "transformation:cost_based_pattern_start",
+            Self::GraphMatchHashJoin => "transformation:graph_match_hash_join",
+            Self::GraphMatchIdSetSemiJoin => "transformation:graph_match_id_set_semi_join",
         }
     }
 

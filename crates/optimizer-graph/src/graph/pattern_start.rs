@@ -163,6 +163,23 @@ pub(super) fn walk_work(
     edges: &[PathEdge<'_>],
     start: usize,
 ) -> Option<f64> {
+    walk(catalog, nodes, edges, start).map(|estimate| estimate.work)
+}
+
+/// The estimated work of a walk and the complete matches it produces.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct WalkEstimate {
+    pub(super) work: f64,
+    pub(super) rows: f64,
+}
+
+/// [`walk_work`] with the estimated number of complete matches.
+pub(super) fn walk(
+    catalog: &OptimizerCatalog,
+    nodes: &[PathNode<'_>],
+    edges: &[PathEdge<'_>],
+    start: usize,
+) -> Option<WalkEstimate> {
     // Without published path statistics every fanout would be a guess.
     if catalog.path_counts.is_empty() {
         return None;
@@ -231,7 +248,76 @@ pub(super) fn walk_work(
         };
         visited[to] = true;
     }
-    Some(work)
+    Some(WalkEstimate { work, rows })
+}
+
+/// A path that meets its input at the node `key`, estimated as a per-row
+/// nested loop and as one build run hashed on `key`.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct MeetingEstimate {
+    /// Work of one per-row walk with `key` bound, from its chosen start.
+    pub(super) per_row: f64,
+    /// Work and matches of one walk with `key` unbound, from `build_start`.
+    pub(super) build: f64,
+    pub(super) build_rows: f64,
+    pub(super) build_start: usize,
+}
+
+impl MeetingEstimate {
+    /// Whether one build run, a hash insert per build match and a probe per
+    /// input row is at most half the per-row nested loop. The work both
+    /// plans share (producing the input and the joined rows) is left out,
+    /// so the margin applies to the work that differs.
+    pub(super) fn hash_join_is_cheaper(&self, input_rows: f64) -> bool {
+        let hash_join = self.build + self.build_rows + input_rows;
+        hash_join * START_COST_MARGIN <= input_rows * self.per_row
+    }
+}
+
+/// Estimates the path both ways. `per_row_start` is where the per-row walk
+/// starts; the build starts at the text start or a clearly cheaper seek,
+/// as an unbound first MATCH would. `None` when an estimate is unknown.
+pub(super) fn meeting(
+    catalog: &OptimizerCatalog,
+    nodes: &[PathNode<'_>],
+    edges: &[PathEdge<'_>],
+    key: usize,
+    per_row_start: usize,
+) -> Option<MeetingEstimate> {
+    let key_variable = nodes[key].variable;
+    let with = |bound: bool| {
+        nodes
+            .iter()
+            .map(|node| PathNode {
+                bound: if node.variable == key_variable {
+                    bound
+                } else {
+                    node.bound
+                },
+                ..node.clone()
+            })
+            .collect::<Vec<_>>()
+    };
+    let per_row_nodes = with(true);
+    let per_row = match choose_start(catalog, &per_row_nodes, edges, per_row_start) {
+        Some(StartDecision::Chosen(choice)) => choice.work,
+        _ => walk_work(catalog, &per_row_nodes, edges, per_row_start)?,
+    };
+    let build_nodes = with(false);
+    if build_nodes.iter().any(|node| node.bound) {
+        return None;
+    }
+    let build_start = match choose_start(catalog, &build_nodes, edges, 0) {
+        Some(StartDecision::Chosen(choice)) => choice.start,
+        _ => 0,
+    };
+    let build = walk(catalog, &build_nodes, edges, build_start)?;
+    Some(MeetingEstimate {
+        per_row,
+        build: build.work,
+        build_rows: build.rows,
+        build_start,
+    })
 }
 
 /// Relationships read per source row by one step walking `direction`.

@@ -162,6 +162,8 @@ pub(super) fn plan_pattern_expression(
         predicate_steps: Vec::new(),
         edge_predicates: Vec::new(),
         optional: false,
+        hash_join: None,
+        id_set_conjuncts: Vec::new(),
     };
 
     // The body sees the introduced variables as graph variables. Enclosing

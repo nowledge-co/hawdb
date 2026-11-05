@@ -20,6 +20,18 @@ pub(super) fn write_program(output: &mut String, program: &GraphMatchProgram) {
         ",projected_relationships=[",
         &program.projected_relationships,
     );
+    // The execution strategy changes the work and the row order.
+    if let Some(join) = &program.hash_join {
+        output.push_str(",hash_join=");
+        write_identifier(output, &join.key);
+        output.push_str(&format!(
+            ":{:?}:{:?}:{}:{}",
+            join.build_conjuncts, join.residual_order, join.residual_placed, join.probe_conjuncts
+        ));
+    }
+    if !program.id_set_conjuncts.is_empty() {
+        output.push_str(&format!(",id_sets={:?}", program.id_set_conjuncts));
+    }
     output.push_str(",imports=[");
     for import in &program.imports {
         output.push_str(match import.kind {

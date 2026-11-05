@@ -456,7 +456,20 @@ impl PhysicalPlan {
                         program.projected_relationships
                     )
                 };
-                format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?}{projected}{projected_relationships} predicate={:?}{placement}{edge}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
+                let mut hash_join = program.hash_join.as_ref().map_or(String::new(), |join| {
+                    format!(
+                        " hash_join=key:{} build_conjuncts={:?} residual_order={:?} residual_placed={} probe_conjuncts={}",
+                        join.key,
+                        join.build_conjuncts,
+                        join.residual_order,
+                        join.residual_placed,
+                        join.probe_conjuncts
+                    )
+                });
+                if !program.id_set_conjuncts.is_empty() {
+                    hash_join.push_str(&format!(" id_set_conjuncts={:?}", program.id_set_conjuncts));
+                }
+                format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?}{projected}{projected_relationships} predicate={:?}{placement}{edge}{hash_join}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
             }
             PhysicalPlan::NodeColumnLookupExec {
                 variable,

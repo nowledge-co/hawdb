@@ -91,24 +91,41 @@ fn a_disabled_rule_or_an_optimistic_catalog_keeps_the_chain() {
 }
 
 #[test]
-fn a_selective_text_start_keeps_the_chain() {
-    // Both ends seek; walking KNOWS*1..2 back from every employee is not
-    // cheaper than the person seek.
+fn a_selective_text_start_splits_at_the_meeting_node() {
+    // Both ends seek. Walking KNOWS*1..2 back from every employee is not
+    // cheaper than the person seek, but the WORK_AT/IS_LOCATED_IN rest is
+    // cheaper built once from the place and probed per friend.
     let (plan, trace) = optimize(
         "MATCH (a:Person {id: 7})-[:KNOWS*1..2]-(f:Person)-[:WORK_AT]->(c:Organisation)-[:IS_LOCATED_IN]->(:Place {name: 'Country3'}) \
          RETURN f",
     );
+    let explain = plan.explain(0);
     assert!(
-        plan.explain(0)
-            .contains("IndexNodeSeek variable=a label=Person property=id"),
-        "{}",
-        plan.explain(0)
+        explain.contains("IndexNodeSeek variable=a label=Person property=id"),
+        "{explain}"
     );
+    let graph_match = explain
+        .lines()
+        .find(|line| line.contains("GraphMatchExec"))
+        .unwrap_or_else(|| panic!("{explain}"));
     assert!(
-        rule_events(&trace).iter().any(|event| event.starts_with(
-            "estimate transformation:cost_based_pattern_start: keep Expand chain start a"
-        )),
-        "{:?}",
-        rule_events(&trace)
+        graph_match
+            .contains("steps=[Node(GraphMatchNode { variable: \"__anon0\", label: \"Place\"")
+            && graph_match.contains("hash_join=key:f build_conjuncts=[]"),
+        "{graph_match}\n{:#?}",
+        trace.decisions
     );
+    for expected in [
+        "apply transformation:graph_match_hash_join: split Expand chain at f: expand a to it, then join a GraphMatchExec built once from __anon0",
+        "GraphMatchExec runs as the hash join chosen when its Expand chain was split at f",
+    ] {
+        assert!(
+            trace
+                .decisions
+                .iter()
+                .any(|decision| decision.starts_with(expected)),
+            "{expected}\n{:#?}",
+            trace.decisions
+        );
+    }
 }

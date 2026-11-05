@@ -39,7 +39,9 @@ use hawdb_storage::{adjacency::AdjacencyDirection, NodeId, NodeRecord, RelId};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod hash_join;
 mod indexed_node;
+mod membership;
 
 const MAX_MATCH_STEPS: usize = 32;
 
@@ -161,6 +163,15 @@ pub(crate) fn stream_graph_match(
     if limit.is_reached(0) {
         return Ok(BatchControl::Stop);
     }
+    // Seed scoring annotates every hop of a per-row match; it keeps the
+    // per-row program, which the hash join's steps remain.
+    if let (Some(join), Some(input)) = (&program.hash_join, input)
+        && context.observer.seed_graph_scoring_input().is_none()
+    {
+        return hash_join::stream_graph_match_hash_join(
+            program, join, input, source, store, context, limit, emit,
+        );
+    }
     let account = context.operator_account("GraphMatchExec state");
     let source_account = context.source_account_retaining("GraphMatchExec source", account.clone());
     let output_account = context.memory_ledger.account(
@@ -187,6 +198,7 @@ pub(crate) fn stream_graph_match(
         // hop, so it keeps whole records and per-step row copies.
         scoring: context.observer.seed_graph_scoring_input().is_some(),
         candidate: None,
+        memberships: membership::MembershipSets::default(),
     };
     let mut emitted = 0;
     let mut append = |binding: &Binding| {
@@ -207,6 +219,7 @@ pub(crate) fn stream_graph_match(
         runtime_checkpoint(context.task_context)?;
         let (mut binding, _leases) = runtime.prepare(input)?;
         runtime.deferred.set(false);
+        runtime.memberships.reset();
         let mut matched = false;
         // Steps extend this one row in place and restore it on return.
         let control = runtime.visit(0, &mut binding, &mut BTreeSet::new(), &mut |row| {
@@ -310,6 +323,7 @@ pub(crate) fn visit_correlated_matches(
         indexed: indexed_node::IndexedNodeStats::default(),
         scoring: false,
         candidate: Some(candidate),
+        memberships: membership::MembershipSets::default(),
     };
     let (mut binding, _leases) = runtime.prepare(input)?;
     runtime.visit(0, &mut binding, &mut BTreeSet::new(), emit)
@@ -360,6 +374,8 @@ struct MatchRuntime<'a> {
     /// Charged for each visited candidate when the program runs inside an
     /// expression, whose work is bounded per evaluation.
     candidate: Option<&'a dyn Fn() -> Result<()>>,
+    /// List-column id sets of `node IN column` conjuncts for this input row.
+    memberships: membership::MembershipSets,
 }
 
 /// The rest of a one-hop step after its relationship is bound.
@@ -468,20 +484,30 @@ impl MatchRuntime<'_> {
             row.values.remove(name);
         }
         for import in &self.program.imports {
+            // A node bound by an earlier expansion of the same plan, rather
+            // than a projected column, imports by its record (#1485).
+            let bound = (import.kind == GraphEntityKind::Node
+                && !input.values.contains_key(&import.column))
+            .then(|| input.nodes.get(&import.column).map(|node| node.id.0))
+            .flatten();
             row.nodes.remove(&import.variable);
             row.relationships.remove(&import.variable);
-            let value = input.values.get(&import.column).ok_or_else(|| {
-                HawDBError::Execution(format!(
-                    "missing graph column '{}' during MATCH",
-                    import.column
-                ))
-            })?;
-            if value == &Value::Null {
-                row.values.insert(import.variable.clone(), Value::Null);
-                continue;
-            }
-            let values = imported_entity(value, import)?;
-            let id = entity_id(values, "_id")?;
+            let id = if let Some(id) = bound {
+                id
+            } else {
+                let value = input.values.get(&import.column).ok_or_else(|| {
+                    HawDBError::Execution(format!(
+                        "missing graph column '{}' during MATCH",
+                        import.column
+                    ))
+                })?;
+                if value == &Value::Null {
+                    row.values.insert(import.variable.clone(), Value::Null);
+                    continue;
+                }
+                let values = imported_entity(value, import)?;
+                entity_id(values, "_id")?
+            };
             match import.kind {
                 GraphEntityKind::Node
                     if let Some(properties) = self.projection(&import.variable) =>
@@ -539,6 +565,8 @@ impl MatchRuntime<'_> {
                     row.nodes.insert(import.variable.clone(), node);
                 }
                 GraphEntityKind::Relationship => {
+                    // Relationships always import from their column.
+                    let values = imported_entity(&input.values[&import.column], import)?;
                     let source = NodeId(entity_id(values, "source_id")?);
                     let mut found = None;
                     self.store
@@ -978,6 +1006,16 @@ impl MatchRuntime<'_> {
                                 {
                                     return Ok(ScanControl::Continue);
                                 }
+                                if bound_target.is_none()
+                                    && self.membership_rejects(
+                                        index,
+                                        &target.variable,
+                                        neighbor,
+                                        row,
+                                    )?
+                                {
+                                    return Ok(ScanControl::Continue);
+                                }
                                 let (observed, _allocation) = match bound_target {
                                     Some(_) => (Target::Bound, None),
                                     None => match self.read_target(
@@ -1125,6 +1163,12 @@ impl MatchRuntime<'_> {
                     Err(error) => return Err(error),
                 }
             }
+        }
+        if let Some(id) = neighbor
+            && !defer
+            && self.membership_rejects(index, &pattern.variable, id, row)?
+        {
+            return Ok(ScanControl::Continue);
         }
         let (observed, _allocation) = match neighbor {
             None => (Target::Bound, None),

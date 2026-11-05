@@ -46,6 +46,8 @@ mod ddl;
 mod join;
 mod match_order;
 mod match_predicates;
+pub(super) use match_predicates::predicate_variables;
+mod meeting_join;
 mod mutation;
 mod ordered;
 mod procedure;
@@ -968,12 +970,8 @@ fn lower_logical(
                 )
             })))
         }
-        LogicalPlan::GraphMatch { program, input } => PhysicalPlan::GraphMatchExec {
-            program: placed_graph_match_program(
-                anchored_graph_match_program(program, catalog, optimizer_context, decisions),
-                decisions,
-            ),
-            input: input.as_ref().map(|input| {
+        LogicalPlan::GraphMatch { program, input } => {
+            let input = input.as_ref().map(|input| {
                 Box::new(children.lower(
                     input,
                     0,
@@ -982,8 +980,18 @@ fn lower_logical(
                     decisions,
                     stage_events,
                 ))
-            }),
-        },
+            });
+            PhysicalPlan::GraphMatchExec {
+                program: meeting_join::lower_graph_match_program(
+                    program,
+                    input.as_deref(),
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                ),
+                input,
+            }
+        }
         LogicalPlan::NodeCartesianProduct { left, right } => {
             let left = children.lower(left, 0, catalog, optimizer_context, decisions, stage_events);
             let right = children.lower(
@@ -1348,15 +1356,10 @@ fn lower_logical(
 /// or at an index-seekable node when statistics show it is clearly cheaper.
 fn anchored_graph_match_program(
     program: &hawdb_plan_cypher::GraphMatchProgram,
-    catalog: &OptimizerCatalog,
-    optimizer_context: &OptimizerContext,
+    costing: match_order::StartCosting<'_>,
     decisions: &mut Vec<String>,
 ) -> hawdb_plan_cypher::GraphMatchProgram {
     let mut program = program.clone();
-    let costing = match_order::StartCosting {
-        catalog,
-        options: optimizer_context.qualification_options(),
-    };
     if let Some(anchored) = match_order::anchor_graph_match_steps(&program, costing) {
         decisions.extend(anchored.events.into_iter().map(RuleEvent::into_decision));
         if let Some(steps) = anchored.steps {

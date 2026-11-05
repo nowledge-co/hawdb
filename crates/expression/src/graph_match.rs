@@ -39,6 +39,98 @@ pub struct GraphMatchProgram {
     /// `predicate_steps`.
     pub edge_predicates: Vec<usize>,
     pub optional: bool,
+    /// Run as a hash join on an imported node instead of once per input row
+    /// (#1485). Lowering sets it; the binder leaves it `None`. The steps stay
+    /// a valid per-row program, so an executor may ignore it.
+    pub hash_join: Option<GraphMatchHashJoin>,
+    /// Ascending indices of placed conjuncts `node IN column` (see
+    /// [`membership_conjunct`]) that the executor checks against the id set
+    /// of the column's list before it reads the node, as a hash semi-join
+    /// built once per input row (#1485). A candidate whose id no element has
+    /// is rejected exactly as the conjunct would reject it. Lowering fills it;
+    /// the binder leaves it empty.
+    pub id_set_conjuncts: Vec<usize>,
+}
+
+/// Executes a [`GraphMatchProgram`] whose only import is the node `key` as
+/// a hash join. The steps run once, with `key` unbound, over an empty row,
+/// and every complete build match is hashed on `key`'s node id. Each input
+/// row then probes with its `key` and is extended by the build matches of
+/// that node. The build evaluates the conjuncts in `build_conjuncts` at their
+/// placed steps; it is a text-order prefix of conjuncts that cannot fail and
+/// read only the program's own variables. The remaining conjuncts run in
+/// order on each joined row. An optional program pads an input row that no
+/// joined row satisfies, exactly as the per-row program does.
+///
+/// The remaining conjuncts run in the order the per-row program would
+/// evaluate them, so errors do not depend on the strategy: `residual_order`
+/// lists them by the per-row program's placed step. The first
+/// `residual_placed` of them run before that program's last step, where an
+/// error defers to the whole predicate in text order on the complete match;
+/// errors in the others propagate. The first `probe_conjuncts` of them run
+/// at step 0 and read only the input row, without the key, so they filter
+/// each input row before it probes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphMatchHashJoin {
+    pub key: String,
+    /// Indices into [`GraphMatchProgram::predicate_conjuncts`], ascending.
+    pub build_conjuncts: Vec<usize>,
+    /// The other conjunct indices, in the per-row program's evaluation order.
+    pub residual_order: Vec<usize>,
+    pub residual_placed: usize,
+    pub probe_conjuncts: usize,
+}
+
+/// `variable IN column` evaluated as a WHERE conjunct, where `variable` is
+/// a graph variable and `column` a row column, such as `friend IN friends`
+/// after `collect(friend) AS friends`. A node's value carries its `_id`, so
+/// only list elements with the node's id can equal it: an executor may
+/// reject a candidate whose id no element has before reading its record.
+pub fn membership_conjunct(predicate: &Predicate) -> Option<(&str, &str)> {
+    let Predicate::ExpressionEq {
+        expression:
+            crate::ProjectionExpression::Binary {
+                left,
+                op: crate::ScalarBinaryOp::In,
+                right,
+            },
+        value: crate::ProjectionExpression::Literal(Value::Bool(true)),
+    } = predicate
+    else {
+        return None;
+    };
+    match (left.as_ref(), right.as_ref()) {
+        (
+            crate::ProjectionExpression::Variable { variable },
+            crate::ProjectionExpression::Column(column),
+        ) => Some((variable, column)),
+        _ => None,
+    }
+}
+
+/// Whether evaluating `predicate` on any row can only yield true, false or
+/// NULL, never an error: identity and stored-property comparisons with
+/// constants (including membership in a constant list, as visibility
+/// policies use), combined by AND, OR and NOT. Anything else, including
+/// arithmetic and functions, may fail.
+pub fn predicate_cannot_fail(predicate: &Predicate) -> bool {
+    match predicate {
+        Predicate::And(children) | Predicate::Or(children) => {
+            children.iter().all(predicate_cannot_fail)
+        }
+        Predicate::Not(child) => predicate_cannot_fail(child),
+        Predicate::ConstantBool(_)
+        | Predicate::IdEq { .. }
+        | Predicate::IdNotEq { .. }
+        | Predicate::IdIn { .. }
+        | Predicate::PropertyEq { .. }
+        | Predicate::PropertyNotEq { .. }
+        | Predicate::PropertyCompare { .. }
+        | Predicate::PropertyIn { .. }
+        | Predicate::PropertyIsNull { .. }
+        | Predicate::PropertyIsNotNull { .. } => true,
+        _ => false,
+    }
 }
 
 impl GraphMatchProgram {
@@ -214,7 +306,18 @@ hawdb_core::impl_retained_heap_for_struct!(GraphMatchProgram {
     predicate,
     predicate_steps,
     edge_predicates,
-    optional
+    optional,
+    hash_join,
+    id_set_conjuncts
+});
+
+// Retained query ownership: GraphMatchHashJoin.
+hawdb_core::impl_retained_heap_for_struct!(GraphMatchHashJoin {
+    key,
+    build_conjuncts,
+    residual_order,
+    residual_placed,
+    probe_conjuncts
 });
 
 // Retained query ownership: GraphMatchNode.

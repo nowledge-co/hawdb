@@ -465,6 +465,33 @@ Replay with `cargo test --locked -p hawdb-optimizer-graph match_predicates`.
 Existing fixtures and assertions remain; CI lanes, feature profiles and deadlines
 are unchanged.
 
+`GraphMatchExec` hash joins at the meeting node and `node IN list` id-set
+semi-joins ([#1485](https://github.com/nowledge-co/hawdb/issues/1485)) are
+owned by optimizer `graph::chain_start::tests` (an IC11-shaped first MATCH
+splits at the meeting node and joins a build started at the place seek),
+executor `graph_match::hash_join` and `graph_match::membership`, and root
+`api::tests::meeting_join` in the existing general unit lane. The root
+differential runs eighteen cases on five randomized 565-node graphs with
+self-loops and parallel relationships and four parameter sets each: the IC11
+single-MATCH and LDBC forms, duplicate meeting nodes (multiplicity), OPTIONAL
+padding with empty builds, NULL meeting nodes, a repeated relationship type
+inside the build, residual conjuncts over input columns (guarded, a guard
+written after the division it protects, and an unguarded division that must
+fail in both plans), an imported node missing from the snapshot (fails in
+both), IC5, and collected lists with NULLs, duplicates, NULL or empty lists,
+plain values and a non-list column, plus a NULL membership followed by a
+failing conjunct, a false one before it, and a membership over a non-list
+before another (errors). Row multisets and errors of the chosen plan, the plan with
+`GraphMatchHashJoin` and `GraphMatchIdSetSemiJoin` disabled and the cached
+plan must match, and every hash-join case must run as one on some graph.
+Further cases check EXPLAIN, the trace and distinct plan fingerprints, a build
+that spills under a 64-KiB blocking budget (and refuses rather than truncates
+at 4 KiB), cancellation and work limits, and, with `--features acl`, that the
+join returns only visible nodes and applies the visibility conjuncts in its build. Replay with
+`cargo test --locked -p hawdb --lib api::tests::meeting_join` and
+`cargo test --locked -p hawdb --lib --features acl meeting_join::access_control`.
+No lane, fixture, feature matrix or deadline changes.
+
 `GraphMatchExec` record projection (#1427) is owned by optimizer
 `graph::match_reads::tests` (which node properties later projections,
 aggregates, filters, sort keys, nested conversion/temporal/component/map expressions

@@ -57,6 +57,15 @@ impl PhysicalPlan {
             output.push_str(access.physical_operator_name());
             output.push(']');
         }
+        // The execution strategy of a correlated match is a different plan.
+        if let PhysicalPlan::GraphMatchExec { program, .. } = self {
+            if program.hash_join.is_some() {
+                output.push_str("[hash_join]");
+            }
+            if !program.id_set_conjuncts.is_empty() {
+                output.push_str("[id_set]");
+            }
+        }
         match self.children() {
             PlanChildren::None => {}
             PlanChildren::Unary(input) => {

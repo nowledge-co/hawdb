@@ -60,6 +60,8 @@ fn chain(predicate: Option<Predicate>) -> PhysicalPlan {
             ],
             predicate,
             optional: false,
+            hash_join: None,
+            id_set_conjuncts: Vec::new(),
         },
         input: None,
     }
@@ -315,6 +317,8 @@ fn a_later_match_passes_its_reads_to_the_match_that_bound_the_node() {
             ],
             predicate: None,
             optional: false,
+            hash_join: None,
+            id_set_conjuncts: Vec::new(),
         },
         input: Some(Box::new(chain(None))),
     };
@@ -350,6 +354,8 @@ fn imports_and_reintroduced_names_stop_demand_at_their_match() {
             ],
             predicate: None,
             optional: true,
+            hash_join: None,
+            id_set_conjuncts: Vec::new(),
         },
         input: Some(Box::new(project(
             vec![ProjectionExpression::Id {
@@ -566,6 +572,8 @@ fn imported_and_variable_length_relationships_are_not_projected() {
         ],
         predicate: None,
         optional: false,
+        hash_join: None,
+        id_set_conjuncts: Vec::new(),
     };
     let plan = project(
         vec![property("r", "since"), property("s", "since")],
