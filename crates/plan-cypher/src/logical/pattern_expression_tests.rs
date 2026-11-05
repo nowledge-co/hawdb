@@ -435,3 +435,82 @@ fn node_visibility_reaches_pattern_programs_and_endpoint_reads() {
     // ORDER BY key.
     assert_eq!(seen, 5, "{restricted:?}");
 }
+
+#[test]
+fn visibility_validation_refuses_any_unrestricted_pattern_or_endpoint_read() {
+    let visibility = |variable: &str| Predicate::PropertyEq {
+        variable: variable.to_string(),
+        property: "visibility".to_string(),
+        value: Value::String("public".into()),
+    };
+    let plan = |query: &str| {
+        crate::plan_pipeline_query(
+            query,
+            &BTreeMap::from([("rels".to_string(), Value::List(Vec::new()))]),
+        )
+        .unwrap()
+    };
+    let refused = |plan: &LogicalPlan| {
+        validate_node_visibility_predicates(plan, &visibility)
+            .unwrap_err()
+            .to_string()
+    };
+    for query in [
+        "MATCH (a) RETURN [(a)-[:R]->(b) | [(b)-[:R]->(c) | c]] AS x",
+        "MATCH (a) WHERE (a)-[:R]->()-[:S]->() RETURN a",
+        "MATCH (a) WITH a ORDER BY size([(a)-[:R]->(b) | b]) RETURN a",
+        "MATCH (a) RETURN [r IN $rels | startNode(r)] AS x",
+        "UNWIND $rels AS r RETURN [x IN [1] | endNode(r)] AS x",
+    ] {
+        // Unrestricted, every such plan is refused; restricted, it passes.
+        let original = plan(query);
+        assert!(
+            refused(&original).contains("access control could not restrict"),
+            "{query}"
+        );
+        let restricted = apply_node_visibility_predicates(original, &visibility);
+        validate_node_visibility_predicates(&restricted, &visibility)
+            .unwrap_or_else(|error| panic!("{query}: {error}"));
+    }
+    // A nested program whose policy is missing fails closed even when every
+    // other program is restricted, as does a different policy.
+    let mut restricted = apply_node_visibility_predicates(
+        plan("MATCH (a) RETURN [(a)-[:R]->(b) | [(b)-[:R]->(c) | c]] AS x"),
+        &visibility,
+    );
+    let LogicalPlan::Project { items, .. } = &mut restricted else {
+        panic!("{restricted:?}");
+    };
+    let ProjectionExpression::Pattern(outer) = &mut items[0].expression else {
+        panic!("{items:?}");
+    };
+    let Some(ProjectionExpression::Pattern(inner)) = &mut outer.projection else {
+        panic!("{outer:?}");
+    };
+    inner.program.predicate = None;
+    assert!(refused(&restricted).contains("pattern expression"));
+    let other = |variable: &str| Predicate::PropertyEq {
+        variable: variable.to_string(),
+        property: "tenant".to_string(),
+        value: Value::String("x".into()),
+    };
+    let restricted =
+        apply_node_visibility_predicates(plan("MATCH (a) RETURN [(a)-[:R]->(b) | b] AS x"), &other);
+    assert!(validate_node_visibility_predicates(&restricted, &visibility).is_err());
+    // An unresolved endpoint read left in a plan fails closed.
+    let unresolved = LogicalPlan::Project {
+        items: vec![Projection {
+            expression: ProjectionExpression::RelationshipEndpoint {
+                endpoint: hawdb_core::RelationshipEndpoint::Start,
+                variable: "r".into(),
+                endpoints: None,
+            },
+            name: "s".into(),
+        }],
+        input: Box::new(plan("MATCH ()-[r:R]->() RETURN r")),
+    };
+    assert!(refused(&unresolved).contains("relationship endpoint read"));
+    // Plans without pattern expressions or endpoint reads pass unchanged.
+    validate_node_visibility_predicates(&plan("MATCH (a)-[:R]->(b) RETURN b"), &visibility)
+        .unwrap();
+}

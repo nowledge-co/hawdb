@@ -42,7 +42,7 @@ pub use pipeline::{
     plan_normalized_pipeline_query, plan_parsed_pipeline_query, plan_pipeline_query,
     unique_projection_names,
 };
-pub use visibility::apply_node_visibility_predicates;
+pub use visibility::{apply_node_visibility_predicates, validate_node_visibility_predicates};
 mod binding;
 mod case;
 #[cfg(test)]
