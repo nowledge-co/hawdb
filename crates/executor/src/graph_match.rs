@@ -28,8 +28,8 @@ use crate::traversal::{
 use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryClass};
 use hawdb_core::{HawDBError, RelTypeId, Result, Value};
 use hawdb_plan_cypher::{
-    GraphEntityKind, GraphMatchNode, GraphMatchProgram, GraphMatchShortestPath, GraphMatchStep,
-    PhysicalPlan, Predicate, ShortestPathSelection,
+    GraphBindingImport, GraphEntityKind, GraphMatchNode, GraphMatchProgram, GraphMatchShortestPath,
+    GraphMatchStep, PhysicalPlan, Predicate, ShortestPathSelection,
 };
 use hawdb_storage::read_view::{
     AdmittedNodeRead, AdmittedRelationshipRead, AdmittedVec, GraphReadAdmission,
@@ -416,11 +416,7 @@ impl MatchRuntime<'_> {
                 row.values.insert(import.variable.clone(), Value::Null);
                 continue;
             }
-            let Value::Map(values) = value else {
-                return Err(HawDBError::Execution(
-                    "typed graph column requires an entity value".to_string(),
-                ));
-            };
+            let values = imported_entity(value, import)?;
             let id = entity_id(values, "_id")?;
             match import.kind {
                 GraphEntityKind::Node
@@ -1348,6 +1344,39 @@ impl MatchRuntime<'_> {
             label_ids_for_pattern(self.context.catalog, &pattern.label).as_deref(),
         ) && properties_match(&pattern.properties, &node.properties)
     }
+}
+
+/// Checks that an imported column holds an entity of the import's kind. The
+/// column may come from an untyped source such as an UNWIND element (#1486),
+/// so a non-entity value fails with the variable named rather than being read
+/// as an identity.
+fn imported_entity<'a>(
+    value: &'a Value,
+    import: &GraphBindingImport,
+) -> Result<&'a BTreeMap<String, Value>> {
+    let (expected, fields): (&str, &[&str]) = match import.kind {
+        GraphEntityKind::Node => ("a node", &["_id", "labels"]),
+        GraphEntityKind::Relationship => {
+            ("a relationship", &["_id", "source_id", "target_id", "type"])
+        }
+    };
+    let found = match value {
+        Value::Map(values) if fields.iter().all(|field| values.contains_key(*field)) => {
+            return Ok(values);
+        }
+        Value::Map(_) => "a map",
+        Value::Bool(_) => "a boolean",
+        Value::Int(_) => "an integer",
+        Value::Float(_) => "a float",
+        Value::Decimal(_) => "a decimal",
+        Value::String(_) => "a string",
+        Value::List(_) => "a list",
+        _ => "a non-entity value",
+    };
+    Err(HawDBError::Execution(format!(
+        "MATCH variable '{}' must be bound to {expected}, found {found}",
+        import.variable
+    )))
 }
 
 fn entity_id(values: &BTreeMap<String, Value>, field: &str) -> Result<u64> {

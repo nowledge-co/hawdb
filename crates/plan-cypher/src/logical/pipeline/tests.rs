@@ -1279,3 +1279,65 @@ fn relationship_type_disjunctions_are_rejected_outside_match_reads() {
         );
     }
 }
+
+fn graph_match_imports(plan: &LogicalPlan, imports: &mut Vec<GraphBindingImport>) {
+    match plan {
+        LogicalPlan::GraphMatch { program, input } => {
+            imports.extend(program.imports.iter().cloned());
+            if let Some(input) = input {
+                graph_match_imports(input, imports);
+            }
+        }
+        LogicalPlan::Project { input, .. }
+        | LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Aggregate { input, .. }
+        | LogicalPlan::Distinct { input }
+        | LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Limit { input, .. }
+        | LogicalPlan::UnwindRows { input, .. } => graph_match_imports(input, imports),
+        _ => {}
+    }
+}
+
+#[test]
+fn unwound_variables_import_as_nodes_in_later_matches() {
+    for query in [
+        "MATCH (p:Person)-[:KNOWS]-(friend) WITH collect(friend) AS friends \
+         UNWIND friends AS f MATCH (f)<-[:HAS_CREATOR]-(m:Message) RETURN f.id, count(m)",
+        "MATCH (p:Person)-[:KNOWS]-(friend) WITH collect(friend) AS friends \
+         UNWIND friends AS f WITH DISTINCT f MATCH (f:Person)<-[:HAS_CREATOR]-(m) RETURN m",
+        "UNWIND $nodes AS f MATCH (m)-[:HAS_CREATOR]->(f) RETURN m",
+        "UNWIND [1, 2] AS f OPTIONAL MATCH (f)-[:R]->(g) RETURN g",
+    ] {
+        let parameters = BTreeMap::from([("nodes".into(), Value::List(Vec::new()))]);
+        for plan in [
+            plan_pipeline_query(query, &parameters),
+            plan_normalized_pipeline_query(query, &parameters),
+        ] {
+            let plan = plan.unwrap_or_else(|error| panic!("{query}: {error}"));
+            let mut imports = Vec::new();
+            graph_match_imports(&plan, &mut imports);
+            assert!(
+                imports.contains(&GraphBindingImport {
+                    variable: "f".into(),
+                    column: "f".into(),
+                    kind: GraphEntityKind::Node,
+                }),
+                "{query}: {plan:?}"
+            );
+        }
+    }
+    // Other scalar bindings, and unwound relationships, keep the refusal.
+    for query in [
+        "WITH 1 AS f MATCH (f)-[:R]->() RETURN f",
+        "UNWIND [1] AS r MATCH ()-[r:R]->() RETURN r",
+    ] {
+        let error = plan_pipeline_query(query, &BTreeMap::new())
+            .err()
+            .unwrap_or_else(|| panic!("{query} planned"));
+        assert!(
+            error.to_string().contains("incompatible MATCH type"),
+            "{query}: {error}"
+        );
+    }
+}

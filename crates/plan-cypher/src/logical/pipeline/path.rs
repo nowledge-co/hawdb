@@ -290,6 +290,7 @@ pub(super) fn bind_shortest_path_match(
         patterns,
         predicate,
     } = clause;
+    scope.adopt_unwound_nodes(patterns);
     let imports = scope.imports();
     let mut constrained = scope.graph_names();
     if let Some(predicate) = predicate {
