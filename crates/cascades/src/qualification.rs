@@ -10,13 +10,16 @@ pub enum OptionalOptimizerRule {
     RedundantOrdering,
     RedundantDistinct,
     SingletonGroup,
+    /// Starts a pattern path at a selective index-seekable node (#1485).
+    CostBasedPatternStart,
 }
 
 impl OptionalOptimizerRule {
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 4] = [
         Self::RedundantOrdering,
         Self::RedundantDistinct,
         Self::SingletonGroup,
+        Self::CostBasedPatternStart,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -24,6 +27,7 @@ impl OptionalOptimizerRule {
             Self::RedundantOrdering => "transformation:proof_redundant_ordering",
             Self::RedundantDistinct => "transformation:proof_redundant_distinct",
             Self::SingletonGroup => "transformation:proof_singleton_group",
+            Self::CostBasedPatternStart => "transformation:cost_based_pattern_start",
         }
     }
 
@@ -191,7 +195,10 @@ mod tests {
             Err(OptimizerRuleAssertionError::ForbiddenApplied(rule))
         );
         assert_eq!(
-            verify_optimizer_rule_assertions(&[], &[OptimizerRuleAssertion::Required(rule); 7]),
+            verify_optimizer_rule_assertions(
+                &[],
+                &[OptimizerRuleAssertion::Required(rule); OptionalOptimizerRule::ALL.len() * 2 + 1]
+            ),
             Err(OptimizerRuleAssertionError::TooManyAssertions)
         );
     }

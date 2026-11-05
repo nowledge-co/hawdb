@@ -431,6 +431,27 @@ that anchoring adds no per-row scan rather than assuming the input scan kind.
 Replay with `cargo test --locked -p hawdb --lib api::tests::anchored_match`.
 No lane, fixture, feature matrix or deadline changes.
 
+Cost-based pattern starts at index-seekable nodes ([#1485](https://github.com/nowledge-co/hawdb/issues/1485))
+are owned by optimizer `graph::pattern_start::tests` (work estimates, the 2x
+margin, missing, unlabelled, `:A:B` and disjunction statistics keep the start),
+`graph::chain_start::tests` (a first-MATCH `Expand` chain restarts at its
+`IndexNodeSeek`, a disabled rule or optimistic catalog keeps it),
+`graph::lowering::match_order::tests` (a `GraphMatchExec` path moves to a
+seek, a bound node stays) and root `api::tests::cost_based_start` in the
+existing general unit lane. The root differential runs six cases (chain,
+variable-length chain, repeated relationship type, cycle through the seek,
+OPTIONAL MATCH padding, bound endpoint) on six randomized 102-node graphs with
+self-loops and parallel relationships and five parameter sets each, and
+requires identical row multisets for the chosen plan, the
+`CostBasedPatternStart`-disabled qualification plan and the pattern written
+from the other end, plus the cached plan; it asserts the start moved where the
+seek is clearly cheaper. Further cases check EXPLAIN and the trace name the
+start, a seek inside a longer `GraphMatchExec` scans no nodes, and a statistics
+change misses the cached plan and re-plans the start. Replay with
+`cargo test --locked -p hawdb --lib api::tests::cost_based_start` and
+`cargo test --locked -p hawdb-optimizer-graph pattern_start chain_start match_order`.
+No lane, fixture, feature matrix or deadline changes.
+
 Early `GraphMatchExec` WHERE placement (#1424) is owned by optimizer
 `graph::lowering::match_predicates::tests` and root `api::tests::early_match_predicates`.
 The optimizer cases include dependencies nested in scalar conversions, temporal functions,

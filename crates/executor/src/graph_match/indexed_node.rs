@@ -9,6 +9,10 @@ pub(super) struct IndexedNodeAccess<'a> {
     pub label: LabelId,
     pub property: &'a str,
     pub access: NodeProjectionAccess,
+    /// Whether the single-node scan-pruning report describes this access.
+    /// A seek on a pattern property inside a longer pattern is one of
+    /// possibly several node steps, so it is not reported as the scan.
+    pub reported: bool,
     _allocation: Box<dyn GraphReadAllocation>,
 }
 
@@ -62,10 +66,13 @@ impl<'a> IndexedNodeStats<'a> {
 impl<'a> MatchRuntime<'a> {
     pub(super) fn indexed_node_access(
         &self,
-        node: &GraphMatchNode,
+        node: &'a GraphMatchNode,
         label: Option<LabelId>,
         row: &Binding,
     ) -> Result<Option<IndexedNodeAccess<'a>>> {
+        if let Some(access) = self.pattern_property_access(node, label)? {
+            return Ok(Some(access));
+        }
         // Keep traversal, imported bindings and union-label reads on their
         // original paths. The complete single-node MATCH retains its predicate.
         if self.program.steps.len() != 1
@@ -102,6 +109,49 @@ impl<'a> MatchRuntime<'a> {
                 property: property.into(),
                 values: vec![value.clone()],
             },
+            reported: true,
+            _allocation: allocation,
+        }))
+    }
+
+    /// Seeks a fresh node of a longer pattern by a constant or parameter
+    /// property of its node pattern, such as `(:Place {name: $name})`, when a
+    /// scalar index covers it. The optimizer may start a path at such a node
+    /// (#1485). The seek only narrows candidates: every candidate is still
+    /// matched against the complete node pattern. The single-node program
+    /// keeps its own predicate-key seek and report.
+    fn pattern_property_access(
+        &self,
+        node: &'a GraphMatchNode,
+        label: Option<LabelId>,
+    ) -> Result<Option<IndexedNodeAccess<'a>>> {
+        let Some(label) = label else { return Ok(None) };
+        if self.program.steps.len() == 1 || node.label.contains(':') {
+            return Ok(None);
+        }
+        let Some((property, value)) = node.properties.iter().find(|(property, value)| {
+            **value != Value::Null
+                && self
+                    .context
+                    .catalog
+                    .has_scalar_property_index(label, property)
+        }) else {
+            return Ok(None);
+        };
+        let allocation = crate::scan::owned::admit_access_copy(
+            self.account,
+            self.context.task_context,
+            std::iter::once(property.as_str()),
+            std::iter::once(value),
+        )?;
+        Ok(Some(IndexedNodeAccess {
+            label,
+            property,
+            access: NodeProjectionAccess::PropertyValues {
+                property: property.as_str().into(),
+                values: vec![value.clone()],
+            },
+            reported: false,
             _allocation: allocation,
         }))
     }

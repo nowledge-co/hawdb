@@ -816,7 +816,7 @@ impl MatchRuntime<'_> {
                         },
                     ),
                 }?;
-                if let Some(lookup) = &lookup {
+                if let Some(lookup) = lookup.as_ref().filter(|lookup| lookup.reported) {
                     let total = self.store.node_count_for_label(Some(lookup.label));
                     self.indexed
                         .record(lookup, total, visited.get(), matched.get());

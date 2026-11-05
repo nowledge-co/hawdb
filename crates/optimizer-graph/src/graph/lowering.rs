@@ -970,7 +970,7 @@ fn lower_logical(
         }
         LogicalPlan::GraphMatch { program, input } => PhysicalPlan::GraphMatchExec {
             program: placed_graph_match_program(
-                anchored_graph_match_program(program, decisions),
+                anchored_graph_match_program(program, catalog, optimizer_context, decisions),
                 decisions,
             ),
             input: input.as_ref().map(|input| {
@@ -1344,18 +1344,30 @@ fn lower_logical(
 }
 
 /// Starts each pattern path at a bound node when one exists, so the per-row
-/// nested loop expands from it instead of scanning for the path's first node.
+/// nested loop expands from it instead of scanning for the path's first node,
+/// or at an index-seekable node when statistics show it is clearly cheaper.
 fn anchored_graph_match_program(
     program: &hawdb_plan_cypher::GraphMatchProgram,
+    catalog: &OptimizerCatalog,
+    optimizer_context: &OptimizerContext,
     decisions: &mut Vec<String>,
 ) -> hawdb_plan_cypher::GraphMatchProgram {
     let mut program = program.clone();
-    if let Some(anchored) = match_order::anchor_graph_match_steps(&program) {
-        decisions.push(format!(
-            "anchor GraphMatchExec at bound variable(s) [{}]: expand from the bound node instead of scanning per input row",
-            anchored.anchors.join(", ")
-        ));
-        program.steps = anchored.steps;
+    let costing = match_order::StartCosting {
+        catalog,
+        options: optimizer_context.qualification_options(),
+    };
+    if let Some(anchored) = match_order::anchor_graph_match_steps(&program, costing) {
+        decisions.extend(anchored.events.into_iter().map(RuleEvent::into_decision));
+        if let Some(steps) = anchored.steps {
+            if !anchored.anchors.is_empty() {
+                decisions.push(format!(
+                    "anchor GraphMatchExec at bound variable(s) [{}]: expand from the bound node instead of scanning per input row",
+                    anchored.anchors.join(", ")
+                ));
+            }
+            program.steps = steps;
+        }
     }
     program
 }
