@@ -2851,12 +2851,17 @@ fn relationship_owned_read_typed_window_streams_without_degree_sized_key_buffer(
             residency_mode: hawdb_storage::store::StorageResidencyMode::OutOfCore,
             ..Default::default()
         };
+        // The 1,000 single-relationship commits below would otherwise each
+        // sync the WAL, which dominates this test on a contended disk. The
+        // test checks read allocation, not durability, and the checkpoint
+        // still syncs before the reopen.
+        let durability = hawdb_storage::config::DurabilityPolicy::SyncOnCheckpoint;
         let mut catalog = Catalog::default();
         let mut store = match &directory {
             Some(directory) => GraphStore::open_with_durability_and_replay_config(
                 &directory.0,
                 &mut catalog,
-                Default::default(),
+                durability,
                 replay,
             )
             .unwrap(),
@@ -2888,7 +2893,7 @@ fn relationship_owned_read_typed_window_streams_without_degree_sized_key_buffer(
             store = GraphStore::open_with_durability_and_replay_config(
                 &directory.0,
                 &mut catalog,
-                Default::default(),
+                durability,
                 replay,
             )
             .unwrap();
