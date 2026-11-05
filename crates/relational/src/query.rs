@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use crate::field_plan::{
-    order_by_uses_expression_alias, plan_relational_field_plan, projection_contains_aggregate,
-    resolve_relational_order_target, RelationalOrderTarget,
+    order_by_uses_expression_alias, plan_relational_execution_field_plan,
+    plan_relational_field_plan, projection_contains_aggregate, resolve_relational_order_target,
+    RelationalOrderTarget,
 };
 use crate::index_runtime::{
     RelationalIndexReadMode, RelationalIndexRuntime, RelationalIndexStoreReader,

@@ -128,6 +128,24 @@ impl RelationalAccessCostContext {
                 }
             }
             RelationalAccessPathKind::PrimaryKey => snapshot.point_work(rows),
+            RelationalAccessPathKind::PrimaryKeyRange => {
+                // One root search positions the interval on its first page;
+                // the remaining rows share the following pages in key order.
+                let seek = snapshot.point_work(1);
+                let table_pages = snapshot.table_pages.get();
+                let pages = (u128::from(rows) * u128::from(table_pages))
+                    .div_ceil(u128::from(snapshot.table_rows.get()))
+                    .clamp(1, u128::from(table_pages));
+                let following = u64::try_from(pages - 1).unwrap_or(u64::MAX);
+                SnapshotRootWork {
+                    cpu: seek.cpu.saturating_add(
+                        following
+                            .saturating_mul(SNAPSHOT_ROOT_ARTIFACT_SETUP_CPU.saturating_add(1)),
+                    ),
+                    random: seek.random,
+                    sequential: following.saturating_mul(SNAPSHOT_ROOT_DESCRIPTOR_READS),
+                }
+            }
             RelationalAccessPathKind::Index if access.requires_row_fetch => {
                 snapshot.point_work(rows)
             }
@@ -265,6 +283,8 @@ pub fn estimate_relational_access_path_cost_with_context(
             input_rows,
         ),
         RelationalAccessPathKind::PrimaryKey => (rows, rows, 0),
+        // A clustered interval is one seek followed by an in-order row scan.
+        RelationalAccessPathKind::PrimaryKeyRange => (rows, 1, rows),
         RelationalAccessPathKind::Index => {
             let fetches = if access.requires_row_fetch { rows } else { 0 };
             (

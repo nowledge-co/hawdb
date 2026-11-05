@@ -449,9 +449,9 @@ fn access_path_properties(descriptor: &RelationalAccessPathDescriptor) -> Physic
         },
         scan_pruning: match descriptor.kind {
             RelationalAccessPathKind::FullScan => ScanPruningSupport::None,
-            RelationalAccessPathKind::PrimaryKey | RelationalAccessPathKind::Index => {
-                ScanPruningSupport::Index
-            }
+            RelationalAccessPathKind::PrimaryKey
+            | RelationalAccessPathKind::Index
+            | RelationalAccessPathKind::PrimaryKeyRange => ScanPruningSupport::Index,
         },
         memory_budget: MemoryBudgetClass::Constant,
         ..PhysicalProperties::default()

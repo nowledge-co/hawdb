@@ -35,6 +35,7 @@ impl RelationalOperatorId {
 pub enum RelationalOperatorKind {
     TableFullScan,
     TablePointGet,
+    TableRangeScan,
     IndexRangeScan,
     NestedLoopJoin,
     NestedLoopLeftJoin,
@@ -51,6 +52,7 @@ impl RelationalOperatorKind {
         match self {
             Self::TableFullScan => "TableFullScanExec",
             Self::TablePointGet => "TablePointGetExec",
+            Self::TableRangeScan => "TableRangeScanExec",
             Self::IndexRangeScan => "IndexRangeScanExec",
             Self::NestedLoopJoin => "NestedLoopJoinExec",
             Self::NestedLoopLeftJoin => "NestedLoopLeftJoinExec",
