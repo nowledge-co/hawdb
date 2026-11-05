@@ -457,6 +457,8 @@ pub(super) fn bind_shortest_path_match(
                 predicate_steps: Vec::new(),
                 edge_predicates: Vec::new(),
                 optional,
+                hash_join: None,
+                id_set_conjuncts: Vec::new(),
             },
             input: input.map(Box::new),
         });
@@ -480,6 +482,8 @@ pub(super) fn bind_shortest_path_match(
                 predicate_steps: Vec::new(),
                 edge_predicates: Vec::new(),
                 optional: false,
+                hash_join: None,
+                id_set_conjuncts: Vec::new(),
             },
             input: input.map(Box::new),
         };
@@ -496,6 +500,8 @@ pub(super) fn bind_shortest_path_match(
             predicate_steps: Vec::new(),
             edge_predicates: Vec::new(),
             optional: false,
+            hash_join: None,
+            id_set_conjuncts: Vec::new(),
         },
         input: input.map(Box::new),
     })

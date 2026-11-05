@@ -24,8 +24,19 @@
 use super::pattern_start::{self, PathEdge, PathNode, StartDecision};
 use super::OptimizerCatalog;
 use crate::{OptimizerQualificationOptions, OptionalOptimizerRule, RuleEvent};
-use hawdb_plan_cypher::{LogicalPlan, Predicate};
-use std::collections::BTreeSet;
+use hawdb_plan_cypher::{
+    GraphBindingImport, GraphEntityKind, GraphMatchHashJoin, GraphMatchNode, GraphMatchProgram,
+    GraphMatchStep, LogicalPlan, Predicate,
+};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// A split of a chain at `meeting` that the hash join makes clearly cheaper.
+struct ChainSplit {
+    meeting: usize,
+    estimate: pattern_start::MeetingEstimate,
+    input_rows: f64,
+    total: f64,
+}
 
 /// Rewrites every eligible chain in `plan`.
 pub(super) fn rewrite(
@@ -311,8 +322,33 @@ impl<'a> Chain<'a> {
                     || (expand.min_hops == 1 && expand.max_hops == 1),
             })
             .collect::<Vec<_>>();
+        let restart = pattern_start::choose_start(catalog, &nodes, &edges, 0);
+        if let Some(split) = self.best_split(catalog, &nodes, &edges)
+            && !matches!(&restart, Some(StartDecision::Chosen(choice)) if choice.work <= split.total)
+        {
+            let rule = OptionalOptimizerRule::GraphMatchHashJoin;
+            let detail = format!(
+                "split Expand chain at {}: expand {} to it, then join a GraphMatchExec built once from {}: estimated work {:.1} + {:.1} build matches + {:.0} probes instead of {:.0} rows x {:.1} per row",
+                self.nodes[split.meeting].variable,
+                self.nodes[0].variable,
+                self.nodes[split.meeting + split.estimate.build_start].variable,
+                split.estimate.build,
+                split.estimate.build_rows,
+                split.input_rows,
+                split.input_rows,
+                split.estimate.per_row,
+            );
+            if options.rule_enabled(rule) {
+                events.push(RuleEvent::applied(rule.as_str(), detail));
+                return Some(self.split(split.meeting, &conjuncts));
+            }
+            events.push(RuleEvent::skipped(
+                rule.as_str(),
+                format!("disabled by statement qualification: {detail}"),
+            ));
+        }
         let rule = OptionalOptimizerRule::CostBasedPatternStart;
-        let choice = match pattern_start::choose_start(catalog, &nodes, &edges, 0)? {
+        let choice = match restart? {
             StartDecision::Kept { detail } => {
                 events.push(RuleEvent::estimated(
                     rule.as_str(),
@@ -341,6 +377,190 @@ impl<'a> Chain<'a> {
         }
         events.push(RuleEvent::applied(rule.as_str(), detail));
         Some(self.rebuild(choice.start))
+    }
+
+    /// The cheapest node to split the chain at: the chain runs from its start
+    /// to that node, and the rest of the chain is one GraphMatch that the
+    /// lowering can run as a hash join on it. Only a rest whose relationship
+    /// types are distinct qualifies: a GraphMatch keeps its relationships
+    /// pairwise distinct, which an `Expand` chain does not require.
+    fn best_split(
+        &self,
+        catalog: &OptimizerCatalog,
+        nodes: &[PathNode<'_>],
+        edges: &[PathEdge<'_>],
+    ) -> Option<ChainSplit> {
+        let mut best: Option<ChainSplit> = None;
+        for meeting in 1..self.expands.len() {
+            let rest = &self.expands[meeting..];
+            let mut types = BTreeSet::new();
+            if rest
+                .iter()
+                .any(|expand| expand.rel_type.is_empty() || !types.insert(expand.rel_type))
+            {
+                continue;
+            }
+            let Some(prefix) =
+                pattern_start::walk(catalog, &nodes[..=meeting], &edges[..meeting], 0)
+            else {
+                continue;
+            };
+            let Some(estimate) =
+                pattern_start::meeting(catalog, &nodes[meeting..], &edges[meeting..], 0, 0)
+            else {
+                continue;
+            };
+            let input_rows = prefix.rows.max(1.0);
+            if !estimate.hash_join_is_cheaper(input_rows) {
+                continue;
+            }
+            let total = prefix.work + estimate.build + estimate.build_rows + input_rows;
+            if best.as_ref().is_none_or(|best| total < best.total) {
+                best = Some(ChainSplit {
+                    meeting,
+                    estimate,
+                    input_rows,
+                    total,
+                });
+            }
+        }
+        best
+    }
+
+    /// The chain up to `meeting`, then a GraphMatch over the rest that imports
+    /// the meeting node. Conjuncts that read only the first part stay on it;
+    /// a constant equality on a node of the rest becomes its pattern property
+    /// (so the executor can seek it); the others keep their order in the
+    /// GraphMatch predicate.
+    fn split(&self, meeting: usize, conjuncts: &[&Predicate]) -> LogicalPlan {
+        let mut plan = LogicalPlan::NodeScan {
+            variable: self.nodes[0].variable.to_string(),
+            label: self.nodes[0].label.to_string(),
+        };
+        let mut first = BTreeSet::from([self.nodes[0].variable.to_string()]);
+        for (index, expand) in self.expands[..meeting].iter().enumerate() {
+            first.insert(self.nodes[index + 1].variable.to_string());
+            first.extend(expand.rel_variable.iter().cloned());
+            plan = LogicalPlan::Expand {
+                source_variable: self.nodes[index].variable.to_string(),
+                source_label: self.nodes[index].label.to_string(),
+                rel_variable: expand.rel_variable.clone(),
+                rel_type: expand.rel_type.to_string(),
+                rel_properties: expand.rel_properties.clone(),
+                direction: expand.direction,
+                target_variable: self.nodes[index + 1].variable.to_string(),
+                target_label: self.nodes[index + 1].label.to_string(),
+                min_hops: expand.min_hops,
+                max_hops: expand.max_hops,
+                optional: false,
+                input: Box::new(plan),
+            };
+        }
+        let key = self.nodes[meeting].variable;
+        let rest_nodes = self.nodes[meeting + 1..]
+            .iter()
+            .map(|node| node.variable)
+            .collect::<BTreeSet<_>>();
+        let mut properties: BTreeMap<&str, BTreeMap<String, hawdb_core::Value>> = BTreeMap::new();
+        let mut on_first = Vec::new();
+        let mut on_rest = Vec::new();
+        for conjunct in conjuncts {
+            if super::lowering::predicate_variables(conjunct)
+                .iter()
+                .all(|name| first.contains(name))
+            {
+                on_first.push((*conjunct).clone());
+                continue;
+            }
+            if let Predicate::PropertyEq {
+                variable,
+                property,
+                value,
+            } = conjunct
+                && rest_nodes.contains(variable.as_str())
+                && !properties
+                    .get(variable.as_str())
+                    .is_some_and(|existing| existing.contains_key(property))
+            {
+                properties
+                    .entry(variable.as_str())
+                    .or_default()
+                    .insert(property.clone(), value.clone());
+                continue;
+            }
+            on_rest.push((*conjunct).clone());
+        }
+        if !on_first.is_empty() {
+            plan = LogicalPlan::Filter {
+                predicate: if on_first.len() == 1 {
+                    on_first.pop().expect("one conjunct")
+                } else {
+                    Predicate::And(on_first)
+                },
+                input: Box::new(plan),
+            };
+        }
+        let node = |index: usize| GraphMatchNode {
+            variable: self.nodes[index].variable.to_string(),
+            label: self.nodes[index].label.to_string(),
+            properties: properties
+                .get(self.nodes[index].variable)
+                .cloned()
+                .unwrap_or_default(),
+        };
+        let mut steps = vec![GraphMatchStep::Node(GraphMatchNode {
+            properties: BTreeMap::new(),
+            ..node(meeting)
+        })];
+        let mut introduced = Vec::new();
+        for (offset, expand) in self.expands[meeting..].iter().enumerate() {
+            let index = meeting + offset;
+            introduced.extend(expand.rel_variable.iter().cloned());
+            introduced.push(self.nodes[index + 1].variable.to_string());
+            steps.push(GraphMatchStep::Expand {
+                source: self.nodes[index].variable.to_string(),
+                relationship: expand.rel_variable.clone(),
+                rel_type: expand.rel_type.to_string(),
+                rel_types: Vec::new(),
+                properties: expand.rel_properties.clone(),
+                direction: expand.direction,
+                min_hops: expand.min_hops,
+                max_hops: expand.max_hops,
+                target: node(index + 1),
+            });
+        }
+        LogicalPlan::GraphMatch {
+            program: GraphMatchProgram {
+                imports: vec![GraphBindingImport {
+                    variable: key.to_string(),
+                    column: key.to_string(),
+                    kind: GraphEntityKind::Node,
+                }],
+                introduced,
+                projected_nodes: BTreeMap::new(),
+                projected_relationships: BTreeMap::new(),
+                steps,
+                predicate: match on_rest.len() {
+                    0 => None,
+                    1 => on_rest.pop(),
+                    _ => Some(Predicate::And(on_rest)),
+                },
+                predicate_steps: Vec::new(),
+                edge_predicates: Vec::new(),
+                optional: false,
+                // Decided here, with this chain's own row estimate; lowering
+                // places the build's conjuncts.
+                hash_join: Some(GraphMatchHashJoin {
+                    key: key.to_string(),
+                    build_conjuncts: Vec::new(),
+                    residual_order: Vec::new(),
+                    residual_placed: 0,
+                    probe_conjuncts: 0,
+                }),
+                id_set_conjuncts: Vec::new(),
+            },
+            input: Some(Box::new(plan)),
+        }
     }
 
     fn rebuild(&self, start: usize) -> LogicalPlan {

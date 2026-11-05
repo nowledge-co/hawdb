@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod graph_match;
+mod predicate_variables;
 pub mod sql;
 
 pub use graph_match::*;
+pub use predicate_variables::predicate_variables;
 
 use hawdb_core::{RelationshipDirection, ValidatedRegex, Value};
 

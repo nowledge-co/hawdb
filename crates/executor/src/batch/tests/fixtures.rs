@@ -46,6 +46,8 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                     predicate_steps: Vec::new(),
                     edge_predicates: Vec::new(),
                     optional: false,
+                    hash_join: None,
+                    id_set_conjuncts: Vec::new(),
                 },
                 input: None,
             },

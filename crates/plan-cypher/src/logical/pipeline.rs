@@ -1434,6 +1434,8 @@ fn bind_read_clauses(
                         predicate_steps: Vec::new(),
                         edge_predicates: Vec::new(),
                         optional: *optional,
+                        hash_join: None,
+                        id_set_conjuncts: Vec::new(),
                     },
                     input: input.map(Box::new),
                 });
@@ -1486,6 +1488,8 @@ fn restore_bindings(input: Option<LogicalPlan>, scope: &mut Scope) -> LogicalPla
             predicate_steps: Vec::new(),
             edge_predicates: Vec::new(),
             optional: false,
+            hash_join: None,
+            id_set_conjuncts: Vec::new(),
         },
         input: input.map(Box::new),
     }

@@ -134,6 +134,8 @@ fn plan(parent: Parent, window: usize) -> PhysicalPlan {
                         properties: BTreeMap::new(),
                     },
                 }],
+                hash_join: None,
+                id_set_conjuncts: Vec::new(),
             },
             input: Some(Box::new(lookup(window))),
         },

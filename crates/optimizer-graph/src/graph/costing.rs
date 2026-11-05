@@ -576,9 +576,14 @@ fn estimate_local_operator_cost(
         }
         PhysicalPlan::GraphMatchExec { program, .. } => {
             let base = inputs[0].unwrap_or_else(|| PlanCostBreakdown::new(1, 0, 0, 0, 0));
-            let mut rows = base.estimated_rows;
-            let mut output_rows = rows;
-            let mut work = rows;
+            // A hash join walks the steps once and probes once per input row.
+            let mut rows = if program.hash_join.is_some() {
+                1
+            } else {
+                base.estimated_rows
+            };
+            let mut output_rows = base.estimated_rows;
+            let mut work = base.estimated_rows;
             // Steps run as a per-row nested loop in plan order. A step that
             // binds a fresh node multiplies the rows by its label; a step that
             // reaches an imported or already-bound node only filters them. The

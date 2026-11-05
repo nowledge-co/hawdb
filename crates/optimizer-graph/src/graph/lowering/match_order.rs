@@ -61,6 +61,21 @@ pub(super) struct AnchoredSteps {
 pub(super) struct StartCosting<'a> {
     pub(super) catalog: &'a OptimizerCatalog,
     pub(super) options: OptimizerQualificationOptions,
+    /// Labels of imported nodes that the input bound, for patterns that
+    /// leave them unlabelled such as `WITH friend MATCH (friend)-->(c)`.
+    pub(super) labels: Option<&'a BTreeMap<String, String>>,
+}
+
+impl StartCosting<'_> {
+    fn label<'n>(&'n self, node: &'n GraphMatchNode) -> &'n str {
+        if node.label.is_empty() {
+            self.labels
+                .and_then(|labels| labels.get(&node.variable))
+                .map_or("", String::as_str)
+        } else {
+            &node.label
+        }
+    }
 }
 
 /// One relationship of a path, oriented from `nodes[i]` to `nodes[i + 1]`.
@@ -135,35 +150,7 @@ fn costed_start(
     costing: StartCosting<'_>,
     events: &mut Vec<RuleEvent>,
 ) -> usize {
-    let nodes = path
-        .nodes
-        .iter()
-        .map(|node| PathNode {
-            variable: &node.variable,
-            label: &node.label,
-            equalities: node
-                .properties
-                .iter()
-                .filter(|(_, value)| **value != Value::Null)
-                .map(|(property, _)| property.as_str())
-                .collect(),
-            bound: bound.contains(node.variable.as_str()),
-        })
-        .collect::<Vec<_>>();
-    let edges = path
-        .relationships
-        .iter()
-        .map(|relationship| PathEdge {
-            rel_type: (relationship.rel_types.is_empty() && !relationship.rel_type.is_empty())
-                .then_some(relationship.rel_type.as_str()),
-            equalities: relationship.properties.keys().map(String::as_str).collect(),
-            direction: relationship.direction,
-            min_hops: relationship.min_hops,
-            max_hops: relationship.max_hops,
-            reversible: relationship.relationship.is_none()
-                || (relationship.min_hops == 1 && relationship.max_hops == 1),
-        })
-        .collect::<Vec<_>>();
+    let (nodes, edges) = estimate_view(path, bound, &costing);
     let rule = OptionalOptimizerRule::CostBasedPatternStart;
     match pattern_start::choose_start(costing.catalog, &nodes, &edges, anchor) {
         None => anchor,
@@ -224,6 +211,88 @@ fn best_anchor(path: &PatternPath, bound: &BTreeSet<&str>) -> Option<(usize, Anc
             anchor_rank(node, position, bound).map(|rank| (position, rank))
         })
         .min_by_key(|(position, rank)| (*rank, *position))
+}
+
+/// The cost model's view of a path with `bound` variables bound.
+fn estimate_view<'p>(
+    path: &'p PatternPath,
+    bound: &BTreeSet<&str>,
+    costing: &'p StartCosting<'_>,
+) -> (Vec<PathNode<'p>>, Vec<PathEdge<'p>>) {
+    let nodes = path
+        .nodes
+        .iter()
+        .map(|node| PathNode {
+            variable: &node.variable,
+            label: costing.label(node),
+            equalities: node
+                .properties
+                .iter()
+                .filter(|(_, value)| **value != Value::Null)
+                .map(|(property, _)| property.as_str())
+                .collect(),
+            bound: bound.contains(node.variable.as_str()),
+        })
+        .collect::<Vec<_>>();
+    let edges = path
+        .relationships
+        .iter()
+        .map(|relationship| PathEdge {
+            rel_type: (relationship.rel_types.is_empty() && !relationship.rel_type.is_empty())
+                .then_some(relationship.rel_type.as_str()),
+            equalities: relationship.properties.keys().map(String::as_str).collect(),
+            direction: relationship.direction,
+            min_hops: relationship.min_hops,
+            max_hops: relationship.max_hops,
+            reversible: relationship.relationship.is_none()
+                || (relationship.min_hops == 1 && relationship.max_hops == 1),
+        })
+        .collect::<Vec<_>>();
+    (nodes, edges)
+}
+
+/// The estimates of a correlated MATCH whose only import is a node, and the
+/// steps of its build run.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct MeetingJoinEstimate {
+    pub(super) estimate: pattern_start::MeetingEstimate,
+    pub(super) build_start: String,
+    /// The steps of the build run, starting at `build_start`.
+    pub(super) steps: Vec<GraphMatchStep>,
+}
+
+/// Estimates `program` both ways, or `None` when it is not a single plain
+/// path whose only import is one node, or any estimate is unknown.
+pub(super) fn meeting_join_estimate(
+    program: &GraphMatchProgram,
+    costing: StartCosting<'_>,
+) -> Option<MeetingJoinEstimate> {
+    let [import] = program.imports.as_slice() else {
+        return None;
+    };
+    if import.kind != hawdb_plan_cypher::GraphEntityKind::Node
+        || program.introduced.contains(&import.variable)
+    {
+        return None;
+    }
+    let paths = split_paths(&program.steps)?;
+    let [path] = paths.as_slice() else {
+        return None;
+    };
+    let key = import.variable.as_str();
+    let position = path.nodes.iter().position(|node| node.variable == key)?;
+    // Per row, the path starts where the anchoring starts it: at the key.
+    let bound = BTreeSet::from([key]);
+    let (anchor, _) = best_anchor(path, &bound)?;
+    let (nodes, edges) = estimate_view(path, &BTreeSet::new(), &costing);
+    let estimate = pattern_start::meeting(costing.catalog, &nodes, &edges, position, anchor)?;
+    let mut steps = Vec::with_capacity(program.steps.len());
+    emit_path(path, estimate.build_start, &mut steps);
+    Some(MeetingJoinEstimate {
+        build_start: path.nodes[estimate.build_start].variable.clone(),
+        estimate,
+        steps,
+    })
 }
 
 /// Splits steps into paths; `None` for shapes this pass does not reorder.
@@ -354,6 +423,7 @@ mod tests {
         StartCosting {
             catalog,
             options: OptimizerQualificationOptions::default(),
+            labels: None,
         }
     }
 
@@ -407,6 +477,8 @@ mod tests {
             projected_relationships: BTreeMap::new(),
             predicate: None,
             optional: true,
+            hash_join: None,
+            id_set_conjuncts: Vec::new(),
         }
     }
 
@@ -622,6 +694,7 @@ mod tests {
             catalog: &catalog,
             options: OptimizerQualificationOptions::default()
                 .without_rule(OptionalOptimizerRule::CostBasedPatternStart),
+            labels: None,
         };
         let kept = anchor_graph_match_steps(&program, disabled).unwrap();
         assert_eq!(kept.steps, None);
