@@ -108,6 +108,16 @@ fn bound_value(
 /// Reuses the secondary-index interval binding for the clustered primary key:
 /// an equality prefix shorter than the key plus optional bounds on its next
 /// column. Complete keys remain point reads; an unconstrained key is a scan.
+///
+/// Plans that show no `SelectionExec` above this access (for example py-tpcc
+/// `getNewOrder`) rely on `predicate_is_covered_by_access`: the WHERE clause
+/// counts as absorbed only when every conjunct is `column = value` on a
+/// distinct prefix column or `column <op> value` with `<`, `<=`, `>` or `>=`
+/// on the next key column, each against a literal or parameter. `bind_range`
+/// turns exactly those conjuncts into the interval (repeated range bounds are
+/// intersected, a NULL bound empties it, a mismatched type keeps the conjunct
+/// as a residual and the predicate uncovered). Any other conjunct leaves a
+/// residual selection.
 pub(super) fn primary_key_range_candidate(
     planning: &RelationalBaseAccessPlanning<
         '_,
