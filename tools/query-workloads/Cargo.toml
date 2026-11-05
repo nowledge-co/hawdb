@@ -9,6 +9,6 @@ publish = false
 [workspace]
 
 [dependencies]
-hawdb-core = { path = "../../crates/core", version = "0.27.0" }
+hawdb-core = { path = "../../crates/core", version = "0.28.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
