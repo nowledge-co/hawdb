@@ -93,6 +93,7 @@ pub(super) fn collect(
     let [GraphMatchStep::Expand {
         source,
         rel_type,
+        rel_types,
         direction,
         target,
         min_hops: 1,
@@ -102,7 +103,8 @@ pub(super) fn collect(
     else {
         return Err(refusal());
     };
-    if source != &root.variable {
+    // The guards below cover one relationship type.
+    if source != &root.variable || !rel_types.is_empty() {
         return Err(refusal());
     }
     if covered_hop(dependencies, &root.label, rel_type, &target.label) {

@@ -22,11 +22,11 @@ use crate::traversal::shortest_path_bfs::{
 };
 use crate::traversal::{
     projected_node_with_allocation, visit_bounded_expand_trails, visit_one_hop_adjacency_entries,
-    visit_one_hop_relationship_records, visit_zero_hop_expand_target, BoundedExpandSpec,
+    visit_one_hop_relationship_records, visit_zero_hop_expand_target, BoundedTrailSpec,
     OneHopRecordSpec,
 };
 use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryClass};
-use hawdb_core::{HawDBError, Result, Value};
+use hawdb_core::{HawDBError, RelTypeId, Result, Value};
 use hawdb_plan_cypher::{
     GraphEntityKind, GraphMatchNode, GraphMatchProgram, GraphMatchShortestPath, GraphMatchStep,
     PhysicalPlan, Predicate, ShortestPathSelection,
@@ -114,6 +114,24 @@ impl<'a> PlacedPredicate<'a> {
         }
         Ok(Self { early, last, edge })
     }
+}
+
+/// Runs `visit` once per relationship type a one-hop step reads: with `None`
+/// for an untyped step, else with each of `rel_type_ids` until one stops.
+/// Types are disjoint, so no relationship is visited twice.
+fn visit_step_types(
+    rel_type_ids: Option<&[RelTypeId]>,
+    visit: &mut dyn FnMut(Option<RelTypeId>) -> Result<ScanControl>,
+) -> Result<ScanControl> {
+    let Some(rel_type_ids) = rel_type_ids else {
+        return visit(None);
+    };
+    for &rel_type_id in rel_type_ids {
+        if visit(Some(rel_type_id))? == ScanControl::Stop {
+            return Ok(ScanControl::Stop);
+        }
+    }
+    Ok(ScanControl::Continue)
 }
 
 /// Retained bytes of one relationship id in the trail-uniqueness set.
@@ -743,6 +761,7 @@ impl MatchRuntime<'_> {
                 source,
                 relationship,
                 rel_type,
+                rel_types,
                 properties,
                 direction,
                 min_hops,
@@ -758,10 +777,25 @@ impl MatchRuntime<'_> {
                         "missing MATCH source '{source}'"
                     )));
                 };
-                let rel_type_id = if rel_type.is_empty() {
+                // `None` reads every type. Otherwise the step reads these
+                // types: its one type, or the disjunction's types that exist.
+                let single;
+                let disjunction: Vec<RelTypeId>;
+                let rel_type_ids = if !rel_types.is_empty() {
+                    disjunction = rel_types
+                        .iter()
+                        .filter_map(|name| self.context.catalog.rel_type_id(name))
+                        .collect();
+                    Some(disjunction.as_slice())
+                } else if rel_type.is_empty() {
                     None
                 } else {
-                    let Some(id) = self.context.catalog.rel_type_id(rel_type) else {
+                    single = self.context.catalog.rel_type_id(rel_type);
+                    Some(single.as_slice())
+                };
+                let rel_type_ids = match rel_type_ids {
+                    Some([]) => {
+                        // No named type exists, so only a zero-hop trail matches.
                         if *min_hops == 0 {
                             let labels = label_ids_for_pattern(self.context.catalog, &target.label);
                             return visit_zero_hop_expand_target(
@@ -784,8 +818,8 @@ impl MatchRuntime<'_> {
                             );
                         }
                         return Ok(ScanControl::Continue);
-                    };
-                    Some(id)
+                    }
+                    rel_type_ids => rel_type_ids,
                 };
                 let labels = label_ids_for_pattern(self.context.catalog, &target.label);
                 // A bound target is compared by id and matched against its
@@ -808,11 +842,17 @@ impl MatchRuntime<'_> {
                     let _excluded = self
                         .account
                         .reserve(excluded.len().saturating_mul(USED_RELATIONSHIP_BYTES))?;
+                    // Validation rejects untyped bounded steps before any row.
+                    let Some(rel_type_ids) = rel_type_ids else {
+                        return Err(HawDBError::Execution(
+                            "bounded MATCH expansion requires a typed pattern".to_string(),
+                        ));
+                    };
                     return visit_bounded_expand_trails(
                         self.store,
-                        BoundedExpandSpec {
+                        BoundedTrailSpec {
                             source: source_id,
-                            rel_type_id: rel_type_id.unwrap(),
+                            rel_type_ids,
                             direction: *direction,
                             target_label_ids: labels.as_deref(),
                             min_hops: *min_hops,
@@ -858,41 +898,49 @@ impl MatchRuntime<'_> {
                 if relationship.is_none() && properties.is_empty() {
                     // Nothing reads an anonymous relationship without property
                     // constraints beyond its id and endpoint.
-                    return visit_one_hop_adjacency_entries(
-                        self.store,
-                        source_id,
-                        rel_type_id,
-                        *direction,
-                        self.adjacency_memory(),
-                        self.context.task_context,
-                        &mut |relationship_id, neighbor| {
-                            if used.contains(&relationship_id)
-                                || bound_target.is_some_and(|id| id != neighbor)
-                            {
-                                return Ok(ScanControl::Continue);
-                            }
-                            let (observed, _allocation) = match bound_target {
-                                Some(_) => (Target::Bound, None),
-                                None => match self.read_target(
-                                    &target.variable,
-                                    neighbor,
-                                    labels.as_deref(),
-                                    0,
-                                )? {
-                                    Some((node, allocation)) => {
-                                        (Target::Read(node), Some(allocation))
-                                    }
-                                    None => return Ok(ScanControl::Continue),
-                                },
-                            };
-                            let _used = self.account.reserve(USED_RELATIONSHIP_BYTES)?;
-                            used.insert(relationship_id);
-                            let control =
-                                self.visit_target(index, row, used, target, (observed, 1), emit);
-                            used.remove(&relationship_id);
-                            control
-                        },
-                    );
+                    return visit_step_types(rel_type_ids, &mut |rel_type_id| {
+                        visit_one_hop_adjacency_entries(
+                            self.store,
+                            source_id,
+                            rel_type_id,
+                            *direction,
+                            self.adjacency_memory(),
+                            self.context.task_context,
+                            &mut |relationship_id, neighbor| {
+                                if used.contains(&relationship_id)
+                                    || bound_target.is_some_and(|id| id != neighbor)
+                                {
+                                    return Ok(ScanControl::Continue);
+                                }
+                                let (observed, _allocation) = match bound_target {
+                                    Some(_) => (Target::Bound, None),
+                                    None => match self.read_target(
+                                        &target.variable,
+                                        neighbor,
+                                        labels.as_deref(),
+                                        0,
+                                    )? {
+                                        Some((node, allocation)) => {
+                                            (Target::Read(node), Some(allocation))
+                                        }
+                                        None => return Ok(ScanControl::Continue),
+                                    },
+                                };
+                                let _used = self.account.reserve(USED_RELATIONSHIP_BYTES)?;
+                                used.insert(relationship_id);
+                                let control = self.visit_target(
+                                    index,
+                                    row,
+                                    used,
+                                    target,
+                                    (observed, 1),
+                                    emit,
+                                );
+                                used.remove(&relationship_id);
+                                control
+                            },
+                        )
+                    });
                 }
                 // Conjuncts on this relationship run before its target is read.
                 let edge_conjuncts = self
@@ -907,65 +955,67 @@ impl MatchRuntime<'_> {
                     }
                     _ => None,
                 };
-                visit_one_hop_relationship_records(
-                    self.store,
-                    OneHopRecordSpec {
-                        source: source_id,
-                        rel_type_id,
-                        direction: *direction,
-                        rel_properties: properties,
-                        projection,
-                    },
-                    self.adjacency_memory(),
-                    self.context.observer,
-                    self.context.task_context,
-                    &mut |edge, neighbor| {
-                        if used.contains(&edge.id)
-                            || bound_relationship.is_some_and(|id| id != edge.id)
-                            || bound_target.is_some_and(|id| id != neighbor)
-                            || !properties_match(properties, &edge.properties)
-                        {
-                            return Ok(ScanControl::Continue);
-                        }
-                        let edge_bytes = relationship_memory_bytes(&edge);
-                        let _used = self.account.reserve(USED_RELATIONSHIP_BYTES)?;
-                        let _edge = self.source_account.reserve(
-                            edge_bytes.saturating_add(
-                                relationship
-                                    .as_ref()
-                                    .map_or(0, |name| graph_slot_entry_bytes(name)),
-                            ),
-                        )?;
-                        let edge_id = edge.id;
-                        used.insert(edge_id);
-                        // A bound relationship keeps its record: the ids match.
-                        let inserted = match relationship {
-                            Some(variable) if bound_relationship.is_none() => {
-                                row.relationships.insert(variable.clone(), edge);
-                                Some(variable)
+                visit_step_types(rel_type_ids, &mut |rel_type_id| {
+                    visit_one_hop_relationship_records(
+                        self.store,
+                        OneHopRecordSpec {
+                            source: source_id,
+                            rel_type_id,
+                            direction: *direction,
+                            rel_properties: properties,
+                            projection,
+                        },
+                        self.adjacency_memory(),
+                        self.context.observer,
+                        self.context.task_context,
+                        &mut |edge, neighbor| {
+                            if used.contains(&edge.id)
+                                || bound_relationship.is_some_and(|id| id != edge.id)
+                                || bound_target.is_some_and(|id| id != neighbor)
+                                || !properties_match(properties, &edge.properties)
+                            {
+                                return Ok(ScanControl::Continue);
                             }
-                            _ => None,
-                        };
-                        let control = self.visit_edge_target(
-                            index,
-                            row,
-                            used,
-                            EdgeTarget {
-                                conjuncts: edge_conjuncts,
-                                pattern: target,
-                                labels: labels.as_deref(),
-                                neighbor: bound_target.is_none().then_some(neighbor),
-                                edge_bytes,
-                            },
-                            emit,
-                        );
-                        if let Some(variable) = inserted {
-                            row.relationships.remove(variable);
-                        }
-                        used.remove(&edge_id);
-                        control
-                    },
-                )
+                            let edge_bytes = relationship_memory_bytes(&edge);
+                            let _used = self.account.reserve(USED_RELATIONSHIP_BYTES)?;
+                            let _edge = self.source_account.reserve(
+                                edge_bytes.saturating_add(
+                                    relationship
+                                        .as_ref()
+                                        .map_or(0, |name| graph_slot_entry_bytes(name)),
+                                ),
+                            )?;
+                            let edge_id = edge.id;
+                            used.insert(edge_id);
+                            // A bound relationship keeps its record: the ids match.
+                            let inserted = match relationship {
+                                Some(variable) if bound_relationship.is_none() => {
+                                    row.relationships.insert(variable.clone(), edge);
+                                    Some(variable)
+                                }
+                                _ => None,
+                            };
+                            let control = self.visit_edge_target(
+                                index,
+                                row,
+                                used,
+                                EdgeTarget {
+                                    conjuncts: edge_conjuncts,
+                                    pattern: target,
+                                    labels: labels.as_deref(),
+                                    neighbor: bound_target.is_none().then_some(neighbor),
+                                    edge_bytes,
+                                },
+                                emit,
+                            );
+                            if let Some(variable) = inserted {
+                                row.relationships.remove(variable);
+                            }
+                            used.remove(&edge_id);
+                            control
+                        },
+                    )
+                })
             }
             GraphMatchStep::ShortestPath(step) => {
                 self.visit_shortest_paths(index, row, used, step, emit)

@@ -452,6 +452,12 @@ impl Transformer<'_> {
         let edge = self.tree.required(step_node, rule_id!("p_relationship"));
         let edge = self.tree.children(edge)[0];
         let body = self.tree.required(edge, rule_id!("p_rel_body"));
+        if !step.relationship.rel_type_disjunction.is_empty() {
+            return Err(self.error(
+                node,
+                "relationship type disjunction is not supported in relationship existence predicates",
+            ));
+        }
         if self.tokens[self.tree.node(body).start + 1].kind == T::Star
             || step.relationship.search != PathSearch::All
             || step.relationship.min_hops != 1

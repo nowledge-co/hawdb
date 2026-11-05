@@ -37,6 +37,7 @@ fn expand(
         source: source.to_string(),
         relationship: relationship.map(str::to_string),
         rel_type: "R".to_string(),
+        rel_types: Vec::new(),
         properties: BTreeMap::new(),
         direction: RelationshipDirection::Outgoing,
         min_hops: hops.0,
