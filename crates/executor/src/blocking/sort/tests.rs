@@ -148,6 +148,142 @@ fn spilled_top_n_output_does_not_compete_with_merge_heap_account() {
     assert_spilled_output_has_its_own_account(true);
 }
 
+/// Sorts `value` (NULL for every third row) by itself, then `id`, through the
+/// complete sort or top-k operator, resident or spilled with encoded or
+/// re-evaluated expression keys.
+fn null_ordered_ids(
+    top_n: bool,
+    spill: bool,
+    expression: bool,
+    direction: SortDirection,
+) -> Vec<Value> {
+    let directory = Directory::new();
+    let memory = ExecutionMemoryConfig {
+        blocking_operator_bytes: NonZeroUsize::new(if spill { 1024 } else { 1 << 20 }).unwrap(),
+        batch_rows: NonZeroUsize::new(4).unwrap(),
+        min_spill_free_bytes: NonZeroU64::MIN,
+        spill_directory: directory.0.clone(),
+        ..ExecutionMemoryConfig::default()
+    };
+    let catalog = Catalog::default();
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let input = PhysicalPlan::SeqNodeScan {
+        variable: "n".to_string(),
+        label: String::new(),
+    };
+    let rows = (0..12)
+        .rev()
+        .map(|id| {
+            let mut binding = Binding::scalar("id", Value::Int(id));
+            let value = if id % 3 == 0 {
+                Value::Null
+            } else {
+                Value::Int(id % 4)
+            };
+            binding.values.insert("value".to_string(), value);
+            binding
+        })
+        .collect();
+    let value = if expression {
+        SortKey::Expression(hawdb_plan_cypher::ProjectionExpression::Binary {
+            left: Box::new(hawdb_plan_cypher::ProjectionExpression::Column(
+                "value".to_string(),
+            )),
+            op: hawdb_plan_cypher::ScalarBinaryOp::Add,
+            right: Box::new(hawdb_plan_cypher::ProjectionExpression::Literal(
+                Value::Int(0),
+            )),
+        })
+    } else {
+        SortKey::Column("value".to_string())
+    };
+    let items = [
+        SortItem {
+            key: value,
+            direction,
+        },
+        SortItem {
+            key: SortKey::Column("id".to_string()),
+            direction: SortDirection::Asc,
+        },
+    ];
+    let context = BlockingExecutionContext {
+        catalog: &catalog,
+        memory: &memory,
+        memory_ledger: &ledger,
+        task_context: None,
+        observer: &NoopExecutionObserver,
+    };
+    let mut output = Vec::new();
+    let mut emit = |batch: BindingBatch| {
+        output.extend(
+            batch
+                .into_iter()
+                .map(|binding| binding.values["id"].clone()),
+        );
+        Ok(BatchControl::Continue)
+    };
+    let mut source = Rows(rows);
+    if top_n {
+        stream_top_n_batches(
+            &input,
+            &items,
+            1,
+            10,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut emit,
+        )
+    } else {
+        stream_sort_batches(
+            &input,
+            &items,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut emit,
+        )
+    }
+    .unwrap();
+    assert_eq!(memory.spill_pool_snapshot().unwrap().active_runs, 0);
+    let spilled = ledger
+        .snapshot()
+        .classes
+        .iter()
+        .any(|class| class.class == QueryMemoryClass::SpillStaging && class.peak_bytes > 0);
+    assert_eq!(spilled, spill);
+    output
+}
+
+#[test]
+fn sort_and_top_n_place_null_last_ascending_and_first_descending() {
+    // Non-null values by id: 1→1, 2→2, 4→0, 5→1, 7→3, 8→0, 10→2, 11→3.
+    let ascending = [4, 8, 1, 5, 2, 10, 7, 11, 0, 3, 6, 9].map(Value::Int);
+    let descending = [0, 3, 6, 9, 7, 11, 2, 10, 1, 5, 4, 8].map(Value::Int);
+    for top_n in [false, true] {
+        for spill in [false, true] {
+            for expression in [false, true] {
+                for (direction, expected) in [
+                    (SortDirection::Asc, &ascending),
+                    (SortDirection::Desc, &descending),
+                ] {
+                    let expected = if top_n {
+                        &expected[1..11]
+                    } else {
+                        &expected[..]
+                    };
+                    assert_eq!(
+                        null_ordered_ids(top_n, spill, expression, direction),
+                        expected,
+                        "top_n={top_n} spill={spill} expression={expression} {direction:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn check_in_memory_output_accounting(top_n: bool) {
     for exit in [Exit::Complete, Exit::Stop, Exit::Error, Exit::Cancel] {
         check_in_memory_output_exit(top_n, exit);

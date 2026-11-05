@@ -51,13 +51,14 @@ fn selected_plan(db: &Database, query: &str) -> String {
 #[test]
 fn orders_by_function_calls_over_unreturned_variables() {
     let mut db = people();
-    // `size` of a missing list is NULL, which sorts like a NULL property key.
+    // `size` of a missing list is NULL, which sorts like a NULL property key:
+    // first descending and last ascending (#1407).
     assert_eq!(
         names(
             &mut db,
             "MATCH (n:Person) RETURN n.name AS name ORDER BY size(n.tags) DESC, name",
         ),
-        strings(&["bob", "alice", "dave", "carol", "erin"])
+        strings(&["erin", "bob", "alice", "dave", "carol"])
     );
     let output = db
         .query("MATCH (n:Person) RETURN n.name ORDER BY lower(n.city), n.age DESC")
@@ -65,7 +66,7 @@ fn orders_by_function_calls_over_unreturned_variables() {
     assert_eq!(output.rows[0].keys().collect::<Vec<_>>(), ["n.name"]);
     assert_eq!(
         column(&output, "n.name"),
-        strings(&["erin", "bob", "alice", "dave", "carol"])
+        strings(&["bob", "alice", "dave", "carol", "erin"])
     );
 }
 
@@ -106,7 +107,7 @@ fn orders_by_mixed_direction_expression_and_property_keys() {
             "MATCH (n:Person) RETURN n.name AS name \
              ORDER BY n.lastName DESC, size(n.tags) ASC, n.age DESC",
         ),
-        strings(&["carol", "alice", "erin", "bob", "dave"])
+        strings(&["carol", "alice", "bob", "erin", "dave"])
     );
 }
 
@@ -481,7 +482,7 @@ fn tiny_order_keys_keep_costed_sort_and_exact_pages() {
             &mut db,
             "MATCH (n:Person) RETURN n.name AS name ORDER BY size(n.tags) DESC, n.age % 10 LIMIT 2",
         ),
-        strings(&["bob", "alice"])
+        strings(&["erin", "bob"])
     );
 }
 
@@ -520,7 +521,7 @@ fn limited_order_keys_keep_top_n_plans() {
     let plan = selected_plan(&db, expression);
     assert!(plan.contains("TopNExec"), "{plan}");
     assert!(!plan.contains("SortExec"), "{plan}");
-    assert_eq!(names(&mut db, expression), strings(&["bob", "alice"]));
+    assert_eq!(names(&mut db, expression), strings(&["erin", "bob"]));
 }
 
 #[test]
