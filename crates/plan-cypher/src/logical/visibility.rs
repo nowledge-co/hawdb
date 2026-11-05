@@ -399,3 +399,266 @@ fn mutation_predicates(plan: &mut LogicalPlan) -> Vec<&mut Predicate> {
         _ => Vec::new(),
     }
 }
+
+/// Fails closed when a plan still holds a pattern program or an endpoint read
+/// by id that [`apply_node_visibility_predicates`] did not restrict with
+/// `predicate_for`. Every plan node is matched exhaustively, so a new kind of
+/// plan node is a compile error here until its expressions are covered.
+pub fn validate_node_visibility_predicates(
+    plan: &LogicalPlan,
+    predicate_for: &impl Fn(&str) -> Predicate,
+) -> Result<()> {
+    let mut children: Vec<&LogicalPlan> = Vec::new();
+    let mut predicates: Vec<&Predicate> = Vec::new();
+    let mut expressions: Vec<&ProjectionExpression> = Vec::new();
+    match plan {
+        LogicalPlan::CreateNodeLabel { .. }
+        | LogicalPlan::CreateRelationshipType { .. }
+        | LogicalPlan::CreateNodeTable { .. }
+        | LogicalPlan::CreateRelationshipTable { .. }
+        | LogicalPlan::CreateProperty { .. }
+        | LogicalPlan::AlterTableState { .. }
+        | LogicalPlan::AlterPropertyState { .. }
+        | LogicalPlan::CreateIndex { .. }
+        | LogicalPlan::CreateCompositeIndex { .. }
+        | LogicalPlan::CreateRangeIndex { .. }
+        | LogicalPlan::CreateFullTextIndex { .. }
+        | LogicalPlan::CreateUniqueConstraint { .. }
+        | LogicalPlan::CreateNodePropertyExistsConstraint { .. }
+        | LogicalPlan::CreateRelationshipUniqueConstraint { .. }
+        | LogicalPlan::CreateRelationshipPropertyExistsConstraint { .. }
+        | LogicalPlan::TextSeed { .. }
+        | LogicalPlan::VectorSeed { .. }
+        | LogicalPlan::CreateNode { .. }
+        | LogicalPlan::Unwind { .. }
+        | LogicalPlan::UnwindMutation { .. }
+        | LogicalPlan::LoadCsvMutation { .. }
+        | LogicalPlan::LoadCsv { .. }
+        | LogicalPlan::MergeNode { .. }
+        | LogicalPlan::MergeRelationship { .. }
+        | LogicalPlan::MergeMatchedRelationship { .. }
+        | LogicalPlan::MergeRelationshipFromMatchedRelationship { .. }
+        | LogicalPlan::MergeRelationshipToMatchedTarget { .. }
+        | LogicalPlan::MergeRelationshipFromMatchedTarget { .. }
+        | LogicalPlan::CreateRelationship { .. }
+        | LogicalPlan::CreateMatchedRelationship { .. }
+        | LogicalPlan::NodeScan { .. }
+        | LogicalPlan::OptionalRelationshipCountSum { .. }
+        | LogicalPlan::ThreadRepairStats { .. } => {}
+        LogicalPlan::ProjectGraph {
+            relationship_predicates,
+            ..
+        } => predicates.extend(relationship_predicates.values()),
+        LogicalPlan::GraphAlgorithm {
+            node_visibility_predicate,
+            ..
+        }
+        | LogicalPlan::GraphSeed {
+            node_visibility_predicate,
+            ..
+        } => predicates.extend(node_visibility_predicate),
+        LogicalPlan::GraphAlgorithmOutput(output) => {
+            predicates.extend(&output.node_visibility_predicate)
+        }
+        LogicalPlan::VectorIndexSearch(scan) => {
+            predicates.extend(&scan.node_visibility_predicate);
+            children.extend(scan.input.as_deref());
+        }
+        LogicalPlan::UnwindRows {
+            expression, input, ..
+        } => {
+            expressions.push(expression);
+            children.push(input);
+        }
+        LogicalPlan::SetNodeProperty { predicate, .. }
+        | LogicalPlan::SetNodeProperties { predicate, .. }
+        | LogicalPlan::SetNodePropertiesReturn { predicate, .. }
+        | LogicalPlan::DeleteNode { predicate, .. }
+        | LogicalPlan::DeleteRelationshipTargetNodes {
+            source_predicate: predicate,
+            ..
+        } => predicates.extend(predicate),
+        LogicalPlan::SetRelationshipProperty {
+            predicate,
+            rel_predicate,
+            ..
+        }
+        | LogicalPlan::SetRelationshipProperties {
+            predicate,
+            rel_predicate,
+            ..
+        }
+        | LogicalPlan::DeleteRelationship {
+            predicate,
+            rel_predicate,
+            ..
+        } => predicates.extend(predicate.iter().chain(rel_predicate)),
+        LogicalPlan::GraphMatch { program, input } => {
+            predicates.extend(&program.predicate);
+            children.extend(input.as_deref());
+        }
+        LogicalPlan::NodeCartesianProduct { left, right } => {
+            children.push(left);
+            children.push(right);
+        }
+        LogicalPlan::NodeColumnLookup {
+            node_visibility_predicate,
+            input,
+            ..
+        } => {
+            predicates.extend(node_visibility_predicate);
+            children.push(input);
+        }
+        LogicalPlan::Expand { input, .. }
+        | LogicalPlan::OptionalDegree { input, .. }
+        | LogicalPlan::Distinct { input }
+        | LogicalPlan::Limit { input, .. } => children.push(input),
+        LogicalPlan::ShortestPath {
+            source_visibility_predicate,
+            target_visibility_predicate,
+            ..
+        } => predicates.extend(
+            source_visibility_predicate
+                .iter()
+                .chain(target_visibility_predicate),
+        ),
+        LogicalPlan::Filter { predicate, input } => {
+            predicates.push(predicate);
+            children.push(input);
+        }
+        LogicalPlan::Project { items, input } => {
+            expressions.extend(items.iter().map(|item| &item.expression));
+            children.push(input);
+        }
+        LogicalPlan::Aggregate {
+            group_keys,
+            items,
+            input,
+        } => {
+            expressions.extend(group_keys.iter().map(|item| &item.expression));
+            expressions.extend(items.iter().filter_map(|item| match &item.target {
+                AggregateTarget::Expression(expression) => Some(expression),
+                _ => None,
+            }));
+            children.push(input);
+        }
+        LogicalPlan::Sort { items, input } => {
+            expressions.extend(items.iter().filter_map(|item| match &item.key {
+                SortKey::Expression(expression) => Some(expression),
+                _ => None,
+            }));
+            children.push(input);
+        }
+    }
+    for predicate in predicates {
+        validate_predicate_expressions(predicate, predicate_for)?;
+    }
+    for expression in expressions {
+        validate_expression(expression, predicate_for)?;
+    }
+    for child in children {
+        validate_node_visibility_predicates(child, predicate_for)?;
+    }
+    Ok(())
+}
+
+fn unrestricted(what: &str) -> HawDBError {
+    HawDBError::Execution(format!(
+        "access control could not restrict a {what}; the query is refused"
+    ))
+}
+
+/// Whether `policy` is `predicate` or one of its top-level conjuncts.
+fn admits(predicate: Option<&Predicate>, policy: &Predicate) -> bool {
+    match predicate {
+        Some(predicate) if predicate == policy => true,
+        Some(Predicate::And(conjuncts)) => conjuncts
+            .iter()
+            .any(|conjunct| admits(Some(conjunct), policy)),
+        _ => false,
+    }
+}
+
+fn validate_expression(
+    expression: &ProjectionExpression,
+    predicate_for: &impl Fn(&str) -> Predicate,
+) -> Result<()> {
+    match expression {
+        ProjectionExpression::Pattern(pattern) => {
+            let program = &pattern.program;
+            for step in &program.steps {
+                let variable = match step {
+                    GraphMatchStep::Node(node) => &node.variable,
+                    GraphMatchStep::Expand { target, .. } => &target.variable,
+                    GraphMatchStep::ShortestPath(_) => continue,
+                };
+                if !admits(program.predicate.as_ref(), &predicate_for(variable)) {
+                    return Err(unrestricted("pattern expression"));
+                }
+            }
+            if let Some(predicate) = &program.predicate {
+                validate_predicate_expressions(predicate, predicate_for)?;
+            }
+        }
+        ProjectionExpression::RelationshipValueEndpoint { visibility, .. } => {
+            let policy = predicate_for(hawdb_expression::ENDPOINT_VISIBILITY_VARIABLE);
+            if !admits(visibility.as_deref(), &policy) {
+                return Err(unrestricted("relationship endpoint read"));
+            }
+        }
+        ProjectionExpression::RelationshipEndpoint {
+            endpoints: None, ..
+        } => return Err(unrestricted("relationship endpoint read")),
+        _ => {}
+    }
+    let mut result = Ok(());
+    expression.all_children(|child| {
+        result = validate_expression(child, predicate_for);
+        result.is_ok()
+    });
+    result
+}
+
+fn validate_predicate_expressions(
+    predicate: &Predicate,
+    predicate_for: &impl Fn(&str) -> Predicate,
+) -> Result<()> {
+    match predicate {
+        Predicate::And(predicates) | Predicate::Or(predicates) => predicates
+            .iter()
+            .try_for_each(|predicate| validate_predicate_expressions(predicate, predicate_for)),
+        Predicate::Not(predicate) => validate_predicate_expressions(predicate, predicate_for),
+        Predicate::ExpressionEq { expression, value }
+        | Predicate::ExpressionNotEq { expression, value }
+        | Predicate::ExpressionCompare {
+            expression, value, ..
+        }
+        | Predicate::ExpressionContains { expression, value } => {
+            validate_expression(expression, predicate_for)?;
+            validate_expression(value, predicate_for)
+        }
+        Predicate::ExpressionRegexMatch { expression, .. }
+        | Predicate::ExpressionIn { expression, .. } => {
+            validate_expression(expression, predicate_for)
+        }
+        Predicate::ConstantBool(_)
+        | Predicate::RelationshipExists { .. }
+        | Predicate::BoundRelationshipExists { .. }
+        | Predicate::IdEq { .. }
+        | Predicate::IdNotEq { .. }
+        | Predicate::IdCompare { .. }
+        | Predicate::IdIn { .. }
+        | Predicate::PropertyEq { .. }
+        | Predicate::PropertyNotEq { .. }
+        | Predicate::PropertyCompare { .. }
+        | Predicate::PropertyListContains { .. }
+        | Predicate::PropertyListContainsLower { .. }
+        | Predicate::PropertyContains { .. }
+        | Predicate::PropertyStartsWith { .. }
+        | Predicate::PropertyEndsWith { .. }
+        | Predicate::PropertyRegexMatch { .. }
+        | Predicate::PropertyIsNull { .. }
+        | Predicate::PropertyIsNotNull { .. }
+        | Predicate::PropertyIn { .. } => Ok(()),
+    }
+}

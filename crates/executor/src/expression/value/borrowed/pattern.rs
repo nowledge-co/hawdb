@@ -299,7 +299,9 @@ fn with_column_frames<'p, R>(
 /// `startNode(r)`/`endNode(r)` of a relationship value. The value must name
 /// a stored relationship with the same endpoints, so a map that merely has a
 /// relationship's keys reads nothing; the node is the stored record's
-/// source or target, NULL when `visibility` does not admit it.
+/// source or target, NULL when `visibility` does not admit it. Under a
+/// visibility policy a value naming no stored relationship is NULL as well;
+/// without one it fails.
 pub(super) fn relationship_value_endpoint<'a>(
     endpoint: hawdb_core::RelationshipEndpoint,
     relationship: &Value,
@@ -337,9 +339,17 @@ pub(super) fn relationship_value_endpoint<'a>(
     let graph = graph_access(&what, graph)?;
     let charged = charged(account, graph);
     let account = charged.account();
-    let stored = stored_relationship(graph, account, RelId(id), NodeId(source))?
+    let Some(stored) = stored_relationship(graph, account, RelId(id), NodeId(source))?
         .filter(|stored| stored.target == NodeId(target))
-        .ok_or_else(not_a_relationship)?;
+    else {
+        // Under a visibility policy an absent relationship reads like one
+        // whose endpoint is hidden, so guessed ids cannot probe whether a
+        // relationship exists.
+        if visibility.is_some() {
+            return Ok(ProjectedValue::scalar(Value::Null));
+        }
+        return Err(not_a_relationship());
+    };
     let node = match endpoint {
         hawdb_core::RelationshipEndpoint::Start => stored.source,
         hawdb_core::RelationshipEndpoint::End => stored.target,

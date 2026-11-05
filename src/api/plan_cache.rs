@@ -915,7 +915,7 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
             logical,
             access_control,
             cache_mode == PlanCacheMode::Use,
-        );
+        )?;
     }
     let catalog_access = optimizer_catalog_access_for_logical(
         &context,
@@ -1305,14 +1305,19 @@ fn parameters_with_access_control<'a>(
     Cow::Owned(execution_parameters)
 }
 
+/// Applies the node visibility policy, then refuses the plan if a pattern
+/// program or endpoint read anywhere in it escaped the policy.
 fn apply_access_control_to_logical_plan(
     logical: LogicalPlan,
     access_control: &QueryAccessControlContext,
     parameterized_values: bool,
-) -> LogicalPlan {
-    hawdb_plan_cypher::apply_node_visibility_predicates(logical, &|variable| {
+) -> Result<LogicalPlan> {
+    let predicate_for = |variable: &str| {
         access_control_node_predicate(variable, access_control, parameterized_values)
-    })
+    };
+    let logical = hawdb_plan_cypher::apply_node_visibility_predicates(logical, &predicate_for);
+    hawdb_plan_cypher::validate_node_visibility_predicates(&logical, &predicate_for)?;
+    Ok(logical)
 }
 
 fn access_control_node_predicate(

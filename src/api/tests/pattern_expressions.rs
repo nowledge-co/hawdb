@@ -899,17 +899,34 @@ mod access_control {
         let Value::Map(real) = &values[1] else {
             panic!("{:?}", values[1])
         };
+        // Guessed ids cannot probe for relationships: under the policy a
+        // value naming no stored relationship reads as NULL, exactly like the
+        // real relationship above whose endpoint is hidden. Without the
+        // policy it fails.
         let mut forged = real.clone();
         forged.insert("_id".to_string(), Value::Int(9999));
-        let parameters = BTreeMap::from([("r".to_string(), Value::Map(forged))]);
-        let error = scoped(
-            &mut db,
-            "UNWIND [$r] AS r RETURN startNode(r) AS s",
-            &parameters,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("names no stored relationship"), "{error}");
+        let mut reversed = real.clone();
+        let source = reversed.remove("source_id").unwrap();
+        let target = reversed.insert("target_id".to_string(), source).unwrap();
+        reversed.insert("source_id".to_string(), target);
+        for value in [Value::Map(forged), Value::Map(reversed)] {
+            let parameters = BTreeMap::from([("r".to_string(), value)]);
+            for query in [
+                "UNWIND [$r] AS r RETURN startNode(r) AS s",
+                "UNWIND [$r] AS r RETURN endNode(r) AS s",
+            ] {
+                assert_eq!(
+                    scoped(&mut db, query, &parameters).unwrap(),
+                    [vec![Value::Null]],
+                    "{query}"
+                );
+                let error = db
+                    .query_with_params(query, &parameters)
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("names no stored relationship"), "{error}");
+            }
+        }
         // Inside a pattern body, endpoints of relationships it binds come
         // from the visible match itself.
         assert_eq!(
