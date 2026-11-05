@@ -107,6 +107,11 @@ enum BindingType {
         column: Option<String>,
     },
     Scalar,
+    /// A value column bound by UNWIND. It reads as a scalar column, but a
+    /// later MATCH may use it as a bound node: list element types are not
+    /// tracked statically, so the MATCH import checks at runtime that each
+    /// value is a node (NULL matches nothing).
+    Unwound,
     UnmaterializedPath,
     /// A path value column bound by a shortest-path pattern.
     Path,
@@ -132,6 +137,7 @@ impl Scope {
                 matches!(
                     kind,
                     BindingType::Scalar
+                        | BindingType::Unwound
                         | BindingType::Path
                         | BindingType::Graph {
                             column: Some(_),
@@ -176,6 +182,22 @@ impl Scope {
                     .insert(name.to_string(), BindingType::Graph { kind, column: None });
                 introduced.push(name.to_string());
                 Ok(())
+            }
+        }
+    }
+
+    /// Turns UNWIND variables that `patterns` use as nodes into imported
+    /// node bindings read from their value column. Call before `imports`.
+    fn adopt_unwound_nodes(&mut self, patterns: &[hawdb_cypher::MatchPattern]) {
+        let nodes = patterns.iter().flat_map(|pattern| {
+            std::iter::once(&pattern.first).chain(pattern.steps.iter().map(|step| &step.target))
+        });
+        for node in nodes {
+            if let Some(binding @ BindingType::Unwound) = self.0.get_mut(&node.variable) {
+                *binding = BindingType::Graph {
+                    kind: GraphEntityKind::Node,
+                    column: Some(node.variable.clone()),
+                };
             }
         }
     }
@@ -1236,7 +1258,7 @@ fn bind_read_clauses(
                     variable: String::new(),
                 });
                 let input_plan = imports::restore(input_plan, &scope, &needed);
-                scope.0.insert(variable.clone(), BindingType::Scalar);
+                scope.0.insert(variable.clone(), BindingType::Unwound);
                 input = Some(LogicalPlan::UnwindRows {
                     expression,
                     variable: variable.clone(),
@@ -1255,7 +1277,7 @@ fn bind_read_clauses(
                         ))
                     }
                 };
-                scope.0.insert(variable.clone(), BindingType::Scalar);
+                scope.0.insert(variable.clone(), BindingType::Unwound);
                 input = Some(LogicalPlan::Unwind {
                     rows,
                     variable: variable.clone(),
@@ -1278,7 +1300,7 @@ fn bind_read_clauses(
                 })?;
                 let needed = imports::for_expression(&mut expression, &scope)?;
                 let input_plan = imports::restore(input_plan, &scope, &needed);
-                scope.0.insert(variable.clone(), BindingType::Scalar);
+                scope.0.insert(variable.clone(), BindingType::Unwound);
                 input = Some(LogicalPlan::UnwindRows {
                     expression,
                     variable: variable.clone(),
@@ -1329,6 +1351,7 @@ fn bind_read_clauses(
                 patterns,
                 predicate,
             } => {
+                scope.adopt_unwound_nodes(patterns);
                 let imports = scope.imports();
                 let mut introduced = Vec::new();
                 let mut steps = Vec::new();
@@ -1498,6 +1521,7 @@ fn bind_projection(
                     column: Some(name.clone()),
                 },
                 Some(BindingType::Path) => BindingType::Path,
+                Some(BindingType::Unwound) => BindingType::Unwound,
                 _ => BindingType::Scalar,
             },
             _ => BindingType::Scalar,
