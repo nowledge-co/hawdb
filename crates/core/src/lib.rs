@@ -25,6 +25,7 @@ pub mod ids;
 pub mod list_function;
 pub mod logical_type;
 pub mod numeric;
+pub mod numeric_function;
 pub mod projection;
 pub mod regex;
 mod retained_heap;
@@ -52,7 +53,7 @@ pub use error::{
     HawDBError, ReadBudgetError, ReadBudgetResource, ResourceBudgetError, ResourceBudgetKind,
     ResourceBudgetScope, Result, StorageFormatError, TransactionRetryError, TransactionRetryReason,
 };
-pub use graph::RelationshipDirection;
+pub use graph::{RelationshipDirection, RelationshipEndpoint};
 pub use graph_rag::{
     build_graph_rag_schema_context, GraphRagCommonPathSummary, GraphRagGeneratedQuery,
     GraphRagLabelSummary, GraphRagPropertySubject, GraphRagPropertySummary, GraphRagQueryBinding,
@@ -69,6 +70,7 @@ pub use list_function::{
     ListFunction, MAX_LIST_EXPRESSION_WORK, MAX_RANGE_LENGTH, MAX_UNACCOUNTED_LIST_BYTES,
 };
 pub use logical_type::{LogicalType, VectorDimension};
+pub use numeric_function::NumericFunction;
 pub use regex::ValidatedRegex;
 #[doc(hidden)]
 pub use retained_heap::{checked_retained_heap_sum, RetainedHeapBytes};

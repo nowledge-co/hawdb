@@ -311,6 +311,37 @@ pub enum ProjectionExpression {
     },
     /// `{key: expression, ...}`; keys are unique.
     MapLiteral(Vec<(String, ProjectionExpression)>),
+    /// `abs`, `ceil`, `floor`, `round`, `sign` or `sqrt`.
+    NumericFunction {
+        function: hawdb_core::NumericFunction,
+        argument: Box<ProjectionExpression>,
+    },
+    /// `reduce(accumulator = initial, variable IN list | expression)`.
+    Reduce(Box<ReduceProjection>),
+    /// `startNode(r)` or `endNode(r)`: the stored source or target node of
+    /// the relationship bound to `variable`, as a node value. NULL when the
+    /// variable is NULL (an unmatched OPTIONAL MATCH).
+    RelationshipEndpoint {
+        endpoint: hawdb_core::RelationshipEndpoint,
+        variable: String,
+        /// The two node variables of the single-hop pattern step that binds
+        /// `variable`, in pattern order. The stored source or target is the
+        /// one whose id matches; no other row variable is consulted. Planning
+        /// resolves them after binding; `None` only before that pass.
+        endpoints: Option<[String; 2]>,
+    },
+}
+
+/// A `reduce` fold. `accumulator` and `variable` are visible only to
+/// `expression`, as [`ProjectionExpression::LocalVariable`]; `initial` and
+/// `list` read the enclosing scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReduceProjection {
+    pub accumulator: String,
+    pub initial: ProjectionExpression,
+    pub variable: String,
+    pub list: ProjectionExpression,
+    pub expression: ProjectionExpression,
 }
 
 /// A list comprehension. `variable` is visible only to `predicate` and
@@ -430,7 +461,14 @@ impl ProjectionExpression {
             | Self::Conversion {
                 argument: expression,
                 ..
+            }
+            | Self::NumericFunction {
+                argument: expression,
+                ..
             } => visit(expression),
+            Self::Reduce(reduce) => {
+                visit(&reduce.initial) && visit(&reduce.list) && visit(&reduce.expression)
+            }
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {
@@ -503,7 +541,22 @@ impl ProjectionExpression {
             | Self::Conversion {
                 argument: expression,
                 ..
+            }
+            | Self::NumericFunction {
+                argument: expression,
+                ..
             } => visit(expression)?,
+            Self::Reduce(reduce) => {
+                let ReduceProjection {
+                    initial,
+                    list,
+                    expression,
+                    ..
+                } = reduce.as_mut();
+                visit(initial)?;
+                visit(list)?;
+                visit(expression)?;
+            }
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {
@@ -1035,6 +1088,22 @@ impl hawdb_core::RetainedHeapBytes for ProjectionExpression {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(function),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(column),
             ]),
+            Self::NumericFunction { function, argument } => {
+                hawdb_core::checked_retained_heap_sum([
+                    hawdb_core::RetainedHeapBytes::retained_heap_bytes(function),
+                    hawdb_core::RetainedHeapBytes::retained_heap_bytes(argument),
+                ])
+            }
+            Self::Reduce(reduce) => hawdb_core::RetainedHeapBytes::retained_heap_bytes(reduce),
+            Self::RelationshipEndpoint {
+                endpoint,
+                variable,
+                endpoints,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(endpoint),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(variable),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(endpoints),
+            ]),
         }
     }
 }
@@ -1057,6 +1126,15 @@ hawdb_core::impl_retained_heap_for_struct!(ListComprehensionProjection {
     list,
     predicate,
     projection,
+});
+
+// Retained query ownership: ReduceProjection.
+hawdb_core::impl_retained_heap_for_struct!(ReduceProjection {
+    accumulator,
+    initial,
+    variable,
+    list,
+    expression,
 });
 
 // Retained query ownership: SortItem.

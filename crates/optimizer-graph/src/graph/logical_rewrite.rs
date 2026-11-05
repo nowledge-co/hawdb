@@ -443,6 +443,8 @@ fn collect_projection_columns(
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
@@ -480,6 +482,7 @@ fn collect_projection_columns(
         | ProjectionExpression::Property { .. }
         | ProjectionExpression::Id { .. }
         | ProjectionExpression::RelationshipType { .. }
+        | ProjectionExpression::RelationshipEndpoint { .. }
         | ProjectionExpression::DatePart { .. }
         | ProjectionExpression::DefaultIfNullOrEq { .. }
         | ProjectionExpression::DefaultIfNull { .. }
@@ -504,6 +507,8 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
@@ -530,6 +535,7 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         | ProjectionExpression::Property { .. }
         | ProjectionExpression::Id { .. }
         | ProjectionExpression::RelationshipType { .. }
+        | ProjectionExpression::RelationshipEndpoint { .. }
         | ProjectionExpression::Literal(_)
         | ProjectionExpression::DatePart { .. }
         | ProjectionExpression::DefaultIfNullOrEq { .. }

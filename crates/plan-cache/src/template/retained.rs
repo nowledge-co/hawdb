@@ -100,6 +100,17 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
         | E::Id { variable }
         | E::RelationshipType { variable }
         | E::Column(variable) => Some(variable.capacity()),
+        E::RelationshipEndpoint {
+            variable,
+            endpoints,
+            ..
+        } => variable.capacity().checked_add(
+            endpoints
+                .iter()
+                .flatten()
+                .map(String::capacity)
+                .sum::<usize>(),
+        ),
         E::Property { variable, property }
         | E::DatePart {
             part: _,
@@ -122,6 +133,10 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
         E::Coalesce(values) => vector(values, expression_bytes),
         E::Lower(value)
         | E::Conversion {
+            function: _,
+            argument: value,
+        }
+        | E::NumericFunction {
             function: _,
             argument: value,
         }
@@ -259,6 +274,15 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
                     .projection
                     .as_ref()
                     .map_or(Some(0), expression_bytes),
+            ])
+        }),
+        E::Reduce(reduce) => boxed(reduce.as_ref(), |reduce| {
+            sum([
+                Some(reduce.accumulator.capacity()),
+                Some(reduce.variable.capacity()),
+                expression_bytes(&reduce.initial),
+                expression_bytes(&reduce.list),
+                expression_bytes(&reduce.expression),
             ])
         }),
         E::LocalVariable { name, property } => name

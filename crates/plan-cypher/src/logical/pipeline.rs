@@ -18,6 +18,7 @@ use hawdb_cypher::{
     ProjectionClause, QueryPipeline, RelationshipPattern,
 };
 
+mod endpoints;
 mod imports;
 mod mutation;
 mod normalize;
@@ -189,6 +190,15 @@ impl Scope {
 }
 
 fn bind_pipeline(
+    query: &QueryPipeline,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    let mut plan = bind_pipeline_clauses(query, parameters)?;
+    endpoints::resolve(&mut plan)?;
+    Ok(plan)
+}
+
+fn bind_pipeline_clauses(
     query: &QueryPipeline,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
@@ -1718,6 +1728,8 @@ fn reads_only_group_keys(expression: &ProjectionExpression, keys: &[Projection])
         | ProjectionExpression::ListFunction { .. }
         | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. } => {
             expression.all_children(|child| reads_only_group_keys(child, keys))

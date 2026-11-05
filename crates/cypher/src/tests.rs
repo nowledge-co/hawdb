@@ -178,6 +178,7 @@ mod default_pipeline;
 mod list_functions;
 mod list_literals;
 mod load_csv;
+mod math_reduce_endpoints;
 mod migration_corpus;
 mod order_by_expressions;
 mod source_spans;

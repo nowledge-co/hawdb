@@ -1971,6 +1971,8 @@ fn collect_projection_properties(
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
@@ -1980,6 +1982,8 @@ fn collect_projection_properties(
         ProjectionExpression::LocalVariable { .. } => true,
         ProjectionExpression::Variable { .. }
         | ProjectionExpression::RelationshipType { .. }
+        // The endpoint is a whole node value the expression does not name.
+        | ProjectionExpression::RelationshipEndpoint { .. }
         | ProjectionExpression::Column(_)
         | ProjectionExpression::ColumnProperty { .. }
         | ProjectionExpression::Path { .. }

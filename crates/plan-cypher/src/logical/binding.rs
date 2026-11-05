@@ -1443,10 +1443,26 @@ pub(super) fn collect_scalar_expression_variables(
         ScalarExpressionKind::Variable(variable)
         | ScalarExpressionKind::Property { variable, .. }
         | ScalarExpressionKind::Id(variable)
-        | ScalarExpressionKind::RelationshipType(variable) => {
+        | ScalarExpressionKind::RelationshipType(variable)
+        | ScalarExpressionKind::RelationshipEndpoint { variable, .. } => {
             variables.insert(variable.clone());
         }
         ScalarExpressionKind::Value(_) => {}
+        ScalarExpressionKind::Reduce {
+            accumulator,
+            initial,
+            variable,
+            list,
+            expression,
+        } => {
+            collect_scalar_expression_variables(initial, variables);
+            collect_scalar_expression_variables(list, variables);
+            let mut body = BTreeSet::new();
+            collect_scalar_expression_variables(expression, &mut body);
+            body.remove(accumulator);
+            body.remove(variable);
+            variables.extend(body);
+        }
         ScalarExpressionKind::Coalesce(expressions) => {
             for expression in expressions {
                 collect_scalar_expression_variables(expression, variables);
@@ -1508,6 +1524,7 @@ pub(super) fn collect_scalar_expression_variables(
         | ScalarExpressionKind::List(_)
         | ScalarExpressionKind::ListIndex { .. }
         | ScalarExpressionKind::Conversion { .. }
+        | ScalarExpressionKind::NumericFunction { .. }
         | ScalarExpressionKind::ListSlice { .. }
         | ScalarExpressionKind::TemporalFunction { .. }
         | ScalarExpressionKind::PropertyAccess { .. }
