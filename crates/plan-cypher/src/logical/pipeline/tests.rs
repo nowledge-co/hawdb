@@ -528,6 +528,65 @@ fn plans_composed_and_aggregate_order_keys() {
 }
 
 #[test]
+fn aggregating_projections_reject_order_keys_outside_their_groups() {
+    // A hidden key over an unprojected value would become a grouping key and
+    // split the groups, whatever the key's form (#1408).
+    for (query, key) in [
+        (
+            "MATCH (m:Memory) RETURN m.kind AS kind, count(*) AS c ORDER BY m.importance",
+            "'m.importance'",
+        ),
+        (
+            "MATCH (m:Memory) RETURN m.kind AS kind, count(*) AS c ORDER BY id(m)",
+            "'id(m)'",
+        ),
+        (
+            "MATCH (m:Memory) RETURN count(*) AS c ORDER BY m.kind DESC",
+            "'m.kind'",
+        ),
+        (
+            "MATCH (m:Memory) WITH m, m.importance AS importance \
+             WITH m.kind AS kind, count(*) AS c ORDER BY importance RETURN kind, c",
+            "'importance'",
+        ),
+        (
+            "MATCH (m:Memory) RETURN m.kind AS kind, count(*) AS c ORDER BY m.importance + 1",
+            "expression",
+        ),
+    ] {
+        let error = plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap_err();
+        let HawDBError::Semantic(message) = &error else {
+            panic!("{query}: {error:?}");
+        };
+        assert!(
+            message.starts_with(&format!(
+                "ORDER BY key {key} is not in scope after an aggregating RETURN or WITH"
+            )),
+            "{query}: {message}"
+        );
+    }
+    // Projected names, aggregates and keys equal to a projected grouping
+    // expression order the existing groups.
+    for query in [
+        "MATCH (m:Memory) RETURN m.kind AS kind, count(*) AS c ORDER BY kind, c DESC",
+        "MATCH (m:Memory) RETURN m.kind AS kind, count(*) AS c ORDER BY m.kind",
+        "MATCH (m:Memory) RETURN m.kind, count(*) AS c ORDER BY m.kind",
+        "MATCH (m:Memory) WITH m.kind AS kind, count(*) AS c ORDER BY m.kind LIMIT 1 \
+         RETURN kind, c",
+    ] {
+        if let Err(error) = plan_normalized_pipeline_query(query, &BTreeMap::new()) {
+            panic!("{query}: {error}");
+        }
+    }
+    // A non-aggregating projection still sorts by an unprojected value.
+    plan_normalized_pipeline_query(
+        "MATCH (m:Memory) RETURN m.kind AS kind ORDER BY m.importance, id(m)",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+}
+
+#[test]
 fn normalizes_native_graph_columns_in_hidden_order_expressions() {
     let plan = plan_normalized_pipeline_query(
         "MATCH (s:Source) \

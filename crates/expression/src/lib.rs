@@ -634,9 +634,52 @@ pub enum SortDirection {
     Desc,
 }
 
+impl SortDirection {
+    /// Orders two evaluated sort-key values in this direction with openCypher
+    /// `ORDER BY` semantics: `NULL` is greater than every other value, so it
+    /// sorts last ascending and first descending. Non-null values keep
+    /// [`Value`]'s total order.
+    ///
+    /// This is the ordering contract of every [`SortItem`]; it deliberately
+    /// differs from `Value`'s `Ord`, which ranks `NULL` lowest for sets, maps,
+    /// grouping and index keys. SQL callers that share the sort operators
+    /// encode their `NULLS FIRST`/`NULLS LAST` placement into a non-null
+    /// ranked key first, so this placement never applies to them.
+    pub fn compare(self, left: &Value, right: &Value) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let ordering = match (left, right) {
+            (Value::Null, Value::Null) => Ordering::Equal,
+            (Value::Null, _) => Ordering::Greater,
+            (_, Value::Null) => Ordering::Less,
+            (left, right) => left.cmp(right),
+        };
+        match self {
+            Self::Asc => ordering,
+            Self::Desc => ordering.reverse(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sort_direction_places_null_like_open_cypher() {
+        let mut values = vec![Value::Int(2), Value::Null, Value::Int(1), Value::Null];
+        values.sort_by(|left, right| SortDirection::Asc.compare(left, right));
+        assert_eq!(
+            values,
+            [Value::Int(1), Value::Int(2), Value::Null, Value::Null]
+        );
+        values.sort_by(|left, right| SortDirection::Desc.compare(left, right));
+        assert_eq!(
+            values,
+            [Value::Null, Value::Null, Value::Int(2), Value::Int(1)]
+        );
+        // `Value`'s own order is unchanged: NULL stays the least value.
+        assert!(Value::Null < Value::Int(i64::MIN));
+    }
 
     #[test]
     fn expression_ir_composes_boolean_and_scalar_nodes() {

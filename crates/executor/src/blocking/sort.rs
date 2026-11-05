@@ -84,10 +84,8 @@ fn compare_sort_values(
 ) -> Ordering {
     for ((left, direction), (right, other_direction)) in left.iter().zip(right) {
         debug_assert_eq!(direction, other_direction);
-        let ordering = match direction {
-            SortDirection::Asc => left.cmp(right),
-            SortDirection::Desc => left.cmp(right).reverse(),
-        };
+        // openCypher NULL placement; see `SortDirection::compare`.
+        let ordering = direction.compare(left, right);
         if ordering != Ordering::Equal {
             return ordering;
         }

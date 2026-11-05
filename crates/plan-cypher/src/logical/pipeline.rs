@@ -1557,24 +1557,7 @@ fn bind_projection(
             Err(error) => {
                 let mut items =
                     plan_sort_items(&graph, &columns, std::slice::from_ref(item), parameters)?;
-                let planned_item = items.pop().expect("one ORDER BY expression");
-                // After an aggregating projection only grouped values are in
-                // scope. An expression key that reads anything else would
-                // become a hidden grouping key and silently split the
-                // groups, so it fails instead. Plain property, column and id
-                // keys keep their earlier hidden-key behaviour (#1408).
-                if let SortKey::Expression(expression) = &planned_item.key
-                    && matches!(
-                        item.expression,
-                        OrderExpression::Projection(_) | OrderExpression::Value(_)
-                    )
-                    && planned
-                        .group_keys()
-                        .is_some_and(|keys| !reads_only_group_keys(expression, keys))
-                {
-                    return Err(error);
-                }
-                let item = planned_item;
+                let item = items.pop().expect("one ORDER BY expression");
                 let expression = match item.key {
                     SortKey::Column(column) => ProjectionExpression::Column(column),
                     SortKey::Property { variable, property } => {
@@ -1583,6 +1566,21 @@ fn bind_projection(
                     SortKey::Id { variable } => ProjectionExpression::Id { variable },
                     SortKey::Expression(expression) => expression,
                 };
+                // After an aggregating projection only projected names are in
+                // scope. A key that reads anything other than a grouped value
+                // would become a hidden grouping key and silently split the
+                // groups, so any key form fails instead (#1408). Keys equal
+                // to a projected grouping expression, such as `n.lastName`
+                // for `n.lastName AS last`, remain valid.
+                if planned
+                    .group_keys()
+                    .is_some_and(|keys| !reads_only_group_keys(&expression, keys))
+                {
+                    return Err(unprojected_aggregate_order_key(
+                        &projection.order_by[index].expression,
+                        &error,
+                    ));
+                }
                 let name = format!("\0order.{index}");
                 append_order_projection(
                     &mut planned,
@@ -1673,6 +1671,25 @@ pub fn unique_projection_names(names: Vec<String>) -> Vec<String> {
             candidate
         })
         .collect()
+}
+
+/// The semantic error for an `ORDER BY` key that reads values an aggregating
+/// `RETURN` or `WITH` does not project.
+fn unprojected_aggregate_order_key(key: &OrderExpression, cause: &HawDBError) -> HawDBError {
+    let key = match key {
+        OrderExpression::Property { variable, property } => format!("'{variable}.{property}'"),
+        OrderExpression::Id { variable } => format!("'id({variable})'"),
+        OrderExpression::Column(name) => format!("'{name}'"),
+        OrderExpression::Value(_) | OrderExpression::Projection(_) => "expression".to_string(),
+    };
+    let cause = match cause {
+        HawDBError::Semantic(message) => message.clone(),
+        other => other.to_string(),
+    };
+    HawDBError::Semantic(format!(
+        "ORDER BY key {key} is not in scope after an aggregating RETURN or WITH ({cause}); \
+         order by a projected name, an aggregate or a projected grouping expression instead"
+    ))
 }
 
 /// Whether `expression` reads only values an aggregating projection groups
