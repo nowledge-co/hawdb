@@ -737,7 +737,7 @@ def _sql_value(value: Any) -> Any:
     if key not in ("$localdatetime", "$datetime") or type(text) is not str:
         return value
     _, dot, fraction = text.partition(".")
-    if dot and sum(map(str.isdigit, fraction)) > 6:
+    if dot and len(fraction) - len(fraction.lstrip("0123456789")) > 6:
         return value
     try:
         parsed = datetime.datetime.fromisoformat(text)

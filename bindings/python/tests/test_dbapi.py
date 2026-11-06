@@ -908,3 +908,13 @@ def test_cursor_timestamp_conversion_keeps_unrepresentable_values():
     assert dbapi._sql_value(
         {"$datetime": "2026-01-01T00:00:00+02:00"}
     ) == datetime.datetime(2025, 12, 31, 22, tzinfo=datetime.timezone.utc)
+    # Offset digits are not fractional digits: six fractional digits plus an
+    # offset are still exact in Python.
+    assert dbapi._sql_value(
+        {"$datetime": "2026-01-01T00:00:00.123456+02:00"}
+    ) == datetime.datetime(
+        2025, 12, 31, 22, 0, 0, 123456, tzinfo=datetime.timezone.utc
+    )
+    assert dbapi._sql_value({"$datetime": "2026-01-01T00:00:00.1234567+02:00"}) == {
+        "$datetime": "2026-01-01T00:00:00.1234567+02:00"
+    }
