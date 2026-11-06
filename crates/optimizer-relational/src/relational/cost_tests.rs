@@ -50,12 +50,22 @@ fn index(rows: usize, covering: bool) -> RelationalAccessPathDescriptor {
     }
 }
 
+fn primary_key_range(rows: usize) -> RelationalAccessPathDescriptor {
+    RelationalAccessPathDescriptor {
+        kind: RelationalAccessPathKind::PrimaryKeyRange,
+        name: "primary_key_range".into(),
+        requires_row_fetch: false,
+        ..index(rows, false)
+    }
+}
+
 // Keep the oracle in a wider type and independent of production cost helpers.
 fn access_oracle(path: &RelationalAccessPathDescriptor) -> [u64; 5] {
     let n = path.estimated_rows.max(1) as u128;
     let (cpu, random, sequential) = match path.kind {
         RelationalAccessPathKind::FullScan => (n + 4, 0, n),
         RelationalAccessPathKind::PrimaryKey => (n, n, 0),
+        RelationalAccessPathKind::PrimaryKeyRange => (n, 1, n),
         RelationalAccessPathKind::Index => (
             n * (1 + u128::from(path.requires_row_fetch)),
             1 + n * u128::from(path.requires_row_fetch),
@@ -190,6 +200,7 @@ fn snapshot_access_oracle(
             n.max(u128::from(table_rows)),
         ),
         RelationalAccessPathKind::PrimaryKey => (n, n, 0),
+        RelationalAccessPathKind::PrimaryKeyRange => (n, 1, n),
         RelationalAccessPathKind::Index => (
             n * (1 + u128::from(path.requires_row_fetch)),
             1 + n * u128::from(path.requires_row_fetch),
@@ -213,6 +224,17 @@ fn snapshot_access_oracle(
         RelationalAccessPathKind::PrimaryKey => {
             cpu += n * (2 + search_steps);
             random += n * search_steps * 3;
+        }
+        RelationalAccessPathKind::PrimaryKeyRange => {
+            // One positioned search reaches the first page; later pages
+            // holding the interval are read in order.
+            let following = (n * u128::from(table_pages))
+                .div_ceil(u128::from(table_rows))
+                .clamp(1, u128::from(table_pages))
+                - 1;
+            cpu += 2 + search_steps + following * 3;
+            random += search_steps * 3;
+            sequential += following * 3;
         }
         RelationalAccessPathKind::Index if path.requires_row_fetch => {
             cpu += n * (2 + search_steps);
@@ -327,7 +349,13 @@ fn snapshot_cost_context_preserves_cardinality_covering_and_saturation() {
         point.index_columns.truncate(1);
         point.unique_point = true;
         point.requires_row_fetch = false;
-        for path in [scan(rows), index(rows, false), index(rows, true), point] {
+        for path in [
+            scan(rows),
+            index(rows, false),
+            index(rows, true),
+            point,
+            primary_key_range(rows),
+        ] {
             path.validate().unwrap();
             assert_eq!(
                 estimate_relational_access_path_cost(&path),
@@ -413,7 +441,12 @@ fn snapshot_cost_context_composes_probe_and_materialized_work_once() {
 #[test]
 fn access_components_distinguish_scan_navigation_and_row_fetches() {
     for rows in [0, 1, 2, 10, 1_000, usize::MAX] {
-        for path in [scan(rows), index(rows, true), index(rows, false)] {
+        for path in [
+            scan(rows),
+            index(rows, true),
+            index(rows, false),
+            primary_key_range(rows),
+        ] {
             assert_cost(&path);
         }
         let mut point = index(rows, false);
@@ -567,6 +600,9 @@ fn campaign(cases: usize) {
         point.name = "primary_key".into();
         assert_cost(&point);
         paths.push(point);
+        let interval = primary_key_range(next() % rows.saturating_add(1).max(1));
+        assert_cost(&interval);
+        paths.push(interval);
         for ordinal in 0..7 {
             let mut p = index(next() % rows.saturating_add(1).max(1), next() % 2 == 0);
             p.name = format!("index_{ordinal}");
@@ -684,4 +720,39 @@ fn capped_scan_cannot_beat_a_selective_covering_access_by_hiding_input() {
             .unwrap(),
         covering
     );
+}
+
+#[test]
+fn clustered_interval_needs_no_row_fetch_and_rejects_point_metadata() {
+    for rows in [1, 64, 3_000] {
+        let interval = primary_key_range(rows);
+        for context in [
+            RelationalAccessCostContext::default(),
+            snapshot_context(9_000, 64),
+        ] {
+            let interval_cost =
+                estimate_relational_access_path_cost_with_context(&interval, context);
+            for other in [index(rows, false), scan(9_000)] {
+                assert!(
+                    interval_cost.cost
+                        < estimate_relational_access_path_cost_with_context(&other, context).cost,
+                    "{rows} {other:?}"
+                );
+            }
+        }
+    }
+    let mut invalid = primary_key_range(1);
+    invalid.unique_point = true;
+    assert!(invalid.validate().is_err());
+    let mut invalid = primary_key_range(1);
+    invalid.requires_row_fetch = true;
+    assert!(invalid.validate().is_err());
+    let mut invalid = primary_key_range(1);
+    invalid.equality_prefix_len = 0;
+    invalid.access_columns.clear();
+    assert!(invalid.validate().is_err());
+    let mut invalid = primary_key_range(1);
+    invalid.reverse_order = true;
+    invalid.order_prefix_len = 1;
+    assert!(invalid.validate().is_err());
 }

@@ -15,7 +15,7 @@
 use super::{
     elapsed_nanos, execute_aggregate_select, execute_blocking_projection,
     execute_ordered_index_projection, execute_streaming_projection, format_relational_explain,
-    plan_relational_field_plan, planned_operator_cardinality_profiles_with_cost_contexts,
+    plan_relational_execution_field_plan, planned_operator_cardinality_profiles_with_cost_contexts,
     prepared_access_descriptors, AdmittedRelationalExecution, BindingId, HawDBError, Instant,
     PlannedJoin, PreparedRelationalExecutionMode, PreparedRelationalSelect, QueryRows, RefCell,
     RelationalIndexRuntime, RelationalPhysicalJoinExecution, RelationalPipelineState,
@@ -136,7 +136,12 @@ pub(super) fn execute_select<'state>(
     }
     let default_task = hawdb_core::RuntimeTaskContext::default();
     let row_task = task_context.unwrap_or(&default_task);
-    let field_plan = plan_relational_field_plan(select, state)?;
+    let field_plan = plan_relational_execution_field_plan(
+        select,
+        state,
+        prepared.execution.mode == PreparedRelationalExecutionMode::StreamingProjection
+            && !select.order_by.is_empty(),
+    )?;
     let (row_runtime, index_context) = match planning_snapshot {
         Some(snapshot) => (
             row_read_mode.open_runtime_with_snapshot(

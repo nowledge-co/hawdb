@@ -24,6 +24,10 @@ pub enum RelationalAccessPathKind {
     FullScan,
     PrimaryKey,
     Index,
+    /// An ordered interval of clustered primary-key rows: an equality prefix
+    /// shorter than the key, optionally bounded on the next key column. Rows
+    /// are read in place, without a secondary locator fetch.
+    PrimaryKeyRange,
 }
 
 /// Conservative row-work estimate for an index nested-loop join.
@@ -85,8 +89,10 @@ impl RelationalAccessPathDescriptor {
             return Err("relational range metadata requires an ordered index access");
         }
         if let Some(range) = &self.range
-            && (self.kind != RelationalAccessPathKind::Index
-                || self.index_columns.get(self.equality_prefix_len) != Some(&range.column)
+            && (!matches!(
+                self.kind,
+                RelationalAccessPathKind::Index | RelationalAccessPathKind::PrimaryKeyRange
+            ) || self.index_columns.get(self.equality_prefix_len) != Some(&range.column)
                 || (!range.empty
                     && range.lower_inclusive.is_none()
                     && range.upper_inclusive.is_none()))
@@ -108,6 +114,17 @@ impl RelationalAccessPathDescriptor {
         }
         if self.covering && self.requires_row_fetch {
             return Err("covering relational access must not require a row fetch");
+        }
+        if self.kind == RelationalAccessPathKind::PrimaryKeyRange
+            && (self.unique_point
+                || self.requires_row_fetch
+                || (self.range.is_none()
+                    && (self.equality_prefix_len == 0
+                        || self.equality_prefix_len >= self.index_columns.len())))
+        {
+            return Err(
+                "relational primary-key range must constrain a proper key prefix without a row fetch",
+            );
         }
         Ok(())
     }

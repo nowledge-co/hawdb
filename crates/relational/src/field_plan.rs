@@ -173,17 +173,28 @@ pub fn plan_relational_field_plan(
     select: &SelectStatement,
     state: &RelationalState,
 ) -> Result<RelationalFieldPlan> {
+    plan_relational_execution_field_plan(select, state, false)
+}
+
+/// Plans fields for the selected execution mode. Rows streamed in their
+/// requested order are projected during the scan, so an ordered stream reads
+/// its output fields instead of deferring them behind a sort.
+pub fn plan_relational_execution_field_plan(
+    select: &SelectStatement,
+    state: &RelationalState,
+    streams_ordered_rows: bool,
+) -> Result<RelationalFieldPlan> {
     let has_aggregate =
         select.having.is_some() || select.projection.iter().any(projection_contains_aggregate);
     let output_fields = plan_requested_fields(select, state)?;
     let projects_before_order = order_by_uses_expression_alias(select)?;
-    let scan_fields = if (!select.order_by.is_empty()
+    let defers_output_fields = (!select.order_by.is_empty()
         && !select.distinct
         && !has_aggregate
         && !projects_before_order)
         || has_aggregate
-        || !select.group_by.is_empty()
-    {
+        || !select.group_by.is_empty();
+    let scan_fields = if defers_output_fields && !streams_ordered_rows {
         plan_scan_fields(select, state)?
     } else {
         output_fields.clone()

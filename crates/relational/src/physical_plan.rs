@@ -40,7 +40,8 @@ use hawdb_sql::{
     RelationalSqlStageTimings, SelectStatement, SqlColumnRef, SqlJoinKind, SqlPredicate,
 };
 use hawdb_storage::relational::{
-    RelationalIndexRangeScan, RelationalIndexScanDirection, RelationalKey, RelationalState,
+    RelationalIndexRangeScan, RelationalIndexScanDirection, RelationalKey,
+    RelationalPrimaryKeyRange, RelationalState,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -55,6 +56,8 @@ pub struct RelationalPhysicalOutputBindingRef<'a> {
 #[derive(Debug, Clone)]
 pub enum RelationalBaseAccess {
     PrimaryKey(RelationalKey),
+    /// Clustered rows inside one bound primary-key interval, in key order.
+    PrimaryKeyRange(RelationalPrimaryKeyRange),
     Index {
         name: String,
         scan: RelationalIndexRangeScan,
@@ -1157,8 +1160,22 @@ impl PreparedRelationalExecutionDescriptor {
                     .as_deref()
                     .unwrap_or(&select.from_table().name),
             );
-        let mode = if ordered_index_projection {
+        // A clustered interval already yields rows in the requested key order,
+        // and the streaming pipeline still evaluates every residual predicate.
+        let ordered_primary_key_range = !select.order_by.is_empty()
+            && access_order_by.len() == select.order_by.len()
+            && access_plan.base_access.descriptor.kind == RelationalAccessPathKind::PrimaryKeyRange
+            && access_plan.base_access.descriptor.order_prefix_len == access_order_by.len()
+            && select.joins.is_empty()
+            && !select.distinct
+            && !has_aggregate
+            && select.group_by.is_empty();
+        let mode = if ordered_index_projection
+            && access_plan.base_access.descriptor.kind == RelationalAccessPathKind::Index
+        {
             PreparedRelationalExecutionMode::OrderedIndexProjection
+        } else if ordered_primary_key_range {
+            PreparedRelationalExecutionMode::StreamingProjection
         } else if has_aggregate || !select.group_by.is_empty() {
             PreparedRelationalExecutionMode::Aggregate
         } else if !select.order_by.is_empty() || select.distinct {
@@ -1372,6 +1389,10 @@ pub fn base_access_matches_descriptor(candidate: &RelationalAccessCandidate) -> 
             candidate.descriptor.name == *name
                 && candidate.descriptor.equality_prefix_len == scan.prefix.0.len()
         }
+        (RelationalAccessPathKind::PrimaryKeyRange, RelationalBaseAccess::PrimaryKeyRange(_)) => {
+            candidate.descriptor.equality_prefix_len < candidate.descriptor.index_columns.len()
+                && !candidate.descriptor.reverse_order
+        }
         (RelationalAccessPathKind::FullScan, RelationalBaseAccess::FullScan) => {
             candidate.descriptor.equality_prefix_len == 0
         }
@@ -1439,6 +1460,7 @@ pub fn planned_tree_operator_cardinality_profiles_with_cost_contexts(
         operator: match base.access.descriptor().kind {
             RelationalAccessPathKind::FullScan => RelationalOperatorKind::TableFullScan,
             RelationalAccessPathKind::PrimaryKey => RelationalOperatorKind::TablePointGet,
+            RelationalAccessPathKind::PrimaryKeyRange => RelationalOperatorKind::TableRangeScan,
             RelationalAccessPathKind::Index => RelationalOperatorKind::IndexRangeScan,
         },
         table: base.table.clone(),

@@ -5188,6 +5188,19 @@ impl RelationalState {
             .flat_map(|segment| segment.rows.iter())
     }
 
+    /// Resident rows inside one primary-key interval, in primary-key order.
+    /// An out-of-core state must read the interval through its row snapshot.
+    pub fn rows_in_range(
+        &self,
+        table: &str,
+        range: &RelationalPrimaryKeyRange,
+    ) -> impl Iterator<Item = (&RelationalKey, &RelationalRow)> {
+        self.segments
+            .get(table)
+            .into_iter()
+            .flat_map(move |segment| segment.rows.range(Some(range.clone())))
+    }
+
     /// Metadata-only ordered seek for native full-source enumeration. A sparse
     /// row state must use its pinned canonical row reader, never an empty map.
     #[doc(hidden)]

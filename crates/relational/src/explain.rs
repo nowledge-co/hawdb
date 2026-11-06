@@ -267,6 +267,7 @@ pub fn format_relational_explain(
             || match base_access_path.kind {
                 RelationalAccessPathKind::FullScan => "TableFullScanExec",
                 RelationalAccessPathKind::PrimaryKey => "TablePointGetExec",
+                RelationalAccessPathKind::PrimaryKeyRange => "TableRangeScanExec",
                 RelationalAccessPathKind::Index => "IndexRangeScanExec",
             },
             |profile| profile.operator.as_str(),
@@ -476,6 +477,9 @@ fn explain_access_object(table: &str, descriptor: &RelationalAccessPathDescripto
     match descriptor.kind {
         RelationalAccessPathKind::FullScan => format!("table:{table}"),
         RelationalAccessPathKind::PrimaryKey => format!("table:{table}, primary_key"),
+        RelationalAccessPathKind::PrimaryKeyRange => {
+            format!("table:{table}, primary_key_range")
+        }
         RelationalAccessPathKind::Index => {
             format!("table:{table}, index:{}", descriptor.name)
         }
@@ -502,7 +506,10 @@ fn relational_index_evidence<'a>(
             hawdb_storage::relational::RELATIONAL_PRIMARY_INDEX_NAME
         }
         RelationalAccessPathKind::Index => descriptor.name.as_str(),
-        RelationalAccessPathKind::FullScan => return None,
+        // Clustered intervals read row pages; row evidence describes them.
+        RelationalAccessPathKind::FullScan | RelationalAccessPathKind::PrimaryKeyRange => {
+            return None
+        }
     };
     output
         .index_execution_evidence

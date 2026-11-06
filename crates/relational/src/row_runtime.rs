@@ -27,13 +27,14 @@ use hawdb_storage::{
     },
     relational::{
         encode_relational_primary_key, RelationalError, RelationalHydrationBudget, RelationalKey,
-        RelationalProjectedField, RelationalProjectedRow, RelationalProjectedRowView,
-        RelationalRow, RelationalRowPageDemandReadError, RelationalRowPageProjectedFields,
-        RelationalRowPageProjectedRangeFields, RelationalRowPageReadViewIdentity,
-        RelationalRowPageSnapshotPointReport, RelationalRowPageSnapshotPointsReport,
-        RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
-        RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
-        RelationalRowPageSnapshotRowSource, RelationalState, RelationalValueRef,
+        RelationalPrimaryKeyRange, RelationalProjectedField, RelationalProjectedRow,
+        RelationalProjectedRowView, RelationalRow, RelationalRowPageDemandReadError,
+        RelationalRowPageProjectedFields, RelationalRowPageProjectedRangeFields,
+        RelationalRowPageReadViewIdentity, RelationalRowPageSnapshotPointReport,
+        RelationalRowPageSnapshotPointsReport, RelationalRowPageSnapshotRangeReport,
+        RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
+        RelationalRowPageSnapshotReader, RelationalRowPageSnapshotRowSource, RelationalState,
+        RelationalValueRef,
     },
 };
 use std::cell::{Cell, RefCell};
@@ -698,20 +699,58 @@ impl<'a> RelationalRowRuntime<'a> {
     pub fn visit_all(
         &self,
         table: &str,
+        visit: impl FnMut(RelationalReadRow) -> Result<bool>,
+    ) -> Result<bool> {
+        self.visit_key_range(table, None, visit)
+    }
+
+    /// Visits the rows of one primary-key interval in key order. Row-page
+    /// snapshots seek the interval and merge their live overlay inside it.
+    pub fn visit_primary_key_range(
+        &self,
+        table: &str,
+        range: &RelationalPrimaryKeyRange,
+        visit: impl FnMut(RelationalReadRow) -> Result<bool>,
+    ) -> Result<bool> {
+        if range.is_empty() {
+            return Ok(true);
+        }
+        self.visit_key_range(table, Some(range), visit)
+    }
+
+    fn visit_key_range(
+        &self,
+        table: &str,
+        range: Option<&RelationalPrimaryKeyRange>,
         mut visit: impl FnMut(RelationalReadRow) -> Result<bool>,
     ) -> Result<bool> {
         let fields = self.fields.scan_fields(table)?;
         let hydration_fields = self.fields.scan_hydration_fields(table)?;
+        let (lower, upper) = range.map_or((Bound::Unbounded, Bound::Unbounded), |range| {
+            (range.lower.as_ref(), range.upper.as_ref())
+        });
         if self
             .projection
             .as_ref()
             .is_some_and(|projection| projection.tables.contains(table))
         {
-            return self.visit_projection_rows(table, fields, hydration_fields, &mut visit);
+            // Projection generations are planned as full scans; keep any
+            // interval exact rather than assuming their member order.
+            return self.visit_projection_rows(table, fields, hydration_fields, &mut |row| {
+                if std::ops::RangeBounds::contains(&(lower, upper), row.primary_key()) {
+                    visit(row)
+                } else {
+                    Ok(true)
+                }
+            });
         }
         match &self.backend {
             None => {
-                for (key, row) in self.state.rows(table) {
+                let rows: Box<dyn Iterator<Item = _>> = match range {
+                    None => Box::new(self.state.rows(table)),
+                    Some(range) => Box::new(self.state.rows_in_range(table, range)),
+                };
+                for (key, row) in rows {
                     self.task.checkpoint().map_err(|reason| {
                         HawDBError::Execution(format!("runtime task stopped: {reason}"))
                     })?;
@@ -739,8 +778,8 @@ impl<'a> RelationalRowRuntime<'a> {
                         RelationalRowPageProjectedRangeFields {
                             range: hawdb_storage::relational::RelationalRowPageProjectedRange {
                                 table,
-                                lower: Bound::Unbounded,
-                                upper: Bound::Unbounded,
+                                lower,
+                                upper,
                                 requested_fields: fields,
                             },
                             hydration_fields,

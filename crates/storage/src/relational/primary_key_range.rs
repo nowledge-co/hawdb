@@ -28,6 +28,18 @@ impl RelationalKeyRange {
         key_range(columns, predicate, None)
     }
 
+    /// Derive the interval for already-bound values: a complete-key equality
+    /// prefix followed by optional `(value, inclusive)` bounds on the next
+    /// ordered column. Callers must reject NULL and cross-domain values first;
+    /// the original predicate must still be evaluated.
+    pub fn from_prefix_bounds(
+        prefix: RelationalKey,
+        lower: Option<(&RelationalValue, bool)>,
+        upper: Option<(&RelationalValue, bool)>,
+    ) -> Result<Self, RelationalError> {
+        prefix_interval(prefix, lower, upper, None)
+    }
+
     pub fn is_empty(&self) -> bool {
         match (&self.lower, &self.upper) {
             (Bound::Included(left), Bound::Included(right)) => left > right,
@@ -248,6 +260,19 @@ fn key_range(
     if prefix_len == 0 && lower.is_none() && upper.is_none() {
         return Ok(None);
     }
+    prefix_interval(prefix, lower, upper, allocations).map(Some)
+}
+
+/// Converts an equality prefix and optional bounds on its next column into an
+/// interval over complete keys. Exclusive lower and inclusive upper bounds use
+/// the scalar successor, so a short key never admits a longer key tied with it.
+fn prefix_interval(
+    prefix: RelationalKey,
+    lower: Option<(&RelationalValue, bool)>,
+    upper: Option<(&RelationalValue, bool)>,
+    allocations: Option<&crate::background::CheckpointDecodeContext>,
+) -> Result<RelationalKeyRange, RelationalError> {
+    let prefix_len = prefix.0.len();
     let prefix_upper = if prefix_len == 0 {
         Bound::Unbounded
     } else {
@@ -274,10 +299,10 @@ fn key_range(
                 prefix_len + 1,
                 allocations,
             )?;
-            return Ok(Some(RelationalPrimaryKeyRange {
+            return Ok(RelationalPrimaryKeyRange {
                 lower: Bound::Excluded(copy_key(maximum.0.iter(), maximum.0.len(), allocations)?),
                 upper: Bound::Included(maximum),
-            }));
+            });
         }
     } else if prefix_len == 0 {
         Bound::Unbounded
@@ -298,12 +323,95 @@ fn key_range(
     } else {
         prefix_upper
     };
-    Ok(Some(RelationalPrimaryKeyRange { lower, upper }))
+    Ok(RelationalPrimaryKeyRange { lower, upper })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bounds on a middle key column must admit every longer key extending a
+    /// boundary value exactly when the comparison holds for that column.
+    #[test]
+    fn prefix_bounds_on_a_middle_column_cover_exactly_the_matching_longer_keys() {
+        let texts = ["", "\0", "a", "a\0", "b"];
+        let ints = [i64::MIN, -1, 0, 1, i64::MAX];
+        let mut keys = Vec::new();
+        for a in ints {
+            for b in texts {
+                for c in ints {
+                    keys.push(RelationalKey(vec![
+                        RelationalValue::BigInt(a),
+                        RelationalValue::Text(b.into()),
+                        RelationalValue::BigInt(c),
+                    ]));
+                }
+            }
+        }
+        let rows = RelationalRowPages::from_map(
+            keys.iter()
+                .map(|key| (key.clone(), RelationalRow::new(key.0.clone())))
+                .collect(),
+        );
+        let holds = |value: &RelationalValue, bound: Option<(&RelationalValue, bool)>, lower| {
+            bound.is_none_or(|(bound, inclusive)| match (lower, inclusive) {
+                (true, true) => value >= bound,
+                (true, false) => value > bound,
+                (false, true) => value <= bound,
+                (false, false) => value < bound,
+            })
+        };
+        let text_values = texts.map(|text| RelationalValue::Text(text.into()));
+        let int_values = ints.map(RelationalValue::BigInt);
+        for prefix_len in 0..3 {
+            let next_values: &[RelationalValue] = if prefix_len == 1 {
+                &text_values
+            } else {
+                &int_values
+            };
+            let prefixes: Vec<Vec<RelationalValue>> = match prefix_len {
+                0 => vec![vec![]],
+                1 => int_values.iter().map(|a| vec![a.clone()]).collect(),
+                _ => int_values
+                    .iter()
+                    .flat_map(|a| text_values.iter().map(move |b| vec![a.clone(), b.clone()]))
+                    .collect(),
+            };
+            let bounds = std::iter::once(None)
+                .chain(
+                    next_values
+                        .iter()
+                        .flat_map(|value| [Some((value, true)), Some((value, false))]),
+                )
+                .collect::<Vec<_>>();
+            for prefix in &prefixes {
+                for lower in &bounds {
+                    for upper in &bounds {
+                        let range = RelationalKeyRange::from_prefix_bounds(
+                            RelationalKey(prefix.clone()),
+                            *lower,
+                            *upper,
+                        )
+                        .unwrap();
+                        let expected = rows
+                            .iter()
+                            .filter(|(key, _)| {
+                                key.0[..prefix_len] == prefix[..]
+                                    && holds(&key.0[prefix_len], *lower, true)
+                                    && holds(&key.0[prefix_len], *upper, false)
+                            })
+                            .collect::<Vec<_>>();
+                        let actual = if range.is_empty() {
+                            Vec::new()
+                        } else {
+                            rows.range(Some(range.clone())).collect()
+                        };
+                        assert_eq!(actual, expected, "{prefix:?} {lower:?} {upper:?} {range:?}");
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn scalar_prefix_bounds_preserve_predicate_truth_and_encoded_key_order() {
