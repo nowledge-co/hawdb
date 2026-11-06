@@ -1,7 +1,7 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::manifest::{Cell, Frozen, Manifest, MAX_ARTIFACT_BYTES};
+use crate::manifest::{Cell, Frontend, Frozen, Manifest, MAX_ARTIFACT_BYTES};
 use hawdb::{
     Database, DatabaseConfig, DatabaseReadTransaction, HawDBError, QueryStreamOptions,
     RuntimeMemoryReservation, RuntimeTaskContext, SqlQueryRequest,
@@ -96,12 +96,24 @@ fn fixture(m: &Manifest, deadline: Instant) -> Result<Database, (Status, String)
             return Err((Status::TimedOut, "fixture setup deadline".into()));
         }
         let parameters = statement.values();
-        match catch_unwind(AssertUnwindSafe(|| {
-            db.query_sql_request(
+        match catch_unwind(AssertUnwindSafe(|| match m.frontend {
+            Frontend::Sql => db.query_sql_request(
                 SqlQueryRequest::new(&statement.sql)
                     .with_params(&parameters)
                     .with_task_context(&task),
-            )
+            ),
+            Frontend::Cypher => {
+                let parameters = parameters
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, value)| (format!("p{index}"), value))
+                    .collect();
+                db.query_request(
+                    hawdb::QueryRequest::new(&statement.sql)
+                        .with_params(&parameters)
+                        .with_task_context(&task),
+                )
+            }
         })) {
             Ok(Ok(_)) => {}
             Ok(Err(error)) => {
@@ -112,7 +124,7 @@ fn fixture(m: &Manifest, deadline: Instant) -> Result<Database, (Status, String)
     }
     Ok(db)
 }
-fn error_status(error: &HawDBError) -> Status {
+pub(crate) fn error_status(error: &HawDBError) -> Status {
     match error {
         HawDBError::Parse(_) | HawDBError::Semantic(_) => Status::GeneratorInvalid,
         HawDBError::CapabilityUnavailable { .. } | HawDBError::UnsupportedStorageFormat(_) => {
@@ -154,11 +166,14 @@ fn cost_json(cost: hawdb::RelationalJoinPlanningCost) -> Json {
     json!({"estimated_rows":cost.estimated_rows,"total":cost.cost,"cpu":cost.cpu,"random_access":cost.random_io,"sequential_access":cost.sequential_io,"output":cost.output_rows})
 }
 fn observe(
-    read: &DatabaseReadTransaction,
+    read: &mut DatabaseReadTransaction,
     case: &Case,
     m: &Manifest,
     remaining: Duration,
 ) -> Observation {
+    if m.frontend == Frontend::Cypher {
+        return crate::graph_statistics::observe(read, case, m, remaining);
+    }
     let parameters = case.statement.values();
     let task = RuntimeTaskContext::with_timeout(
         Duration::from_millis(m.attempt_timeout_ms).min(remaining),
@@ -275,7 +290,7 @@ fn omitted(epoch: u64, status: Status, reason: &str) -> Observation {
     }
 }
 fn cell_observation(
-    read: &DatabaseReadTransaction,
+    read: &mut DatabaseReadTransaction,
     cell: &Cell,
     m: &Manifest,
     remaining: Duration,
@@ -309,9 +324,9 @@ fn replay_before(frozen: &Frozen, cell: usize, deadline: Instant) -> Result<Obse
         Ok(db) => db,
         Err((status, reason)) => return Ok(omitted(0, status, &reason)),
     };
-    let read = db.begin_read_transaction().map_err(|e| e.to_string())?;
+    let mut read = db.begin_read_transaction().map_err(|e| e.to_string())?;
     Ok(cell_observation(
-        &read,
+        &mut read,
         target,
         &frozen.manifest,
         deadline.saturating_duration_since(Instant::now()),
@@ -359,7 +374,9 @@ pub fn run_with_progress(
         manifest_sha256: frozen.sha256.clone(),
         kind: if cost {
             "cost_baseline"
-        } else if m.protocol == query_workloads::cardinality::PROTOCOL {
+        } else if m.protocol == query_workloads::cardinality::PROTOCOL
+            || m.protocol == query_workloads::compressed_statistics::PROTOCOL
+        {
             "cardinality"
         } else {
             "sqlsmith_comparison"
@@ -395,7 +412,7 @@ pub fn run_with_progress(
         }
     };
     report.fixture_setup_ns = elapsed(campaign_start);
-    let read = db.begin_read_transaction().map_err(|e| e.to_string())?;
+    let mut read = db.begin_read_transaction().map_err(|e| e.to_string())?;
     let mut retained_bytes = 0usize;
     let mut stopped = None;
     let mut failed = BTreeSet::new();
@@ -418,7 +435,7 @@ pub fn run_with_progress(
             )
         } else {
             cell_observation(
-                &read,
+                &mut read,
                 &m.cells[cell],
                 m,
                 deadline.saturating_duration_since(Instant::now()),
@@ -538,7 +555,10 @@ fn schedule(m: &Manifest, cost: bool) -> Vec<(usize, String)> {
 }
 
 fn summarize(m: &Manifest, attempts: &[Attempt], replays: &[Replay], cost: bool) -> Json {
-    if !cost && m.protocol == query_workloads::cardinality::PROTOCOL {
+    if !cost
+        && (m.protocol == query_workloads::cardinality::PROTOCOL
+            || m.protocol == query_workloads::compressed_statistics::PROTOCOL)
+    {
         return json!({"kind":"cardinality","cases":m.cells.len(),"completed":attempts.iter().filter(|a| a.observation.status == Status::Completed).count(),"note":"use ce-report for operator-level error and ground-truth checks"});
     }
     let mut cohorts = vec![];

@@ -365,6 +365,10 @@ pub use hawdb_bootstrap::{
 };
 pub use hawdb_core::{temporal, time, TemporalDuration, Uuid};
 pub use hawdb_core::{
+    CompressedHistogram, HistogramBucket, MostCommonValue, PropertyCardinalityEstimate,
+    PropertyEstimateSource,
+};
+pub use hawdb_core::{
     Decimal, DecimalError, DecimalType, LogicalType, Vector, VectorDimension, VectorDistance,
     VectorRef,
 };

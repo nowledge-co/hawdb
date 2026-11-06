@@ -37,6 +37,13 @@ positive-only Q-error and signed bias, explicit zero/partial/missing coverage,
 and same-input paired reports. These do not provide complete predicate-level
 CE traces, frozen-plan observed-cardinality re-costing or candidate regret.
 
+The [compressed graph histogram](COMPRESSED_HISTOGRAMS.md) adapter adds 20 frozen
+graph cases. It uses the existing qualification API for a selected tree
+fingerprint, cost and operator actuals from the same execution. It bypasses
+the physical cache and reports whole-call timing. It does not select legal
+alternatives or complete phase 1; these graph observations also do not qualify
+SQL candidate identity, hardware weights or regret.
+
 These tools are independent, unpublished workspaces, excluded from library
 archives and ordinary CI. They do not complete phase 1 or phase 2: full physical
 identity, legal alternative selection, four-family coverage and source-qualified

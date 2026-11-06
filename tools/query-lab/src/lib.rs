@@ -6,5 +6,6 @@
 
 pub mod cardinality;
 pub mod cli;
+pub mod graph_statistics;
 pub mod manifest;
 pub mod runner;

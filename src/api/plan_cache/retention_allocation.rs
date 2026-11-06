@@ -129,6 +129,10 @@ fn cached(
     trace.decisions.reserve(128);
     let key = PlanCacheKey {
         normalized_query: query.to_owned(),
+        statistics_values: BTreeMap::from([(
+            Value::String("stat-marker".repeat(16)),
+            StatisticsParameterValue::Exact(Value::String("hot-value".repeat(64))),
+        )]),
         parameters: parameterized.cache_key().clone(),
         environment: OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(&Catalog::default()),

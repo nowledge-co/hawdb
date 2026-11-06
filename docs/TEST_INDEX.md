@@ -79,6 +79,39 @@ and the current fixture, assertions, timeout and compilation profile; external
 machine contention remains possible. Replay the existing owner with
 `bazel test //crates/executor:hawdb_executor_unit_tests`.
 
+Compressed histogram ownership stays in existing lanes:
+
+- `//crates/core:hawdb_core_tests`: `histogram::tests` owns MCV/residual mass,
+  population versus sample NDV, NULL/missing, monotone extreme numeric ranges
+  and exact string bucket endpoints.
+- `//crates/storage:hawdb_storage_tests`: `statistics::distribution::tests`
+  owns deterministic row sampling, byte/target refusal and optional codec
+  validation. External refresh's independent legacy bag/set oracle additionally
+  verifies duplicate-preserving row counts and sample mass when the budget admits
+  a distribution, keeping its deliberately inconsistent relationship-population
+  fixture ineligible. Existing cooperative statistics cases compare the new maps,
+  including late unsupported-value exclusion and cancellation/retry.
+- `//crates/optimizer-graph:hawdb_optimizer_graph_tests`: catalog distribution
+  cases cover shared node/relationship skew estimates, NULL-aware complements,
+  duplicate IN values, exact point-count precedence and COW statistics snapshots
+  shared by query-local overrides.
+- `//crates/plan-cache:hawdb_plan_cache_tests`: statistics marker rebinding and
+  scalar-count/payload refusal. Existing physical-key retention measurement
+  includes statistical bindings under its unchanged isolated owner.
+- Existing root plan-cache tests check equal-frequency MCV point classes,
+  distinct hot/cold/unobserved classes, generic range templates and the unchanged
+  ACL scope-rebinding cache contract. The 8-KiB external recovery fixture compares every legacy field
+  and separately checks optional distribution omission versus materialized rebuild.
+- `//:hawdb_unit_general_tests`: `api::tests::compressed_histogram` owns hot/cold
+  physical-cache variants and complete results, update/delete with old readers,
+  external refresh, missing values and checkpoint reopen. Minimal/default
+  selections use the existing general owners.
+
+No CI lane or compilation profile changes. Local replay filters are
+`histogram::`, `statistics::distribution::`, `catalog::distribution::`,
+`statistics_bindings_` and `api::tests::compressed_histogram::` in their respective
+Cargo library packages. See [the model and bounds](COMPRESSED_HISTOGRAMS.md).
+
 The optimizer-graph joint-statistics owner also covers a residual filter above
 HashJoin when either or both marginal key NDVs are missing. Single-key and
 multi-key predicates retain the existing default selectivity; compatible
@@ -2816,7 +2849,8 @@ coverage. The manual workload prerequisite now has concrete owners:
 - `//tools/query-workloads:query_workloads_tests`: bounded, typed recursive
   SQL generation, deterministic replay and supported syntax combinations;
   independently enumerated directed CE populations, NULL counts and join
-  multiplicities (64/128 rows, 77 cases).
+  multiplicities (64/128 rows, 77 cases), plus the 20-case compressed graph
+  statistics inventory and complete-read query skeleton controls.
 - `//tools/query-lab:query_lab_tests`: template/recursive execution on identical
   fixtures, complete typed replay with NULL/multiplicity, parse/output-refusal
   negative controls, setup failure denominators and frozen same-snapshot cost
@@ -2826,6 +2860,8 @@ coverage. The manual workload prerequisite now has concrete owners:
   observation accounting, missing/failed case denominators, duplicate/foreign
   evidence refusal, A/A pairing and injected estimate/result/access changes.
   They validate diagnostic classification, not a global Q-error performance gate.
+  The graph adapter also checks frozen fixture counts, same-execution
+  cost/operator evidence, pinned replay and refusal of early-stop skeletons.
 
 All three are included in local `//tools/shiro:shiro_tests`; no ordinary CI,
 schedule, profile override or performance gate is added. Cargo replay uses

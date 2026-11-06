@@ -52,6 +52,7 @@ fn node<'a>(variable: &'a str, label: &'a str, equalities: &[&'a str]) -> PathNo
         variable,
         label,
         equalities: equalities.to_vec(),
+        values: Default::default(),
         bound: false,
     }
 }
@@ -60,6 +61,7 @@ fn edge(rel_type: &str, direction: RelationshipDirection) -> PathEdge<'_> {
     PathEdge {
         rel_type: Some(rel_type),
         equalities: Vec::new(),
+        values: Default::default(),
         direction,
         min_hops: 1,
         max_hops: 1,

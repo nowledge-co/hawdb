@@ -492,6 +492,22 @@ pub(crate) fn encode_checkpoint_body_with_changes<'a>(
             encode_bool(*sampled)
         ));
     }
+    for ((label, property), distribution) in &statistics.property_distributions {
+        body.push_str(&format!(
+            "stat_property_distribution\t{}\t{}\t{}\n",
+            label.0,
+            encode_string(property),
+            crate::statistics::distribution::encode(distribution)?
+        ));
+    }
+    for ((rel_type, property), distribution) in &statistics.rel_property_distributions {
+        body.push_str(&format!(
+            "stat_rel_property_distribution\t{}\t{}\t{}\n",
+            rel_type.0,
+            encode_string(property),
+            crate::statistics::distribution::encode(distribution)?
+        ));
+    }
     for (name, definition) in image.projected_graphs {
         body.push_str(&format!(
             "project_graph\t{}\t{}\t{}\t{}\n",
@@ -1159,6 +1175,34 @@ pub fn parse_checkpoint(
                         ),
                         decode_bool(raw_sampled, "statistics sampled flag")?,
                     );
+            }
+            ["stat_property_distribution", raw_label, raw_property, raw_distribution] => {
+                let key = (
+                    LabelId(parse_u32(raw_label, "distribution label")?),
+                    decode_string(raw_property)?,
+                );
+                if let Some(distribution) =
+                    crate::statistics::distribution::decode(raw_distribution)
+                {
+                    state
+                        .checkpoint_statistics
+                        .property_distributions
+                        .insert(key, distribution);
+                }
+            }
+            ["stat_rel_property_distribution", raw_rel_type, raw_property, raw_distribution] => {
+                let key = (
+                    RelTypeId(parse_u32(raw_rel_type, "distribution relationship type")?),
+                    decode_string(raw_property)?,
+                );
+                if let Some(distribution) =
+                    crate::statistics::distribution::decode(raw_distribution)
+                {
+                    state
+                        .checkpoint_statistics
+                        .rel_property_distributions
+                        .insert(key, distribution);
+                }
             }
             ["project_graph", raw_name, raw_node_labels, raw_rel_types] => {
                 state.projected_graphs.insert(

@@ -45,6 +45,7 @@ pub(super) struct PathNode<'a> {
     pub(super) label: &'a str,
     /// Properties compared for equality with a constant or a parameter.
     pub(super) equalities: Vec<&'a str>,
+    pub(super) values: std::collections::BTreeMap<&'a str, &'a hawdb_core::Value>,
     /// Bound before the path starts: an imported column or an earlier path.
     pub(super) bound: bool,
 }
@@ -56,6 +57,7 @@ pub(super) struct PathEdge<'a> {
     /// disjunction, which this model does not estimate.
     pub(super) rel_type: Option<&'a str>,
     pub(super) equalities: Vec<&'a str>,
+    pub(super) values: std::collections::BTreeMap<&'a str, &'a hawdb_core::Value>,
     pub(super) direction: RelationshipDirection,
     pub(super) min_hops: usize,
     pub(super) max_hops: usize,
@@ -97,7 +99,12 @@ pub(super) fn seekable_property<'a>(
         .iter()
         .copied()
         .filter(|property| catalog.has_property_index(node.label, property))
-        .min_by_key(|property| catalog.estimate_property_index_eq_rows(node.label, property))
+        .min_by_key(|property| {
+            node.values.get(property).map_or_else(
+                || catalog.estimate_property_index_eq_rows(node.label, property),
+                |value| catalog.estimate_property_index_value_rows(node.label, property, value),
+            )
+        })
 }
 
 /// Chooses among `current` and the index-seekable nodes of the path. `None`
@@ -208,13 +215,21 @@ pub(super) fn walk(
     } else if !single_label(node.label) {
         return None;
     } else if let Some(property) = seekable_property(catalog, node) {
-        let seek = catalog.estimate_property_index_eq_rows(node.label, property) as f64;
+        let seek = node.values.get(property).map_or_else(
+            || catalog.estimate_property_index_eq_rows(node.label, property),
+            |value| catalog.estimate_property_index_value_rows(node.label, property, value),
+        ) as f64;
         let rows = node
             .equalities
             .iter()
             .filter(|other| **other != property)
             .fold(seek, |rows, other| {
-                rows * equality_selectivity(catalog, node.label, other)
+                rows * equality_selectivity(
+                    catalog,
+                    node.label,
+                    other,
+                    node.values.get(other).copied(),
+                )
             });
         (rows, seek + 1.0)
     } else {
@@ -347,10 +362,19 @@ fn fanout(
         }
     };
     let selectivity = edge.equalities.iter().fold(1.0, |selectivity, property| {
+        let rows = catalog.relationship_count(rel_type).max(1);
+        let selected = edge.values.get(property).and_then(|value| {
+            catalog.rel_property_equality_estimate(rel_type, property, value, rows)
+        });
         selectivity
-            / catalog
-                .rel_property_distinct_count(rel_type, property)
-                .max(1) as f64
+            * selected.map_or_else(
+                || {
+                    1.0 / catalog
+                        .rel_property_distinct_count(rel_type, property)
+                        .max(1) as f64
+                },
+                |estimate| estimate.rows.max(1) as f64 / rows as f64,
+            )
     });
     let one_hop = relationships / catalog.label_count(from.label) as f64 * selectivity;
     if edge.min_hops == 1 && edge.max_hops == 1 {
@@ -372,13 +396,28 @@ fn node_selectivity(catalog: &OptimizerCatalog, node: &PathNode<'_>) -> f64 {
         return 1.0;
     }
     node.equalities.iter().fold(1.0, |selectivity, property| {
-        selectivity * equality_selectivity(catalog, node.label, property)
+        selectivity
+            * equality_selectivity(
+                catalog,
+                node.label,
+                property,
+                node.values.get(property).copied(),
+            )
     })
 }
 
-fn equality_selectivity(catalog: &OptimizerCatalog, label: &str, property: &str) -> f64 {
+fn equality_selectivity(
+    catalog: &OptimizerCatalog,
+    label: &str,
+    property: &str,
+    value: Option<&hawdb_core::Value>,
+) -> f64 {
     let rows = catalog.label_count(label);
-    catalog.estimate_property_eq_rows(label, property, rows) as f64 / rows as f64
+    value.map_or_else(
+        || catalog.estimate_property_eq_rows(label, property, rows),
+        |value| catalog.estimate_property_value_rows(label, property, value, rows),
+    ) as f64
+        / rows as f64
 }
 
 fn single_label(label: &str) -> bool {

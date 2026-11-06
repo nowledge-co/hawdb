@@ -113,6 +113,34 @@ reports regressions or unpaired cases; inspect the comparison counts. `ce-report
 returns failure when a frozen case lacks valid result/operator evidence while
 still writing its diagnostic artifact. All artifacts remain outside Git.
 
+## Compressed graph statistics
+
+The graph adapter freezes 20 indexed/unindexed cases with hot/cold equality,
+numeric ranges, missing properties, duplicate IN values and not-equal. Fixture
+rows are bounded to 64..=1024. The manifest includes `frontend: cypher`; legacy
+SQL manifests omit this default field and preserve their canonical hashes.
+
+```console
+cargo run --locked --manifest-path tools/query-lab/Cargo.toml -- freeze-graph-stats /tmp/graph-stats.json 42 128
+cargo run --locked --manifest-path tools/query-lab/Cargo.toml -- ce-run /tmp/graph-stats.json /tmp/graph-stats-run.json
+cargo run --locked --manifest-path tools/query-lab/Cargo.toml -- ce-report /tmp/graph-stats.json /tmp/graph-stats-run.json /tmp/graph-stats-ce.json
+cargo run --locked --manifest-path tools/query-lab/Cargo.toml -- cost-check /tmp/graph-stats.json /tmp/graph-stats-cost-check.json
+```
+
+Graph observations use the embedded qualification API: plan, raw cost and actual
+operator outputs belong to the same execution on a pinned snapshot. Each call
+bypasses the physical cache. Only successful whitelisted no-LIMIT/no-existence
+queries establish complete child consumption; missing/uninvoked counters remain
+unobserved. Frozen counts check fixture truth independently from estimates.
+Graph evidence includes the complete selected tree fingerprint, statistics
+decisions and whole-call latency. Stage timings and allocator peaks remain null;
+CE IDs are native graph ordinals plus one to preserve the common nonzero ID
+contract; `native_ordinal` retains the exact graph identity in raw evidence.
+RSS fields are optional process observations, not per-query allocation peaks.
+`cost` runs the same rounds in release mode. This measures selected-plan
+observations, not candidate regret or an automatically fitted cost policy.
+See [the distribution contract](../../docs/COMPRESSED_HISTOGRAMS.md).
+
 ## Frozen cost baseline
 
 `freeze-cost` invokes the same generator with 32 nodes, depth four, at most two
@@ -140,7 +168,8 @@ Results describe warmed materialized data; no cold/device-cache claim is made.
 
 This implements workload reuse and ordinary-plan baseline collection, **not**
 the complete [optimizer cost qualification protocol](../../docs/specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md).
-There is no candidate selector, complete physical fingerprint, alternative-plan
+The SQL adapter has no candidate selector or complete physical fingerprint;
+neither adapter provides alternative-plan
 coverage, regret or fitted coefficient change. SQL from different generator
 modes is never treated as alternative plans of the same query. Missing cost,
 allocator/RSS and complete-plan evidence remains null. Full scan/index,

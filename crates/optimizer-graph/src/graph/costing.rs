@@ -108,9 +108,9 @@ fn projected_access_cost(
         }
         NodeProjectionAccess::PropertyValues { property, values } => {
             let rows = if values.len() == 1 {
-                catalog.estimate_property_index_eq_rows(label, property)
+                catalog.estimate_property_index_value_rows(label, property, &values[0])
             } else {
-                catalog.estimate_property_index_in_rows(label, property, values.len() as u64)
+                catalog.estimate_property_index_values_rows(label, property, values)
             }
             .max(1);
             node_index_seek_work(rows, values.len().max(1) as u64)
@@ -186,11 +186,8 @@ fn exact_property_union_cost(
     let mut cpu = 0u64;
     let mut random_io = 0u64;
     for branch in branches {
-        let branch_rows = catalog.estimate_property_index_in_rows(
-            label,
-            &branch.property,
-            branch.values.len() as u64,
-        );
+        let branch_rows =
+            catalog.estimate_property_index_values_rows(label, &branch.property, &branch.values);
         rows = rows.saturating_add(branch_rows);
         let work = node_index_seek_work(branch_rows, branch.values.len().max(1) as u64);
         cpu = cpu.saturating_add(work.cpu);
@@ -497,11 +494,25 @@ fn estimate_local_operator_cost(
             ..
         } => {
             let access_cost = projected_access_cost(access, label, catalog);
+            let access_statistics = match access {
+                NodeProjectionAccess::PropertyValues { property, values } if values.len() == 1 => {
+                    catalog
+                        .property_equality_estimate(
+                            label,
+                            property,
+                            &values[0],
+                            catalog.label_count(label),
+                        )
+                        .map(StatisticsUsage::distribution)
+                }
+                _ => None,
+            };
             let input_rows = access_cost.estimated_rows;
             let rows = predicate.as_ref().map_or(input_rows, |predicate| {
                 estimate_filter_rows(predicate, plan, input_rows, catalog, bindings, statistics)
                     .max(1)
             });
+            *statistics = statistics.or(access_statistics);
             let cpu_rows = if !items.is_empty() || predicate.is_some() {
                 rows
             } else {
@@ -648,9 +659,15 @@ fn estimate_local_operator_cost(
             )
         }
         PhysicalPlan::IndexNodeSeek {
-            label, property, ..
+            label,
+            property,
+            value,
+            ..
         } => {
-            let rows = catalog.estimate_property_index_eq_rows(label, property);
+            *statistics = catalog
+                .property_equality_estimate(label, property, value, catalog.label_count(label))
+                .map(StatisticsUsage::distribution);
+            let rows = catalog.estimate_property_index_value_rows(label, property, value);
             node_index_seek_work(rows, NODE_INDEX_EQ_STARTUP_COST)
         }
         PhysicalPlan::IndexNodeMultiSeek {
@@ -659,8 +676,7 @@ fn estimate_local_operator_cost(
             values,
             ..
         } => {
-            let rows =
-                catalog.estimate_property_index_in_rows(label, property, values.len() as u64);
+            let rows = catalog.estimate_property_index_values_rows(label, property, values);
             node_index_seek_work(rows, values.len() as u64)
         }
         PhysicalPlan::IndexNodeUnionSeek {

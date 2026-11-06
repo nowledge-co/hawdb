@@ -9,7 +9,7 @@ use crate::{
 use query_workloads::smith::Limits;
 use std::{fs, io::Write, path::Path};
 
-pub const USAGE: &str = "query-lab freeze PATH [SEED CASES ROWS]\nquery-lab freeze-cost PATH [SEED CASES ROWS]\nquery-lab freeze-ce PATH [SEED ROWS]\nquery-lab compare MANIFEST REPORT\nquery-lab ce-run MANIFEST REPORT\nquery-lab ce-report MANIFEST RUN_REPORT OUTPUT\nquery-lab ce-diff MANIFEST BASELINE_RUN CANDIDATE_RUN OUTPUT\nquery-lab cost MANIFEST REPORT\nquery-lab cost-check MANIFEST REPORT\nquery-lab replay MANIFEST CELL\nAll commands are manual. Cost requires a release build and collects a frozen ordinary-plan baseline, not qualified alternative-plan regret. Cost-check exercises sampling under the checked profile. CE reports analyze validation observations only; CE diffs are diagnostics, not automatic performance gates.";
+pub const USAGE: &str = "query-lab freeze PATH [SEED CASES ROWS]\nquery-lab freeze-cost PATH [SEED CASES ROWS]\nquery-lab freeze-ce PATH [SEED ROWS]\nquery-lab freeze-graph-stats PATH [SEED ROWS]\nquery-lab compare MANIFEST REPORT\nquery-lab ce-run MANIFEST REPORT\nquery-lab ce-report MANIFEST RUN_REPORT OUTPUT\nquery-lab ce-diff MANIFEST BASELINE_RUN CANDIDATE_RUN OUTPUT\nquery-lab cost MANIFEST REPORT\nquery-lab cost-check MANIFEST REPORT\nquery-lab replay MANIFEST CELL\nAll commands are manual. Cost requires a release build and collects a frozen ordinary-plan baseline, not qualified alternative-plan regret. Cost-check exercises sampling under the checked profile. CE reports analyze validation observations only; CE diffs are diagnostics, not automatic performance gates.";
 
 fn load_run(path: &str) -> Result<runner::Report, String> {
     use std::io::Read;
@@ -34,6 +34,15 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<bool, String> {
     match args.first().map(String::as_str) {
         Some("--help") => {
             println!("{USAGE}");
+            Ok(true)
+        }
+        Some("freeze-graph-stats") if args.len() == 2 || args.len() == 4 => {
+            let frozen = Frozen::graph_statistics(
+                parse(2, 7)?,
+                usize::try_from(parse(3, 128)?).map_err(|e| e.to_string())?,
+            )?;
+            frozen.save(Path::new(&args[1]))?;
+            println!("{}", frozen.sha256);
             Ok(true)
         }
         Some("freeze-ce") if args.len() == 2 || args.len() == 4 => {
@@ -101,8 +110,9 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<bool, String> {
             let frozen = Frozen::load(Path::new(&args[1]))?;
             if args[0] == "ce-run"
                 && frozen.manifest.protocol != query_workloads::cardinality::PROTOCOL
+                && frozen.manifest.protocol != query_workloads::compressed_statistics::PROTOCOL
             {
-                return Err("ce-run requires a freeze-ce manifest".into());
+                return Err("ce-run requires a freeze-ce or freeze-graph-stats manifest".into());
             }
             let progress_path = format!("{}.progress.jsonl", args[2]);
             let mut progress = fs::OpenOptions::new()

@@ -231,6 +231,11 @@ fn estimate_view<'p>(
                 .filter(|(_, value)| **value != Value::Null)
                 .map(|(property, _)| property.as_str())
                 .collect(),
+            values: node
+                .properties
+                .iter()
+                .map(|(key, value)| (key.as_str(), value))
+                .collect(),
             bound: bound.contains(node.variable.as_str()),
         })
         .collect::<Vec<_>>();
@@ -241,6 +246,11 @@ fn estimate_view<'p>(
             rel_type: (relationship.rel_types.is_empty() && !relationship.rel_type.is_empty())
                 .then_some(relationship.rel_type.as_str()),
             equalities: relationship.properties.keys().map(String::as_str).collect(),
+            values: relationship
+                .properties
+                .iter()
+                .map(|(key, value)| (key.as_str(), value))
+                .collect(),
             direction: relationship.direction,
             min_hops: relationship.min_hops,
             max_hops: relationship.max_hops,

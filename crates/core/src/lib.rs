@@ -21,6 +21,7 @@ pub mod decimal;
 pub mod error;
 pub mod graph;
 pub mod graph_rag;
+pub mod histogram;
 pub mod ids;
 pub mod list_function;
 pub mod logical_type;
@@ -66,6 +67,10 @@ pub use graph_rag::{
     DEFAULT_GRAPH_RAG_MAX_COMMON_PATHS, DEFAULT_GRAPH_RAG_MAX_LABELS,
     DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT, DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES,
     DEFAULT_GRAPH_RAG_MAX_ROUTES, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
+};
+pub use histogram::{
+    CompressedHistogram, HistogramBucket, MostCommonValue, PropertyCardinalityEstimate,
+    PropertyEstimateSource,
 };
 pub use list_function::{
     ListFunction, MAX_LIST_EXPRESSION_WORK, MAX_RANGE_LENGTH, MAX_UNACCOUNTED_LIST_BYTES,

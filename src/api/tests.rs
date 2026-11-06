@@ -59,6 +59,7 @@ mod community_lifecycle;
 mod community_memberships;
 mod community_reads;
 mod comparison_chains;
+mod compressed_histogram;
 mod concurrent_transactions;
 mod cost_based_start;
 mod crystal_reads;

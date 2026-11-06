@@ -7,6 +7,7 @@ use hawdb_core::Value;
 use query_ast::QueryAst;
 use std::collections::BTreeMap;
 pub mod cardinality;
+pub mod compressed_statistics;
 pub mod generator;
 pub mod predicate_rewrite;
 pub mod query_ast;

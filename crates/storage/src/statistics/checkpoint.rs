@@ -34,6 +34,9 @@ pub fn compute_with_work_context(
     let mut rel_property_values = BTreeMap::<(RelTypeId, String), BTreeSet<Value>>::new();
     let mut excluded_property_groups = BTreeSet::<(LabelId, String)>::new();
     let mut excluded_rel_property_groups = BTreeSet::<(RelTypeId, String)>::new();
+    let mut property_budget = distribution::PropertyValueBudget::default();
+    let mut node_distributions = distribution::PropertyDistributionCollector::default();
+    let mut rel_distributions = distribution::PropertyDistributionCollector::default();
     let mut rel_type_sources = BTreeMap::<RelTypeId, BTreeSet<NodeId>>::new();
     let mut rel_type_targets = BTreeMap::<RelTypeId, BTreeSet<NodeId>>::new();
     let mut path_sources = BTreeMap::<(LabelId, RelTypeId, LabelId), BTreeSet<NodeId>>::new();
@@ -52,6 +55,7 @@ pub fn compute_with_work_context(
                 let eligible = node_property_supports_optimizer_statistics(
                     catalog, *label_id, property, value,
                 );
+                node_distributions.observe(key.clone(), property.len(), value, eligible);
                 unit.finish();
                 collect_value_with_work_context(
                     &mut property_values,
@@ -59,6 +63,7 @@ pub fn compute_with_work_context(
                     key,
                     value,
                     eligible,
+                    &mut property_budget,
                     work,
                 )?;
             }
@@ -88,6 +93,7 @@ pub fn compute_with_work_context(
                 property,
                 value,
             );
+            rel_distributions.observe(key.clone(), property.len(), value, eligible);
             unit.finish();
             collect_value_with_work_context(
                 &mut rel_property_values,
@@ -95,6 +101,7 @@ pub fn compute_with_work_context(
                 key,
                 value,
                 eligible,
+                &mut property_budget,
                 work,
             )?;
         }
@@ -141,29 +148,35 @@ pub fn compute_with_work_context(
     statistics.bounded_path_counts = bounded_path_statistics.counts;
     statistics.bounded_path_source_distinct_counts = bounded_path_statistics.source_distinct_counts;
     statistics.bounded_path_target_distinct_counts = bounded_path_statistics.target_distinct_counts;
+    statistics.property_distributions = node_distributions.finish_with_work_context(
+        |(label, _)| statistics.label_counts.get(label).copied().unwrap_or(0),
+        work,
+    )?;
+    statistics.rel_property_distributions = rel_distributions.finish_with_work_context(
+        |(rel_type, _)| {
+            statistics
+                .rel_type_counts
+                .get(rel_type)
+                .copied()
+                .unwrap_or(0)
+        },
+        work,
+    )?;
     work.checkpoint()?;
     Ok(statistics)
 }
 
-fn collect_value_with_work_context<K: Ord>(
+fn collect_value_with_work_context<K: Ord + Clone + hawdb_core::RetainedHeapBytes>(
     values: &mut BTreeMap<K, BTreeSet<Value>>,
     excluded: &mut BTreeSet<K>,
     key: K,
     value: &Value,
     eligible: bool,
+    budget: &mut distribution::PropertyValueBudget,
     work: &CheckpointWorkContext,
 ) -> Result<(), CheckpointWorkError> {
     let unit = work.start_unit()?;
-    let retired = if !eligible {
-        let retired = values.remove(&key);
-        excluded.insert(key);
-        retired
-    } else {
-        if !excluded.contains(&key) {
-            values.entry(key).or_default().insert(value.clone());
-        }
-        None
-    };
+    let retired = collect_property_statistic_value(values, excluded, key, value, eligible, budget);
     unit.finish();
     if let Some(retired) = retired {
         drain_values(retired, work)?;
@@ -543,6 +556,11 @@ pub(crate) fn clone_retained_with_index_samples_and_work_context<'a>(
     copy.rel_property_distinct_counts = counts;
     copy.rel_property_histograms = histograms;
     copy.sampled_rel_property_histograms = sampled;
+    copy.property_distributions =
+        clone_map_with_work_context(&source.property_distributions, work)?;
+    copy.rel_property_distributions =
+        clone_map_with_work_context(&source.rel_property_distributions, work)?;
+    crate::statistics_refresh::retain_supported_property_statistics(&mut copy, Some(catalog));
     work.checkpoint()?;
     Ok(copy)
 }
