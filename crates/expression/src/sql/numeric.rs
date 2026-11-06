@@ -73,6 +73,7 @@ impl Binder<'_> {
             ExprKind::Cast { expression, target } => {
                 cast_numeric(self.expression(expression, depth + 1)?.as_ref(), *target)
             }
+            ExprKind::CurrentTimestamp(kind) => hawdb_core::sql_timestamp::current_timestamp(*kind),
             ExprKind::TimestampCast { expression, target } => {
                 target.apply(&self.expression(expression, depth + 1)?)
             }

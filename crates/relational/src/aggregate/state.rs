@@ -538,6 +538,7 @@ pub(super) fn sql_expression_memory_bytes(expression: &SqlExpression) -> usize {
     let children = match &expression.kind {
         ExprKind::Column(column) => column_ref_memory_bytes(column),
         ExprKind::Value(value) => sql_value_memory_bytes(value),
+        ExprKind::CurrentTimestamp(_) => 0,
         ExprKind::Function {
             name,
             arguments,

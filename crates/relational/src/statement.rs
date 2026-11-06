@@ -736,6 +736,14 @@ fn materialize_column_default(column: &RelationalColumnSchema) -> Result<Relatio
         Some(RelationalColumnDefault::UuidV7) => {
             RelationalValue::Uuid(hawdb_core::generate_uuidv7()?)
         }
+        // Materialized here, before the row reaches the WAL, so recovery
+        // replays the recorded instant instead of reading the clock again.
+        Some(RelationalColumnDefault::CurrentTimestamp(kind)) => crate::coerce_relational_value(
+            crate::query_value::value_to_relational(hawdb_core::sql_timestamp::current_timestamp(
+                *kind,
+            )?)?,
+            column.scalar_type,
+        )?,
     })
 }
 

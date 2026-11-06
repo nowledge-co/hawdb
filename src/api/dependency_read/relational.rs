@@ -101,14 +101,19 @@ pub(in crate::api) fn collect_transaction(
             if schema.columns.iter().enumerate().any(|(index, column)| {
                 matches!(
                     column.default,
-                    Some(hawdb_storage::relational::RelationalColumnDefault::UuidV7)
+                    Some(
+                        hawdb_storage::relational::RelationalColumnDefault::UuidV7
+                            | hawdb_storage::relational::RelationalColumnDefault::CurrentTimestamp(
+                                _
+                            )
+                    )
                 ) && if statement.columns.is_empty() {
                     statement.rows.iter().any(|row| row.len() <= index)
                 } else {
                     !statement.columns.contains(&column.name)
                 }
             }) {
-                return Err(refusal("unversioned generated UUID default"));
+                return Err(refusal("unversioned generated UUID or clock default"));
             }
             record(dependencies, key)
         }
@@ -325,7 +330,7 @@ fn qualify_expression(expression: &Expr, nodes: &mut usize, depth: usize) -> Res
         ExprKind::Value(SqlValue::Expression(expression)) => {
             qualify_expression(expression, nodes, depth + 1)
         }
-        ExprKind::Column(_) | ExprKind::Value(_) => Ok(()),
+        ExprKind::Column(_) | ExprKind::Value(_) | ExprKind::CurrentTimestamp(_) => Ok(()),
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Compare { left, right, .. }

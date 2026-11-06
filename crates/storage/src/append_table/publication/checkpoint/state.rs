@@ -195,6 +195,9 @@ fn schema_copy(
                 Some(RelationalColumnDefault::Literal(value_copy(value, work)?))
             }
             Some(RelationalColumnDefault::UuidV7) => Some(RelationalColumnDefault::UuidV7),
+            Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+                Some(RelationalColumnDefault::CurrentTimestamp(*kind))
+            }
             None => None,
         };
         work.push(

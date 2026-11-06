@@ -1276,6 +1276,20 @@ fn relational_default_value(default: Option<&RelationalColumnDefault>) -> Value 
             })
         }
         Some(RelationalColumnDefault::UuidV7) => Value::String("uuidv7()".to_string()),
+        Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+            let name = if kind.zoned {
+                "CURRENT_TIMESTAMP"
+            } else {
+                "LOCALTIMESTAMP"
+            };
+            Value::String(
+                if kind.precision == hawdb_core::TimestampPrecision::DEFAULT {
+                    name.to_string()
+                } else {
+                    format!("{name}({})", kind.precision.get())
+                },
+            )
+        }
     }
 }
 

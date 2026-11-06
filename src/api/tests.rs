@@ -196,6 +196,7 @@ mod source_parsed_metadata;
 mod source_reads;
 mod source_reference;
 mod source_revisions;
+mod sql_current_timestamp;
 mod sql_timestamp;
 mod statistics;
 mod storage_recovery;

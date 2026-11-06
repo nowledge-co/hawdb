@@ -207,7 +207,7 @@ fn sql_session_unsupported_postgres_shapes_preserve_errors_and_rollback() {
         "CREATE TABLE unsupported (body VECTOR(0))",
         "SELECT to_tsvector(body) FROM pages",
         "SELECT body::jsonb ->> 'name' FROM pages",
-        "SELECT now() FROM pages",
+        "SELECT clock_timestamp() FROM pages",
         "SELECT body::date FROM pages",
         "SELECT body::timestamptz AT TIME ZONE 'UTC' FROM pages",
     ] {

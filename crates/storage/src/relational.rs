@@ -707,6 +707,9 @@ pub struct RelationalColumnSchema {
 pub enum RelationalColumnDefault {
     Literal(RelationalValue),
     UuidV7,
+    /// `CURRENT_TIMESTAMP[(p)]`/`now()` (zoned) or `LOCALTIMESTAMP[(p)]`
+    /// (local), materialized for each inserted row before it is logged.
+    CurrentTimestamp(hawdb_core::sql_timestamp::TimestampType),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -835,6 +838,9 @@ fn clone_column_with_allocations(
             value.as_ref().to_owned_value_with_allocations(context)?,
         )),
         Some(RelationalColumnDefault::UuidV7) => Some(RelationalColumnDefault::UuidV7),
+        Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+            Some(RelationalColumnDefault::CurrentTimestamp(*kind))
+        }
         None => None,
     };
     Ok(RelationalColumnSchema {
@@ -1061,6 +1067,50 @@ impl RelationalTableSchema {
                 role: RelationalIndexRole::DeclaredUnique,
             })
     }
+}
+
+/// A clock default (`CURRENT_TIMESTAMP`, `now()`, `LOCALTIMESTAMP`) requires a
+/// TIMESTAMP or TIMESTAMPTZ column.
+pub(crate) fn validate_clock_default(
+    column: &RelationalColumnSchema,
+) -> Result<(), RelationalError> {
+    if matches!(
+        column.scalar_type,
+        RelationalScalarType::Timestamp(_) | RelationalScalarType::TimestampTz(_)
+    ) {
+        Ok(())
+    } else {
+        Err(RelationalError::Schema(format!(
+            "column {} uses a CURRENT_TIMESTAMP or LOCALTIMESTAMP default but is not TIMESTAMP or TIMESTAMPTZ",
+            column.name
+        )))
+    }
+}
+
+/// Encodes a clock default's function type: zoned flag, then precision.
+pub(crate) const fn clock_default_bytes(kind: hawdb_core::sql_timestamp::TimestampType) -> [u8; 2] {
+    [kind.zoned as u8, kind.precision.get()]
+}
+
+/// Decodes [`clock_default_bytes`].
+pub(crate) fn decode_clock_default(
+    zoned: u8,
+    precision: u8,
+) -> Result<RelationalColumnDefault, RelationalError> {
+    let zoned = match zoned {
+        0 => false,
+        1 => true,
+        tag => {
+            return Err(RelationalError::Corruption(format!(
+                "invalid clock default zone flag {tag}"
+            )))
+        }
+    };
+    let precision = hawdb_core::TimestampPrecision::new(precision)
+        .ok_or_else(|| RelationalError::Corruption("invalid clock default precision".into()))?;
+    Ok(RelationalColumnDefault::CurrentTimestamp(
+        hawdb_core::sql_timestamp::TimestampType { zoned, precision },
+    ))
 }
 
 /// Decodes a durable TIMESTAMP (scalar tag 9) or TIMESTAMPTZ (10) type.
@@ -6835,19 +6885,28 @@ fn add_column_with_allocations(
             limits.max_rows
         )));
     }
-    let fill = match &column.default {
-        None => RelationalValue::Null,
-        Some(RelationalColumnDefault::Literal(value)) => value
-            .as_ref()
-            .to_owned_value_with_allocations(&fill_context)?,
-        Some(RelationalColumnDefault::UuidV7) if row_count == 0 => RelationalValue::Null,
-        Some(RelationalColumnDefault::UuidV7) => {
-            return Err(RelationalError::Schema(format!(
+    let fill =
+        match &column.default {
+            None => RelationalValue::Null,
+            Some(RelationalColumnDefault::Literal(value)) => value
+                .as_ref()
+                .to_owned_value_with_allocations(&fill_context)?,
+            Some(
+                RelationalColumnDefault::UuidV7 | RelationalColumnDefault::CurrentTimestamp(_),
+            ) if row_count == 0 => RelationalValue::Null,
+            Some(RelationalColumnDefault::UuidV7) => {
+                return Err(RelationalError::Schema(format!(
             "ALTER TABLE {table} cannot add column {} with uuidv7() default to a non-empty table",
             column.name
         )))
-        }
-    };
+            }
+            Some(RelationalColumnDefault::CurrentTimestamp(_)) => {
+                return Err(RelationalError::Schema(format!(
+            "ALTER TABLE {table} cannot add column {} with a clock default to a non-empty table",
+            column.name
+        )))
+            }
+        };
     if !column.nullable && matches!(&fill, RelationalValue::Null) && row_count != 0 {
         return Err(RelationalError::Constraint(format!("ALTER TABLE {table} cannot add NOT NULL column {} without a default to a non-empty table", column.name)));
     }
@@ -7161,12 +7220,19 @@ fn apply_transaction_inner(
                 let fill = match column.default.clone() {
                     None => RelationalValue::Null,
                     Some(RelationalColumnDefault::Literal(value)) => value,
-                    Some(RelationalColumnDefault::UuidV7) if row_count == 0 => {
-                        RelationalValue::Null
-                    }
+                    Some(
+                        RelationalColumnDefault::UuidV7
+                        | RelationalColumnDefault::CurrentTimestamp(_),
+                    ) if row_count == 0 => RelationalValue::Null,
                     Some(RelationalColumnDefault::UuidV7) => {
                         return Err(RelationalError::Schema(format!(
                             "ALTER TABLE {table} cannot add column {} with uuidv7() default to a non-empty table",
+                            column.name
+                        )));
+                    }
+                    Some(RelationalColumnDefault::CurrentTimestamp(_)) => {
+                        return Err(RelationalError::Schema(format!(
+                            "ALTER TABLE {table} cannot add column {} with a clock default to a non-empty table",
                             column.name
                         )));
                     }
@@ -8714,6 +8780,9 @@ fn validate_table_schema(schema: &RelationalTableSchema) -> Result<(), Relationa
                         "column {} uses uuidv7() default but is not UUID",
                         column.name
                     )));
+                }
+                RelationalColumnDefault::CurrentTimestamp(_) => {
+                    validate_clock_default(column)?;
                 }
             }
         }

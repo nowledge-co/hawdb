@@ -144,6 +144,7 @@ impl Lowerer<'_> {
                             | ExprKind::Negate(_)
                             | ExprKind::Cast { .. }
                             | ExprKind::TimestampCast { .. }
+                            | ExprKind::CurrentTimestamp(_)
                     )
                 });
                 if !constant_numeric {
@@ -152,6 +153,70 @@ impl Lowerer<'_> {
                 Ok(SqlValue::Expression(Box::new(expr)))
             }
         }
+    }
+    /// Recognizes `CURRENT_TIMESTAMP[(p)]` and `now()` (TIMESTAMPTZ) and
+    /// `LOCALTIMESTAMP[(p)]` (TIMESTAMP). Quoted identifiers remain columns.
+    fn current_timestamp(
+        &self,
+        value: &S,
+    ) -> Result<Option<hawdb_core::sql_timestamp::TimestampType>> {
+        let (name, arguments) = match &value.kind {
+            E::Column(name) => (name, None),
+            E::Function {
+                name,
+                arguments,
+                distinct: false,
+            } => (name, Some(arguments.as_slice())),
+            _ => return Ok(None),
+        };
+        let [part] = name.parts.as_slice() else {
+            return Ok(None);
+        };
+        if part.quoted {
+            return Ok(None);
+        }
+        let name = self.ident(part);
+        let zoned = match (name.as_str(), arguments) {
+            ("current_timestamp", _) | ("now", Some(_)) => true,
+            ("localtimestamp", _) => false,
+            _ => return Ok(None),
+        };
+        let precision = match arguments {
+            None => hawdb_core::TimestampPrecision::DEFAULT,
+            Some([]) if name != "now" => {
+                return Err(semantic(format!(
+                    "{} takes no parentheses without a precision",
+                    name.to_ascii_uppercase()
+                )))
+            }
+            Some([]) => hawdb_core::TimestampPrecision::DEFAULT,
+            Some(
+                [S {
+                    kind: E::Literal(L::Number(span)),
+                    ..
+                }],
+            ) if name != "now" => self.input[span.start..span.end]
+                .parse::<u8>()
+                .ok()
+                .and_then(hawdb_core::TimestampPrecision::new)
+                .ok_or_else(|| {
+                    semantic(format!(
+                        "{} precision must be an integer between 0 and 6",
+                        name.to_ascii_uppercase()
+                    ))
+                })?,
+            Some(_) if name == "now" => return Err(semantic("now() takes no arguments")),
+            Some(_) => {
+                return Err(semantic(format!(
+                    "{} accepts only an integer precision",
+                    name.to_ascii_uppercase()
+                )))
+            }
+        };
+        Ok(Some(hawdb_core::sql_timestamp::TimestampType {
+            zoned,
+            precision,
+        }))
     }
     /// Lowers `TIMESTAMP 'text'`, `TIMESTAMPTZ 'text'` and
     /// `TIMESTAMP WITH[OUT] TIME ZONE 'text'` to a host temporal value. Other
@@ -420,6 +485,19 @@ impl Lowerer<'_> {
                 ExprKind::Value(self.literal(value)?),
                 self.literal_span(value),
             )),
+            Scalar | HavingScalar | PredicateScalar if self.current_timestamp(value)?.is_some() => {
+                let kind = self
+                    .current_timestamp(value)?
+                    .expect("checked clock function");
+                let span = self.span(value.span);
+                Ok(expression(
+                    ExprKind::Value(SqlValue::Expression(Box::new(expression(
+                        ExprKind::CurrentTimestamp(kind),
+                        span,
+                    )))),
+                    span,
+                ))
+            }
             Scalar | HavingScalar | PredicateScalar => match &value.kind {
                 E::Parenthesized(inner) => self.lower(inner, position),
                 E::Column(_) => self.lower(value, Column),

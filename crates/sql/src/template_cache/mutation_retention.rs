@@ -129,6 +129,7 @@ fn expression(expr: &Expr) -> Option<usize> {
     match &expr.kind {
         ExprKind::Column(item) => column(item),
         ExprKind::Value(item) => value(item),
+        ExprKind::CurrentTimestamp(_) => Some(0),
         ExprKind::Arithmetic { left, right, .. }
         | ExprKind::And(left, right)
         | ExprKind::Or(left, right)

@@ -596,6 +596,10 @@ pub(super) struct DatabaseTransactionState {
     // Moves with the private workspace into a queued commit. Checkpoint
     // reclamation must retain its physical generation until the state retires.
     snapshot_pin: Option<ReaderPin>,
+    /// The transaction-start instant. Every SQL statement of the transaction
+    /// pins the statement clock to it, so `CURRENT_TIMESTAMP`, `now()`,
+    /// `LOCALTIMESTAMP` and clock defaults agree across the transaction.
+    sql_clock: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
 }
 
 struct SparseRelationalStatementStage {
@@ -657,6 +661,8 @@ pub struct DatabaseReadTransaction<S: crate::executor::ExecutionStore = GraphSto
     task_context: Option<hawdb_core::RuntimeTaskContext>,
     _pin: Arc<ReaderPin>,
     retained_runtime: Arc<retained_query::RetainedRuntime>,
+    /// The read transaction's start instant, pinned for its SQL statements.
+    sql_clock: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
 }
 
 /// An immutable canonical view that can create independent query contexts.
@@ -709,6 +715,7 @@ impl DatabaseReadSnapshot {
             task_context,
             _pin: Arc::clone(&source._pin),
             retained_runtime: Arc::clone(&source.retained_runtime),
+            sql_clock: source.sql_clock,
         })
     }
 }

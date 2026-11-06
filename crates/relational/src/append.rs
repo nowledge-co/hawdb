@@ -258,6 +258,12 @@ fn compile_insert_values(
                         "append table column {} does not support uuidv7() defaults",
                         column.name
                     ))),
+                    Some(RelationalColumnDefault::CurrentTimestamp(_)) => {
+                        Err(HawDBError::Semantic(format!(
+                            "append table column {} does not support clock defaults",
+                            column.name
+                        )))
+                    }
                 })
                 .collect::<Result<Vec<_>>>()?;
             for (position, value) in positions.iter().zip(values) {

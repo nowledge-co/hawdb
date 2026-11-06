@@ -1375,6 +1375,12 @@ impl Encoder {
                 self.logical_value(value)?;
             }
             Some(RelationalColumnDefault::UuidV7) => self.u8(2),
+            Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+                self.u8(3);
+                for byte in super::clock_default_bytes(*kind) {
+                    self.u8(byte);
+                }
+            }
         }
         Ok(())
     }
@@ -2315,6 +2321,7 @@ impl<I: DecodeInput> Decoder<I> {
             0 => Ok(None),
             1 => Ok(Some(RelationalColumnDefault::Literal(self.value()?))),
             2 => Ok(Some(RelationalColumnDefault::UuidV7)),
+            3 => super::decode_clock_default(self.u8()?, self.u8()?).map(Some),
             tag => Err(RelationalError::Corruption(format!(
                 "invalid column default tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
@@ -2330,6 +2337,7 @@ impl<I: DecodeInput> Decoder<I> {
                 self.logical_value()?,
             ))),
             2 => Ok(Some(RelationalColumnDefault::UuidV7)),
+            3 => super::decode_clock_default(self.u8()?, self.u8()?).map(Some),
             tag => Err(RelationalError::Corruption(format!(
                 "invalid column default tag {tag} (corrupt, or written by a newer HawDB)"
             ))),

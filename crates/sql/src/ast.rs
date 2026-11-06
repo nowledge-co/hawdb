@@ -296,6 +296,9 @@ pub struct SqlColumnDefinition {
 pub enum SqlColumnDefault {
     Literal(SqlValue),
     UuidV7,
+    /// `CURRENT_TIMESTAMP[(p)]`, `now()` or `LOCALTIMESTAMP[(p)]`, evaluated
+    /// for each inserted row from the transaction-start clock.
+    CurrentTimestamp(hawdb_core::sql_timestamp::TimestampType),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
