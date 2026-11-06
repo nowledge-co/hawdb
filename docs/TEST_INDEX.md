@@ -971,8 +971,11 @@ legacy document tombstones before reducing the complete pinned source interval.
 
 | Lane / entry point | Problems covered | Execution policy |
 | --- | --- | --- |
-| Prow root: `//:hawdb_unit_tests`, `//:hawdb_system_sql_loom_tests`, `//:hawdb_linux_ci_smoke_tests`, CLI/shadow and package-parity targets | Embedded facade behavior, concurrent publication, recovery, public consumers, compatibility protocols and benchmark evidence | Required PR and mainline regression coverage. Fuzz is excluded. |
+| Prow root: `//:hawdb_unit_tests`, `//:hawdb_system_sql_loom_tests`, `//:hawdb_linux_ci_smoke_tests`, CLI/shadow and package-parity targets | Embedded facade behavior, concurrent publication, recovery, public consumers, compatibility protocols and benchmark evidence | Required PR and mainline regression coverage. The PR lane excludes the explicit checkpoint targets below; the mainline lane retains the aggregate coverage. Fuzz is excluded. |
 | Prow crates: `//:hawdb_presubmit_crate_tests` | Internal component contracts and exact Search feature profiles | Required checked-profile component coverage (the release-only observer target runs in the native lane). Each package owns `:presubmit_tests`; manual-only targets must not accidentally enter implicit suite discovery. |
+| Prow checkpoint growing-table presubmit: `//:hawdb_unit_checkpoint_headroom_growing_table_tests` | Complete steady-insert growing-table headroom regression | Required PR context `ci/skein-bazel-test-checkpoint-growing-table`; exclusive local test execution over the shared checked root binary. |
+| Prow checkpoint large-commit presubmit: `//:hawdb_unit_checkpoint_large_commit_tests` | Uninterrupted whole-district and oversized-commit checkpoint controls | Required PR context `ci/skein-bazel-test-checkpoint-large-commit`; exclusive local test execution over the shared checked root binary. |
+| Prow checkpoint controls presubmit: `//:hawdb_unit_checkpoint_headroom_controls_tests`, `//:hawdb_unit_checkpoint_lifecycle_tests`, `//:hawdb_unit_checkpoint_large_commit_interrupted_tests` | Remaining headroom controls, lifecycle, cancellation, deadline and process-stop cases | Required PR context `ci/skein-bazel-test-checkpoint-controls`; exclusive local test execution over the shared checked root binary. |
 | Prow dense analytics: `//:hawdb_unit_analytics_rss_tests` | Persistent graph identity admission, edge streaming and bounded incremental RSS in a fresh process | Separate exclusive target; dense fixture construction is outside the measured child's RSS baseline. |
 | Prow storage crash recovery: `//:hawdb_storage_crash_recovery_tests` | Subprocess termination at persistence boundaries, complete transaction recovery, endpoint integrity and artifact generations | Dedicated job binds evidence to source/toolchain/features. Process termination does not alone establish power-loss safety. |
 | Native bindings: `//bindings/ffi:hawdb_ffi_tests`, `//bindings/go:hawdb_go_tests`, `//bindings/python/...` | C ABI retention, host ownership/errors, Go integration/race checks and Python behavior | Binding-specific PR/mainline workflows; Windows contracts and scheduled qualification are distinct receipts. See workflow definitions for current triggers. |
@@ -1066,18 +1069,27 @@ Bazel. A family description does not imply every leaf belongs to every lane.
 
 ### Automatic-checkpoint frontend deadline controls
 
-The required `//:hawdb_unit_checkpoint_headroom_tests` label uses two native
-Bazel shards over the same checked root binary: the complete growing-table
-steady-insert regression in shard 0 and all other discovered controls in shard 1.
-Both retain exclusive scheduling, one libtest thread, the 900-second deadline,
-complete fixtures/assertions/retry bounds and ordinary features. The runner
-refuses invalid coordinates, empty selections and cross-shard substring overlap;
-`//:root_unit_partition_script_test` owns complete/disjoint inventory and protocol
-controls. Source-bound 31-case timings, both earlier Linux timeouts, progress
-diagnostics and local replay are in [checkpoint qualification](CHECKPOINT_HEADROOM_QUALIFICATION.md).
-This separates execution budgets and does not claim less total work or remote
-CI speedup. Issue [1512](https://github.com/nowledge-co/hawdb/issues/1512) retains
-independent progress/stability qualification.
+The required `//:hawdb_unit_checkpoint_headroom_tests` compatibility label
+aggregates two explicit targets over the same checked root binary:
+`//:hawdb_unit_checkpoint_headroom_growing_table_tests` owns the complete
+growing-table steady-insert regression and
+`//:hawdb_unit_checkpoint_headroom_controls_tests` owns every other discovered
+control. Both retain exclusive scheduling, one libtest thread, the 900-second
+deadline, complete fixtures/assertions/retry bounds and ordinary features. The
+runner refuses unexpected Bazel sharding, empty selections and cross-target
+substring overlap; `//:root_unit_partition_script_test` owns complete/disjoint
+inventory and protocol controls. Source-bound 31-case timings, both earlier
+Linux timeouts, progress diagnostics and local replay are in
+[checkpoint qualification](CHECKPOINT_HEADROOM_QUALIFICATION.md). This separates
+execution budgets and allows required CI to place them in different Pods; it
+does not claim less total work or a measured remote speedup. Issue
+[#1512](https://github.com/nowledge-co/hawdb/issues/1512) retains independent
+progress/stability qualification.
+
+For pull requests, `ci/skein-bazel-test-checkpoint-growing-table` owns the
+growing-table target and `ci/skein-bazel-test-checkpoint-controls` owns the
+remaining headroom target. The main root presubmit excludes both leaves; the
+compatibility aggregate remains available for local and mainline replay.
 
 `//:hawdb_unit_checkpoint_headroom_tests` owns
 `api::automatic_checkpoint::tests::headroom` in the isolated default-feature root CI lane
@@ -1156,6 +1168,10 @@ statements: one 30,000-line statement in a concurrent transaction stages about
 four times slower than six smaller ones. Replay:
 `bazel test //:hawdb_unit_checkpoint_large_commit_tests
 //:hawdb_unit_checkpoint_large_commit_interrupted_tests`.
+For pull requests, `ci/skein-bazel-test-checkpoint-large-commit` owns the first
+target and `ci/skein-bazel-test-checkpoint-controls` owns the interrupted target
+alongside checkpoint lifecycle and the remaining headroom controls. The main
+root presubmit excludes these explicit leaves.
 Replay with `cargo test --locked
 -p hawdb --lib api::automatic_checkpoint::tests::relational_live_overlay`.
 
@@ -1981,8 +1997,8 @@ in the existing TLA suite; native capacity-band tests own Tokio waiter renewal.
 - Both checkpoint targets are included through the existing required root unit
   suites. They reuse the ordinary root executable and global checked profile,
   each with one libtest thread, Bazel `exclusive` and the unchanged 900-second
-  deadline per invocation. The headroom label now owns the two native shards
-  documented above; the lifecycle target remains unsharded. Internal test-created concurrency remains intact. Automatic-checkpoint
+  deadline per invocation. The headroom aggregate now owns the two explicit
+  targets documented above; the lifecycle target remains unsharded. Internal test-created concurrency remains intact. Automatic-checkpoint
   headroom CREATE failures retain the original success/refusal contract and phase,
   work-progress, wake/resource and libtest-concurrency diagnostics for
   [#1116](https://github.com/nowledge-co/hawdb/issues/1116); no caller retries or
