@@ -93,6 +93,7 @@ mod database_projection;
 mod database_query;
 mod database_transactions;
 mod retrieval;
+pub(crate) use retrieval::search_hit_payload_bytes;
 mod transactions;
 use retrieval::*;
 use transactions::*;

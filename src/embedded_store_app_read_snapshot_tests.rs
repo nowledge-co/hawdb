@@ -455,6 +455,265 @@ fn resident_and_out_of_core_text_seeds_return_the_same_document_identities() {
     assert_eq!(query(&out_of_core_handle), resident_rows);
 }
 
+fn typed_candidate_isolation_handle(
+    out_of_core: bool,
+) -> (SnapshotTestRoot, EmbeddedStoreHandle, u64) {
+    let root = SnapshotTestRoot::new();
+    let mut database = Database::new_with_config(DatabaseConfig {
+        max_read_result_rows: Some(16),
+        max_read_result_payload_bytes: Some(16 * 1024),
+        ..Default::default()
+    });
+    database
+        .query("CREATE (:Memory {id: 'target', title: 'Canonical target'})")
+        .unwrap();
+    let commit_epoch = database.commit_epoch().unwrap();
+    let graph = EmbeddedGraph::from_database_with_runtime_governor(
+        database,
+        GraphMode::ShadowReadOnly,
+        snapshot_governor(),
+    );
+    let mut rows = vec![
+        SearchProjectionRow {
+            kind: SearchProjectionKind::Memory,
+            external_id: "target".into(),
+            title: "Memory target".into(),
+            body: "qualified memory candidate".into(),
+            embedding: Some(vec![0.6, 0.8]),
+            source_id: None,
+            metadata: BTreeMap::new(),
+        },
+        SearchProjectionRow {
+            kind: SearchProjectionKind::Source,
+            external_id: "target".into(),
+            title: "Colliding source".into(),
+            body: "foreign candidate".into(),
+            embedding: Some(vec![1.0, 0.0]),
+            source_id: None,
+            metadata: BTreeMap::new(),
+        },
+    ];
+    rows.extend((0..8).map(|ordinal| SearchProjectionRow {
+        kind: SearchProjectionKind::Source,
+        external_id: format!("foreign-{ordinal}"),
+        title: "Nearer source".into(),
+        body: "foreign candidate".into(),
+        embedding: Some(vec![1.0, 0.0]),
+        source_id: None,
+        metadata: BTreeMap::new(),
+    }));
+
+    let store = if out_of_core {
+        let search_path = root.0.join("out-of-core-search");
+        let options = crate::SearchOutOfCoreGenerationBuildOptions {
+            source_graph_commit_epoch: Some(commit_epoch),
+            ..Default::default()
+        };
+        let mut writer =
+            crate::SearchOutOfCoreGenerationWriter::create(&search_path, options).unwrap();
+        let mut documents = rows
+            .into_iter()
+            .map(SearchProjectionRow::into_document)
+            .collect::<Vec<_>>();
+        documents.sort_by(|left, right| left.id.cmp(&right.id));
+        for document in documents {
+            writer.push(document).unwrap();
+        }
+        writer.finish().unwrap();
+        EmbeddedStore::new_with_out_of_core_search(
+            graph,
+            super::OutOfCoreSearchProjection::open(&search_path).unwrap(),
+            Default::default(),
+        )
+    } else {
+        let search_path = root.0.join("resident-search");
+        let mut index = SearchIndex::open(&search_path).unwrap();
+        index
+            .apply_projection_delta(crate::SearchProjectionDelta {
+                upserts: rows,
+                source_graph_commit_epoch: Some(commit_epoch),
+                ..Default::default()
+            })
+            .unwrap();
+        index.checkpoint().unwrap();
+        EmbeddedStore::new(graph, Some(SearchProjection::from_index(index)))
+    };
+    (root, EmbeddedStoreHandle::new(store).unwrap(), commit_epoch)
+}
+
+#[test]
+fn typed_snapshot_candidates_filter_projection_kind_before_vector_top_k() {
+    let request = super::SearchCandidateRequest::vector(vec![1.0, 0.0], 1)
+        .with_metadata_filters(BTreeMap::from([("kind".into(), "memory".into())]));
+    let mut expected = None;
+    for out_of_core in [false, true] {
+        let (_root, handle, commit_epoch) = typed_candidate_isolation_handle(out_of_core);
+        let observed = handle
+            .with_bounded_read_snapshot(
+                EmbeddedReadSnapshotBudget {
+                    max_rows: 2,
+                    max_payload_bytes: 4096,
+                },
+                |snapshot| {
+                    let candidates = snapshot.search_candidates_with_report(&request)?;
+                    assert_eq!(candidates.result.hits.len(), 1);
+                    let hit = &candidates.result.hits[0];
+                    assert_eq!(hit.id, "memory:target");
+                    assert_eq!(hit.kind.as_deref(), Some("memory"));
+                    assert_eq!(hit.external_id.as_deref(), Some("target"));
+                    assert!(hit.vector_score > 0.0);
+                    assert_eq!(candidates.report.metadata_filter_count, 1);
+                    assert_eq!(candidates.report.pushed_predicate_count, 1);
+                    assert_eq!(
+                        candidates
+                            .result
+                            .projection_freshness
+                            .source_graph_commit_epoch,
+                        Some(commit_epoch)
+                    );
+                    assert_eq!(
+                        candidates
+                            .result
+                            .projection_freshness
+                            .durable_source_graph_commit_epoch,
+                        Some(commit_epoch)
+                    );
+                    assert_eq!(snapshot.commit_epoch(), commit_epoch);
+                    let graph = snapshot.query_cypher(
+                        "MATCH (m:Memory {id: $id}) RETURN m.title AS title LIMIT 1",
+                        &BTreeMap::from([(
+                            "id".into(),
+                            Value::String(hit.external_id.clone().unwrap()),
+                        )]),
+                        1,
+                    )?;
+                    assert_eq!(
+                        graph.rows[0]["title"],
+                        Value::String("Canonical target".into())
+                    );
+                    let report = snapshot.report();
+                    assert_eq!(report.output_rows, 2);
+                    assert!(report.output_payload_bytes > 0);
+                    Ok((hit.clone(), candidates.result.truncated))
+                },
+            )
+            .unwrap();
+        if let Some(expected) = &expected {
+            assert_eq!(&observed, expected);
+        } else {
+            expected = Some(observed);
+        }
+    }
+}
+
+#[test]
+fn typed_snapshot_candidates_share_cumulative_row_and_payload_budgets() {
+    let (_root, handle, _) = typed_candidate_isolation_handle(false);
+    let request = super::SearchCandidateRequest::vector(vec![1.0, 0.0], 1)
+        .with_metadata_filters(BTreeMap::from([("kind".into(), "memory".into())]));
+    let graph_query = "MATCH (m:Memory {id: 'target'}) RETURN m.id AS id LIMIT 1";
+    let row_error = handle
+        .with_bounded_read_snapshot(
+            EmbeddedReadSnapshotBudget {
+                max_rows: 1,
+                max_payload_bytes: 4096,
+            },
+            |snapshot| {
+                snapshot.search_candidates(&request)?;
+                snapshot.query_cypher(graph_query, &BTreeMap::new(), 1)?;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(row_error, crate::HawDBError::ReadBudgetExceeded(cause)
+        if cause.resource == crate::ReadBudgetResource::Rows && cause.limit == 1)
+    );
+
+    let candidate_bytes = handle
+        .with_bounded_read_snapshot(
+            EmbeddedReadSnapshotBudget {
+                max_rows: 1,
+                max_payload_bytes: 4096,
+            },
+            |snapshot| {
+                snapshot.search_candidates(&request)?;
+                Ok(snapshot.report().output_payload_bytes)
+            },
+        )
+        .unwrap();
+    assert!(candidate_bytes > 0);
+    let payload_error = handle
+        .with_bounded_read_snapshot(
+            EmbeddedReadSnapshotBudget {
+                max_rows: 2,
+                max_payload_bytes: candidate_bytes,
+            },
+            |snapshot| {
+                snapshot.search_candidates(&request)?;
+                snapshot.query_cypher(graph_query, &BTreeMap::new(), 1)?;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(payload_error, crate::HawDBError::ReadBudgetExceeded(cause)
+        if cause.resource == crate::ReadBudgetResource::PayloadBytes
+            && cause.limit == candidate_bytes)
+    );
+}
+
+#[test]
+fn typed_snapshot_candidates_use_the_snapshot_task_context_and_require_a_projection() {
+    let (_root, handle, _) = typed_candidate_isolation_handle(false);
+    let request = super::SearchCandidateRequest::vector(vec![1.0, 0.0], 1)
+        .with_metadata_filters(BTreeMap::from([("kind".into(), "memory".into())]));
+    let cancellation = RuntimeCancellationToken::new();
+    let context = RuntimeTaskContext::without_deadline(cancellation.clone());
+    let cancelled = handle
+        .with_bounded_read_snapshot_context(
+            EmbeddedReadSnapshotBudget {
+                max_rows: 1,
+                max_payload_bytes: 4096,
+            },
+            &context,
+            |snapshot| {
+                assert!(cancellation.cancel());
+                snapshot.search_candidates(&request).map(|_| ())
+            },
+        )
+        .unwrap_err();
+    assert!(cancelled.to_string().contains("cancelled"));
+
+    let deadline = RuntimeTaskContext::with_timeout(std::time::Duration::ZERO);
+    let expired = handle
+        .with_bounded_read_snapshot_context(
+            EmbeddedReadSnapshotBudget {
+                max_rows: 1,
+                max_payload_bytes: 4096,
+            },
+            &deadline,
+            |snapshot| snapshot.search_candidates(&request).map(|_| ()),
+        )
+        .unwrap_err();
+    assert!(expired.to_string().contains("deadline"));
+
+    let missing = app_read_handle();
+    let missing_error = missing
+        .with_bounded_graph_read_snapshot(
+            EmbeddedReadSnapshotBudget {
+                max_rows: 1,
+                max_payload_bytes: 4096,
+            },
+            |snapshot| snapshot.search_candidates(&request).map(|_| ()),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(missing_error, crate::HawDBError::Storage(ref message)
+        if message == "nowledge mem search projection is not configured")
+    );
+}
+
 #[test]
 fn bounded_text_seed_snapshot_retains_its_projection_during_a_writer_update() {
     let handle = app_read_handle();
@@ -493,6 +752,8 @@ fn bounded_text_seed_snapshot_retains_its_projection_during_a_writer_update() {
         done_tx.send(result).unwrap();
     });
     let read = |snapshot: &mut super::EmbeddedReadSnapshot<'_>| -> crate::Result<_> {
+        let candidates =
+            snapshot.search_candidates(&super::SearchCandidateRequest::text("candidate", 2))?;
         let text = snapshot.query_cypher(
             "CALL text_search($text, topK := 2) YIELD id, score RETURN id ORDER BY id",
             &BTreeMap::from([("text".into(), Value::String("candidate".into()))]),
@@ -508,11 +769,11 @@ fn bounded_text_seed_snapshot_retains_its_projection_during_a_writer_update() {
             &[],
             1,
         )?;
-        Ok((text, graph, sql))
+        Ok((candidates, text, graph, sql))
     };
     let result = handle.with_bounded_read_snapshot(
         EmbeddedReadSnapshotBudget {
-            max_rows: 8,
+            max_rows: 12,
             max_payload_bytes: 4096,
         },
         |snapshot| {
