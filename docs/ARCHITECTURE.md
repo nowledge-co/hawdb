@@ -1013,7 +1013,9 @@ Implementation rules:
 - `Expand` to `AdjacencyExpand`
 - the source `SeqNodeScan` of a mandatory single-hop `AdjacencyExpand` with
   relationship property equalities to `RelationshipSeededNodeScan` when fewer
-  relationships are estimated to match than the label has nodes
+  relationships are estimated to match than the label has nodes; resident
+  stores seed from the relationship property index, out-of-core stores from
+  the persisted relationship equality projection merged with the delta
 - selective pattern fragment to `HashJoin`
 - correlated pattern fragment to `NestedLoopApply`
 - mutation logical nodes to `MutationExec`

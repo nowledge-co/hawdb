@@ -275,11 +275,15 @@ impl GraphStore {
 
 impl GraphStore {
     /// Endpoint node ids of `rel_type` relationships whose properties equal
-    /// every entry of `properties`, read from the resident relationship
-    /// property index: the sources, the targets, or both. The ids are sorted
-    /// and distinct. `None` means the index cannot answer (a canonical base
-    /// exists, no property is given, or the smallest posting exceeds
-    /// `max_relationships`), so the caller keeps its node-first path (#1548).
+    /// every entry of `properties`: the sources, the targets, or both. The
+    /// ids are sorted and distinct. A resident store reads the resident
+    /// relationship property index; an out-of-core store reads the persisted
+    /// relationship equality projection of its canonical base and merges the
+    /// resident delta. `None` means neither can answer within
+    /// `max_relationships` candidate relationships (no property is given, an
+    /// out-of-core store has no complete projection for any of them, the
+    /// smallest posting is larger, or admission refused), so the caller keeps
+    /// its node-first path (#1548).
     pub fn relationship_property_endpoint_candidates(
         &self,
         rel_type: RelTypeId,
@@ -288,10 +292,19 @@ impl GraphStore {
         max_relationships: usize,
         admit: &mut dyn FnMut(usize) -> Result<Option<Box<dyn GraphReadAllocation>>>,
     ) -> Result<Option<EndpointCandidates>> {
-        if self.canonical_base.is_some() || properties.is_empty() {
+        if properties.is_empty() {
             return Ok(None);
         }
-        let mut smallest: Option<&RelIdPropertyPostingList> = None;
+        if self.canonical_base.is_some() {
+            return self.canonical_relationship_property_endpoint_candidates(
+                rel_type,
+                properties,
+                endpoints,
+                max_relationships,
+                admit,
+            );
+        }
+        let mut smallest: Option<(&String, &RelIdPropertyPostingList)> = None;
         for (property, value) in properties {
             let Some(_key) = admit_key_copy(admit, property, value)? else {
                 return Ok(None);
@@ -305,28 +318,25 @@ impl GraphStore {
                 let Some(allocation) = admit(0)? else {
                     return Ok(None);
                 };
-                return Ok(Some((Vec::new(), allocation)));
+                return Ok(Some(EndpointCandidates {
+                    ids: Vec::new(),
+                    probed_property: property.clone(),
+                    allocation,
+                }));
             };
-            if smallest.is_none_or(|smallest| posting.len() < smallest.len()) {
-                smallest = Some(posting);
+            if smallest.is_none_or(|(_, smallest)| posting.len() < smallest.len()) {
+                smallest = Some((property, posting));
             }
         }
-        let smallest = smallest.expect("at least one property was probed");
+        let (probed_property, smallest) = smallest.expect("at least one property was probed");
         if smallest.len() > max_relationships {
             return Ok(None);
         }
-        let per_relationship = match endpoints {
-            RelationshipEndpoints::Both => 2,
-            RelationshipEndpoints::Sources | RelationshipEndpoints::Targets => 1,
-        };
-        let bytes = smallest
-            .len()
-            .saturating_mul(per_relationship)
-            .saturating_mul(std::mem::size_of::<NodeId>());
-        let Some(allocation) = admit(bytes)? else {
+        let Some(allocation) = admit(endpoint_bytes(smallest.len(), endpoints))? else {
             return Ok(None);
         };
-        let mut ids = Vec::with_capacity(smallest.len().saturating_mul(per_relationship));
+        let mut ids =
+            Vec::with_capacity(smallest.len().saturating_mul(endpoints.per_relationship()));
         for id in smallest.iter() {
             let Some(record) = self.relationships.get(id) else {
                 return Err(HawDBError::StorageIntegrity(format!(
@@ -334,34 +344,223 @@ impl GraphStore {
                     id.0
                 )));
             };
-            if record.rel_type != rel_type
-                || properties
-                    .iter()
-                    .any(|(property, value)| record.properties.get(property) != Some(value))
-            {
-                continue;
-            }
-            if matches!(
-                endpoints,
-                RelationshipEndpoints::Sources | RelationshipEndpoints::Both
-            ) {
-                ids.push(record.source);
-            }
-            if matches!(
-                endpoints,
-                RelationshipEndpoints::Targets | RelationshipEndpoints::Both
-            ) {
-                ids.push(record.target);
-            }
+            push_matching_endpoints(&mut ids, record, rel_type, properties, endpoints);
         }
         ids.sort_unstable();
         ids.dedup();
-        Ok(Some((ids, allocation)))
+        Ok(Some(EndpointCandidates {
+            ids,
+            probed_property: probed_property.clone(),
+            allocation,
+        }))
+    }
+
+    /// The out-of-core form: the canonical base answers from its persisted
+    /// relationship equality projection, and the resident delta, which holds
+    /// every created or rewritten relationship, from its own index.
+    fn canonical_relationship_property_endpoint_candidates(
+        &self,
+        rel_type: RelTypeId,
+        properties: &BTreeMap<String, Value>,
+        endpoints: RelationshipEndpoints,
+        max_relationships: usize,
+        admit: &mut dyn FnMut(usize) -> Result<Option<Box<dyn GraphReadAllocation>>>,
+    ) -> Result<Option<EndpointCandidates>> {
+        let Some(projection) = self.persistent_property_projection.as_ref() else {
+            return Ok(None);
+        };
+        if projection.is_poisoned() {
+            return Ok(None);
+        }
+        // Rank the complete projections by their block-granular estimate.
+        // Equal estimates (one block) are tried in turn: the first posting
+        // within the cap answers.
+        let mut probes = Vec::new();
+        for (property, value) in properties {
+            if !projection.manifest().supports_relationship(
+                rel_type,
+                property,
+                PersistentPropertyProjectionKind::RelationshipEquality,
+            ) {
+                continue;
+            }
+            let (estimate, report) = projection
+                .estimate_relationship_equality_entries(rel_type, property, value)
+                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+            self.graph_index_read_metrics
+                .record_property(PersistentGraphIndexClass::RelationshipEquality, report);
+            probes.push((estimate, property, value));
+        }
+        probes.sort_by_key(|(estimate, _, _)| *estimate);
+        for (estimate, property, value) in probes {
+            let delta =
+                self.relationship_property_index
+                    .get(&(rel_type, property.clone(), value.clone()));
+            let delta_len = delta.as_ref().map_or(0, |posting| posting.len());
+            if delta_len > max_relationships {
+                continue;
+            }
+            let base_cap = max_relationships - delta_len;
+            let (base, _base_allocation) = match self.canonical_relationship_posting(
+                (rel_type, property, value),
+                estimate,
+                base_cap,
+                admit,
+            )? {
+                BaseRelationshipPosting::Within(base, allocation) => (base, allocation),
+                BaseRelationshipPosting::Overflow => continue,
+                BaseRelationshipPosting::Refused => return Ok(None),
+            };
+            let relationships = base.len().saturating_add(delta_len);
+            let Some(allocation) = admit(endpoint_bytes(relationships, endpoints))? else {
+                return Ok(None);
+            };
+            let mut ids =
+                Vec::with_capacity(relationships.saturating_mul(endpoints.per_relationship()));
+            let mut reader = crate::read_view::GraphReadAllocator::new(&mut *admit, None);
+            for id in base {
+                let row = match self.relationship_with_allocation(id, &mut reader)? {
+                    AdmittedRelationshipRead::Relationship(row) => row,
+                    AdmittedRelationshipRead::Stopped => return Ok(None),
+                    AdmittedRelationshipRead::Missing => {
+                        return Err(HawDBError::StorageIntegrity(format!(
+                            "relationship property projection references missing canonical relationship {}",
+                            id.0
+                        )));
+                    }
+                };
+                let (record, _permit) = row.into_parts();
+                if record.rel_type != rel_type || record.properties.get(property) != Some(value) {
+                    return Err(HawDBError::StorageIntegrity(format!(
+                        "relationship property projection candidate {} fails its canonical seek predicate",
+                        id.0
+                    )));
+                }
+                push_matching_endpoints(&mut ids, &record, rel_type, properties, endpoints);
+            }
+            if let Some(delta) = delta {
+                for id in delta.iter() {
+                    let Some(record) = self.relationships.get(id) else {
+                        return Err(HawDBError::StorageIntegrity(format!(
+                            "relationship property index references missing relationship {}",
+                            id.0
+                        )));
+                    };
+                    push_matching_endpoints(&mut ids, record, rel_type, properties, endpoints);
+                }
+            }
+            ids.sort_unstable();
+            ids.dedup();
+            return Ok(Some(EndpointCandidates {
+                ids,
+                probed_property: property.clone(),
+                allocation,
+            }));
+        }
+        Ok(None)
+    }
+
+    /// Canonical relationship ids carrying `property = value`, excluding
+    /// tombstoned relationships and those the delta rewrites.
+    fn canonical_relationship_posting(
+        &self,
+        (rel_type, property, value): (RelTypeId, &str, &Value),
+        estimate: u64,
+        cap: usize,
+        admit: &mut dyn FnMut(usize) -> Result<Option<Box<dyn GraphReadAllocation>>>,
+    ) -> Result<BaseRelationshipPosting> {
+        let projection = self
+            .persistent_property_projection
+            .as_ref()
+            .expect("the caller checked the projection");
+        // The estimate counts every entry of the overlapping blocks, so it
+        // bounds the matches; one more than the cap detects an overflow.
+        let slots = usize::try_from(estimate)
+            .unwrap_or(usize::MAX)
+            .min(cap.saturating_add(1));
+        let Some(allocation) = admit(slots.saturating_mul(std::mem::size_of::<RelId>()))? else {
+            return Ok(BaseRelationshipPosting::Refused);
+        };
+        let mut ids = Vec::with_capacity(slots);
+        let mut overflow = false;
+        let (report, _control) = projection
+            .scan_relationship_equality_candidates(rel_type, property, value, |id| {
+                if self.relationship_tombstones.contains(&id)
+                    || self.relationships.contains_key(&id)
+                {
+                    return Ok(CanonicalScanControl::Continue);
+                }
+                if ids.len() == slots {
+                    overflow = true;
+                    return Ok(CanonicalScanControl::Stop);
+                }
+                ids.push(id);
+                Ok(CanonicalScanControl::Continue)
+            })
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+        self.graph_index_read_metrics
+            .record_property(PersistentGraphIndexClass::RelationshipEquality, report);
+        if overflow || ids.len() > cap {
+            return Ok(BaseRelationshipPosting::Overflow);
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        Ok(BaseRelationshipPosting::Within(ids, allocation))
     }
 }
 
-/// Sorted distinct endpoint ids and the permit that admitted them.
-pub type EndpointCandidates = (Vec<NodeId>, Box<dyn GraphReadAllocation>);
+/// One canonical posting: within the cap with its admitted ids, larger than
+/// the cap, or refused by admission.
+enum BaseRelationshipPosting {
+    Within(Vec<RelId>, Box<dyn GraphReadAllocation>),
+    Overflow,
+    Refused,
+}
+
+/// Bytes of the endpoint ids seeded from `relationships` relationships.
+fn endpoint_bytes(relationships: usize, endpoints: RelationshipEndpoints) -> usize {
+    relationships
+        .saturating_mul(endpoints.per_relationship())
+        .saturating_mul(std::mem::size_of::<NodeId>())
+}
+
+/// Pushes the requested endpoints of `record` when it is a `rel_type`
+/// relationship carrying every entry of `properties`.
+fn push_matching_endpoints(
+    ids: &mut Vec<NodeId>,
+    record: &RelRecord,
+    rel_type: RelTypeId,
+    properties: &BTreeMap<String, Value>,
+    endpoints: RelationshipEndpoints,
+) {
+    if record.rel_type != rel_type
+        || properties
+            .iter()
+            .any(|(property, value)| record.properties.get(property) != Some(value))
+    {
+        return;
+    }
+    if matches!(
+        endpoints,
+        RelationshipEndpoints::Sources | RelationshipEndpoints::Both
+    ) {
+        ids.push(record.source);
+    }
+    if matches!(
+        endpoints,
+        RelationshipEndpoints::Targets | RelationshipEndpoints::Both
+    ) {
+        ids.push(record.target);
+    }
+}
+
+/// Sorted distinct endpoint ids, the relationship property whose posting
+/// supplied them, and the permit that admitted them.
+pub struct EndpointCandidates {
+    pub ids: Vec<NodeId>,
+    pub probed_property: String,
+    pub allocation: Box<dyn GraphReadAllocation>,
+}
 
 /// Which endpoints of the matching relationships a caller seeds from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -369,6 +568,15 @@ pub enum RelationshipEndpoints {
     Sources,
     Targets,
     Both,
+}
+
+impl RelationshipEndpoints {
+    fn per_relationship(self) -> usize {
+        match self {
+            Self::Both => 2,
+            Self::Sources | Self::Targets => 1,
+        }
+    }
 }
 
 #[cfg(test)]

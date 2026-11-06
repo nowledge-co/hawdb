@@ -227,9 +227,10 @@ pub trait GraphExecutionRead {
     }
 
     /// Endpoint ids of `rel_type` relationships whose properties equal all of
-    /// `properties`, from a resident relationship property index (#1548).
-    /// `None` keeps the caller's node-first path; readers without such an
-    /// index use this default.
+    /// `properties`, from a resident relationship property index or a
+    /// persisted relationship equality projection (#1548). `None` keeps the
+    /// caller's node-first path; readers without such an index use this
+    /// default.
     fn relationship_property_endpoint_candidates(
         &self,
         _rel_type: RelTypeId,
