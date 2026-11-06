@@ -333,13 +333,25 @@ pub(super) fn encode<W: EncodeWork>(
     Ok(encoded)
 }
 
-pub(super) fn encode_row<W: EncodeWork>(
+/// Returns the exact length `encode_row` produces for `row`, or the error it
+/// reports, without materializing the encoded row.
+pub(super) fn encoded_row_len(
     row: &RelationalRow,
     column_count: usize,
     limits: RelationalRowPageLimits,
-    work: &W,
-) -> Result<Vec<u8>, RelationalRowPageError> {
-    let unit = work.start_unit()?;
+) -> Result<usize, RelationalRowPageError> {
+    let (header_len, payload_len) = count_row(row, column_count, limits)?;
+    Ok(header_len + payload_len)
+}
+
+/// Counts one row with the same value grammar and in the same order as its
+/// materialization, so every row-level limit fails before payload allocation.
+/// Returns the fixed header length and the value payload length.
+fn count_row(
+    row: &RelationalRow,
+    column_count: usize,
+    limits: RelationalRowPageLimits,
+) -> Result<(usize, usize), RelationalRowPageError> {
     if row.values().len() != column_count {
         return Err(RelationalRowPageError::Admission(format!(
             "row contains {} values, expected {column_count}",
@@ -358,8 +370,6 @@ pub(super) fn encode_row<W: EncodeWork>(
             limits.max_row_bytes
         )));
     }
-    // Count with the same value grammar before allocating payload backing.
-    // Check each cumulative row extent in the same order as materialization.
     let mut count = value::CountingValueOutput::default();
     for value in row.values() {
         u32_len(count.length, "value offset")?;
@@ -374,8 +384,19 @@ pub(super) fn encode_row<W: EncodeWork>(
             )));
         }
     }
+    Ok((header_len, count.length))
+}
+
+pub(super) fn encode_row<W: EncodeWork>(
+    row: &RelationalRow,
+    column_count: usize,
+    limits: RelationalRowPageLimits,
+    work: &W,
+) -> Result<Vec<u8>, RelationalRowPageError> {
+    let unit = work.start_unit()?;
+    let (header_len, payload_len) = count_row(row, column_count, limits)?;
     let mut slots = work.scratch_vector_capacity(column_count)?;
-    let mut payload = work.scratch_vector_capacity(count.length)?;
+    let mut payload = work.scratch_vector_capacity(payload_len)?;
     unit.finish();
     for value in row.values() {
         let unit = work.start_unit()?;

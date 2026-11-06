@@ -418,3 +418,234 @@ fn unique_test_dir(label: &str) -> PathBuf {
         TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))
 }
+
+/// The packer before linear sizing: it encoded the whole candidate page after
+/// every row and split at the first row the codec rejected.
+fn reference_pack(
+    column_count: usize,
+    digest: Sha256Digest,
+    config: RelationalRowPagePublicationConfig,
+    rows: &[RelationalRowPageEntry],
+) -> (
+    Vec<ImmutableRelationalRowPage>,
+    Option<RelationalRowPageMutationError>,
+) {
+    let limits = config.page_limits;
+    let new_page = |id: u64| ImmutableRelationalRowPage {
+        generation: 1,
+        source_commit_epoch: 1,
+        page_id: RelationalRowPageId::new(NonZeroU64::new(id).unwrap()),
+        schema_digest: digest,
+        column_count,
+        rows: Vec::new(),
+    };
+    let mut pages = Vec::new();
+    let mut next_id = 1;
+    let mut pending: Option<ImmutableRelationalRowPage> = None;
+    for row in rows {
+        let page = pending.get_or_insert_with(|| new_page(next_id));
+        page.rows.push(row.clone());
+        if page.encode(limits).is_ok() {
+            continue;
+        }
+        let row = page.rows.pop().unwrap();
+        if page.rows.is_empty() {
+            let mut single = new_page(next_id);
+            single.rows.push(row);
+            return (pages, Some(single.encode(limits).unwrap_err().into()));
+        }
+        page.encode(limits).unwrap();
+        pages.push(pending.take().unwrap());
+        next_id += 1;
+        let mut next = new_page(next_id);
+        next.rows.push(row);
+        if let Err(error) = next.encode(limits) {
+            return (pages, Some(error.into()));
+        }
+        pending = Some(next);
+    }
+    pages.extend(pending);
+    (pages, None)
+}
+
+fn linear_pack(
+    column_count: usize,
+    digest: Sha256Digest,
+    config: RelationalRowPagePublicationConfig,
+    rows: &[RelationalRowPageEntry],
+) -> (
+    Vec<ImmutableRelationalRowPage>,
+    Option<RelationalRowPageMutationError>,
+) {
+    let mut pages = Vec::new();
+    let mut bootstrap = RelationalRowPageBootstrap::new(
+        1,
+        1,
+        digest,
+        column_count,
+        NonZeroU64::new(1).unwrap(),
+        config,
+    )
+    .unwrap();
+    for row in rows {
+        if let Err(error) = bootstrap.push(row.clone(), |page| {
+            pages.push(page);
+            Ok(())
+        }) {
+            return (pages, Some(error));
+        }
+    }
+    let result = bootstrap.finish(|page| {
+        pages.push(page);
+        Ok(())
+    });
+    (pages, result.err())
+}
+
+fn assert_same_packing(
+    label: &str,
+    column_count: usize,
+    config: RelationalRowPagePublicationConfig,
+    rows: &[RelationalRowPageEntry],
+) {
+    let digest = crate::relational::row_page::test_row_page_schema_digest("packing", column_count);
+    let (expected, expected_error) = reference_pack(column_count, digest, config, rows);
+    let (actual, actual_error) = linear_pack(column_count, digest, config, rows);
+    assert_eq!(
+        actual_error.as_ref().map(ToString::to_string),
+        expected_error.as_ref().map(ToString::to_string),
+        "{label}: packing outcome differs"
+    );
+    assert_eq!(actual, expected, "{label}: page partition differs");
+    for (actual, expected) in actual.iter().zip(&expected) {
+        assert_eq!(
+            actual.encode(config.page_limits).unwrap(),
+            expected.encode(config.page_limits).unwrap(),
+            "{label}: encoded page bytes differ"
+        );
+    }
+}
+
+fn varied_row(index: usize, column_count: usize) -> RelationalRow {
+    let mut values = Vec::with_capacity(column_count);
+    values.push(RelationalValue::BigInt(index as i64));
+    for column in 1..column_count {
+        values.push(match (index * 7 + column * 3) % 8 {
+            0 => RelationalValue::Null,
+            1 => RelationalValue::Boolean(index.is_multiple_of(2)),
+            2 => RelationalValue::DoublePrecision(index as f64 / 3.0),
+            3 => RelationalValue::Bytea(vec![column as u8; (index * 13) % 97]),
+            4 => RelationalValue::Overflow(crate::relational::RelationalOverflowRef {
+                digest: Sha256Digest::from_bytes([index as u8; 32]),
+                scalar_type: crate::relational::RelationalScalarType::Text,
+                compressed_bytes: 5_000 + index as u64,
+                uncompressed_bytes: 9_000 + index as u64,
+            }),
+            5 => RelationalValue::Text(String::new()),
+            _ => RelationalValue::Text("w".repeat((index * 37 + column) % 300)),
+        });
+    }
+    RelationalRow::new(values)
+}
+
+fn integer_rows(count: usize, column_count: usize) -> Vec<RelationalRowPageEntry> {
+    (0..count)
+        .map(|index| RelationalRowPageEntry {
+            primary_key: key(index as i64),
+            row: varied_row(index, column_count),
+        })
+        .collect()
+}
+
+/// Strictly increasing text keys whose length shrinks after long keys, so a
+/// later row's per-row size projection can be smaller than an earlier one.
+fn text_key_rows(count: usize) -> Vec<RelationalRowPageEntry> {
+    (0..count)
+        .map(|index| {
+            let length = if index.is_multiple_of(3) {
+                400
+            } else {
+                1 + index % 5
+            };
+            let text = format!("{:04}{}", index, "k".repeat(length));
+            RelationalRowPageEntry {
+                primary_key: RelationalKey(vec![RelationalValue::Text(text.clone())]),
+                row: RelationalRow::new(vec![
+                    RelationalValue::Text(text),
+                    RelationalValue::Text("v".repeat(index % 11)),
+                ]),
+            }
+        })
+        .collect()
+}
+
+fn limits_config(page_bytes: usize, rows: usize) -> RelationalRowPagePublicationConfig {
+    let mut config = RelationalRowPagePublicationConfig::default();
+    config.page_limits.max_page_bytes = NonZeroUsize::new(page_bytes).unwrap();
+    config.page_limits.max_rows = NonZeroUsize::new(rows).unwrap();
+    config
+}
+
+#[test]
+fn linear_packing_matches_whole_page_encoding_at_default_limits() {
+    let config = RelationalRowPagePublicationConfig::default();
+    // Narrow rows fill pages to exactly the 256-row cap; one more row splits.
+    for count in [1, 255, 256, 257, 513, 1_000] {
+        assert_same_packing(
+            &format!("narrow {count}"),
+            2,
+            config,
+            &integer_rows(count, 2),
+        );
+    }
+    assert_same_packing("wide", 24, config, &integer_rows(600, 24));
+    assert_same_packing("text keys", 2, config, &text_key_rows(700));
+}
+
+#[test]
+fn linear_packing_matches_whole_page_encoding_at_every_byte_cap() {
+    let wide = integer_rows(60, 6);
+    let keyed = text_key_rows(60);
+    // Every byte limit in the sweep lands some page exactly at its cap and
+    // the next row one byte or more over it, including single rows that no
+    // page can hold.
+    for page_bytes in (ROW_PAGE_TEST_HEADER_BYTES..6_000).step_by(3) {
+        for max_rows in [1, 2, 3, 7, 256] {
+            let config = limits_config(page_bytes, max_rows);
+            assert_same_packing(&format!("wide {page_bytes}/{max_rows}"), 6, config, &wide);
+            assert_same_packing(&format!("keyed {page_bytes}/{max_rows}"), 2, config, &keyed);
+        }
+    }
+}
+
+#[test]
+fn linear_packing_reports_the_codec_error_for_unpackable_rows() {
+    let mut rows = integer_rows(20, 3);
+    let config = limits_config(64 * 1024, 256);
+
+    // A row wider than its row limit, after rows that already fill a page.
+    let mut row_limited = config;
+    row_limited.page_limits.max_row_bytes = NonZeroUsize::new(200).unwrap();
+    rows[10].row = RelationalRow::new(vec![
+        RelationalValue::BigInt(10),
+        RelationalValue::Text("x".repeat(400)),
+        RelationalValue::Null,
+    ]);
+    assert_same_packing("row over row limit", 3, row_limited, &rows);
+
+    // A single row larger than a whole page.
+    let page_limited = limits_config(600, 256);
+    assert_same_packing("row over page limit", 3, page_limited, &rows);
+
+    // A row with the wrong number of values.
+    let mut short = integer_rows(20, 3);
+    short[5].row = RelationalRow::new(vec![RelationalValue::BigInt(5)]);
+    assert_same_packing("wrong column count", 3, config, &short);
+
+    // A key over the key limit.
+    let mut key_limited = config;
+    key_limited.page_limits.max_key_bytes = NonZeroUsize::new(64).unwrap();
+    assert_same_packing("key over key limit", 2, key_limited, &text_key_rows(10));
+}
+
+const ROW_PAGE_TEST_HEADER_BYTES: usize = 140;
