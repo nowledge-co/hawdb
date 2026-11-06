@@ -146,8 +146,21 @@ fn native_decimal_fromless_projection_and_explicit_float_cast() {
         panic!("native Decimal");
     };
     assert_eq!(value.to_string(), "1.0000");
+    // #1516: a numeric literal beside a DOUBLE operand converts to DOUBLE,
+    // as PostgreSQL's implicit numeric-to-float8 cast does; typed DECIMAL
+    // operands beside DOUBLE still require an explicit CAST (#1429).
+    assert_eq!(
+        database
+            .query_sql_with_params("SELECT $1 + 0.1 AS x", &[Value::Float(1.0)])
+            .unwrap()
+            .rows[0]["x"],
+        Value::Float(1.0 + 0.1)
+    );
     assert!(database
-        .query_sql_with_params("SELECT $1 + 0.1", &[Value::Float(1.0)])
+        .query_sql_with_params(
+            "SELECT $1 + CAST(0.1 AS DECIMAL(8,2))",
+            &[Value::Float(1.0)]
+        )
         .is_err());
     assert_eq!(
         database

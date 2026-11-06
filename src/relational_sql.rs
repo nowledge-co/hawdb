@@ -33,6 +33,10 @@ mod postgres_compat;
 #[path = "relational_sql/update_arithmetic.rs"]
 mod update_arithmetic;
 
+#[cfg(test)]
+#[path = "relational_sql/numeric_literal_double.rs"]
+mod numeric_literal_double;
+
 pub use hawdb_optimizer_relational::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
     RelationalJoinPlanningDirective, RelationalJoinPlanningFallbackClass,

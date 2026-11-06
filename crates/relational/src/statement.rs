@@ -111,6 +111,7 @@ fn compile_relational_mutation(
     parameters: &[Value],
     state: &RelationalState,
 ) -> Result<CompiledRelationalStatement> {
+    let statement = &*crate::literal_coercion::coerce_mutation(statement, state, parameters)?;
     let mut returning = None;
     let write = match statement {
         SqlStatement::Insert(insert) => {

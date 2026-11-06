@@ -155,9 +155,12 @@ fn schema_rounding_checks_precision_after_carry() {
         d("1")
     );
     assert_eq!(d("42.00").to_i64().unwrap(), 42);
-    assert!(d("42.01").to_i64().is_err());
+    assert_eq!(d("42.01").to_i64(), Err(DecimalError::Fractional));
     assert_eq!(d("-9223372036854775808").to_i64().unwrap(), i64::MIN);
-    assert!(d("9223372036854775808").to_i64().is_err());
+    assert_eq!(
+        d("9223372036854775808").to_i64(),
+        Err(DecimalError::IntegerOutOfRange)
+    );
 }
 
 #[test]

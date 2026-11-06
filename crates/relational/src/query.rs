@@ -471,8 +471,9 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
         ..RelationalSqlStageTimings::default()
     };
     match prepared.statement {
-        SqlStatement::Select(select) => {
+        SqlStatement::Select(mut select) => {
             if select.from.is_none() {
+                crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
                 return execute_fromless_select(
                     &select,
                     parameters,
