@@ -372,17 +372,21 @@ pub enum PhysicalPlan {
         variable: String,
         label: String,
     },
-    /// The `label` nodes that are endpoints of `rel_type` relationships whose
-    /// properties equal `rel_properties`, on the side `direction` expands
-    /// from, read from the resident relationship property index in node-id
-    /// order (#1548). Without that index it is a full label scan. Only a
-    /// mandatory single-hop expand of `variable` over the same relationship
-    /// constraints uses it, since the expand drops every other node.
+    /// The `label` nodes (every node when `label` is empty) that are endpoints
+    /// of `rel_type` relationships whose properties equal `rel_properties`
+    /// and, with `rel_property_in`, whose property is one of the listed
+    /// values, on the side `direction` expands from, read from the relationship
+    /// property index in node-id order (#1548). Without that index it is a
+    /// full label scan. Only a mandatory single-hop expand of `variable` over
+    /// the same relationship constraints uses it, since the expand (and, for
+    /// `rel_property_in`, the filter it came from, which stays above the
+    /// expand) drops every other node.
     RelationshipSeededNodeScan {
         variable: String,
         label: String,
         rel_type: String,
         rel_properties: BTreeMap<String, Value>,
+        rel_property_in: Option<(String, Vec<Value>)>,
         direction: RelationshipDirection,
     },
     /// Fused required-property node scan, local predicate, and optional scalar projection.

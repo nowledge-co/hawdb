@@ -1016,11 +1016,14 @@ Implementation rules:
 - `NodeScan` to `SeqNodeScan`
 - `NodeScan + property predicate` to `IndexNodeSeek`
 - `Expand` to `AdjacencyExpand`
-- the source `SeqNodeScan` of a mandatory single-hop `AdjacencyExpand` with
-  relationship property equalities to `RelationshipSeededNodeScan` when fewer
-  relationships are estimated to match than the label has nodes; resident
-  stores seed from the relationship property index, out-of-core stores from
-  the persisted relationship equality projection merged with the delta
+- the source `SeqNodeScan` (labeled or unlabeled) of a mandatory single-hop
+  `AdjacencyExpand` with relationship property equalities, or with a
+  relationship-property `IN` in the filter directly above it (the filter
+  stays), to `RelationshipSeededNodeScan` when fewer relationships are
+  estimated to match than the scan visits nodes; resident stores seed from
+  the relationship property index, out-of-core stores from the persisted
+  relationship equality projection merged with the delta, and an `IN` list
+  unions its values' postings
 - selective pattern fragment to `HashJoin`
 - correlated pattern fragment to `NestedLoopApply`
 - mutation logical nodes to `MutationExec`

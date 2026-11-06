@@ -19,6 +19,7 @@
 use super::*;
 
 mod out_of_core;
+mod unlabeled_in;
 
 fn database() -> Database {
     let mut db = Database::new();

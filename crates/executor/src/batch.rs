@@ -552,6 +552,7 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
             label,
             rel_type,
             rel_properties,
+            rel_property_in,
             direction,
         } => dispatch.supported(|context, execution_limit, emit| {
             stream_relationship_seeded_node_scan_batches(
@@ -560,6 +561,9 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                     label,
                     rel_type,
                     rel_properties,
+                    rel_property_in: rel_property_in
+                        .as_ref()
+                        .map(|(property, values)| (property.as_str(), values.as_slice())),
                     direction: *direction,
                 },
                 context,

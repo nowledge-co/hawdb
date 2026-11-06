@@ -226,15 +226,16 @@ pub trait GraphExecutionRead {
         ))
     }
 
-    /// Endpoint ids of `rel_type` relationships whose properties equal all of
-    /// `properties`, from a resident relationship property index or a
-    /// persisted relationship equality projection (#1548). `None` keeps the
+    /// Endpoint ids of `rel_type` relationships satisfying `constraints`
+    /// (property equalities and an optional `IN` list), from a resident
+    /// relationship property index or a persisted relationship equality
+    /// projection (#1548). `None` keeps the
     /// caller's node-first path; readers without such an index use this
     /// default.
     fn relationship_property_endpoint_candidates(
         &self,
         _rel_type: RelTypeId,
-        _properties: &std::collections::BTreeMap<String, hawdb_core::Value>,
+        _constraints: hawdb_storage::store::RelationshipSeedConstraints<'_>,
         _endpoints: hawdb_storage::store::RelationshipEndpoints,
         _max_relationships: usize,
         _admit: &mut dyn FnMut(

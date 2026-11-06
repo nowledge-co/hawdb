@@ -559,12 +559,14 @@ impl RetainedHeapBytes for PhysicalPlan {
                 label,
                 rel_type,
                 rel_properties,
+                rel_property_in,
                 direction,
             } => checked_retained_heap_sum([
                 variable.retained_heap_bytes(),
                 label.retained_heap_bytes(),
                 rel_type.retained_heap_bytes(),
                 rel_properties.retained_heap_bytes(),
+                rel_property_in.retained_heap_bytes(),
                 direction.retained_heap_bytes(),
             ]),
             Self::NodeProjectionScanExec {

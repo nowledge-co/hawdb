@@ -855,6 +855,7 @@ impl PhysicalPlan {
                 label,
                 rel_type,
                 rel_properties,
+                rel_property_in,
                 direction,
             } => {
                 output.push_str("RelationshipSeededNodeScan(");
@@ -871,6 +872,18 @@ impl PhysicalPlan {
                 });
                 output.push(',');
                 write_properties(output, rel_properties);
+                if let Some((property, values)) = rel_property_in {
+                    output.push(',');
+                    write_identifier(output, property);
+                    output.push_str(" IN [");
+                    for (index, value) in values.iter().enumerate() {
+                        if index > 0 {
+                            output.push(',');
+                        }
+                        write_value(output, value);
+                    }
+                    output.push(']');
+                }
                 output.push(')');
             }
             PhysicalPlan::NodeProjectionScanExec {

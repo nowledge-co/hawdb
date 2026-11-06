@@ -500,6 +500,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 label: String::new(),
                 rel_type: String::new(),
                 rel_properties: BTreeMap::new(),
+                rel_property_in: None,
                 direction: RelationshipDirection::Outgoing,
             },
             true,
