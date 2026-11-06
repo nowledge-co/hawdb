@@ -1659,16 +1659,23 @@ impl GraphStore {
                 config.max_scan_pages
             )));
         }
-        let page_bytes = usize::try_from(manifest.page_bytes).map_err(|_| {
+        // A table's read budget bounds each page by the writer's maximum.
+        let page_bytes = usize::try_from(manifest.max_page_bytes).map_err(|_| {
             crate::error::HawDBError::Storage(
                 "overflow compaction page size exceeds this target".to_string(),
             )
         })?;
-        let estimated_scan_bytes = root_pages.checked_mul(page_bytes).ok_or_else(|| {
-            crate::error::HawDBError::Storage(
-                "overflow compaction scan byte count overflow".to_string(),
-            )
-        })?;
+        // v2 pages have exact lengths: the live inventory is the scan size.
+        let estimated_scan_bytes = manifest
+            .physical_generations
+            .iter()
+            .try_fold(0u64, |total, entry| total.checked_add(entry.live_bytes))
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .ok_or_else(|| {
+                crate::error::HawDBError::Storage(
+                    "overflow compaction scan byte count overflow".to_string(),
+                )
+            })?;
         if estimated_scan_bytes > config.max_scan_bytes.get() {
             return Err(crate::error::HawDBError::Storage(format!(
                 "overflow compaction needs {estimated_scan_bytes} row bytes, exceeding limit {}",
@@ -2622,6 +2629,7 @@ mod tests {
             ..WalReplayConfig::default()
         };
         let path = unique_test_dir("metadata-only-monotonic-append-reads");
+        let _row_cap = LegacyRowCap::new(&path);
         let event_schema = RelationalTableSchema {
             materialized_view: None,
             name: "events".to_string(),
@@ -3255,6 +3263,7 @@ mod tests {
     #[test]
     fn canonical_checkpoint_rewrites_only_dirty_relational_pages() {
         let path = unique_test_dir("canonical-dirty-pages");
+        let _row_cap = LegacyRowCap::new(&path);
         let replay = WalReplayConfig::default();
         let mut catalog = Catalog::default();
         let mut store = GraphStore::open_with_durability_and_replay_config(
@@ -3407,6 +3416,7 @@ mod tests {
     #[test]
     fn schema_change_rebuilds_the_complete_relational_row_root() {
         let path = unique_test_dir("schema-rebuild");
+        let _row_cap = LegacyRowCap::new(&path);
         let replay = WalReplayConfig::default();
         let mut catalog = Catalog::default();
         let mut store = GraphStore::open_with_durability_and_replay_config(
@@ -3512,6 +3522,7 @@ mod tests {
     #[test]
     fn schema_change_rewrites_only_the_changed_tables() {
         let path = unique_test_dir("schema-per-table");
+        let _row_cap = LegacyRowCap::new(&path);
         let mut catalog = Catalog::default();
         let mut store = GraphStore::open_with_durability_and_replay_config(
             &path,
@@ -4463,6 +4474,27 @@ mod tests {
 
     fn key(id: i64) -> RelationalKey {
         RelationalKey(vec![RelationalValue::BigInt(id)])
+    }
+
+    /// Keeps the 256-row page split these layout tests were written for
+    /// (no byte target below the page limit): format v2 otherwise packs
+    /// their narrow rows by size.
+    struct LegacyRowCap(std::path::PathBuf);
+
+    impl LegacyRowCap {
+        fn new(path: &std::path::Path) -> Self {
+            let mut config = RelationalRowPagePublicationConfig::default();
+            config.page_limits.max_rows = NonZeroUsize::new(256).unwrap();
+            config.target_page_bytes = config.page_limits.max_page_bytes;
+            super::set_relational_row_publication_config_override_for_test(path, Some(config));
+            Self(path.to_path_buf())
+        }
+    }
+
+    impl Drop for LegacyRowCap {
+        fn drop(&mut self) {
+            super::set_relational_row_publication_config_override_for_test(&self.0, None);
+        }
     }
 
     fn unique_test_dir(label: &str) -> std::path::PathBuf {

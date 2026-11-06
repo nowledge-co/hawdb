@@ -16,8 +16,9 @@ use super::super::{codec::WireDescriptor, ROOT_DESCRIPTOR_BINDING_OFFSET, ROOT_D
 use super::{work_error, CheckpointWorkContext};
 use crate::file_io::File;
 use crate::relational::row_page::publication::{
-    durability, RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
-    RelationalRowPageRootDescriptor, RelationalRowPageRootManifest, RelationalRowPageSlotIntegrity,
+    durability, RelationalRowPageIntegrity, RelationalRowPagePublicationConfig,
+    RelationalRowPagePublicationError, RelationalRowPageRootDescriptor,
+    RelationalRowPageRootManifest,
 };
 use crate::relational::RelationalRowPageId;
 use hawdb_integrity::IntegrityHasher;
@@ -127,15 +128,15 @@ pub(in crate::relational::row_page::publication) fn read_descriptor_with_allocat
             })?,
         ),
         physical_generation: wire.physical_generation,
-        physical_slot: wire.physical_slot,
+        physical_offset: wire.physical_offset,
         source_commit_epoch: wire.source_commit_epoch,
         row_count: wire.row_count,
         lower_bound,
         upper_bound,
-        slot_integrity: RelationalRowPageSlotIntegrity {
+        page_integrity: RelationalRowPageIntegrity {
             encoded_len: wire.encoded_len,
-            slot_crc32c: wire.slot_crc32c,
-            slot_sha256: wire.slot_sha256,
+            page_crc32c: wire.page_crc32c,
+            page_sha256: wire.page_sha256,
         },
     };
     unit.finish();
@@ -155,11 +156,17 @@ pub(in crate::relational::row_page::publication) fn read_descriptor_with_allocat
                 "row-page descriptor references an unaccounted physical generation".to_string(),
             )
         })?;
-    let allocated_pages = manifest.physical_generations[index].allocated_pages;
-    if descriptor.physical_slot >= allocated_pages {
+    let allocated_bytes = manifest.physical_generations[index].allocated_bytes;
+    if descriptor
+        .physical_offset
+        .checked_add(u64::from(descriptor.page_integrity.encoded_len))
+        .is_none_or(|end| end > allocated_bytes)
+    {
         return Err(RelationalRowPagePublicationError::Corrupt(format!(
-            "row-page descriptor references slot {} outside generation {} allocation {}",
-            descriptor.physical_slot, descriptor.physical_generation, allocated_pages
+            "row-page descriptor range {}+{} lies outside generation {} allocation {allocated_bytes}",
+            descriptor.physical_offset,
+            descriptor.page_integrity.encoded_len,
+            descriptor.physical_generation
         )));
     }
     unit.finish();
@@ -242,12 +249,12 @@ pub(in crate::relational::row_page::publication) fn validate_descriptor(
             descriptor.row_count
         )));
     }
-    if descriptor.slot_integrity.encoded_len == 0
-        || descriptor.slot_integrity.encoded_len as usize > config.page_limits.max_page_bytes.get()
+    if descriptor.page_integrity.encoded_len == 0
+        || descriptor.page_integrity.encoded_len as usize > config.page_limits.max_page_bytes.get()
     {
         return Err(RelationalRowPagePublicationError::Corrupt(format!(
             "row-page descriptor encoded length {} is outside the admitted range",
-            descriptor.slot_integrity.encoded_len
+            descriptor.page_integrity.encoded_len
         )));
     }
     unit.finish();

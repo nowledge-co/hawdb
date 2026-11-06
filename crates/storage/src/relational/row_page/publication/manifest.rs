@@ -26,10 +26,13 @@ use std::path::Path;
 mod checkpoint;
 pub(super) use checkpoint::{encode_manifest_with_work_context, root_set_digest_with_work_context};
 
-const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM01";
-const MANIFEST_VERSION: u16 = 2;
-const PHYSICAL_GENERATIONS_FLAG: u16 = 1;
-pub(super) const PHYSICAL_GENERATION_BYTES: usize = 24;
+/// Row-page format v2: exact-length pages packed back to back, addressed by
+/// byte offset and length (#1521). v1 (`SKRPGM01`) used fixed 1 MiB slots.
+const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM02";
+const LEGACY_V1_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM01";
+const MANIFEST_VERSION: u16 = 1;
+/// generation, allocated pages, allocated bytes, live pages, live bytes.
+pub(super) const PHYSICAL_GENERATION_BYTES: usize = 40;
 pub(super) const OCCUPANCY_TRAILER_BYTES: usize = 12;
 pub(super) const MANIFEST_HEADER_BYTES: usize = 316;
 const MANIFEST_INTEGRITY_OFFSET: usize = 280;
@@ -81,7 +84,9 @@ fn encode_manifest_inner(
         let unit = start_unit(work)?;
         payload.extend_from_slice(&entry.generation.to_le_bytes());
         payload.extend_from_slice(&entry.allocated_pages.to_le_bytes());
+        payload.extend_from_slice(&entry.allocated_bytes.to_le_bytes());
         payload.extend_from_slice(&entry.live_pages.to_le_bytes());
+        payload.extend_from_slice(&entry.live_bytes.to_le_bytes());
         finish_unit(unit);
     }
     let unit = start_unit(work)?;
@@ -109,11 +114,20 @@ fn encode_manifest_inner(
     let mut encoded = Vec::with_capacity(encoded_len);
     encoded.extend_from_slice(MANIFEST_MAGIC);
     encoded.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
-    encoded.extend_from_slice(&PHYSICAL_GENERATIONS_FLAG.to_le_bytes());
+    encoded.extend_from_slice(&0u16.to_le_bytes());
     encoded.extend_from_slice(&manifest.generation.to_le_bytes());
     encoded.extend_from_slice(&manifest.source_commit_epoch.to_le_bytes());
     encoded.extend_from_slice(&manifest.previous_generation.unwrap_or(0).to_le_bytes());
-    encoded.extend_from_slice(&manifest.page_bytes.to_le_bytes());
+    encoded.extend_from_slice(
+        &u32::try_from(manifest.target_page_bytes)
+            .expect("validated target page size fits in u32")
+            .to_le_bytes(),
+    );
+    encoded.extend_from_slice(
+        &u32::try_from(manifest.max_page_bytes)
+            .expect("validated maximum page size fits in u32")
+            .to_le_bytes(),
+    );
     encoded.extend_from_slice(&manifest.dirty_page_count.to_le_bytes());
     encoded.extend_from_slice(&manifest.root_page_count.to_le_bytes());
     encoded.extend_from_slice(
@@ -301,6 +315,11 @@ fn decode_manifest_inner(
     work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<RelationalRowPageRootManifest, RelationalRowPagePublicationError> {
     let unit = start_unit(work)?;
+    if encoded.len() >= 8 && &encoded[..8] == LEGACY_V1_MANIFEST_MAGIC {
+        return Err(RelationalRowPagePublicationError::Corrupt(
+            "row-page format v1 (fixed 1 MiB slots) is no longer supported; recreate the development database".to_string(),
+        ));
+    }
     if encoded.len() < MANIFEST_HEADER_BYTES || &encoded[..8] != MANIFEST_MAGIC {
         return Err(RelationalRowPagePublicationError::Corrupt(
             "invalid row-page manifest header".to_string(),
@@ -308,12 +327,7 @@ fn decode_manifest_inner(
     }
     let version = read_u16(&encoded[8..10]);
     let flags = read_u16(&encoded[10..12]);
-    if version == MANIFEST_VERSION && flags == 0 {
-        return Err(RelationalRowPagePublicationError::Corrupt(
-            "row-page v1 manifest lacks physical-generation accounting; recreate the development database".to_string(),
-        ));
-    }
-    if version != MANIFEST_VERSION || flags != PHYSICAL_GENERATIONS_FLAG {
+    if version != MANIFEST_VERSION || flags != 0 {
         return Err(RelationalRowPagePublicationError::Corrupt(format!(
             "unsupported row-page manifest version {version} or flags {flags}"
         )));
@@ -321,7 +335,8 @@ fn decode_manifest_inner(
     let generation = read_u64(&encoded[12..20]);
     let source_commit_epoch = read_u64(&encoded[20..28]);
     let previous = read_u64(&encoded[28..36]);
-    let page_bytes = read_u64(&encoded[36..44]);
+    let target_page_bytes = u64::from(read_u32(&encoded[36..40]));
+    let max_page_bytes = u64::from(read_u32(&encoded[40..44]));
     let dirty_page_count = read_u64(&encoded[44..52]);
     let root_page_count = read_u64(&encoded[52..60]);
     let table_count = read_u32(&encoded[60..64]) as usize;
@@ -427,7 +442,9 @@ fn decode_manifest_inner(
         physical_generations.push(RelationalRowPagePhysicalGeneration {
             generation: read_u64(&entry[..8]),
             allocated_pages: read_u64(&entry[8..16]),
-            live_pages: read_u64(&entry[16..24]),
+            allocated_bytes: read_u64(&entry[16..24]),
+            live_pages: read_u64(&entry[24..32]),
+            live_bytes: read_u64(&entry[32..40]),
         });
         finish_unit(unit);
     }
@@ -435,7 +452,8 @@ fn decode_manifest_inner(
         generation,
         source_commit_epoch,
         previous_generation: (previous != 0).then_some(previous),
-        page_bytes,
+        target_page_bytes,
+        max_page_bytes,
         dirty_page_count,
         relocated_page_count,
         root_page_count,
@@ -493,10 +511,14 @@ fn validate_manifest_inner(
             manifest.source_commit_epoch
         )));
     }
-    if manifest.page_bytes != config.page_limits.max_page_bytes.get() as u64 {
+    if manifest.max_page_bytes < super::super::ROW_PAGE_HEADER_BYTES as u64
+        || manifest.max_page_bytes > config.page_limits.max_page_bytes.get() as u64
+        || manifest.target_page_bytes == 0
+        || manifest.target_page_bytes > manifest.max_page_bytes
+    {
         return Err(fail(format!(
-            "row-page slot contains {} bytes, configured for {}",
-            manifest.page_bytes, config.page_limits.max_page_bytes
+            "row-page target/maximum page sizes {}/{} are outside the reader limit {}",
+            manifest.target_page_bytes, manifest.max_page_bytes, config.page_limits.max_page_bytes
         )));
     }
     // Every dirty page is a root page of this generation, so the root-page
@@ -517,12 +539,14 @@ fn validate_manifest_inner(
             "row-page written pages exceed the live root".to_string(),
         ));
     }
-    let expected_page_bytes = written_page_count
-        .checked_mul(manifest.page_bytes)
+    let max_page_artifact_bytes = written_page_count
+        .checked_mul(manifest.max_page_bytes)
         .ok_or_else(|| fail("row-page artifact length overflow".to_string()))?;
-    if manifest.page_artifact.encoded_len != expected_page_bytes {
+    if manifest.page_artifact.encoded_len > max_page_artifact_bytes
+        || (written_page_count == 0) != (manifest.page_artifact.encoded_len == 0)
+    {
         return Err(fail(format!(
-            "row-page artifact declares {} bytes, expected {expected_page_bytes}",
+            "row-page artifact declares {} bytes for {written_page_count} pages",
             manifest.page_artifact.encoded_len
         )));
     }
@@ -712,8 +736,8 @@ fn validate_occupancy(
     }
     let mut previous = 0;
     let mut live_pages = 0u64;
-    let mut allocated_pages = 0u64;
     let mut current_allocation = 0;
+    let mut current_bytes = 0;
     finish_unit(unit);
     for entry in &manifest.physical_generations {
         let unit = start_unit(work)?;
@@ -725,6 +749,12 @@ fn validate_occupancy(
         if entry.live_pages == 0
             || entry.live_pages > entry.allocated_pages
             || entry.allocated_pages > config.max_root_pages.get()
+            || entry.live_bytes == 0
+            || entry.live_bytes > entry.allocated_bytes
+            || entry
+                .allocated_pages
+                .checked_mul(manifest.max_page_bytes)
+                .is_none_or(|limit| entry.allocated_bytes > limit)
         {
             return Err(fail(
                 "row-page physical generation has invalid live/allocated counts",
@@ -733,28 +763,27 @@ fn validate_occupancy(
         live_pages = live_pages
             .checked_add(entry.live_pages)
             .ok_or_else(|| fail("row-page live-page count overflow"))?;
-        allocated_pages = allocated_pages
-            .checked_add(entry.allocated_pages)
-            .ok_or_else(|| fail("row-page allocated-page count overflow"))?;
         if entry.generation == manifest.generation {
             current_allocation = entry.allocated_pages;
-            if entry.live_pages != entry.allocated_pages {
-                return Err(fail("new row-page generation contains unreferenced slots"));
+            current_bytes = entry.allocated_bytes;
+            if entry.live_pages != entry.allocated_pages
+                || entry.live_bytes != entry.allocated_bytes
+            {
+                return Err(fail("new row-page generation contains unreferenced pages"));
             }
         }
         previous = entry.generation;
         finish_unit(unit);
     }
     let unit = start_unit(work)?;
-    allocated_pages
-        .checked_mul(manifest.page_bytes)
-        .ok_or_else(|| fail("row-page physical allocation byte count overflow"))?;
     if live_pages != manifest.root_page_count {
         return Err(fail("row-page live-page inventory does not cover the root"));
     }
-    if current_allocation != manifest.dirty_page_count + manifest.relocated_page_count {
+    if current_allocation != manifest.dirty_page_count + manifest.relocated_page_count
+        || current_bytes != manifest.page_artifact.encoded_len
+    {
         return Err(fail(
-            "row-page current-generation inventory does not match written slots",
+            "row-page current-generation inventory does not match the written pages",
         ));
     }
     finish_unit(unit);

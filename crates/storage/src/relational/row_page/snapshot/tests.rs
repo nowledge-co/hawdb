@@ -582,7 +582,8 @@ fn checkpoint_corruption_poison_is_sticky_at_the_composite_reader() {
         &fixture
             .directory
             .join(crate::relational::relational_row_page_artifact_file(1)),
-        0,
+        // A payload byte of the first page, past its 140-byte header.
+        145,
     );
     let cold = RelationalRowPageSnapshotReader::new(
         Arc::clone(&fixture.view),
@@ -881,7 +882,8 @@ fn controlled_snapshot_points_preserve_canonical_live_recovery_and_deleted_sourc
             )
             .unwrap();
         let budgets = if id == 0 {
-            vec![(4096, false), (16 * 1024 * 1024, true)]
+            // Below one exact v2 page, then ample.
+            vec![(256, false), (16 * 1024 * 1024, true)]
         } else {
             vec![(16 * 1024 * 1024, true)]
         };

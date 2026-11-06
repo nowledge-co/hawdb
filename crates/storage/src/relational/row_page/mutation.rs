@@ -640,13 +640,15 @@ struct PendingPageSize {
 
 impl PendingPageSize {
     /// Returns the size after appending one row as row number `rows`, or
-    /// `None` when the codec would reject the page or the row.
+    /// `None` when the codec would reject the page or the row, or when a page
+    /// that already holds a row would grow past `target_page_bytes`.
     fn with_row(
         self,
         rows: usize,
         key_len: usize,
         row_len: Option<usize>,
         limits: RelationalRowPageLimits,
+        target_page_bytes: usize,
     ) -> Option<Self> {
         let row_len = row_len?;
         if rows > limits.max_rows.get()
@@ -676,6 +678,14 @@ impl PendingPageSize {
             .checked_add(lower_key_bytes)?
             .checked_add(directory_bytes)?
             .checked_add(max_row_extent)?;
+        // The `i = n` projection is the exact encoded page length.
+        let encoded_bytes = super::ROW_PAGE_HEADER_BYTES
+            .checked_add(lower_key_bytes)?
+            .checked_add(directory_bytes)?
+            .checked_add(row_extent)?;
+        if rows > 1 && encoded_bytes > target_page_bytes {
+            return None;
+        }
         (page_bytes <= limits.max_page_bytes.get()).then_some(Self {
             lower_key_bytes,
             key_bytes,
@@ -782,10 +792,13 @@ impl PagePackState {
         let pending = self.pending.as_mut().expect("pending page was initialized");
         pending.rows.push(entry);
         self.peak_buffered_rows = self.peak_buffered_rows.max(pending.rows.len());
-        if let Some(size) =
-            self.pending_size
-                .with_row(pending.rows.len(), encoded_key.len(), row_len, limits)
-        {
+        if let Some(size) = self.pending_size.with_row(
+            pending.rows.len(),
+            encoded_key.len(),
+            row_len,
+            limits,
+            self.config.target_page_bytes.get(),
+        ) {
             self.pending_size = size;
             self.previous_key = Some(encoded_key);
             return Ok(());
@@ -804,8 +817,13 @@ impl PagePackState {
         self.emit_pending(allocator, &mut emit)?;
         let mut next = self.empty_page(self.peek_page_id(allocator));
         next.rows.push(entry);
-        let Some(size) = PendingPageSize::default().with_row(1, encoded_key.len(), row_len, limits)
-        else {
+        let Some(size) = PendingPageSize::default().with_row(
+            1,
+            encoded_key.len(),
+            row_len,
+            limits,
+            self.config.target_page_bytes.get(),
+        ) else {
             next.encode(self.config.page_limits)?;
             return Err(RelationalRowPageMutationError::Corrupt(
                 "row-page pack sizing rejected a row the codec accepts".to_string(),

@@ -78,8 +78,11 @@ impl RowPageRewriteControls<'_> {
         })
     }
 
+    /// Selects a generation whose live bytes are at most the configured
+    /// share of its page artifact. v2 pages vary in length, so occupancy is
+    /// measured in bytes rather than pages.
     pub(super) fn selects(self, entry: &RelationalRowPagePhysicalGeneration) -> bool {
-        u128::from(entry.live_pages) * 100
-            <= u128::from(entry.allocated_pages) * u128::from(self.config.max_live_ratio_percent)
+        u128::from(entry.live_bytes) * 100
+            <= u128::from(entry.allocated_bytes) * u128::from(self.config.max_live_ratio_percent)
     }
 }

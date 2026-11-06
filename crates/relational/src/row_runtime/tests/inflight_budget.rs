@@ -53,7 +53,7 @@ fn parent_rows_are_charged_before_nested_point_reads() {
 fn parent_slot_bytes_are_charged_before_nested_point_reads() {
     let fixture = Fixture::new();
     let task = RuntimeTaskContext::default();
-    let bytes = usize::try_from(fixture.root.manifest().page_bytes).unwrap();
+    let bytes = fixture.page_bytes("docs");
     for borrowed in [false, true] {
         let mut runtime = fixture.runtime(1, "SELECT id FROM docs", &task);
         runtime.limits.demand.max_bytes = NonZeroUsize::new(8 * bytes).unwrap();
