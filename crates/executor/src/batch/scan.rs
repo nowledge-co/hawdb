@@ -811,7 +811,12 @@ pub(super) fn stream_relationship_seeded_node_scan_batches(
         .kernel_context()
         .source_account("RelationshipSeededNodeScan");
     let seeds = relationship_property_seeds(spec, context, &source_account)?;
-    let Some((ids, _permit)) = seeds else {
+    let Some(hawdb_storage::store::EndpointCandidates {
+        ids,
+        allocation: _permit,
+        ..
+    }) = seeds
+    else {
         return stream_node_scan_batches(
             spec.variable,
             spec.label,
@@ -935,7 +940,7 @@ fn relationship_property_seeds(
         }
         admit_graph_read(source_account, context.task_context, bytes).map(Some)
     };
-    let Some((ids, permit)) = context.store.relationship_property_endpoint_candidates(
+    let Some(candidates) = context.store.relationship_property_endpoint_candidates(
         rel_type_id,
         spec.rel_properties,
         endpoints,
@@ -945,19 +950,16 @@ fn relationship_property_seeds(
     else {
         return Ok(None);
     };
-    let property = spec
-        .rel_properties
-        .keys()
-        .next()
-        .expect("relationship properties were checked non-empty")
-        .clone();
+    let ids = &candidates.ids;
     context
         .observer
         .record_scan_pruning_report(hawdb_storage::scan::ScanPruningReport {
             target_kind: hawdb_storage::scan::ScanPruningTargetKind::Node,
             label_id,
             rel_type_id: Some(rel_type_id),
-            strategy: hawdb_storage::scan::ScanPruningStrategy::PropertyEq { property },
+            strategy: hawdb_storage::scan::ScanPruningStrategy::PropertyEq {
+                property: candidates.probed_property.clone(),
+            },
             pruned: true,
             exact_empty: ids.is_empty(),
             candidate_count_before_pruning: max_relationships,
@@ -966,7 +968,7 @@ fn relationship_property_seeds(
             output_count: ids.len(),
             filtered_out_count: 0,
         });
-    Ok(Some((ids, permit)))
+    Ok(Some(candidates))
 }
 
 struct ExpandBatchConsumer<'a, 'context> {

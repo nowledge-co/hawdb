@@ -18,6 +18,8 @@
 
 use super::*;
 
+mod out_of_core;
+
 fn database() -> Database {
     let mut db = Database::new();
     populate(&mut db);
@@ -170,72 +172,6 @@ fn relationship_property_seeds_expand_only_matching_sources() {
         .iter()
         .all(|report| report.candidate_count_before_pruning != 60
             || report.candidate_count_before_filter != 1));
-}
-
-/// A checkpointed out-of-core store has no resident relationship index to
-/// seed from, so the expand keeps the node-first path with equal results.
-#[test]
-fn relationship_property_seeds_fall_back_without_a_resident_index() {
-    let path = unique_test_dir("relationship_property_seeds");
-    let expected = {
-        let mut db = Database::open(&path).unwrap();
-        let mut source = database();
-        let source_rows = rows(
-            &mut source,
-            "MATCH (s:Entity)-[r:RELATES_TO]->(t:Entity) RETURN s.id, r.offset, t.id",
-        );
-        for row in &source_rows {
-            let parameters = BTreeMap::from([
-                ("s".into(), row[0].clone()),
-                ("o".into(), row[1].clone()),
-                ("t".into(), row[2].clone()),
-            ]);
-            for endpoint in ["s", "t"] {
-                db.query_with_params(&format!("MERGE (:Entity {{id: ${endpoint}}})"), &parameters)
-                    .unwrap();
-            }
-            db.query_with_params(
-                "MATCH (a:Entity {id: $s}), (b:Entity {id: $t}) \
-                 CREATE (a)-[:RELATES_TO {table: 7, offset: $o}]->(b)",
-                &parameters,
-            )
-            .unwrap();
-        }
-        db.checkpoint().unwrap();
-        rows(
-            &mut db,
-            "MATCH (s:Entity) WITH s MATCH (s)-[r:RELATES_TO {table: 7, offset: 4}]->(t:Entity) \
-             RETURN s.id, r.offset, t.id",
-        )
-    };
-    assert!(!expected.is_empty());
-    let mut db = Database::open_with_config(
-        &path,
-        DatabaseConfig {
-            storage_residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
-            ..DatabaseConfig::default()
-        },
-    )
-    .unwrap();
-    let query = "MATCH (s:Entity)-[r:RELATES_TO {table: 7, offset: 4}]->(t:Entity) RETURN s.id, r.offset, t.id";
-    assert_eq!(rows(&mut db, query), expected);
-    let output = db
-        .explain_analyze_query_with_params(query, &BTreeMap::new())
-        .unwrap();
-    // The node-first path scans the whole label; nothing was seeded.
-    let reports = &output.execution_profile.scan_pruning_reports;
-    assert!(
-        reports.iter().any(|report| report.target_kind
-            == hawdb_storage::scan::ScanPruningTargetKind::Node
-            && !report.pruned),
-        "{reports:?}"
-    );
-    assert!(
-        reports.iter().all(|report| report.target_kind
-            != hawdb_storage::scan::ScanPruningTargetKind::Node
-            || report.rel_type_id.is_none()),
-        "{reports:?}"
-    );
 }
 
 const SEEDED: &str =
