@@ -652,6 +652,7 @@ impl SnapshotFixture {
                 10,
                 None,
                 vec![RelationalRowPageTableDelta {
+                    replaces_base: false,
                     last_row_id: 0,
                     table: "documents".to_string(),
                     schema: Some(crate::relational::row_page::test_row_page_schema(

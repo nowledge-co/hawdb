@@ -118,6 +118,11 @@ pub struct RelationalRowPageTableDelta {
     pub next_page_id: NonZeroU64,
     pub dirty_pages: Vec<ImmutableRelationalRowPage>,
     pub deleted_page_ids: Vec<RelationalRowPageId>,
+    /// Replaces the base table's schema and every base page (#1593). The
+    /// delta then carries the complete table: its schema, all of its rows in
+    /// `dirty_pages` and no `deleted_page_ids`. Its page ids continue the
+    /// base table's allocator, so no id of a pinned base root is reused.
+    pub replaces_base: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

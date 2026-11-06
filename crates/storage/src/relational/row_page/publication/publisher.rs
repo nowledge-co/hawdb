@@ -472,6 +472,10 @@ fn require_schema_source(
                 .ok()
                 .map(|index| &reader.manifest().tables[index].schema)
         });
+        if delta.replaces_base {
+            // A replacement carries the complete table under its new schema.
+            continue;
+        }
         match (base_schema, delta.schema.as_ref()) {
             (None, None) => {
                 return Err(RelationalRowPagePublicationError::Admission(format!(
@@ -547,6 +551,7 @@ pub(super) struct PreparedTableDelta {
     pub next_page_id: std::num::NonZeroU64,
     pub dirty_pages: Vec<PreparedDirtyPage>,
     pub deleted_page_ids: BTreeSet<super::RelationalRowPageId>,
+    pub replaces_base: bool,
 }
 
 fn preflight_deltas(
@@ -658,6 +663,12 @@ fn preflight_deltas(
                     delta.table
                 )));
             }
+        }
+        if delta.replaces_base && (delta.schema.is_none() || !delta.deleted_page_ids.is_empty()) {
+            return Err(RelationalRowPagePublicationError::Admission(format!(
+                "replacement of table {} requires its schema and no deleted page ids",
+                delta.table
+            )));
         }
         let deleted_count = delta.deleted_page_ids.len();
         let mut deleted_page_ids = BTreeSet::new();
@@ -787,6 +798,7 @@ fn preflight_deltas(
                     next_page_id: delta.next_page_id,
                     dirty_pages,
                     deleted_page_ids,
+                    replaces_base: delta.replaces_base,
                 },
             );
             Ok(())

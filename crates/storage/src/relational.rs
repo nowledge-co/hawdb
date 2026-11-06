@@ -167,7 +167,7 @@ pub use row_page::{
     RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
     RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
     RelationalRowPageSnapshotRowSource, RelationalRowPageState, RelationalRowPageTableDelta,
-    RelationalRowPageTableRoot, RelationalRowPageView,
+    RelationalRowPageTableRoot, RelationalRowPageView, RelationalRowSchemaRewrite,
     DEFAULT_RELATIONAL_ROW_DELTA_CHECKPOINT_RUNS, DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_BYTES,
     DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_ENTRIES, DEFAULT_RELATIONAL_ROW_DELTA_MANIFEST_BYTES,
     DEFAULT_RELATIONAL_ROW_DELTA_RUNS, DEFAULT_RELATIONAL_ROW_DELTA_RUN_BYTES,
@@ -1897,12 +1897,24 @@ pub enum RelationalRowChangeCapture {
         changes: Vec<RelationalRowChange>,
         encoded_bytes: usize,
     },
+    /// A schema change in `tables` requires a canonical row checkpoint.
     RequiresCheckpoint {
         tables: Vec<String>,
+        /// The same commit's changes to every other table, when they fit
+        /// the capture limits. The schema checkpoint then rewrites only
+        /// `tables`; `None` requires a full rebuild (#1593).
+        unaffected: Option<RelationalRowUnaffectedChanges>,
     },
     Invalidated {
         reason: String,
     },
+}
+
+/// Row changes captured outside the tables a schema change rewrites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalRowUnaffectedChanges {
+    pub changes: Vec<RelationalRowChange>,
+    pub encoded_bytes: usize,
 }
 
 impl RelationalIndexChangeCapture {
@@ -5163,7 +5175,7 @@ impl RelationalState {
 
         let row_changes = match row_capture {
             RelationalRowChangeCapture::Captured { changes, .. } => changes,
-            RelationalRowChangeCapture::RequiresCheckpoint { tables } => {
+            RelationalRowChangeCapture::RequiresCheckpoint { tables, .. } => {
                 return Err(RelationalError::Admission(format!(
                     "relational live preparation requires a checkpoint for tables {}",
                     tables.join(",")
@@ -5458,6 +5470,7 @@ impl RelationalState {
                 }
                 let report = bootstrap.finish(&mut emit)?;
                 Ok(RelationalRowPageTableDelta {
+                    replaces_base: false,
                     last_row_id: self.last_row_id(&schema.name),
                     table: schema.name.clone(),
                     schema: Some(schema.clone()),
@@ -5482,6 +5495,78 @@ impl RelationalState {
                 })
             })
             .collect()
+    }
+
+    /// Packs one table's complete current rows as a replacement of its base
+    /// row-page table (#1593). Page ids continue from `next_page_id`, the
+    /// base table's allocator, so no id of a pinned base root is reused. The
+    /// bootstrap admits `config`'s dirty-page and encoded dirty-byte limits.
+    pub fn row_page_table_replacement_delta(
+        &self,
+        table: &str,
+        generation: u64,
+        source_commit_epoch: u64,
+        next_page_id: NonZeroU64,
+        config: RelationalRowPagePublicationConfig,
+    ) -> Result<RelationalRowPageTableDelta, RelationalRowPageMutationError> {
+        self.require_materialized_rows("relational row-page table replacement")
+            .map_err(|error| RelationalRowPageMutationError::Admission(error.to_string()))?;
+        let schema = self.table_schema(table).ok_or_else(|| {
+            RelationalRowPageMutationError::Corrupt(format!(
+                "replaced row-page table {table} is missing from the relational state"
+            ))
+        })?;
+        let schema_digest = self
+            .table_schema_digest(table)
+            .map_err(|error| RelationalRowPageMutationError::Corrupt(error.to_string()))?
+            .ok_or_else(|| {
+                RelationalRowPageMutationError::Corrupt(format!(
+                    "replaced row-page table {table} has no schema digest"
+                ))
+            })?;
+        let mut bootstrap = RelationalRowPageBootstrap::new(
+            generation,
+            source_commit_epoch,
+            schema_digest,
+            schema.columns.len(),
+            next_page_id,
+            config,
+        )?;
+        let mut pages = Vec::new();
+        for (primary_key, row) in self.rows(table) {
+            bootstrap.push(
+                RelationalRowPageEntry {
+                    primary_key: primary_key.clone(),
+                    row: row.clone(),
+                },
+                |page| {
+                    pages.push(page);
+                    Ok(())
+                },
+            )?;
+        }
+        let report = bootstrap.finish(|page| {
+            pages.push(page);
+            Ok(())
+        })?;
+        Ok(RelationalRowPageTableDelta {
+            last_row_id: self.last_row_id(table),
+            table: table.to_string(),
+            schema: Some(schema.clone()),
+            schema_digest,
+            column_count: NonZeroU32::new(u32::try_from(schema.columns.len()).map_err(|_| {
+                RelationalRowPageMutationError::Admission(format!(
+                    "table {table} column count does not fit u32"
+                ))
+            })?)
+            .ok_or_else(|| {
+                RelationalRowPageMutationError::Admission(format!("table {table} has no columns"))
+            })?,
+            next_page_id: report.next_page_id,
+            dirty_pages: pages,
+            deleted_page_ids: Vec::new(),
+            replaces_base: true,
+        })
     }
 
     pub fn row_count(&self, table: &str) -> usize {
@@ -9529,6 +9614,14 @@ fn capture_relational_row_changes_with_allocations(
     limits: RelationalRowChangeCaptureLimits,
     allocations: Option<&crate::background::CheckpointDecodeContext>,
 ) -> Result<RelationalRowChangeCapture, RelationalError> {
+    let captured = capture_relational_row_change_entries(
+        previous,
+        next,
+        changed_keys,
+        rewritten_tables,
+        limits,
+        allocations,
+    )?;
     if !rewritten_tables.is_empty() {
         let tables = collect_results_with_allocations(
             rewritten_tables.iter().map(|name| match allocations {
@@ -9540,12 +9633,38 @@ fn capture_relational_row_changes_with_allocations(
             rewritten_tables.len(),
             allocations,
         )?;
-        return Ok(RelationalRowChangeCapture::RequiresCheckpoint { tables });
+        // Changes to the other tables of the same commit let the schema
+        // checkpoint keep their pages incremental (#1593).
+        let unaffected = match captured {
+            RelationalRowChangeCapture::Captured {
+                changes,
+                encoded_bytes,
+            } => Some(RelationalRowUnaffectedChanges {
+                changes,
+                encoded_bytes,
+            }),
+            _ => None,
+        };
+        return Ok(RelationalRowChangeCapture::RequiresCheckpoint { tables, unaffected });
     }
+    Ok(captured)
+}
 
+/// Captures the row changes of `changed_keys` outside `skipped_tables`.
+fn capture_relational_row_change_entries(
+    previous: &RelationalState,
+    next: &RelationalState,
+    changed_keys: &BTreeMap<String, BTreeSet<RelationalKey>>,
+    skipped_tables: &BTreeSet<String>,
+    limits: RelationalRowChangeCaptureLimits,
+    allocations: Option<&crate::background::CheckpointDecodeContext>,
+) -> Result<RelationalRowChangeCapture, RelationalError> {
     let mut changes = Vec::new();
     let mut encoded_bytes = 0usize;
     for (table, keys) in changed_keys {
+        if skipped_tables.contains(table) {
+            continue;
+        }
         for primary_key in keys {
             let previous_row = previous.row(table, primary_key);
             let next_row = next.row(table, primary_key);

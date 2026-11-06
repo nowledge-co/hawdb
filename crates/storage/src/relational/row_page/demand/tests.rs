@@ -751,6 +751,7 @@ fn row_publication_config() -> RelationalRowPagePublicationConfig {
 
 fn table_delta(dirty_pages: Vec<ImmutableRelationalRowPage>) -> RelationalRowPageTableDelta {
     RelationalRowPageTableDelta {
+        replaces_base: false,
         last_row_id: 0,
         table: "documents".to_string(),
         schema: Some(crate::relational::row_page::test_row_page_schema(
@@ -1300,6 +1301,7 @@ fn controlled_point_with_wide_table_bounds_denies_without_cloning_root_metadata(
             10,
             None,
             vec![RelationalRowPageTableDelta {
+                replaces_base: false,
                 last_row_id: 0,
                 table: "documents".into(),
                 schema: Some(schema),

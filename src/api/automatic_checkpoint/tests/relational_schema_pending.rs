@@ -75,6 +75,9 @@ fn background_checkpoints_do_not_spin_on_a_deferred_schema_checkpoint() {
     );
     db.query_sql("CREATE TABLE t1 (id BIGINT PRIMARY KEY)")
         .unwrap();
+    // CREATE TABLE writes no existing page; ALTER rewrites all of t0.
+    db.query_sql("ALTER TABLE t0 ADD COLUMN extra TEXT")
+        .unwrap();
     let store_reason = db
         .runtime
         .get()

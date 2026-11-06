@@ -153,6 +153,9 @@ fn schema_rebuild_charges_encoded_page_bytes() {
     load(&mut db, "t0", ROWS);
     db.query_sql("CREATE TABLE t1 (id BIGINT PRIMARY KEY)")
         .unwrap();
+    // CREATE TABLE writes no existing page; ALTER rewrites all of t0.
+    db.query_sql("ALTER TABLE t0 ADD COLUMN extra TEXT")
+        .unwrap();
     assert!(!required(&db), "the schema checkpoint must complete");
     exercise(&mut db, ROWS);
     drop(db);
@@ -202,9 +205,12 @@ fn budget_refusal_defers_the_schema_checkpoint_without_poisoning() {
     // The DDL commits; its schema checkpoint does not fit and stays pending.
     db.query_sql("CREATE TABLE t1 (id BIGINT PRIMARY KEY)")
         .unwrap();
+    // CREATE TABLE writes no existing page; ALTER rewrites all of t0.
+    db.query_sql("ALTER TABLE t0 ADD COLUMN extra TEXT")
+        .unwrap();
     assert!(required(&db));
     let reason = deferred(&db).expect("the refused checkpoint is recorded");
-    assert!(reason.contains("encoded bytes"), "{reason}");
+    assert!(reason.contains("exceeding limit"), "{reason}");
 
     // Resident reads and writes keep working, and later commits do not
     // retry or poison.
@@ -261,6 +267,9 @@ fn out_of_core_reopen_of_a_pending_schema_checkpoint_heals_after_a_resident_reop
     {
         let mut db = Database::open_with_config(&path, resident_shadow()).unwrap();
         db.query_sql("CREATE TABLE t1 (id BIGINT PRIMARY KEY)")
+            .unwrap();
+        // CREATE TABLE writes no existing page; ALTER rewrites all of t0.
+        db.query_sql("ALTER TABLE t0 ADD COLUMN extra TEXT")
             .unwrap();
         assert!(required(&db));
         assert_eq!(int(&mut db, "SELECT count(*) FROM t0"), ROWS);

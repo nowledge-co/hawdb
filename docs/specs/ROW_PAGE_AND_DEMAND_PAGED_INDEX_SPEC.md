@@ -1122,9 +1122,22 @@ and conservative simultaneous resident peak share the existing 100,000-entry
 and 64 MiB envelope. An admission, traversal-integrity, or base-identity error
 rejects checkpoint preparation without publishing a partial candidate.
 
-Only the first row root or an explicitly unavailable view, including a schema
-replacement, uses the bounded streaming full-row bootstrap. A schema
-replacement makes this checkpoint required right after the commit. If it is
+Only the first row root or an explicitly unavailable view uses the bounded
+streaming full-row bootstrap. A schema change rewrites only the tables whose
+schema or row encoding changed (#1593): the commit's changes to every other
+table still advance a planning-only view of the base, those tables keep their
+pages, and each rewritten table is published as a whole-table replacement
+(`RelationalRowPageTableDelta::replaces_base`). A replacement carries the new
+schema, digest and column count and every current row of the table, no
+explicit deletions, and page ids that continue the base table's allocator, so
+a pinned base root never sees a reused id. `CREATE TABLE` adds an empty table
+and writes no existing page; `ALTER TABLE ... ADD COLUMN` and `CREATE INDEX`
+rewrite only their table, because every page header binds the table's schema
+digest, which covers columns and indexes. A schema change that drops a table
+(`DROP MATERIALIZED VIEW`), a commit after the schema change before its
+checkpoint, a capture over the live limits, out-of-core rows and recovery
+from WAL fall back to the full rebuild. A schema change makes this checkpoint
+required right after the commit. If it is
 refused for resources or budget, nothing is published: the previous checkpoint
 stays selected, the WAL stays authoritative and the checkpoint stays pending
 without poisoning the handle. Resident rows keep serving reads and writes.

@@ -5937,7 +5937,12 @@ fn relational_schema_change_requires_a_canonical_row_checkpoint() {
     assert_eq!(
         capture,
         RelationalRowChangeCapture::RequiresCheckpoint {
-            tables: vec!["documents".to_string()]
+            tables: vec!["documents".to_string()],
+            // No other table changed in the commit.
+            unaffected: Some(RelationalRowUnaffectedChanges {
+                changes: Vec::new(),
+                encoded_bytes: 0,
+            }),
         }
     );
 }

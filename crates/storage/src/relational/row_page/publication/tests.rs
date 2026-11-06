@@ -1311,6 +1311,7 @@ fn deletion_requires_a_page_in_the_selected_base() {
             11,
             Some(1),
             vec![RelationalRowPageTableDelta {
+                replaces_base: false,
                 last_row_id: 0,
                 table: "documents".to_string(),
                 schema: None,
@@ -1384,6 +1385,68 @@ fn deleting_every_page_publishes_an_empty_table_without_breaking_pinned_roots() 
         pinned.manifest().tables[0].schema
     );
     assert!(collect_descriptors(&current, "documents").is_empty());
+    assert_eq!(
+        page_id_values(&collect_descriptors(&pinned, "documents")),
+        vec![1, 2]
+    );
+
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn table_replacement_keeps_the_allocator_and_drops_every_base_page() {
+    let directory = unique_test_dir("replace-table");
+    let config = RelationalRowPagePublicationConfig::default();
+    let publisher = RelationalRowPagePublisher::new(config);
+    publisher
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta(
+                "documents",
+                vec![page(1, 1, 10, 1, 2), page(2, 1, 10, 3, 4)],
+            )],
+        )
+        .unwrap();
+    let pinned = RelationalRowPageRootReader::open_latest(&directory, config)
+        .unwrap()
+        .unwrap();
+
+    // A replacement may not reuse an id below the base allocator, and it
+    // carries the whole table, so it deletes nothing explicitly.
+    let mut reused = table_delta("documents", vec![page(2, 2, 11, 1, 9)]);
+    reused.replaces_base = true;
+    reused.next_page_id = NonZeroU64::new(3).unwrap();
+    let error = publisher
+        .publish(&directory, 2, 11, Some(1), vec![reused])
+        .unwrap_err();
+    assert!(error.to_string().contains("below its allocator"), "{error}");
+    let mut deleting = table_delta("documents", vec![page(3, 2, 11, 1, 9)]);
+    deleting.replaces_base = true;
+    deleting.deleted_page_ids = vec![page_id(1)];
+    let error = publisher
+        .publish(&directory, 2, 11, Some(1), vec![deleting])
+        .unwrap_err();
+    assert!(error.to_string().contains("no deleted page ids"), "{error}");
+
+    let mut replacement = table_delta("documents", vec![page(3, 2, 11, 1, 9)]);
+    replacement.replaces_base = true;
+    let report = publisher
+        .publish(&directory, 2, 11, Some(1), vec![replacement])
+        .unwrap();
+    assert_eq!(report.dirty_pages_written, 1);
+    assert_eq!(report.reused_pages, 0);
+    let current = RelationalRowPageRootReader::open_latest(&directory, config)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        page_id_values(&collect_descriptors(&current, "documents")),
+        vec![3]
+    );
+    assert_eq!(current.manifest().tables[0].row_count, 9);
+    assert_eq!(current.manifest().tables[0].next_page_id.get(), 4);
     assert_eq!(
         page_id_values(&collect_descriptors(&pinned, "documents")),
         vec![1, 2]
@@ -1622,6 +1685,7 @@ fn table_delta(
         .and_then(NonZeroU64::new)
         .expect("test row-page allocator must remain representable");
     RelationalRowPageTableDelta {
+        replaces_base: false,
         last_row_id: 0,
         table: table.to_string(),
         schema: Some(crate::relational::row_page::test_row_page_schema(table, 2)),

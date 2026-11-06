@@ -312,6 +312,7 @@ impl<'a> RelationalRowPageMutationPlanner<'a> {
         let dirty_page_count = dirty_pages.len();
         Ok(RelationalRowPageMutationPlan {
             delta: RelationalRowPageTableDelta {
+                replaces_base: false,
                 last_row_id: self
                     .base
                     .and_then(|base| base.table_root(table).ok())

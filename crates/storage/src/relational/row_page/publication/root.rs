@@ -159,6 +159,11 @@ impl PageArtifactWriter {
             }
             None => page.page.encode(self.limits)?,
         };
+        // Dirty budgets charge `encoded_len`; it must equal the bytes written.
+        debug_assert_eq!(
+            page.page.encoded_len(self.limits)?,
+            encoded_slot.len() as u64
+        );
         let encoded_page_len = u32::try_from(encoded_slot.len()).map_err(|_| {
             RelationalRowPagePublicationError::Admission(
                 "encoded row page length does not fit in u32".to_string(),
@@ -348,6 +353,31 @@ pub(super) fn write_root_artifacts(
         if let Some(unit) = unit {
             unit.finish();
         }
+        // A replacement takes its schema, digest and column count from the
+        // delta and keeps none of the base table's pages (#1593).
+        let replaces_base = delta.as_ref().is_some_and(|delta| delta.replaces_base);
+        let base_table = if replaces_base {
+            if let (Some(base_table), Some(delta)) = (base_table, delta.as_ref()) {
+                if delta.next_page_id < base_table.next_page_id
+                    || delta.dirty_pages.iter().any(|page| {
+                        page.descriptor.logical_page_id.get() < base_table.next_page_id.get()
+                    })
+                {
+                    return Err(RelationalRowPagePublicationError::Admission(format!(
+                        "replacement of table {table_name} reuses page ids below its allocator {}",
+                        base_table.next_page_id
+                    )));
+                }
+                if delta.last_row_id < base_table.last_row_id {
+                    return Err(RelationalRowPagePublicationError::Admission(format!(
+                        "replacement of table {table_name} rewinds its hidden row ID allocator"
+                    )));
+                }
+            }
+            None
+        } else {
+            base_table
+        };
         let schema_source = match (
             base_table,
             delta.as_ref().and_then(|delta| delta.schema.as_ref()),

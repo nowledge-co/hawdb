@@ -44,6 +44,9 @@ pub struct RelationalRowPageState {
     /// checkpoint. While set, commits do not retry the checkpoint; an
     /// explicit, automatic or recovery checkpoint does (#1593).
     pub schema_checkpoint_deferred: Option<String>,
+    /// Incremental planning state of the pending schema checkpoint, valid
+    /// while its view is at the current commit epoch.
+    pub schema_rewrite: Option<RelationalRowSchemaRewrite>,
     pub monotonic_append_fast_path_enabled: bool,
     pub monotonic_append_metrics: Arc<RelationalMonotonicAppendMetrics>,
 }
@@ -148,6 +151,10 @@ impl RelationalRowPageState {
             recovery_status: self.recovery_status.clone(),
             schema_checkpoint_required: self.schema_checkpoint_required,
             schema_checkpoint_deferred: self.schema_checkpoint_deferred.clone(),
+            schema_rewrite: self
+                .schema_rewrite
+                .clone()
+                .filter(|rewrite| rewrite.view.identity().visible_commit_epoch == commit_epoch),
             monotonic_append_fast_path_enabled: self.monotonic_append_fast_path_enabled,
             monotonic_append_metrics: Arc::clone(&self.monotonic_append_metrics),
         }
@@ -196,13 +203,31 @@ impl RelationalRowPageState {
         capture: Option<RelationalRowChangeCapture>,
     ) -> Option<Result<Arc<RelationalRowPageReadView>, RelationalRowLiveUnavailable>> {
         let view = self.current_read_view(current_epoch)?;
-        if let Some(RelationalRowChangeCapture::RequiresCheckpoint { tables }) = capture.as_ref() {
+        if let Some(RelationalRowChangeCapture::RequiresCheckpoint { tables, unaffected }) =
+            capture.as_ref()
+        {
+            // Advance the view by the commit's changes outside the rewritten
+            // tables. The schema checkpoint plans those tables incrementally
+            // from it; it never serves reads (#1593).
+            let schema_rewrite_view = unaffected.as_ref().and_then(|unaffected| {
+                view.advance(
+                    next_epoch,
+                    Some(RelationalRowChangeCapture::Captured {
+                        changes: unaffected.changes.clone(),
+                        encoded_bytes: unaffected.encoded_bytes,
+                    }),
+                    self.live_limits,
+                )
+                .ok()
+                .map(Arc::new)
+            });
             return Some(Err(RelationalRowLiveUnavailable {
                 identity: view.identity(),
                 failed_commit_epoch: next_epoch,
                 error: RelationalRowPageLiveError::RequiresCheckpoint {
                     tables: tables.clone(),
                 },
+                schema_rewrite_view,
             }));
         }
         Some(
@@ -212,6 +237,7 @@ impl RelationalRowPageState {
                     identity: view.identity(),
                     failed_commit_epoch: next_epoch,
                     error,
+                    schema_rewrite_view: None,
                 }),
         )
     }
@@ -222,4 +248,19 @@ pub struct RelationalRowLiveUnavailable {
     pub identity: RelationalRowPageReadViewIdentity,
     pub failed_commit_epoch: u64,
     pub error: RelationalRowPageLiveError,
+    /// For a schema change: the view advanced by the commit's changes to the
+    /// tables it does not rewrite, when they fit the live limits.
+    pub schema_rewrite_view: Option<Arc<RelationalRowPageReadView>>,
+}
+
+/// A pending schema checkpoint whose unaffected tables can be planned
+/// incrementally (#1593).
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct RelationalRowSchemaRewrite {
+    /// The base view advanced by every commit up to the schema change,
+    /// excluding the rewritten tables' changes in that commit.
+    pub view: Arc<RelationalRowPageReadView>,
+    /// Tables whose schema or row encoding changed; they are rewritten whole.
+    pub tables: std::collections::BTreeSet<String>,
 }
