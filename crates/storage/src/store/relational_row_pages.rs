@@ -56,6 +56,51 @@ pub(super) use hawdb_storage::relational::{
     RelationalRowLiveUnavailable, RelationalRowPageServingResources, RelationalRowPageState,
 };
 
+// Test hooks stay compiled in every build, like the other `*_for_test`
+// storage hooks, because Bazel builds root tests against the non-test
+// storage library. The fast path is one relaxed load.
+static ROW_PUBLICATION_CONFIG_OVERRIDE_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+static ROW_PUBLICATION_CONFIG_OVERRIDES: std::sync::Mutex<
+    Vec<(std::path::PathBuf, RelationalRowPagePublicationConfig)>,
+> = std::sync::Mutex::new(Vec::new());
+
+/// Overrides the canonical checkpoint row-page publication config for
+/// databases below `directory`, or removes the override. Test support only:
+/// it lets tests force a small dirty budget for one database (#1593).
+#[doc(hidden)]
+pub fn set_relational_row_publication_config_override_for_test(
+    directory: &std::path::Path,
+    config: Option<RelationalRowPagePublicationConfig>,
+) {
+    let mut overrides = ROW_PUBLICATION_CONFIG_OVERRIDES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    overrides.retain(|(path, _)| path != directory);
+    if let Some(config) = config {
+        overrides.push((directory.to_path_buf(), config));
+    }
+    ROW_PUBLICATION_CONFIG_OVERRIDE_ACTIVE
+        .store(!overrides.is_empty(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The row-page publication config of an ordinary canonical checkpoint.
+pub(super) fn canonical_row_publication_config(
+    root: &std::path::Path,
+) -> RelationalRowPagePublicationConfig {
+    if ROW_PUBLICATION_CONFIG_OVERRIDE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some((_, config)) = ROW_PUBLICATION_CONFIG_OVERRIDES
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .find(|(path, _)| root.starts_with(path))
+    {
+        return *config;
+    }
+    RelationalRowPagePublicationConfig::default()
+}
+
 pub(super) struct RelationalRowPageCheckpointPlan {
     pub base: Option<Arc<RelationalRowPageRootReader>>,
     pub deltas: Vec<RelationalRowPageTableDelta>,
@@ -200,7 +245,6 @@ impl GraphStore {
         let mut deltas = Vec::with_capacity(changes_by_table.len());
         let mut planned_dirty_pages = 0usize;
         let mut planned_dirty_bytes = 0u64;
-        let slot_bytes = config.page_limits.max_page_bytes.get() as u64;
         for (table, changes) in changes_by_table {
             let remaining_pages = config
                 .max_dirty_pages
@@ -259,14 +303,20 @@ impl GraphStore {
                         "relational row checkpoint dirty-page accounting overflow".to_string(),
                     )
                 })?;
-            let table_dirty_bytes = u64::try_from(plan.dirty_pages)
-                .ok()
-                .and_then(|pages| pages.checked_mul(slot_bytes))
-                .ok_or_else(|| {
-                    crate::error::HawDBError::Storage(
-                        "relational row checkpoint dirty-byte accounting overflow".to_string(),
-                    )
-                })?;
+            // Encoded page bytes, not the v1 slot (#1593); see
+            // `RelationalRowPagePublicationConfig::max_dirty_bytes`.
+            let mut table_dirty_bytes = 0u64;
+            for page in &plan.delta.dirty_pages {
+                table_dirty_bytes = page
+                    .encoded_len(config.page_limits)
+                    .ok()
+                    .and_then(|bytes| table_dirty_bytes.checked_add(bytes))
+                    .ok_or_else(|| {
+                        crate::error::HawDBError::Storage(
+                            "relational row checkpoint dirty-byte accounting overflow".to_string(),
+                        )
+                    })?;
+            }
             planned_dirty_bytes = planned_dirty_bytes
                 .checked_add(table_dirty_bytes)
                 .ok_or_else(|| {
@@ -356,6 +406,7 @@ impl GraphStore {
             }));
         self.relational_row_pages.recovery_report = None;
         self.relational_row_pages.schema_checkpoint_required = false;
+        self.relational_row_pages.schema_checkpoint_deferred = None;
         self.relational_row_pages.recovery_status =
             RelationalRowPageRecoveryStatus::CheckpointReady {
                 generation,
@@ -896,6 +947,19 @@ impl GraphStore {
                 self.relational_row_pages.recovery_status,
                 RelationalRowPageRecoveryStatus::Missing
             ) => Ok(()),
+            // A pending schema checkpoint dropped the view. Resident rows
+            // remain authoritative with the WAL; the checkpoint rebuilds the
+            // row root from them (#1593).
+            None if self.relational_row_pages.schema_checkpoint_required
+                && !self.relational_state.canonical_row_metadata_only() =>
+            {
+                Ok(())
+            }
+            None if self.relational_row_pages.schema_checkpoint_required => Err(
+                self.relational_row_schema_checkpoint_pending_error(&format!(
+                    "out-of-core relational commit {next_epoch}"
+                )),
+            ),
             None => Err(crate::error::HawDBError::StorageIntegrity(format!(
                 "canonical relational row view has no current reader for commit {next_epoch}: {:?}",
                 self.relational_row_pages.recovery_status
@@ -950,6 +1014,7 @@ impl GraphStore {
             Some(Ok(view)) => {
                 let identity = view.identity();
                 self.relational_row_pages.schema_checkpoint_required = false;
+                self.relational_row_pages.schema_checkpoint_deferred = None;
                 self.relational_row_pages.recovery_status =
                     RelationalRowPageRecoveryStatus::LiveCurrent {
                         base_generation: identity.base_generation,
@@ -969,6 +1034,7 @@ impl GraphStore {
                 );
                 self.relational_row_pages.read_view = None;
                 self.relational_row_pages.schema_checkpoint_required = checkpoint_required;
+                self.relational_row_pages.schema_checkpoint_deferred = None;
                 self.relational_row_pages.recovery_status =
                     RelationalRowPageRecoveryStatus::LiveUnavailable {
                         base_generation: unavailable.identity.base_generation,
@@ -1310,6 +1376,7 @@ impl GraphStore {
         self.relational_row_pages.recovery_builder = None;
         self.relational_row_pages.read_view = None;
         self.relational_row_pages.schema_checkpoint_required = checkpoint_required;
+        self.relational_row_pages.schema_checkpoint_deferred = None;
         self.relational_row_pages.recovery_status = RelationalRowPageRecoveryStatus::Unavailable {
             base_generation,
             base_commit_epoch,
@@ -1322,6 +1389,44 @@ impl GraphStore {
     #[doc(hidden)]
     pub fn relational_row_schema_checkpoint_required(&self) -> bool {
         self.relational_row_pages.schema_checkpoint_required
+    }
+
+    /// Records a resource or budget failure of the required schema
+    /// checkpoint. The checkpoint stays pending and the WAL stays
+    /// authoritative; commits stop retrying it until a checkpoint succeeds
+    /// or the database reopens (#1593).
+    #[doc(hidden)]
+    pub fn defer_relational_row_schema_checkpoint(&mut self, reason: String) {
+        if self.relational_row_pages.schema_checkpoint_required {
+            self.relational_row_pages.schema_checkpoint_deferred = Some(reason);
+        }
+    }
+
+    /// The deferred failure of a still-pending schema checkpoint.
+    #[doc(hidden)]
+    pub fn relational_row_schema_checkpoint_deferred(&self) -> Option<&str> {
+        self.relational_row_pages
+            .schema_checkpoint_deferred
+            .as_deref()
+            .filter(|_| self.relational_row_pages.schema_checkpoint_required)
+    }
+
+    /// The error for out-of-core relational row access while a required
+    /// schema checkpoint is pending: rows are served only by canonical row
+    /// pages, which do not yet reflect the schema change.
+    fn relational_row_schema_checkpoint_pending_error(
+        &self,
+        access: &str,
+    ) -> crate::error::HawDBError {
+        crate::error::HawDBError::Storage(format!(
+            "{access} is unavailable: a relational schema checkpoint is pending at commit epoch {}{}; out-of-core relational rows are served by canonical row pages, which do not reflect the schema change until a checkpoint succeeds",
+            self.commit_epoch,
+            self.relational_row_pages
+                .schema_checkpoint_deferred
+                .as_deref()
+                .map(|reason| format!(" (last attempt: {reason})"))
+                .unwrap_or_default(),
+        ))
     }
 
     pub fn relational_row_page_recovery_status(&self) -> &RelationalRowPageRecoveryStatus {
@@ -1339,15 +1444,23 @@ impl GraphStore {
         if !self.relational_state.canonical_row_metadata_only() {
             return Ok(None);
         }
-        let view = self
+        let view = match self
             .relational_row_pages
             .current_read_view(self.commit_epoch)
             .cloned()
-            .ok_or_else(|| {
-                crate::error::HawDBError::StorageIntegrity(
+        {
+            Some(view) => view,
+            None if self.relational_row_pages.schema_checkpoint_required => {
+                return Err(self.relational_row_schema_checkpoint_pending_error(
+                    "out-of-core relational transaction",
+                ));
+            }
+            None => {
+                return Err(crate::error::HawDBError::StorageIntegrity(
                     "metadata-only transaction requires a current canonical row view".to_string(),
-                )
-            })?;
+                ));
+            }
+        };
         Ok(Some(RelationalTransactionRowView::new(
             view,
             self.relational_row_pages.live_limits,
@@ -1365,6 +1478,15 @@ impl GraphStore {
         else {
             return match &self.relational_row_pages.recovery_status {
                 RelationalRowPageRecoveryStatus::Missing => Ok(None),
+                // Resident rows serve reads while a schema checkpoint is
+                // pending; out-of-core rows have no current reader (#1593).
+                _ if self.relational_row_pages.schema_checkpoint_required
+                    && !self.relational_state.canonical_row_metadata_only() =>
+                {
+                    Ok(None)
+                }
+                _ if self.relational_row_pages.schema_checkpoint_required => Err(self
+                    .relational_row_schema_checkpoint_pending_error("out-of-core relational read")),
                 status => Err(crate::error::HawDBError::StorageIntegrity(format!(
                     "canonical relational row reader is unavailable at commit epoch {}: {status:?}",
                     self.commit_epoch
@@ -1935,9 +2057,11 @@ mod tests {
             } if reason.contains("requires a schema checkpoint")
         ));
         assert!(store.relational_row_pages.read_view.is_none());
+        // Resident rows serve reads while the schema checkpoint is pending
+        // (#1593); there is no canonical row reader to open.
         assert!(matches!(
             store.open_relational_row_snapshot_reader(),
-            Err(crate::error::HawDBError::StorageIntegrity(_))
+            Ok(None)
         ));
         assert!(Arc::ptr_eq(
             &pinned_epoch_four,

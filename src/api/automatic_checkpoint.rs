@@ -50,7 +50,7 @@ const MAX_OPERATION_FAILURES: u8 = 3;
 // This is not a bound on schema replay, allocation or physical synchronization.
 const MAX_FINAL_DRAIN_BYTES: u64 = 32 * 1024;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AutomaticCheckpointReport {
     pub preparing: bool,
     pub waiting_for_handoff: bool,
@@ -75,6 +75,10 @@ pub struct AutomaticCheckpointReport {
     /// The latest concrete allocation denial. Its requested size, pressure
     /// and retryability are preserved without counting an operation failure.
     pub preparation_memory_denial: Option<RuntimeMemoryError>,
+    /// The refusal reason of a required relational schema checkpoint that
+    /// is still pending. Background attempts follow the ordinary operation
+    /// failure circuit; an explicit or recovery checkpoint retries (#1593).
+    pub relational_schema_checkpoint_pending: Option<String>,
 }
 
 #[derive(Default)]
@@ -824,7 +828,7 @@ impl Control {
 
     pub(super) fn report(&self) -> Result<Option<AutomaticCheckpointReport>> {
         let state = self.lock()?;
-        Ok(state.enabled.then_some(state.report))
+        Ok(state.enabled.then_some(state.report.clone()))
     }
 }
 
@@ -2142,6 +2146,7 @@ mod tests {
     mod read_gate;
     mod read_handoff;
     mod relational_live_overlay;
+    mod relational_schema_pending;
     mod retirement_io;
 
     use super::*;
@@ -2223,7 +2228,7 @@ mod tests {
                 .automatic_checkpoint_report()
                 .unwrap()
                 .expect("persistent owner");
-            if predicate(report) {
+            if predicate(report.clone()) {
                 return;
             }
             assert!(

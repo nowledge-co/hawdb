@@ -66,7 +66,18 @@ pub struct RelationalRowPagePublicationConfig {
     pub max_manifest_bytes: NonZeroUsize,
     pub max_tables: NonZeroUsize,
     pub max_table_name_bytes: NonZeroUsize,
+    /// Dirty pages one publication may write. Readers validate a manifest's
+    /// dirty page count against `max_root_pages`, not this writer limit.
     pub max_dirty_pages: NonZeroUsize,
+    /// Encoded dirty-page bytes one publication may write before its fsync.
+    ///
+    /// The charge is each page's encoded length (#1593). This is a deliberate
+    /// interim choice: the budget bounds written page payload and never
+    /// bounded memory (planned rows share their values). Until v2 packs pages
+    /// by length, the v1 page artifact pads every page to
+    /// `page_limits.max_page_bytes`, so physical page-artifact writes before
+    /// the fsync can exceed this charge by the slot-to-encoded ratio, about
+    /// 20x for narrow rows.
     pub max_dirty_bytes: NonZeroU64,
     pub max_root_pages: NonZeroU64,
     pub max_root_key_bytes: NonZeroU64,

@@ -1005,8 +1005,8 @@ and root page count are empty.
 Standalone publication holds one directory-scoped exclusive lock and follows
 this order:
 
-1. pre-admit table count, dirty page count, fixed-slot dirty bytes, root pages,
-   root-key bytes, and manifest bytes before creating a candidate;
+1. pre-admit table count, dirty page count, encoded dirty-page bytes, root
+   pages, root-key bytes, and manifest bytes before creating a candidate;
 2. write and synchronize dirty page slots;
 3. stream and synchronize the complete root descriptor and key artifacts;
 4. publish the immutable page artifact, then both root artifacts;
@@ -1030,6 +1030,16 @@ none is reachable until the latest manifest is replaced. Retrying uses a fresh
 generation. Publication does not reclaim old artifacts, so a generation-pinned
 `RelationalRowPageRootReader` continues to resolve its complete
 cross-generation descriptor closure while a newer root is published.
+
+The dirty-byte budget charges each dirty page's encoded length, not its v1
+slot (#1593). This is a deliberate interim choice: the budget bounds encoded
+page payload written by one publication before its fsync, and it never bounded
+memory, because planned rows share their values with the relational state.
+Until v2 packs pages by length, the v1 page artifact pads every page to one
+slot, so physical page-artifact writes before the fsync can exceed the charge
+by the slot-to-encoded ratio, about 20x for narrow rows. A reader validates a
+manifest's dirty page count against the root-page limit rather than the
+writer's per-publication dirty-page limit: every dirty page is a root page.
 
 Normal root open reads and validates only the bounded manifest and exact
 artifact file lengths. It MUST NOT hash or enumerate every descriptor or row
@@ -1086,8 +1096,8 @@ order. The first non-empty output for an affected leaf retains that leaf's
 logical `PageId`; additional right-side split pages consume new ids from the
 persisted allocator. An empty output deletes the old leaf. A later split after
 that deletion still consumes the next never-issued id rather than recycling
-the deleted id. Dirty-page count and fixed-slot byte reservations are admitted
-before the plan can be published.
+the deleted id. Dirty-page count and encoded dirty-page byte reservations are
+admitted before the plan can be published.
 
 Empty-table bootstrap consumes strictly ordered rows through a callback. It
 retains at most one page plus the candidate row that proves the page boundary,
@@ -1113,7 +1123,23 @@ and 64 MiB envelope. An admission, traversal-integrity, or base-identity error
 rejects checkpoint preparation without publishing a partial candidate.
 
 Only the first row root or an explicitly unavailable view, including a schema
-replacement, uses the bounded streaming full-row bootstrap. Ordinary DML
+replacement, uses the bounded streaming full-row bootstrap. A schema
+replacement makes this checkpoint required right after the commit. If it is
+refused for resources or budget, nothing is published: the previous checkpoint
+stays selected, the WAL stays authoritative and the checkpoint stays pending
+without poisoning the handle. Resident rows keep serving reads and writes.
+Out-of-core handles reject schema-changing transactions before the WAL and
+out-of-core recovery refuses uncheckpointed schema-changing WAL, so a resident
+handle completes a pending checkpoint; should a metadata-only handle ever hold
+one, its row reads and transactions fail with an explicit pending-checkpoint
+error rather than an integrity failure. Commits do not retry a refused checkpoint; explicit, automatic and
+recovery checkpoints do, and a writable open that still cannot fit it opens
+with the checkpoint pending. Background attempts follow the ordinary
+automatic-checkpoint operation-failure circuit (three failures per WAL
+generation), so a refused checkpoint is not retried in a loop. The pending
+reason is reported by `AutomaticCheckpointReport::relational_schema_checkpoint_pending`
+and by the relational row residency report (`schema_checkpoint_pending`,
+`schema_checkpoint_pending_reason`). Integrity failures still poison the handle. Ordinary DML
 rewrites only affected leaves. A graph-only checkpoint produces no relational
 table deltas and copies the complete base root by descriptor, so it writes zero
 new row-page slots. Clean descriptors retain their immutable physical

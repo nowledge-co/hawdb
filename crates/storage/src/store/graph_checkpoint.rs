@@ -1134,7 +1134,7 @@ impl GraphStore {
                     .sum()
             });
             let row_publication_config = row_compaction.as_ref().map_or_else(
-                RelationalRowPagePublicationConfig::default,
+                || super::relational_row_pages::canonical_row_publication_config(durable.root_path()),
                 |row| {
                     hawdb_storage::relational::relational_row_page_compaction_publication_config(
                         row.config,

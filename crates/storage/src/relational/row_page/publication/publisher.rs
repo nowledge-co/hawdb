@@ -572,16 +572,22 @@ fn preflight_deltas(
             config.max_dirty_pages
         )));
     }
-    let admitted_dirty_bytes = (dirty_page_count as u64)
-        .checked_mul(config.page_limits.max_page_bytes.get() as u64)
-        .ok_or_else(|| {
-            RelationalRowPagePublicationError::Admission(
-                "dirty page byte count overflow".to_string(),
-            )
+    // Encoded page bytes, not the v1 slot (#1593); see
+    // `RelationalRowPagePublicationConfig::max_dirty_bytes`.
+    let mut admitted_dirty_bytes = 0u64;
+    for page in deltas.iter().flat_map(|delta| delta.dirty_pages.iter()) {
+        admitted_dirty_bytes = checkpoint::cpu(work, || {
+            let bytes = page.encoded_len(config.page_limits)?;
+            admitted_dirty_bytes.checked_add(bytes).ok_or_else(|| {
+                RelationalRowPagePublicationError::Admission(
+                    "dirty page byte count overflow".to_string(),
+                )
+            })
         })?;
+    }
     if admitted_dirty_bytes > config.max_dirty_bytes.get() {
         return Err(RelationalRowPagePublicationError::Admission(format!(
-            "publication reserves {admitted_dirty_bytes} dirty bytes, exceeding limit {}",
+            "publication reserves {admitted_dirty_bytes} encoded dirty bytes, exceeding limit {}",
             config.max_dirty_bytes
         )));
     }

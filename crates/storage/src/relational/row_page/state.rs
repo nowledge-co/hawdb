@@ -40,6 +40,10 @@ pub struct RelationalRowPageState {
     pub recovery_report: Option<RelationalRowDeltaReport>,
     pub recovery_status: RelationalRowPageRecoveryStatus,
     pub schema_checkpoint_required: bool,
+    /// The last resource or budget failure of the required schema
+    /// checkpoint. While set, commits do not retry the checkpoint; an
+    /// explicit, automatic or recovery checkpoint does (#1593).
+    pub schema_checkpoint_deferred: Option<String>,
     pub monotonic_append_fast_path_enabled: bool,
     pub monotonic_append_metrics: Arc<RelationalMonotonicAppendMetrics>,
 }
@@ -77,6 +81,11 @@ impl RelationalRowPageState {
             monotonic_append_proven_absent_primary_keys: self
                 .monotonic_append_metrics
                 .proven_absent_primary_keys(),
+            schema_checkpoint_pending: self.schema_checkpoint_required,
+            schema_checkpoint_pending_reason: self
+                .schema_checkpoint_deferred
+                .clone()
+                .filter(|_| self.schema_checkpoint_required),
             ..RelationalRowStorageResidencyReport::default()
         };
         let Some(view) = self.current_read_view(commit_epoch) else {
@@ -138,6 +147,7 @@ impl RelationalRowPageState {
             recovery_report: self.recovery_report.clone(),
             recovery_status: self.recovery_status.clone(),
             schema_checkpoint_required: self.schema_checkpoint_required,
+            schema_checkpoint_deferred: self.schema_checkpoint_deferred.clone(),
             monotonic_append_fast_path_enabled: self.monotonic_append_fast_path_enabled,
             monotonic_append_metrics: Arc::clone(&self.monotonic_append_metrics),
         }

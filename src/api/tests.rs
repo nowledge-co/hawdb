@@ -166,6 +166,7 @@ mod relational_overlay_scans;
 mod relational_primary_key_range;
 mod relational_projection_expressions;
 mod relational_range;
+mod relational_row_dirty_budget;
 mod relational_update_delete_outcomes;
 mod relationship_patterns;
 mod relationship_property_mutations;

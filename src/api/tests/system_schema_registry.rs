@@ -121,12 +121,13 @@ fn application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_sc
                     ..
                 }
             ));
-            let error = read_only
+            // Resident rows recovered from the WAL serve reads while the
+            // schema checkpoint is pending (#1593).
+            let rows = read_only
                 .query_sql("SELECT kind FROM content_documents WHERE id = 'doc-1'")
-                .unwrap_err();
-            assert!(error
-                .to_string()
-                .contains("canonical relational row reader is unavailable"));
+                .unwrap();
+            assert_eq!(rows.rows.len(), 1);
+            assert_eq!(rows.rows[0]["kind"], Value::String("text".to_string()));
         }
 
         let mut reopened = Database::open(&path).unwrap();
