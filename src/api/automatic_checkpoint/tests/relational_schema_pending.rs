@@ -21,7 +21,10 @@ use hawdb_storage::relational::RelationalRowPagePublicationConfig;
 use hawdb_storage::store::relational_row_pages::set_relational_row_publication_config_override_for_test;
 use std::num::NonZeroU64;
 
-fn process_cpu() -> Duration {
+/// Process CPU time, for the log only. Windows has no `getrusage`; the
+/// attempt-count assertions below bound the background work there.
+#[cfg(unix)]
+fn process_cpu() -> Option<Duration> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
     // SAFETY: getrusage writes one complete rusage for RUSAGE_SELF.
     let usage = unsafe {
@@ -31,7 +34,12 @@ fn process_cpu() -> Duration {
     let time = |value: libc::timeval| {
         Duration::from_secs(value.tv_sec as u64) + Duration::from_micros(value.tv_usec as u64)
     };
-    time(usage.ru_utime) + time(usage.ru_stime)
+    Some(time(usage.ru_utime) + time(usage.ru_stime))
+}
+
+#[cfg(not(unix))]
+fn process_cpu() -> Option<Duration> {
+    None
 }
 
 #[test]
@@ -86,7 +94,9 @@ fn background_checkpoints_do_not_spin_on_a_deferred_schema_checkpoint() {
         id += 1;
         std::thread::sleep(Duration::from_millis(50));
     }
-    let cpu = process_cpu() - cpu_before;
+    let cpu = process_cpu()
+        .zip(cpu_before)
+        .map(|(after, before)| after - before);
     let report = db.automatic_checkpoint_report().unwrap().unwrap();
     eprintln!(
         "deferred schema checkpoint over {:?}: cpu={cpu:?} report={report:?}",
