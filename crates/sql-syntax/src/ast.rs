@@ -279,6 +279,13 @@ pub struct GraphPatternQuantifier {
     pub span: Span,
 }
 
+/// The time zone clause of `TIMESTAMP [ (p) ] { WITH | WITHOUT } TIME ZONE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeZoneSyntax {
+    With,
+    Without,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpressionSyntax {
     pub kind: ExpressionKindSyntax,
@@ -293,6 +300,8 @@ pub enum ExpressionKindSyntax {
     Literal(LiteralSyntax),
     TypedString {
         data_type: Identifier,
+        /// `WITH TIME ZONE` or `WITHOUT TIME ZONE` after the type name.
+        time_zone: Option<TimeZoneSyntax>,
         value: Span,
     },
     Unary {
@@ -339,6 +348,8 @@ pub enum ExpressionKindSyntax {
         expression: Box<ExpressionSyntax>,
         data_type: QualifiedName,
         type_parameters: Vec<Span>,
+        /// `WITH TIME ZONE` or `WITHOUT TIME ZONE` after the type modifiers.
+        time_zone: Option<TimeZoneSyntax>,
     },
     Collate {
         expression: Box<ExpressionSyntax>,

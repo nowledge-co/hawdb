@@ -125,6 +125,56 @@ fn decimal_row_page_preserves_raw_scale_and_uses_numeric_key_identity() {
 }
 
 #[test]
+fn timestamp_row_page_round_trips_and_rejects_out_of_range_payloads() {
+    let (min, max) = (
+        hawdb_core::sql_timestamp::min_micros(),
+        hawdb_core::sql_timestamp::max_micros(),
+    );
+    let page = ImmutableRelationalRowPage {
+        generation: 1,
+        source_commit_epoch: 1,
+        page_id: page_id(1),
+        schema_digest: integrity_digest(b"timestamp schema").sha256,
+        column_count: 3,
+        rows: [min, -1, max]
+            .into_iter()
+            .map(|micros| RelationalRowPageEntry {
+                primary_key: RelationalKey(vec![RelationalValue::Timestamp(micros)]),
+                row: RelationalRow::new(vec![
+                    RelationalValue::Timestamp(micros),
+                    RelationalValue::TimestampTz(micros),
+                    RelationalValue::Null,
+                ]),
+            })
+            .collect(),
+    };
+    let limits = RelationalRowPageLimits::default();
+    let encoded = page.encode(limits).unwrap();
+    let decoded = ImmutableRelationalRowPage::decode(&encoded, limits).unwrap();
+    assert_eq!(decoded.rows, page.rows);
+    let view = RelationalRowPageView::open(&encoded, limits).unwrap();
+    let key = RelationalKey(vec![RelationalValue::Timestamp(-1)]);
+    assert_eq!(view.find_row(&key).unwrap(), Some(1));
+    let projected = view.find_projected_row(&key, &[1]).unwrap().unwrap();
+    assert_eq!(projected.fields[0].value, RelationalValue::TimestampTz(-1));
+
+    // Overwrite the stored TIMESTAMPTZ of the last row with max + 1.
+    let mut corrupt = encoded.clone();
+    let mut needle = vec![11_u8];
+    needle.extend_from_slice(&max.to_le_bytes());
+    let position = corrupt
+        .windows(needle.len())
+        .position(|window| window == needle.as_slice())
+        .expect("encoded TIMESTAMPTZ payload");
+    corrupt[position + 1..position + 9].copy_from_slice(&(max + 1).to_le_bytes());
+    write_integrity(&mut corrupt);
+    assert!(matches!(
+        ImmutableRelationalRowPage::decode(&corrupt, limits),
+        Err(RelationalRowPageError::Corrupt(_))
+    ));
+}
+
+#[test]
 fn view_binary_searches_keys_and_decodes_only_requested_fields() {
     let page = page();
     let limits = RelationalRowPageLimits::default();

@@ -274,6 +274,8 @@ fn value_copy(value: &RelationalValue, work: &CheckpointDecodeContext) -> Result
         | RelationalValue::DoublePrecision(_)
         | RelationalValue::Decimal(_)
         | RelationalValue::Uuid(_)
+        | RelationalValue::Timestamp(_)
+        | RelationalValue::TimestampTz(_)
         | RelationalValue::Overflow(_)) => {
             let unit = start(work)?;
             let value = value.clone();

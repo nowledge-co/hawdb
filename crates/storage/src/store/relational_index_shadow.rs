@@ -201,6 +201,14 @@ fn hash_relational_value(hasher: &mut IntegrityHasher, value: &RelationalValue) 
             hasher.update(&[7]);
             hasher.update(value.as_bytes());
         }
+        RelationalValue::Timestamp(value) => {
+            hasher.update(&[10]);
+            hasher.update(&value.to_le_bytes());
+        }
+        RelationalValue::TimestampTz(value) => {
+            hasher.update(&[11]);
+            hasher.update(&value.to_le_bytes());
+        }
         RelationalValue::Overflow(reference) => {
             hasher.update(&[6, relational_scalar_type_tag(reference.scalar_type)]);
             hash_bounded_bytes(hasher, reference.digest.as_bytes());
@@ -220,6 +228,8 @@ const fn relational_scalar_type_tag(scalar_type: RelationalScalarType) -> u8 {
         RelationalScalarType::Uuid => 5,
         RelationalScalarType::Vector(_) => 6,
         RelationalScalarType::Decimal(_) => 7,
+        RelationalScalarType::Timestamp(_) => 8,
+        RelationalScalarType::TimestampTz(_) => 9,
     }
 }
 

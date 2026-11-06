@@ -125,6 +125,13 @@ fn prefix_successor(
                 }
                 None => false,
             },
+            RelationalValue::Timestamp(value) | RelationalValue::TimestampTz(value)
+                if *value < hawdb_core::sql_timestamp::max_micros() =>
+            {
+                *value += 1;
+                true
+            }
+            RelationalValue::Timestamp(_) | RelationalValue::TimestampTz(_) => false,
             RelationalValue::Decimal(value) => match value.next_up() {
                 Some(next) => {
                     *value = next;
@@ -413,6 +420,17 @@ mod tests {
         }
     }
 
+    fn timestamp_domain(variant: fn(i64) -> RelationalValue) -> Vec<RelationalValue> {
+        let (min, max) = (
+            hawdb_core::sql_timestamp::min_micros(),
+            hawdb_core::sql_timestamp::max_micros(),
+        );
+        [min, min + 1, -1, 0, 1, max - 1, max]
+            .into_iter()
+            .map(variant)
+            .collect()
+    }
+
     #[test]
     fn scalar_prefix_bounds_preserve_predicate_truth_and_encoded_key_order() {
         let domains = [
@@ -474,6 +492,8 @@ mod tests {
                 .into_iter()
                 .map(|value| RelationalValue::Uuid(Uuid::from_u128(value)))
                 .collect(),
+            timestamp_domain(RelationalValue::Timestamp),
+            timestamp_domain(RelationalValue::TimestampTz),
         ];
         for domain in domains {
             let schema = RelationalTableSchema {

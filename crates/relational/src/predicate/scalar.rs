@@ -74,7 +74,11 @@ impl Scalar {
 
     pub(super) fn coerce_comparison_literal(&mut self, other: &Self) -> Result<()> {
         if let (Self::Value(value), Self::Column(_, target)) = (self, other)
-            && target.logical_type().is_numeric()
+            && (target.logical_type().is_numeric()
+                || (matches!(
+                    target,
+                    RelationalScalarType::Timestamp(_) | RelationalScalarType::TimestampTz(_)
+                ) && matches!(value, RelationalValue::Text(_))))
         {
             *value = crate::query_value::value_to_relational_as(
                 crate::query_value::relational_to_value(value)?,

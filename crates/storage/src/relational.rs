@@ -286,18 +286,55 @@ pub enum RelationalScalarType {
     Bytea,
     Uuid,
     Vector(hawdb_core::VectorDimension),
+    /// `TIMESTAMP(p)`: local date and time, microseconds since 1970-01-01.
+    Timestamp(hawdb_core::TimestampPrecision),
+    /// `TIMESTAMPTZ(p)`: a UTC instant, microseconds since 1970-01-01.
+    TimestampTz(hawdb_core::TimestampPrecision),
 }
 
 impl RelationalScalarType {
-    /// Index identity is numeric for Decimal, independent of declaration scale.
+    /// Index identity is numeric for Decimal, independent of declaration scale,
+    /// and chronological for timestamps, independent of declared precision.
     pub fn same_value_domain(self, other: Option<Self>) -> bool {
-        matches!((self, other), (Self::Decimal(_), Some(Self::Decimal(_)))) || other == Some(self)
+        matches!(
+            (self, other),
+            (Self::Decimal(_), Some(Self::Decimal(_)))
+                | (Self::Timestamp(_), Some(Self::Timestamp(_)))
+                | (Self::TimestampTz(_), Some(Self::TimestampTz(_)))
+        ) || other == Some(self)
+    }
+
+    /// Whether a value of `value_type` belongs to this column type's domain
+    /// for comparison and key lookup. Timestamp precision does not
+    /// participate; other types require identical scalar types.
+    pub fn value_type_matches(self, value_type: Option<Self>) -> bool {
+        match (self, value_type) {
+            (Self::Timestamp(_), Some(Self::Timestamp(_)))
+            | (Self::TimestampTz(_), Some(Self::TimestampTz(_))) => true,
+            _ => value_type == Some(self),
+        }
+    }
+
+    /// Whether a non-NULL stored value has exactly this column type, including
+    /// a timestamp rounded to the declared precision.
+    pub fn holds(self, value: RelationalValueRef<'_>) -> bool {
+        match (self, value) {
+            (Self::Timestamp(precision), RelationalValueRef::Timestamp(value))
+            | (Self::TimestampTz(precision), RelationalValueRef::TimestampTz(value)) => {
+                precision.accepts(value)
+            }
+            (_, value) => value.scalar_type() == Some(self),
+        }
     }
 
     pub fn accepts(self, value: RelationalValueRef<'_>) -> bool {
         match (self, value) {
             (_, RelationalValueRef::Null) => true,
             (Self::Decimal(kind), RelationalValueRef::Decimal(value)) => kind.accepts(value),
+            (Self::Timestamp(precision), RelationalValueRef::Timestamp(value))
+            | (Self::TimestampTz(precision), RelationalValueRef::TimestampTz(value)) => {
+                precision.accepts(value)
+            }
             (_, value) => value.scalar_type() == Some(self),
         }
     }
@@ -312,6 +349,8 @@ impl RelationalScalarType {
             Self::Bytea => LogicalType::Binary,
             Self::Uuid => LogicalType::Uuid,
             Self::Vector(dimension) => LogicalType::Vector(dimension),
+            Self::Timestamp(_) => LogicalType::LocalDateTime,
+            Self::TimestampTz(_) => LogicalType::DateTime,
         }
     }
 }
@@ -327,6 +366,10 @@ pub enum RelationalValue {
     Bytea(Vec<u8>),
     Vector(hawdb_core::Vector),
     Uuid(Uuid),
+    /// Microseconds since 1970-01-01 00:00:00 (local, no zone).
+    Timestamp(i64),
+    /// Microseconds since 1970-01-01 00:00:00 UTC.
+    TimestampTz(i64),
     Overflow(RelationalOverflowRef),
 }
 
@@ -346,6 +389,10 @@ pub enum RelationalValueRef<'a> {
     Bytea(&'a [u8]),
     Vector(hawdb_core::VectorRef<'a>),
     Uuid(Uuid),
+    /// Microseconds since 1970-01-01 00:00:00 (local, no zone).
+    Timestamp(i64),
+    /// Microseconds since 1970-01-01 00:00:00 UTC.
+    TimestampTz(i64),
     Overflow(RelationalOverflowRef),
 }
 
@@ -365,6 +412,12 @@ impl RelationalValue {
             Self::Bytea(_) => Some(RelationalScalarType::Bytea),
             Self::Vector(value) => Some(RelationalScalarType::Vector(value.dimension())),
             Self::Uuid(_) => Some(RelationalScalarType::Uuid),
+            Self::Timestamp(_) => Some(RelationalScalarType::Timestamp(
+                hawdb_core::TimestampPrecision::DEFAULT,
+            )),
+            Self::TimestampTz(_) => Some(RelationalScalarType::TimestampTz(
+                hawdb_core::TimestampPrecision::DEFAULT,
+            )),
             Self::Overflow(reference) => Some(reference.scalar_type),
         }
     }
@@ -377,7 +430,10 @@ impl RelationalValue {
         match self {
             Self::Null => 0,
             Self::Boolean(_) => 1,
-            Self::BigInt(_) | Self::DoublePrecision(_) => 8,
+            Self::BigInt(_)
+            | Self::DoublePrecision(_)
+            | Self::Timestamp(_)
+            | Self::TimestampTz(_) => 8,
             Self::Decimal(_) => hawdb_core::Decimal::ENCODED_LEN,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
@@ -399,6 +455,8 @@ impl RelationalValue {
             Self::Vector(_) => 8,
             Self::Uuid(_) => 6,
             Self::Overflow(_) => 7,
+            Self::Timestamp(_) => 10,
+            Self::TimestampTz(_) => 11,
         }
     }
 }
@@ -415,6 +473,12 @@ impl<'a> RelationalValueRef<'a> {
             Self::Bytea(_) => Some(RelationalScalarType::Bytea),
             Self::Vector(value) => Some(RelationalScalarType::Vector(value.dimension())),
             Self::Uuid(_) => Some(RelationalScalarType::Uuid),
+            Self::Timestamp(_) => Some(RelationalScalarType::Timestamp(
+                hawdb_core::TimestampPrecision::DEFAULT,
+            )),
+            Self::TimestampTz(_) => Some(RelationalScalarType::TimestampTz(
+                hawdb_core::TimestampPrecision::DEFAULT,
+            )),
             Self::Overflow(reference) => Some(reference.scalar_type),
         }
     }
@@ -430,7 +494,10 @@ impl<'a> RelationalValueRef<'a> {
         match self {
             Self::Null => 0,
             Self::Boolean(_) => 1,
-            Self::BigInt(_) | Self::DoublePrecision(_) => 8,
+            Self::BigInt(_)
+            | Self::DoublePrecision(_)
+            | Self::Timestamp(_)
+            | Self::TimestampTz(_) => 8,
             Self::Decimal(_) => hawdb_core::Decimal::ENCODED_LEN,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
@@ -451,6 +518,8 @@ impl<'a> RelationalValueRef<'a> {
             Self::Bytea(value) => RelationalValue::Bytea(value.to_vec()),
             Self::Vector(value) => RelationalValue::Vector(value.to_owned()),
             Self::Uuid(value) => RelationalValue::Uuid(value),
+            Self::Timestamp(value) => RelationalValue::Timestamp(value),
+            Self::TimestampTz(value) => RelationalValue::TimestampTz(value),
             Self::Overflow(reference) => RelationalValue::Overflow(reference),
         }
     }
@@ -506,6 +575,8 @@ impl<'a> RelationalValueRef<'a> {
             Self::Vector(_) => 8,
             Self::Uuid(_) => 6,
             Self::Overflow(_) => 7,
+            Self::Timestamp(_) => 10,
+            Self::TimestampTz(_) => 11,
         }
     }
 }
@@ -522,6 +593,8 @@ impl<'a> From<&'a RelationalValue> for RelationalValueRef<'a> {
             RelationalValue::Bytea(value) => Self::Bytea(value),
             RelationalValue::Vector(value) => Self::Vector(value.as_ref()),
             RelationalValue::Uuid(value) => Self::Uuid(*value),
+            RelationalValue::Timestamp(value) => Self::Timestamp(*value),
+            RelationalValue::TimestampTz(value) => Self::TimestampTz(*value),
             RelationalValue::Overflow(reference) => Self::Overflow(*reference),
         }
     }
@@ -557,6 +630,8 @@ impl Ord for RelationalValueRef<'_> {
                 (Self::Bytea(left), Self::Bytea(right)) => left.cmp(right),
                 (Self::Vector(left), Self::Vector(right)) => left.cmp(&right),
                 (Self::Uuid(left), Self::Uuid(right)) => left.cmp(&right),
+                (Self::Timestamp(left), Self::Timestamp(right))
+                | (Self::TimestampTz(left), Self::TimestampTz(right)) => left.cmp(&right),
                 (Self::Overflow(left), Self::Overflow(right)) => left.cmp(&right),
                 _ => Ordering::Equal,
             })
@@ -593,6 +668,8 @@ impl Ord for RelationalValue {
                 (Self::Bytea(left), Self::Bytea(right)) => left.cmp(right),
                 (Self::Vector(left), Self::Vector(right)) => left.cmp(right),
                 (Self::Uuid(left), Self::Uuid(right)) => left.cmp(right),
+                (Self::Timestamp(left), Self::Timestamp(right))
+                | (Self::TimestampTz(left), Self::TimestampTz(right)) => left.cmp(right),
                 (Self::Overflow(left), Self::Overflow(right)) => left.cmp(right),
                 _ => Ordering::Equal,
             })
@@ -612,6 +689,7 @@ impl Hash for RelationalValue {
             Self::Bytea(value) => value.hash(state),
             Self::Vector(value) => value.hash(state),
             Self::Uuid(value) => value.hash(state),
+            Self::Timestamp(value) | Self::TimestampTz(value) => value.hash(state),
             Self::Overflow(reference) => reference.hash(state),
         }
     }
@@ -982,6 +1060,39 @@ impl RelationalTableSchema {
                 columns: index.columns.clone(),
                 role: RelationalIndexRole::DeclaredUnique,
             })
+    }
+}
+
+/// Decodes a durable TIMESTAMP (scalar tag 9) or TIMESTAMPTZ (10) type.
+pub(crate) fn decode_timestamp_type(
+    tag: u8,
+    precision: u8,
+) -> Result<RelationalScalarType, RelationalError> {
+    let precision = hawdb_core::TimestampPrecision::new(precision)
+        .ok_or_else(|| RelationalError::Corruption("invalid TIMESTAMP precision".into()))?;
+    match tag {
+        9 => Ok(RelationalScalarType::Timestamp(precision)),
+        10 => Ok(RelationalScalarType::TimestampTz(precision)),
+        _ => Err(RelationalError::Corruption(format!(
+            "invalid TIMESTAMP scalar type tag {tag}"
+        ))),
+    }
+}
+
+/// Decodes a durable TIMESTAMP (value tag 10) or TIMESTAMPTZ (11) value,
+/// rejecting microsecond counts outside the supported range as corruption.
+pub(crate) fn decode_timestamp_value(
+    tag: u8,
+    micros: i64,
+) -> Result<RelationalValue, RelationalError> {
+    let micros = hawdb_core::sql_timestamp::checked(micros)
+        .map_err(|_| RelationalError::Corruption("TIMESTAMP value is out of range".into()))?;
+    match tag {
+        10 => Ok(RelationalValue::Timestamp(micros)),
+        11 => Ok(RelationalValue::TimestampTz(micros)),
+        _ => Err(RelationalError::Corruption(format!(
+            "invalid TIMESTAMP value tag {tag}"
+        ))),
     }
 }
 
@@ -9666,7 +9777,10 @@ fn estimated_relational_values_encoding_bytes<'a>(
         let value_bytes = match value {
             RelationalValue::Null => 1,
             RelationalValue::Boolean(_) => 2,
-            RelationalValue::BigInt(_) | RelationalValue::DoublePrecision(_) => 9,
+            RelationalValue::BigInt(_)
+            | RelationalValue::DoublePrecision(_)
+            | RelationalValue::Timestamp(_)
+            | RelationalValue::TimestampTz(_) => 9,
             RelationalValue::Decimal(_) => 1 + hawdb_core::Decimal::ORDERED_LEN,
             RelationalValue::Text(value) => 3usize
                 .checked_add(value.as_bytes().iter().filter(|byte| **byte == 0).count())?

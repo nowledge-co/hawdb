@@ -261,10 +261,11 @@ fn validate_value_type(
     ordinal: usize,
     value: &RelationalValue,
 ) -> Result<()> {
-    if value
-        .scalar_type()
-        .is_some_and(|scalar_type| scalar_type != schema.columns[ordinal].scalar_type)
-    {
+    if value.scalar_type().is_some_and(|scalar_type| {
+        !schema.columns[ordinal]
+            .scalar_type
+            .value_type_matches(Some(scalar_type))
+    }) {
         return Err(HawDBError::Semantic(format!(
             "relational comparison on {} has an incompatible scalar type",
             schema.columns[ordinal].name

@@ -490,6 +490,38 @@ impl Fold<'_> {
                 Ok(SqlDataType::BigInt)
             }
             Some("HawDoubleType") => Ok(SqlDataType::DoublePrecision),
+            Some("HawTimestampType") => {
+                let tokens = &self.tokens[self.tree.nodes[kind].start..self.tree.nodes[kind].end];
+                let precision = match self.tree.child(kind, "Number") {
+                    None => hawdb_core::TimestampPrecision::DEFAULT,
+                    Some(number) => self
+                        .text(number)
+                        .parse::<u8>()
+                        .ok()
+                        .and_then(hawdb_core::TimestampPrecision::new)
+                        .ok_or_else(|| {
+                            semantic("TIMESTAMP precision must be an integer between 0 and 6")
+                        })?,
+                };
+                let with = tokens
+                    .iter()
+                    .any(|token| token.is_keyword(self.input, "WITH"));
+                let without = tokens
+                    .iter()
+                    .any(|token| token.is_keyword(self.input, "WITHOUT"));
+                let tz = raw == "TIMESTAMPTZ";
+                if tz && (with || without) {
+                    return Err(semantic(
+                        "TIMESTAMPTZ does not accept a WITH or WITHOUT TIME ZONE clause",
+                    ));
+                }
+                Ok(SqlDataType::Timestamp(
+                    hawdb_core::sql_timestamp::TimestampType {
+                        zoned: tz || with,
+                        precision,
+                    },
+                ))
+            }
             Some("HawFloatType") => {
                 let widths = self.children(kind, "Number");
                 if let Some(width) = widths.first() {

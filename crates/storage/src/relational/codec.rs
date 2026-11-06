@@ -46,6 +46,8 @@ mod decimal_tests;
 #[cfg(test)]
 mod read_ahead_tests;
 #[cfg(test)]
+mod timestamp_tests;
+#[cfg(test)]
 mod vector_schema_tests;
 
 #[cfg(test)]
@@ -1322,6 +1324,8 @@ impl Encoder {
             RelationalScalarType::Uuid => 6,
             RelationalScalarType::Vector(_) => 7,
             RelationalScalarType::Decimal(_) => 8,
+            RelationalScalarType::Timestamp(_) => 9,
+            RelationalScalarType::TimestampTz(_) => 10,
         });
         if let RelationalScalarType::Vector(dimension) = scalar_type {
             self.u32(dimension.get());
@@ -1329,6 +1333,11 @@ impl Encoder {
         if let RelationalScalarType::Decimal(kind) = scalar_type {
             self.u8(kind.precision());
             self.u8(kind.scale());
+        }
+        if let RelationalScalarType::Timestamp(precision)
+        | RelationalScalarType::TimestampTz(precision) = scalar_type
+        {
+            self.u8(precision.get());
         }
     }
 
@@ -2063,8 +2072,9 @@ impl<I: DecodeInput> Decoder<I> {
             7 => hawdb_core::VectorDimension::new(self.u32()?)
                 .map(RelationalScalarType::Vector)
                 .ok_or_else(|| RelationalError::Corruption("zero VECTOR dimension".into())),
+            tag @ (9 | 10) => super::decode_timestamp_type(tag, self.u8()?),
             tag => Err(RelationalError::Corruption(format!(
-                "invalid relational scalar type tag {tag}"
+                "invalid relational scalar type tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -2139,6 +2149,9 @@ impl<I: DecodeInput> Decoder<I> {
             9 => hawdb_core::Decimal::from_le_bytes(self.fixed()?)
                 .map(RelationalValue::Decimal)
                 .map_err(|error| RelationalError::Corruption(error.to_string())),
+            tag @ (10 | 11) => {
+                super::decode_timestamp_value(tag, i64::from_le_bytes(self.fixed()?))
+            }
             8 => {
                 let bytes = self.bounded_bytes(self.limits.max_value_bytes, "VECTOR value")?;
                 self.value_bytes = self.value_bytes.checked_add(bytes.len()).ok_or_else(|| {
@@ -2148,7 +2161,7 @@ impl<I: DecodeInput> Decoder<I> {
                     .map(RelationalValue::Vector)
             }
             tag => Err(RelationalError::Corruption(format!(
-                "invalid relational value tag {tag}"
+                "invalid relational value tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -2303,7 +2316,7 @@ impl<I: DecodeInput> Decoder<I> {
             1 => Ok(Some(RelationalColumnDefault::Literal(self.value()?))),
             2 => Ok(Some(RelationalColumnDefault::UuidV7)),
             tag => Err(RelationalError::Corruption(format!(
-                "invalid column default tag {tag}"
+                "invalid column default tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -2318,7 +2331,7 @@ impl<I: DecodeInput> Decoder<I> {
             ))),
             2 => Ok(Some(RelationalColumnDefault::UuidV7)),
             tag => Err(RelationalError::Corruption(format!(
-                "invalid column default tag {tag}"
+                "invalid column default tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }

@@ -140,6 +140,9 @@ fn expression(expr: &Expr) -> Option<usize> {
         | ExprKind::Cast {
             expression: item, ..
         }
+        | ExprKind::TimestampCast {
+            expression: item, ..
+        }
         | ExprKind::IsNull {
             expression: item, ..
         } => boxed_expression(item),

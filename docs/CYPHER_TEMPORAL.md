@@ -156,8 +156,11 @@ Go exposes them as the string types `Date`, `LocalTime`, `LocalDateTime`,
 `datetime` has microsecond precision and `timedelta` has no months) and also
 accepts `datetime.date`, naive `datetime.time`, naive and aware
 `datetime.datetime` and `datetime.timedelta` parameters. The retained
-zero-copy node APIs report temporal values as unsupported types. SQL keeps its
-integer `DATE`/`TIMESTAMP` behaviour and refuses temporal parameters.
+zero-copy node APIs report temporal values as unsupported types. Relational
+SQL binds local datetimes to `TIMESTAMP` and zoned datetimes to `TIMESTAMPTZ`
+and returns those types as the same values; it refuses date, local time and
+duration parameters. See the SQL timestamp section of
+[the PostgreSQL SQL/PGQ specification](specs/POSTGRES_SQL_PGQ_SPEC.md).
 
 ## Differences from Neo4j
 

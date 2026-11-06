@@ -19,7 +19,7 @@ use super::identifier_from_token;
 use crate::peg::{Expression as E, NodeId, ParseTree};
 use crate::{
     BinaryOperatorSyntax as B, ExpressionKindSyntax as Kind, ExpressionSyntax, LiteralSyntax,
-    QualifiedName, Span, Token, TokenKind as T, UnaryOperatorSyntax as U,
+    QualifiedName, Span, TimeZoneSyntax, Token, TokenKind as T, UnaryOperatorSyntax as U,
 };
 
 type Rule = (&'static str, E);
@@ -159,7 +159,17 @@ pub(super) fn rules() -> Vec<Rule> {
                     r("Name"),
                 ]),
                 opt(r("TypeParameters")),
+                opt(r("TimeZone")),
             ]),
+        ),
+        (
+            "TimeZone",
+            choice(vec![r("WithTimeZone"), r("WithoutTimeZone")]),
+        ),
+        ("WithTimeZone", seq(vec![k("WITH"), k("TIME"), k("ZONE")])),
+        (
+            "WithoutTimeZone",
+            seq(vec![k("WITHOUT"), k("TIME"), k("ZONE")]),
         ),
         (
             "TypeParameters",
@@ -219,7 +229,14 @@ pub(super) fn rules() -> Vec<Rule> {
         (
             "TypedString",
             seq(vec![
-                choice(vec![k("DATE"), k("TIME"), k("TIMESTAMP"), k("INTERVAL")]),
+                choice(vec![
+                    k("DATE"),
+                    k("TIME"),
+                    k("TIMESTAMP"),
+                    k("TIMESTAMPTZ"),
+                    k("INTERVAL"),
+                ]),
+                opt(r("TimeZone")),
                 t(T::String),
             ]),
         ),
@@ -335,12 +352,13 @@ impl Fold<'_> {
                 for suffix in &children[1..] {
                     let end = self.span(*suffix).end;
                     let kind = if self.tree.nodes[*suffix].name == Some("Cast") {
-                        let (data_type, type_parameters) =
+                        let (data_type, type_parameters, time_zone) =
                             self.cast_type(self.tree.required(*suffix, "CastType"));
                         Kind::Cast {
                             expression: Box::new(expression),
                             data_type,
                             type_parameters,
+                            time_zone,
                         }
                     } else {
                         Kind::Collate {
@@ -369,12 +387,13 @@ impl Fold<'_> {
             },
             "CastExpression" => {
                 let contents = self.tree.required(node, "CastContents");
-                let (data_type, type_parameters) =
+                let (data_type, type_parameters, time_zone) =
                     self.cast_type(self.tree.required(contents, "CastType"));
                 Kind::Cast {
                     expression: Box::new(self.expression(self.tree.required(contents, "Or"))),
                     data_type,
                     type_parameters,
+                    time_zone,
                 }
             }
             "Parenthesized" => Kind::Parenthesized(Box::new(self.expression(children[0]))),
@@ -394,7 +413,8 @@ impl Fold<'_> {
             "False" => Kind::Literal(LiteralSyntax::Boolean(false)),
             "TypedString" => Kind::TypedString {
                 data_type: identifier_from_token(self.tokens[self.tree.nodes[node].start]),
-                value: self.tokens[self.tree.nodes[node].start + 1].span,
+                time_zone: self.time_zone(node),
+                value: self.tokens[self.tree.nodes[node].end - 1].span,
             },
             "Function" => {
                 let args = self.tree.required(node, "Arguments");
@@ -433,11 +453,26 @@ impl Fold<'_> {
         };
         ExpressionSyntax { kind, span }
     }
-    fn cast_type(&self, node: NodeId) -> (QualifiedName, Vec<Span>) {
+    fn time_zone(&self, node: NodeId) -> Option<TimeZoneSyntax> {
+        let clause = self.tree.child(node, "TimeZone")?;
+        Some(if self.tree.child(clause, "WithTimeZone").is_some() {
+            TimeZoneSyntax::With
+        } else {
+            TimeZoneSyntax::Without
+        })
+    }
+    fn cast_type(&self, node: NodeId) -> (QualifiedName, Vec<Span>, Option<TimeZoneSyntax>) {
         let mut name = self.name(self.tree.required(node, "Name"));
         let last = self.tree.nodes[self.tree.required(node, "Name")].end;
+        let time_zone_start = self
+            .tree
+            .child(node, "TimeZone")
+            .map(|clause| self.tree.nodes[clause].start);
         // PRECISION is the optional token between the name and type modifiers.
-        if last < self.tree.nodes[node].end && self.tokens[last].kind == T::Word {
+        if last < self.tree.nodes[node].end
+            && self.tokens[last].kind == T::Word
+            && time_zone_start != Some(last)
+        {
             name.span.end = self.tokens[last].span.end;
             if let Some(part) = name.parts.last_mut() {
                 part.span.end = name.span.end;
@@ -455,7 +490,7 @@ impl Fold<'_> {
                     .collect()
             })
             .unwrap_or_default();
-        (name, parameters)
+        (name, parameters, self.time_zone(node))
     }
     fn operator(&self, node: NodeId) -> B {
         match self.tokens[self.tree.nodes[node].start].kind {

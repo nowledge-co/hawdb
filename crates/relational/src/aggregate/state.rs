@@ -565,7 +565,8 @@ pub(super) fn sql_expression_memory_bytes(expression: &SqlExpression) -> usize {
         ExprKind::Not(expression)
         | ExprKind::IsNull { expression, .. }
         | ExprKind::Negate(expression)
-        | ExprKind::Cast { expression, .. } => sql_expression_memory_bytes(expression),
+        | ExprKind::Cast { expression, .. }
+        | ExprKind::TimestampCast { expression, .. } => sql_expression_memory_bytes(expression),
         ExprKind::InList { left, values, .. } => values.iter().fold(
             sql_expression_memory_bytes(left).saturating_add(std::mem::size_of::<Vec<Expr>>()),
             |total, value| total.saturating_add(sql_expression_memory_bytes(value)),

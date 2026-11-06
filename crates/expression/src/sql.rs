@@ -67,6 +67,11 @@ pub enum ExprKind {
         expression: Box<Expr>,
         target: hawdb_core::numeric::NumericType,
     },
+    /// An explicit CAST between TEXT, TIMESTAMP and TIMESTAMPTZ.
+    TimestampCast {
+        expression: Box<Expr>,
+        target: hawdb_core::sql_timestamp::TimestampCast,
+    },
     Function {
         name: String,
         arguments: Vec<SqlFunctionArgument>,
@@ -183,7 +188,8 @@ impl Expr {
             ExprKind::Not(expression)
             | ExprKind::IsNull { expression, .. }
             | ExprKind::Negate(expression)
-            | ExprKind::Cast { expression, .. } => expression.try_visit_mut(visitor)?,
+            | ExprKind::Cast { expression, .. }
+            | ExprKind::TimestampCast { expression, .. } => expression.try_visit_mut(visitor)?,
             ExprKind::InList { left, values, .. } => {
                 left.try_visit_mut(visitor)?;
                 for value in values {
@@ -226,7 +232,8 @@ impl Expr {
             ExprKind::Not(expression)
             | ExprKind::IsNull { expression, .. }
             | ExprKind::Negate(expression)
-            | ExprKind::Cast { expression, .. } => expression.visit(visitor),
+            | ExprKind::Cast { expression, .. }
+            | ExprKind::TimestampCast { expression, .. } => expression.visit(visitor),
             ExprKind::InList { left, values, .. } => {
                 left.visit(visitor);
                 for value in values {

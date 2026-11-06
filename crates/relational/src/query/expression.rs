@@ -36,7 +36,8 @@ pub(super) fn projection_uses_non_aggregate_scalar_function(
             ExprKind::Value(_)
             | ExprKind::Arithmetic { .. }
             | ExprKind::Negate(_)
-            | ExprKind::Cast { .. } => !projection_contains_aggregate(projection),
+            | ExprKind::Cast { .. }
+            | ExprKind::TimestampCast { .. } => !projection_contains_aggregate(projection),
             ExprKind::Function { name, .. } => {
                 (name == "coalesce"
                     || hawdb_core::VectorDistance::from_function_name(name).is_some())
@@ -57,7 +58,10 @@ pub(super) fn validate_non_aggregate_coalesce_projections(
             continue;
         };
         let validate = match &expression.kind {
-            ExprKind::Arithmetic { .. } | ExprKind::Negate(_) | ExprKind::Cast { .. } => true,
+            ExprKind::Arithmetic { .. }
+            | ExprKind::Negate(_)
+            | ExprKind::Cast { .. }
+            | ExprKind::TimestampCast { .. } => true,
             ExprKind::Function { name, .. } => {
                 name == "coalesce" || hawdb_core::VectorDistance::from_function_name(name).is_some()
             }
@@ -83,6 +87,17 @@ pub(super) fn infer_coalesce_scalar_type(
         } => crate::query_value::infer_numeric_type(expression, &|child| {
             infer_coalesce_scalar_type(child, select, parameters, state)
         }),
+        Expr {
+            kind:
+                ExprKind::TimestampCast {
+                    expression: inner,
+                    target,
+                },
+            ..
+        } => {
+            let operand = infer_coalesce_scalar_type(inner, select, parameters, state)?;
+            crate::query_value::timestamp_cast_type(operand, *target).map(Some)
+        }
         Expr {
             kind: ExprKind::Column(column),
             ..
@@ -397,6 +412,17 @@ pub(super) fn evaluate_projection_expression(
             evaluate_projection_expression(child, row, parameters).map(std::borrow::Cow::Owned)
         }),
         Expr {
+            kind:
+                ExprKind::TimestampCast {
+                    expression: inner,
+                    target,
+                },
+            ..
+        } => crate::query_value::evaluate_timestamp_cast(
+            &evaluate_projection_expression(inner, row, parameters)?,
+            *target,
+        ),
+        Expr {
             kind: ExprKind::Column(column),
             ..
         } => Ok(resolve_column(row, column)?.clone()),
@@ -513,7 +539,11 @@ pub(super) fn evaluate_coalesce(
                 )))
             }
             Expr {
-                kind: ExprKind::Arithmetic { .. } | ExprKind::Negate(_) | ExprKind::Cast { .. },
+                kind:
+                    ExprKind::Arithmetic { .. }
+                    | ExprKind::Negate(_)
+                    | ExprKind::Cast { .. }
+                    | ExprKind::TimestampCast { .. },
                 ..
             } => evaluate_projection_expression(expression, row, parameters)?,
             _ => {
