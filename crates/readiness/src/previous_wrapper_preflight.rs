@@ -19,25 +19,22 @@
 
 use hawdb_core::{HawDBError, Result, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL};
 use hawdb_evidence::replacement_contract::{
-    NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE, NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
-    NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
+    NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
+    SEARCH_CANDIDATE_EVIDENCE_ROUTE, SEARCH_CANDIDATE_EVIDENCE_SOURCE,
+    SEARCH_CANDIDATE_PRIMARY_ENGINE, SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
 };
 use hawdb_route_ownership::graph::{
-    nowledge_mem_graph_read_route_catalog_digest, NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-    REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+    graph_read_route_catalog_digest, GRAPH_READ_ROUTE_CATALOG_VERSION, REQUIRED_BOUNDED_READ_ROUTES,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 pub const NOWLEDGE_PREVIOUS_WRAPPER_PREFLIGHT_PROTOCOL: &str =
     "hawdb-nowledge-previous-wrapper-preflight-check";
-pub use crate::bounded_read_evidence::NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL;
-pub const NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL: &str = "hawdb-nowledge-mem-cutover-controls-v1";
-pub const NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL: &str = "hawdb-nowledge-mem-library-readiness-v1";
-pub const NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL: &str =
-    "hawdb-nowledge-mem-operations-readiness-v1";
+pub use crate::bounded_read_evidence::BOUNDED_READ_EVIDENCE_PROTOCOL;
+pub const CUTOVER_CONTROLS_PROTOCOL: &str = "hawdb-nowledge-mem-cutover-controls-v1";
+pub const LIBRARY_READINESS_PROTOCOL: &str = "hawdb-nowledge-mem-library-readiness-v1";
+pub const OPERATIONS_READINESS_PROTOCOL: &str = "hawdb-nowledge-mem-operations-readiness-v1";
 pub const NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL: &str =
     "hawdb-nowledge-query-runtime-preflight-v1";
 const HAWDB_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL: &str =
@@ -847,15 +844,15 @@ pub fn nowledge_previous_wrapper_preflight_check(
                 str_path(
                     &replacement_summary,
                     &["search_candidate_shadow_evidence", "protocol"],
-                ) == Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL),
+                ) == Some(SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL),
                 str_path(
                     &replacement_summary,
                     &["search_candidate_shadow_evidence", "evidence_source"],
-                ) == Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE),
+                ) == Some(SEARCH_CANDIDATE_EVIDENCE_SOURCE),
                 str_path(
                     &replacement_summary,
                     &["search_candidate_shadow_evidence", "route"],
-                ) == Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE),
+                ) == Some(SEARCH_CANDIDATE_EVIDENCE_ROUTE),
                 bool_path(
                     &replacement_summary,
                     &["search_candidate_shadow_evidence", "present"],
@@ -870,7 +867,7 @@ pub fn nowledge_previous_wrapper_preflight_check(
                         "search_candidate_shadow_evidence",
                         "candidate_primary_engine",
                     ],
-                ) == Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE),
+                ) == Some(SEARCH_CANDIDATE_PRIMARY_ENGINE),
                 search_candidate_shadow_counts_ready(&replacement_summary),
                 bool_path(
                     &replacement_summary,
@@ -1220,7 +1217,7 @@ pub fn nowledge_previous_wrapper_preflight_check(
                     &["graph_route_readiness", "primary_ready_route_count"],
                 )
                 .is_some_and(|count| {
-                    count == REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() as u64
+                    count == REQUIRED_BOUNDED_READ_ROUTES.len() as u64
                 }),
             ],
             [
@@ -1246,7 +1243,7 @@ pub fn nowledge_previous_wrapper_preflight_check(
             "replacement_summary_bounded_read",
             [
                 str_path(&replacement_summary, &["bounded_read_evidence", "protocol"])
-                    == Some(NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL),
+                    == Some(BOUNDED_READ_EVIDENCE_PROTOCOL),
                 bool_path(&replacement_summary, &["bounded_read_evidence", "present"])
                     == Some(true),
                 bool_path(&replacement_summary, &["bounded_read_evidence", "ready"]) == Some(true),
@@ -1375,9 +1372,9 @@ pub fn nowledge_previous_wrapper_preflight_check(
                 u64_path(&query_runtime_preflight, &["failed_probe_count"]) == Some(0),
                 query_runtime_preflight_route_coverage_ready(&query_runtime_preflight),
                 str_path(&query_runtime_preflight, &["route_catalog_version"])
-                    == Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION),
+                    == Some(GRAPH_READ_ROUTE_CATALOG_VERSION),
                 str_path(&query_runtime_preflight, &["route_catalog_digest"])
-                    == Some(nowledge_mem_graph_read_route_catalog_digest().as_str()),
+                    == Some(graph_read_route_catalog_digest().as_str()),
                 query_runtime_preflight_probe_details_ready(&query_runtime_preflight),
             ],
             [
@@ -1410,7 +1407,7 @@ pub fn nowledge_previous_wrapper_preflight_check(
             "library_readiness",
             [
                 str_path(&library_readiness, &["protocol"])
-                    == Some(NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL),
+                    == Some(LIBRARY_READINESS_PROTOCOL),
                 bool_path(&library_readiness, &["present"]) == Some(true),
                 bool_path(&library_readiness, &["ready"]) == Some(true),
                 u64_path(&library_readiness, &["ready_area_count"]).is_some_and(|value| value > 0),
@@ -1495,7 +1492,7 @@ pub fn nowledge_previous_wrapper_preflight_check(
             "cutover_controls",
             [
                 str_path(&cutover_controls, &["protocol"])
-                    == Some(NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL),
+                    == Some(CUTOVER_CONTROLS_PROTOCOL),
                 bool_path(&cutover_controls, &["ready"]) == Some(true),
                 str_path(&cutover_controls, &["controls", "graph_reads"]) == Some("hawdb"),
                 str_path(&cutover_controls, &["controls", "search_reads"]) == Some("hawdb"),
@@ -1555,7 +1552,7 @@ pub fn nowledge_previous_wrapper_preflight_check(
             "operations_readiness",
             [
                 str_path(&operations_readiness, &["protocol"])
-                    == Some(NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL),
+                    == Some(OPERATIONS_READINESS_PROTOCOL),
                 bool_path(&operations_readiness, &["present"]) == Some(true),
                 bool_path(&operations_readiness, &["ready"]) == Some(true),
                 bool_path(&operations_readiness, &["graph", "open"]) == Some(true),
@@ -3259,10 +3256,9 @@ fn route_catalog_metadata_ready(value: &serde_json::Value, path: &[&str]) -> boo
     let Some(value) = value_path(value, path) else {
         return false;
     };
-    str_path(value, &["route_catalog_version"])
-        == Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION)
+    str_path(value, &["route_catalog_version"]) == Some(GRAPH_READ_ROUTE_CATALOG_VERSION)
         && str_path(value, &["route_catalog_digest"])
-            == Some(nowledge_mem_graph_read_route_catalog_digest().as_str())
+            == Some(graph_read_route_catalog_digest().as_str())
 }
 
 fn bounded_read_execution_row_cap_ready(value: &serde_json::Value) -> bool {
@@ -3323,25 +3319,23 @@ fn query_runtime_preflight_route_coverage_ready(value: &serde_json::Value) -> bo
     let duplicate_routes = duplicate_routes(&observed_routes);
     let unknown_routes = observed_route_set
         .iter()
-        .filter(|route| !REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.contains(route))
+        .filter(|route| !REQUIRED_BOUNDED_READ_ROUTES.contains(route))
         .count();
-    u64_path(value, &["required_route_count"])
-        == Some(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() as u64)
+    u64_path(value, &["required_route_count"]) == Some(REQUIRED_BOUNDED_READ_ROUTES.len() as u64)
         && u64_path(value, &["covered_route_count"])
-            == Some(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() as u64)
+            == Some(REQUIRED_BOUNDED_READ_ROUTES.len() as u64)
         && bool_path(value, &["required_routes_covered"]) == Some(true)
         && empty_array_path(value, &["missing_required_routes"])
         && empty_array_path(value, &["unknown_routes"])
         && empty_array_path(value, &["duplicate_routes"])
-        && str_path(value, &["route_catalog_version"])
-            == Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION)
+        && str_path(value, &["route_catalog_version"]) == Some(GRAPH_READ_ROUTE_CATALOG_VERSION)
         && str_path(value, &["route_catalog_digest"])
-            == Some(nowledge_mem_graph_read_route_catalog_digest().as_str())
+            == Some(graph_read_route_catalog_digest().as_str())
         && bool_path(value, &["route_coverage_ready"]) == Some(true)
         && empty_array_path(value, &["route_coverage_blocker_codes"])
         && unknown_routes == 0
         && duplicate_routes.is_empty()
-        && REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        && REQUIRED_BOUNDED_READ_ROUTES
             .iter()
             .all(|route| observed_route_set.contains(route))
 }
@@ -3475,15 +3469,12 @@ mod tests {
         HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
     };
     use super::{
-        nowledge_mem_graph_read_route_catalog_digest,
-        NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL,
-        NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL,
-        NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL,
-        NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
-        NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE,
-        NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
-        NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
-        NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+        graph_read_route_catalog_digest, BOUNDED_READ_EVIDENCE_PROTOCOL, CUTOVER_CONTROLS_PROTOCOL,
+        GRAPH_READ_ROUTE_CATALOG_VERSION, NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL,
+        NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS, OPERATIONS_READINESS_PROTOCOL,
+        REQUIRED_BOUNDED_READ_ROUTES, SEARCH_CANDIDATE_EVIDENCE_ROUTE,
+        SEARCH_CANDIDATE_EVIDENCE_SOURCE, SEARCH_CANDIDATE_PRIMARY_ENGINE,
+        SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
     };
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -3563,12 +3554,12 @@ mod tests {
         assert_release_summary_field(
             summary,
             "bounded_read_route_catalog_version",
-            NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
+            GRAPH_READ_ROUTE_CATALOG_VERSION,
         );
         assert_release_summary_field(
             summary,
             "bounded_read_route_catalog_digest",
-            nowledge_mem_graph_read_route_catalog_digest(),
+            graph_read_route_catalog_digest(),
         );
         assert_release_summary_field(summary, "storage_recovery_ready", true);
         assert_release_summary_field(summary, "storage_recovery_durable", true);
@@ -3788,12 +3779,12 @@ mod tests {
         assert_release_summary_field(
             summary,
             "query_runtime_preflight_probe_count",
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+            REQUIRED_BOUNDED_READ_ROUTES.len(),
         );
         assert_release_summary_field(
             summary,
             "query_runtime_preflight_passed_probe_count",
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+            REQUIRED_BOUNDED_READ_ROUTES.len(),
         );
         assert_release_summary_field(summary, "query_runtime_preflight_failed_probe_count", 0);
         assert_release_summary_field(summary, "library_readiness_ready", true);
@@ -5388,8 +5379,7 @@ mod tests {
         let preflight = inputs.query_runtime_preflight.as_mut().unwrap();
         let probe = preflight["probes"][0].clone();
         preflight["probes"].as_array_mut().unwrap().push(probe);
-        preflight["duplicate_routes"] =
-            serde_json::json!([REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES[0]]);
+        preflight["duplicate_routes"] = serde_json::json!([REQUIRED_BOUNDED_READ_ROUTES[0]]);
         preflight["route_coverage_ready"] = serde_json::json!(false);
         preflight["route_coverage_blocker_codes"] =
             serde_json::json!(["query_runtime_duplicate_routes"]);
@@ -5698,7 +5688,7 @@ mod tests {
 
     fn ready_cutover_controls() -> serde_json::Value {
         serde_json::json!({
-            "protocol": NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL,
+            "protocol": CUTOVER_CONTROLS_PROTOCOL,
             "ready": true,
             "controls": {
                 "graph_reads": "hawdb",
@@ -5742,7 +5732,7 @@ mod tests {
 
     fn ready_operations_readiness() -> serde_json::Value {
         serde_json::json!({
-            "protocol": NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL,
+            "protocol": OPERATIONS_READINESS_PROTOCOL,
             "present": true,
             "ready": true,
             "mode": "writable_cutover",
@@ -5777,16 +5767,16 @@ mod tests {
 
     fn ready_route_catalog_metadata() -> serde_json::Value {
         serde_json::json!({
-            "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-            "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+            "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+            "route_catalog_digest": graph_read_route_catalog_digest(),
             "blocker_codes": []
         })
     }
 
     fn ready_graph_route_readiness() -> serde_json::Value {
         serde_json::json!({
-            "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-            "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+            "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+            "route_catalog_digest": graph_read_route_catalog_digest(),
             "present": true,
             "ready": true,
             "evidence_ready": true,
@@ -5798,7 +5788,7 @@ mod tests {
             "route_query_api_behavior_evidence_ready": true,
             "route_relationship_property_pruning_evidence_ready": true,
             "route_primary_ready": true,
-            "primary_ready_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+            "primary_ready_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
             "blocker_codes": []
         })
     }
@@ -5808,8 +5798,8 @@ mod tests {
             "protocol": NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL,
             "present": true,
             "ready": true,
-            "route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "query_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+            "route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "query_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
             "failed_query_count": 0,
             "bounded_expansion_probe_count": 2,
             "failed_bounded_expansion_probe_count": 0,
@@ -5864,7 +5854,7 @@ mod tests {
 
     fn ready_bounded_read_evidence() -> serde_json::Value {
         serde_json::json!({
-            "protocol": NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL,
+            "protocol": BOUNDED_READ_EVIDENCE_PROTOCOL,
             "present": true,
             "ready": true,
             "mode": "shadow_read_only",
@@ -5882,25 +5872,25 @@ mod tests {
             "blocking_operator_memory_reports_complete": true,
             "blocking_operator_memory_within_budget": true,
             "spill_within_budget": true,
-            "covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
-            "required_covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "covered_routes": REQUIRED_BOUNDED_READ_ROUTES,
+            "required_covered_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "missing_covered_routes": [],
-            "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-            "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+            "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+            "route_catalog_digest": graph_read_route_catalog_digest(),
             "route_primary_ready": true,
-            "primary_ready_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "primary_ready_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "route_query_plan_evidence_ready": true,
             "route_query_profile_evidence_ready": true,
             "route_query_api_behavior_evidence_ready": true,
             "route_relationship_property_pruning_evidence_ready": true,
-            "relationship_property_pruning_required_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "relationship_property_pruning_report_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+            "relationship_property_pruning_required_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "relationship_property_pruning_report_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
             "blocker_codes": []
         })
     }
 
     fn ready_query_runtime_preflight() -> serde_json::Value {
-        let probes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        let probes = REQUIRED_BOUNDED_READ_ROUTES
             .iter()
             .map(|route| ready_query_runtime_preflight_probe(route))
             .collect::<Vec<_>>();
@@ -5918,15 +5908,15 @@ mod tests {
             "probe_count": probes.len(),
             "passed_probe_count": probes.len(),
             "failed_probe_count": 0,
-            "required_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "covered_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "required_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "covered_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "covered_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "missing_required_routes": [],
             "required_routes_covered": true,
             "unknown_routes": [],
             "duplicate_routes": [],
-            "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-            "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+            "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+            "route_catalog_digest": graph_read_route_catalog_digest(),
             "route_coverage_ready": true,
             "route_coverage_blocker_codes": [],
             "blocker_codes": [],
@@ -6180,12 +6170,12 @@ mod tests {
 
     fn ready_search_candidate_shadow_evidence() -> serde_json::Value {
         serde_json::json!({
-            "protocol": NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
-            "route": NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
-            "evidence_source": NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE,
+            "protocol": SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+            "route": SEARCH_CANDIDATE_EVIDENCE_ROUTE,
+            "evidence_source": SEARCH_CANDIDATE_EVIDENCE_SOURCE,
             "present": true,
             "ready": true,
-            "candidate_primary_engine": NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
+            "candidate_primary_engine": SEARCH_CANDIDATE_PRIMARY_ENGINE,
             "request_count": 2,
             "primary_candidate_count": 3,
             "shadow_candidate_count": 3,

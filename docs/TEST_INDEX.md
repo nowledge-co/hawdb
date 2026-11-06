@@ -177,7 +177,7 @@ mutant rejection and retained-evidence verification. The existing moderate scrip
 timeout is unchanged. Replay with `bazel test //:storage_tla_evidence_script_test`
 or `bash scripts/check-storage-tla.test.sh`.
 
-`nowledge_mem::tests::catch_up_admission_tests` belongs to the existing root
+`embedded_store::tests::catch_up_admission_tests` belongs to the existing root
 `//:hawdb_unit_general_tests` owner. Its two guards each exercise full-residency
 and incremental projection dispatch with one explicitly configured governor.
 A retained Background physical I/O wave must not reject caller-selected
@@ -813,12 +813,19 @@ request cases with `tokio-runtime,acl`. Its saturated-admission case also proves
 SQL waits for capacity before parsing. Native CI owns execution; local strict
 Clippy checks compile the same test sources.
 
-`nowledge_mem::concurrent_owner::tests` requires a second writer to commit while
+The capability-based [API naming migration](PUBLIC_API_NAMING.md) moves the
+embedded store families to `embedded_store::`. Candidate facade identity and
+entrypoint checks remain in `embedded_store::candidate_facade_tests`, and the
+search-owned builder, report and shadow cases retain their existing search
+test targets and feature matrices. The renamed families keep their execution
+lanes and assertions.
+
+`embedded_store::concurrent_owner::tests` requires a second writer to commit while
 the first transaction callback remains suspended, then checks both the retained
 old snapshot and the newly published state and released admission memory. It
 uses the existing App snapshot fixture and root general unit owner.
 The weekly native runtime lane also runs this family and
-`nowledge_mem::app_read_snapshot_tests`, preserving their mixed-statement,
+`embedded_store::app_read_snapshot_tests`, preserving their mixed-statement,
 publication-failure, unwind, admission and old-generation assertions after Mem
 switches to the concurrent transaction kernel.
 
@@ -862,7 +869,7 @@ summary ceilings and expression/NULL predicate parity.
 The expression fallback uses a supported `COALESCE` comparison. The concurrent
 read-observation cases pause SQL and Cypher private execution before publication;
 post-commit telemetry is not a prepublication synchronization point.
-`nowledge_mem::read_execution::tests` additionally exercises the actual
+`embedded_store::read_execution::tests` additionally exercises the actual
 admitted report adapter with two such writers, captured plans, one preparation
 per statement and full admission refund. These are correctness/operation-count
 checks, not release latency or allocation evidence.
@@ -892,7 +899,7 @@ owner. Its three manual controls (`UnprotectedPredicate`, `EarlySnapshot`,
 `IgnoreSchema`) distinguish predicate protection, snapshot ordering and admission
 invalidation. They do not replace positive checking or native scope-mapping tests.
 
-`nowledge_mem::read_execution::tests` covers ordinary owned/streaming and report
+`embedded_store::read_execution::tests` covers ordinary owned/streaming and report
 reads from published views: streaming and report-observation callbacks must allow
 a writer and fresh reader to finish, and execution-admission telemetry must
 release the preparation view in both ordinary and report entrypoints.
@@ -957,7 +964,7 @@ with the captured out-of-core external operator. Plain/analyzed explain rows
 have an explicit 1 MiB diagnostic cap and debit their delivered row/payload from
 the cumulative snapshot ledger; ordinary reads keep their 8 KiB snapshot cap.
 
-The root general `nowledge_mem` family exercises out-of-core text, hydration,
+The root general `embedded_store` family exercises out-of-core text, hydration,
 graph context and `CALL vector_search` with default DiskANN and explicit RaBitQ
 artifacts. It checks typed ANN/raw score sources and the raw-scan behavior of
 disabled compression. Replacement/shadow evidence fixtures explicitly select
@@ -2765,7 +2772,7 @@ MVCC campaign documented above.
 The query-first review regressions also cover Mem report/stream admission when
 execution fits but retained preparation does not, and route qualification
 statements that exceed explicit row or payload ceilings. These live in
-`src/nowledge_mem/read_execution.rs` and `src/graph_route_evidence_tests.rs` under
+`src/embedded_store/read_execution.rs` and `src/graph_route_evidence_tests.rs` under
 the existing root library test targets.
 
 ### Pinned full-scan input cost

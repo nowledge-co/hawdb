@@ -17,50 +17,48 @@ pub mod graph;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL: &str =
-    "hawdb-nowledge-mem-search-route-ownership-v1";
-pub const NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL: &str =
+pub const SEARCH_ROUTE_OWNERSHIP_PROTOCOL: &str = "hawdb-nowledge-mem-search-route-ownership-v1";
+pub const ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL: &str =
     "hawdb-nowledge-mem-active-search-route-readiness-v1";
 
-pub const NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY: &str = "memory";
-pub const NOWLEDGE_MEM_SEARCH_ROUTE_MESSAGE: &str = "message";
-pub const NOWLEDGE_MEM_SEARCH_ROUTE_COMMUNITY: &str = "community";
-pub const NOWLEDGE_MEM_SEARCH_ROUTE_ENTITY: &str = "entity";
-pub const NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE: &str = "source";
-pub const NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE_CHUNK: &str = "source_chunk";
+pub const SEARCH_ROUTE_MEMORY: &str = "memory";
+pub const SEARCH_ROUTE_MESSAGE: &str = "message";
+pub const SEARCH_ROUTE_COMMUNITY: &str = "community";
+pub const SEARCH_ROUTE_ENTITY: &str = "entity";
+pub const SEARCH_ROUTE_SOURCE: &str = "source";
+pub const SEARCH_ROUTE_SOURCE_CHUNK: &str = "source_chunk";
 
-pub const REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES: &[&str] = &[
-    NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY,
-    NOWLEDGE_MEM_SEARCH_ROUTE_MESSAGE,
-    NOWLEDGE_MEM_SEARCH_ROUTE_COMMUNITY,
-    NOWLEDGE_MEM_SEARCH_ROUTE_ENTITY,
-    NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE,
-    NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE_CHUNK,
+pub const REQUIRED_SEARCH_ROUTES: &[&str] = &[
+    SEARCH_ROUTE_MEMORY,
+    SEARCH_ROUTE_MESSAGE,
+    SEARCH_ROUTE_COMMUNITY,
+    SEARCH_ROUTE_ENTITY,
+    SEARCH_ROUTE_SOURCE,
+    SEARCH_ROUTE_SOURCE_CHUNK,
 ];
 
-pub const NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS: &str = "thread_message_fts";
-pub const NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_ENTITY_DISCOVERY: &str = "entity_discovery";
-pub const NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_COMMUNITY_DISCOVERY: &str = "community_discovery";
-pub const NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_RECALL: &str = "source_recall";
-pub const NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL: &str = "source_chunk_recall";
-pub const NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_FS_RECALL: &str = "fs_recall";
-pub const NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH: &str = "mcp_search";
-pub const NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_DEEP_SEARCH_GRAPH_EXPANSION: &str =
-    "deep_search_graph_expansion";
+pub const ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS: &str = "thread_message_fts";
+pub const ACTIVE_SEARCH_ROUTE_ENTITY_DISCOVERY: &str = "entity_discovery";
+pub const ACTIVE_SEARCH_ROUTE_COMMUNITY_DISCOVERY: &str = "community_discovery";
+pub const ACTIVE_SEARCH_ROUTE_SOURCE_RECALL: &str = "source_recall";
+pub const ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL: &str = "source_chunk_recall";
+pub const ACTIVE_SEARCH_ROUTE_FS_RECALL: &str = "fs_recall";
+pub const ACTIVE_SEARCH_ROUTE_MCP_SEARCH: &str = "mcp_search";
+pub const ACTIVE_SEARCH_ROUTE_DEEP_SEARCH_GRAPH_EXPANSION: &str = "deep_search_graph_expansion";
 
-pub const REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES: &[&str] = &[
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_ENTITY_DISCOVERY,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_COMMUNITY_DISCOVERY,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_RECALL,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_FS_RECALL,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_DEEP_SEARCH_GRAPH_EXPANSION,
+pub const REQUIRED_ACTIVE_SEARCH_ROUTES: &[&str] = &[
+    ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
+    ACTIVE_SEARCH_ROUTE_ENTITY_DISCOVERY,
+    ACTIVE_SEARCH_ROUTE_COMMUNITY_DISCOVERY,
+    ACTIVE_SEARCH_ROUTE_SOURCE_RECALL,
+    ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL,
+    ACTIVE_SEARCH_ROUTE_FS_RECALL,
+    ACTIVE_SEARCH_ROUTE_MCP_SEARCH,
+    ACTIVE_SEARCH_ROUTE_DEEP_SEARCH_GRAPH_EXPANSION,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemActiveSearchRouteReadRequirement {
+pub struct ActiveSearchRouteReadRequirement {
     pub route: String,
     pub projection_route: String,
     pub requires_text_candidates: bool,
@@ -75,7 +73,7 @@ pub struct NowledgeMemActiveSearchRouteReadRequirement {
     pub requires_repair_rebuild_markers: bool,
 }
 
-impl NowledgeMemActiveSearchRouteReadRequirement {
+impl ActiveSearchRouteReadRequirement {
     fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "route": self.route,
@@ -95,11 +93,11 @@ impl NowledgeMemActiveSearchRouteReadRequirement {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemSearchRouteOwnershipPolicy {
+pub struct SearchRouteOwnershipPolicy {
     pub require_all_hawdb: bool,
 }
 
-impl NowledgeMemSearchRouteOwnershipPolicy {
+impl SearchRouteOwnershipPolicy {
     pub const fn migration() -> Self {
         Self {
             require_all_hawdb: false,
@@ -113,19 +111,19 @@ impl NowledgeMemSearchRouteOwnershipPolicy {
     }
 }
 
-impl Default for NowledgeMemSearchRouteOwnershipPolicy {
+impl Default for SearchRouteOwnershipPolicy {
     fn default() -> Self {
         Self::migration()
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum NowledgeMemSearchReadEngine {
+pub enum SearchReadEngine {
     LanceDb,
     HawDB,
 }
 
-impl NowledgeMemSearchReadEngine {
+impl SearchReadEngine {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::LanceDb => "lancedb",
@@ -135,13 +133,13 @@ impl NowledgeMemSearchReadEngine {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSearchRouteOwnership {
+pub struct SearchRouteOwnership {
     pub route: String,
-    pub read_engine: NowledgeMemSearchReadEngine,
+    pub read_engine: SearchReadEngine,
 }
 
-impl NowledgeMemSearchRouteOwnership {
-    pub fn new(route: impl Into<String>, read_engine: NowledgeMemSearchReadEngine) -> Self {
+impl SearchRouteOwnership {
+    pub fn new(route: impl Into<String>, read_engine: SearchReadEngine) -> Self {
         Self {
             route: route.into(),
             read_engine,
@@ -150,17 +148,17 @@ impl NowledgeMemSearchRouteOwnership {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemActiveSearchRouteOwnership {
+pub struct ActiveSearchRouteOwnership {
     pub route: String,
     pub projection_route: String,
-    pub read_engine: NowledgeMemSearchReadEngine,
+    pub read_engine: SearchReadEngine,
 }
 
-impl NowledgeMemActiveSearchRouteOwnership {
+impl ActiveSearchRouteOwnership {
     pub fn new(
         route: impl Into<String>,
         projection_route: impl Into<String>,
-        read_engine: NowledgeMemSearchReadEngine,
+        read_engine: SearchReadEngine,
     ) -> Self {
         Self {
             route: route.into(),
@@ -171,7 +169,7 @@ impl NowledgeMemActiveSearchRouteOwnership {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSearchRouteOwnershipReadinessReport {
+pub struct SearchRouteOwnershipReadinessReport {
     pub protocol: String,
     pub ready: bool,
     pub production_cutover_ready: bool,
@@ -180,7 +178,7 @@ pub struct NowledgeMemSearchRouteOwnershipReadinessReport {
     pub explicit_route_count: usize,
     pub hawdb_route_count: usize,
     pub lancedb_route_count: usize,
-    pub routes: Vec<NowledgeMemSearchRouteOwnership>,
+    pub routes: Vec<SearchRouteOwnership>,
     pub hawdb_routes: Vec<String>,
     pub lancedb_routes: Vec<String>,
     pub missing_required_routes: Vec<String>,
@@ -190,7 +188,7 @@ pub struct NowledgeMemSearchRouteOwnershipReadinessReport {
     pub blocker_codes: Vec<String>,
 }
 
-impl NowledgeMemSearchRouteOwnershipReadinessReport {
+impl SearchRouteOwnershipReadinessReport {
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "protocol": self.protocol,
@@ -214,7 +212,7 @@ impl NowledgeMemSearchRouteOwnershipReadinessReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemActiveSearchRouteOwnershipReadinessReport {
+pub struct ActiveSearchRouteOwnershipReadinessReport {
     pub protocol: String,
     pub ready: bool,
     pub production_cutover_ready: bool,
@@ -223,7 +221,7 @@ pub struct NowledgeMemActiveSearchRouteOwnershipReadinessReport {
     pub explicit_route_count: usize,
     pub hawdb_route_count: usize,
     pub lancedb_route_count: usize,
-    pub routes: Vec<NowledgeMemActiveSearchRouteOwnership>,
+    pub routes: Vec<ActiveSearchRouteOwnership>,
     pub hawdb_routes: Vec<String>,
     pub lancedb_routes: Vec<String>,
     pub missing_required_routes: Vec<String>,
@@ -233,10 +231,10 @@ pub struct NowledgeMemActiveSearchRouteOwnershipReadinessReport {
     pub blocker_codes: Vec<String>,
 }
 
-impl NowledgeMemActiveSearchRouteOwnershipReadinessReport {
+impl ActiveSearchRouteOwnershipReadinessReport {
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
-            "protocol": NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
+            "protocol": SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
             "ready": self.ready,
             "production_cutover_ready": self.production_cutover_ready,
             "require_all_hawdb": self.require_all_hawdb,
@@ -257,10 +255,10 @@ impl NowledgeMemActiveSearchRouteOwnershipReadinessReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemActiveSearchRouteReadEvidence {
+pub struct ActiveSearchRouteReadEvidence {
     pub route: String,
     pub projection_route: String,
-    pub read_engine: NowledgeMemSearchReadEngine,
+    pub read_engine: SearchReadEngine,
     pub candidate_readiness_ready: bool,
     pub candidate_identity_ready: bool,
     pub embedding_identity_ready: bool,
@@ -275,12 +273,12 @@ pub struct NowledgeMemActiveSearchRouteReadEvidence {
     pub lancedb_handle_required: bool,
 }
 
-impl NowledgeMemActiveSearchRouteReadEvidence {
+impl ActiveSearchRouteReadEvidence {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         route: impl Into<String>,
         projection_route: impl Into<String>,
-        read_engine: NowledgeMemSearchReadEngine,
+        read_engine: SearchReadEngine,
         candidate_readiness_ready: bool,
         candidate_identity_ready: bool,
         metadata_pushdown_ready: bool,
@@ -311,7 +309,7 @@ impl NowledgeMemActiveSearchRouteReadEvidence {
         Self::new(
             route,
             projection_route,
-            NowledgeMemSearchReadEngine::HawDB,
+            SearchReadEngine::HawDB,
             true,
             true,
             true,
@@ -323,7 +321,7 @@ impl NowledgeMemActiveSearchRouteReadEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemActiveSearchRouteReadinessReport {
+pub struct ActiveSearchRouteReadinessReport {
     pub protocol: String,
     pub ready: bool,
     pub production_cutover_ready: bool,
@@ -333,8 +331,8 @@ pub struct NowledgeMemActiveSearchRouteReadinessReport {
     pub ready_route_count: usize,
     pub hawdb_route_count: usize,
     pub lancedb_handle_required_route_count: usize,
-    pub routes: Vec<NowledgeMemActiveSearchRouteReadEvidence>,
-    pub requirements: Vec<NowledgeMemActiveSearchRouteReadRequirement>,
+    pub routes: Vec<ActiveSearchRouteReadEvidence>,
+    pub requirements: Vec<ActiveSearchRouteReadRequirement>,
     pub ready_routes: Vec<String>,
     pub missing_required_routes: Vec<String>,
     pub unknown_routes: Vec<String>,
@@ -356,7 +354,7 @@ pub struct NowledgeMemActiveSearchRouteReadinessReport {
     pub blocker_codes: Vec<String>,
 }
 
-impl NowledgeMemActiveSearchRouteReadinessReport {
+impl ActiveSearchRouteReadinessReport {
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "protocol": self.protocol,
@@ -369,7 +367,7 @@ impl NowledgeMemActiveSearchRouteReadinessReport {
             "hawdb_route_count": self.hawdb_route_count,
             "lancedb_handle_required_route_count": self.lancedb_handle_required_route_count,
             "routes": self.routes.iter().map(active_search_route_read_evidence_json).collect::<Vec<_>>(),
-            "requirements": self.requirements.iter().map(NowledgeMemActiveSearchRouteReadRequirement::json).collect::<Vec<_>>(),
+            "requirements": self.requirements.iter().map(ActiveSearchRouteReadRequirement::json).collect::<Vec<_>>(),
             "ready_routes": self.ready_routes,
             "missing_required_routes": self.missing_required_routes,
             "unknown_routes": self.unknown_routes,
@@ -393,40 +391,38 @@ impl NowledgeMemActiveSearchRouteReadinessReport {
     }
 }
 
-pub fn nowledge_mem_search_route_ownership_all_lancedb() -> Vec<NowledgeMemSearchRouteOwnership> {
-    nowledge_mem_search_route_ownership_for_engine(NowledgeMemSearchReadEngine::LanceDb)
+pub fn search_route_ownership_all_lancedb() -> Vec<SearchRouteOwnership> {
+    search_route_ownership_for_engine(SearchReadEngine::LanceDb)
 }
 
-pub fn nowledge_mem_search_route_ownership_all_hawdb() -> Vec<NowledgeMemSearchRouteOwnership> {
-    nowledge_mem_search_route_ownership_for_engine(NowledgeMemSearchReadEngine::HawDB)
+pub fn search_route_ownership_all_hawdb() -> Vec<SearchRouteOwnership> {
+    search_route_ownership_for_engine(SearchReadEngine::HawDB)
 }
 
-pub fn nowledge_mem_search_route_ownership_for_engine(
-    read_engine: NowledgeMemSearchReadEngine,
-) -> Vec<NowledgeMemSearchRouteOwnership> {
-    REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES
+pub fn search_route_ownership_for_engine(
+    read_engine: SearchReadEngine,
+) -> Vec<SearchRouteOwnership> {
+    REQUIRED_SEARCH_ROUTES
         .iter()
-        .map(|route| NowledgeMemSearchRouteOwnership::new(*route, read_engine))
+        .map(|route| SearchRouteOwnership::new(*route, read_engine))
         .collect()
 }
 
-pub fn nowledge_mem_active_search_route_ownership_all_lancedb(
-) -> Vec<NowledgeMemActiveSearchRouteOwnership> {
-    nowledge_mem_active_search_route_ownership_for_engine(NowledgeMemSearchReadEngine::LanceDb)
+pub fn active_search_route_ownership_all_lancedb() -> Vec<ActiveSearchRouteOwnership> {
+    active_search_route_ownership_for_engine(SearchReadEngine::LanceDb)
 }
 
-pub fn nowledge_mem_active_search_route_ownership_all_hawdb(
-) -> Vec<NowledgeMemActiveSearchRouteOwnership> {
-    nowledge_mem_active_search_route_ownership_for_engine(NowledgeMemSearchReadEngine::HawDB)
+pub fn active_search_route_ownership_all_hawdb() -> Vec<ActiveSearchRouteOwnership> {
+    active_search_route_ownership_for_engine(SearchReadEngine::HawDB)
 }
 
-pub fn nowledge_mem_active_search_route_ownership_for_engine(
-    read_engine: NowledgeMemSearchReadEngine,
-) -> Vec<NowledgeMemActiveSearchRouteOwnership> {
-    REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES
+pub fn active_search_route_ownership_for_engine(
+    read_engine: SearchReadEngine,
+) -> Vec<ActiveSearchRouteOwnership> {
+    REQUIRED_ACTIVE_SEARCH_ROUTES
         .iter()
         .map(|route| {
-            NowledgeMemActiveSearchRouteOwnership::new(
+            ActiveSearchRouteOwnership::new(
                 *route,
                 required_projection_route_for_active_search_route(route),
                 read_engine,
@@ -435,12 +431,11 @@ pub fn nowledge_mem_active_search_route_ownership_for_engine(
         .collect()
 }
 
-pub fn nowledge_mem_active_search_route_read_evidence_all_hawdb_ready(
-) -> Vec<NowledgeMemActiveSearchRouteReadEvidence> {
-    REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES
+pub fn active_search_route_read_evidence_all_hawdb_ready() -> Vec<ActiveSearchRouteReadEvidence> {
+    REQUIRED_ACTIVE_SEARCH_ROUTES
         .iter()
         .map(|route| {
-            NowledgeMemActiveSearchRouteReadEvidence::ready_hawdb(
+            ActiveSearchRouteReadEvidence::ready_hawdb(
                 *route,
                 required_projection_route_for_active_search_route(route),
             )
@@ -448,9 +443,8 @@ pub fn nowledge_mem_active_search_route_read_evidence_all_hawdb_ready(
         .collect()
 }
 
-pub fn nowledge_mem_active_search_route_read_requirements(
-) -> Vec<NowledgeMemActiveSearchRouteReadRequirement> {
-    REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES
+pub fn active_search_route_read_requirements() -> Vec<ActiveSearchRouteReadRequirement> {
+    REQUIRED_ACTIVE_SEARCH_ROUTES
         .iter()
         .filter_map(|route| active_search_route_read_requirement(route))
         .collect()
@@ -458,28 +452,28 @@ pub fn nowledge_mem_active_search_route_read_requirements(
 
 pub fn active_search_route_read_requirement(
     route: &str,
-) -> Option<NowledgeMemActiveSearchRouteReadRequirement> {
+) -> Option<ActiveSearchRouteReadRequirement> {
     let projection_route = required_projection_route_for_active_search_route(route);
     if projection_route.is_empty() {
         return None;
     }
     let requires_vector_candidates = matches!(
         route,
-        NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_RECALL
-            | NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL
-            | NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_FS_RECALL
-            | NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH
-            | NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_DEEP_SEARCH_GRAPH_EXPANSION
+        ACTIVE_SEARCH_ROUTE_SOURCE_RECALL
+            | ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL
+            | ACTIVE_SEARCH_ROUTE_FS_RECALL
+            | ACTIVE_SEARCH_ROUTE_MCP_SEARCH
+            | ACTIVE_SEARCH_ROUTE_DEEP_SEARCH_GRAPH_EXPANSION
     );
     let requires_cjk_tokenization = matches!(
         route,
-        NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS
-            | NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_RECALL
-            | NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL
-            | NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_FS_RECALL
-            | NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH
+        ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS
+            | ACTIVE_SEARCH_ROUTE_SOURCE_RECALL
+            | ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL
+            | ACTIVE_SEARCH_ROUTE_FS_RECALL
+            | ACTIVE_SEARCH_ROUTE_MCP_SEARCH
     );
-    Some(NowledgeMemActiveSearchRouteReadRequirement {
+    Some(ActiveSearchRouteReadRequirement {
         route: route.to_string(),
         projection_route: projection_route.to_string(),
         requires_text_candidates: true,
@@ -495,16 +489,16 @@ pub fn active_search_route_read_requirement(
     })
 }
 
-pub fn nowledge_mem_search_route_ownership_readiness(
-    routes: &[NowledgeMemSearchRouteOwnership],
-    policy: NowledgeMemSearchRouteOwnershipPolicy,
-) -> NowledgeMemSearchRouteOwnershipReadinessReport {
-    let required_routes = REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES
+pub fn search_route_ownership_readiness(
+    routes: &[SearchRouteOwnership],
+    policy: SearchRouteOwnershipPolicy,
+) -> SearchRouteOwnershipReadinessReport {
+    let required_routes = REQUIRED_SEARCH_ROUTES
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
     let mut route_counts = BTreeMap::<&str, usize>::new();
-    let mut route_engines = BTreeMap::<&str, BTreeSet<NowledgeMemSearchReadEngine>>::new();
+    let mut route_engines = BTreeMap::<&str, BTreeSet<SearchReadEngine>>::new();
     for route in routes {
         *route_counts.entry(route.route.as_str()).or_default() += 1;
         route_engines
@@ -518,7 +512,7 @@ pub fn nowledge_mem_search_route_ownership_readiness(
         .copied()
         .filter(|route| required_routes.contains(route))
         .collect::<BTreeSet<_>>();
-    let missing_required_routes = REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES
+    let missing_required_routes = REQUIRED_SEARCH_ROUTES
         .iter()
         .copied()
         .filter(|route| !explicit_required_routes.contains(route))
@@ -540,8 +534,8 @@ pub fn nowledge_mem_search_route_ownership_readiness(
         .filter(|(_, engines)| engines.len() > 1)
         .map(|(route, _)| (*route).to_string())
         .collect::<Vec<_>>();
-    let hawdb_routes = search_routes_by_engine(routes, NowledgeMemSearchReadEngine::HawDB);
-    let lancedb_routes = search_routes_by_engine(routes, NowledgeMemSearchReadEngine::LanceDb);
+    let hawdb_routes = search_routes_by_engine(routes, SearchReadEngine::HawDB);
+    let lancedb_routes = search_routes_by_engine(routes, SearchReadEngine::LanceDb);
 
     let mut blocker_codes = Vec::new();
     if !missing_required_routes.is_empty() {
@@ -561,12 +555,12 @@ pub fn nowledge_mem_search_route_ownership_readiness(
     }
 
     let ready = blocker_codes.is_empty();
-    NowledgeMemSearchRouteOwnershipReadinessReport {
-        protocol: NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL.to_string(),
+    SearchRouteOwnershipReadinessReport {
+        protocol: SEARCH_ROUTE_OWNERSHIP_PROTOCOL.to_string(),
         ready,
         production_cutover_ready: ready && policy.require_all_hawdb,
         require_all_hawdb: policy.require_all_hawdb,
-        required_route_count: REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES.len(),
+        required_route_count: REQUIRED_SEARCH_ROUTES.len(),
         explicit_route_count: explicit_required_routes.len(),
         hawdb_route_count: hawdb_routes.len(),
         lancedb_route_count: lancedb_routes.len(),
@@ -581,15 +575,15 @@ pub fn nowledge_mem_search_route_ownership_readiness(
     }
 }
 
-pub fn nowledge_mem_active_search_route_ownership_readiness(
-    routes: &[NowledgeMemActiveSearchRouteOwnership],
-    policy: NowledgeMemSearchRouteOwnershipPolicy,
-) -> NowledgeMemActiveSearchRouteOwnershipReadinessReport {
-    let required_routes = REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES
+pub fn active_search_route_ownership_readiness(
+    routes: &[ActiveSearchRouteOwnership],
+    policy: SearchRouteOwnershipPolicy,
+) -> ActiveSearchRouteOwnershipReadinessReport {
+    let required_routes = REQUIRED_ACTIVE_SEARCH_ROUTES
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    let required_projection_routes = REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES
+    let required_projection_routes = REQUIRED_SEARCH_ROUTES
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
@@ -603,7 +597,7 @@ pub fn nowledge_mem_active_search_route_ownership_readiness(
         .copied()
         .filter(|route| required_routes.contains(route))
         .collect::<BTreeSet<_>>();
-    let missing_required_routes = REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES
+    let missing_required_routes = REQUIRED_ACTIVE_SEARCH_ROUTES
         .iter()
         .copied()
         .filter(|route| !explicit_required_routes.contains(route))
@@ -627,9 +621,8 @@ pub fn nowledge_mem_active_search_route_ownership_readiness(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let hawdb_routes = active_search_routes_by_engine(routes, NowledgeMemSearchReadEngine::HawDB);
-    let lancedb_routes =
-        active_search_routes_by_engine(routes, NowledgeMemSearchReadEngine::LanceDb);
+    let hawdb_routes = active_search_routes_by_engine(routes, SearchReadEngine::HawDB);
+    let lancedb_routes = active_search_routes_by_engine(routes, SearchReadEngine::LanceDb);
 
     let mut blocker_codes = Vec::new();
     if !missing_required_routes.is_empty() {
@@ -649,12 +642,12 @@ pub fn nowledge_mem_active_search_route_ownership_readiness(
     }
 
     let ready = blocker_codes.is_empty();
-    NowledgeMemActiveSearchRouteOwnershipReadinessReport {
-        protocol: NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL.to_string(),
+    ActiveSearchRouteOwnershipReadinessReport {
+        protocol: SEARCH_ROUTE_OWNERSHIP_PROTOCOL.to_string(),
         ready,
         production_cutover_ready: ready && policy.require_all_hawdb,
         require_all_hawdb: policy.require_all_hawdb,
-        required_route_count: REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len(),
+        required_route_count: REQUIRED_ACTIVE_SEARCH_ROUTES.len(),
         explicit_route_count: explicit_required_routes.len(),
         hawdb_route_count: hawdb_routes.len(),
         lancedb_route_count: lancedb_routes.len(),
@@ -669,15 +662,15 @@ pub fn nowledge_mem_active_search_route_ownership_readiness(
     }
 }
 
-pub fn nowledge_mem_active_search_route_readiness(
-    evidence: &[NowledgeMemActiveSearchRouteReadEvidence],
-    policy: NowledgeMemSearchRouteOwnershipPolicy,
-) -> NowledgeMemActiveSearchRouteReadinessReport {
-    let required_routes = REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES
+pub fn active_search_route_readiness(
+    evidence: &[ActiveSearchRouteReadEvidence],
+    policy: SearchRouteOwnershipPolicy,
+) -> ActiveSearchRouteReadinessReport {
+    let required_routes = REQUIRED_ACTIVE_SEARCH_ROUTES
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    let required_projection_routes = REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES
+    let required_projection_routes = REQUIRED_SEARCH_ROUTES
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
@@ -691,7 +684,7 @@ pub fn nowledge_mem_active_search_route_readiness(
         .copied()
         .filter(|route| required_routes.contains(route))
         .collect::<BTreeSet<_>>();
-    let missing_required_routes = REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES
+    let missing_required_routes = REQUIRED_ACTIVE_SEARCH_ROUTES
         .iter()
         .copied()
         .filter(|route| !explicit_required_routes.contains(route))
@@ -716,7 +709,7 @@ pub fn nowledge_mem_active_search_route_readiness(
         .into_iter()
         .collect::<Vec<_>>();
     let non_hawdb_routes = active_search_read_routes_where(evidence, |route| {
-        route.read_engine != NowledgeMemSearchReadEngine::HawDB
+        route.read_engine != SearchReadEngine::HawDB
     });
     let lancedb_handle_required_routes =
         active_search_read_routes_where(evidence, |route| route.lancedb_handle_required);
@@ -767,7 +760,7 @@ pub fn nowledge_mem_active_search_route_readiness(
     let ready_routes = active_search_read_routes_where(evidence, active_search_read_evidence_ready);
     let hawdb_route_count = evidence
         .iter()
-        .filter(|route| route.read_engine == NowledgeMemSearchReadEngine::HawDB)
+        .filter(|route| route.read_engine == SearchReadEngine::HawDB)
         .map(|route| route.route.as_str())
         .collect::<BTreeSet<_>>()
         .len();
@@ -831,18 +824,18 @@ pub fn nowledge_mem_active_search_route_readiness(
     }
 
     let ready = blocker_codes.is_empty();
-    NowledgeMemActiveSearchRouteReadinessReport {
-        protocol: NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL.to_string(),
+    ActiveSearchRouteReadinessReport {
+        protocol: ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL.to_string(),
         ready,
         production_cutover_ready: ready && policy.require_all_hawdb,
         require_all_hawdb: policy.require_all_hawdb,
-        required_route_count: REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len(),
+        required_route_count: REQUIRED_ACTIVE_SEARCH_ROUTES.len(),
         evidence_route_count: explicit_required_routes.len(),
         ready_route_count: ready_routes.len(),
         hawdb_route_count,
         lancedb_handle_required_route_count: lancedb_handle_required_routes.len(),
         routes: normalized_active_search_read_evidence(evidence),
-        requirements: nowledge_mem_active_search_route_read_requirements(),
+        requirements: active_search_route_read_requirements(),
         ready_routes,
         missing_required_routes,
         unknown_routes,
@@ -867,25 +860,21 @@ pub fn nowledge_mem_active_search_route_readiness(
 
 pub fn required_projection_route_for_active_search_route(route: &str) -> &'static str {
     match route {
-        NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS => NOWLEDGE_MEM_SEARCH_ROUTE_MESSAGE,
-        NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_ENTITY_DISCOVERY => NOWLEDGE_MEM_SEARCH_ROUTE_ENTITY,
-        NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_COMMUNITY_DISCOVERY => NOWLEDGE_MEM_SEARCH_ROUTE_COMMUNITY,
-        NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_RECALL => NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE,
-        NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL => {
-            NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE_CHUNK
-        }
-        NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_FS_RECALL => NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE_CHUNK,
-        NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH => NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY,
-        NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_DEEP_SEARCH_GRAPH_EXPANSION => {
-            NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY
-        }
+        ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS => SEARCH_ROUTE_MESSAGE,
+        ACTIVE_SEARCH_ROUTE_ENTITY_DISCOVERY => SEARCH_ROUTE_ENTITY,
+        ACTIVE_SEARCH_ROUTE_COMMUNITY_DISCOVERY => SEARCH_ROUTE_COMMUNITY,
+        ACTIVE_SEARCH_ROUTE_SOURCE_RECALL => SEARCH_ROUTE_SOURCE,
+        ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL => SEARCH_ROUTE_SOURCE_CHUNK,
+        ACTIVE_SEARCH_ROUTE_FS_RECALL => SEARCH_ROUTE_SOURCE_CHUNK,
+        ACTIVE_SEARCH_ROUTE_MCP_SEARCH => SEARCH_ROUTE_MEMORY,
+        ACTIVE_SEARCH_ROUTE_DEEP_SEARCH_GRAPH_EXPANSION => SEARCH_ROUTE_MEMORY,
         _ => "",
     }
 }
 
 fn search_routes_by_engine(
-    routes: &[NowledgeMemSearchRouteOwnership],
-    read_engine: NowledgeMemSearchReadEngine,
+    routes: &[SearchRouteOwnership],
+    read_engine: SearchReadEngine,
 ) -> Vec<String> {
     let mut matching = routes
         .iter()
@@ -898,8 +887,8 @@ fn search_routes_by_engine(
 }
 
 fn active_search_routes_by_engine(
-    routes: &[NowledgeMemActiveSearchRouteOwnership],
-    read_engine: NowledgeMemSearchReadEngine,
+    routes: &[ActiveSearchRouteOwnership],
+    read_engine: SearchReadEngine,
 ) -> Vec<String> {
     let mut matching = routes
         .iter()
@@ -911,9 +900,7 @@ fn active_search_routes_by_engine(
     matching
 }
 
-fn normalized_search_routes(
-    routes: &[NowledgeMemSearchRouteOwnership],
-) -> Vec<NowledgeMemSearchRouteOwnership> {
+fn normalized_search_routes(routes: &[SearchRouteOwnership]) -> Vec<SearchRouteOwnership> {
     let mut normalized = routes.to_vec();
     normalized.sort_by(|left, right| {
         left.route
@@ -924,8 +911,8 @@ fn normalized_search_routes(
 }
 
 fn normalized_active_search_routes(
-    routes: &[NowledgeMemActiveSearchRouteOwnership],
-) -> Vec<NowledgeMemActiveSearchRouteOwnership> {
+    routes: &[ActiveSearchRouteOwnership],
+) -> Vec<ActiveSearchRouteOwnership> {
     let mut normalized = routes.to_vec();
     normalized.sort_by(|left, right| {
         left.route
@@ -937,8 +924,8 @@ fn normalized_active_search_routes(
 }
 
 fn normalized_active_search_read_evidence(
-    evidence: &[NowledgeMemActiveSearchRouteReadEvidence],
-) -> Vec<NowledgeMemActiveSearchRouteReadEvidence> {
+    evidence: &[ActiveSearchRouteReadEvidence],
+) -> Vec<ActiveSearchRouteReadEvidence> {
     let mut normalized = evidence.to_vec();
     normalized.sort_by(|left, right| {
         left.route
@@ -950,8 +937,8 @@ fn normalized_active_search_read_evidence(
 }
 
 fn active_search_read_routes_where(
-    evidence: &[NowledgeMemActiveSearchRouteReadEvidence],
-    predicate: impl Fn(&NowledgeMemActiveSearchRouteReadEvidence) -> bool,
+    evidence: &[ActiveSearchRouteReadEvidence],
+    predicate: impl Fn(&ActiveSearchRouteReadEvidence) -> bool,
 ) -> Vec<String> {
     let mut routes = evidence
         .iter()
@@ -964,19 +951,19 @@ fn active_search_read_routes_where(
 }
 
 fn active_search_route_requires(
-    route: &NowledgeMemActiveSearchRouteReadEvidence,
-    required: impl Fn(&NowledgeMemActiveSearchRouteReadRequirement) -> bool,
+    route: &ActiveSearchRouteReadEvidence,
+    required: impl Fn(&ActiveSearchRouteReadRequirement) -> bool,
 ) -> bool {
     active_search_route_read_requirement(&route.route).is_some_and(|requirement| {
         requirement.projection_route == route.projection_route && required(&requirement)
     })
 }
 
-fn active_search_read_evidence_ready(route: &NowledgeMemActiveSearchRouteReadEvidence) -> bool {
+fn active_search_read_evidence_ready(route: &ActiveSearchRouteReadEvidence) -> bool {
     let Some(requirement) = active_search_route_read_requirement(&route.route) else {
         return false;
     };
-    route.read_engine == NowledgeMemSearchReadEngine::HawDB
+    route.read_engine == SearchReadEngine::HawDB
         && route.candidate_readiness_ready
         && (!requirement.requires_candidate_identity || route.candidate_identity_ready)
         && (!requirement.requires_embedding_identity || route.embedding_identity_ready)
@@ -992,16 +979,14 @@ fn active_search_read_evidence_ready(route: &NowledgeMemActiveSearchRouteReadEvi
         && route.projection_route == requirement.projection_route
 }
 
-fn search_route_ownership_json(route: &NowledgeMemSearchRouteOwnership) -> serde_json::Value {
+fn search_route_ownership_json(route: &SearchRouteOwnership) -> serde_json::Value {
     serde_json::json!({
         "route": route.route,
         "read_engine": route.read_engine.as_str(),
     })
 }
 
-fn active_search_route_ownership_json(
-    route: &NowledgeMemActiveSearchRouteOwnership,
-) -> serde_json::Value {
+fn active_search_route_ownership_json(route: &ActiveSearchRouteOwnership) -> serde_json::Value {
     serde_json::json!({
         "route": route.route,
         "projection_route": route.projection_route,
@@ -1010,7 +995,7 @@ fn active_search_route_ownership_json(
 }
 
 fn active_search_route_read_evidence_json(
-    route: &NowledgeMemActiveSearchRouteReadEvidence,
+    route: &ActiveSearchRouteReadEvidence,
 ) -> serde_json::Value {
     serde_json::json!({
         "route": route.route,
@@ -1037,26 +1022,23 @@ mod tests {
 
     #[test]
     fn search_route_ownership_accepts_all_hawdb_for_cutover() {
-        let report = nowledge_mem_search_route_ownership_readiness(
-            &nowledge_mem_search_route_ownership_all_hawdb(),
-            NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+        let report = search_route_ownership_readiness(
+            &search_route_ownership_all_hawdb(),
+            SearchRouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(report.ready);
         assert!(report.production_cutover_ready);
-        assert_eq!(
-            report.hawdb_route_count,
-            REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES.len()
-        );
+        assert_eq!(report.hawdb_route_count, REQUIRED_SEARCH_ROUTES.len());
         assert_eq!(report.lancedb_route_count, 0);
         assert!(report.blocker_codes.is_empty());
     }
 
     #[test]
     fn search_route_ownership_blocks_lancedb_routes_for_cutover() {
-        let report = nowledge_mem_search_route_ownership_readiness(
-            &nowledge_mem_search_route_ownership_all_lancedb(),
-            NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+        let report = search_route_ownership_readiness(
+            &search_route_ownership_all_lancedb(),
+            SearchRouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(!report.ready);
@@ -1065,7 +1047,7 @@ mod tests {
             report.blocker_codes,
             vec!["search_route_ownership_lancedb_routes_remaining".to_string()]
         );
-        let mut expected_lancedb_routes = REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES
+        let mut expected_lancedb_routes = REQUIRED_SEARCH_ROUTES
             .iter()
             .map(|route| (*route).to_string())
             .collect::<Vec<_>>();
@@ -1076,21 +1058,13 @@ mod tests {
     #[test]
     fn search_route_ownership_fails_closed_on_missing_unknown_and_conflicting_routes() {
         let routes = vec![
-            NowledgeMemSearchRouteOwnership::new(
-                NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY,
-                NowledgeMemSearchReadEngine::HawDB,
-            ),
-            NowledgeMemSearchRouteOwnership::new(
-                NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY,
-                NowledgeMemSearchReadEngine::LanceDb,
-            ),
-            NowledgeMemSearchRouteOwnership::new("unknown", NowledgeMemSearchReadEngine::HawDB),
+            SearchRouteOwnership::new(SEARCH_ROUTE_MEMORY, SearchReadEngine::HawDB),
+            SearchRouteOwnership::new(SEARCH_ROUTE_MEMORY, SearchReadEngine::LanceDb),
+            SearchRouteOwnership::new("unknown", SearchReadEngine::HawDB),
         ];
 
-        let report = nowledge_mem_search_route_ownership_readiness(
-            &routes,
-            NowledgeMemSearchRouteOwnershipPolicy::migration(),
-        );
+        let report =
+            search_route_ownership_readiness(&routes, SearchRouteOwnershipPolicy::migration());
 
         assert!(!report.ready);
         assert!(report
@@ -1108,36 +1082,36 @@ mod tests {
         assert_eq!(report.unknown_routes, vec!["unknown".to_string()]);
         assert_eq!(
             report.conflicting_routes,
-            vec![NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY.to_string()]
+            vec![SEARCH_ROUTE_MEMORY.to_string()]
         );
     }
 
     #[test]
     fn active_search_route_ownership_accepts_all_hawdb_for_cutover() {
-        let report = nowledge_mem_active_search_route_ownership_readiness(
-            &nowledge_mem_active_search_route_ownership_all_hawdb(),
-            NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+        let report = active_search_route_ownership_readiness(
+            &active_search_route_ownership_all_hawdb(),
+            SearchRouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(report.ready);
         assert!(report.production_cutover_ready);
         assert_eq!(
             report.hawdb_route_count,
-            REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len()
+            REQUIRED_ACTIVE_SEARCH_ROUTES.len()
         );
         assert_eq!(report.lancedb_route_count, 0);
         assert!(report.blocker_codes.is_empty());
         assert!(report.routes.iter().any(|route| {
-            route.route == NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS
-                && route.projection_route == NOWLEDGE_MEM_SEARCH_ROUTE_MESSAGE
+            route.route == ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS
+                && route.projection_route == SEARCH_ROUTE_MESSAGE
         }));
     }
 
     #[test]
     fn active_search_route_ownership_blocks_lancedb_routes_for_cutover() {
-        let report = nowledge_mem_active_search_route_ownership_readiness(
-            &nowledge_mem_active_search_route_ownership_all_lancedb(),
-            NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+        let report = active_search_route_ownership_readiness(
+            &active_search_route_ownership_all_lancedb(),
+            SearchRouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(!report.ready);
@@ -1146,7 +1120,7 @@ mod tests {
             report.blocker_codes,
             vec!["active_search_route_ownership_lancedb_routes_remaining".to_string()]
         );
-        let mut expected_lancedb_routes = REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES
+        let mut expected_lancedb_routes = REQUIRED_ACTIVE_SEARCH_ROUTES
             .iter()
             .map(|route| (*route).to_string())
             .collect::<Vec<_>>();
@@ -1157,26 +1131,26 @@ mod tests {
     #[test]
     fn active_search_route_ownership_fails_closed_for_inventory_gaps() {
         let routes = vec![
-            NowledgeMemActiveSearchRouteOwnership::new(
-                NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
-                NOWLEDGE_MEM_SEARCH_ROUTE_MESSAGE,
-                NowledgeMemSearchReadEngine::HawDB,
+            ActiveSearchRouteOwnership::new(
+                ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
+                SEARCH_ROUTE_MESSAGE,
+                SearchReadEngine::HawDB,
             ),
-            NowledgeMemActiveSearchRouteOwnership::new(
-                NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
+            ActiveSearchRouteOwnership::new(
+                ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
                 "invalid_projection",
-                NowledgeMemSearchReadEngine::HawDB,
+                SearchReadEngine::HawDB,
             ),
-            NowledgeMemActiveSearchRouteOwnership::new(
+            ActiveSearchRouteOwnership::new(
                 "unknown_active_route",
-                NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY,
-                NowledgeMemSearchReadEngine::HawDB,
+                SEARCH_ROUTE_MEMORY,
+                SearchReadEngine::HawDB,
             ),
         ];
 
-        let report = nowledge_mem_active_search_route_ownership_readiness(
+        let report = active_search_route_ownership_readiness(
             &routes,
-            NowledgeMemSearchRouteOwnershipPolicy::migration(),
+            SearchRouteOwnershipPolicy::migration(),
         );
 
         assert!(!report.ready);
@@ -1194,7 +1168,7 @@ mod tests {
             .contains(&"active_search_route_ownership_invalid_projection_routes".to_string()));
         assert_eq!(
             report.duplicate_routes,
-            vec![NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS.to_string()]
+            vec![ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS.to_string()]
         );
         assert_eq!(
             report.unknown_routes,
@@ -1202,40 +1176,27 @@ mod tests {
         );
         assert_eq!(
             report.invalid_projection_routes,
-            vec![NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS.to_string()]
+            vec![ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS.to_string()]
         );
     }
 
     #[test]
     fn active_search_route_read_requirements_cover_business_routes() {
-        let requirements = nowledge_mem_active_search_route_read_requirements();
+        let requirements = active_search_route_read_requirements();
 
-        assert_eq!(
-            requirements.len(),
-            REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len()
-        );
-        let thread_fts = active_search_route_read_requirement(
-            NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
-        )
-        .unwrap();
-        assert_eq!(
-            thread_fts.projection_route,
-            NOWLEDGE_MEM_SEARCH_ROUTE_MESSAGE
-        );
+        assert_eq!(requirements.len(), REQUIRED_ACTIVE_SEARCH_ROUTES.len());
+        let thread_fts =
+            active_search_route_read_requirement(ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS).unwrap();
+        assert_eq!(thread_fts.projection_route, SEARCH_ROUTE_MESSAGE);
         assert!(thread_fts.requires_text_candidates);
         assert!(!thread_fts.requires_vector_candidates);
         assert!(thread_fts.requires_cjk_tokenization);
         assert!(!thread_fts.requires_embedding_identity);
         assert!(!thread_fts.requires_zero_vector_semantics);
 
-        let source_chunk = active_search_route_read_requirement(
-            NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL,
-        )
-        .unwrap();
-        assert_eq!(
-            source_chunk.projection_route,
-            NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE_CHUNK
-        );
+        let source_chunk =
+            active_search_route_read_requirement(ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL).unwrap();
+        assert_eq!(source_chunk.projection_route, SEARCH_ROUTE_SOURCE_CHUNK);
         assert!(source_chunk.requires_text_candidates);
         assert!(source_chunk.requires_vector_candidates);
         assert!(source_chunk.requires_embedding_identity);
@@ -1248,44 +1209,44 @@ mod tests {
 
     #[test]
     fn active_search_route_readiness_accepts_all_hawdb_ready_evidence() {
-        let report = nowledge_mem_active_search_route_readiness(
-            &nowledge_mem_active_search_route_read_evidence_all_hawdb_ready(),
-            NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+        let report = active_search_route_readiness(
+            &active_search_route_read_evidence_all_hawdb_ready(),
+            SearchRouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(report.ready);
         assert!(report.production_cutover_ready);
         assert_eq!(
             report.evidence_route_count,
-            REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len()
+            REQUIRED_ACTIVE_SEARCH_ROUTES.len()
         );
         assert_eq!(
             report.ready_route_count,
-            REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len()
+            REQUIRED_ACTIVE_SEARCH_ROUTES.len()
         );
         assert_eq!(report.lancedb_handle_required_route_count, 0);
         assert!(report.blocker_codes.is_empty());
         assert_eq!(
             report.json()["protocol"],
-            NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL
+            ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL
         );
         assert_eq!(
             report.requirements.len(),
-            REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len()
+            REQUIRED_ACTIVE_SEARCH_ROUTES.len()
         );
         assert_eq!(
             report.json()["requirements"].as_array().unwrap().len(),
-            REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len()
+            REQUIRED_ACTIVE_SEARCH_ROUTES.len()
         );
         assert_eq!(report.json()["lancedb_handle_required_route_count"], 0);
     }
 
     #[test]
     fn active_search_route_readiness_preserves_business_search_semantics() {
-        let mut evidence = nowledge_mem_active_search_route_read_evidence_all_hawdb_ready();
+        let mut evidence = active_search_route_read_evidence_all_hawdb_ready();
         let mcp_search = evidence
             .iter_mut()
-            .find(|route| route.route == NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH)
+            .find(|route| route.route == ACTIVE_SEARCH_ROUTE_MCP_SEARCH)
             .unwrap();
         mcp_search.embedding_identity_ready = false;
         mcp_search.zero_vector_semantics_ready = false;
@@ -1294,39 +1255,39 @@ mod tests {
         mcp_search.fail_soft_reason_codes_ready = false;
         mcp_search.repair_rebuild_markers_ready = false;
 
-        let report = nowledge_mem_active_search_route_readiness(
+        let report = active_search_route_readiness(
             &evidence,
-            NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+            SearchRouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(!report.ready);
         assert_eq!(
             report.ready_route_count,
-            REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len() - 1
+            REQUIRED_ACTIVE_SEARCH_ROUTES.len() - 1
         );
         assert_eq!(
             report.embedding_identity_not_ready_routes,
-            vec![NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH.to_string()]
+            vec![ACTIVE_SEARCH_ROUTE_MCP_SEARCH.to_string()]
         );
         assert_eq!(
             report.zero_vector_semantics_not_ready_routes,
-            vec![NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH.to_string()]
+            vec![ACTIVE_SEARCH_ROUTE_MCP_SEARCH.to_string()]
         );
         assert_eq!(
             report.cjk_tokenization_not_ready_routes,
-            vec![NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH.to_string()]
+            vec![ACTIVE_SEARCH_ROUTE_MCP_SEARCH.to_string()]
         );
         assert_eq!(
             report.ranking_window_not_ready_routes,
-            vec![NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH.to_string()]
+            vec![ACTIVE_SEARCH_ROUTE_MCP_SEARCH.to_string()]
         );
         assert_eq!(
             report.fail_soft_reason_codes_not_ready_routes,
-            vec![NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH.to_string()]
+            vec![ACTIVE_SEARCH_ROUTE_MCP_SEARCH.to_string()]
         );
         assert_eq!(
             report.repair_rebuild_markers_not_ready_routes,
-            vec![NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH.to_string()]
+            vec![ACTIVE_SEARCH_ROUTE_MCP_SEARCH.to_string()]
         );
         assert!(report
             .blocker_codes
@@ -1350,17 +1311,17 @@ mod tests {
 
     #[test]
     fn active_search_route_readiness_uses_route_specific_vector_requirements() {
-        let mut evidence = nowledge_mem_active_search_route_read_evidence_all_hawdb_ready();
+        let mut evidence = active_search_route_read_evidence_all_hawdb_ready();
         let thread_fts = evidence
             .iter_mut()
-            .find(|route| route.route == NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS)
+            .find(|route| route.route == ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS)
             .unwrap();
         thread_fts.embedding_identity_ready = false;
         thread_fts.zero_vector_semantics_ready = false;
 
-        let report = nowledge_mem_active_search_route_readiness(
+        let report = active_search_route_readiness(
             &evidence,
-            NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+            SearchRouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(report.ready);
@@ -1370,26 +1331,26 @@ mod tests {
 
     #[test]
     fn active_search_route_readiness_blocks_lancedb_handle_and_weak_candidate_evidence() {
-        let mut evidence = nowledge_mem_active_search_route_read_evidence_all_hawdb_ready();
+        let mut evidence = active_search_route_read_evidence_all_hawdb_ready();
         let source_chunk = evidence
             .iter_mut()
-            .find(|route| route.route == NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL)
+            .find(|route| route.route == ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL)
             .unwrap();
         source_chunk.lancedb_handle_required = true;
         source_chunk.candidate_readiness_ready = false;
         source_chunk.metadata_pushdown_ready = false;
         source_chunk.ranking_ready = false;
 
-        let report = nowledge_mem_active_search_route_readiness(
+        let report = active_search_route_readiness(
             &evidence,
-            NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+            SearchRouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(!report.ready);
         assert!(!report.production_cutover_ready);
         assert_eq!(
             report.lancedb_handle_required_routes,
-            vec![NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL.to_string()]
+            vec![ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL.to_string()]
         );
         assert!(report
             .blocker_codes
@@ -1408,14 +1369,14 @@ mod tests {
     #[test]
     fn active_search_route_readiness_fails_closed_for_inventory_and_engine_gaps() {
         let evidence = vec![
-            NowledgeMemActiveSearchRouteReadEvidence::ready_hawdb(
-                NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
-                NOWLEDGE_MEM_SEARCH_ROUTE_MESSAGE,
+            ActiveSearchRouteReadEvidence::ready_hawdb(
+                ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
+                SEARCH_ROUTE_MESSAGE,
             ),
-            NowledgeMemActiveSearchRouteReadEvidence::new(
-                NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
+            ActiveSearchRouteReadEvidence::new(
+                ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
                 "invalid_projection",
-                NowledgeMemSearchReadEngine::LanceDb,
+                SearchReadEngine::LanceDb,
                 true,
                 false,
                 true,
@@ -1423,15 +1384,12 @@ mod tests {
                 false,
                 true,
             ),
-            NowledgeMemActiveSearchRouteReadEvidence::ready_hawdb(
-                "unknown_active_route",
-                NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY,
-            ),
+            ActiveSearchRouteReadEvidence::ready_hawdb("unknown_active_route", SEARCH_ROUTE_MEMORY),
         ];
 
-        let report = nowledge_mem_active_search_route_readiness(
+        let report = active_search_route_readiness(
             &evidence,
-            NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+            SearchRouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(!report.ready);
@@ -1452,7 +1410,7 @@ mod tests {
             .contains(&"active_search_route_readiness_non_hawdb_routes".to_string()));
         assert_eq!(
             report.duplicate_routes,
-            vec![NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS.to_string()]
+            vec![ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS.to_string()]
         );
         assert_eq!(
             report.unknown_routes,

@@ -21,27 +21,27 @@ type CatchUpResult<T> = std::result::Result<T, ProjectionConsumerCatchUpError>;
 /// open while this owner or one of its borrowed preparation sessions is alive.
 /// This is an explicit registered projection; it does not adopt or replace a
 /// legacy/full-residency or incremental projection configured on the store.
-pub struct NowledgeMemSearchProjectionConsumer {
+pub struct RegisteredSearchProjectionConsumer {
     consumer: SearchProjectionConsumer,
-    owner: NowledgeMemEmbeddedStoreHandle,
+    owner: EmbeddedStoreHandle,
 }
 
 /// One versioned projection definition and the embedded owner that acquired it.
 /// Mapping callbacks and source domains are selected once at acquisition.
-pub struct NowledgeMemDefinedSearchProjectionConsumer {
-    consumer: NowledgeMemSearchProjectionConsumer,
+pub struct DefinedSearchProjectionConsumer {
+    consumer: RegisteredSearchProjectionConsumer,
     definition: SearchProjectionDefinition,
 }
 
 /// Native construction is complete; only fenced publication remains. This value
 /// can publish through its original embedded owner, never a caller-selected one.
 #[must_use]
-pub struct NowledgeMemPreparedConsumerUpdate<'consumer> {
+pub struct PreparedSearchProjectionConsumerUpdate<'consumer> {
     prepared: ProjectionPreparedConsumerUpdate<'consumer>,
-    owner: NowledgeMemEmbeddedStoreHandle,
+    owner: EmbeddedStoreHandle,
 }
 
-impl NowledgeMemEmbeddedStoreHandle {
+impl EmbeddedStoreHandle {
     /// Acquire a version/scope-bound registration using its own initializer.
     /// A changed definition requires a fresh target and explicit query cutover.
     pub fn open_or_create_defined_search_projection_consumer(
@@ -49,14 +49,14 @@ impl NowledgeMemEmbeddedStoreHandle {
         definition: SearchProjectionDefinition,
         projection_directory: impl AsRef<Path>,
         options: SearchProjectionConsumerOptions,
-    ) -> SearchProjectionConsumerResult<NowledgeMemDefinedSearchProjectionConsumer> {
+    ) -> SearchProjectionConsumerResult<DefinedSearchProjectionConsumer> {
         let consumer = self.open_or_create_search_projection_consumer(
             definition.consumer_id().clone(),
             projection_directory,
             options,
             |source, index| definition.initialize(source, index),
         )?;
-        Ok(NowledgeMemDefinedSearchProjectionConsumer {
+        Ok(DefinedSearchProjectionConsumer {
             consumer,
             definition,
         })
@@ -86,7 +86,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         projection_directory: impl AsRef<Path>,
         options: SearchProjectionConsumerOptions,
         initialize: F,
-    ) -> SearchProjectionConsumerResult<NowledgeMemSearchProjectionConsumer>
+    ) -> SearchProjectionConsumerResult<RegisteredSearchProjectionConsumer>
     where
         F: FnOnce(&mut DatabaseReadTransaction, &mut SearchIndex) -> Result<()>,
     {
@@ -103,14 +103,14 @@ impl NowledgeMemEmbeddedStoreHandle {
                 options,
                 initialize,
             )?;
-        Ok(NowledgeMemSearchProjectionConsumer {
+        Ok(RegisteredSearchProjectionConsumer {
             consumer,
             owner: self.clone(),
         })
     }
 }
 
-impl NowledgeMemDefinedSearchProjectionConsumer {
+impl DefinedSearchProjectionConsumer {
     pub fn definition(&self) -> &SearchProjectionDefinition {
         &self.definition
     }
@@ -155,7 +155,7 @@ impl NowledgeMemDefinedSearchProjectionConsumer {
         &mut self,
         covered: ProjectionCoveredConsumerUpdate,
         durability: ProjectionSourceDurability,
-    ) -> CatchUpResult<NowledgeMemPreparedConsumerUpdate<'_>> {
+    ) -> CatchUpResult<PreparedSearchProjectionConsumerUpdate<'_>> {
         self.consumer.prepare_covered_update(covered, durability)
     }
 
@@ -175,7 +175,7 @@ impl NowledgeMemDefinedSearchProjectionConsumer {
     }
 }
 
-impl NowledgeMemSearchProjectionConsumer {
+impl RegisteredSearchProjectionConsumer {
     /// Immutable access to verified receipts and the registered query surface.
     /// Store-level legacy query methods keep their explicitly configured target.
     pub fn consumer(&self) -> &SearchProjectionConsumer {
@@ -225,7 +225,7 @@ impl NowledgeMemSearchProjectionConsumer {
         &mut self,
         covered: ProjectionCoveredConsumerUpdate,
         durability: ProjectionSourceDurability,
-    ) -> CatchUpResult<NowledgeMemPreparedConsumerUpdate<'_>> {
+    ) -> CatchUpResult<PreparedSearchProjectionConsumerUpdate<'_>> {
         let reserved = {
             let mut store = self.owner.write_store()?;
             store
@@ -237,7 +237,7 @@ impl NowledgeMemSearchProjectionConsumer {
                     durability,
                 )?
         };
-        Ok(NowledgeMemPreparedConsumerUpdate {
+        Ok(PreparedSearchProjectionConsumerUpdate {
             prepared: reserved.prepare(),
             owner: self.owner.clone(),
         })
@@ -274,7 +274,7 @@ impl NowledgeMemSearchProjectionConsumer {
     }
 }
 
-impl NowledgeMemPreparedConsumerUpdate<'_> {
+impl PreparedSearchProjectionConsumerUpdate<'_> {
     pub fn source_epoch(&self) -> u64 {
         self.prepared.source_epoch()
     }

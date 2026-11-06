@@ -69,6 +69,11 @@ be registered or replaced; existing unfiltered list forms keep their capacity.
 
 ## Crate Layout
 
+Host-facing types use capability names such as `SearchCandidateRequest` and
+`EmbeddedStoreHandle`. See [embedded API naming](PUBLIC_API_NAMING.md) for the
+source migration and the distinction between Rust names and serialized protocol
+identifiers.
+
 HawDB follows a RisingWave/Chryso-style workspace-and-facade layout. The root
 crate remains the stable embedded facade, while implementation crates are split
 out as interfaces harden and dependency direction becomes acyclic. The current
@@ -101,13 +106,13 @@ integration API or dependency from evidence back to search.
 The internal `hawdb-search::candidate_evidence` module owns candidate requests,
 reports and readiness assessment, compressed-retrieval advice, and shadow
 accumulation/probe decoding. These contracts consume search-owned result and
-recall models without depending on the database facade. Root `nowledge_mem`
-and `search_candidate_shadow_evidence` preserve their existing public paths;
+recall models without depending on the database facade. Root `embedded_store`
+and `search_candidate_shadow_evidence` re-export those same contracts;
 query execution, CLI file reads, and overall activation/readiness assembly
 remain in the root. Private model methods are not promoted to new host APIs.
 
 Library/operations readiness report models, reduction and JSON serialization
-belong to `hawdb-readiness::nowledge_mem_reports`. The `hawdb::nowledge_mem`
+belong to `hawdb-readiness::embedded_store_reports`. The `hawdb::embedded_store`
 and crate-root paths re-export the owner types without conversion. The facade
 retains live database/search sampling, runtime admission and activation control.
 Internal snapshot constructors are hidden from the public API documentation.
@@ -218,7 +223,7 @@ tests live with storage; checkpoint/reopen snapshot coverage stays at the facade
 Source mutation dual-write evidence models and readiness evaluation belong to
 `hawdb-readiness::source_mutation`. The owner retains the eight-family inventory,
 independent ACK/watermark and replay checks, projection-payload requirements,
-stable evidence ordering, and v1 report serialization. Root `nowledge_mem`
+stable evidence ordering, and v1 report serialization. Root `embedded_store`
 re-exports the same concrete types and functions; replacement-summary and host
 integration remain at the facade. This evaluates supplied evidence, not actual
 dual-write execution or bootstrap verification, and cannot authorize activation
@@ -428,7 +433,7 @@ Graph route catalog metadata and ownership readiness belong to the existing
 owns required routes, execution/evidence roles, query-family requirements, and
 its ordered v1 digest. Ownership checks consume a typed readiness summary; they
 do not open a database, execute probes, publish ownership, or activate cutover.
-The root `route_ownership` and `nowledge_mem` paths retain re-exports of the same
+The root `route_ownership` and `embedded_store` paths retain re-exports of the same
 types and functions. Database-running readiness, full verification, and cutover
 integration tests remain at the root boundary.
 
@@ -575,8 +580,8 @@ The `hawdb` crate remains the host integration boundary. Its `api` module keeps
 public types/configuration and delegates implementations within the same crate:
 `database_lifecycle`, `database_query`, `database_transactions`,
 `database_projection`, `database_maintenance`, `transactions`, `read`,
-`graph_adapter`, and `retrieval`. `nowledge_mem/handle.rs` owns the embedded
-publication handle and its pinned snapshots; `nowledge_mem/registered_search.rs`
+`graph_adapter`, and `retrieval`. `embedded_store/handle.rs` owns the embedded
+publication handle and its pinned snapshots; `embedded_store/registered_search.rs`
 connects that same owner to registered Search consumers. These modules create no
 additional crate or host control plane.
 
@@ -739,11 +744,11 @@ context snapshots and invalid parameter maps before submitting the generated
 Cypher through the normal query runtime.
 
 Application-bound hosts use the same contract through
-`NowledgeMemEmbeddedStoreHandle::graph_rag_schema_context` and
+`EmbeddedStoreHandle::graph_rag_schema_context` and
 `read_generated_graph_rag`. The handle releases its read lock while the host or
 LLM prepares a draft, then opens a fresh pinned read transaction for execution.
 An intervening graph commit therefore fails closed as a stale schema context.
-The generated query remains subject to `NowledgeMemReadOptions` row and payload
+The generated query remains subject to `EmbeddedReadOptions` row and payload
 budgets.
 
 Typed two-hop generation validates both one-hop legs independently, including
@@ -1160,7 +1165,7 @@ gate decision is blocked. With `--require-cutover-evidence`, the command also
 runs the ready preflight and requires previous-wrapper shadow evidence, making it
 suitable for isolated release or nightly cutover evidence generation. Production
 Mem should consume typed Rust library gates such as
-`nowledge_mem_final_cutover_preflight` instead of invoking this CLI path.
+`final_cutover_preflight` instead of invoking this CLI path.
 External shadow adapter smoke reports include a `dual_engine_evidence` object
 that records the HawDB primary side, the previous-wrapper shadow side, matched
 check count, primary-only count, and readiness. Preflight consumes this field
@@ -1299,10 +1304,10 @@ BM25 consumes that set through fallible membership checks, vector scoring reads
 only vector ranges, and full document ranges are touched only for final-page
 hydration. Explicit budgets cover compressed and decompressed segments,
 candidate spill and block reads, retained score entries, hydrated rows, and
-hydrated bytes. The typed `NowledgeMemOutOfCoreSearchProjection` facade exposes
+hydrated bytes. The typed `OutOfCoreSearchProjection` facade exposes
 this read path to Mem.
 
-Production callers must use `NowledgeMemOutOfCoreSearchProjection::open_production`
+Production callers must use `OutOfCoreSearchProjection::open_production`
 or `open_production_with_config`. These constructors require a
 generation-bound `SearchLexicalProductionQualificationReport` and recompute the
 admission decision from raw evidence instead of trusting its `ready` field. The

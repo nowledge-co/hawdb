@@ -80,11 +80,10 @@ fn retrieval_facades_return_capability_errors_before_pipeline_admission() {
 
 #[test]
 fn projection_candidate_readiness_and_shadow_methods_fail_closed() {
-    let projection = NowledgeMemSearchProjection::from_index(disabled_index());
-    let readiness =
-        NowledgeMemSearchCandidateReadinessOptions::lancedb_replacement_candidate_read();
+    let projection = SearchProjection::from_index(disabled_index());
+    let readiness = SearchCandidateReadinessOptions::lancedb_replacement_candidate_read();
     for mode in [SearchMode::Text, SearchMode::Vector, SearchMode::Hybrid] {
-        let mut request = NowledgeMemSearchCandidateRequest::text("graph", 5);
+        let mut request = SearchCandidateRequest::text("graph", 5);
         request.mode = mode;
         request.query_embedding = Some(vec![1.0, 0.0]);
         unavailable(projection.search_candidates(&request), mode);
@@ -106,16 +105,11 @@ fn projection_candidate_readiness_and_shadow_methods_fail_closed() {
 
 #[test]
 fn embedded_store_and_handle_propagate_errors_and_release_admission() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let store = NowledgeMemEmbeddedStore::new(
-        graph,
-        Some(NowledgeMemSearchProjection::from_index(disabled_index())),
-    );
-    let readiness =
-        NowledgeMemSearchCandidateReadinessOptions::lancedb_replacement_candidate_read();
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let store = EmbeddedStore::new(graph, Some(SearchProjection::from_index(disabled_index())));
+    let readiness = SearchCandidateReadinessOptions::lancedb_replacement_candidate_read();
     for mode in [SearchMode::Text, SearchMode::Vector, SearchMode::Hybrid] {
-        let mut candidate = NowledgeMemSearchCandidateRequest::text("graph", 5);
+        let mut candidate = SearchCandidateRequest::text("graph", 5);
         candidate.mode = mode;
         candidate.query_embedding = Some(vec![1.0, 0.0]);
         unavailable(store.search_candidates(&candidate), mode);
@@ -130,9 +124,9 @@ fn embedded_store_and_handle_propagate_errors_and_release_admission() {
         unavailable(store.retrieve_knowledge(&request(mode)), mode);
         unavailable(store.retrieve_knowledge_with_report(&request(mode)), mode);
     }
-    let handle = NowledgeMemEmbeddedStoreHandle::new(store).unwrap();
+    let handle = EmbeddedStoreHandle::new(store).unwrap();
     for mode in [SearchMode::Text, SearchMode::Vector, SearchMode::Hybrid] {
-        let mut candidate = NowledgeMemSearchCandidateRequest::text("graph", 5);
+        let mut candidate = SearchCandidateRequest::text("graph", 5);
         candidate.mode = mode;
         candidate.query_embedding = Some(vec![1.0, 0.0]);
         unavailable(handle.search_candidates(&candidate), mode);
@@ -206,8 +200,7 @@ fn retrieval_facades_propagate_pipeline_errors_after_successful_search() {
 #[test]
 fn enabled_facades_preserve_complete_results_and_reports() {
     let (mut db, index) = fixture(DatabaseConfig::default());
-    let readiness =
-        NowledgeMemSearchCandidateReadinessOptions::lancedb_replacement_candidate_read();
+    let readiness = SearchCandidateReadinessOptions::lancedb_replacement_candidate_read();
     for mode in [SearchMode::Text, SearchMode::Vector, SearchMode::Hybrid] {
         if mode != SearchMode::Text && !cfg!(feature = "vector-search") {
             continue;
@@ -229,8 +222,8 @@ fn enabled_facades_preserve_complete_results_and_reports() {
             expected
         );
     }
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    let request = NowledgeMemSearchCandidateRequest::text("graph", 5);
+    let projection = SearchProjection::from_index(index);
+    let request = SearchCandidateRequest::text("graph", 5);
     let expected = projection
         .try_search_candidates_with_report(&request)
         .unwrap();
@@ -254,7 +247,7 @@ fn enabled_facades_preserve_complete_results_and_reports() {
         .iter()
         .map(|hit| hit.id.as_str())
         .collect();
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
     accumulator.record_search_candidate_output(ids.clone(), &expected);
     let evidence = accumulator.evidence();
     assert_eq!(

@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Embedded graph and search-projection coordination for host applications.
+
 use crate::search::{
     AdaptiveVectorSearchOptions, CompressedVectorSearchMode, SearchFallbackReasonCode,
     SearchLexicalProductionQualificationReport, SearchOutOfCoreConfig,
@@ -46,14 +48,11 @@ use crate::{
     nowledge_inventory::{
         replacement_readiness_family_evidence_health, REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
     },
-    route_ownership::NowledgeMemRouteOwnershipReadinessReport,
+    route_ownership::RouteOwnershipReadinessReport,
     search_route_ownership::{
-        NowledgeMemActiveSearchRouteOwnershipReadinessReport,
-        NowledgeMemActiveSearchRouteReadinessReport,
-        NowledgeMemSearchRouteOwnershipReadinessReport,
-        NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
-        NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL, REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES,
-        REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
+        ActiveSearchRouteOwnershipReadinessReport, ActiveSearchRouteReadinessReport,
+        SearchRouteOwnershipReadinessReport, ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
+        REQUIRED_ACTIVE_SEARCH_ROUTES, REQUIRED_SEARCH_ROUTES, SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
     },
     workload_fixtures::{
         NowledgeGraphRouteWorkloadFixtureReport, NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL,
@@ -69,7 +68,7 @@ use resident_read::ResidentProjectionRef;
 mod handle;
 mod registered_search;
 use handle::*;
-pub use handle::{NowledgeMemEmbeddedStoreHandle, NowledgeMemReadSnapshot};
+pub use handle::{EmbeddedReadSnapshot, EmbeddedStoreHandle};
 use hawdb_optimizer::AdaptiveVectorBackendPolicy;
 use hawdb_qos::{
     IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorSnapshot,
@@ -77,24 +76,20 @@ use hawdb_qos::{
     WorkPriority,
 };
 pub use hawdb_readiness::bounded_read_evidence::{
-    nowledge_mem_bounded_read_evidence_json,
-    nowledge_mem_bounded_read_evidence_json_with_route_readiness,
-    nowledge_mem_bounded_read_evidence_json_with_routes, NowledgeMemGraphMode,
-    NowledgeMemReadReport, NowledgeMemRouteReadinessSummary,
-    NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
+    bounded_read_evidence_json, bounded_read_evidence_json_with_route_readiness,
+    bounded_read_evidence_json_with_routes, EmbeddedReadReport, GraphMode, RouteReadinessSummary,
+    BOUNDED_READ_EVIDENCE_PROTOCOL, READ_REPORT_PROTOCOL,
 };
-use hawdb_readiness::nowledge_mem_query_report::nowledge_mem_plan_cache_report;
-pub use hawdb_readiness::nowledge_mem_query_report::{
-    nowledge_mem_fast_path_classification, NowledgeMemFastPathClassification,
-    NowledgeMemQueryApiBehavior, NowledgeMemQueryExecutionPath, NowledgeMemQueryOutput,
-    NowledgeMemQueryOutputRowShape, NowledgeMemQueryReport, NowledgeMemQueryReportOptions,
-    NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL,
+use hawdb_readiness::embedded_query_report::plan_cache_report;
+pub use hawdb_readiness::embedded_query_report::{
+    fast_path_classification, EmbeddedQueryApiBehavior, EmbeddedQueryExecutionPath,
+    EmbeddedQueryOutput, EmbeddedQueryOutputRowShape, EmbeddedQueryReport,
+    EmbeddedQueryReportOptions, FastPathClassification, QUERY_REPORT_PROTOCOL,
 };
-pub use hawdb_readiness::nowledge_mem_reports::{
-    NowledgeMemBackgroundMaintenanceReport, NowledgeMemLibraryProductionPathSummary,
-    NowledgeMemLibraryReadinessReport, NowledgeMemOperationsReadinessReport,
-    NowledgeMemReadinessDashboard, NowledgeMemReadinessRedactionSummary,
-    NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL,
+pub use hawdb_readiness::embedded_store_reports::{
+    BackgroundMaintenanceReport, LibraryProductionPathSummary, LibraryReadinessReport,
+    OperationsReadinessReport, ReadinessDashboard, ReadinessRedactionSummary,
+    READINESS_DASHBOARD_PROTOCOL,
 };
 pub use hawdb_readiness::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
 use hawdb_readiness::query_runtime_preflight_report::{
@@ -106,14 +101,14 @@ pub use hawdb_readiness::query_runtime_preflight_report::{
     NowledgeQueryRuntimePreflightReport,
 };
 pub use hawdb_readiness::slow_query::{
-    NowledgeMemSlowQueryRecord, NowledgeMemSlowQueryReport, NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
+    SlowQueryReport, SlowQueryReportRecord, SLOW_QUERY_REPORT_PROTOCOL,
 };
-pub use hawdb_readiness::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
+pub use hawdb_readiness::{ReadinessAreaMap, ReadinessAreaSummary};
 
-pub use incremental_search::NowledgeMemIncrementalSearchMaintenanceOptions;
+pub use incremental_search::IncrementalSearchMaintenanceOptions;
 pub use registered_search::{
-    NowledgeMemDefinedSearchProjectionConsumer, NowledgeMemPreparedConsumerUpdate,
-    NowledgeMemSearchProjectionConsumer,
+    DefinedSearchProjectionConsumer, PreparedSearchProjectionConsumerUpdate,
+    RegisteredSearchProjectionConsumer,
 };
 
 #[cfg(test)]
@@ -124,22 +119,22 @@ mod slow_query_facade_tests {
     #[test]
     fn facade_reexports_slow_query_contracts_without_conversion() {
         assert_eq!(
-            TypeId::of::<NowledgeMemSlowQueryRecord>(),
-            TypeId::of::<hawdb_readiness::slow_query::NowledgeMemSlowQueryRecord>(),
+            TypeId::of::<SlowQueryReportRecord>(),
+            TypeId::of::<hawdb_readiness::slow_query::SlowQueryReportRecord>(),
         );
         assert_eq!(
-            TypeId::of::<NowledgeMemSlowQueryReport>(),
-            TypeId::of::<hawdb_readiness::slow_query::NowledgeMemSlowQueryReport>(),
+            TypeId::of::<SlowQueryReport>(),
+            TypeId::of::<hawdb_readiness::slow_query::SlowQueryReport>(),
         );
         assert_eq!(
-            NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
-            hawdb_readiness::slow_query::NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
+            SLOW_QUERY_REPORT_PROTOCOL,
+            hawdb_readiness::slow_query::SLOW_QUERY_REPORT_PROTOCOL,
         );
     }
 }
 #[cfg(test)]
 mod readiness_report_facade_tests {
-    use hawdb_readiness::nowledge_mem_reports as owner;
+    use hawdb_readiness::embedded_store_reports as owner;
     use std::any::TypeId;
 
     #[test]
@@ -156,38 +151,34 @@ mod readiness_report_facade_tests {
                 );
             };
         }
-        same_report!(NowledgeMemLibraryReadinessReport);
-        same_report!(NowledgeMemLibraryProductionPathSummary);
-        same_report!(NowledgeMemReadinessRedactionSummary);
-        same_report!(NowledgeMemReadinessDashboard);
-        same_report!(NowledgeMemOperationsReadinessReport);
-        same_report!(NowledgeMemBackgroundMaintenanceReport);
+        same_report!(LibraryReadinessReport);
+        same_report!(LibraryProductionPathSummary);
+        same_report!(ReadinessRedactionSummary);
+        same_report!(ReadinessDashboard);
+        same_report!(OperationsReadinessReport);
+        same_report!(BackgroundMaintenanceReport);
         assert_eq!(
-            super::NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL,
-            owner::NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL
+            super::READINESS_DASHBOARD_PROTOCOL,
+            owner::READINESS_DASHBOARD_PROTOCOL
         );
     }
 }
 
 use hawdb_search::candidate_evidence::{
     advised_compressed_vector_search_mode, effective_search_candidate_mode,
-    nowledge_mem_search_candidate_report, retrieval_projection_advisor_blocker_codes,
-    retrieval_projection_advisor_json,
+    retrieval_projection_advisor_blocker_codes, retrieval_projection_advisor_json,
+    search_candidate_report,
 };
 pub use hawdb_search::candidate_evidence::{
-    nowledge_mem_search_candidate_shadow_evidence_json, NowledgeMemRetrievalProjectionAdvisor,
-    NowledgeMemSearchCandidateFieldSummary, NowledgeMemSearchCandidateFilterPushdownEvidence,
-    NowledgeMemSearchCandidateOutput, NowledgeMemSearchCandidateReadinessOptions,
-    NowledgeMemSearchCandidateReadinessReport, NowledgeMemSearchCandidateReport,
-    NowledgeMemSearchCandidateRequest, NowledgeMemSearchCandidateShadowAccumulator,
-    NowledgeMemSearchCandidateShadowEvidence, NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE, NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_REPORT_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_ENGINE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_EVIDENCE_SOURCE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_PRIMARY_ENGINE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_SHADOW_ENGINE,
+    search_candidate_shadow_evidence_json, RetrievalProjectionAdvisor, SearchCandidateFieldSummary,
+    SearchCandidateFilterPushdownEvidence, SearchCandidateOutput, SearchCandidateReadinessOptions,
+    SearchCandidateReadinessReport, SearchCandidateReport, SearchCandidateRequest,
+    SearchCandidateShadowAccumulator, SearchCandidateShadowEvidence,
+    SEARCH_CANDIDATE_EVIDENCE_ROUTE, SEARCH_CANDIDATE_EVIDENCE_SOURCE,
+    SEARCH_CANDIDATE_PRIMARY_ENGINE, SEARCH_CANDIDATE_READINESS_PROTOCOL,
+    SEARCH_CANDIDATE_REPORT_PROTOCOL, SEARCH_CANDIDATE_SHADOW_ENGINE,
+    SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL, SEARCH_CANDIDATE_TRACE_EVIDENCE_SOURCE,
+    SEARCH_CANDIDATE_TRACE_PRIMARY_ENGINE, SEARCH_CANDIDATE_TRACE_SHADOW_ENGINE,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
@@ -197,7 +188,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 #[cfg(test)]
-#[path = "nowledge_mem_app_read_snapshot_tests.rs"]
+#[path = "embedded_store_app_read_snapshot_tests.rs"]
 mod app_read_snapshot_tests;
 #[cfg(test)]
 mod candidate_facade_tests;
@@ -205,60 +196,58 @@ mod candidate_facade_tests;
 #[cfg(test)]
 mod runtime_status_facade_tests {
     use super::{
-        NowledgeMemCutoverControls, NowledgeMemCutoverControlsReport, NowledgeMemProductionStatus,
-        NowledgeMemReadControl, NowledgeMemRuntimeStatus, NowledgeMemWorkControl,
+        CutoverControls, CutoverControlsReport, EmbeddedProductionStatus, EmbeddedRuntimeStatus,
+        ReadControl, WorkControl,
     };
     use std::any::TypeId;
 
     #[test]
     fn root_facade_preserves_runtime_status_type_identity() {
         assert_eq!(
-            TypeId::of::<NowledgeMemRuntimeStatus>(),
-            TypeId::of::<hawdb_readiness::nowledge_mem_runtime_status::NowledgeMemRuntimeStatus>()
+            TypeId::of::<EmbeddedRuntimeStatus>(),
+            TypeId::of::<hawdb_readiness::runtime_status::EmbeddedRuntimeStatus>()
         );
         assert_eq!(
-            TypeId::of::<NowledgeMemProductionStatus>(),
-            TypeId::of::<hawdb_readiness::nowledge_mem_runtime_status::NowledgeMemProductionStatus>(
-            )
+            TypeId::of::<EmbeddedProductionStatus>(),
+            TypeId::of::<hawdb_readiness::runtime_status::EmbeddedProductionStatus>()
         );
         assert_eq!(
-            TypeId::of::<NowledgeMemReadControl>(),
-            TypeId::of::<hawdb_readiness::nowledge_mem_cutover::NowledgeMemReadControl>()
+            TypeId::of::<ReadControl>(),
+            TypeId::of::<hawdb_readiness::cutover::ReadControl>()
         );
         assert_eq!(
-            TypeId::of::<NowledgeMemWorkControl>(),
-            TypeId::of::<hawdb_readiness::nowledge_mem_cutover::NowledgeMemWorkControl>()
+            TypeId::of::<WorkControl>(),
+            TypeId::of::<hawdb_readiness::cutover::WorkControl>()
         );
         assert_eq!(
-            TypeId::of::<NowledgeMemCutoverControls>(),
-            TypeId::of::<hawdb_readiness::nowledge_mem_cutover::NowledgeMemCutoverControls>()
+            TypeId::of::<CutoverControls>(),
+            TypeId::of::<hawdb_readiness::cutover::CutoverControls>()
         );
         assert_eq!(
-            TypeId::of::<NowledgeMemCutoverControlsReport>(),
-            TypeId::of::<hawdb_readiness::nowledge_mem_cutover::NowledgeMemCutoverControlsReport>()
+            TypeId::of::<CutoverControlsReport>(),
+            TypeId::of::<hawdb_readiness::cutover::CutoverControlsReport>()
         );
     }
 }
 
-pub use hawdb_readiness::nowledge_mem_serving_path::{
-    NowledgeMemServingEntrypoint, NowledgeMemServingPathReadiness,
-    NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL,
+pub use hawdb_readiness::serving_path::{
+    EmbeddedServingEntrypoint, EmbeddedServingPathReadiness, SERVING_PATH_READINESS_PROTOCOL,
 };
 
 const TYPED_CONTROL_STATEMENT_MEMORY_BYTES: u64 = 1024 * 1024;
 const SEARCH_PROJECTION_CHANGEFEED_OPERATION_BYTES: usize = 1024;
 
-pub fn nowledge_mem_graph_config(mode: NowledgeMemGraphMode) -> DatabaseConfig {
-    nowledge_mem_graph_config_with_search_mode(mode, CompressedVectorSearchMode::Disabled)
+pub fn graph_config(mode: GraphMode) -> DatabaseConfig {
+    graph_config_with_search_mode(mode, CompressedVectorSearchMode::Disabled)
 }
 
-pub fn nowledge_mem_graph_config_with_search_mode(
-    mode: NowledgeMemGraphMode,
+pub fn graph_config_with_search_mode(
+    mode: GraphMode,
     compressed_vector_search_mode: CompressedVectorSearchMode,
 ) -> DatabaseConfig {
     DatabaseConfig {
-        read_only: matches!(mode, NowledgeMemGraphMode::ShadowReadOnly),
-        recovery_mode: if matches!(mode, NowledgeMemGraphMode::ShadowReadOnly) {
+        read_only: matches!(mode, GraphMode::ShadowReadOnly),
+        recovery_mode: if matches!(mode, GraphMode::ShadowReadOnly) {
             crate::RecoveryMode::Strict
         } else {
             crate::RecoveryMode::default()
@@ -268,7 +257,7 @@ pub fn nowledge_mem_graph_config_with_search_mode(
     }
 }
 
-fn default_nowledge_mem_runtime_governor(
+fn default_embedded_runtime_governor(
     path: &Path,
     database_config: &DatabaseConfig,
 ) -> RuntimeGovernor {
@@ -284,55 +273,51 @@ fn default_nowledge_mem_runtime_governor(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemOpenOptions {
+pub struct EmbeddedStoreOpenOptions {
     pub graph_path: PathBuf,
     pub search_projection_path: Option<PathBuf>,
-    pub search_projection_open_mode: NowledgeMemSearchProjectionOpenMode,
-    pub mode: NowledgeMemGraphMode,
+    pub search_projection_open_mode: SearchProjectionOpenMode,
+    pub mode: GraphMode,
     pub database_config: Option<DatabaseConfig>,
     pub compressed_vector_search_mode: CompressedVectorSearchMode,
     pub adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy,
-    pub retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor,
+    pub retrieval_projection_advisor: RetrievalProjectionAdvisor,
     pub search_range_read_config: Option<SearchRangeReadConfig>,
     pub system_schema_registries: Vec<crate::SystemSchemaRegistry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemQualifiedOutOfCoreSearchOptions {
+pub struct QualifiedOutOfCoreSearchOptions {
     pub config: SearchOutOfCoreConfig,
     pub qualification: SearchLexicalProductionQualificationReport,
     pub expected_identity: crate::ProductionQualificationIdentity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NowledgeMemSearchProjectionOpenMode {
+pub enum SearchProjectionOpenMode {
     FullResidencyMaintenance,
-    IncrementalMaintenance(Box<NowledgeMemIncrementalSearchMaintenanceOptions>),
-    QualifiedOutOfCore(Box<NowledgeMemQualifiedOutOfCoreSearchOptions>),
+    IncrementalMaintenance(Box<IncrementalSearchMaintenanceOptions>),
+    QualifiedOutOfCore(Box<QualifiedOutOfCoreSearchOptions>),
 }
 
-impl NowledgeMemSearchProjectionOpenMode {
-    fn role(&self) -> NowledgeMemSearchProjectionRole {
+impl SearchProjectionOpenMode {
+    fn role(&self) -> SearchProjectionRole {
         match self {
-            Self::FullResidencyMaintenance => {
-                NowledgeMemSearchProjectionRole::FullResidencyMaintenance
-            }
-            Self::IncrementalMaintenance(_) => {
-                NowledgeMemSearchProjectionRole::IncrementalMaintenance
-            }
-            Self::QualifiedOutOfCore(_) => NowledgeMemSearchProjectionRole::QualifiedOutOfCore,
+            Self::FullResidencyMaintenance => SearchProjectionRole::FullResidencyMaintenance,
+            Self::IncrementalMaintenance(_) => SearchProjectionRole::IncrementalMaintenance,
+            Self::QualifiedOutOfCore(_) => SearchProjectionRole::QualifiedOutOfCore,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemSearchProjectionRole {
+pub enum SearchProjectionRole {
     FullResidencyMaintenance,
     IncrementalMaintenance,
     QualifiedOutOfCore,
 }
 
-impl NowledgeMemSearchProjectionRole {
+impl SearchProjectionRole {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::FullResidencyMaintenance => "full_residency_maintenance",
@@ -343,22 +328,21 @@ impl NowledgeMemSearchProjectionRole {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct NowledgeMemOpenDiagnosticOptions {
+pub struct EmbeddedStoreOpenDiagnosticOptions {
     pub include_local_paths: bool,
 }
 
-impl NowledgeMemOpenOptions {
-    pub fn graph_only(graph_path: impl Into<PathBuf>, mode: NowledgeMemGraphMode) -> Self {
+impl EmbeddedStoreOpenOptions {
+    pub fn graph_only(graph_path: impl Into<PathBuf>, mode: GraphMode) -> Self {
         Self {
             graph_path: graph_path.into(),
             search_projection_path: None,
-            search_projection_open_mode:
-                NowledgeMemSearchProjectionOpenMode::FullResidencyMaintenance,
+            search_projection_open_mode: SearchProjectionOpenMode::FullResidencyMaintenance,
             mode,
             database_config: None,
             compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
-            retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
+            retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
             search_range_read_config: None,
             system_schema_registries: Vec::new(),
         }
@@ -367,18 +351,17 @@ impl NowledgeMemOpenOptions {
     pub fn with_search_projection(
         graph_path: impl Into<PathBuf>,
         search_projection_path: impl Into<PathBuf>,
-        mode: NowledgeMemGraphMode,
+        mode: GraphMode,
     ) -> Self {
         Self {
             graph_path: graph_path.into(),
             search_projection_path: Some(search_projection_path.into()),
-            search_projection_open_mode:
-                NowledgeMemSearchProjectionOpenMode::FullResidencyMaintenance,
+            search_projection_open_mode: SearchProjectionOpenMode::FullResidencyMaintenance,
             mode,
             database_config: None,
             compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
-            retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
+            retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
             search_range_read_config: None,
             system_schema_registries: Vec::new(),
         }
@@ -387,20 +370,20 @@ impl NowledgeMemOpenOptions {
     pub fn with_qualified_out_of_core_search_projection(
         graph_path: impl Into<PathBuf>,
         search_projection_path: impl Into<PathBuf>,
-        mode: NowledgeMemGraphMode,
-        qualified: NowledgeMemQualifiedOutOfCoreSearchOptions,
+        mode: GraphMode,
+        qualified: QualifiedOutOfCoreSearchOptions,
     ) -> Self {
         Self {
             graph_path: graph_path.into(),
             search_projection_path: Some(search_projection_path.into()),
-            search_projection_open_mode: NowledgeMemSearchProjectionOpenMode::QualifiedOutOfCore(
-                Box::new(qualified),
-            ),
+            search_projection_open_mode: SearchProjectionOpenMode::QualifiedOutOfCore(Box::new(
+                qualified,
+            )),
             mode,
             database_config: None,
             compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
-            retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
+            retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
             search_range_read_config: None,
             system_schema_registries: Vec::new(),
         }
@@ -438,7 +421,7 @@ impl NowledgeMemOpenOptions {
 
     pub fn with_retrieval_projection_advisor(
         mut self,
-        advisor: NowledgeMemRetrievalProjectionAdvisor,
+        advisor: RetrievalProjectionAdvisor,
     ) -> Self {
         self.retrieval_projection_advisor = advisor;
         self
@@ -458,7 +441,7 @@ impl NowledgeMemOpenOptions {
 
     fn effective_database_config(&self) -> DatabaseConfig {
         let mut config = self.database_config.clone().unwrap_or_default();
-        config.read_only = matches!(self.mode, NowledgeMemGraphMode::ShadowReadOnly);
+        config.read_only = matches!(self.mode, GraphMode::ShadowReadOnly);
         if config.read_only {
             config.recovery_mode = crate::RecoveryMode::Strict;
         }
@@ -472,12 +455,12 @@ impl NowledgeMemOpenOptions {
             self.search_projection_path.as_ref(),
             &self.search_projection_open_mode,
         ) {
-            (None, NowledgeMemSearchProjectionOpenMode::IncrementalMaintenance(_)) => {
+            (None, SearchProjectionOpenMode::IncrementalMaintenance(_)) => {
                 return Err(HawDBError::Semantic(
                     "incremental search maintenance requires search_projection_path".into(),
                 ));
             }
-            (Some(_), NowledgeMemSearchProjectionOpenMode::IncrementalMaintenance(options)) => {
+            (Some(_), SearchProjectionOpenMode::IncrementalMaintenance(options)) => {
                 options.validate()?;
                 if self.search_range_read_config.is_some() {
                     return Err(HawDBError::Semantic(
@@ -485,12 +468,12 @@ impl NowledgeMemOpenOptions {
                     ));
                 }
             }
-            (None, NowledgeMemSearchProjectionOpenMode::QualifiedOutOfCore(_)) => {
+            (None, SearchProjectionOpenMode::QualifiedOutOfCore(_)) => {
                 return Err(HawDBError::Semantic(
                     "qualified out-of-core search requires search_projection_path".to_string(),
                 ));
             }
-            (Some(_), NowledgeMemSearchProjectionOpenMode::QualifiedOutOfCore(qualified)) => {
+            (Some(_), SearchProjectionOpenMode::QualifiedOutOfCore(qualified)) => {
                 qualified.expected_identity.validate()?;
                 if self.search_range_read_config.is_some() {
                     return Err(HawDBError::Semantic(
@@ -518,11 +501,11 @@ impl NowledgeMemOpenOptions {
         Ok(())
     }
 
-    pub fn sanitized_report(&self) -> NowledgeMemOpenReport {
+    pub fn sanitized_report(&self) -> EmbeddedStoreOpenReport {
         let effective_compressed_vector_search_mode =
             self.effective_compressed_vector_search_mode();
-        NowledgeMemOpenReport {
-            protocol: NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL.to_string(),
+        EmbeddedStoreOpenReport {
+            protocol: OPEN_REPORT_PROTOCOL.to_string(),
             mode: self.mode,
             graph_configured: true,
             search_projection_configured: self.search_projection_path.is_some(),
@@ -550,7 +533,7 @@ impl NowledgeMemOpenOptions {
 
     pub fn diagnostic_report_json(
         &self,
-        options: NowledgeMemOpenDiagnosticOptions,
+        options: EmbeddedStoreOpenDiagnosticOptions,
     ) -> serde_json::Value {
         let mut report = self.sanitized_report().json();
         if let Some(object) = report.as_object_mut() {
@@ -581,16 +564,16 @@ impl NowledgeMemOpenOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemOpenReport {
+pub struct EmbeddedStoreOpenReport {
     pub protocol: String,
-    pub mode: NowledgeMemGraphMode,
+    pub mode: GraphMode,
     pub graph_configured: bool,
     pub search_projection_configured: bool,
-    pub search_projection_role: Option<NowledgeMemSearchProjectionRole>,
+    pub search_projection_role: Option<SearchProjectionRole>,
     pub compressed_vector_search_mode: CompressedVectorSearchMode,
     pub requested_compressed_vector_search_mode: CompressedVectorSearchMode,
     pub adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy,
-    pub retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor,
+    pub retrieval_projection_advisor: RetrievalProjectionAdvisor,
     pub retrieval_projection_advisor_blocker_codes: Vec<String>,
     pub graph_opened: bool,
     pub search_projection_opened: bool,
@@ -598,14 +581,14 @@ pub struct NowledgeMemOpenReport {
     pub system_schema_upgrades: Vec<crate::SystemSchemaUpgradeReport>,
 }
 
-impl NowledgeMemOpenReport {
+impl EmbeddedStoreOpenReport {
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "protocol": self.protocol,
             "mode": self.mode.as_str(),
             "graph_configured": self.graph_configured,
             "search_projection_configured": self.search_projection_configured,
-            "search_projection_role": self.search_projection_role.map(NowledgeMemSearchProjectionRole::as_str),
+            "search_projection_role": self.search_projection_role.map(SearchProjectionRole::as_str),
             "compressed_vector_search_mode": self.compressed_vector_search_mode.as_str(),
             "requested_compressed_vector_search_mode": self.requested_compressed_vector_search_mode.as_str(),
             "adaptive_vector_backend_policy": {
@@ -630,21 +613,19 @@ impl NowledgeMemOpenReport {
     }
 }
 
-pub use hawdb_readiness::nowledge_mem_runtime_status::{
-    NowledgeMemProductionStatus, NowledgeMemRuntimeStatus, NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL,
-    NOWLEDGE_MEM_RUNTIME_STATUS_PROTOCOL,
+pub use hawdb_readiness::runtime_status::{
+    EmbeddedProductionStatus, EmbeddedRuntimeStatus, PRODUCTION_STATUS_PROTOCOL,
+    RUNTIME_STATUS_PROTOCOL,
 };
 
-pub use hawdb_readiness::nowledge_mem_cutover::{
-    NowledgeMemCutoverControls, NowledgeMemCutoverControlsReport, NowledgeMemReadControl,
-    NowledgeMemWorkControl,
+pub use hawdb_readiness::cutover::{
+    CutoverControls, CutoverControlsReport, ReadControl, WorkControl,
 };
 
 pub use hawdb_nowledge_contracts::{
-    NowledgeMemReadSnapshotBudget, NowledgeMemReadSnapshotReport,
-    NowledgeMemStorageLifecycleActionKind, NowledgeMemStorageLifecycleDecision,
-    NowledgeMemStorageRecoveryReport, NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
-    NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL,
+    EmbeddedReadSnapshotBudget, EmbeddedReadSnapshotReport, EmbeddedStorageRecoveryReport,
+    StorageLifecycleActionKind, StorageLifecycleDecision, READ_SNAPSHOT_REPORT_PROTOCOL,
+    STORAGE_LIFECYCLE_DECISION_PROTOCOL,
 };
 
 #[cfg(test)]
@@ -655,113 +636,103 @@ mod storage_lifecycle_facade_tests {
     #[test]
     fn facade_reexports_storage_lifecycle_contracts_without_conversion() {
         assert_eq!(
-            TypeId::of::<NowledgeMemStorageRecoveryReport>(),
-            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemStorageRecoveryReport>(),
+            TypeId::of::<EmbeddedStorageRecoveryReport>(),
+            TypeId::of::<hawdb_nowledge_contracts::EmbeddedStorageRecoveryReport>(),
         );
         assert_eq!(
-            TypeId::of::<NowledgeMemStorageLifecycleDecision>(),
-            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemStorageLifecycleDecision>(),
+            TypeId::of::<StorageLifecycleDecision>(),
+            TypeId::of::<hawdb_nowledge_contracts::StorageLifecycleDecision>(),
         );
         assert_eq!(
-            TypeId::of::<NowledgeMemStorageLifecycleActionKind>(),
-            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemStorageLifecycleActionKind>(),
+            TypeId::of::<StorageLifecycleActionKind>(),
+            TypeId::of::<hawdb_nowledge_contracts::StorageLifecycleActionKind>(),
         );
     }
 
     #[test]
     fn facade_reexports_read_snapshot_contracts_without_conversion() {
         assert_eq!(
-            TypeId::of::<NowledgeMemReadSnapshotBudget>(),
-            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemReadSnapshotBudget>(),
+            TypeId::of::<EmbeddedReadSnapshotBudget>(),
+            TypeId::of::<hawdb_nowledge_contracts::EmbeddedReadSnapshotBudget>(),
         );
         assert_eq!(
-            TypeId::of::<NowledgeMemReadSnapshotReport>(),
-            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemReadSnapshotReport>(),
+            TypeId::of::<EmbeddedReadSnapshotReport>(),
+            TypeId::of::<hawdb_nowledge_contracts::EmbeddedReadSnapshotReport>(),
         );
         assert_eq!(
-            NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
-            hawdb_nowledge_contracts::NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
+            READ_SNAPSHOT_REPORT_PROTOCOL,
+            hawdb_nowledge_contracts::READ_SNAPSHOT_REPORT_PROTOCOL,
         );
     }
 }
 
 pub use hawdb_readiness::source_mutation::{
-    nowledge_mem_source_mutation_dual_write_evidence_all_ready,
-    nowledge_mem_source_mutation_dual_write_readiness,
-    nowledge_mem_source_mutation_family_requirements, NowledgeMemSourceMutationDualWriteEvidence,
-    NowledgeMemSourceMutationDualWriteReadinessReport, NowledgeMemSourceMutationFamilyRequirement,
-    NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_CONTENT_REFRESH_REPARSE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_GRAPH_DELETE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INDEXED_TRANSITION,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INGEST_CREATE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_LIFECYCLE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_PATCH_DELETE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_REVISION_EDGES,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_SEARCH_PROJECTION_EFFECTS,
-    REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
+    source_mutation_dual_write_evidence_all_ready, source_mutation_dual_write_readiness,
+    source_mutation_family_requirements, SourceMutationDualWriteEvidence,
+    SourceMutationDualWriteReadinessReport, SourceMutationFamilyRequirement,
+    REQUIRED_SOURCE_MUTATION_FAMILIES, SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
+    SOURCE_MUTATION_FAMILY_CONTENT_REFRESH_REPARSE, SOURCE_MUTATION_FAMILY_GRAPH_DELETE,
+    SOURCE_MUTATION_FAMILY_INDEXED_TRANSITION, SOURCE_MUTATION_FAMILY_INGEST_CREATE,
+    SOURCE_MUTATION_FAMILY_LIFECYCLE, SOURCE_MUTATION_FAMILY_PATCH_DELETE,
+    SOURCE_MUTATION_FAMILY_REVISION_EDGES, SOURCE_MUTATION_FAMILY_SEARCH_PROJECTION_EFFECTS,
 };
 
-pub const NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-open-report";
+pub const OPEN_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-open-report";
 pub use hawdb_readiness::previous_wrapper_preflight::{
-    NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL, NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL, NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL,
+    CUTOVER_CONTROLS_PROTOCOL, LIBRARY_READINESS_PROTOCOL,
+    NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL, OPERATIONS_READINESS_PROTOCOL,
 };
-pub const NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-retrieval-report";
+pub const RETRIEVAL_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-retrieval-report";
 
 pub use hawdb_route_ownership::graph::{
-    nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_graph_read_route_spec,
-    nowledge_mem_graph_read_route_spec_json, nowledge_mem_graph_read_route_specs_json,
-    nowledge_mem_required_query_families_for_route, NowledgeMemGraphReadRouteEvidenceKind,
-    NowledgeMemGraphReadRouteOwner, NowledgeMemGraphReadRouteSpec,
-    NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS,
-    NOWLEDGE_MEM_SEARCH_ROUTE, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+    graph_read_route_catalog_digest, graph_read_route_spec, graph_read_route_spec_json,
+    graph_read_route_specs_json, required_query_families_for_route, GraphReadRouteEvidenceKind,
+    GraphReadRouteOwner, GraphReadRouteSpec, GRAPH_READ_ROUTE_CATALOG_VERSION,
+    GRAPH_READ_ROUTE_SPECS, REQUIRED_BOUNDED_READ_ROUTES, SEARCH_ROUTE,
 };
 
-pub const DEFAULT_NOWLEDGE_MEM_READ_MAX_ROWS: usize = 512;
-pub const DEFAULT_NOWLEDGE_MEM_READ_MAX_ESTIMATED_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
+pub const DEFAULT_READ_MAX_ROWS: usize = 512;
+pub const DEFAULT_READ_MAX_ESTIMATED_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug)]
-pub struct NowledgeMemGraph {
+pub struct EmbeddedGraph {
     db: Database,
-    mode: NowledgeMemGraphMode,
+    mode: GraphMode,
     runtime_governor: RuntimeGovernor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemReadOptions {
+pub struct EmbeddedReadOptions {
     pub max_rows: Option<usize>,
     pub max_estimated_payload_bytes: Option<usize>,
 }
 
-impl Default for NowledgeMemReadOptions {
+impl Default for EmbeddedReadOptions {
     fn default() -> Self {
         Self {
-            max_rows: Some(DEFAULT_NOWLEDGE_MEM_READ_MAX_ROWS),
-            max_estimated_payload_bytes: Some(
-                DEFAULT_NOWLEDGE_MEM_READ_MAX_ESTIMATED_PAYLOAD_BYTES,
-            ),
+            max_rows: Some(DEFAULT_READ_MAX_ROWS),
+            max_estimated_payload_bytes: Some(DEFAULT_READ_MAX_ESTIMATED_PAYLOAD_BYTES),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemReadOutput {
+pub struct EmbeddedReadOutput {
     pub output: QueryOutput,
-    pub report: NowledgeMemReadReport,
+    pub report: EmbeddedReadReport,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct NowledgeMemReadinessOptions {
+pub struct ReadinessOptions {
     pub bounded_read_probe: Option<NowledgeGraphStatement>,
     pub bounded_read_evidence: Option<serde_json::Value>,
     pub covered_routes: Vec<String>,
-    pub graph_route_readiness: Option<NowledgeMemRouteReadinessSummary>,
-    pub search_route_ownership: Option<NowledgeMemSearchRouteOwnershipReadinessReport>,
-    pub active_search_route_ownership: Option<NowledgeMemActiveSearchRouteOwnershipReadinessReport>,
-    pub active_search_route_readiness: Option<NowledgeMemActiveSearchRouteReadinessReport>,
+    pub graph_route_readiness: Option<RouteReadinessSummary>,
+    pub search_route_ownership: Option<SearchRouteOwnershipReadinessReport>,
+    pub active_search_route_ownership: Option<ActiveSearchRouteOwnershipReadinessReport>,
+    pub active_search_route_readiness: Option<ActiveSearchRouteReadinessReport>,
     pub replacement_readiness_by_query_family: Option<serde_json::Value>,
-    pub read_options: NowledgeMemReadOptions,
+    pub read_options: EmbeddedReadOptions,
     pub search_projection_evidence: Option<serde_json::Value>,
     pub search_projection_probe_options: SearchProjectionProbeOptions,
     pub primary_search_projection_probe: Option<serde_json::Value>,
@@ -775,9 +746,9 @@ pub struct NowledgeMemReadinessOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemRetrievalReport {
+pub struct RetrievalReport {
     pub protocol: String,
-    pub mode: NowledgeMemGraphMode,
+    pub mode: GraphMode,
     pub compressed_vector_search_mode: CompressedVectorSearchMode,
     pub graph_commit_epoch: u64,
     pub projection_source_graph_commit_epoch: Option<u64>,
@@ -802,7 +773,7 @@ pub struct NowledgeMemRetrievalReport {
     pub warnings: Vec<String>,
 }
 
-impl NowledgeMemRetrievalReport {
+impl RetrievalReport {
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "protocol": self.protocol,
@@ -834,21 +805,21 @@ impl NowledgeMemRetrievalReport {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeMemRetrievalOutput {
+pub struct RetrievalOutput {
     pub output: KnowledgeRetrievalOutput,
-    pub report: NowledgeMemRetrievalReport,
+    pub report: RetrievalReport,
     pub out_of_core_search_metrics: Option<SearchOutOfCoreMetrics>,
 }
 
-impl NowledgeMemGraph {
-    pub fn open(path: impl AsRef<Path>, mode: NowledgeMemGraphMode) -> Result<Self> {
+impl EmbeddedGraph {
+    pub fn open(path: impl AsRef<Path>, mode: GraphMode) -> Result<Self> {
         let path = path.as_ref();
-        Self::open_with_config(path, nowledge_mem_graph_config(mode))
+        Self::open_with_config(path, graph_config(mode))
     }
 
     pub fn open_with_config(path: impl AsRef<Path>, config: DatabaseConfig) -> Result<Self> {
         let path = path.as_ref();
-        let runtime_governor = default_nowledge_mem_runtime_governor(path, &config);
+        let runtime_governor = default_embedded_runtime_governor(path, &config);
         Self::open_with_config_and_runtime_governor(path, config, runtime_governor)
     }
 
@@ -858,9 +829,9 @@ impl NowledgeMemGraph {
         runtime_governor: RuntimeGovernor,
     ) -> Result<Self> {
         let mode = if config.read_only {
-            NowledgeMemGraphMode::ShadowReadOnly
+            GraphMode::ShadowReadOnly
         } else {
-            NowledgeMemGraphMode::WritableCutover
+            GraphMode::WritableCutover
         };
         let mut db = Database::open_with_config(path, config)?;
         db.set_runtime_governor(runtime_governor.clone());
@@ -871,14 +842,14 @@ impl NowledgeMemGraph {
         })
     }
 
-    pub fn from_database(db: Database, mode: NowledgeMemGraphMode) -> Self {
-        let runtime_governor = default_nowledge_mem_runtime_governor(Path::new("."), db.config());
+    pub fn from_database(db: Database, mode: GraphMode) -> Self {
+        let runtime_governor = default_embedded_runtime_governor(Path::new("."), db.config());
         Self::from_database_with_runtime_governor(db, mode, runtime_governor)
     }
 
     pub fn from_database_with_runtime_governor(
         mut db: Database,
-        mode: NowledgeMemGraphMode,
+        mode: GraphMode,
         runtime_governor: RuntimeGovernor,
     ) -> Self {
         db.set_runtime_governor(runtime_governor.clone());
@@ -889,7 +860,7 @@ impl NowledgeMemGraph {
         }
     }
 
-    pub fn mode(&self) -> NowledgeMemGraphMode {
+    pub fn mode(&self) -> GraphMode {
         self.mode
     }
 
@@ -921,15 +892,15 @@ impl NowledgeMemGraph {
         self.query_with_params(cypher, &BTreeMap::new())
     }
 
-    pub fn query_with_report(&mut self, cypher: &str) -> Result<NowledgeMemQueryOutput> {
+    pub fn query_with_report(&mut self, cypher: &str) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report(cypher, &BTreeMap::new())
     }
 
     pub fn query_with_report_options(
         &mut self,
         cypher: &str,
-        options: NowledgeMemQueryReportOptions,
-    ) -> Result<NowledgeMemQueryOutput> {
+        options: EmbeddedQueryReportOptions,
+    ) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report_options(cypher, &BTreeMap::new(), options)
     }
 
@@ -947,11 +918,11 @@ impl NowledgeMemGraph {
         &mut self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-    ) -> Result<NowledgeMemQueryOutput> {
+    ) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report_options(
             cypher,
             parameters,
-            NowledgeMemQueryReportOptions::default(),
+            EmbeddedQueryReportOptions::default(),
         )
     }
 
@@ -959,8 +930,8 @@ impl NowledgeMemGraph {
         &mut self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: NowledgeMemQueryReportOptions,
-    ) -> Result<NowledgeMemQueryOutput> {
+        options: EmbeddedQueryReportOptions,
+    ) -> Result<EmbeddedQueryOutput> {
         let mut external = crate::executor::NoExternalReadOperator;
         self.query_with_params_with_report_options_and_external(
             cypher,
@@ -974,9 +945,9 @@ impl NowledgeMemGraph {
         &mut self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: NowledgeMemQueryReportOptions,
+        options: EmbeddedQueryReportOptions,
         task_context: &RuntimeTaskContext,
-    ) -> Result<NowledgeMemQueryOutput> {
+    ) -> Result<EmbeddedQueryOutput> {
         let mut external = crate::executor::NoExternalReadOperator;
         self.query_with_params_with_report_options_and_external_context(
             cypher,
@@ -991,9 +962,9 @@ impl NowledgeMemGraph {
         &mut self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: NowledgeMemQueryReportOptions,
+        options: EmbeddedQueryReportOptions,
         external: &mut dyn crate::executor::ExternalReadOperator,
-    ) -> Result<NowledgeMemQueryOutput> {
+    ) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report_options_and_external_context(
             cypher,
             parameters,
@@ -1007,10 +978,10 @@ impl NowledgeMemGraph {
         &mut self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: NowledgeMemQueryReportOptions,
+        options: EmbeddedQueryReportOptions,
         external: &mut dyn crate::executor::ExternalReadOperator,
         task_context: &RuntimeTaskContext,
-    ) -> Result<NowledgeMemQueryOutput> {
+    ) -> Result<EmbeddedQueryOutput> {
         self.query_request_with_report_and_external(
             crate::QueryRequest::new(cypher)
                 .with_params(parameters)
@@ -1023,8 +994,8 @@ impl NowledgeMemGraph {
     pub(crate) fn query_request_with_report(
         &mut self,
         request: crate::QueryRequest<'_>,
-        options: NowledgeMemQueryReportOptions,
-    ) -> Result<NowledgeMemQueryOutput> {
+        options: EmbeddedQueryReportOptions,
+    ) -> Result<EmbeddedQueryOutput> {
         self.query_request_with_report_and_external(
             request,
             options,
@@ -1035,9 +1006,9 @@ impl NowledgeMemGraph {
     fn query_request_with_report_and_external(
         &mut self,
         request: crate::QueryRequest<'_>,
-        options: NowledgeMemQueryReportOptions,
+        options: EmbeddedQueryReportOptions,
         external: &mut dyn crate::executor::ExternalReadOperator,
-    ) -> Result<NowledgeMemQueryOutput> {
+    ) -> Result<EmbeddedQueryOutput> {
         let default_context = RuntimeTaskContext::default();
         let task_context = request.task_context.unwrap_or(&default_context);
         let empty = BTreeMap::new();
@@ -1060,7 +1031,7 @@ impl NowledgeMemGraph {
             self.check_runtime_context(task_context)?;
         }
         let elapsed_micros = started.elapsed().as_micros();
-        let report = nowledge_mem_query_report(NowledgeMemQueryReportInput {
+        let report = embedded_query_report(EmbeddedQueryReportInput {
             mode: self.mode,
             statement: &execution_trace.statement,
             trace: execution_trace.optimizer_trace.as_ref(),
@@ -1070,7 +1041,7 @@ impl NowledgeMemGraph {
             options,
             elapsed_micros,
         });
-        Ok(NowledgeMemQueryOutput { output, report })
+        Ok(EmbeddedQueryOutput { output, report })
     }
 
     fn admit_materialized_query(
@@ -1143,7 +1114,7 @@ impl NowledgeMemGraph {
         try_admit_runtime(&self.runtime_governor, request)
     }
 
-    fn admitted_streaming_result_bytes(&self, options: &NowledgeMemReadOptions) -> Result<usize> {
+    fn admitted_streaming_result_bytes(&self, options: &EmbeddedReadOptions) -> Result<usize> {
         read_execution::admitted_result_bytes(self.db.config(), &self.runtime_governor, options)
     }
 
@@ -1166,9 +1137,9 @@ impl NowledgeMemGraph {
         }
     }
 
-    pub fn slow_query_report(&self) -> NowledgeMemSlowQueryReport {
+    pub fn slow_query_report(&self) -> SlowQueryReport {
         let config = self.db.config();
-        NowledgeMemSlowQueryReport::from_summaries(
+        SlowQueryReport::from_summaries(
             self.mode,
             config.slow_query_log_capacity,
             config.slow_query_log_threshold_micros,
@@ -1180,15 +1151,15 @@ impl NowledgeMemGraph {
         self.slow_query_report().json()
     }
 
-    pub fn read_query(&self, cypher: &str) -> Result<NowledgeMemReadOutput> {
-        self.read_query_with_params(cypher, &BTreeMap::new(), &NowledgeMemReadOptions::default())
+    pub fn read_query(&self, cypher: &str) -> Result<EmbeddedReadOutput> {
+        self.read_query_with_params(cypher, &BTreeMap::new(), &EmbeddedReadOptions::default())
     }
 
     pub fn read_query_with_options(
         &self,
         cypher: &str,
-        options: &NowledgeMemReadOptions,
-    ) -> Result<NowledgeMemReadOutput> {
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
         self.read_query_with_params(cypher, &BTreeMap::new(), options)
     }
 
@@ -1196,11 +1167,11 @@ impl NowledgeMemGraph {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
-    ) -> Result<NowledgeMemReadOutput> {
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
         let mut output = self
             .read_query_with_params_streaming_collect(cypher, parameters, options)
-            .map_err(|error| legacy_nowledge_mem_read_error(error, options))?;
+            .map_err(|error| legacy_embedded_read_error(error, options))?;
         output.report.streaming = false;
         Ok(output)
     }
@@ -1209,7 +1180,7 @@ impl NowledgeMemGraph {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
+        options: &EmbeddedReadOptions,
         consumer: impl FnMut(BTreeMap<String, Value>) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         self.read_query_with_params_streaming_context(
@@ -1225,7 +1196,7 @@ impl NowledgeMemGraph {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
+        options: &EmbeddedReadOptions,
         task_context: &RuntimeTaskContext,
         consumer: impl FnMut(BTreeMap<String, Value>) -> Result<()>,
     ) -> Result<QueryStreamReport> {
@@ -1261,8 +1232,8 @@ impl NowledgeMemGraph {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
-    ) -> Result<NowledgeMemReadOutput> {
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
         let max_payload_bytes = self.admitted_streaming_result_bytes(options)?;
         let (permit, prepared) = self.admit_streaming_query(
             cypher,
@@ -1282,7 +1253,7 @@ impl NowledgeMemGraph {
                 },
                 &task_context,
             )?;
-        let mut output = bounded_nowledge_mem_read_output(self.mode, bounded, options)?;
+        let mut output = bounded_embedded_read_output(self.mode, bounded, options)?;
         output.report.streaming = true;
         Ok(output)
     }
@@ -1298,8 +1269,8 @@ impl NowledgeMemGraph {
         &self,
         query: &GraphRagGeneratedQuery,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
-    ) -> Result<NowledgeMemReadOutput> {
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
         query
             .validate_parameters(parameters)
             .map_err(|error| HawDBError::Semantic(error.to_string()))?;
@@ -1321,36 +1292,36 @@ impl NowledgeMemGraph {
             },
             &context,
         )?;
-        bounded_nowledge_mem_read_output(self.mode, bounded, options)
+        bounded_embedded_read_output(self.mode, bounded, options)
     }
 }
 
 #[derive(Debug)]
-pub struct NowledgeMemSearchProjection {
+pub struct SearchProjection {
     index: SearchIndex,
 }
 
 #[derive(Debug)]
-pub struct NowledgeMemOutOfCoreSearchProjection {
+pub struct OutOfCoreSearchProjection {
     reader: Arc<SearchOutOfCoreReader>,
-    maintenance: Option<(PathBuf, NowledgeMemIncrementalSearchMaintenanceOptions)>,
+    maintenance: Option<(PathBuf, IncrementalSearchMaintenanceOptions)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeMemOutOfCoreSearchCandidateOutput {
+pub struct OutOfCoreSearchCandidateOutput {
     pub result: SearchResultSet,
-    pub report: NowledgeMemSearchCandidateReport,
+    pub report: SearchCandidateReport,
     pub metrics: SearchOutOfCoreMetrics,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeMemSearchHydrationOutput {
+pub struct SearchHydrationOutput {
     pub documents: Vec<SearchDocument>,
     pub out_of_core_metrics: Option<SearchOutOfCoreMetrics>,
 }
 
-impl From<NowledgeMemOutOfCoreSearchCandidateOutput> for NowledgeMemSearchCandidateOutput {
-    fn from(output: NowledgeMemOutOfCoreSearchCandidateOutput) -> Self {
+impl From<OutOfCoreSearchCandidateOutput> for SearchCandidateOutput {
+    fn from(output: OutOfCoreSearchCandidateOutput) -> Self {
         Self {
             result: output.result,
             report: output.report,
@@ -1359,7 +1330,7 @@ impl From<NowledgeMemOutOfCoreSearchCandidateOutput> for NowledgeMemSearchCandid
     }
 }
 
-impl NowledgeMemOutOfCoreSearchProjection {
+impl OutOfCoreSearchProjection {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             reader: Arc::new(SearchOutOfCoreReader::open(path)?),
@@ -1442,25 +1413,22 @@ impl NowledgeMemOutOfCoreSearchProjection {
         self.reader.hydrate_documents(document_ids)
     }
 
-    pub fn search_candidates(
-        &self,
-        request: &NowledgeMemSearchCandidateRequest,
-    ) -> Result<SearchResultSet> {
+    pub fn search_candidates(&self, request: &SearchCandidateRequest) -> Result<SearchResultSet> {
         Ok(self.search_candidates_with_report(request)?.result)
     }
 
     pub fn search_candidates_with_report(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
-    ) -> Result<NowledgeMemOutOfCoreSearchCandidateOutput> {
+        request: &SearchCandidateRequest,
+    ) -> Result<OutOfCoreSearchCandidateOutput> {
         self.search_candidates_with_report_context(request, VectorSearchExecutionOptions::default())
     }
 
     pub fn search_candidates_with_report_context(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
+        request: &SearchCandidateRequest,
         vector_execution_options: VectorSearchExecutionOptions<'_>,
-    ) -> Result<NowledgeMemOutOfCoreSearchCandidateOutput> {
+    ) -> Result<OutOfCoreSearchCandidateOutput> {
         let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
         let output = self
             .reader
@@ -1479,12 +1447,12 @@ impl NowledgeMemOutOfCoreSearchProjection {
                 effective_compressed_vector_search_mode,
                 vector_execution_options,
             )?;
-        let report = nowledge_mem_search_candidate_report(
+        let report = search_candidate_report(
             request,
             effective_compressed_vector_search_mode,
             &output.result,
         );
-        Ok(NowledgeMemOutOfCoreSearchCandidateOutput {
+        Ok(OutOfCoreSearchCandidateOutput {
             result: output.result,
             report,
             metrics: output.metrics,
@@ -1492,7 +1460,7 @@ impl NowledgeMemOutOfCoreSearchProjection {
     }
 }
 
-impl NowledgeMemSearchProjection {
+impl SearchProjection {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             index: SearchIndex::open(path)?,
@@ -1570,18 +1538,15 @@ impl NowledgeMemSearchProjection {
         self.index.projection_freshness()
     }
 
-    pub fn search_candidates(
-        &self,
-        request: &NowledgeMemSearchCandidateRequest,
-    ) -> Result<SearchResultSet> {
+    pub fn search_candidates(&self, request: &SearchCandidateRequest) -> Result<SearchResultSet> {
         self.search_candidates_with_report(request)
             .map(|output| output.result)
     }
 
     pub fn search_candidates_with_report(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
-    ) -> Result<NowledgeMemSearchCandidateOutput> {
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
         let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
         let result = self.index.search_with_options_adaptive_vector_projection(
             &request.query_text,
@@ -1601,12 +1566,9 @@ impl NowledgeMemSearchProjection {
                 recall_validation_probe: request.recall_validation_probe,
             },
         )?;
-        let report = nowledge_mem_search_candidate_report(
-            request,
-            effective_compressed_vector_search_mode,
-            &result,
-        );
-        Ok(NowledgeMemSearchCandidateOutput {
+        let report =
+            search_candidate_report(request, effective_compressed_vector_search_mode, &result);
+        Ok(SearchCandidateOutput {
             result,
             report,
             out_of_core_metrics: None,
@@ -1615,8 +1577,8 @@ impl NowledgeMemSearchProjection {
 
     pub fn try_search_candidates_with_report(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
-    ) -> Result<NowledgeMemSearchCandidateOutput> {
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
         self.try_search_candidates_with_report_context(
             request,
             VectorSearchExecutionOptions::default(),
@@ -1625,9 +1587,9 @@ impl NowledgeMemSearchProjection {
 
     pub fn try_search_candidates_with_report_context(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
+        request: &SearchCandidateRequest,
         vector_execution_options: VectorSearchExecutionOptions<'_>,
-    ) -> Result<NowledgeMemSearchCandidateOutput> {
+    ) -> Result<SearchCandidateOutput> {
         let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
         let result = self
             .index
@@ -1650,12 +1612,9 @@ impl NowledgeMemSearchProjection {
                 },
                 vector_execution_options,
             )?;
-        let report = nowledge_mem_search_candidate_report(
-            request,
-            effective_compressed_vector_search_mode,
-            &result,
-        );
-        Ok(NowledgeMemSearchCandidateOutput {
+        let report =
+            search_candidate_report(request, effective_compressed_vector_search_mode, &result);
+        Ok(SearchCandidateOutput {
             result,
             report,
             out_of_core_metrics: None,
@@ -1664,31 +1623,31 @@ impl NowledgeMemSearchProjection {
 
     pub fn search_candidate_readiness(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
-        options: &NowledgeMemSearchCandidateReadinessOptions,
-    ) -> Result<NowledgeMemSearchCandidateReadinessReport> {
+        request: &SearchCandidateRequest,
+        options: &SearchCandidateReadinessOptions,
+    ) -> Result<SearchCandidateReadinessReport> {
         self.search_candidates_with_report(request)
             .map(|output| output.readiness_report(options))
     }
 
     pub fn search_candidate_shadow_evidence<I, S>(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
+        request: &SearchCandidateRequest,
         primary_candidate_ids: I,
-    ) -> Result<NowledgeMemSearchCandidateShadowEvidence>
+    ) -> Result<SearchCandidateShadowEvidence>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         let output = self.search_candidates_with_report(request)?;
-        let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+        let mut accumulator = SearchCandidateShadowAccumulator::new();
         accumulator.record_search_candidate_output(primary_candidate_ids, &output);
         Ok(accumulator.evidence())
     }
 
     pub fn search_candidate_shadow_evidence_json<I, S>(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
+        request: &SearchCandidateRequest,
         primary_candidate_ids: I,
     ) -> Result<serde_json::Value>
     where
@@ -1702,7 +1661,7 @@ impl NowledgeMemSearchProjection {
 
 struct SearchProjectionExternalReadOperator<'a> {
     projection: Option<ResidentProjectionRef<'a>>,
-    out_of_core_projection: Option<&'a NowledgeMemOutOfCoreSearchProjection>,
+    out_of_core_projection: Option<&'a OutOfCoreSearchProjection>,
     vector_seed_execution_count: usize,
 }
 
@@ -1876,9 +1835,8 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
     ) -> Result<crate::executor::VectorSeedExecutionOutput> {
         request.resources.checkpoint()?;
         let top_k = vector_plan_top_k(request.vector_plan)?.min(request.resources.result.max_rows);
-        let search_request =
-            NowledgeMemSearchCandidateRequest::vector(request.embedding.to_vec(), top_k)
-                .with_metadata_filters(request.metadata_filters.clone());
+        let search_request = SearchCandidateRequest::vector(request.embedding.to_vec(), top_k)
+            .with_metadata_filters(request.metadata_filters.clone());
         let vector_execution_options = VectorSearchExecutionOptions::bounded(
             request.resources.max_parallelism,
             request.resources.max_working_memory_bytes.get(),
@@ -2078,14 +2036,14 @@ fn vector_fallback_reason_code(
 }
 
 #[derive(Debug)]
-pub struct NowledgeMemEmbeddedStore {
-    graph: NowledgeMemGraph,
-    search_projection: Option<NowledgeMemSearchProjection>,
-    out_of_core_search_projection: Option<NowledgeMemOutOfCoreSearchProjection>,
-    retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor,
+pub struct EmbeddedStore {
+    graph: EmbeddedGraph,
+    search_projection: Option<SearchProjection>,
+    out_of_core_search_projection: Option<OutOfCoreSearchProjection>,
+    retrieval_projection_advisor: RetrievalProjectionAdvisor,
 }
 
-impl crate::DatabasePublicationState for NowledgeMemEmbeddedStore {
+impl crate::DatabasePublicationState for EmbeddedStore {
     fn database(&self) -> &crate::Database {
         self.graph.database()
     }
@@ -2109,11 +2067,8 @@ fn search_document_payload_bytes(document: &SearchDocument) -> usize {
         .saturating_add(metadata_bytes)
 }
 
-impl NowledgeMemEmbeddedStore {
-    pub fn new(
-        graph: NowledgeMemGraph,
-        mut search_projection: Option<NowledgeMemSearchProjection>,
-    ) -> Self {
+impl EmbeddedStore {
+    pub fn new(graph: EmbeddedGraph, mut search_projection: Option<SearchProjection>) -> Self {
         if let Some(projection) = search_projection.as_mut() {
             let mut range_read_config = projection.index().range_read_config();
             range_read_config.io_depth = range_read_config
@@ -2125,14 +2080,14 @@ impl NowledgeMemEmbeddedStore {
             graph,
             search_projection,
             out_of_core_search_projection: None,
-            retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
+            retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
         }
     }
 
     fn new_with_out_of_core_search(
-        graph: NowledgeMemGraph,
-        out_of_core_search_projection: NowledgeMemOutOfCoreSearchProjection,
-        retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor,
+        graph: EmbeddedGraph,
+        out_of_core_search_projection: OutOfCoreSearchProjection,
+        retrieval_projection_advisor: RetrievalProjectionAdvisor,
     ) -> Self {
         Self {
             graph,
@@ -2143,23 +2098,23 @@ impl NowledgeMemEmbeddedStore {
     }
 
     pub fn open_with_options(
-        options: NowledgeMemOpenOptions,
-    ) -> Result<(Self, NowledgeMemOpenReport)> {
+        options: EmbeddedStoreOpenOptions,
+    ) -> Result<(Self, EmbeddedStoreOpenReport)> {
         let graph_config = options.effective_database_config();
         let runtime_governor =
-            default_nowledge_mem_runtime_governor(&options.graph_path, &graph_config);
+            default_embedded_runtime_governor(&options.graph_path, &graph_config);
         Self::open_with_options_and_runtime_governor(options, runtime_governor)
     }
 
     pub fn open_with_options_and_runtime_governor(
-        options: NowledgeMemOpenOptions,
+        options: EmbeddedStoreOpenOptions,
         runtime_governor: RuntimeGovernor,
-    ) -> Result<(Self, NowledgeMemOpenReport)> {
+    ) -> Result<(Self, EmbeddedStoreOpenReport)> {
         options.validate()?;
         let mut report = options.sanitized_report();
         let graph_config = options.effective_database_config();
         let namespace_anchor = graph_config.namespace_durability_anchor.clone();
-        let mut graph = NowledgeMemGraph::open_with_config_and_runtime_governor(
+        let mut graph = EmbeddedGraph::open_with_config_and_runtime_governor(
             &options.graph_path,
             graph_config,
             runtime_governor,
@@ -2188,7 +2143,7 @@ impl NowledgeMemEmbeddedStore {
         // Reader modes must not create or synchronize an absent projection.
         let create_search = matches!(
             &options.search_projection_open_mode,
-            NowledgeMemSearchProjectionOpenMode::FullResidencyMaintenance
+            SearchProjectionOpenMode::FullResidencyMaintenance
         );
         let _search_namespace = namespace_anchor
             .as_deref()
@@ -2201,8 +2156,8 @@ impl NowledgeMemEmbeddedStore {
             })
             .transpose()?;
         match &options.search_projection_open_mode {
-            NowledgeMemSearchProjectionOpenMode::FullResidencyMaintenance => {
-                let mut projection = NowledgeMemSearchProjection::open(path)?;
+            SearchProjectionOpenMode::FullResidencyMaintenance => {
+                let mut projection = SearchProjection::open(path)?;
                 projection.set_range_read_config(
                     options
                         .search_range_read_config
@@ -2211,11 +2166,9 @@ impl NowledgeMemEmbeddedStore {
                 report.search_projection_opened = true;
                 Ok((Self::new(graph, Some(projection)), report))
             }
-            NowledgeMemSearchProjectionOpenMode::IncrementalMaintenance(maintenance) => {
-                let projection = NowledgeMemOutOfCoreSearchProjection::open_incremental(
-                    path,
-                    (**maintenance).clone(),
-                )?;
+            SearchProjectionOpenMode::IncrementalMaintenance(maintenance) => {
+                let projection =
+                    OutOfCoreSearchProjection::open_incremental(path, (**maintenance).clone())?;
                 report.search_projection_opened = true;
                 Ok((
                     Self::new_with_out_of_core_search(
@@ -2226,7 +2179,7 @@ impl NowledgeMemEmbeddedStore {
                     report,
                 ))
             }
-            NowledgeMemSearchProjectionOpenMode::QualifiedOutOfCore(qualified) => {
+            SearchProjectionOpenMode::QualifiedOutOfCore(qualified) => {
                 let graph_commit_epoch = graph.database().commit_epoch()?;
                 if graph_commit_epoch != qualified.expected_identity.canonical_graph_commit_epoch {
                     return Err(HawDBError::Storage(format!(
@@ -2234,7 +2187,7 @@ impl NowledgeMemEmbeddedStore {
                         qualified.expected_identity.canonical_graph_commit_epoch
                     )));
                 }
-                let projection = NowledgeMemOutOfCoreSearchProjection::open_production_with_config(
+                let projection = OutOfCoreSearchProjection::open_production_with_config(
                     path,
                     qualified.config.clone(),
                     &qualified.qualification,
@@ -2254,11 +2207,11 @@ impl NowledgeMemEmbeddedStore {
         }
     }
 
-    pub fn graph(&self) -> &NowledgeMemGraph {
+    pub fn graph(&self) -> &EmbeddedGraph {
         &self.graph
     }
 
-    pub fn graph_mut(&mut self) -> &mut NowledgeMemGraph {
+    pub fn graph_mut(&mut self) -> &mut EmbeddedGraph {
         &mut self.graph
     }
 
@@ -2270,15 +2223,15 @@ impl NowledgeMemEmbeddedStore {
         self.graph.refresh_runtime_resources()
     }
 
-    pub fn search_projection(&self) -> Option<&NowledgeMemSearchProjection> {
+    pub fn search_projection(&self) -> Option<&SearchProjection> {
         self.search_projection.as_ref()
     }
 
-    pub fn search_projection_mut(&mut self) -> Option<&mut NowledgeMemSearchProjection> {
+    pub fn search_projection_mut(&mut self) -> Option<&mut SearchProjection> {
         self.search_projection.as_mut()
     }
 
-    pub fn out_of_core_search_projection(&self) -> Option<&NowledgeMemOutOfCoreSearchProjection> {
+    pub fn out_of_core_search_projection(&self) -> Option<&OutOfCoreSearchProjection> {
         self.out_of_core_search_projection.as_ref()
     }
 
@@ -2338,9 +2291,9 @@ impl NowledgeMemEmbeddedStore {
         }
     }
 
-    pub fn storage_recovery_report(&self) -> Result<NowledgeMemStorageRecoveryReport> {
+    pub fn storage_recovery_report(&self) -> Result<EmbeddedStorageRecoveryReport> {
         Ok({
-            NowledgeMemStorageRecoveryReport::from_storage_report(
+            EmbeddedStorageRecoveryReport::from_storage_report(
                 &self.graph.database().storage_recovery_report()?,
             )
         })
@@ -2368,23 +2321,21 @@ impl NowledgeMemEmbeddedStore {
             )
     }
 
-    pub fn storage_lifecycle_decision(&self) -> Result<NowledgeMemStorageLifecycleDecision> {
-        Ok({
-            NowledgeMemStorageLifecycleDecision::from_storage_recovery(
-                self.storage_recovery_report()?,
-            )
-        })
+    pub fn storage_lifecycle_decision(&self) -> Result<StorageLifecycleDecision> {
+        Ok(StorageLifecycleDecision::from_storage_recovery(
+            self.storage_recovery_report()?,
+        ))
     }
 
     pub fn storage_lifecycle_decision_json(&self) -> Result<serde_json::Value> {
         Ok(self.storage_lifecycle_decision()?.json())
     }
 
-    pub fn runtime_status(&self) -> Result<NowledgeMemRuntimeStatus> {
+    pub fn runtime_status(&self) -> Result<EmbeddedRuntimeStatus> {
         Ok({
             let graph_commit_epoch = self.graph.database().commit_epoch()?;
-            NowledgeMemRuntimeStatus {
-                protocol: NOWLEDGE_MEM_RUNTIME_STATUS_PROTOCOL.to_string(),
+            EmbeddedRuntimeStatus {
+                protocol: RUNTIME_STATUS_PROTOCOL.to_string(),
                 graph_commit_epoch,
                 changefeed: self
                     .graph
@@ -2398,10 +2349,10 @@ impl NowledgeMemEmbeddedStore {
 
     pub fn production_status(
         &self,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-    ) -> Result<NowledgeMemProductionStatus> {
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
+    ) -> Result<EmbeddedProductionStatus> {
         Ok({
-            NowledgeMemProductionStatus::from_runtime(
+            EmbeddedProductionStatus::from_runtime(
                 self.graph.mode(),
                 self.graph.database().config().read_only,
                 self.runtime_status()?,
@@ -2412,16 +2363,16 @@ impl NowledgeMemEmbeddedStore {
 
     pub fn production_status_json(
         &self,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
     ) -> Result<serde_json::Value> {
         Ok(self.production_status(route_ownership)?.json())
     }
 
     pub fn cutover_controls_report(
         &self,
-        controls: NowledgeMemCutoverControls,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-    ) -> Result<NowledgeMemCutoverControlsReport> {
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
+    ) -> Result<CutoverControlsReport> {
         Ok({
             self.cutover_controls_report_with_initial_import_cutover_catch_up(
                 controls,
@@ -2433,12 +2384,12 @@ impl NowledgeMemEmbeddedStore {
 
     pub fn cutover_controls_report_with_initial_import_cutover_catch_up(
         &self,
-        controls: NowledgeMemCutoverControls,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
         initial_import_cutover_catch_up: Option<&HawDBLightningInitialImportCutoverCatchUpReport>,
-    ) -> Result<NowledgeMemCutoverControlsReport> {
+    ) -> Result<CutoverControlsReport> {
         Ok({
-            NowledgeMemCutoverControlsReport::from_production_status(
+            CutoverControlsReport::from_production_status(
                 controls,
                 self.production_status(route_ownership)?,
                 initial_import_cutover_catch_up.is_some_and(|report| report.ready),
@@ -2448,10 +2399,10 @@ impl NowledgeMemEmbeddedStore {
 
     pub fn cutover_controls_report_with_initial_import_recovery(
         &self,
-        controls: NowledgeMemCutoverControls,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
         initial_import_recovery: Option<&HawDBLightningInitialImportRecoveryReadinessReport>,
-    ) -> Result<NowledgeMemCutoverControlsReport> {
+    ) -> Result<CutoverControlsReport> {
         Ok({
             let recovery_ready = initial_import_recovery.is_some_and(|report| {
                 report.ready
@@ -2462,7 +2413,7 @@ impl NowledgeMemEmbeddedStore {
                         .as_ref()
                         .is_some_and(|catch_up| catch_up.ready)
             });
-            let mut report = NowledgeMemCutoverControlsReport::from_production_status(
+            let mut report = CutoverControlsReport::from_production_status(
                 controls,
                 self.production_status(route_ownership)?,
                 recovery_ready,
@@ -2481,8 +2432,8 @@ impl NowledgeMemEmbeddedStore {
 
     pub fn cutover_controls_report_json(
         &self,
-        controls: NowledgeMemCutoverControls,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
     ) -> Result<serde_json::Value> {
         Ok({
             self.cutover_controls_report(controls, route_ownership)?
@@ -2492,8 +2443,8 @@ impl NowledgeMemEmbeddedStore {
 
     pub fn cutover_controls_report_json_with_initial_import_cutover_catch_up(
         &self,
-        controls: NowledgeMemCutoverControls,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
         initial_import_cutover_catch_up: Option<&HawDBLightningInitialImportCutoverCatchUpReport>,
     ) -> Result<serde_json::Value> {
         Ok({
@@ -2763,8 +2714,8 @@ impl NowledgeMemEmbeddedStore {
 
     pub fn search_candidates(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
-    ) -> Result<NowledgeMemSearchCandidateOutput> {
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
         match (
             self.search_projection.as_ref(),
             self.out_of_core_search_projection.as_ref(),
@@ -2780,15 +2731,15 @@ impl NowledgeMemEmbeddedStore {
 
     pub fn search_candidate_readiness(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
-        options: &NowledgeMemSearchCandidateReadinessOptions,
-    ) -> Result<NowledgeMemSearchCandidateReadinessReport> {
+        request: &SearchCandidateRequest,
+        options: &SearchCandidateReadinessOptions,
+    ) -> Result<SearchCandidateReadinessReport> {
         Ok(self.search_candidates(request)?.readiness_report(options))
     }
 
     pub fn search_candidate_shadow_evidence_json<I, S>(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
+        request: &SearchCandidateRequest,
         primary_candidate_ids: I,
     ) -> Result<serde_json::Value>
     where
@@ -2809,7 +2760,7 @@ impl NowledgeMemEmbeddedStore {
     pub fn retrieve_knowledge_with_report(
         &self,
         request: &KnowledgeRetrievalRequest,
-    ) -> Result<NowledgeMemRetrievalOutput> {
+    ) -> Result<RetrievalOutput> {
         let (output, out_of_core_search_metrics) = match (
             self.search_projection.as_ref(),
             self.out_of_core_search_projection.as_ref(),
@@ -2833,35 +2784,35 @@ impl NowledgeMemEmbeddedStore {
             (None, None) => return Err(missing_search_projection_error()),
             (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
         };
-        let report = nowledge_mem_retrieval_report(
+        let report = retrieval_report(
             self.graph.mode(),
             self.graph.database().config().compressed_vector_search_mode,
             &output,
         );
-        Ok(NowledgeMemRetrievalOutput {
+        Ok(RetrievalOutput {
             output,
             report,
             out_of_core_search_metrics,
         })
     }
 
-    pub fn read_query(&self, cypher: &str) -> Result<NowledgeMemReadOutput> {
+    pub fn read_query(&self, cypher: &str) -> Result<EmbeddedReadOutput> {
         self.graph.read_query(cypher)
     }
 
-    pub fn query_with_report(&mut self, cypher: &str) -> Result<NowledgeMemQueryOutput> {
+    pub fn query_with_report(&mut self, cypher: &str) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report_options(
             cypher,
             &BTreeMap::new(),
-            NowledgeMemQueryReportOptions::default(),
+            EmbeddedQueryReportOptions::default(),
         )
     }
 
     pub fn query_with_report_options(
         &mut self,
         cypher: &str,
-        options: NowledgeMemQueryReportOptions,
-    ) -> Result<NowledgeMemQueryOutput> {
+        options: EmbeddedQueryReportOptions,
+    ) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report_options(cypher, &BTreeMap::new(), options)
     }
 
@@ -2869,11 +2820,11 @@ impl NowledgeMemEmbeddedStore {
         &mut self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-    ) -> Result<NowledgeMemQueryOutput> {
+    ) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report_options(
             cypher,
             parameters,
-            NowledgeMemQueryReportOptions::default(),
+            EmbeddedQueryReportOptions::default(),
         )
     }
 
@@ -2881,8 +2832,8 @@ impl NowledgeMemEmbeddedStore {
         &mut self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: NowledgeMemQueryReportOptions,
-    ) -> Result<NowledgeMemQueryOutput> {
+        options: EmbeddedQueryReportOptions,
+    ) -> Result<EmbeddedQueryOutput> {
         let Self {
             graph,
             search_projection,
@@ -2906,9 +2857,9 @@ impl NowledgeMemEmbeddedStore {
         &mut self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: NowledgeMemQueryReportOptions,
+        options: EmbeddedQueryReportOptions,
         task_context: &RuntimeTaskContext,
-    ) -> Result<NowledgeMemQueryOutput> {
+    ) -> Result<EmbeddedQueryOutput> {
         let Self {
             graph,
             search_projection,
@@ -2943,7 +2894,7 @@ impl NowledgeMemEmbeddedStore {
         self.query_runtime_preflight(probes).json()
     }
 
-    pub fn slow_query_report(&self) -> NowledgeMemSlowQueryReport {
+    pub fn slow_query_report(&self) -> SlowQueryReport {
         self.graph.slow_query_report()
     }
 
@@ -2954,8 +2905,8 @@ impl NowledgeMemEmbeddedStore {
     pub fn read_query_with_options(
         &self,
         cypher: &str,
-        options: &NowledgeMemReadOptions,
-    ) -> Result<NowledgeMemReadOutput> {
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
         self.graph.read_query_with_options(cypher, options)
     }
 
@@ -2963,8 +2914,8 @@ impl NowledgeMemEmbeddedStore {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
-    ) -> Result<NowledgeMemReadOutput> {
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
         self.graph
             .read_query_with_params(cypher, parameters, options)
     }
@@ -2973,7 +2924,7 @@ impl NowledgeMemEmbeddedStore {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
+        options: &EmbeddedReadOptions,
         consumer: impl FnMut(BTreeMap<String, Value>) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         self.graph
@@ -2984,7 +2935,7 @@ impl NowledgeMemEmbeddedStore {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
+        options: &EmbeddedReadOptions,
         task_context: &RuntimeTaskContext,
         consumer: impl FnMut(BTreeMap<String, Value>) -> Result<()>,
     ) -> Result<QueryStreamReport> {
@@ -3001,8 +2952,8 @@ impl NowledgeMemEmbeddedStore {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
-    ) -> Result<NowledgeMemReadOutput> {
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
         self.graph
             .read_query_with_params_streaming_collect(cypher, parameters, options)
     }
@@ -3018,13 +2969,13 @@ impl NowledgeMemEmbeddedStore {
         &self,
         query: &GraphRagGeneratedQuery,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
-    ) -> Result<NowledgeMemReadOutput> {
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
         self.graph
             .read_generated_graph_rag(query, parameters, options)
     }
 }
-impl NowledgeMemEmbeddedStore {
+impl EmbeddedStore {
     pub fn background_maintenance_summary(
         &self,
         policy: &LocalQosPolicy,
@@ -3033,9 +2984,7 @@ impl NowledgeMemEmbeddedStore {
     ) -> Result<BackgroundMaintenanceSummary> {
         Ok({
             self.graph.database().background_maintenance_summary(
-                self.search_projection
-                    .as_ref()
-                    .map(NowledgeMemSearchProjection::index),
+                self.search_projection.as_ref().map(SearchProjection::index),
                 policy,
                 state,
                 options,
@@ -3048,14 +2997,11 @@ impl NowledgeMemEmbeddedStore {
         policy: &LocalQosPolicy,
         state: &LocalQosState,
         options: BackgroundMaintenanceOptions,
-    ) -> Result<NowledgeMemBackgroundMaintenanceReport> {
+    ) -> Result<BackgroundMaintenanceReport> {
         Ok({
             let summary = self.background_maintenance_summary(policy, state, options)?;
             let slow_query = self.slow_query_report();
-            NowledgeMemBackgroundMaintenanceReport::from_summary_with_slow_query(
-                &summary,
-                Some(&slow_query),
-            )
+            BackgroundMaintenanceReport::from_summary_with_slow_query(&summary, Some(&slow_query))
         })
     }
 
@@ -3071,17 +3017,11 @@ impl NowledgeMemEmbeddedStore {
         })
     }
 
-    pub fn library_readiness_json(
-        &self,
-        options: &NowledgeMemReadinessOptions,
-    ) -> Result<serde_json::Value> {
+    pub fn library_readiness_json(&self, options: &ReadinessOptions) -> Result<serde_json::Value> {
         Ok(self.library_readiness(options)?.json())
     }
 
-    pub fn library_readiness(
-        &self,
-        options: &NowledgeMemReadinessOptions,
-    ) -> Result<NowledgeMemLibraryReadinessReport> {
+    pub fn library_readiness(&self, options: &ReadinessOptions) -> Result<LibraryReadinessReport> {
         Ok({
             let bounded_read_evidence = options
                 .bounded_read_evidence
@@ -3097,21 +3037,21 @@ impl NowledgeMemEmbeddedStore {
                 options.replacement_readiness_by_query_family.as_ref(),
             );
             let graph_route_readiness =
-                nowledge_mem_graph_route_readiness_json(options.graph_route_readiness.as_ref());
+                graph_route_readiness_json(options.graph_route_readiness.as_ref());
             let search_route_ownership = options
                 .search_route_ownership
                 .as_ref()
-                .map(NowledgeMemSearchRouteOwnershipReadinessReport::json)
+                .map(SearchRouteOwnershipReadinessReport::json)
                 .unwrap_or_else(missing_search_route_ownership_json);
             let active_search_route_ownership = options
                 .active_search_route_ownership
                 .as_ref()
-                .map(NowledgeMemActiveSearchRouteOwnershipReadinessReport::json)
+                .map(ActiveSearchRouteOwnershipReadinessReport::json)
                 .unwrap_or_else(missing_active_search_route_ownership_json);
             let active_search_route_readiness = options
                 .active_search_route_readiness
                 .as_ref()
-                .map(NowledgeMemActiveSearchRouteReadinessReport::json)
+                .map(ActiveSearchRouteReadinessReport::json)
                 .unwrap_or_else(missing_active_search_route_readiness_json);
             let search_projection_evidence = options
                 .search_projection_evidence
@@ -3152,37 +3092,36 @@ impl NowledgeMemEmbeddedStore {
                 .as_ref()
                 .map(StorageResourceProfileReport::json)
                 .unwrap_or_else(missing_production_resource_profile_json);
-            let assessment =
-                hawdb_readiness::library_readiness::assess_nowledge_mem_library_readiness(
-                    &hawdb_readiness::library_readiness::NowledgeMemLibraryReadinessEvidence {
-                        bounded_read_evidence: &bounded_read_evidence,
-                        storage_recovery: &storage_recovery,
-                        background_maintenance: &background_maintenance,
-                        query_family_evidence: &query_family_evidence,
-                        graph_route_readiness: &graph_route_readiness,
-                        search_route_ownership: &search_route_ownership,
-                        active_search_route_ownership: &active_search_route_ownership,
-                        active_search_route_readiness: &active_search_route_readiness,
-                        search_projection_evidence: &search_projection_evidence,
-                        search_projection_shadow_evidence: &search_projection_shadow_evidence,
-                        search_candidate_shadow_evidence: &search_candidate_shadow_evidence,
-                        workload_fixture_evidence: &workload_fixture_evidence,
-                        production_resource_profile: &production_resource_profile,
-                    },
-                );
+            let assessment = hawdb_readiness::library_readiness::assess_library_readiness(
+                &hawdb_readiness::library_readiness::LibraryReadinessEvidence {
+                    bounded_read_evidence: &bounded_read_evidence,
+                    storage_recovery: &storage_recovery,
+                    background_maintenance: &background_maintenance,
+                    query_family_evidence: &query_family_evidence,
+                    graph_route_readiness: &graph_route_readiness,
+                    search_route_ownership: &search_route_ownership,
+                    active_search_route_ownership: &active_search_route_ownership,
+                    active_search_route_readiness: &active_search_route_readiness,
+                    search_projection_evidence: &search_projection_evidence,
+                    search_projection_shadow_evidence: &search_projection_shadow_evidence,
+                    search_candidate_shadow_evidence: &search_candidate_shadow_evidence,
+                    workload_fixture_evidence: &workload_fixture_evidence,
+                    production_resource_profile: &production_resource_profile,
+                },
+            );
             let readiness_by_area = assessment.readiness_by_area;
             let areas = readiness_by_area.areas();
             let ready_area_count = areas.iter().filter(|area| area.ready).count();
             let blocked_area_count = areas.len().saturating_sub(ready_area_count);
             let blocker_codes = assessment.blocker_codes;
             let ready = blocker_codes.is_empty();
-            NowledgeMemLibraryReadinessReport {
-                protocol: NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL.to_string(),
+            LibraryReadinessReport {
+                protocol: LIBRARY_READINESS_PROTOCOL.to_string(),
                 present: true,
                 ready,
                 mode: self.graph.mode(),
-                redaction: NowledgeMemReadinessRedactionSummary::default(),
-                production_path: NowledgeMemLibraryProductionPathSummary::default(),
+                redaction: ReadinessRedactionSummary::default(),
+                production_path: LibraryProductionPathSummary::default(),
                 blocker_codes,
                 readiness_by_area,
                 ready_area_count,
@@ -3206,29 +3145,26 @@ impl NowledgeMemEmbeddedStore {
         })
     }
 
-    pub fn readiness_dashboard(
-        &self,
-        options: &NowledgeMemReadinessOptions,
-    ) -> Result<NowledgeMemReadinessDashboard> {
+    pub fn readiness_dashboard(&self, options: &ReadinessOptions) -> Result<ReadinessDashboard> {
         Ok({
             let library = self.library_readiness(options)?;
             let storage_lifecycle = self.storage_lifecycle_decision()?;
             let slow_query = self.slow_query_report();
-            NowledgeMemReadinessDashboard::from_reports(&library, &storage_lifecycle, &slow_query)
+            ReadinessDashboard::from_reports(&library, &storage_lifecycle, &slow_query)
         })
     }
 
     pub fn readiness_dashboard_json(
         &self,
-        options: &NowledgeMemReadinessOptions,
+        options: &ReadinessOptions,
     ) -> Result<serde_json::Value> {
         Ok(self.readiness_dashboard(options)?.json())
     }
 
     pub fn operations_readiness(
         &self,
-        options: &NowledgeMemReadinessOptions,
-    ) -> Result<NowledgeMemOperationsReadinessReport> {
+        options: &ReadinessOptions,
+    ) -> Result<OperationsReadinessReport> {
         Ok({
             let runtime_status = self.runtime_status()?;
             let storage_recovery = self.storage_recovery_report()?;
@@ -3238,7 +3174,7 @@ impl NowledgeMemEmbeddedStore {
                 &options.qos_state,
                 options.background_maintenance_options.clone(),
             )?;
-            NowledgeMemOperationsReadinessReport::from_reports(
+            OperationsReadinessReport::from_reports(
                 self.graph.mode(),
                 self.graph.database().config().read_only,
                 runtime_status,
@@ -3251,31 +3187,28 @@ impl NowledgeMemEmbeddedStore {
 
     pub fn operations_readiness_json(
         &self,
-        options: &NowledgeMemReadinessOptions,
+        options: &ReadinessOptions,
     ) -> Result<serde_json::Value> {
         Ok(self.operations_readiness(options)?.json())
     }
 
-    fn bounded_read_probe_evidence_json(
-        &self,
-        options: &NowledgeMemReadinessOptions,
-    ) -> serde_json::Value {
+    fn bounded_read_probe_evidence_json(&self, options: &ReadinessOptions) -> serde_json::Value {
         let Some(probe) = options.bounded_read_probe.as_ref() else {
             return serde_json::json!({
-                "protocol": NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL,
+                "protocol": BOUNDED_READ_EVIDENCE_PROTOCOL,
                 "present": false,
                 "ready": false,
                 "blocker_codes": ["bounded_read_probe_missing"],
             });
         };
         match self.read_query_with_params(&probe.cypher, &probe.parameters, &options.read_options) {
-            Ok(read) => nowledge_mem_bounded_read_evidence_json_with_route_readiness(
+            Ok(read) => bounded_read_evidence_json_with_route_readiness(
                 &read.report,
                 &options.covered_routes,
                 options.graph_route_readiness.as_ref(),
             ),
             Err(_) => serde_json::json!({
-                "protocol": NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL,
+                "protocol": BOUNDED_READ_EVIDENCE_PROTOCOL,
                 "present": true,
                 "ready": false,
                 "blocker_codes": ["bounded_read_probe_failed"],
@@ -3306,7 +3239,7 @@ impl NowledgeMemEmbeddedStore {
     fn search_request_for_retrieval(
         &self,
         request: &KnowledgeRetrievalRequest,
-    ) -> NowledgeMemSearchCandidateRequest {
+    ) -> SearchCandidateRequest {
         search_read::retrieval_request(
             self.graph.database().config(),
             &self.retrieval_projection_advisor,
@@ -3314,7 +3247,7 @@ impl NowledgeMemEmbeddedStore {
         )
     }
 
-    fn require_search_projection(&self) -> Result<&NowledgeMemSearchProjection> {
+    fn require_search_projection(&self) -> Result<&SearchProjection> {
         self.search_projection
             .as_ref()
             .ok_or_else(missing_search_projection_error)
@@ -3330,31 +3263,31 @@ fn ambiguous_search_projection_error() -> HawDBError {
 }
 
 fn require_search_projection_mut(
-    search_projection: &mut Option<NowledgeMemSearchProjection>,
-) -> Result<&mut NowledgeMemSearchProjection> {
+    search_projection: &mut Option<SearchProjection>,
+) -> Result<&mut SearchProjection> {
     search_projection
         .as_mut()
         .ok_or_else(missing_search_projection_error)
 }
 
-struct NowledgeMemQueryReportInput<'a> {
-    mode: NowledgeMemGraphMode,
+struct EmbeddedQueryReportInput<'a> {
+    mode: GraphMode,
     statement: &'a cypher::Statement,
     trace: Option<&'a crate::optimizer::OptimizerTrace>,
     plan_cache_lookup: Option<PlanCacheLookup>,
     execution_profile: Option<&'a ReadExecutionProfile>,
     output: &'a QueryOutput,
-    options: NowledgeMemQueryReportOptions,
+    options: EmbeddedQueryReportOptions,
     elapsed_micros: u128,
 }
 
-fn nowledge_mem_query_report(input: NowledgeMemQueryReportInput<'_>) -> NowledgeMemQueryReport {
+fn embedded_query_report(input: EmbeddedQueryReportInput<'_>) -> EmbeddedQueryReport {
     let statement_kind = crate::api::statement_kind(
         hawdb_cypher::read_route::query_statement_body(input.statement),
     );
-    let decision = nowledge_mem_fast_path_classification(input.statement);
-    hawdb_readiness::nowledge_mem_query_report::nowledge_mem_query_report(
-        hawdb_readiness::nowledge_mem_query_report::NowledgeMemQueryReportInput {
+    let decision = fast_path_classification(input.statement);
+    hawdb_readiness::embedded_query_report::embedded_query_report(
+        hawdb_readiness::embedded_query_report::EmbeddedQueryReportInput {
             mode: input.mode,
             statement_kind,
             statement: input.statement,
@@ -3411,8 +3344,8 @@ fn nowledge_query_runtime_preflight_report(
         required_routes_covered: route_coverage.required_routes_covered,
         unknown_routes: route_coverage.unknown_routes,
         duplicate_routes: route_coverage.duplicate_routes,
-        route_catalog_version: NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION.to_string(),
-        route_catalog_digest: nowledge_mem_graph_read_route_catalog_digest(),
+        route_catalog_version: GRAPH_READ_ROUTE_CATALOG_VERSION.to_string(),
+        route_catalog_digest: graph_read_route_catalog_digest(),
         route_coverage_ready: route_coverage.ready,
         route_coverage_blocker_codes: route_coverage.blocker_codes,
         blocker_codes,
@@ -3441,7 +3374,7 @@ fn nowledge_query_runtime_probe_report(
                 output_row_count,
             );
             let plan_cache_lookup = output.plan_cache_lookup;
-            let plan_cache = nowledge_mem_plan_cache_report(Some(plan_cache_lookup));
+            let plan_cache = plan_cache_report(Some(plan_cache_lookup));
             NowledgeQueryRuntimePreflightProbeReport {
                 name: probe.name.clone(),
                 route: probe.route.clone(),
@@ -3543,12 +3476,12 @@ fn missing_primary_search_projection_probe_json() -> serde_json::Value {
 
 fn missing_search_candidate_shadow_evidence_json() -> serde_json::Value {
     serde_json::json!({
-        "protocol": NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
-        "route": NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
-        "evidence_source": NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE,
+        "protocol": SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+        "route": SEARCH_CANDIDATE_EVIDENCE_ROUTE,
+        "evidence_source": SEARCH_CANDIDATE_EVIDENCE_SOURCE,
         "present": false,
         "ready": false,
-        "candidate_primary_engine": NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
+        "candidate_primary_engine": SEARCH_CANDIDATE_PRIMARY_ENGINE,
         "request_count": null,
         "primary_candidate_count": null,
         "shadow_candidate_count": null,
@@ -3658,20 +3591,20 @@ fn query_family_replacement_blocker_codes(
     blockers
 }
 
-fn nowledge_mem_graph_route_readiness_json(
-    route_readiness: Option<&NowledgeMemRouteReadinessSummary>,
+fn graph_route_readiness_json(
+    route_readiness: Option<&RouteReadinessSummary>,
 ) -> serde_json::Value {
     let Some(summary) = route_readiness else {
         return serde_json::json!({
             "protocol": NMEM_GRAPH_ROUTE_READINESS_PROTOCOL,
             "present": false,
             "ready": false,
-            "required_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+            "required_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
             "primary_ready_route_count": 0,
             "primary_ready_routes": [],
-            "missing_required_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
-            "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-            "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+            "missing_required_routes": REQUIRED_BOUNDED_READ_ROUTES,
+            "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+            "route_catalog_digest": graph_read_route_catalog_digest(),
             "route_primary_ready": null,
             "route_query_plan_evidence_ready": null,
             "route_query_profile_evidence_ready": null,
@@ -3684,7 +3617,7 @@ fn nowledge_mem_graph_route_readiness_json(
     };
 
     let missing_required_routes =
-        hawdb_readiness::bounded_read_evidence::missing_nowledge_mem_bounded_read_routes(
+        hawdb_readiness::bounded_read_evidence::missing_bounded_read_routes(
             &summary.primary_ready_routes,
         );
     let relationship_property_pruning_count_matches = summary
@@ -3713,12 +3646,12 @@ fn nowledge_mem_graph_route_readiness_json(
         "protocol": NMEM_GRAPH_ROUTE_READINESS_PROTOCOL,
         "present": true,
         "ready": blocker_codes.is_empty(),
-        "required_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+        "required_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
         "primary_ready_route_count": summary.primary_ready_routes.len(),
         "primary_ready_routes": summary.primary_ready_routes,
         "missing_required_routes": missing_required_routes,
-        "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-        "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+        "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+        "route_catalog_digest": graph_read_route_catalog_digest(),
         "route_primary_ready": summary.route_primary_ready,
         "route_query_plan_evidence_ready": summary.route_query_plan_evidence_ready,
         "route_query_profile_evidence_ready": summary.route_query_profile_evidence_ready,
@@ -3732,18 +3665,18 @@ fn nowledge_mem_graph_route_readiness_json(
 
 fn missing_search_route_ownership_json() -> serde_json::Value {
     serde_json::json!({
-        "protocol": NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
+        "protocol": SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
         "ready": false,
         "production_cutover_ready": false,
         "require_all_hawdb": true,
-        "required_route_count": REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES.len(),
+        "required_route_count": REQUIRED_SEARCH_ROUTES.len(),
         "explicit_route_count": 0,
         "hawdb_route_count": 0,
         "lancedb_route_count": 0,
         "routes": [],
         "hawdb_routes": [],
         "lancedb_routes": [],
-        "missing_required_routes": REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
+        "missing_required_routes": REQUIRED_SEARCH_ROUTES,
         "unknown_routes": [],
         "duplicate_routes": [],
         "conflicting_routes": [],
@@ -3753,18 +3686,18 @@ fn missing_search_route_ownership_json() -> serde_json::Value {
 
 fn missing_active_search_route_ownership_json() -> serde_json::Value {
     serde_json::json!({
-        "protocol": NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
+        "protocol": SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
         "ready": false,
         "production_cutover_ready": false,
         "require_all_hawdb": true,
-        "required_route_count": REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len(),
+        "required_route_count": REQUIRED_ACTIVE_SEARCH_ROUTES.len(),
         "explicit_route_count": 0,
         "hawdb_route_count": 0,
         "lancedb_route_count": 0,
         "routes": [],
         "hawdb_routes": [],
         "lancedb_routes": [],
-        "missing_required_routes": REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES,
+        "missing_required_routes": REQUIRED_ACTIVE_SEARCH_ROUTES,
         "unknown_routes": [],
         "duplicate_routes": [],
         "invalid_projection_routes": [],
@@ -3774,18 +3707,18 @@ fn missing_active_search_route_ownership_json() -> serde_json::Value {
 
 fn missing_active_search_route_readiness_json() -> serde_json::Value {
     serde_json::json!({
-        "protocol": NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
+        "protocol": ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
         "ready": false,
         "production_cutover_ready": false,
         "require_all_hawdb": true,
-        "required_route_count": REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len(),
+        "required_route_count": REQUIRED_ACTIVE_SEARCH_ROUTES.len(),
         "evidence_route_count": 0,
         "ready_route_count": 0,
         "hawdb_route_count": 0,
         "lancedb_handle_required_route_count": 0,
         "routes": [],
         "ready_routes": [],
-        "missing_required_routes": REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES,
+        "missing_required_routes": REQUIRED_ACTIVE_SEARCH_ROUTES,
         "unknown_routes": [],
         "duplicate_routes": [],
         "invalid_projection_routes": [],
@@ -3800,11 +3733,11 @@ fn missing_active_search_route_readiness_json() -> serde_json::Value {
     })
 }
 
-fn nowledge_mem_retrieval_report(
-    mode: NowledgeMemGraphMode,
+fn retrieval_report(
+    mode: GraphMode,
     compressed_vector_search_mode: CompressedVectorSearchMode,
     output: &KnowledgeRetrievalOutput,
-) -> NowledgeMemRetrievalReport {
+) -> RetrievalReport {
     let vector_backend = output
         .search
         .retrievers
@@ -3866,8 +3799,8 @@ fn nowledge_mem_retrieval_report(
                 .map(|code| code.as_str().to_string()),
         )
         .collect::<Vec<_>>();
-    NowledgeMemRetrievalReport {
-        protocol: NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL.to_string(),
+    RetrievalReport {
+        protocol: RETRIEVAL_REPORT_PROTOCOL.to_string(),
         mode,
         compressed_vector_search_mode,
         graph_commit_epoch: output.graph_commit_epoch,
@@ -3899,15 +3832,15 @@ fn nowledge_mem_retrieval_report(
     }
 }
 
-fn nowledge_mem_read_report(
-    mode: NowledgeMemGraphMode,
+fn embedded_read_report(
+    mode: GraphMode,
     output: &QueryOutput,
-    options: &NowledgeMemReadOptions,
+    options: &EmbeddedReadOptions,
     execution_profile: &ReadExecutionProfile,
-) -> NowledgeMemReadReport {
+) -> EmbeddedReadReport {
     let estimated_payload_bytes = estimate_query_output_payload_bytes(output);
-    NowledgeMemReadReport {
-        protocol: NOWLEDGE_MEM_READ_REPORT_PROTOCOL.to_string(),
+    EmbeddedReadReport {
+        protocol: READ_REPORT_PROTOCOL.to_string(),
         mode,
         row_count: output.rows.len(),
         max_rows: options.max_rows,
@@ -3945,13 +3878,12 @@ fn nowledge_mem_read_report(
     }
 }
 
-fn bounded_nowledge_mem_read_output(
-    mode: NowledgeMemGraphMode,
+fn bounded_embedded_read_output(
+    mode: GraphMode,
     bounded: BoundedReadQueryOutput,
-    options: &NowledgeMemReadOptions,
-) -> Result<NowledgeMemReadOutput> {
-    let report =
-        nowledge_mem_read_report(mode, &bounded.output, options, &bounded.execution_profile);
+    options: &EmbeddedReadOptions,
+) -> Result<EmbeddedReadOutput> {
+    let report = embedded_read_report(mode, &bounded.output, options, &bounded.execution_profile);
     if report.row_budget_exceeded {
         return Err(HawDBError::read_budget_exceeded(
             ReadBudgetResource::Rows,
@@ -3970,16 +3902,13 @@ fn bounded_nowledge_mem_read_output(
             report.max_estimated_payload_bytes.unwrap_or_default()
         )));
     }
-    Ok(NowledgeMemReadOutput {
+    Ok(EmbeddedReadOutput {
         output: bounded.output,
         report,
     })
 }
 
-fn legacy_nowledge_mem_read_error(
-    error: HawDBError,
-    options: &NowledgeMemReadOptions,
-) -> HawDBError {
+fn legacy_embedded_read_error(error: HawDBError, options: &EmbeddedReadOptions) -> HawDBError {
     let Some(max_payload_bytes) = options.max_estimated_payload_bytes else {
         return error;
     };

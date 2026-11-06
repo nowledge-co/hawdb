@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use super::{
-    NowledgeMemEmbeddedStore, NowledgeMemEmbeddedStoreHandle, NowledgeMemGraph,
-    NowledgeMemGraphMode, NowledgeMemReadSnapshotBudget, NowledgeMemSearchProjection,
+    EmbeddedGraph, EmbeddedReadSnapshotBudget, EmbeddedStore, EmbeddedStoreHandle, GraphMode,
+    SearchProjection,
 };
 use crate::search::{SearchProjectionKind, SearchProjectionRow};
 use crate::{Database, DatabaseConfig, SearchIndex, Value};
@@ -95,11 +95,8 @@ fn search_helpers_preserve_their_pair_while_writers_and_fresh_helpers_advance() 
             }
             writer.finish().unwrap();
             store.out_of_core_search_projection = Some(
-                super::NowledgeMemOutOfCoreSearchProjection::open_incremental(
-                    &path,
-                    Default::default(),
-                )
-                .unwrap(),
+                super::OutOfCoreSearchProjection::open_incremental(&path, Default::default())
+                    .unwrap(),
             );
         }
         let request = crate::KnowledgeRetrievalRequest::nowledge_deep(
@@ -160,7 +157,7 @@ fn search_helpers_preserve_their_pair_while_writers_and_fresh_helpers_advance() 
                 old.retrieve(&request)?.output.graph_commit_epoch,
                 before.output.graph_commit_epoch
             );
-            let candidates = super::NowledgeMemSearchCandidateRequest::text("App", 1)
+            let candidates = super::SearchCandidateRequest::text("App", 1)
                 .with_metadata_filters(BTreeMap::from([("space_id".into(), "default".into())]));
             assert_eq!(handle.search_candidates(&candidates)?.hits.len(), 1);
             assert_eq!(old.search_candidates(&candidates)?.result.hits.len(), 1,);
@@ -179,7 +176,7 @@ fn search_helpers_preserve_their_pair_while_writers_and_fresh_helpers_advance() 
     }
 }
 
-#[path = "nowledge_mem_snapshot_scoring_tests.rs"]
+#[path = "embedded_store_snapshot_scoring_tests.rs"]
 mod scoring_tests;
 
 fn snapshot_governor() -> hawdb_qos::RuntimeGovernor {
@@ -194,13 +191,13 @@ fn snapshot_governor() -> hawdb_qos::RuntimeGovernor {
     )
 }
 
-pub(super) fn app_read_handle() -> NowledgeMemEmbeddedStoreHandle {
+pub(super) fn app_read_handle() -> EmbeddedStoreHandle {
     app_read_handle_with_result_budget(16 * 1024)
 }
 
 pub(super) fn app_read_handle_with_result_budget(
     max_read_result_payload_bytes: usize,
-) -> NowledgeMemEmbeddedStoreHandle {
+) -> EmbeddedStoreHandle {
     let mut database = Database::new_with_config(DatabaseConfig {
         max_read_result_rows: Some(16),
         max_read_result_payload_bytes: Some(max_read_result_payload_bytes),
@@ -233,9 +230,9 @@ pub(super) fn app_read_handle_with_result_budget(
         )
         .unwrap();
 
-    let graph = NowledgeMemGraph::from_database_with_runtime_governor(
+    let graph = EmbeddedGraph::from_database_with_runtime_governor(
         database,
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
         snapshot_governor(),
     );
     let mut index = SearchIndex::in_memory();
@@ -255,9 +252,8 @@ pub(super) fn app_read_handle_with_result_budget(
             })
             .unwrap();
     }
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
-        .unwrap()
+    let projection = SearchProjection::from_index(index);
+    EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap()
 }
 
 #[test]
@@ -265,7 +261,7 @@ fn bounded_read_snapshot_coordinates_search_graph_and_relational_queries() {
     let handle = app_read_handle();
     let output = handle
         .with_bounded_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 4,
                 max_payload_bytes: 4096,
             },
@@ -344,7 +340,7 @@ fn bounded_read_snapshot_uses_its_pinned_projection_for_text_seeds() {
     let handle = app_read_handle();
     handle
         .with_bounded_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 4,
                 max_payload_bytes: 4096,
             },
@@ -409,28 +405,27 @@ fn resident_and_out_of_core_text_seeds_return_the_same_document_identities() {
         });
         database.query("CREATE (:Memory {id: 'first'})").unwrap();
         database.query("CREATE (:Memory {id: 'second'})").unwrap();
-        NowledgeMemGraph::from_database_with_runtime_governor(
+        EmbeddedGraph::from_database_with_runtime_governor(
             database,
-            NowledgeMemGraphMode::ShadowReadOnly,
+            GraphMode::ShadowReadOnly,
             snapshot_governor(),
         )
     };
-    let resident_handle = NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(
+    let resident_handle = EmbeddedStoreHandle::new(EmbeddedStore::new(
         graph(),
-        Some(NowledgeMemSearchProjection::from_index(resident)),
+        Some(SearchProjection::from_index(resident)),
     ))
     .unwrap();
-    let out_of_core_handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new_with_out_of_core_search(
-            graph(),
-            super::NowledgeMemOutOfCoreSearchProjection::open(&search_path).unwrap(),
-            Default::default(),
-        ))
-        .unwrap();
-    let query = |handle: &NowledgeMemEmbeddedStoreHandle| {
+    let out_of_core_handle = EmbeddedStoreHandle::new(EmbeddedStore::new_with_out_of_core_search(
+        graph(),
+        super::OutOfCoreSearchProjection::open(&search_path).unwrap(),
+        Default::default(),
+    ))
+    .unwrap();
+    let query = |handle: &EmbeddedStoreHandle| {
         handle
             .with_bounded_read_snapshot(
-                NowledgeMemReadSnapshotBudget {
+                EmbeddedReadSnapshotBudget {
                     max_rows: 2,
                     max_payload_bytes: 4096,
                 },
@@ -497,7 +492,7 @@ fn bounded_text_seed_snapshot_retains_its_projection_during_a_writer_update() {
         })();
         done_tx.send(result).unwrap();
     });
-    let read = |snapshot: &mut super::NowledgeMemReadSnapshot<'_>| -> crate::Result<_> {
+    let read = |snapshot: &mut super::EmbeddedReadSnapshot<'_>| -> crate::Result<_> {
         let text = snapshot.query_cypher(
             "CALL text_search($text, topK := 2) YIELD id, score RETURN id ORDER BY id",
             &BTreeMap::from([("text".into(), Value::String("candidate".into()))]),
@@ -516,7 +511,7 @@ fn bounded_text_seed_snapshot_retains_its_projection_during_a_writer_update() {
         Ok((text, graph, sql))
     };
     let result = handle.with_bounded_read_snapshot(
-        NowledgeMemReadSnapshotBudget {
+        EmbeddedReadSnapshotBudget {
             max_rows: 8,
             max_payload_bytes: 4096,
         },
@@ -537,7 +532,7 @@ fn bounded_text_seed_snapshot_retains_its_projection_during_a_writer_update() {
     let epoch = result.unwrap();
     handle
         .with_bounded_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 3,
                 max_payload_bytes: 4096,
             },
@@ -578,10 +573,7 @@ fn bounded_read_snapshot_filters_text_seeds_before_top_k() {
         .query("CREATE (:Memory {id: 'farther', space_id: 'other', title: 'Farther memory'})")
         .unwrap();
     let unfiltered = handle
-        .search_candidates(&super::NowledgeMemSearchCandidateRequest::text(
-            "candidate",
-            1,
-        ))
+        .search_candidates(&super::SearchCandidateRequest::text("candidate", 1))
         .unwrap();
     let excluded_space = if unfiltered.hits[0].external_id.as_deref() == Some("nearest") {
         "other"
@@ -590,7 +582,7 @@ fn bounded_read_snapshot_filters_text_seeds_before_top_k() {
     };
     let expected = handle
         .search_candidates(
-            &super::NowledgeMemSearchCandidateRequest::text("candidate", 1).with_metadata_filters(
+            &super::SearchCandidateRequest::text("candidate", 1).with_metadata_filters(
                 BTreeMap::from([("space_id".into(), excluded_space.into())]),
             ),
         )
@@ -603,7 +595,7 @@ fn bounded_read_snapshot_filters_text_seeds_before_top_k() {
     ]);
     handle
         .with_bounded_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 1,
                 max_payload_bytes: 4096,
             },
@@ -633,7 +625,7 @@ fn graph_only_snapshot_refuses_text_seeds_without_a_pinned_projection() {
     let handle = app_read_handle();
     handle
         .with_bounded_graph_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 1,
                 max_payload_bytes: 4096,
             },
@@ -659,7 +651,7 @@ fn bounded_graph_read_snapshot_exposes_profiled_query_memory_evidence() {
     let context = RuntimeTaskContext::default();
     let report = handle
         .with_bounded_graph_read_snapshot_context(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 2,
                 max_payload_bytes: 4096,
             },
@@ -700,7 +692,7 @@ fn bounded_graph_read_snapshot_propagates_cancellation_without_leaking_admission
 
     let error = handle
         .with_bounded_graph_read_snapshot_context(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 1,
                 max_payload_bytes: 4096,
             },
@@ -742,7 +734,7 @@ fn bounded_graph_read_snapshot_propagates_deadline_without_leaking_admission() {
 
     let error = handle
         .with_bounded_graph_read_snapshot_context(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 1,
                 max_payload_bytes: 4096,
             },
@@ -774,7 +766,7 @@ fn bounded_read_snapshot_reports_the_thread_detail_mixed_read_shape() {
     let handle = app_read_handle();
     let report = handle
         .with_bounded_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 4,
                 max_payload_bytes: 4096,
             },
@@ -825,7 +817,7 @@ fn bounded_read_snapshot_counts_only_successfully_budgeted_statements() {
     let handle = app_read_handle();
     let report = handle
         .with_bounded_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 2,
                 max_payload_bytes: 4096,
             },
@@ -865,7 +857,7 @@ fn bounded_read_snapshot_enforces_the_cumulative_row_budget() {
     let handle = app_read_handle();
     let error = handle
         .with_bounded_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 1,
                 max_payload_bytes: 4096,
             },
@@ -899,7 +891,7 @@ fn bounded_read_snapshot_enforces_the_cumulative_payload_budget() {
     let handle = app_read_handle();
     let error = handle
         .with_bounded_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 2,
                 max_payload_bytes: 12,
             },
@@ -932,7 +924,7 @@ fn bounded_read_snapshot_enforces_the_cumulative_payload_budget() {
 
     handle
         .with_bounded_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 2,
                 max_payload_bytes: 10,
             },
@@ -982,7 +974,7 @@ fn user_keeps_a_stable_graph_and_sql_snapshot_while_a_writer_commits() {
         });
         done_tx.send(result).unwrap();
     });
-    let read = |snapshot: &mut super::NowledgeMemReadSnapshot<'_>| -> crate::Result<_> {
+    let read = |snapshot: &mut super::EmbeddedReadSnapshot<'_>| -> crate::Result<_> {
         let graph = snapshot.query_cypher(
             "MATCH (t:Thread) RETURN t.title AS title LIMIT 1",
             &BTreeMap::new(),
@@ -992,7 +984,7 @@ fn user_keeps_a_stable_graph_and_sql_snapshot_while_a_writer_commits() {
         Ok((graph, sql))
     };
     let result = handle.with_bounded_graph_read_snapshot(
-        NowledgeMemReadSnapshotBudget {
+        EmbeddedReadSnapshotBudget {
             max_rows: 4,
             max_payload_bytes: 4096,
         },
@@ -1025,7 +1017,7 @@ fn user_keeps_a_stable_graph_and_sql_snapshot_while_a_writer_commits() {
     let (before, epoch) = result.unwrap();
     handle
         .with_bounded_graph_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 4,
                 max_payload_bytes: 4096,
             },
@@ -1054,7 +1046,7 @@ fn user_cannot_read_an_unpinned_projection_from_a_graph_snapshot() {
         ),
         ("space_id".into(), Value::String("default".into())),
     ]);
-    let budget = NowledgeMemReadSnapshotBudget {
+    let budget = EmbeddedReadSnapshotBudget {
         max_rows: 4,
         max_payload_bytes: 4096,
     };
@@ -1093,7 +1085,7 @@ fn user_retains_cumulative_budgets_without_a_projection_lock() {
     let handle = app_read_handle();
     handle
         .with_bounded_graph_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 1,
                 max_payload_bytes: 4096,
             },
@@ -1146,14 +1138,14 @@ fn user_read_transaction_allows_a_writer_to_commit_before_it_finishes() {
 }
 
 fn read_canonical_pair(
-    handle: &NowledgeMemEmbeddedStoreHandle,
+    handle: &EmbeddedStoreHandle,
     bounded: bool,
 ) -> crate::Result<(Value, Value, u64)> {
     let graph_query = "MATCH (t:Thread) RETURN t.title AS title LIMIT 1";
     let sql_query = "SELECT content FROM thread_messages LIMIT 1";
     let (graph, sql, epoch) = if bounded {
         handle.with_bounded_graph_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 2,
                 max_payload_bytes: 4096,
             },
@@ -1251,13 +1243,13 @@ fn user_acquires_committed_graph_and_sql_while_writer_stages_then_observes_its_o
 }
 
 fn canonical_read_then<T>(
-    handle: &NowledgeMemEmbeddedStoreHandle,
+    handle: &EmbeddedStoreHandle,
     bounded: bool,
     after_read: impl FnOnce() -> crate::Result<T>,
 ) -> crate::Result<T> {
     if bounded {
         handle.with_bounded_graph_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 1,
                 max_payload_bytes: 4096,
             },
@@ -1324,7 +1316,7 @@ impl Drop for SnapshotTestRoot {
     }
 }
 
-fn durable_snapshot_handle(root: &SnapshotTestRoot) -> NowledgeMemEmbeddedStoreHandle {
+fn durable_snapshot_handle(root: &SnapshotTestRoot) -> EmbeddedStoreHandle {
     let mut db = Database::open_with_config(
         &root.0,
         DatabaseConfig {
@@ -1337,12 +1329,12 @@ fn durable_snapshot_handle(root: &SnapshotTestRoot) -> NowledgeMemEmbeddedStoreH
     .unwrap();
     db.query("CREATE (:Record {id: 'committed'})").unwrap();
     db.checkpoint().unwrap();
-    let graph = NowledgeMemGraph::from_database_with_runtime_governor(
+    let graph = EmbeddedGraph::from_database_with_runtime_governor(
         db,
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
         snapshot_governor(),
     );
-    NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None)).unwrap()
+    EmbeddedStoreHandle::new(EmbeddedStore::new(graph, None)).unwrap()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1411,17 +1403,13 @@ fn assert_read_only_snapshot_context(case: SnapshotContextCase) {
             residency == crate::store::StorageResidencyMode::OutOfCore
         );
         let governor = snapshot_governor();
-        let graph = NowledgeMemGraph::from_database_with_runtime_governor(
+        let graph = EmbeddedGraph::from_database_with_runtime_governor(
             database,
-            NowledgeMemGraphMode::ShadowReadOnly,
+            GraphMode::ShadowReadOnly,
             governor.clone(),
         );
-        let projection = NowledgeMemSearchProjection::from_index(SearchIndex::in_memory());
-        let handle = NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(
-            graph,
-            Some(projection),
-        ))
-        .unwrap();
+        let projection = SearchProjection::from_index(SearchIndex::in_memory());
+        let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
 
         for pin_projection in [false, true] {
             for sql_first in [false, true] {
@@ -1442,7 +1430,7 @@ fn assert_read_only_snapshot_context(case: SnapshotContextCase) {
                         )),
                     _ => RuntimeTaskContext::without_deadline(cancellation.clone()),
                 };
-                let budget = NowledgeMemReadSnapshotBudget {
+                let budget = EmbeddedReadSnapshotBudget {
                     max_rows: if case == SnapshotContextCase::RowBudget {
                         1
                     } else {
@@ -1455,7 +1443,7 @@ fn assert_read_only_snapshot_context(case: SnapshotContextCase) {
                     },
                 };
                 let before = governor.snapshot();
-                let operation = |snapshot: &mut super::NowledgeMemReadSnapshot<'_>| {
+                let operation = |snapshot: &mut super::EmbeddedReadSnapshot<'_>| {
                     assert_eq!(snapshot.commit_epoch(), epoch);
                     assert_eq!(snapshot.report().search_projection_present, pin_projection);
                     if case == SnapshotContextCase::Cancellation {
@@ -1884,7 +1872,7 @@ fn user_releases_snapshot_admission_after_success_error_panic_and_budget_rejecti
         // Given the same governor used by writers and published snapshot readers.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             handle.with_bounded_graph_read_snapshot(
-                NowledgeMemReadSnapshotBudget {
+                EmbeddedReadSnapshotBudget {
                     max_rows: if outcome == 3 { 17 } else { 1 },
                     max_payload_bytes: 4096,
                 },
@@ -1987,7 +1975,7 @@ fn user_can_reenter_snapshot_reads_from_admission_and_completion_telemetry() {
         // When admission succeeds or a row-budget error releases its admitted permit.
         let rejected = target == RuntimeTelemetryEventKind::Completed;
         let result = handle.with_bounded_graph_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: if rejected { 17 } else { 1 },
                 max_payload_bytes: 4096,
             },
@@ -2010,7 +1998,7 @@ fn user_can_reenter_snapshot_reads_from_admission_and_completion_telemetry() {
 #[test]
 fn bounded_read_snapshot_projection_scan_accounts_complete_output_and_requires_pin() {
     let handle = app_read_handle();
-    let budget = NowledgeMemReadSnapshotBudget {
+    let budget = EmbeddedReadSnapshotBudget {
         max_rows: 4,
         max_payload_bytes: 4096,
     };
@@ -2049,7 +2037,7 @@ fn bounded_read_snapshot_projection_scan_accounts_complete_output_and_requires_p
 #[test]
 fn bounded_read_snapshot_projection_scan_observes_same_epoch_payload_and_bit_drift() {
     let handle = app_read_handle();
-    let budget = NowledgeMemReadSnapshotBudget {
+    let budget = EmbeddedReadSnapshotBudget {
         max_rows: 16,
         max_payload_bytes: 16384,
     };
@@ -2117,7 +2105,7 @@ fn bounded_read_snapshot_projection_scan_observes_same_epoch_payload_and_bit_dri
 #[test]
 fn bounded_read_snapshot_projection_scan_unwind_releases_native_pin() {
     let handle = app_read_handle();
-    let budget = NowledgeMemReadSnapshotBudget {
+    let budget = EmbeddedReadSnapshotBudget {
         max_rows: 4,
         max_payload_bytes: 4096,
     };
@@ -2160,24 +2148,23 @@ fn bounded_read_snapshot_projection_scan_uses_out_of_core_pin_and_releases_admis
         crate::SearchOutOfCoreGenerationWriter::create(&search_path, Default::default()).unwrap();
     writer.push(document.clone()).unwrap();
     writer.finish().unwrap();
-    let graph = NowledgeMemGraph::from_database_with_runtime_governor(
+    let graph = EmbeddedGraph::from_database_with_runtime_governor(
         Database::new_with_config(DatabaseConfig {
             max_read_result_rows: Some(16),
             max_read_result_payload_bytes: Some(16384),
             ..Default::default()
         }),
-        NowledgeMemGraphMode::ShadowReadOnly,
+        GraphMode::ShadowReadOnly,
         snapshot_governor(),
     );
-    let projection = super::NowledgeMemOutOfCoreSearchProjection::open(&search_path).unwrap();
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new_with_out_of_core_search(
-            graph,
-            projection,
-            Default::default(),
-        ))
-        .unwrap();
-    let budget = NowledgeMemReadSnapshotBudget {
+    let projection = super::OutOfCoreSearchProjection::open(&search_path).unwrap();
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new_with_out_of_core_search(
+        graph,
+        projection,
+        Default::default(),
+    ))
+    .unwrap();
+    let budget = EmbeddedReadSnapshotBudget {
         max_rows: 4,
         max_payload_bytes: 4096,
     };
@@ -2204,11 +2191,11 @@ fn bounded_read_snapshot_projection_scan_uses_out_of_core_pin_and_releases_admis
     assert_eq!(report.document_count, 1);
     assert!(report.artifact_generation.is_some());
     for cumulative in [
-        NowledgeMemReadSnapshotBudget {
+        EmbeddedReadSnapshotBudget {
             max_rows: 1,
             ..budget
         },
-        NowledgeMemReadSnapshotBudget {
+        EmbeddedReadSnapshotBudget {
             max_payload_bytes: report.payload_bytes,
             ..budget
         },
@@ -2290,24 +2277,23 @@ fn bounded_out_of_core_text_seed_filters_before_top_k() {
     assert!(plan.contains("TextSeedScan"));
     assert!(plan.contains("top_k=1"));
     let pinned_reader = crate::SearchOutOfCoreReader::open(&search_path).unwrap();
-    let graph = NowledgeMemGraph::from_database_with_runtime_governor(
+    let graph = EmbeddedGraph::from_database_with_runtime_governor(
         database,
-        NowledgeMemGraphMode::ShadowReadOnly,
+        GraphMode::ShadowReadOnly,
         snapshot_governor(),
     );
-    let projection = super::NowledgeMemOutOfCoreSearchProjection::open(&search_path).unwrap();
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new_with_out_of_core_search(
-            graph,
-            projection,
-            Default::default(),
-        ))
-        .unwrap();
+    let projection = super::OutOfCoreSearchProjection::open(&search_path).unwrap();
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new_with_out_of_core_search(
+        graph,
+        projection,
+        Default::default(),
+    ))
+    .unwrap();
     let reported = handle
         .query_with_params_with_report_options(
             query,
             &parameters,
-            super::NowledgeMemQueryReportOptions {
+            super::EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 ..Default::default()
             },
@@ -2327,7 +2313,7 @@ fn bounded_out_of_core_text_seed_filters_before_top_k() {
     for prefix in ["EXPLAIN", "EXPLAIN ANALYZE"] {
         handle
             .with_bounded_read_snapshot(
-                NowledgeMemReadSnapshotBudget {
+                EmbeddedReadSnapshotBudget {
                     max_rows: 1,
                     max_payload_bytes: 1024 * 1024,
                 },
@@ -2350,7 +2336,7 @@ fn bounded_out_of_core_text_seed_filters_before_top_k() {
     }
     handle
         .with_bounded_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 2,
                 max_payload_bytes: 8192,
             },
@@ -2432,27 +2418,25 @@ fn out_of_core_snapshot_allows_generation_publication_and_keeps_its_old_pair() {
     database
         .query("CREATE (:Memory {id: 'memory', title: 'Before'})")
         .unwrap();
-    let graph = NowledgeMemGraph::from_database_with_runtime_governor(
+    let graph = EmbeddedGraph::from_database_with_runtime_governor(
         database,
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
         snapshot_governor(),
     );
     let projection =
-        super::NowledgeMemOutOfCoreSearchProjection::open_incremental(&path, Default::default())
-            .unwrap();
+        super::OutOfCoreSearchProjection::open_incremental(&path, Default::default()).unwrap();
     let old_reader = Arc::downgrade(&projection.reader);
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new_with_out_of_core_search(
-            graph,
-            projection,
-            Default::default(),
-        ))
-        .unwrap();
-    let budget = NowledgeMemReadSnapshotBudget {
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new_with_out_of_core_search(
+        graph,
+        projection,
+        Default::default(),
+    ))
+    .unwrap();
+    let budget = EmbeddedReadSnapshotBudget {
         max_rows: 4,
         max_payload_bytes: 8192,
     };
-    let read_pair = |snapshot: &mut super::NowledgeMemReadSnapshot<'_>| -> crate::Result<_> {
+    let read_pair = |snapshot: &mut super::EmbeddedReadSnapshot<'_>| -> crate::Result<_> {
         let graph = snapshot.query_cypher(
             "MATCH (m:Memory) RETURN m.title AS title",
             &BTreeMap::new(),
@@ -2530,12 +2514,12 @@ fn database_instance_identity_survives_committed_handle_writes() {
     assert_eq!(handle.database_instance_identity().unwrap(), identity);
     assert_eq!(writer.database_instance_identity().unwrap(), identity);
 
-    let budget = NowledgeMemReadSnapshotBudget {
+    let budget = EmbeddedReadSnapshotBudget {
         max_rows: 1,
         max_payload_bytes: 4096,
     };
     for pin_projection in [false, true] {
-        let check = |snapshot: &mut super::NowledgeMemReadSnapshot<'_>| {
+        let check = |snapshot: &mut super::EmbeddedReadSnapshot<'_>| {
             assert_eq!(snapshot.database_instance_identity(), &identity);
             let output = snapshot.query_cypher(
                 "MATCH (m:Memory {id: 'nearest'}) RETURN m.title AS title LIMIT 1",
@@ -2572,7 +2556,7 @@ fn database_instance_identity_tracks_the_exact_published_read_view() {
         handle.runtime_status().unwrap().graph_commit_epoch,
         replacement.runtime_status().unwrap().graph_commit_epoch
     );
-    let budget = NowledgeMemReadSnapshotBudget {
+    let budget = EmbeddedReadSnapshotBudget {
         max_rows: 4,
         max_payload_bytes: 4096,
     };
@@ -2606,7 +2590,7 @@ fn database_instance_identity_tracks_the_exact_published_read_view() {
         replacement_identity
     );
     for pin_projection in [false, true] {
-        let check = |snapshot: &mut super::NowledgeMemReadSnapshot<'_>| {
+        let check = |snapshot: &mut super::EmbeddedReadSnapshot<'_>| {
             assert_eq!(snapshot.database_instance_identity(), &replacement_identity);
             Ok(())
         };
@@ -2626,11 +2610,11 @@ fn resident_snapshot_preserves_its_pair_while_writers_and_fresh_readers_advance(
     use std::time::Duration;
 
     let handle = app_read_handle();
-    let budget = NowledgeMemReadSnapshotBudget {
+    let budget = EmbeddedReadSnapshotBudget {
         max_rows: 16,
         max_payload_bytes: 8192,
     };
-    let read_pair = |snapshot: &mut super::NowledgeMemReadSnapshot<'_>| -> crate::Result<_> {
+    let read_pair = |snapshot: &mut super::EmbeddedReadSnapshot<'_>| -> crate::Result<_> {
         let output = snapshot.query_cypher(
             "MATCH (m:Memory {id: $id}) RETURN m.title AS title",
             &BTreeMap::from([("id".into(), Value::String("nearest".into()))]),

@@ -978,7 +978,7 @@ pub struct GraphStore {
     relational_row_pages: RelationalRowPageState,
     projection_generations: Option<hawdb_storage::projection_generation::ProjectionGenerationStore>,
     /// The engine's runtime governor, threaded down from the embedding
-    /// layer (`HawDBEmbedded` / `NowledgeMemGraph`) so background shadow
+    /// layer (`HawDBEmbedded` / `EmbeddedGraph`) so background shadow
     /// work can request admission. The store never constructs its own.
     runtime_governor: Option<Arc<dyn hawdb_storage::background::BackgroundWorkAdmission>>,
     branch_lease: Option<Arc<hawdb_storage::ownership::DatabaseDirectoryLease>>,

@@ -13,17 +13,15 @@
 // limitations under the License.
 
 use crate::graph_route_evidence::{
-    nowledge_mem_graph_augmentation_state_route_query,
-    nowledge_mem_graph_community_members_route_query,
-    nowledge_mem_graph_community_recent_memories_route_query,
-    nowledge_mem_graph_community_subgraph_route_query, nowledge_mem_graph_node_details_route_query,
-    nowledge_mem_graph_orphans_route_query, nowledge_mem_graph_overview_route_query,
-    nowledge_mem_graph_pagerank_plan_route_query, nowledge_mem_graph_sample_route_query,
+    graph_augmentation_state_route_query, graph_community_members_route_query,
+    graph_community_recent_memories_route_query, graph_community_subgraph_route_query,
+    graph_node_details_route_query, graph_orphans_route_query, graph_overview_route_query,
+    graph_pagerank_plan_route_query, graph_sample_route_query,
 };
 use crate::{
-    Database, KnowledgeCandidateScoringPolicy, KnowledgeRetrievalRequest, NowledgeMemGraph,
-    NowledgeMemGraphMode, NowledgeMemQueryReportOptions, NowledgeMemReadOptions, Result,
-    RouteQuery, SearchFusionWeights, SearchIndex, SearchMode, SearchPredicatePushdownReport,
+    Database, EmbeddedGraph, EmbeddedQueryReportOptions, EmbeddedReadOptions, GraphMode,
+    KnowledgeCandidateScoringPolicy, KnowledgeRetrievalRequest, Result, RouteQuery,
+    SearchFusionWeights, SearchIndex, SearchMode, SearchPredicatePushdownReport,
     SearchQueryOptions, SearchRebuildOptions, Value, DENSE_ADJACENCY_DEGREE_THRESHOLD,
 };
 use hawdb_core::{
@@ -43,8 +41,7 @@ pub use hawdb_nowledge_contracts::{
 pub fn nowledge_graph_route_workload_fixture_report(
     options: NowledgeGraphRouteWorkloadFixtureOptions,
 ) -> Result<NowledgeGraphRouteWorkloadFixtureReport> {
-    let mut graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
     seed_graph_route_workload_fixture(&mut graph)?;
     let route_queries = nowledge_graph_route_workload_fixture_queries(options)?;
     run_graph_route_workload_fixture(&mut graph, &route_queries, options)
@@ -54,29 +51,29 @@ fn nowledge_graph_route_workload_fixture_queries(
     options: NowledgeGraphRouteWorkloadFixtureOptions,
 ) -> Result<Vec<RouteQuery>> {
     Ok(vec![
-        nowledge_mem_graph_overview_route_query(options.limit)?,
-        nowledge_mem_graph_sample_route_query(options.limit)?,
-        nowledge_mem_graph_node_details_route_query(0)?,
-        nowledge_mem_graph_community_members_route_query(42, options.limit)?,
-        nowledge_mem_graph_community_recent_memories_route_query(3676, options.limit)?,
-        nowledge_mem_graph_community_subgraph_route_query(
+        graph_overview_route_query(options.limit)?,
+        graph_sample_route_query(options.limit)?,
+        graph_node_details_route_query(0)?,
+        graph_community_members_route_query(42, options.limit)?,
+        graph_community_recent_memories_route_query(3676, options.limit)?,
+        graph_community_subgraph_route_query(
             3505,
             options.max_entities,
             ["community-subgraph-alpha", "community-subgraph-beta"],
             options.max_edges,
         )?,
-        nowledge_mem_graph_augmentation_state_route_query(),
-        nowledge_mem_graph_pagerank_plan_route_query(options.changed_since_epoch_nanos),
-        nowledge_mem_graph_orphans_route_query(options.limit)?,
+        graph_augmentation_state_route_query(),
+        graph_pagerank_plan_route_query(options.changed_since_epoch_nanos),
+        graph_orphans_route_query(options.limit)?,
     ])
 }
 
 fn run_graph_route_workload_fixture(
-    graph: &mut NowledgeMemGraph,
+    graph: &mut EmbeddedGraph,
     route_queries: &[RouteQuery],
     options: NowledgeGraphRouteWorkloadFixtureOptions,
 ) -> Result<NowledgeGraphRouteWorkloadFixtureReport> {
-    let query_options = NowledgeMemQueryReportOptions {
+    let query_options = EmbeddedQueryReportOptions {
         capture_physical_plan: options.capture_physical_plan,
         slow_log_threshold_micros: None,
     };
@@ -143,9 +140,9 @@ fn run_graph_route_workload_fixture(
 }
 
 fn run_graph_route_workload_route(
-    graph: &mut NowledgeMemGraph,
+    graph: &mut EmbeddedGraph,
     route: &RouteQuery,
-    options: NowledgeMemQueryReportOptions,
+    options: EmbeddedQueryReportOptions,
 ) -> NowledgeGraphRouteWorkloadRouteReport {
     let queries = route
         .queries
@@ -197,7 +194,7 @@ fn run_graph_route_workload_route(
     }
 }
 
-fn seed_graph_route_workload_fixture(graph: &mut NowledgeMemGraph) -> Result<()> {
+fn seed_graph_route_workload_fixture(graph: &mut EmbeddedGraph) -> Result<()> {
     for statement in GRAPH_ROUTE_WORKLOAD_FIXTURE_STATEMENTS {
         graph.query(statement)?;
     }
@@ -207,7 +204,7 @@ fn seed_graph_route_workload_fixture(graph: &mut NowledgeMemGraph) -> Result<()>
 }
 
 fn run_bounded_expansion_workload_probes(
-    graph: &mut NowledgeMemGraph,
+    graph: &mut EmbeddedGraph,
 ) -> Vec<NowledgeGraphRouteWorkloadBoundedExpansionReport> {
     let mut search_index = SearchIndex::in_memory();
     if let Err(error) = graph
@@ -242,7 +239,7 @@ fn run_bounded_expansion_workload_probes(
 }
 
 fn run_search_metadata_workload_probes(
-    graph: &mut NowledgeMemGraph,
+    graph: &mut EmbeddedGraph,
 ) -> Vec<NowledgeSearchMetadataWorkloadReport> {
     let mut search_index = SearchIndex::in_memory();
     if let Err(error) = graph
@@ -372,7 +369,7 @@ fn search_metadata_pushdown_fields(pushdown: &SearchPredicatePushdownReport) -> 
 }
 
 fn run_source_projection_workload_probes(
-    graph: &mut NowledgeMemGraph,
+    graph: &mut EmbeddedGraph,
 ) -> Vec<NowledgeSourceProjectionWorkloadReport> {
     vec![run_source_projection_workload_probe(
         graph,
@@ -381,7 +378,7 @@ fn run_source_projection_workload_probes(
 }
 
 fn run_source_projection_workload_probe(
-    graph: &mut NowledgeMemGraph,
+    graph: &mut EmbeddedGraph,
     name: &str,
 ) -> NowledgeSourceProjectionWorkloadReport {
     let db = graph.database_mut();
@@ -480,12 +477,12 @@ fn source_projection_error_report(
     }
 }
 
-fn run_graph_rag_workload_probes(graph: &NowledgeMemGraph) -> Vec<NowledgeGraphRagWorkloadReport> {
+fn run_graph_rag_workload_probes(graph: &EmbeddedGraph) -> Vec<NowledgeGraphRagWorkloadReport> {
     vec![run_graph_rag_workload_probe(graph, "memory-to-entity")]
 }
 
 fn run_graph_rag_workload_probe(
-    graph: &NowledgeMemGraph,
+    graph: &EmbeddedGraph,
     name: &str,
 ) -> NowledgeGraphRagWorkloadReport {
     let context = match graph.graph_rag_schema_context(GraphRagSchemaContextOptions::default()) {
@@ -526,7 +523,7 @@ fn run_graph_rag_workload_probe(
     match graph.read_generated_graph_rag(
         &generated,
         &parameters,
-        &NowledgeMemReadOptions {
+        &EmbeddedReadOptions {
             max_rows: Some(4),
             max_estimated_payload_bytes: Some(4096),
         },
@@ -665,7 +662,7 @@ fn bounded_expansion_error_report(
     }
 }
 
-fn seed_bounded_expansion_workload_fixture(graph: &mut NowledgeMemGraph) -> Result<()> {
+fn seed_bounded_expansion_workload_fixture(graph: &mut EmbeddedGraph) -> Result<()> {
     graph.query("CREATE (:Memory {id: 'workload-root', title: 'Workload root traversal', content: 'workload root traversal'})-[:LINKS]->(:Entity {id: 'workload-mid', name: 'Workload Mid'})")?;
     graph.query("CREATE (:Entity {id: 'workload-leaf', name: 'Workload Leaf'})")?;
     graph.query("MATCH (e:Entity {id: 'workload-mid'}), (leaf:Entity {id: 'workload-leaf'}) CREATE (e)-[:LINKS {weight: 2}]->(leaf)")?;
@@ -681,7 +678,7 @@ fn seed_bounded_expansion_workload_fixture(graph: &mut NowledgeMemGraph) -> Resu
     Ok(())
 }
 
-fn seed_search_metadata_workload_fixture(graph: &mut NowledgeMemGraph) -> Result<()> {
+fn seed_search_metadata_workload_fixture(graph: &mut EmbeddedGraph) -> Result<()> {
     for statement in SEARCH_METADATA_WORKLOAD_FIXTURE_STATEMENTS {
         graph.query(statement)?;
     }
@@ -776,15 +773,15 @@ mod tests {
         NowledgeSourceProjectionWorkloadReport, NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL,
     };
     use crate::{
-        KnowledgeFanoutReasonCode, NowledgeMemQueryExecutionPath, DENSE_ADJACENCY_DEGREE_THRESHOLD,
+        EmbeddedQueryExecutionPath, KnowledgeFanoutReasonCode, DENSE_ADJACENCY_DEGREE_THRESHOLD,
     };
     use std::any::TypeId;
 
     #[test]
     fn root_facade_preserves_workload_contract_type_identity() {
         assert_eq!(
-            TypeId::of::<NowledgeMemQueryExecutionPath>(),
-            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemQueryExecutionPath>()
+            TypeId::of::<EmbeddedQueryExecutionPath>(),
+            TypeId::of::<hawdb_nowledge_contracts::EmbeddedQueryExecutionPath>()
         );
         assert_eq!(
             TypeId::of::<NowledgeGraphRouteWorkloadFixtureOptions>(),

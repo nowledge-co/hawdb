@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::bounded_read_evidence::{
-    nowledge_mem_bounded_read_evidence_json_with_route_readiness, NowledgeMemGraphMode,
-    NowledgeMemReadReport, NowledgeMemRouteReadinessSummary,
+    bounded_read_evidence_json_with_route_readiness, EmbeddedReadReport, GraphMode,
+    RouteReadinessSummary,
 };
 use hawdb_core::{HawDBError, Result};
 use std::path::Path;
@@ -78,7 +78,7 @@ pub fn run_nowledge_bounded_read_evidence(
         covered_routes = readiness.primary_ready_routes.clone();
     }
     Ok((
-        nowledge_mem_bounded_read_evidence_json_with_route_readiness(
+        bounded_read_evidence_json_with_route_readiness(
             &report,
             &covered_routes,
             graph_route_readiness.as_ref(),
@@ -94,8 +94,8 @@ pub fn parse_covered_routes_json(value: &serde_json::Value) -> Result<Vec<String
     required_string_array(value, "covered_routes")
 }
 
-pub fn parse_read_report_json(value: &serde_json::Value) -> Result<NowledgeMemReadReport> {
-    Ok(NowledgeMemReadReport {
+pub fn parse_read_report_json(value: &serde_json::Value) -> Result<EmbeddedReadReport> {
+    Ok(EmbeddedReadReport {
         protocol: required_string(value, "protocol")?.to_string(),
         mode: parse_mode(required_string(value, "mode")?)?,
         row_count: required_usize(value, "row_count")?,
@@ -152,8 +152,8 @@ fn required_blocking_operator_memory_reports(
 
 pub fn parse_graph_route_readiness_json(
     value: &serde_json::Value,
-) -> Result<NowledgeMemRouteReadinessSummary> {
-    Ok(NowledgeMemRouteReadinessSummary {
+) -> Result<RouteReadinessSummary> {
+    Ok(RouteReadinessSummary {
         route_primary_ready: required_bool(value, "route_primary_ready")?,
         primary_ready_routes: required_string_array(value, "primary_ready_routes")?,
         route_query_plan_evidence_ready: required_bool(value, "route_query_plan_evidence_ready")?,
@@ -180,10 +180,10 @@ pub fn parse_graph_route_readiness_json(
     })
 }
 
-fn parse_mode(value: &str) -> Result<NowledgeMemGraphMode> {
+fn parse_mode(value: &str) -> Result<GraphMode> {
     match value {
-        "shadow_read_only" => Ok(NowledgeMemGraphMode::ShadowReadOnly),
-        "writable_cutover" => Ok(NowledgeMemGraphMode::WritableCutover),
+        "shadow_read_only" => Ok(GraphMode::ShadowReadOnly),
+        "writable_cutover" => Ok(GraphMode::WritableCutover),
         _ => Err(HawDBError::Semantic(format!(
             "invalid read report mode: {value}"
         ))),
@@ -285,7 +285,7 @@ fn read_json_file(path: &Path) -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::run_nowledge_bounded_read_evidence;
-    use hawdb_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
+    use hawdb_route_ownership::graph::REQUIRED_BOUNDED_READ_ROUTES;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -304,7 +304,7 @@ mod tests {
         .unwrap();
 
         let mut args = vec!["--require-ready".to_string()];
-        for route in REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES {
+        for route in REQUIRED_BOUNDED_READ_ROUTES {
             args.extend(["--covered-route".to_string(), (*route).to_string()]);
         }
         args.extend([
@@ -333,7 +333,7 @@ mod tests {
         );
         assert_eq!(
             evidence["covered_routes"].as_array().unwrap().len(),
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+            REQUIRED_BOUNDED_READ_ROUTES.len()
         );
         assert_eq!(evidence["missing_covered_routes"], serde_json::json!([]));
         assert_eq!(evidence["blocker_codes"], serde_json::json!([]));
@@ -382,7 +382,7 @@ mod tests {
         std::fs::write(
             &routes_path,
             serde_json::json!({
-                "covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+                "covered_routes": REQUIRED_BOUNDED_READ_ROUTES
             })
             .to_string(),
         )
@@ -438,7 +438,7 @@ mod tests {
         assert_eq!(evidence["ready"], true);
         assert_eq!(
             evidence["covered_routes"].as_array().unwrap().len(),
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+            REQUIRED_BOUNDED_READ_ROUTES.len()
         );
         assert_eq!(evidence["missing_covered_routes"], serde_json::json!([]));
         std::fs::remove_file(report_path).unwrap();
@@ -477,7 +477,7 @@ mod tests {
         std::fs::write(
             &routes_path,
             serde_json::json!({
-                "covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+                "covered_routes": REQUIRED_BOUNDED_READ_ROUTES
             })
             .to_string(),
         )
@@ -558,7 +558,7 @@ mod tests {
     fn ready_graph_route_readiness() -> serde_json::Value {
         serde_json::json!({
             "route_primary_ready": true,
-            "primary_ready_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "primary_ready_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "route_query_plan_evidence_ready": true,
             "route_query_profile_evidence_ready": true,
             "route_query_api_behavior_evidence_ready": true,

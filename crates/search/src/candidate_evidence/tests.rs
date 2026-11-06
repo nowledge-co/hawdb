@@ -54,7 +54,7 @@ fn ready_structured_probe() -> serde_json::Value {
 
 #[test]
 fn search_candidate_shadow_evidence_reports_ready_counts() {
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
     accumulator.record_compare_candidate_ids(&["mem_1", "mem_2"], &["mem_1", "mem_2"]);
     accumulator
         .record_compare_candidate_ids(&["mem_3", "mem_4", "mem_5"], &["mem_3", "mem_4", "mem_5"]);
@@ -68,15 +68,12 @@ fn search_candidate_shadow_evidence_reports_ready_counts() {
 
     assert_eq!(
         evidence["protocol"],
-        NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL
+        SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL
     );
-    assert_eq!(
-        evidence["route"],
-        NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE
-    );
+    assert_eq!(evidence["route"], SEARCH_CANDIDATE_EVIDENCE_ROUTE);
     assert_eq!(
         evidence["evidence_source"],
-        NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE
+        SEARCH_CANDIDATE_EVIDENCE_SOURCE
     );
     assert_eq!(evidence["ready"], true);
     assert_eq!(evidence["request_count"], 2);
@@ -153,33 +150,31 @@ fn search_candidate_shadow_evidence_reports_ready_counts() {
 
 #[test]
 fn search_candidate_shadow_evidence_fails_closed_on_weak_counts() {
-    let evidence = nowledge_mem_search_candidate_shadow_evidence_json(
-        &NowledgeMemSearchCandidateShadowEvidence {
-            request_count: 0,
-            primary_candidate_count: 3,
-            shadow_candidate_count: 2,
-            matched_candidate_count: 1,
-            primary_only_candidate_count: 1,
-            text_retriever_available: false,
-            vector_retriever_available: false,
-            text_retriever_candidate_count: 0,
-            vector_retriever_candidate_count: 0,
-            fts_top_k_overlap_observed: false,
-            fts_top_k_overlap_ready: false,
-            vector_top_k_overlap_observed: false,
-            vector_top_k_overlap_ready: false,
-            source_chunk_identity_ready: false,
-            fail_soft_observed: false,
-            projection_marker_status_visible: false,
-            projection_watermark_ready: false,
-            embedding_identity_ready: false,
-            primary_candidate_identity_checksum: None,
-            shadow_candidate_identity_checksum: None,
-            matched_candidate_identity_checksum: None,
-            filter_pushdown: None,
-            blocker_codes: vec!["bridge_timeout".to_string()],
-        },
-    );
+    let evidence = search_candidate_shadow_evidence_json(&SearchCandidateShadowEvidence {
+        request_count: 0,
+        primary_candidate_count: 3,
+        shadow_candidate_count: 2,
+        matched_candidate_count: 1,
+        primary_only_candidate_count: 1,
+        text_retriever_available: false,
+        vector_retriever_available: false,
+        text_retriever_candidate_count: 0,
+        vector_retriever_candidate_count: 0,
+        fts_top_k_overlap_observed: false,
+        fts_top_k_overlap_ready: false,
+        vector_top_k_overlap_observed: false,
+        vector_top_k_overlap_ready: false,
+        source_chunk_identity_ready: false,
+        fail_soft_observed: false,
+        projection_marker_status_visible: false,
+        projection_watermark_ready: false,
+        embedding_identity_ready: false,
+        primary_candidate_identity_checksum: None,
+        shadow_candidate_identity_checksum: None,
+        matched_candidate_identity_checksum: None,
+        filter_pushdown: None,
+        blocker_codes: vec!["bridge_timeout".to_string()],
+    });
 
     assert_eq!(evidence["ready"], false);
     assert_eq!(
@@ -197,7 +192,7 @@ fn search_candidate_shadow_evidence_fails_closed_on_weak_counts() {
 
 #[test]
 fn search_candidate_shadow_accumulator_generates_bridge_evidence() {
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
     accumulator.record_compare_candidate_ids(&["mem_1", "mem_2"], &["mem_1", "mem_2"]);
     accumulator.record_compare_candidate_ids(&["mem_3"], &["mem_3"]);
     accumulator.record_filter_pushdown_fields(
@@ -241,7 +236,7 @@ fn search_candidate_shadow_accumulator_generates_bridge_evidence() {
 
 #[test]
 fn search_candidate_shadow_accumulator_preserves_request_blockers() {
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
     accumulator.record_compare_candidate_ids(&["mem_1", "mem_2"], &["mem_1"]);
     accumulator.record_filter_pushdown_fields(
         1,
@@ -272,7 +267,7 @@ fn search_candidate_shadow_accumulator_preserves_request_blockers() {
 
 #[test]
 fn search_candidate_shadow_evidence_requires_filter_pushdown_fields() {
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
     accumulator.record_compare_candidate_ids(&["mem_1"], &["mem_1"]);
 
     let missing = accumulator.json();
@@ -303,7 +298,7 @@ fn search_candidate_shadow_evidence_requires_filter_pushdown_fields() {
 #[test]
 fn search_candidate_shadow_probe_parser_is_available_to_library_callers() {
     let accumulator = parse_search_candidate_shadow_probe(&ready_probe()).unwrap();
-    let evidence = nowledge_mem_search_candidate_shadow_evidence_json(&accumulator.evidence());
+    let evidence = search_candidate_shadow_evidence_json(&accumulator.evidence());
 
     assert_eq!(evidence["ready"], true);
     assert_eq!(evidence["request_count"], 2);
@@ -334,7 +329,7 @@ fn search_candidate_shadow_probe_parser_is_available_to_library_callers() {
 #[test]
 fn search_candidate_shadow_probe_accepts_structured_field_summaries() {
     let accumulator = parse_search_candidate_shadow_probe(&ready_structured_probe()).unwrap();
-    let evidence = nowledge_mem_search_candidate_shadow_evidence_json(&accumulator.evidence());
+    let evidence = search_candidate_shadow_evidence_json(&accumulator.evidence());
 
     assert_eq!(evidence["ready"], true);
     assert_eq!(
@@ -364,7 +359,7 @@ fn search_candidate_shadow_probe_rejects_zero_summary_counts() {
     lifecycle_state["value_summary_segment_count"] = serde_json::json!(0);
 
     let accumulator = parse_search_candidate_shadow_probe(&probe).unwrap();
-    let evidence = nowledge_mem_search_candidate_shadow_evidence_json(&accumulator.evidence());
+    let evidence = search_candidate_shadow_evidence_json(&accumulator.evidence());
 
     assert_eq!(evidence["ready"], false);
     assert_eq!(
@@ -444,7 +439,7 @@ fn search_candidate_shadow_probe_fails_closed_for_unavailable_retriever_leg() {
     probe["retriever_legs"]["vector"]["candidate_count"] = serde_json::json!(0);
 
     let accumulator = parse_search_candidate_shadow_probe(&probe).unwrap();
-    let evidence = nowledge_mem_search_candidate_shadow_evidence_json(&accumulator.evidence());
+    let evidence = search_candidate_shadow_evidence_json(&accumulator.evidence());
 
     assert_eq!(evidence["ready"], false);
     assert_eq!(evidence["text_retriever_ready"], true);

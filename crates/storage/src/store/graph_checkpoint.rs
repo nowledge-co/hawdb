@@ -1464,7 +1464,7 @@ impl GraphStore {
     }
 
     /// Publication with an explicit pre-admitted shadow context: callers
-    /// that already hold a governor permit (the nowledge_mem typed
+    /// that already hold a governor permit (the embedded_store typed
     /// checkpoint) extend that single admission by
     /// [`GraphStore::columnar_shadow_admission_bytes`] and pass the token
     /// here; `None` lets the shadow acquire its own single non-nested

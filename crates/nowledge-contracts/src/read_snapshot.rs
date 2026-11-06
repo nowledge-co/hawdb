@@ -14,17 +14,16 @@
 
 //! Host-neutral bounded read snapshot reporting contract.
 
-pub const NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL: &str =
-    "hawdb-nowledge-mem-read-snapshot-report-v1";
+pub const READ_SNAPSHOT_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-read-snapshot-report-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemReadSnapshotBudget {
+pub struct EmbeddedReadSnapshotBudget {
     pub max_rows: usize,
     pub max_payload_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemReadSnapshotReport {
+pub struct EmbeddedReadSnapshotReport {
     pub commit_epoch: u64,
     pub search_projection_present: bool,
     pub search_projection_source_graph_commit_epoch: Option<u64>,
@@ -40,10 +39,10 @@ pub struct NowledgeMemReadSnapshotReport {
     pub remaining_payload_bytes: usize,
 }
 
-impl NowledgeMemReadSnapshotReport {
+impl EmbeddedReadSnapshotReport {
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
-            "protocol": NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
+            "protocol": READ_SNAPSHOT_REPORT_PROTOCOL,
             "commit_epoch": self.commit_epoch,
             "search_projection_present": self.search_projection_present,
             "search_projection_source_graph_commit_epoch": self.search_projection_source_graph_commit_epoch,
@@ -67,7 +66,7 @@ mod tests {
 
     #[test]
     fn report_json_preserves_protocol_and_budget_accounting() {
-        let report = NowledgeMemReadSnapshotReport {
+        let report = EmbeddedReadSnapshotReport {
             commit_epoch: 42,
             search_projection_present: true,
             search_projection_source_graph_commit_epoch: Some(41),
@@ -86,7 +85,7 @@ mod tests {
         assert_eq!(
             report.json(),
             serde_json::json!({
-                "protocol": NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
+                "protocol": READ_SNAPSHOT_REPORT_PROTOCOL,
                 "commit_epoch": 42,
                 "search_projection_present": true,
                 "search_projection_source_graph_commit_epoch": 41,

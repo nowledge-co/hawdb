@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{EmbeddedStoreWriteGuard, NowledgeMemEmbeddedStore, PublishedCanonicalRead};
+use super::{EmbeddedStore, EmbeddedStoreWriteGuard, PublishedCanonicalRead};
 use crate::api::{PublishedConcurrentRead, SharedDatabaseGuard, SharedDatabaseOwner};
 use crate::{Database, DatabasePublicationOwner, HawDBError, Result};
 use std::ops::{Deref, DerefMut};
@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, TryLockError};
 /// forming a cycle. All direct and transactional publications share these fields.
 #[derive(Debug)]
 pub(super) struct MemDatabaseOwner {
-    pub(super) inner: Arc<DatabasePublicationOwner<NowledgeMemEmbeddedStore>>,
+    pub(super) inner: Arc<DatabasePublicationOwner<EmbeddedStore>>,
     pub(super) published_read: Arc<Mutex<Option<PublishedCanonicalRead>>>,
     pub(super) read_publication_failed: Arc<AtomicBool>,
 }
@@ -31,7 +31,7 @@ pub(super) struct MemDatabaseOwner {
 impl MemDatabaseOwner {
     fn guard<'a>(
         &'a self,
-        store: crate::api::publication::DatabasePublicationWriteGuard<'a, NowledgeMemEmbeddedStore>,
+        store: crate::api::publication::DatabasePublicationWriteGuard<'a, EmbeddedStore>,
     ) -> SharedDatabaseGuard<'a> {
         Box::new(MemDatabaseGuard(EmbeddedStoreWriteGuard {
             store,

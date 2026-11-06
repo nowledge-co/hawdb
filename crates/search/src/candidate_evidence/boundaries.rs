@@ -19,7 +19,7 @@ use crate::{CompressedVectorSearchMode, SearchMode, VECTOR_RECALL_VALIDATION_PRO
 #[test]
 fn request_builders_and_advisor_preserve_compression_admission() {
     for mask in 0_u32..32 {
-        let advisor = NowledgeMemRetrievalProjectionAdvisor {
+        let advisor = RetrievalProjectionAdvisor {
             recall_evidence_protocol: (mask & 1 != 0)
                 .then(|| VECTOR_RECALL_VALIDATION_PROTOCOL.to_string()),
             recall_sample_count: usize::from(mask & 2 != 0),
@@ -34,9 +34,9 @@ fn request_builders_and_advisor_preserve_compression_admission() {
             CompressedVectorSearchMode::Required,
         ] {
             for request in [
-                NowledgeMemSearchCandidateRequest::text("query", 4),
-                NowledgeMemSearchCandidateRequest::vector(vec![1.0, 0.0], 4),
-                NowledgeMemSearchCandidateRequest::hybrid("query", vec![1.0, 0.0], 4),
+                SearchCandidateRequest::text("query", 4),
+                SearchCandidateRequest::vector(vec![1.0, 0.0], 4),
+                SearchCandidateRequest::hybrid("query", vec![1.0, 0.0], 4),
             ] {
                 assert_eq!(request.limit, 4);
                 assert_eq!(request.offset, 0);
@@ -159,7 +159,7 @@ fn report_json_preserves_complete_field_set_and_provenance() {
 
 #[test]
 fn accumulator_saturates_counts_and_retains_invalid_match_blocker() {
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
     accumulator.record_compare(u64::MAX, u64::MAX, u64::MAX);
     accumulator.record_compare(1, 0, 2);
     accumulator.record_retriever_leg("text", true, u64::MAX);
@@ -179,7 +179,7 @@ fn accumulator_saturates_counts_and_retains_invalid_match_blocker() {
 
 #[test]
 fn identity_is_order_insensitive_within_requests_but_keeps_request_boundaries() {
-    let mut single = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut single = SearchCandidateShadowAccumulator::new();
     single.record_compare_candidate_ids(&["b", "a", "a"], &["a", "b"]);
     let single = single.evidence();
     assert_eq!(single.primary_candidate_count, 2);
@@ -191,7 +191,7 @@ fn identity_is_order_insensitive_within_requests_but_keeps_request_boundaries() 
         single.matched_candidate_identity_checksum,
         single.shadow_candidate_identity_checksum
     );
-    let mut split = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut split = SearchCandidateShadowAccumulator::new();
     split.record_compare_candidate_ids(&["a"], &["a"]);
     split.record_compare_candidate_ids(&["b"], &["b"]);
     assert_ne!(
@@ -202,7 +202,7 @@ fn identity_is_order_insensitive_within_requests_but_keeps_request_boundaries() 
 
 #[test]
 fn field_summary_merge_preserves_max_capabilities_and_scan_absence() {
-    let summary = |source: &str, count, used| NowledgeMemSearchCandidateFieldSummary {
+    let summary = |source: &str, count, used| SearchCandidateFieldSummary {
         field: "lifecycle_state".to_string(),
         source: source.to_string(),
         segment_count: count,
@@ -213,7 +213,7 @@ fn field_summary_merge_preserves_max_capabilities_and_scan_absence() {
         timestamp_range_summary_used: false,
         timestamp_range_segment_count: 0,
     };
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
     accumulator.record_filter_pushdown_summaries(1, false, vec![summary("first", 2, true)]);
     accumulator.record_filter_pushdown_summaries(2, true, vec![summary("second", 3, false)]);
     let evidence = accumulator.evidence();

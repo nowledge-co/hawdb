@@ -10,8 +10,8 @@
 mod native_profile;
 
 use hawdb::{
-    DatabaseConfig, NowledgeMemEmbeddedStoreHandle, NowledgeMemGraphMode, NowledgeMemOpenOptions,
-    NowledgeMemReadOptions, StorageResidencyMode, Value,
+    DatabaseConfig, EmbeddedReadOptions, EmbeddedStoreHandle, EmbeddedStoreOpenOptions, GraphMode,
+    StorageResidencyMode, Value,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Barrier;
 use std::time::Instant;
 
-type Store = NowledgeMemEmbeddedStoreHandle;
+type Store = EmbeddedStoreHandle;
 const WRITE: &str =
     "MATCH (n:Boundary {id: $id}) SET n.value = n.value + 1 RETURN n.value AS value";
 const POINT: &str = "MATCH (n:Boundary {id: $id}) RETURN n.value AS value LIMIT 1";
@@ -101,7 +101,7 @@ fn parameters(id: usize) -> BTreeMap<String, Value> {
 }
 
 fn read(store: &Store, job: &Job, id: usize) -> hawdb::Result<u64> {
-    let options = NowledgeMemReadOptions {
+    let options = EmbeddedReadOptions {
         max_rows: Some(job.rows),
         max_estimated_payload_bytes: Some(PAYLOAD_BYTES),
     };
@@ -232,11 +232,9 @@ fn main() {
         max_read_result_payload_bytes: Some(PAYLOAD_BYTES),
         ..DatabaseConfig::default()
     };
-    let options = NowledgeMemOpenOptions::graph_only(
-        job.path.join("graph"),
-        NowledgeMemGraphMode::WritableCutover,
-    )
-    .with_database_config(config);
+    let options =
+        EmbeddedStoreOpenOptions::graph_only(job.path.join("graph"), GraphMode::WritableCutover)
+            .with_database_config(config);
     let (store, _) = Store::open_with_options(options.clone()).unwrap();
     store
         .query_with_report("CREATE CONSTRAINT ON :Boundary(id) ASSERT UNIQUE")

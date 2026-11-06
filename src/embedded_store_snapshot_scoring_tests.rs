@@ -40,7 +40,7 @@ fn bounded_snapshot_host_scoring_shares_legacy_cumulative_accounting() {
         .with_reference_time_millis(1234);
     handle
         .with_bounded_graph_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 1,
                 max_payload_bytes: 16 * 1024,
             },
@@ -86,7 +86,7 @@ fn bounded_snapshot_host_scoring_keeps_stricter_caller_payload_limits() {
         .with_reference_time_millis(1234);
     handle
         .with_bounded_graph_read_snapshot(
-            NowledgeMemReadSnapshotBudget {
+            EmbeddedReadSnapshotBudget {
                 max_rows: 2,
                 max_payload_bytes: 16 * 1024,
             },

@@ -17,11 +17,11 @@
 //! Hosts open databases and execute probes. This module owns the redacted result
 //! model and JSON encoding so readiness consumers do not depend on the embedded facade.
 
-use crate::nowledge_mem_query_report::scan_pruning_report_json;
+use crate::embedded_query_report::scan_pruning_report_json;
 use crate::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
 use hawdb_core::HawDBError;
 use hawdb_evidence::inventory::REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES;
-use hawdb_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
+use hawdb_route_ownership::graph::REQUIRED_BOUNDED_READ_ROUTES;
 use hawdb_storage::scan::ScanPruningReport;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -243,7 +243,7 @@ pub struct NowledgeQueryRuntimeRouteCoverage {
 pub fn nowledge_query_runtime_route_coverage(
     probes: &[NowledgeQueryRuntimePreflightProbe],
 ) -> NowledgeQueryRuntimeRouteCoverage {
-    let required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
@@ -252,13 +252,13 @@ pub fn nowledge_query_runtime_route_coverage(
         *route_counts.entry(route).or_default() += 1;
     }
     let observed_routes = route_counts.keys().copied().collect::<BTreeSet<_>>();
-    let covered_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let covered_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .filter(|route| observed_routes.contains(route))
         .map(str::to_string)
         .collect::<Vec<_>>();
-    let missing_required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let missing_required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .filter(|route| !observed_routes.contains(route))
@@ -284,7 +284,7 @@ pub fn nowledge_query_runtime_route_coverage(
     }
 
     NowledgeQueryRuntimeRouteCoverage {
-        required_route_count: REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+        required_route_count: REQUIRED_BOUNDED_READ_ROUTES.len(),
         covered_route_count: covered_routes.len(),
         covered_routes,
         missing_required_routes,
@@ -343,7 +343,7 @@ fn query_runtime_probe_identity_blocker_codes(
         blockers.push("query_runtime_probe_name_missing".to_string());
     }
     match probe.route.as_deref() {
-        Some(route) if REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.contains(&route) => {}
+        Some(route) if REQUIRED_BOUNDED_READ_ROUTES.contains(&route) => {}
         Some(_) => blockers.push("query_runtime_probe_unknown_route".to_string()),
         None => blockers.push("query_runtime_probe_route_missing".to_string()),
     }
@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn route_coverage_rejects_missing_and_unknown_routes_without_rejecting_duplicates() {
         let probe = NowledgeQueryRuntimePreflightProbe::new("overview", "MATCH (n) RETURN n")
-            .with_route(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES[0])
+            .with_route(REQUIRED_BOUNDED_READ_ROUTES[0])
             .with_query_family(REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES[0]);
         let duplicate = probe.clone();
         let unknown = NowledgeQueryRuntimePreflightProbe::new("unknown", "MATCH (n) RETURN n")

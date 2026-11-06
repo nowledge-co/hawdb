@@ -63,12 +63,12 @@ mod tests {
             contract::NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL,
         );
         assert_eq!(
-            crate::NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
-            contract::NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+            crate::SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+            contract::SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
         );
         assert_eq!(
-            crate::NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
-            contract::NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
+            crate::SEARCH_CANDIDATE_EVIDENCE_ROUTE,
+            contract::SEARCH_CANDIDATE_EVIDENCE_ROUTE,
         );
     }
 

@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{
-    nowledge_mem_query_report, try_admit_runtime, NowledgeMemEmbeddedStoreHandle,
-    NowledgeMemGraphMode, NowledgeMemQueryOutput, NowledgeMemQueryReportInput,
-    NowledgeMemQueryReportOptions, NowledgeMemReadOptions, SearchProjectionExternalReadOperator,
+    embedded_query_report, try_admit_runtime, EmbeddedQueryOutput, EmbeddedQueryReportInput,
+    EmbeddedQueryReportOptions, EmbeddedReadOptions, EmbeddedStoreHandle, GraphMode,
+    SearchProjectionExternalReadOperator,
 };
 use crate::api::PreparedRuntimeQuery;
 use crate::{
@@ -44,7 +44,7 @@ impl AdmissionSource {
     }
 }
 
-impl NowledgeMemEmbeddedStoreHandle {
+impl EmbeddedStoreHandle {
     fn query_admission_source(&self) -> Result<AdmissionSource> {
         let publication = self.lock_published_read()?;
         let publication = publication.as_ref().ok_or_else(source_changed)?;
@@ -104,14 +104,14 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
+        options: &EmbeddedReadOptions,
         task_context: &RuntimeTaskContext,
         execute: impl FnOnce(
             &mut DatabaseReadTransaction,
             PreparedRuntimeQuery,
             QueryStreamOptions,
             &RuntimeTaskContext,
-            NowledgeMemGraphMode,
+            GraphMode,
         ) -> Result<T>,
     ) -> Result<T> {
         // Admission invokes host telemetry. Retain only scalar/configuration
@@ -173,9 +173,9 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: NowledgeMemQueryReportOptions,
+        options: EmbeddedQueryReportOptions,
         task_context: &RuntimeTaskContext,
-    ) -> Result<NowledgeMemQueryOutput> {
+    ) -> Result<EmbeddedQueryOutput> {
         let source = self.query_admission_source()?;
         let result = (|| {
             let prepared =
@@ -263,7 +263,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                 {
                     return Err(source_changed());
                 }
-                let super::NowledgeMemEmbeddedStore {
+                let super::EmbeddedStore {
                     graph,
                     search_projection,
                     out_of_core_search_projection,
@@ -291,7 +291,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                     .checkpoint()
                     .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
             }
-            let report = nowledge_mem_query_report(NowledgeMemQueryReportInput {
+            let report = embedded_query_report(EmbeddedQueryReportInput {
                 mode,
                 statement: &trace.statement,
                 trace: trace.optimizer_trace.as_ref(),
@@ -301,7 +301,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                 options,
                 elapsed_micros: started.elapsed().as_micros(),
             });
-            Ok(NowledgeMemQueryOutput { output, report })
+            Ok(EmbeddedQueryOutput { output, report })
         })();
         if result.is_err()
             && let Err(reason) = task_context.checkpoint()
@@ -364,7 +364,7 @@ pub(super) fn materialized_result_budget(
 pub(super) fn admitted_result_bytes(
     config: &DatabaseConfig,
     governor: &RuntimeGovernor,
-    options: &NowledgeMemReadOptions,
+    options: &EmbeddedReadOptions,
 ) -> Result<usize> {
     let governor_budget =
         usize::try_from(governor.snapshot().limits.result_budget_bytes).unwrap_or(usize::MAX);
@@ -394,7 +394,7 @@ fn source_changed() -> HawDBError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nowledge_mem::app_read_snapshot_tests::{
+    use crate::embedded_store::app_read_snapshot_tests::{
         app_read_handle, app_read_handle_with_result_budget,
     };
     use crate::{
@@ -410,14 +410,14 @@ mod tests {
     const READ: &str = "MATCH (t:Thread) RETURN t.title AS title";
     const WRITE: &str = "MATCH (t:Thread) SET t.title = 'Updated thread'";
 
-    fn options() -> NowledgeMemReadOptions {
-        NowledgeMemReadOptions {
+    fn options() -> EmbeddedReadOptions {
+        EmbeddedReadOptions {
             max_rows: Some(1),
             max_estimated_payload_bytes: Some(4096),
         }
     }
 
-    fn graph_only_handle() -> NowledgeMemEmbeddedStoreHandle {
+    fn graph_only_handle() -> EmbeddedStoreHandle {
         let handle = app_read_handle();
         handle.write_store().unwrap().search_projection = None;
         handle
@@ -492,7 +492,7 @@ mod tests {
     }
 
     fn resource_profile_identity(
-        handle: &NowledgeMemEmbeddedStoreHandle,
+        handle: &EmbeddedStoreHandle,
     ) -> crate::ProductionQualificationIdentity {
         crate::ProductionQualificationIdentity {
             source_revision: "test-revision".into(),
@@ -533,7 +533,7 @@ mod tests {
     }
 
     fn resource_profile(
-        handle: &NowledgeMemEmbeddedStoreHandle,
+        handle: &EmbeddedStoreHandle,
         cypher: &str,
         limits: crate::StorageResourceProfileLimits,
         identity: crate::ProductionQualificationIdentity,
@@ -581,11 +581,8 @@ mod tests {
         db.checkpoint().unwrap();
         drop(db);
         let db = crate::Database::open_with_config(&path, config).unwrap();
-        let graph =
-            crate::NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-        let handle =
-            NowledgeMemEmbeddedStoreHandle::new(crate::NowledgeMemEmbeddedStore::new(graph, None))
-                .unwrap();
+        let graph = crate::EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+        let handle = EmbeddedStoreHandle::new(crate::EmbeddedStore::new(graph, None)).unwrap();
         let identity = resource_profile_identity(&handle);
         let read_handle = handle.clone();
         let read_identity = identity.clone();
@@ -741,7 +738,7 @@ mod tests {
                     ("id".into(), Value::String("thread-1".into())),
                     ("title".into(), Value::String("First writer".into())),
                 ]),
-                NowledgeMemQueryReportOptions {
+                EmbeddedQueryReportOptions {
                     capture_physical_plan: true,
                     ..Default::default()
                 },
@@ -931,11 +928,11 @@ mod tests {
         assert_eq!(after_direct.misses, rebound.misses);
         assert_eq!(after_direct.hits, rebound.hits + 1);
         for limits in [
-            NowledgeMemReadOptions {
+            EmbeddedReadOptions {
                 max_rows: Some(0),
                 ..options()
             },
-            NowledgeMemReadOptions {
+            EmbeddedReadOptions {
                 max_estimated_payload_bytes: Some(0),
                 ..options()
             },
@@ -993,7 +990,7 @@ mod tests {
     #[test]
     fn logical_payload_limits_do_not_replace_caller_result_memory_limits() {
         let handle = graph_only_handle();
-        let limits = NowledgeMemReadOptions {
+        let limits = EmbeddedReadOptions {
             max_rows: Some(1),
             max_estimated_payload_bytes: Some(512),
         };
@@ -1107,7 +1104,7 @@ mod tests {
         }
     }
 
-    fn explain_handle() -> NowledgeMemEmbeddedStoreHandle {
+    fn explain_handle() -> EmbeddedStoreHandle {
         // EXPLAIN retains plan/schema metadata in addition to its logical payload.
         let handle = app_read_handle_with_result_budget(64 * 1024);
         handle.write_store().unwrap().search_projection = None;
@@ -1178,7 +1175,7 @@ mod tests {
             let result = handle.query_with_params_with_report_options(
                 query,
                 &BTreeMap::from([("text".into(), Value::String("App".into()))]),
-                NowledgeMemQueryReportOptions {
+                EmbeddedQueryReportOptions {
                     capture_physical_plan: true,
                     ..Default::default()
                 },
@@ -1234,7 +1231,7 @@ mod tests {
             .query_with_params_with_report_options(
                 cypher,
                 &BTreeMap::from([("id".into(), Value::String("thread-1".into()))]),
-                NowledgeMemQueryReportOptions {
+                EmbeddedQueryReportOptions {
                     capture_physical_plan: true,
                     ..Default::default()
                 },

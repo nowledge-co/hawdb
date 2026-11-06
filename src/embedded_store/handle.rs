@@ -6,8 +6,8 @@
 use super::*;
 
 #[derive(Debug, Clone)]
-pub struct NowledgeMemEmbeddedStoreHandle {
-    pub(super) inner: Arc<crate::DatabasePublicationOwner<NowledgeMemEmbeddedStore>>,
+pub struct EmbeddedStoreHandle {
+    pub(super) inner: Arc<crate::DatabasePublicationOwner<EmbeddedStore>>,
     pub(super) concurrent: crate::ConcurrentDatabase,
     pub(super) published_read: Arc<Mutex<Option<PublishedCanonicalRead>>>,
     // One-way: a failed or panicking write guard sets this and leaves the
@@ -21,15 +21,15 @@ pub(super) struct PublishedCanonicalRead {
     pub(super) instance_identity: crate::DatabaseInstanceIdentity,
     pub(super) view: Arc<crate::api::PublishedConcurrentRead>,
     pub(super) governor: RuntimeGovernor,
-    pub(super) mode: NowledgeMemGraphMode,
+    pub(super) mode: GraphMode,
     pub(super) resident_projection: Option<crate::search::SearchIndexReadSnapshot>,
     pub(super) external_seed_io_slots: usize,
-    pub(super) retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor,
-    pub(super) out_of_core_projection: Option<NowledgeMemOutOfCoreSearchProjection>,
+    pub(super) retrieval_projection_advisor: RetrievalProjectionAdvisor,
+    pub(super) out_of_core_projection: Option<OutOfCoreSearchProjection>,
 }
 
 impl PublishedCanonicalRead {
-    pub(super) fn capture(store: &NowledgeMemEmbeddedStore) -> Result<Self> {
+    pub(super) fn capture(store: &EmbeddedStore) -> Result<Self> {
         Ok(Self {
             instance_identity: store.graph.database().instance_identity()?,
             view: Arc::new(crate::api::PublishedConcurrentRead::capture(
@@ -46,14 +46,13 @@ impl PublishedCanonicalRead {
             out_of_core_projection: store
                 .out_of_core_search_projection
                 .as_ref()
-                .map(NowledgeMemOutOfCoreSearchProjection::read_snapshot),
+                .map(OutOfCoreSearchProjection::read_snapshot),
         })
     }
 }
 
 pub(super) struct EmbeddedStoreWriteGuard<'a> {
-    pub(super) store:
-        crate::api::publication::DatabasePublicationWriteGuard<'a, NowledgeMemEmbeddedStore>,
+    pub(super) store: crate::api::publication::DatabasePublicationWriteGuard<'a, EmbeddedStore>,
     pub(super) _exclusive: Option<crate::api::ExclusiveDatabaseLease>,
     pub(super) retired: Option<PublishedCanonicalRead>,
     pub(super) published: &'a Mutex<Option<PublishedCanonicalRead>>,
@@ -61,7 +60,7 @@ pub(super) struct EmbeddedStoreWriteGuard<'a> {
 }
 
 impl std::ops::Deref for EmbeddedStoreWriteGuard<'_> {
-    type Target = NowledgeMemEmbeddedStore;
+    type Target = EmbeddedStore;
 
     fn deref(&self) -> &Self::Target {
         &self.store
@@ -106,23 +105,23 @@ impl Drop for EmbeddedStoreWriteGuard<'_> {
     }
 }
 
-pub struct NowledgeMemReadSnapshot<'a> {
+pub struct EmbeddedReadSnapshot<'a> {
     instance_identity: crate::DatabaseInstanceIdentity,
     transaction: crate::BudgetedReadSnapshot,
     external: SearchProjectionExternalReadOperator<'a>,
     search_projection_source_graph_commit_epoch: Option<u64>,
     search_projection_durable_source_graph_commit_epoch: Option<u64>,
-    budget: NowledgeMemReadSnapshotBudget,
+    budget: EmbeddedReadSnapshotBudget,
     task_context: RuntimeTaskContext,
 }
 
-impl<'a> NowledgeMemReadSnapshot<'a> {
+impl<'a> EmbeddedReadSnapshot<'a> {
     pub(super) fn new(
         transaction: crate::DatabaseReadTransaction,
         instance_identity: crate::DatabaseInstanceIdentity,
-        budget: NowledgeMemReadSnapshotBudget,
+        budget: EmbeddedReadSnapshotBudget,
         projection: Option<ResidentProjectionRef<'a>>,
-        out_of_core_projection: Option<&'a NowledgeMemOutOfCoreSearchProjection>,
+        out_of_core_projection: Option<&'a OutOfCoreSearchProjection>,
         task_context: RuntimeTaskContext,
     ) -> Self {
         let freshness = match (projection, out_of_core_projection) {
@@ -276,8 +275,8 @@ impl<'a> NowledgeMemReadSnapshot<'a> {
         Ok(report)
     }
 
-    pub fn report(&self) -> NowledgeMemReadSnapshotReport {
-        NowledgeMemReadSnapshotReport {
+    pub fn report(&self) -> EmbeddedReadSnapshotReport {
+        EmbeddedReadSnapshotReport {
             commit_epoch: self.commit_epoch(),
             search_projection_present: self.external.projection.is_some()
                 || self.external.out_of_core_projection.is_some(),
@@ -343,8 +342,8 @@ impl<'a> NowledgeMemReadSnapshot<'a> {
     }
 }
 
-impl NowledgeMemEmbeddedStoreHandle {
-    pub fn new(store: NowledgeMemEmbeddedStore) -> Result<Self> {
+impl EmbeddedStoreHandle {
+    pub fn new(store: EmbeddedStore) -> Result<Self> {
         let published_read = PublishedCanonicalRead::capture(&store)?;
         let inner = Arc::new(crate::DatabasePublicationOwner::new(store));
         let published_read = Arc::new(Mutex::new(Some(published_read)));
@@ -365,20 +364,18 @@ impl NowledgeMemEmbeddedStoreHandle {
     }
 
     pub fn open_with_options(
-        options: NowledgeMemOpenOptions,
-    ) -> Result<(Self, NowledgeMemOpenReport)> {
-        let (store, report) = NowledgeMemEmbeddedStore::open_with_options(options)?;
+        options: EmbeddedStoreOpenOptions,
+    ) -> Result<(Self, EmbeddedStoreOpenReport)> {
+        let (store, report) = EmbeddedStore::open_with_options(options)?;
         Ok((Self::new(store)?, report))
     }
 
     pub fn open_with_options_and_runtime_governor(
-        options: NowledgeMemOpenOptions,
+        options: EmbeddedStoreOpenOptions,
         runtime_governor: RuntimeGovernor,
-    ) -> Result<(Self, NowledgeMemOpenReport)> {
-        let (store, report) = NowledgeMemEmbeddedStore::open_with_options_and_runtime_governor(
-            options,
-            runtime_governor,
-        )?;
+    ) -> Result<(Self, EmbeddedStoreOpenReport)> {
+        let (store, report) =
+            EmbeddedStore::open_with_options_and_runtime_governor(options, runtime_governor)?;
         Ok((Self::new(store)?, report))
     }
 
@@ -412,8 +409,8 @@ impl NowledgeMemEmbeddedStoreHandle {
 
     /// Reports the admitted facade contract. Production hosts must bind this
     /// report to their long-lived runtime identity before using it as evidence.
-    pub fn serving_path_readiness(&self) -> NowledgeMemServingPathReadiness {
-        NowledgeMemServingPathReadiness::embedded_store_handle()
+    pub fn serving_path_readiness(&self) -> EmbeddedServingPathReadiness {
+        EmbeddedServingPathReadiness::embedded_store_handle()
     }
 
     pub fn refresh_runtime_resources(&self) -> Result<bool> {
@@ -449,7 +446,7 @@ impl NowledgeMemEmbeddedStoreHandle {
             ))
     }
 
-    pub fn query_with_report(&self, cypher: &str) -> Result<NowledgeMemQueryOutput> {
+    pub fn query_with_report(&self, cypher: &str) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report(cypher, &BTreeMap::new())
     }
 
@@ -461,8 +458,8 @@ impl NowledgeMemEmbeddedStoreHandle {
     pub fn query_with_report_options(
         &self,
         cypher: &str,
-        options: NowledgeMemQueryReportOptions,
-    ) -> Result<NowledgeMemQueryOutput> {
+        options: EmbeddedQueryReportOptions,
+    ) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report_options(cypher, &BTreeMap::new(), options)
     }
 
@@ -470,11 +467,11 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-    ) -> Result<NowledgeMemQueryOutput> {
+    ) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report_options(
             cypher,
             parameters,
-            NowledgeMemQueryReportOptions::default(),
+            EmbeddedQueryReportOptions::default(),
         )
     }
 
@@ -497,7 +494,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         document_ids: &[String],
         max_documents: usize,
-    ) -> Result<NowledgeMemSearchHydrationOutput> {
+    ) -> Result<SearchHydrationOutput> {
         if document_ids.len() > max_documents {
             return Err(HawDBError::Execution(format!(
                 "search projection document hydration requested {} rows, limit is {max_documents}",
@@ -508,7 +505,7 @@ impl NowledgeMemEmbeddedStoreHandle {
     }
 }
 
-impl NowledgeMemEmbeddedStoreHandle {
+impl EmbeddedStoreHandle {
     pub fn transaction(
         &self,
         statements: &[NowledgeGraphStatement],
@@ -576,8 +573,8 @@ impl NowledgeMemEmbeddedStoreHandle {
     /// Budgets are cumulative across every statement in the callback.
     pub fn with_bounded_read_snapshot<T>(
         &self,
-        budget: NowledgeMemReadSnapshotBudget,
-        operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
+        budget: EmbeddedReadSnapshotBudget,
+        operation: impl FnOnce(&mut EmbeddedReadSnapshot<'_>) -> Result<T>,
     ) -> Result<T> {
         self.with_bounded_read_snapshot_context(budget, &RuntimeTaskContext::default(), operation)
     }
@@ -586,9 +583,9 @@ impl NowledgeMemEmbeddedStoreHandle {
     /// deadline, and resource reservation context.
     pub fn with_bounded_read_snapshot_context<T>(
         &self,
-        budget: NowledgeMemReadSnapshotBudget,
+        budget: EmbeddedReadSnapshotBudget,
         task_context: &RuntimeTaskContext,
-        operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
+        operation: impl FnOnce(&mut EmbeddedReadSnapshot<'_>) -> Result<T>,
     ) -> Result<T> {
         self.with_bounded_read_snapshot_kind(budget, true, task_context, operation)
     }
@@ -601,8 +598,8 @@ impl NowledgeMemEmbeddedStoreHandle {
     /// `with_bounded_read_snapshot` when a pinned projection is required.
     pub fn with_bounded_graph_read_snapshot<T>(
         &self,
-        budget: NowledgeMemReadSnapshotBudget,
-        operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
+        budget: EmbeddedReadSnapshotBudget,
+        operation: impl FnOnce(&mut EmbeddedReadSnapshot<'_>) -> Result<T>,
     ) -> Result<T> {
         self.with_bounded_graph_read_snapshot_context(
             budget,
@@ -615,19 +612,19 @@ impl NowledgeMemEmbeddedStoreHandle {
     /// deadline, and resource reservation context.
     pub fn with_bounded_graph_read_snapshot_context<T>(
         &self,
-        budget: NowledgeMemReadSnapshotBudget,
+        budget: EmbeddedReadSnapshotBudget,
         task_context: &RuntimeTaskContext,
-        operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
+        operation: impl FnOnce(&mut EmbeddedReadSnapshot<'_>) -> Result<T>,
     ) -> Result<T> {
         self.with_bounded_read_snapshot_kind(budget, false, task_context, operation)
     }
 
     pub(super) fn with_bounded_read_snapshot_kind<T>(
         &self,
-        budget: NowledgeMemReadSnapshotBudget,
+        budget: EmbeddedReadSnapshotBudget,
         pin_projection: bool,
         task_context: &RuntimeTaskContext,
-        operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
+        operation: impl FnOnce(&mut EmbeddedReadSnapshot<'_>) -> Result<T>,
     ) -> Result<T> {
         if budget.max_rows == 0 {
             return Err(HawDBError::Execution(
@@ -646,7 +643,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                     Some(budget.max_rows),
                     task_context,
                 )?;
-            let mut snapshot = NowledgeMemReadSnapshot::new(
+            let mut snapshot = EmbeddedReadSnapshot::new(
                 transaction,
                 instance_identity,
                 budget,
@@ -671,7 +668,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                 current
                     .out_of_core_projection
                     .as_ref()
-                    .map(NowledgeMemOutOfCoreSearchProjection::read_snapshot),
+                    .map(OutOfCoreSearchProjection::read_snapshot),
             )
         };
         let resident = resident
@@ -690,7 +687,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         }
         let transaction = view.begin_read_transaction_with_context(&task_context)?;
         drop(view);
-        let mut snapshot = NowledgeMemReadSnapshot::new(
+        let mut snapshot = EmbeddedReadSnapshot::new(
             transaction,
             identity,
             budget,
@@ -782,8 +779,8 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: NowledgeMemQueryReportOptions,
-    ) -> Result<NowledgeMemQueryOutput> {
+        options: EmbeddedQueryReportOptions,
+    ) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report_options_context(
             cypher,
             parameters,
@@ -796,17 +793,17 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: NowledgeMemQueryReportOptions,
+        options: EmbeddedQueryReportOptions,
         task_context: &RuntimeTaskContext,
-    ) -> Result<NowledgeMemQueryOutput> {
+    ) -> Result<EmbeddedQueryOutput> {
         self.query_with_admitted_report(cypher, parameters, options, task_context)
     }
 
     pub fn read_query(
         &self,
         cypher: &str,
-        options: &NowledgeMemReadOptions,
-    ) -> Result<NowledgeMemReadOutput> {
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
         self.read_query_with_params(cypher, &BTreeMap::new(), options)
     }
 
@@ -814,11 +811,11 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
-    ) -> Result<NowledgeMemReadOutput> {
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
         let mut output = self
             .read_query_with_params_streaming_collect(cypher, parameters, options)
-            .map_err(|error| legacy_nowledge_mem_read_error(error, options))?;
+            .map_err(|error| legacy_embedded_read_error(error, options))?;
         output.report.streaming = false;
         Ok(output)
     }
@@ -827,7 +824,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
+        options: &EmbeddedReadOptions,
         consumer: impl FnMut(BTreeMap<String, Value>) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         self.read_query_with_params_streaming_context(
@@ -843,7 +840,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
+        options: &EmbeddedReadOptions,
         task_context: &RuntimeTaskContext,
         consumer: impl FnMut(BTreeMap<String, Value>) -> Result<()>,
     ) -> Result<QueryStreamReport> {
@@ -869,8 +866,8 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
-    ) -> Result<NowledgeMemReadOutput> {
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
         self.with_admitted_graph_read(
             cypher,
             parameters,
@@ -880,7 +877,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                 let bounded = read.query_prepared_with_params_profiled_context(
                     prepared, parameters, limits, context,
                 )?;
-                let mut output = bounded_nowledge_mem_read_output(mode, bounded, options)?;
+                let mut output = bounded_embedded_read_output(mode, bounded, options)?;
                 output.report.streaming = true;
                 Ok(output)
             },
@@ -911,8 +908,8 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         query: &GraphRagGeneratedQuery,
         parameters: &BTreeMap<String, Value>,
-        options: &NowledgeMemReadOptions,
-    ) -> Result<NowledgeMemReadOutput> {
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
         query
             .validate_parameters(parameters)
             .map_err(|error| HawDBError::Semantic(error.to_string()))?;
@@ -926,23 +923,20 @@ impl NowledgeMemEmbeddedStoreHandle {
                 let bounded = read.query_prepared_with_params_profiled_context(
                     prepared, parameters, limits, context,
                 )?;
-                bounded_nowledge_mem_read_output(mode, bounded, options)
+                bounded_embedded_read_output(mode, bounded, options)
             },
         )
     }
 }
-impl NowledgeMemEmbeddedStoreHandle {
-    pub fn search_candidates(
-        &self,
-        request: &NowledgeMemSearchCandidateRequest,
-    ) -> Result<SearchResultSet> {
+impl EmbeddedStoreHandle {
+    pub fn search_candidates(&self, request: &SearchCandidateRequest) -> Result<SearchResultSet> {
         Ok(self.search_candidates_with_report(request)?.result)
     }
 
     pub fn search_candidates_with_report(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
-    ) -> Result<NowledgeMemSearchCandidateOutput> {
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
         self.with_admitted_search(|read| read.search_candidates(request))
     }
 
@@ -977,15 +971,15 @@ impl NowledgeMemEmbeddedStoreHandle {
     pub fn retrieve_knowledge_with_report(
         &self,
         request: &KnowledgeRetrievalRequest,
-    ) -> Result<NowledgeMemRetrievalOutput> {
+    ) -> Result<RetrievalOutput> {
         self.with_admitted_search(|read| read.retrieve(request))
     }
 
     pub fn search_candidate_readiness(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
-        options: &NowledgeMemSearchCandidateReadinessOptions,
-    ) -> Result<NowledgeMemSearchCandidateReadinessReport> {
+        request: &SearchCandidateRequest,
+        options: &SearchCandidateReadinessOptions,
+    ) -> Result<SearchCandidateReadinessReport> {
         Ok(self
             .search_candidates_with_report(request)?
             .readiness_report(options))
@@ -993,7 +987,7 @@ impl NowledgeMemEmbeddedStoreHandle {
 
     pub fn search_candidate_shadow_evidence_json<I, S>(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
+        request: &SearchCandidateRequest,
         primary_candidate_ids: I,
     ) -> Result<serde_json::Value>
     where
@@ -1003,7 +997,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         self.with_admitted_search(|read| read.shadow_evidence_json(request, primary_candidate_ids))
     }
 
-    pub fn slow_query_report(&self) -> Result<NowledgeMemSlowQueryReport> {
+    pub fn slow_query_report(&self) -> Result<SlowQueryReport> {
         Ok(self.read_store()?.slow_query_report())
     }
 
@@ -1011,7 +1005,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         Ok(self.read_store()?.slow_query_report_json())
     }
 
-    pub fn runtime_status(&self) -> Result<NowledgeMemRuntimeStatus> {
+    pub fn runtime_status(&self) -> Result<EmbeddedRuntimeStatus> {
         self.read_store()?.runtime_status()
     }
 
@@ -1032,7 +1026,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         self.with_admitted_graph_read(
             &statement.cypher,
             &statement.parameters,
-            &NowledgeMemReadOptions {
+            &EmbeddedReadOptions {
                 max_rows: Some(limits.max_output_rows),
                 max_estimated_payload_bytes: Some(limits.max_output_payload_bytes),
             },
@@ -1058,33 +1052,33 @@ impl NowledgeMemEmbeddedStoreHandle {
 
     pub fn production_status(
         &self,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-    ) -> Result<NowledgeMemProductionStatus> {
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
+    ) -> Result<EmbeddedProductionStatus> {
         self.read_store()?.production_status(route_ownership)
     }
 
     pub fn production_status_json(
         &self,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
     ) -> Result<serde_json::Value> {
         self.read_store()?.production_status_json(route_ownership)
     }
 
     pub fn cutover_controls_report(
         &self,
-        controls: NowledgeMemCutoverControls,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-    ) -> Result<NowledgeMemCutoverControlsReport> {
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
+    ) -> Result<CutoverControlsReport> {
         self.read_store()?
             .cutover_controls_report(controls, route_ownership)
     }
 
     pub fn cutover_controls_report_with_initial_import_cutover_catch_up(
         &self,
-        controls: NowledgeMemCutoverControls,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
         initial_import_cutover_catch_up: Option<&HawDBLightningInitialImportCutoverCatchUpReport>,
-    ) -> Result<NowledgeMemCutoverControlsReport> {
+    ) -> Result<CutoverControlsReport> {
         self.read_store()?
             .cutover_controls_report_with_initial_import_cutover_catch_up(
                 controls,
@@ -1095,10 +1089,10 @@ impl NowledgeMemEmbeddedStoreHandle {
 
     pub fn cutover_controls_report_with_initial_import_recovery(
         &self,
-        controls: NowledgeMemCutoverControls,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
         initial_import_recovery: Option<&HawDBLightningInitialImportRecoveryReadinessReport>,
-    ) -> Result<NowledgeMemCutoverControlsReport> {
+    ) -> Result<CutoverControlsReport> {
         self.read_store()?
             .cutover_controls_report_with_initial_import_recovery(
                 controls,
@@ -1109,8 +1103,8 @@ impl NowledgeMemEmbeddedStoreHandle {
 
     pub fn cutover_controls_report_json(
         &self,
-        controls: NowledgeMemCutoverControls,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
     ) -> Result<serde_json::Value> {
         self.read_store()?
             .cutover_controls_report_json(controls, route_ownership)
@@ -1118,8 +1112,8 @@ impl NowledgeMemEmbeddedStoreHandle {
 
     pub fn cutover_controls_report_json_with_initial_import_cutover_catch_up(
         &self,
-        controls: NowledgeMemCutoverControls,
-        route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
         initial_import_cutover_catch_up: Option<&HawDBLightningInitialImportCutoverCatchUpReport>,
     ) -> Result<serde_json::Value> {
         self.read_store()?
@@ -1130,44 +1124,35 @@ impl NowledgeMemEmbeddedStoreHandle {
             )
     }
 
-    pub fn library_readiness(
-        &self,
-        options: &NowledgeMemReadinessOptions,
-    ) -> Result<NowledgeMemLibraryReadinessReport> {
+    pub fn library_readiness(&self, options: &ReadinessOptions) -> Result<LibraryReadinessReport> {
         self.read_store()?.library_readiness(options)
     }
 
-    pub fn library_readiness_json(
-        &self,
-        options: &NowledgeMemReadinessOptions,
-    ) -> Result<serde_json::Value> {
+    pub fn library_readiness_json(&self, options: &ReadinessOptions) -> Result<serde_json::Value> {
         self.read_store()?.library_readiness_json(options)
     }
 
-    pub fn readiness_dashboard(
-        &self,
-        options: &NowledgeMemReadinessOptions,
-    ) -> Result<NowledgeMemReadinessDashboard> {
+    pub fn readiness_dashboard(&self, options: &ReadinessOptions) -> Result<ReadinessDashboard> {
         self.read_store()?.readiness_dashboard(options)
     }
 
     pub fn readiness_dashboard_json(
         &self,
-        options: &NowledgeMemReadinessOptions,
+        options: &ReadinessOptions,
     ) -> Result<serde_json::Value> {
         self.read_store()?.readiness_dashboard_json(options)
     }
 
     pub fn operations_readiness(
         &self,
-        options: &NowledgeMemReadinessOptions,
-    ) -> Result<NowledgeMemOperationsReadinessReport> {
+        options: &ReadinessOptions,
+    ) -> Result<OperationsReadinessReport> {
         self.read_store()?.operations_readiness(options)
     }
 
     pub fn operations_readiness_json(
         &self,
-        options: &NowledgeMemReadinessOptions,
+        options: &ReadinessOptions,
     ) -> Result<serde_json::Value> {
         self.read_store()?.operations_readiness_json(options)
     }
@@ -1621,8 +1606,7 @@ impl NowledgeMemEmbeddedStoreHandle {
 
     pub(super) fn read_store(
         &self,
-    ) -> Result<crate::api::publication::DatabasePublicationReadGuard<'_, NowledgeMemEmbeddedStore>>
-    {
+    ) -> Result<crate::api::publication::DatabasePublicationReadGuard<'_, EmbeddedStore>> {
         self.inner.read().map_err(|_| {
             HawDBError::Execution("nowledge mem embedded store read lock poisoned".to_string())
         })

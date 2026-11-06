@@ -201,15 +201,12 @@ fn embedded_checkpoint_admits_foreground_while_actual_owner_holds_io() {
         }));
         state.manual_wait_probe = Some(waiting);
     }
-    let graph = crate::NowledgeMemGraph::from_database_with_runtime_governor(
+    let graph = crate::EmbeddedGraph::from_database_with_runtime_governor(
         db,
-        crate::NowledgeMemGraphMode::WritableCutover,
+        crate::GraphMode::WritableCutover,
         governor.clone(),
     );
-    let handle = crate::NowledgeMemEmbeddedStoreHandle::new(crate::NowledgeMemEmbeddedStore::new(
-        graph, None,
-    ))
-    .unwrap();
+    let handle = crate::EmbeddedStoreHandle::new(crate::EmbeddedStore::new(graph, None)).unwrap();
 
     struct ResetWaitProbe(Arc<Control>);
     impl Drop for ResetWaitProbe {

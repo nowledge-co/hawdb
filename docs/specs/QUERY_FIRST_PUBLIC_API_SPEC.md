@@ -10,7 +10,7 @@ normative for production builds.
 Application graph behavior MUST be expressed as parameterized Cypher and
 executed through `Database`, `DatabaseReadTransaction`,
 `DatabaseTransaction`, `NowledgeGraphAdapter`, or the bounded
-`NowledgeMemGraph` query surface. Relational behavior MUST be expressed as
+`EmbeddedGraph` query surface. Relational behavior MUST be expressed as
 PostgreSQL-dialect SQL through the corresponding SQL entry points.
 
 Idempotent ingestion uses PostgreSQL-style `INSERT ... ON CONFLICT (...) DO

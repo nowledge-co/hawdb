@@ -10,7 +10,7 @@ use hawdb_executor::QueryMemoryAccount;
 
 #[derive(Clone, Copy)]
 pub(super) enum ResidentProjectionRef<'a> {
-    Live(&'a NowledgeMemSearchProjection),
+    Live(&'a SearchProjection),
     Snapshot(&'a SearchIndexReadSnapshot),
 }
 
@@ -74,9 +74,9 @@ impl ResidentProjectionRef<'_> {
 
     pub(super) fn try_search_candidates_with_report_context(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
+        request: &SearchCandidateRequest,
         execution: VectorSearchExecutionOptions<'_>,
-    ) -> Result<NowledgeMemSearchCandidateOutput> {
+    ) -> Result<SearchCandidateOutput> {
         let compression = effective_search_candidate_mode(request);
         let result = read_projection!(
             self,
@@ -100,8 +100,8 @@ impl ResidentProjectionRef<'_> {
                 execution,
             )
         )?;
-        let report = nowledge_mem_search_candidate_report(request, compression, &result);
-        Ok(NowledgeMemSearchCandidateOutput {
+        let report = search_candidate_report(request, compression, &result);
+        Ok(SearchCandidateOutput {
             result,
             report,
             out_of_core_metrics: None,

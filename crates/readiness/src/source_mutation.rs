@@ -19,39 +19,37 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL: &str =
+pub const SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL: &str =
     "hawdb-nowledge-mem-source-mutation-dual-write-readiness-v1";
 
-pub const NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_PATCH_DELETE: &str = "source_patch_delete";
-pub const NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_LIFECYCLE: &str = "source_lifecycle";
-pub const NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_GRAPH_DELETE: &str = "source_graph_delete";
-pub const NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INGEST_CREATE: &str = "source_ingest_create";
-pub const NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_CONTENT_REFRESH_REPARSE: &str =
-    "source_content_refresh_reparse";
-pub const NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INDEXED_TRANSITION: &str =
-    "source_indexed_transition";
-pub const NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_REVISION_EDGES: &str = "source_revision_edges";
-pub const NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_SEARCH_PROJECTION_EFFECTS: &str =
+pub const SOURCE_MUTATION_FAMILY_PATCH_DELETE: &str = "source_patch_delete";
+pub const SOURCE_MUTATION_FAMILY_LIFECYCLE: &str = "source_lifecycle";
+pub const SOURCE_MUTATION_FAMILY_GRAPH_DELETE: &str = "source_graph_delete";
+pub const SOURCE_MUTATION_FAMILY_INGEST_CREATE: &str = "source_ingest_create";
+pub const SOURCE_MUTATION_FAMILY_CONTENT_REFRESH_REPARSE: &str = "source_content_refresh_reparse";
+pub const SOURCE_MUTATION_FAMILY_INDEXED_TRANSITION: &str = "source_indexed_transition";
+pub const SOURCE_MUTATION_FAMILY_REVISION_EDGES: &str = "source_revision_edges";
+pub const SOURCE_MUTATION_FAMILY_SEARCH_PROJECTION_EFFECTS: &str =
     "source_search_projection_effects";
 
-pub const REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES: &[&str] = &[
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_PATCH_DELETE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_LIFECYCLE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_GRAPH_DELETE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INGEST_CREATE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_CONTENT_REFRESH_REPARSE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INDEXED_TRANSITION,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_REVISION_EDGES,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_SEARCH_PROJECTION_EFFECTS,
+pub const REQUIRED_SOURCE_MUTATION_FAMILIES: &[&str] = &[
+    SOURCE_MUTATION_FAMILY_PATCH_DELETE,
+    SOURCE_MUTATION_FAMILY_LIFECYCLE,
+    SOURCE_MUTATION_FAMILY_GRAPH_DELETE,
+    SOURCE_MUTATION_FAMILY_INGEST_CREATE,
+    SOURCE_MUTATION_FAMILY_CONTENT_REFRESH_REPARSE,
+    SOURCE_MUTATION_FAMILY_INDEXED_TRANSITION,
+    SOURCE_MUTATION_FAMILY_REVISION_EDGES,
+    SOURCE_MUTATION_FAMILY_SEARCH_PROJECTION_EFFECTS,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSourceMutationFamilyRequirement {
+pub struct SourceMutationFamilyRequirement {
     pub family: String,
     pub requires_search_projection_payload: bool,
 }
 
-impl NowledgeMemSourceMutationFamilyRequirement {
+impl SourceMutationFamilyRequirement {
     fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "family": self.family,
@@ -61,7 +59,7 @@ impl NowledgeMemSourceMutationFamilyRequirement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSourceMutationDualWriteEvidence {
+pub struct SourceMutationDualWriteEvidence {
     pub family: String,
     pub payload_frozen: bool,
     pub legacy_ack_recorded: bool,
@@ -71,7 +69,7 @@ pub struct NowledgeMemSourceMutationDualWriteEvidence {
     pub search_projection_payload_frozen: bool,
 }
 
-impl NowledgeMemSourceMutationDualWriteEvidence {
+impl SourceMutationDualWriteEvidence {
     pub fn ready(family: impl Into<String>) -> Self {
         let family = family.into();
         Self {
@@ -87,14 +85,14 @@ impl NowledgeMemSourceMutationDualWriteEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSourceMutationDualWriteReadinessReport {
+pub struct SourceMutationDualWriteReadinessReport {
     pub protocol: String,
     pub ready: bool,
     pub required_family_count: usize,
     pub evidence_family_count: usize,
     pub ready_family_count: usize,
-    pub requirements: Vec<NowledgeMemSourceMutationFamilyRequirement>,
-    pub evidence: Vec<NowledgeMemSourceMutationDualWriteEvidence>,
+    pub requirements: Vec<SourceMutationFamilyRequirement>,
+    pub evidence: Vec<SourceMutationDualWriteEvidence>,
     pub ready_families: Vec<String>,
     pub missing_required_families: Vec<String>,
     pub unknown_families: Vec<String>,
@@ -108,7 +106,7 @@ pub struct NowledgeMemSourceMutationDualWriteReadinessReport {
     pub blocker_codes: Vec<String>,
 }
 
-impl NowledgeMemSourceMutationDualWriteReadinessReport {
+impl SourceMutationDualWriteReadinessReport {
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "protocol": self.protocol,
@@ -116,7 +114,7 @@ impl NowledgeMemSourceMutationDualWriteReadinessReport {
             "required_family_count": self.required_family_count,
             "evidence_family_count": self.evidence_family_count,
             "ready_family_count": self.ready_family_count,
-            "requirements": self.requirements.iter().map(NowledgeMemSourceMutationFamilyRequirement::json).collect::<Vec<_>>(),
+            "requirements": self.requirements.iter().map(SourceMutationFamilyRequirement::json).collect::<Vec<_>>(),
             "evidence": self.evidence.iter().map(source_mutation_dual_write_evidence_json).collect::<Vec<_>>(),
             "ready_families": self.ready_families,
             "missing_required_families": self.missing_required_families,
@@ -133,29 +131,27 @@ impl NowledgeMemSourceMutationDualWriteReadinessReport {
     }
 }
 
-pub fn nowledge_mem_source_mutation_family_requirements(
-) -> Vec<NowledgeMemSourceMutationFamilyRequirement> {
-    REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES
+pub fn source_mutation_family_requirements() -> Vec<SourceMutationFamilyRequirement> {
+    REQUIRED_SOURCE_MUTATION_FAMILIES
         .iter()
-        .map(|family| NowledgeMemSourceMutationFamilyRequirement {
+        .map(|family| SourceMutationFamilyRequirement {
             family: (*family).to_string(),
             requires_search_projection_payload: source_mutation_family_requires_projection(family),
         })
         .collect()
 }
 
-pub fn nowledge_mem_source_mutation_dual_write_evidence_all_ready(
-) -> Vec<NowledgeMemSourceMutationDualWriteEvidence> {
-    REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES
+pub fn source_mutation_dual_write_evidence_all_ready() -> Vec<SourceMutationDualWriteEvidence> {
+    REQUIRED_SOURCE_MUTATION_FAMILIES
         .iter()
-        .map(|family| NowledgeMemSourceMutationDualWriteEvidence::ready(*family))
+        .map(|family| SourceMutationDualWriteEvidence::ready(*family))
         .collect()
 }
 
-pub fn nowledge_mem_source_mutation_dual_write_readiness(
-    evidence: &[NowledgeMemSourceMutationDualWriteEvidence],
-) -> NowledgeMemSourceMutationDualWriteReadinessReport {
-    let required_families = REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES
+pub fn source_mutation_dual_write_readiness(
+    evidence: &[SourceMutationDualWriteEvidence],
+) -> SourceMutationDualWriteReadinessReport {
+    let required_families = REQUIRED_SOURCE_MUTATION_FAMILIES
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
@@ -168,7 +164,7 @@ pub fn nowledge_mem_source_mutation_dual_write_readiness(
         .copied()
         .filter(|family| required_families.contains(family))
         .collect::<BTreeSet<_>>();
-    let missing_required_families = REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES
+    let missing_required_families = REQUIRED_SOURCE_MUTATION_FAMILIES
         .iter()
         .copied()
         .filter(|family| !observed_required_families.contains(family))
@@ -242,13 +238,13 @@ pub fn nowledge_mem_source_mutation_dual_write_readiness(
     }
 
     let ready = blocker_codes.is_empty();
-    NowledgeMemSourceMutationDualWriteReadinessReport {
-        protocol: NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL.to_string(),
+    SourceMutationDualWriteReadinessReport {
+        protocol: SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL.to_string(),
         ready,
-        required_family_count: REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES.len(),
+        required_family_count: REQUIRED_SOURCE_MUTATION_FAMILIES.len(),
         evidence_family_count: observed_required_families.len(),
         ready_family_count: ready_families.len(),
-        requirements: nowledge_mem_source_mutation_family_requirements(),
+        requirements: source_mutation_family_requirements(),
         evidence: normalized_source_mutation_evidence(evidence),
         ready_families,
         missing_required_families,
@@ -267,16 +263,16 @@ pub fn nowledge_mem_source_mutation_dual_write_readiness(
 fn source_mutation_family_requires_projection(family: &str) -> bool {
     matches!(
         family,
-        NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INGEST_CREATE
-            | NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_CONTENT_REFRESH_REPARSE
-            | NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INDEXED_TRANSITION
-            | NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_SEARCH_PROJECTION_EFFECTS
+        SOURCE_MUTATION_FAMILY_INGEST_CREATE
+            | SOURCE_MUTATION_FAMILY_CONTENT_REFRESH_REPARSE
+            | SOURCE_MUTATION_FAMILY_INDEXED_TRANSITION
+            | SOURCE_MUTATION_FAMILY_SEARCH_PROJECTION_EFFECTS
     )
 }
 
 fn source_mutation_families_where(
-    evidence: &[NowledgeMemSourceMutationDualWriteEvidence],
-    predicate: impl Fn(&NowledgeMemSourceMutationDualWriteEvidence) -> bool,
+    evidence: &[SourceMutationDualWriteEvidence],
+    predicate: impl Fn(&SourceMutationDualWriteEvidence) -> bool,
 ) -> Vec<String> {
     let mut families = evidence
         .iter()
@@ -289,15 +285,15 @@ fn source_mutation_families_where(
 }
 
 fn normalized_source_mutation_evidence(
-    evidence: &[NowledgeMemSourceMutationDualWriteEvidence],
-) -> Vec<NowledgeMemSourceMutationDualWriteEvidence> {
+    evidence: &[SourceMutationDualWriteEvidence],
+) -> Vec<SourceMutationDualWriteEvidence> {
     let mut normalized = evidence.to_vec();
     normalized.sort_by(|left, right| left.family.cmp(&right.family));
     normalized
 }
 
 fn source_mutation_dual_write_evidence_json(
-    evidence: &NowledgeMemSourceMutationDualWriteEvidence,
+    evidence: &SourceMutationDualWriteEvidence,
 ) -> serde_json::Value {
     serde_json::json!({
         "family": evidence.family,

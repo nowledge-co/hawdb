@@ -2158,7 +2158,7 @@ fn mem_shaped_graph_mutations_recover_across_checkpoint_and_wal() {
         assert_eq!(recovery.max_wal_replay_entries, Some(8));
         assert_eq!(recovery.recovered_commit_epoch, 5);
 
-        let mem_recovery = NowledgeMemStorageRecoveryReport::from_storage_report(&recovery);
+        let mem_recovery = EmbeddedStorageRecoveryReport::from_storage_report(&recovery);
         assert!(mem_recovery.ready);
         assert!(mem_recovery.durable_recovery_observed);
         assert!(mem_recovery.checkpoint_boundary_present);
@@ -2250,7 +2250,7 @@ fn mem_shaped_post_checkpoint_batch_replays_before_torn_tail() {
         assert_eq!(recovery.discarded_wal_tail_bytes, 0);
         assert!(recovery.torn_tail_reason.is_none());
 
-        let mem_recovery = NowledgeMemStorageRecoveryReport::from_storage_report(&recovery);
+        let mem_recovery = EmbeddedStorageRecoveryReport::from_storage_report(&recovery);
         assert!(mem_recovery.ready);
         assert!(mem_recovery.durable_recovery_observed);
         assert!(mem_recovery.checkpoint_boundary_present);

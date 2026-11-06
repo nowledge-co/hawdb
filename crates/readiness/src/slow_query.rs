@@ -14,13 +14,13 @@
 
 //! Redacted slow-query reporting contract for the embedded readiness surface.
 
-use crate::bounded_read_evidence::NowledgeMemGraphMode;
+use crate::bounded_read_evidence::GraphMode;
 use hawdb_system_sql::SlowQueryLogRecordSummary;
 
-pub const NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-slow-query-report-v1";
+pub const SLOW_QUERY_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-slow-query-report-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSlowQueryRecord {
+pub struct SlowQueryReportRecord {
     pub sequence: u64,
     pub query_language: String,
     pub statement_kind: String,
@@ -33,9 +33,9 @@ pub struct NowledgeMemSlowQueryRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSlowQueryReport {
+pub struct SlowQueryReport {
     pub protocol: String,
-    pub mode: NowledgeMemGraphMode,
+    pub mode: GraphMode,
     pub present: bool,
     pub ready: bool,
     pub capacity: usize,
@@ -44,20 +44,20 @@ pub struct NowledgeMemSlowQueryReport {
     pub latest_sequence: Option<u64>,
     pub max_elapsed_micros: Option<i64>,
     pub total_row_count: i64,
-    pub records: Vec<NowledgeMemSlowQueryRecord>,
+    pub records: Vec<SlowQueryReportRecord>,
 }
 
-impl NowledgeMemSlowQueryReport {
+impl SlowQueryReport {
     #[doc(hidden)]
     pub fn from_summaries(
-        mode: NowledgeMemGraphMode,
+        mode: GraphMode,
         capacity: usize,
         threshold_micros: u128,
         records: Vec<SlowQueryLogRecordSummary>,
     ) -> Self {
         let records = records
             .into_iter()
-            .map(|record| NowledgeMemSlowQueryRecord {
+            .map(|record| SlowQueryReportRecord {
                 sequence: record.sequence,
                 query_language: record.query_language,
                 statement_kind: record.statement_kind,
@@ -77,7 +77,7 @@ impl NowledgeMemSlowQueryReport {
             .fold(0i64, i64::saturating_add);
 
         Self {
-            protocol: NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL.to_string(),
+            protocol: SLOW_QUERY_REPORT_PROTOCOL.to_string(),
             mode,
             present: true,
             ready: true,
@@ -127,14 +127,14 @@ impl NowledgeMemSlowQueryReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{NowledgeMemSlowQueryReport, NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL};
-    use crate::bounded_read_evidence::NowledgeMemGraphMode;
+    use super::{SlowQueryReport, SLOW_QUERY_REPORT_PROTOCOL};
+    use crate::bounded_read_evidence::GraphMode;
     use hawdb_system_sql::SlowQueryLogRecordSummary;
 
     #[test]
     fn report_preserves_summary_aggregates_and_redaction() {
-        let report = NowledgeMemSlowQueryReport::from_summaries(
-            NowledgeMemGraphMode::ShadowReadOnly,
+        let report = SlowQueryReport::from_summaries(
+            GraphMode::ShadowReadOnly,
             16,
             10_000,
             vec![
@@ -166,7 +166,7 @@ mod tests {
         );
 
         let json = report.json();
-        assert_eq!(report.protocol, NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL);
+        assert_eq!(report.protocol, SLOW_QUERY_REPORT_PROTOCOL);
         assert_eq!(report.record_count, 2);
         assert_eq!(report.latest_sequence, Some(5));
         assert_eq!(report.max_elapsed_micros, Some(70));

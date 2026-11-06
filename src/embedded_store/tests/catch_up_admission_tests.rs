@@ -46,23 +46,21 @@ fn fixture(
     name: &str,
     incremental: bool,
     governor: &RuntimeGovernor,
-) -> (std::path::PathBuf, NowledgeMemEmbeddedStoreHandle) {
+) -> (std::path::PathBuf, EmbeddedStoreHandle) {
     let (root, original, options) = incremental_maintenance_fixture(name, Default::default());
     drop(original);
     let options = if incremental {
         options
     } else {
-        NowledgeMemOpenOptions::with_search_projection(
+        EmbeddedStoreOpenOptions::with_search_projection(
             root.join("graph"),
             root.join("search"),
-            NowledgeMemGraphMode::WritableCutover,
+            GraphMode::WritableCutover,
         )
     };
-    let (handle, _) = NowledgeMemEmbeddedStoreHandle::open_with_options_and_runtime_governor(
-        options,
-        governor.clone(),
-    )
-    .unwrap();
+    let (handle, _) =
+        EmbeddedStoreHandle::open_with_options_and_runtime_governor(options, governor.clone())
+            .unwrap();
     handle
         .query_with_report("CREATE (:Memory {id: 'priority-current', title: 'Current source'})")
         .unwrap();

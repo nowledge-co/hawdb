@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_READINESS_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_REPORT_PROTOCOL,
-};
+use super::{SEARCH_CANDIDATE_READINESS_PROTOCOL, SEARCH_CANDIDATE_REPORT_PROTOCOL};
 use crate::{
     CompressedVectorSearchMode, SearchCandidateSetReport, SearchFusionWeights, SearchMode,
     SearchOutOfCoreMetrics, SearchResultSet, VectorRecallValidationReport,
@@ -24,7 +22,7 @@ use hawdb_optimizer_vector::AdaptiveVectorBackendPolicy;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NowledgeMemRetrievalProjectionAdvisor {
+pub struct RetrievalProjectionAdvisor {
     pub recall_evidence_ready: bool,
     pub recall_evidence_protocol: Option<String>,
     pub recall_sample_count: usize,
@@ -33,7 +31,7 @@ pub struct NowledgeMemRetrievalProjectionAdvisor {
     pub cold_or_constrained_local_segment: bool,
 }
 
-impl NowledgeMemRetrievalProjectionAdvisor {
+impl RetrievalProjectionAdvisor {
     pub fn cold_local_with_recall_parity(report: &VectorRecallValidationReport) -> Self {
         Self {
             recall_evidence_ready: report.validates_required_approximate_backend(),
@@ -89,7 +87,7 @@ impl NowledgeMemRetrievalProjectionAdvisor {
 
 pub fn advised_compressed_vector_search_mode(
     requested: CompressedVectorSearchMode,
-    advisor: &NowledgeMemRetrievalProjectionAdvisor,
+    advisor: &RetrievalProjectionAdvisor,
 ) -> CompressedVectorSearchMode {
     if requested == CompressedVectorSearchMode::Disabled || advisor.ready() {
         requested
@@ -98,8 +96,9 @@ pub fn advised_compressed_vector_search_mode(
     }
 }
 
+/// Parameters for text, vector, or hybrid search candidate retrieval.
 #[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeMemSearchCandidateRequest {
+pub struct SearchCandidateRequest {
     pub query_text: String,
     pub query_embedding: Option<Vec<f32>>,
     pub mode: SearchMode,
@@ -111,10 +110,10 @@ pub struct NowledgeMemSearchCandidateRequest {
     pub compressed_vector_search_mode: CompressedVectorSearchMode,
     pub adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy,
     pub recall_validation_probe: bool,
-    pub retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor,
+    pub retrieval_projection_advisor: RetrievalProjectionAdvisor,
 }
 
-impl NowledgeMemSearchCandidateRequest {
+impl SearchCandidateRequest {
     pub fn text(query_text: impl Into<String>, limit: usize) -> Self {
         Self {
             query_text: query_text.into(),
@@ -128,7 +127,7 @@ impl NowledgeMemSearchCandidateRequest {
             compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
             recall_validation_probe: false,
-            retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
+            retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
         }
     }
 
@@ -145,7 +144,7 @@ impl NowledgeMemSearchCandidateRequest {
             compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
             recall_validation_probe: false,
-            retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
+            retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
         }
     }
 
@@ -162,7 +161,7 @@ impl NowledgeMemSearchCandidateRequest {
             compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
             recall_validation_probe: false,
-            retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
+            retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
         }
     }
 
@@ -209,7 +208,7 @@ impl NowledgeMemSearchCandidateRequest {
 
     pub fn with_retrieval_projection_advisor(
         mut self,
-        advisor: NowledgeMemRetrievalProjectionAdvisor,
+        advisor: RetrievalProjectionAdvisor,
     ) -> Self {
         self.retrieval_projection_advisor = advisor;
         self
@@ -224,11 +223,11 @@ impl NowledgeMemSearchCandidateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeMemSearchCandidateReport {
+pub struct SearchCandidateReport {
     pub protocol: String,
     pub compressed_vector_search_mode: CompressedVectorSearchMode,
     pub requested_compressed_vector_search_mode: CompressedVectorSearchMode,
-    pub retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor,
+    pub retrieval_projection_advisor: RetrievalProjectionAdvisor,
     pub retrieval_projection_advisor_blocker_codes: Vec<String>,
     pub mode: SearchMode,
     pub query_embedding_dimension: Option<usize>,
@@ -277,7 +276,7 @@ pub struct NowledgeMemSearchCandidateReport {
     pub projection_embedding_dimension: Option<usize>,
 }
 
-impl NowledgeMemSearchCandidateReport {
+impl SearchCandidateReport {
     pub fn json(&self) -> serde_json::Value {
         let mut value = serde_json::json!({
             "protocol": self.protocol,
@@ -361,14 +360,14 @@ impl NowledgeMemSearchCandidateReport {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeMemSearchCandidateOutput {
+pub struct SearchCandidateOutput {
     pub result: SearchResultSet,
-    pub report: NowledgeMemSearchCandidateReport,
+    pub report: SearchCandidateReport,
     pub out_of_core_metrics: Option<SearchOutOfCoreMetrics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSearchCandidateReadinessOptions {
+pub struct SearchCandidateReadinessOptions {
     pub require_hits: bool,
     pub require_metadata_pushdown: bool,
     pub require_segment_descriptor: bool,
@@ -383,7 +382,7 @@ pub struct NowledgeMemSearchCandidateReadinessOptions {
     pub active_embedding_dimension: Option<usize>,
 }
 
-impl Default for NowledgeMemSearchCandidateReadinessOptions {
+impl Default for SearchCandidateReadinessOptions {
     fn default() -> Self {
         Self {
             require_hits: true,
@@ -402,7 +401,7 @@ impl Default for NowledgeMemSearchCandidateReadinessOptions {
     }
 }
 
-impl NowledgeMemSearchCandidateReadinessOptions {
+impl SearchCandidateReadinessOptions {
     pub fn lancedb_replacement_candidate_read() -> Self {
         Self {
             require_metadata_pushdown: true,
@@ -452,13 +451,13 @@ impl NowledgeMemSearchCandidateReadinessOptions {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeMemSearchCandidateReadinessReport {
+pub struct SearchCandidateReadinessReport {
     pub protocol: String,
     pub present: bool,
     pub ready: bool,
     pub mode: SearchMode,
     pub blocker_codes: Vec<String>,
-    pub candidate_report: NowledgeMemSearchCandidateReport,
+    pub candidate_report: SearchCandidateReport,
     pub metadata_pushdown_ready: bool,
     pub segment_descriptor_ready: bool,
     pub text_retriever_ready: bool,
@@ -470,10 +469,10 @@ pub struct NowledgeMemSearchCandidateReadinessReport {
     pub embedding_identity_ready: bool,
 }
 
-impl NowledgeMemSearchCandidateReadinessReport {
+impl SearchCandidateReadinessReport {
     pub fn from_candidate_report(
-        candidate_report: NowledgeMemSearchCandidateReport,
-        options: &NowledgeMemSearchCandidateReadinessOptions,
+        candidate_report: SearchCandidateReport,
+        options: &SearchCandidateReadinessOptions,
     ) -> Self {
         let metadata_pushdown_ready = candidate_report.metadata_filter_count > 0
             && candidate_report.pushed_predicate_count >= candidate_report.metadata_filter_count
@@ -500,7 +499,7 @@ impl NowledgeMemSearchCandidateReadinessReport {
         let fail_soft_observed = !candidate_report.fallback_reason_codes.is_empty()
             && candidate_report.returned_hit_count > 0;
         let projection_marker_status_visible =
-            candidate_report.protocol == NOWLEDGE_MEM_SEARCH_CANDIDATE_REPORT_PROTOCOL;
+            candidate_report.protocol == SEARCH_CANDIDATE_REPORT_PROTOCOL;
         let projection_watermark_ready = candidate_report
             .projection_durable_source_graph_commit_epoch
             .is_some();
@@ -521,7 +520,7 @@ impl NowledgeMemSearchCandidateReadinessReport {
         );
 
         Self {
-            protocol: NOWLEDGE_MEM_SEARCH_CANDIDATE_READINESS_PROTOCOL.to_string(),
+            protocol: SEARCH_CANDIDATE_READINESS_PROTOCOL.to_string(),
             present: true,
             ready: blocker_codes.is_empty(),
             mode: candidate_report.mode,
@@ -560,23 +559,20 @@ impl NowledgeMemSearchCandidateReadinessReport {
     }
 }
 
-impl NowledgeMemSearchCandidateOutput {
+impl SearchCandidateOutput {
     pub fn readiness_report(
         &self,
-        options: &NowledgeMemSearchCandidateReadinessOptions,
-    ) -> NowledgeMemSearchCandidateReadinessReport {
-        NowledgeMemSearchCandidateReadinessReport::from_candidate_report(
-            self.report.clone(),
-            options,
-        )
+        options: &SearchCandidateReadinessOptions,
+    ) -> SearchCandidateReadinessReport {
+        SearchCandidateReadinessReport::from_candidate_report(self.report.clone(), options)
     }
 }
 
-pub fn nowledge_mem_search_candidate_report(
-    request: &NowledgeMemSearchCandidateRequest,
+pub fn search_candidate_report(
+    request: &SearchCandidateRequest,
     effective_compressed_vector_search_mode: CompressedVectorSearchMode,
     result: &SearchResultSet,
-) -> NowledgeMemSearchCandidateReport {
+) -> SearchCandidateReport {
     let pushdown = &result.candidate_set.metadata_predicate_pushdown;
     let returned_kind_counts = search_candidate_returned_kind_counts(&result.hits);
     let returned_missing_external_id_count = result
@@ -589,8 +585,8 @@ pub fn nowledge_mem_search_candidate_report(
         .iter()
         .filter(|hit| hit.source_id.is_none())
         .count();
-    NowledgeMemSearchCandidateReport {
-        protocol: NOWLEDGE_MEM_SEARCH_CANDIDATE_REPORT_PROTOCOL.to_string(),
+    SearchCandidateReport {
+        protocol: SEARCH_CANDIDATE_REPORT_PROTOCOL.to_string(),
         compressed_vector_search_mode: effective_compressed_vector_search_mode,
         requested_compressed_vector_search_mode: request.compressed_vector_search_mode,
         retrieval_projection_advisor: request.retrieval_projection_advisor.clone(),
@@ -714,8 +710,8 @@ pub fn nowledge_mem_search_candidate_report(
 
 #[allow(clippy::too_many_arguments)]
 fn search_candidate_readiness_blocker_codes(
-    candidate_report: &NowledgeMemSearchCandidateReport,
-    options: &NowledgeMemSearchCandidateReadinessOptions,
+    candidate_report: &SearchCandidateReport,
+    options: &SearchCandidateReadinessOptions,
     metadata_pushdown_ready: bool,
     segment_descriptor_ready: bool,
     text_retriever_ready: bool,
@@ -728,7 +724,7 @@ fn search_candidate_readiness_blocker_codes(
 ) -> Vec<String> {
     let mut blockers = BTreeSet::new();
 
-    if candidate_report.protocol != NOWLEDGE_MEM_SEARCH_CANDIDATE_REPORT_PROTOCOL {
+    if candidate_report.protocol != SEARCH_CANDIDATE_REPORT_PROTOCOL {
         blockers.insert("search_candidate_report_protocol_mismatch");
     }
     if options.require_hits && candidate_report.returned_hit_count == 0 {
@@ -777,8 +773,8 @@ fn search_candidate_readiness_blocker_codes(
 }
 
 fn search_candidate_embedding_identity_ready(
-    candidate_report: &NowledgeMemSearchCandidateReport,
-    options: &NowledgeMemSearchCandidateReadinessOptions,
+    candidate_report: &SearchCandidateReport,
+    options: &SearchCandidateReadinessOptions,
 ) -> bool {
     if !options.require_embedding_identity {
         return true;
@@ -871,19 +867,19 @@ fn search_mode_name(mode: SearchMode) -> &'static str {
 
 // Keep facade-only adapters off the methods of public host types.
 pub fn effective_search_candidate_mode(
-    request: &NowledgeMemSearchCandidateRequest,
+    request: &SearchCandidateRequest,
 ) -> CompressedVectorSearchMode {
     request.effective_compressed_vector_search_mode()
 }
 
 pub fn retrieval_projection_advisor_blocker_codes(
-    advisor: &NowledgeMemRetrievalProjectionAdvisor,
+    advisor: &RetrievalProjectionAdvisor,
 ) -> Vec<String> {
     advisor.blocker_codes()
 }
 
 pub fn retrieval_projection_advisor_json(
-    advisor: &NowledgeMemRetrievalProjectionAdvisor,
+    advisor: &RetrievalProjectionAdvisor,
 ) -> serde_json::Value {
     advisor.json()
 }

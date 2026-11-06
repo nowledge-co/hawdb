@@ -17,31 +17,30 @@
 //! The facade samples live handles; this module reduces those owned snapshots
 //! without opening databases, retaining handles, or changing runtime authority.
 
-use crate::bounded_read_evidence::NowledgeMemGraphMode;
-use crate::nowledge_mem_runtime_status::NowledgeMemRuntimeStatus;
-use crate::previous_wrapper_preflight::NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL;
-use crate::slow_query::NowledgeMemSlowQueryReport;
-use crate::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
+use crate::bounded_read_evidence::GraphMode;
+use crate::previous_wrapper_preflight::OPERATIONS_READINESS_PROTOCOL;
+use crate::runtime_status::EmbeddedRuntimeStatus;
+use crate::slow_query::SlowQueryReport;
+use crate::{ReadinessAreaMap, ReadinessAreaSummary};
 use hawdb_evidence::inventory::background_maintenance_evidence_health;
 use hawdb_nowledge_contracts::{
     background_maintenance_summary_to_json, BackgroundMaintenanceKind,
-    BackgroundMaintenanceSummary, NowledgeMemStorageLifecycleActionKind,
-    NowledgeMemStorageLifecycleDecision, NowledgeMemStorageRecoveryReport,
+    BackgroundMaintenanceSummary, EmbeddedStorageRecoveryReport, StorageLifecycleActionKind,
+    StorageLifecycleDecision,
 };
 
-pub const NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL: &str =
-    "hawdb-nowledge-mem-readiness-dashboard-v1";
+pub const READINESS_DASHBOARD_PROTOCOL: &str = "hawdb-nowledge-mem-readiness-dashboard-v1";
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeMemLibraryReadinessReport {
+pub struct LibraryReadinessReport {
     pub protocol: String,
     pub present: bool,
     pub ready: bool,
-    pub mode: NowledgeMemGraphMode,
-    pub redaction: NowledgeMemReadinessRedactionSummary,
-    pub production_path: NowledgeMemLibraryProductionPathSummary,
+    pub mode: GraphMode,
+    pub redaction: ReadinessRedactionSummary,
+    pub production_path: LibraryProductionPathSummary,
     pub blocker_codes: Vec<String>,
-    pub readiness_by_area: NowledgeMemReadinessAreaMap,
+    pub readiness_by_area: ReadinessAreaMap,
     pub ready_area_count: usize,
     pub blocked_area_count: usize,
     pub graph_open: bool,
@@ -61,8 +60,8 @@ pub struct NowledgeMemLibraryReadinessReport {
     pub production_resource_profile: serde_json::Value,
 }
 
-impl NowledgeMemLibraryReadinessReport {
-    pub fn areas(&self) -> Vec<NowledgeMemReadinessAreaSummary> {
+impl LibraryReadinessReport {
+    pub fn areas(&self) -> Vec<ReadinessAreaSummary> {
         self.readiness_by_area.areas()
     }
 
@@ -77,7 +76,7 @@ impl NowledgeMemLibraryReadinessReport {
             "production_path": self.production_path.json(),
             "blocker_codes": self.blocker_codes,
             "readiness_by_area": self.readiness_by_area.json(),
-            "areas": areas.iter().map(NowledgeMemReadinessAreaSummary::json).collect::<Vec<_>>(),
+            "areas": areas.iter().map(ReadinessAreaSummary::json).collect::<Vec<_>>(),
             "ready_area_count": self.ready_area_count,
             "blocked_area_count": self.blocked_area_count,
             "graph": {
@@ -103,14 +102,14 @@ impl NowledgeMemLibraryReadinessReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemLibraryProductionPathSummary {
+pub struct LibraryProductionPathSummary {
     pub in_process: bool,
     pub cli_required: bool,
     pub env_control_plane_required: bool,
     pub spawned_helper_required: bool,
 }
 
-impl Default for NowledgeMemLibraryProductionPathSummary {
+impl Default for LibraryProductionPathSummary {
     fn default() -> Self {
         Self {
             in_process: true,
@@ -121,7 +120,7 @@ impl Default for NowledgeMemLibraryProductionPathSummary {
     }
 }
 
-impl NowledgeMemLibraryProductionPathSummary {
+impl LibraryProductionPathSummary {
     pub fn ready(&self) -> bool {
         self.in_process
             && !self.cli_required
@@ -141,13 +140,13 @@ impl NowledgeMemLibraryProductionPathSummary {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct NowledgeMemReadinessRedactionSummary {
+pub struct ReadinessRedactionSummary {
     pub query_text_copied: bool,
     pub parameters_copied: bool,
     pub local_paths_copied: bool,
 }
 
-impl NowledgeMemReadinessRedactionSummary {
+impl ReadinessRedactionSummary {
     pub fn ready(&self) -> bool {
         !self.query_text_copied && !self.parameters_copied && !self.local_paths_copied
     }
@@ -163,34 +162,34 @@ impl NowledgeMemReadinessRedactionSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemReadinessDashboard {
+pub struct ReadinessDashboard {
     pub protocol: String,
     pub ready: bool,
-    pub mode: NowledgeMemGraphMode,
+    pub mode: GraphMode,
     pub area_count: usize,
     pub ready_area_count: usize,
     pub blocked_area_count: usize,
     pub blocker_codes: Vec<String>,
-    pub areas: Vec<NowledgeMemReadinessAreaSummary>,
-    pub storage_lifecycle_action: NowledgeMemStorageLifecycleActionKind,
+    pub areas: Vec<ReadinessAreaSummary>,
+    pub storage_lifecycle_action: StorageLifecycleActionKind,
     pub storage_lifecycle_ready: bool,
     pub slow_query_ready: bool,
     pub slow_query_record_count: usize,
 }
 
-impl NowledgeMemReadinessDashboard {
+impl ReadinessDashboard {
     #[doc(hidden)]
     pub fn from_reports(
-        library: &NowledgeMemLibraryReadinessReport,
-        storage_lifecycle: &NowledgeMemStorageLifecycleDecision,
-        slow_query: &NowledgeMemSlowQueryReport,
+        library: &LibraryReadinessReport,
+        storage_lifecycle: &StorageLifecycleDecision,
+        slow_query: &SlowQueryReport,
     ) -> Self {
-        let areas = nowledge_mem_readiness_dashboard_areas(library, slow_query);
+        let areas = readiness_dashboard_areas(library, slow_query);
         let blocked_area_count = areas.iter().filter(|area| !area.ready).count();
         let ready_area_count = areas.len().saturating_sub(blocked_area_count);
 
         Self {
-            protocol: NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL.to_string(),
+            protocol: READINESS_DASHBOARD_PROTOCOL.to_string(),
             ready: library.ready && slow_query.ready,
             mode: library.mode,
             area_count: areas.len(),
@@ -214,7 +213,7 @@ impl NowledgeMemReadinessDashboard {
             "ready_area_count": self.ready_area_count,
             "blocked_area_count": self.blocked_area_count,
             "blocker_codes": self.blocker_codes,
-            "areas": self.areas.iter().map(NowledgeMemReadinessAreaSummary::json).collect::<Vec<_>>(),
+            "areas": self.areas.iter().map(ReadinessAreaSummary::json).collect::<Vec<_>>(),
             "storage_lifecycle": {
                 "ready": self.storage_lifecycle_ready,
                 "action": self.storage_lifecycle_action.as_str(),
@@ -233,45 +232,45 @@ impl NowledgeMemReadinessDashboard {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeMemOperationsReadinessReport {
+pub struct OperationsReadinessReport {
     pub protocol: String,
     pub present: bool,
     pub ready: bool,
-    pub mode: NowledgeMemGraphMode,
+    pub mode: GraphMode,
     pub graph_open: bool,
     pub graph_read_only: bool,
     pub search_projection_open: bool,
     pub graph_commit_epoch: u64,
     pub projection_commit_lag: u64,
     pub projection_stale: bool,
-    pub storage_lifecycle_action: NowledgeMemStorageLifecycleActionKind,
+    pub storage_lifecycle_action: StorageLifecycleActionKind,
     pub storage_lifecycle_ready: bool,
     pub storage_recovery_ready: bool,
     pub slow_query_ready: bool,
     pub background_maintenance_ready: bool,
     pub blocker_codes: Vec<String>,
-    pub runtime_status: NowledgeMemRuntimeStatus,
-    pub storage_lifecycle_decision: NowledgeMemStorageLifecycleDecision,
-    pub storage_recovery: NowledgeMemStorageRecoveryReport,
-    pub slow_query: NowledgeMemSlowQueryReport,
-    pub background_maintenance: NowledgeMemBackgroundMaintenanceReport,
+    pub runtime_status: EmbeddedRuntimeStatus,
+    pub storage_lifecycle_decision: StorageLifecycleDecision,
+    pub storage_recovery: EmbeddedStorageRecoveryReport,
+    pub slow_query: SlowQueryReport,
+    pub background_maintenance: BackgroundMaintenanceReport,
 }
 
-impl NowledgeMemOperationsReadinessReport {
+impl OperationsReadinessReport {
     #[doc(hidden)]
     pub fn from_reports(
-        mode: NowledgeMemGraphMode,
+        mode: GraphMode,
         graph_read_only: bool,
-        runtime_status: NowledgeMemRuntimeStatus,
-        storage_recovery: NowledgeMemStorageRecoveryReport,
-        slow_query: NowledgeMemSlowQueryReport,
-        background_maintenance: NowledgeMemBackgroundMaintenanceReport,
+        runtime_status: EmbeddedRuntimeStatus,
+        storage_recovery: EmbeddedStorageRecoveryReport,
+        slow_query: SlowQueryReport,
+        background_maintenance: BackgroundMaintenanceReport,
     ) -> Self {
         let search_projection_open = runtime_status.projection_freshness.is_some();
         let projection_commit_lag = runtime_status.projection_commit_lag();
         let projection_stale = search_projection_open && runtime_status.projection_stale();
         let storage_lifecycle_decision =
-            NowledgeMemStorageLifecycleDecision::from_storage_recovery(storage_recovery.clone());
+            StorageLifecycleDecision::from_storage_recovery(storage_recovery.clone());
         let mut blocker_codes = Vec::new();
         if !storage_lifecycle_decision.ready_for_mem_lifecycle {
             blocker_codes.push("storage_recovery_not_ready".to_string());
@@ -293,7 +292,7 @@ impl NowledgeMemOperationsReadinessReport {
         }
 
         Self {
-            protocol: NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL.to_string(),
+            protocol: OPERATIONS_READINESS_PROTOCOL.to_string(),
             present: true,
             ready: blocker_codes.is_empty(),
             mode,
@@ -359,7 +358,7 @@ impl NowledgeMemOperationsReadinessReport {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeMemBackgroundMaintenanceReport {
+pub struct BackgroundMaintenanceReport {
     pub protocol: String,
     pub present: bool,
     pub ready: bool,
@@ -396,7 +395,7 @@ pub struct NowledgeMemBackgroundMaintenanceReport {
     summary: serde_json::Value,
 }
 
-impl NowledgeMemBackgroundMaintenanceReport {
+impl BackgroundMaintenanceReport {
     pub fn from_summary(summary: &BackgroundMaintenanceSummary) -> Self {
         Self::from_summary_with_slow_query(summary, None)
     }
@@ -404,7 +403,7 @@ impl NowledgeMemBackgroundMaintenanceReport {
     #[doc(hidden)]
     pub fn from_summary_with_slow_query(
         summary: &BackgroundMaintenanceSummary,
-        slow_query: Option<&NowledgeMemSlowQueryReport>,
+        slow_query: Option<&SlowQueryReport>,
     ) -> Self {
         let mut json = background_maintenance_summary_to_json(summary);
         if let Some(object) = json.as_object_mut() {
@@ -484,9 +483,7 @@ impl NowledgeMemBackgroundMaintenanceReport {
     }
 }
 
-fn background_maintenance_slow_query_json(
-    slow_query: &NowledgeMemSlowQueryReport,
-) -> serde_json::Value {
+fn background_maintenance_slow_query_json(slow_query: &SlowQueryReport) -> serde_json::Value {
     serde_json::json!({
         "protocol": slow_query.protocol,
         "ready": slow_query.ready,
@@ -502,12 +499,12 @@ fn background_maintenance_slow_query_json(
     })
 }
 
-fn nowledge_mem_readiness_dashboard_areas(
-    library: &NowledgeMemLibraryReadinessReport,
-    slow_query: &NowledgeMemSlowQueryReport,
-) -> Vec<NowledgeMemReadinessAreaSummary> {
+fn readiness_dashboard_areas(
+    library: &LibraryReadinessReport,
+    slow_query: &SlowQueryReport,
+) -> Vec<ReadinessAreaSummary> {
     let mut areas = library.areas();
-    areas.push(NowledgeMemReadinessAreaSummary {
+    areas.push(ReadinessAreaSummary {
         name: "slow_query".to_string(),
         ready: slow_query.ready,
         blocker_codes: if slow_query.ready {

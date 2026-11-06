@@ -666,13 +666,13 @@ fn application_cannot_claim_the_engine_system_schema_owner() {
 #[test]
 fn embedded_open_applies_application_schema_before_returning_the_store() {
     let path = unique_test_dir("embedded_application_schema_open");
-    let options = crate::NowledgeMemOpenOptions::graph_only(
+    let options = crate::EmbeddedStoreOpenOptions::graph_only(
         path.clone(),
-        crate::NowledgeMemGraphMode::WritableCutover,
+        crate::GraphMode::WritableCutover,
     )
     .with_system_schema_registry(registry_v1());
 
-    let (mut store, report) = crate::NowledgeMemEmbeddedStore::open_with_options(options).unwrap();
+    let (mut store, report) = crate::EmbeddedStore::open_with_options(options).unwrap();
     assert!(report.graph_opened);
     assert_eq!(report.system_schema_upgrades.len(), 1);
     assert_eq!(
@@ -692,14 +692,14 @@ fn embedded_open_applies_application_schema_before_returning_the_store() {
 #[test]
 fn embedded_open_rejects_duplicate_application_schema_owners_before_open() {
     let path = unique_test_dir("duplicate_application_schema_owner");
-    let options = crate::NowledgeMemOpenOptions::graph_only(
+    let options = crate::EmbeddedStoreOpenOptions::graph_only(
         path.clone(),
-        crate::NowledgeMemGraphMode::WritableCutover,
+        crate::GraphMode::WritableCutover,
     )
     .with_system_schema_registry(registry_v1())
     .with_system_schema_registry(registry_v1());
 
-    let error = crate::NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap_err();
+    let error = crate::EmbeddedStoreHandle::open_with_options(options).unwrap_err();
     assert!(error.to_string().contains("registered more than once"));
     assert!(!path.exists());
 }

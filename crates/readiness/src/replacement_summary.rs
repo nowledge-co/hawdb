@@ -24,8 +24,7 @@ use crate::evidence_json::{
 };
 use crate::graph_summary::nowledge_graph_route_readiness_summary_from_bundle;
 use crate::source_mutation::{
-    NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
-    REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
+    REQUIRED_SOURCE_MUTATION_FAMILIES, SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
 };
 use hawdb_core::GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL;
 use hawdb_evidence::inventory::{
@@ -33,16 +32,14 @@ use hawdb_evidence::inventory::{
     REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
 };
 use hawdb_evidence::replacement_contract::{
-    NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE, NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
-    NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
+    NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
+    SEARCH_CANDIDATE_EVIDENCE_ROUTE, SEARCH_CANDIDATE_EVIDENCE_SOURCE,
+    SEARCH_CANDIDATE_PRIMARY_ENGINE, SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
 };
-use hawdb_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
+use hawdb_route_ownership::graph::REQUIRED_BOUNDED_READ_ROUTES;
 use hawdb_route_ownership::{
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL, REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES,
-    REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
+    ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL, REQUIRED_ACTIVE_SEARCH_ROUTES, REQUIRED_SEARCH_ROUTES,
+    SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -51,8 +48,7 @@ const HAWDB_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL: &str =
 const HAWDB_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL: &str =
     "hawdb-nowledge-search-projection-shadow-evidence";
 const HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "hawdb-rust-library";
-const HAWDB_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
-    "hawdb-nowledge-mem-bounded-read-evidence-v2";
+const HAWDB_BOUNDED_READ_EVIDENCE_PROTOCOL: &str = "hawdb-nowledge-mem-bounded-read-evidence-v2";
 const HAWDB_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL: &str =
     "hawdb-nowledge-query-runtime-preflight-v1";
 const SEARCH_PROJECTION_SHADOW_PUSHDOWN_NOT_READY: &str =
@@ -364,7 +360,7 @@ pub fn nowledge_replacement_summary_json_with_options(
             "blocking_operator_memory_within_budget": bounded_read_evidence.blocking_operator_memory_within_budget,
             "spill_within_budget": bounded_read_evidence.spill_within_budget,
             "covered_routes": bounded_read_evidence.covered_routes,
-            "required_covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "required_covered_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "missing_covered_routes": bounded_read_evidence.missing_covered_routes,
             "route_primary_ready": bounded_read_evidence.route_primary_ready,
             "primary_ready_routes": bounded_read_evidence.primary_ready_routes,
@@ -388,7 +384,7 @@ pub fn nowledge_replacement_summary_json_with_options(
             "required_route_count": query_runtime_preflight.required_route_count,
             "covered_route_count": query_runtime_preflight.covered_route_count,
             "covered_routes": query_runtime_preflight.covered_routes,
-            "required_covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "required_covered_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "missing_required_routes": query_runtime_preflight.missing_required_routes,
             "unknown_routes": query_runtime_preflight.unknown_routes,
             "duplicate_routes": query_runtime_preflight.duplicate_routes,
@@ -1472,10 +1468,8 @@ fn search_candidate_shadow_evidence_summary(
         json_get_bool_path_from_dynamic(bundle, path, "vector_retriever_ready");
     let blocker_codes = json_get_array_path_from_dynamic(bundle, path, "blocker_codes");
 
-    let bridge_ready = evidence_source.as_deref()
-        == Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE)
-        && candidate_primary_engine.as_deref()
-            == Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE)
+    let bridge_ready = evidence_source.as_deref() == Some(SEARCH_CANDIDATE_EVIDENCE_SOURCE)
+        && candidate_primary_engine.as_deref() == Some(SEARCH_CANDIDATE_PRIMARY_ENGINE)
         && candidate_counts_ready
         && candidate_identity_ready == Some(true)
         && candidate_identity_parity == Some(true)
@@ -1502,8 +1496,8 @@ fn search_candidate_shadow_evidence_summary(
         && shadow_scan_field_pruning_ready == Some(true)
         && shadow_scan_field_summary_count.is_some_and(|count| count > 0);
     let ready = present
-        && protocol.as_deref() == Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL)
-        && route.as_deref() == Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE)
+        && protocol.as_deref() == Some(SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL)
+        && route.as_deref() == Some(SEARCH_CANDIDATE_EVIDENCE_ROUTE)
         && bridge_ready;
     SearchCandidateShadowEvidenceSummary {
         protocol,
@@ -1591,11 +1585,7 @@ fn search_candidate_shadow_evidence_summary_json(
 }
 
 fn search_route_ownership_summary(bundle: &serde_json::Value) -> SearchRouteOwnershipSummary {
-    route_ownership_summary_at(
-        bundle,
-        "search_route_ownership",
-        REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
-    )
+    route_ownership_summary_at(bundle, "search_route_ownership", REQUIRED_SEARCH_ROUTES)
 }
 
 fn active_search_route_ownership_summary(
@@ -1604,7 +1594,7 @@ fn active_search_route_ownership_summary(
     route_ownership_summary_at(
         bundle,
         "active_search_route_ownership",
-        REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES,
+        REQUIRED_ACTIVE_SEARCH_ROUTES,
     )
 }
 
@@ -1688,9 +1678,9 @@ fn active_search_route_readiness_summary(
         "repair_rebuild_markers_not_ready_routes",
     );
     let blocker_codes = json_get_array_path_from_dynamic(bundle, &path_refs, "blocker_codes");
-    let expected_route_count = REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len() as u64;
+    let expected_route_count = REQUIRED_ACTIVE_SEARCH_ROUTES.len() as u64;
     let ready = present
-        && protocol.as_deref() == Some(NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL)
+        && protocol.as_deref() == Some(ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL)
         && production_cutover_ready == Some(true)
         && require_all_hawdb == Some(true)
         && required_route_count == Some(expected_route_count)
@@ -1775,7 +1765,7 @@ fn route_ownership_summary_at(
     let blocker_codes = json_get_array_path_from_dynamic(bundle, &path_refs, "blocker_codes");
     let expected_route_count = required_routes.len() as u64;
     let ready = present
-        && protocol.as_deref() == Some(NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL)
+        && protocol.as_deref() == Some(SEARCH_ROUTE_OWNERSHIP_PROTOCOL)
         && production_cutover_ready == Some(true)
         && require_all_hawdb == Some(true)
         && required_route_count == Some(expected_route_count)
@@ -2246,7 +2236,7 @@ fn bounded_read_evidence_summary(bundle: &serde_json::Value) -> BoundedReadEvide
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let missing_covered_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let missing_covered_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .filter(|route| !covered_route_set.contains(route))
@@ -2270,13 +2260,13 @@ fn bounded_read_evidence_summary(bundle: &serde_json::Value) -> BoundedReadEvide
         path,
         "route_relationship_property_pruning_evidence_ready",
     );
-    let primary_ready_routes_cover_required = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let primary_ready_routes_cover_required = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .all(|route| primary_ready_route_set.contains(route));
     let relationship_property_pruning_counts_match =
         relationship_property_pruning_required_count == relationship_property_pruning_report_count;
     let ready = present
-        && protocol.as_deref() == Some(HAWDB_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL)
+        && protocol.as_deref() == Some(HAWDB_BOUNDED_READ_EVIDENCE_PROTOCOL)
         && mode == Some("shadow_read_only")
         && max_rows.is_some_and(|value| value > 0)
         && execution_row_cap == max_rows.and_then(|value| value.checked_add(1))
@@ -2351,18 +2341,18 @@ fn query_runtime_preflight_summary(bundle: &serde_json::Value) -> QueryRuntimePr
         .iter()
         .map(String::to_string)
         .collect::<Vec<_>>();
-    let missing_required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let missing_required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .filter(|route| !probe_route_set.contains(*route))
         .collect::<Vec<_>>();
     let unknown_routes = probe_route_set
         .iter()
-        .filter(|route| !REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.contains(&route.as_str()))
+        .filter(|route| !REQUIRED_BOUNDED_READ_ROUTES.contains(&route.as_str()))
         .map(String::to_string)
         .collect::<Vec<_>>();
     let duplicate_routes = duplicate_probe_routes(&probe_routes);
-    let required_route_len = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() as u64;
+    let required_route_len = REQUIRED_BOUNDED_READ_ROUTES.len() as u64;
     let route_coverage_ready = required_route_count == Some(required_route_len)
         && covered_route_count == Some(required_route_len)
         && required_routes_covered == Some(true)
@@ -2497,9 +2487,9 @@ fn source_mutation_dual_write_readiness_summary(
     let duplicate_families =
         json_get_string_array_path_from_dynamic(bundle, path, "duplicate_families");
     let blocker_codes = json_get_array_path_from_dynamic(bundle, path, "blocker_codes");
-    let required_count = REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES.len() as u64;
+    let required_count = REQUIRED_SOURCE_MUTATION_FAMILIES.len() as u64;
     let ready = present
-        && protocol.as_deref() == Some(NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL)
+        && protocol.as_deref() == Some(SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL)
         && json_get_bool_path_from_dynamic(bundle, path, "ready") == Some(true)
         && required_family_count == Some(required_count)
         && evidence_family_count == Some(required_count)

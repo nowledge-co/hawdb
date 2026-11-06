@@ -142,7 +142,7 @@ bounded multi-statement workflow. New single-query route wrappers and their
 request/output DTOs MUST NOT be added to the embedded facade.
 
 A bounded workflow combining Cypher and PostgreSQL reads MUST use one
-`NowledgeMemReadSnapshot` through `with_bounded_graph_read_snapshot` or
+`EmbeddedReadSnapshot` through `with_bounded_graph_read_snapshot` or
 `with_bounded_read_snapshot`. The graph-only entrypoint and `with_read_transaction` acquire the last committed
 canonical view through a short publication lock after admission by the existing
 runtime governor. A writer staging graph and SQL changes MUST NOT block new
@@ -174,7 +174,7 @@ the last committed state and permit later work. Publication retains the current
 COW roots and one current pin; compaction paths that use only the oldest logical
 epoch may conservatively postpone reclamation until a later checkpoint.
 
-`NowledgeMemEmbeddedStoreHandle::with_transaction` supplies the existing
+`EmbeddedStoreHandle::with_transaction` supplies the existing
 `ConcurrentDatabaseTransaction` workspace. Transaction callbacks stage outside
 the store publication lock, retain their admitted permit, and publish through
 the ordinary lock manager, commit validation and WAL coordinator. The statement
@@ -231,7 +231,7 @@ charged to the cumulative budget. Qualification for a mixed workflow MUST fail
 closed when either required statement class is absent; a graph-only query
 report cannot stand in for the relational half of the workflow. The report
 MUST NOT retain query text, parameters, result rows, or payload values.
-`NowledgeMemReadSnapshotReport::json` emits the versioned
+`EmbeddedReadSnapshotReport::json` emits the versioned
 `hawdb-nowledge-mem-read-snapshot-report-v1` representation of exactly those
 redacted fields; it is evidence input and does not claim route readiness by
 itself.

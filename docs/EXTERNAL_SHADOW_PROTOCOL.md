@@ -667,7 +667,7 @@ hawdb nowledge-mem-library-readiness \
 ```
 
 The command opens the graph in `shadow_read_only` mode by default, uses the
-same `NowledgeMemEmbeddedStore::library_readiness_json` path as embedded
+same `EmbeddedStore::library_readiness_json` path as embedded
 callers, and includes only a sanitized `open_report` instead of local database
 paths. Use `--require-ready` in release automation when missing route coverage,
 query-family evidence, search projection parity, storage recovery, or
@@ -692,11 +692,11 @@ The nested `candidate_identity` summary must also be ready. It carries only
 rolling checksums over per-request sorted candidate IDs for the primary,
 shadow, and matched sets; it must not include raw candidate IDs.
 Rust bridge code should generate this object with
-`nowledge_mem_search_candidate_shadow_evidence_json` and
-`NowledgeMemSearchCandidateShadowEvidence` so `ready` and blocker codes are
+`search_candidate_shadow_evidence_json` and
+`SearchCandidateShadowEvidence` so `ready` and blocker codes are
 computed by HawDB instead of handwritten by the caller.
 For multi-request bridge runs, prefer
-`NowledgeMemSearchCandidateShadowAccumulator::record_compare_candidate_ids`
+`SearchCandidateShadowAccumulator::record_compare_candidate_ids`
 once per LanceDB/HawDB candidate comparison and emit `accumulator.json()` at
 the end. Use `record_compare` only for count-only diagnostics; final
 integration readiness requires candidate identity evidence.
@@ -746,7 +746,7 @@ error unless `cutover_evidence.eligible` is true. Use it for isolated release or
 nightly evidence generation that must reject self-shadow smoke runs, missing
 shadow parity evidence, or blocked migration gates. Production cutover
 automation should consume the resulting artifacts through
-`nowledge_mem_final_cutover_preflight` and other typed Rust library APIs rather
+`final_cutover_preflight` and other typed Rust library APIs rather
 than shelling out to this command.
 
 `--shadow-ready` sends the same `ready` preflight without requiring the final
