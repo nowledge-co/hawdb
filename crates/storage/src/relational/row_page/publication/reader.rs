@@ -601,7 +601,7 @@ impl RelationalRowPageRootReader {
                         descriptor.logical_page_id.get()
                     )));
                 }
-                RelationalRowPageView::open_verified(page, self.config.page_limits)?
+                RelationalRowPageView::open_digest_verified(page, self.config.page_limits)?
             }
             None => RelationalRowPageView::open(page, self.config.page_limits)?,
         };

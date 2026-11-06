@@ -352,3 +352,81 @@ fn torn_packed_page_artifact_fails_closed_without_breaking_a_pinned_root() {
     }
     fs::remove_dir_all(directory).unwrap();
 }
+
+/// A page whose bytes, own digest and descriptor are all consistent but whose
+/// row directory is out of order must be rejected by every read path,
+/// including the cooperative checkpoint path (`read_checkpoint_page_slot`),
+/// which verifies the digest itself and skips only the codec's hash (#1602
+/// review).
+#[test]
+fn consistently_signed_unordered_directory_is_rejected_on_every_read_path() {
+    use crate::cache::{SegmentCache, StoreId};
+
+    let directory = unique_test_dir("v2-unordered-directory");
+    let config = RelationalRowPagePublicationConfig::default();
+    RelationalRowPagePublisher::new(config)
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta("documents", vec![page(1, 1, 10, 1, 4)])],
+        )
+        .unwrap();
+    // Swap the 16-byte row slots of rows 2 and 3. Both key bounds still
+    // match, but the keys are no longer strictly ascending.
+    let artifact = directory.join(relational_row_page_artifact_file(1));
+    let mut bytes = fs::read(&artifact).unwrap();
+    let header = crate::relational::row_page::decode_header(&bytes, config.page_limits).unwrap();
+    let directory_start = crate::relational::row_page::ROW_PAGE_HEADER_BYTES
+        + header.lower_bound_len
+        + header.upper_bound_len;
+    let (first, second) = (directory_start + 16, directory_start + 32);
+    let slot = bytes[first..first + 16].to_vec();
+    bytes.copy_within(second..second + 16, first);
+    bytes[second..second + 16].copy_from_slice(&slot);
+    crate::relational::row_page::write_integrity(&mut bytes);
+    fs::write(&artifact, &bytes).unwrap();
+    let (crc32c, sha256) = crate::relational::row_page::encoded_page_digest(&bytes);
+    tamper_descriptor(&directory, 0, |entry| {
+        entry[64..68].copy_from_slice(&crc32c.to_le_bytes());
+        entry[68..100].copy_from_slice(sha256.as_bytes());
+    });
+    // The artifact digest in the manifest is not consulted by page reads, so
+    // only the page-level checks stand between the bytes and the caller.
+
+    let reader = RelationalRowPageRootReader::open_latest(&directory, config)
+        .unwrap()
+        .unwrap();
+    let descriptor = reader.read_table_page_descriptor("documents", 0).unwrap();
+    // Ordinary reads (mutation planning and relocation use `read_page`).
+    assert!(matches!(
+        reader.read_page(&descriptor),
+        Err(RelationalRowPagePublicationError::Corrupt(_))
+    ));
+    // The cooperative checkpoint read.
+    let work = crate::background::CheckpointWorkContext::default();
+    let result = reader.read_page_slot_accounted_with_work_context(
+        &descriptor,
+        &SegmentCache::new(1024 * 1024),
+        StoreId(1),
+        Some(&work),
+    );
+    assert!(
+        matches!(result, Err(RelationalRowPagePublicationError::Corrupt(_))),
+        "{result:?}"
+    );
+    // The mutation planner reading the page as an incremental base.
+    let change = crate::relational::RelationalRowChange {
+        table: "documents".to_string(),
+        primary_key: RelationalKey(vec![RelationalValue::BigInt(2)]),
+        row: None,
+    };
+    assert!(
+        RelationalRowPageMutationPlanner::new(Some(&reader), 2, 11, config)
+            .unwrap()
+            .plan_table("documents", schema_digest(), 2, vec![change])
+            .is_err()
+    );
+    fs::remove_dir_all(directory).unwrap();
+}

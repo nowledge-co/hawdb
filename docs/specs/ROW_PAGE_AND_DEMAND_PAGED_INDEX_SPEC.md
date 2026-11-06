@@ -1035,7 +1035,9 @@ allocated bytes equal its page artifact length, and every live byte count is
 the sum of its descriptors' exact lengths. The target page size is writer
 policy: readers accept any page within the codec limits and the manifest's
 declared maximum. A v1 (`SKRPGM01`, fixed one-MiB slots) manifest fails with
-an explicit request to recreate the development database; there is no
+the typed `UnsupportedStorageFormat` error (found version 1, supported
+version 2) naming the recreate-the-development-database remedy, so hosts
+report it as an unsupported format rather than corruption; there is no
 migration (HawDB has no persisted production format yet). Source commit epoch zero is valid only when both the table set
 and root page count are empty.
 
@@ -2003,7 +2005,8 @@ representation. The
 physical rather than logical root generation is required because a clean COW
 descriptor may retain a page from an older immutable artifact. A cold read
 verifies the page's own CRC32C and SHA-256 once, compares them with the
-descriptor's page digest, and validates the directory, page id, physical
+descriptor's page digest, and validates the row directory (offset continuity,
+valid keys, strictly ascending order), page id, physical
 generation, source epoch, row count, encoded length, and key bounds. Cache
 admission binds the exact page bytes to that page SHA-256. A verified hit checks
 that strong source tag and the cheap page identity fields; it MUST NOT hash the

@@ -62,7 +62,8 @@ Pinned or cleanup-pending historical files are separate from active allocation.
 
 Row-page format v2 (`SKRPGM02`, #1521) stores exact-length pages back to back
 and records allocated and live bytes per physical generation. Fixed-slot v1
-(`SKRPGM01`) manifests fail with an explicit database-recreation message;
+(`SKRPGM01`) manifests fail with the typed unsupported-storage-format error
+and a database-recreation message;
 absent allocation never means zero.
 There is no compatibility migration for old greenfield databases. The logical
 root-set digest does not incorporate physical placement. Stable/GA inclusion

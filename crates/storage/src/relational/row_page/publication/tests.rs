@@ -843,11 +843,28 @@ fn v1_row_page_manifest_requires_recreation() {
     let mut encoded = fs::read(&path).unwrap();
     encoded[..8].copy_from_slice(b"SKRPGM01");
     fs::write(&path, &encoded).unwrap();
+    let error = RelationalRowPageRootReader::open_latest(&directory, config).unwrap_err();
     assert!(
-        matches!(RelationalRowPageRootReader::open_latest(&directory, config),
-        Err(RelationalRowPagePublicationError::Corrupt(message))
-            if message.contains("format v1") && message.contains("recreate the development database"))
+        matches!(
+            &error,
+            RelationalRowPagePublicationError::UnsupportedFormat(
+                hawdb_core::error::StorageFormatError::UnsupportedVersion {
+                    found: 1,
+                    supported: 2,
+                    ..
+                }
+            )
+        ),
+        "{error:?}"
     );
+    assert!(error
+        .to_string()
+        .contains("recreate the development database"));
+    // Hosts see the typed unsupported-format error, not an integrity alarm.
+    assert!(matches!(
+        hawdb_core::HawDBError::from_storage_error(error),
+        hawdb_core::HawDBError::UnsupportedStorageFormat(_)
+    ));
     // Any other version of the v2 manifest is unsupported, not v1.
     encoded[..8].copy_from_slice(b"SKRPGM02");
     encoded[8..10].copy_from_slice(&2u16.to_le_bytes());

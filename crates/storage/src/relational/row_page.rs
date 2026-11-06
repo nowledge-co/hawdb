@@ -605,20 +605,34 @@ impl<'a> RelationalRowPageView<'a> {
         encoded: &'a [u8],
         limits: RelationalRowPageLimits,
     ) -> Result<Self, RelationalRowPageError> {
-        Self::open_with_validation(encoded, limits, true)
+        Self::open_with_validation(encoded, limits, true, true)
     }
 
+    /// Opens bytes that were fully validated when a verified cache entry was
+    /// inserted: neither the integrity hash nor the directory is re-checked.
     pub(crate) fn open_verified(
         encoded: &'a [u8],
         limits: RelationalRowPageLimits,
     ) -> Result<Self, RelationalRowPageError> {
-        Self::open_with_validation(encoded, limits, false)
+        Self::open_with_validation(encoded, limits, false, false)
+    }
+
+    /// Opens a page whose integrity digest the caller has just verified
+    /// (cooperatively), skipping only that hash. The row directory, key
+    /// order and offset continuity are still validated, exactly as `open`
+    /// does.
+    pub(crate) fn open_digest_verified(
+        encoded: &'a [u8],
+        limits: RelationalRowPageLimits,
+    ) -> Result<Self, RelationalRowPageError> {
+        Self::open_with_validation(encoded, limits, false, true)
     }
 
     fn open_with_validation(
         encoded: &'a [u8],
         limits: RelationalRowPageLimits,
         validate_integrity: bool,
+        validate_directory: bool,
     ) -> Result<Self, RelationalRowPageError> {
         if encoded.len() > limits.max_page_bytes.get() {
             return Err(RelationalRowPageError::Admission(format!(
@@ -681,7 +695,7 @@ impl<'a> RelationalRowPageView<'a> {
             key_payload,
             row_payload,
         };
-        if validate_integrity {
+        if validate_directory {
             view.validate_directory()?;
         }
         Ok(view)
