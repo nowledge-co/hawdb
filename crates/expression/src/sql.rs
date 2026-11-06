@@ -19,7 +19,9 @@
 
 use hawdb_core::Value;
 
+mod literal_coercion;
 mod numeric;
+pub use literal_coercion::NumericLiteralCoercion;
 pub use numeric::{bind_constant_numeric, bind_sql_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
