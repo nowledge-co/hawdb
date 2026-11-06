@@ -1030,18 +1030,9 @@ impl OptimizerCatalog {
         value: &Value,
         input_rows: u64,
     ) -> u64 {
-        let (lower, upper) = super::value_range::range_bounds_for_comparison(
-            op,
-            self.statistics_value(value).clone(),
-        );
-        if let Some(rows) = self.distribution_range_rows(
-            rel_type,
-            property,
-            lower.as_ref(),
-            upper.as_ref(),
-            input_rows,
-            true,
-        ) {
+        if let Some(rows) =
+            self.distribution_comparison_rows(rel_type, property, op, value, input_rows, true)
+        {
             return rows;
         }
 
@@ -1075,15 +1066,11 @@ impl OptimizerCatalog {
         op: ComparisonOp,
         value: &Value,
     ) -> u64 {
-        let (lower, upper) = super::value_range::range_bounds_for_comparison(
-            op,
-            self.statistics_value(value).clone(),
-        );
-        if let Some(rows) = self.distribution_range_rows(
+        if let Some(rows) = self.distribution_comparison_rows(
             label,
             property,
-            lower.as_ref(),
-            upper.as_ref(),
+            op,
+            value,
             self.label_count(label),
             false,
         ) {
@@ -1213,18 +1200,9 @@ impl OptimizerCatalog {
         value: &Value,
         input_rows: u64,
     ) -> u64 {
-        let (lower, upper) = super::value_range::range_bounds_for_comparison(
-            op,
-            self.statistics_value(value).clone(),
-        );
-        if let Some(rows) = self.distribution_range_rows(
-            label,
-            property,
-            lower.as_ref(),
-            upper.as_ref(),
-            input_rows,
-            false,
-        ) {
+        if let Some(rows) =
+            self.distribution_comparison_rows(label, property, op, value, input_rows, false)
+        {
             return rows;
         }
 
@@ -1261,8 +1239,8 @@ impl OptimizerCatalog {
         if let Some(rows) = self.distribution_range_rows(
             label,
             property,
-            lower,
-            upper,
+            lower.map(|(value, inclusive)| (value, *inclusive)),
+            upper.map(|(value, inclusive)| (value, *inclusive)),
             self.label_count(label),
             false,
         ) {

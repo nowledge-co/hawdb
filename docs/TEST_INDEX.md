@@ -82,7 +82,8 @@ machine contention remains possible. Replay the existing owner with
 Compressed histogram ownership stays in existing lanes:
 
 - `//crates/core:hawdb_core_tests`: `histogram::tests` owns MCV/residual mass,
-  population versus sample NDV, NULL/missing and monotone extreme integer ranges.
+  population versus sample NDV, NULL/missing, monotone extreme numeric ranges
+  and exact string bucket endpoints.
 - `//crates/storage:hawdb_storage_tests`: `statistics::distribution::tests`
   owns deterministic row sampling, byte/target refusal and optional codec
   validation. External refresh's independent legacy bag/set oracle additionally

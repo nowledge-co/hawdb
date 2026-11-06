@@ -112,16 +112,8 @@ fn distribution_filter_estimate(
             Some(estimate)
         }
         Predicate::PropertyCompare { op, value, .. } => {
-            let (lower, upper) =
-                super::value_range::range_bounds_for_comparison(*op, value.clone());
-            let rows = catalog.distribution_range_rows(
-                label,
-                property,
-                lower.as_ref(),
-                upper.as_ref(),
-                input_rows,
-                false,
-            )?;
+            let rows = catalog
+                .distribution_comparison_rows(label, property, *op, value, input_rows, false)?;
             Some(hawdb_core::PropertyCardinalityEstimate {
                 rows,
                 source: hawdb_core::PropertyEstimateSource::CompressedHistogram,

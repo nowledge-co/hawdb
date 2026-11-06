@@ -201,12 +201,30 @@ impl OptimizerCatalog {
             .max(1)
     }
 
+    pub(in crate::graph) fn distribution_comparison_rows(
+        &self,
+        label: &str,
+        property: &str,
+        op: ComparisonOp,
+        value: &Value,
+        input_rows: u64,
+        relationship: bool,
+    ) -> Option<u64> {
+        let (lower, upper) = match op {
+            ComparisonOp::Lt => (None, Some((value, false))),
+            ComparisonOp::Lte => (None, Some((value, true))),
+            ComparisonOp::Gt => (Some((value, false)), None),
+            ComparisonOp::Gte => (Some((value, true)), None),
+        };
+        self.distribution_range_rows(label, property, lower, upper, input_rows, relationship)
+    }
+
     pub(in crate::graph) fn distribution_range_rows(
         &self,
         label: &str,
         property: &str,
-        lower: Option<&ValueRangeBound>,
-        upper: Option<&ValueRangeBound>,
+        lower: Option<(&Value, bool)>,
+        upper: Option<(&Value, bool)>,
         input_rows: u64,
         relationship: bool,
     ) -> Option<u64> {
@@ -215,8 +233,8 @@ impl OptimizerCatalog {
         } else {
             self.property_distribution(label, property)?
         };
-        let lower = lower.map(|(value, inclusive)| (self.statistics_value(value), *inclusive));
-        let upper = upper.map(|(value, inclusive)| (self.statistics_value(value), *inclusive));
+        let lower = lower.map(|(value, inclusive)| (self.statistics_value(value), inclusive));
+        let upper = upper.map(|(value, inclusive)| (self.statistics_value(value), inclusive));
         for value in lower.into_iter().chain(upper).map(|(value, _)| value) {
             if !matches!(
                 value,

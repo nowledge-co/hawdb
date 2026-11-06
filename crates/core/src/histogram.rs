@@ -386,7 +386,11 @@ fn numeric_position(lower: &Value, upper: &Value, value: &Value) -> Option<f64> 
         (Value::Float(low), Value::Float(high), Value::Float(value))
             if low.is_finite() && high.is_finite() && value.is_finite() && high > low =>
         {
-            (value - low) / (high - low)
+            if (high - low).is_finite() {
+                (value - low) / (high - low)
+            } else {
+                (value * 0.5 - low * 0.5) / (high * 0.5 - low * 0.5)
+            }
         }
         _ => return None,
     };
@@ -409,6 +413,12 @@ fn bucket_fraction(
             return if inclusive { 1.0 } else { 0.0 };
         }
         let atom = 1.0 / bucket.sample_distinct_count as f64;
+        if value == &bucket.lower {
+            return if inclusive { atom } else { 0.0 };
+        }
+        if value == &bucket.upper {
+            return if inclusive { 1.0 } else { 1.0 - atom };
+        }
         let position = numeric_position(&bucket.lower, &bucket.upper, value).unwrap_or(0.5);
         (position * (1.0 - atom) + if inclusive { atom } else { 0.0 }).clamp(0.0, 1.0)
     };
@@ -420,6 +430,44 @@ fn bucket_fraction(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn residual_endpoints_and_wide_float_interpolation_keep_full_and_empty_ranges() {
+        let strings = HistogramBucket {
+            lower: Value::String("a".into()),
+            upper: Value::String("z".into()),
+            sample_count: 10,
+            sample_distinct_count: 10,
+        };
+        assert_eq!(
+            bucket_fraction(&strings, None, Some((&strings.lower, false))),
+            0.0
+        );
+        assert_eq!(
+            bucket_fraction(&strings, Some((&strings.upper, false)), None),
+            0.0
+        );
+        assert_eq!(
+            bucket_fraction(&strings, None, Some((&strings.upper, true))),
+            1.0
+        );
+        let floats = HistogramBucket {
+            lower: Value::Float(-f64::MAX),
+            upper: Value::Float(f64::MAX),
+            sample_count: 10,
+            sample_distinct_count: 10,
+        };
+        assert_eq!(
+            bucket_fraction(&floats, None, Some((&floats.lower, false))),
+            0.0
+        );
+        assert_eq!(
+            bucket_fraction(&floats, None, Some((&floats.upper, true))),
+            1.0
+        );
+        let middle = bucket_fraction(&floats, None, Some((&Value::Float(0.0), true)));
+        assert!(middle > 0.5 && middle < 0.6, "{middle}");
+    }
 
     #[test]
     fn complete_nulls_and_singletons_conserve_population() {
