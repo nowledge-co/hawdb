@@ -14,7 +14,7 @@ _MOONBIT_DEPS = [
 
 rust_static_library(
     name = "hawdb_moonbit_static",
-    version = "0.27.0",
+    version = "0.28.0",
     crate_name = "hawdb_moonbit",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -26,7 +26,7 @@ rust_static_library(
 # MoonBit objects; actual FFI execution is checked by the MoonBit binary tests.
 rust_test(
     name = "hawdb_moonbit_rust_tests",
-    version = "0.27.0",
+    version = "0.28.0",
     crate_name = "hawdb_moonbit",
     crate_root = "src/lib.rs",
     edition = "2024",
