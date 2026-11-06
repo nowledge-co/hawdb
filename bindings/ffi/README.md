@@ -83,6 +83,7 @@ Parameters and results are JSON so hosts never see HawDB's `Value` type.
 | String | string |
 | Binary | `{"$binary": "<base64>"}` |
 | Uuid | `{"$uuid": "<canonical text>"}` |
+| Date, LocalTime, LocalDateTime, DateTime, Duration | `{"$date": ...}`, `{"$localtime": ...}`, `{"$localdatetime": ...}`, `{"$datetime": ...}`, `{"$duration": ...}` (ISO 8601 text) |
 | List | array |
 | Map | object |
 
@@ -90,6 +91,9 @@ Parameters and results are JSON so hosts never see HawDB's `Value` type.
 their native types in parameters; any other object shape stays a `Map`.
 Decimal uses at most 38 coefficient digits and scale 0 through 38. Its JSON
 payload must be a string; invalid or out-of-range values are rejected.
+SQL `TIMESTAMP` columns read and bind as `$localdatetime` and `TIMESTAMPTZ`
+columns as `$datetime`, returned in UTC (`...Z`); a `$datetime` parameter with
+any offset is stored as its UTC instant.
 The experimental retained ABI has no Decimal buffer type and reports
 `HAWDB_RETAINED_UNSUPPORTED_TYPE` for Decimal node scalar access. Use ordinary
 JSON queries for exact Decimal results.
