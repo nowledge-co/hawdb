@@ -235,6 +235,7 @@ impl<'a> RelationalRowPageMutationPlanner<'a> {
         }
 
         let mut dirty_pages = Vec::new();
+        let mut dirty_bytes = 0u64;
         let mut deleted_page_ids = BTreeSet::new();
         let mut base_pages_read = 0usize;
         let mut split_pages = 0usize;
@@ -264,7 +265,9 @@ impl<'a> RelationalRowPageMutationPlanner<'a> {
                 &mut allocator,
                 rows,
                 |page| {
-                    admit_dirty_pages(dirty_pages.len().saturating_add(1), self.config)?;
+                    let bytes = charge_dirty_page(dirty_bytes, &page, self.config)?;
+                    admit_dirty_pages(dirty_pages.len().saturating_add(1), bytes, self.config)?;
+                    dirty_bytes = bytes;
                     dirty_pages.push(page);
                     Ok(())
                 },
@@ -288,7 +291,9 @@ impl<'a> RelationalRowPageMutationPlanner<'a> {
                 &mut allocator,
                 rows,
                 |page| {
-                    admit_dirty_pages(dirty_pages.len().saturating_add(1), self.config)?;
+                    let bytes = charge_dirty_page(dirty_bytes, &page, self.config)?;
+                    admit_dirty_pages(dirty_pages.len().saturating_add(1), bytes, self.config)?;
+                    dirty_bytes = bytes;
                     dirty_pages.push(page);
                     Ok(())
                 },
@@ -589,8 +594,17 @@ fn validate_base_page(
     Ok(())
 }
 
+/// Admits `pages` dirty pages whose encoded lengths total `bytes`.
+///
+/// The byte budget charges encoded page bytes, not the fixed slot each v1
+/// page occupies in the page artifact (#1593). It bounds the encoded page
+/// payload a publication writes before its fsync; it never bounded memory.
+/// Until v2 packs pages by length, physical page-artifact writes can exceed
+/// the charge by up to the slot size over the encoded length (about 20x for
+/// narrow rows).
 fn admit_dirty_pages(
     pages: usize,
+    bytes: u64,
     config: RelationalRowPagePublicationConfig,
 ) -> Result<(), RelationalRowPageMutationError> {
     if pages > config.max_dirty_pages.get() {
@@ -599,16 +613,9 @@ fn admit_dirty_pages(
             config.max_dirty_pages
         )));
     }
-    let bytes = (pages as u64)
-        .checked_mul(config.page_limits.max_page_bytes.get() as u64)
-        .ok_or_else(|| {
-            RelationalRowPageMutationError::Admission(
-                "row-page mutation dirty-byte reservation overflow".to_string(),
-            )
-        })?;
     if bytes > config.max_dirty_bytes.get() {
         return Err(RelationalRowPageMutationError::Admission(format!(
-            "row-page mutation reserves {bytes} dirty bytes, exceeding limit {}",
+            "row-page mutation reserves {bytes} encoded dirty bytes, exceeding limit {}",
             config.max_dirty_bytes
         )));
     }
@@ -677,6 +684,21 @@ impl PendingPageSize {
     }
 }
 
+/// Adds one page's encoded length to a running dirty-byte charge.
+fn charge_dirty_page(
+    charged: u64,
+    page: &ImmutableRelationalRowPage,
+    config: RelationalRowPagePublicationConfig,
+) -> Result<u64, RelationalRowPageMutationError> {
+    charged
+        .checked_add(page.encoded_len(config.page_limits)?)
+        .ok_or_else(|| {
+            RelationalRowPageMutationError::Admission(
+                "row-page mutation dirty-byte reservation overflow".to_string(),
+            )
+        })
+}
+
 struct PagePackState {
     generation: u64,
     source_commit_epoch: u64,
@@ -689,6 +711,7 @@ struct PagePackState {
     previous_key: Option<Vec<u8>>,
     emitted_rows: usize,
     emitted_pages: usize,
+    emitted_bytes: u64,
     peak_buffered_rows: usize,
 }
 
@@ -713,6 +736,7 @@ impl PagePackState {
             previous_key: None,
             emitted_rows: 0,
             emitted_pages: 0,
+            emitted_bytes: 0,
             peak_buffered_rows: 0,
         }
     }
@@ -820,6 +844,7 @@ impl PagePackState {
             ));
         }
         let row_count = page.rows.len();
+        let emitted_bytes = charge_dirty_page(self.emitted_bytes, &page, self.config)?;
         emit(page)?;
         *allocator = next_allocator;
         self.first_page_id = next_first_page_id;
@@ -833,7 +858,8 @@ impl PagePackState {
                 "row-page bootstrap row count overflow".to_string(),
             )
         })?;
-        admit_dirty_pages(self.emitted_pages, self.config)
+        self.emitted_bytes = emitted_bytes;
+        admit_dirty_pages(self.emitted_pages, self.emitted_bytes, self.config)
     }
 
     fn peek_page_id(&self, allocator: &RelationalRowPageIdAllocator) -> RelationalRowPageId {

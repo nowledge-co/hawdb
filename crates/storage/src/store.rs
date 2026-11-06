@@ -295,9 +295,8 @@ use hawdb_storage::{
         encode_relational_checkpoint, RelationalCheckpointIndexLoad, RelationalDecodeLimits,
         RelationalMutationLimits, RelationalOverflowConfig, RelationalOverflowPublicationConfig,
         RelationalOverflowPublisher, RelationalRecoverySourceBuilder,
-        RelationalRowPageGenerationRequest, RelationalRowPagePublicationConfig,
-        RelationalRowPagePublisher, RelationalSparseLiveStage, RelationalState,
-        RelationalTransaction,
+        RelationalRowPageGenerationRequest, RelationalRowPagePublisher, RelationalSparseLiveStage,
+        RelationalState, RelationalTransaction,
     },
 };
 pub use hawdb_storage::{

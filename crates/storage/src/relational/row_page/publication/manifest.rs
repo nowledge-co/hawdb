@@ -499,10 +499,13 @@ fn validate_manifest_inner(
             manifest.page_bytes, config.page_limits.max_page_bytes
         )));
     }
-    if manifest.dirty_page_count > config.max_dirty_pages.get() as u64 {
+    // Every dirty page is a root page of this generation, so the root-page
+    // limit bounds it. The writer's `max_dirty_pages` is an admission limit
+    // for one publication, not a property of a valid manifest (#1593).
+    if manifest.dirty_page_count > config.max_root_pages.get() {
         return Err(fail(format!(
-            "row-page manifest declares {} dirty pages, exceeding limit {}",
-            manifest.dirty_page_count, config.max_dirty_pages
+            "row-page manifest declares {} dirty pages, exceeding root-page limit {}",
+            manifest.dirty_page_count, config.max_root_pages
         )));
     }
     let written_page_count = manifest

@@ -5398,7 +5398,6 @@ impl RelationalState {
         }
         let mut dirty_pages = 0usize;
         let mut dirty_bytes = 0u64;
-        let slot_bytes = config.page_limits.max_page_bytes.get() as u64;
         self.table_schemas()
             .map(|schema| {
                 let schema_digest = self
@@ -5413,13 +5412,16 @@ impl RelationalState {
                         ))
                     })?;
                 let mut pages = Vec::new();
-                let mut emit = |page| {
+                let mut emit = |page: ImmutableRelationalRowPage| {
                     let next_pages = dirty_pages.checked_add(1).ok_or_else(|| {
                         RelationalRowPageMutationError::Admission(
                             "row-page snapshot page count overflow".to_string(),
                         )
                     })?;
-                    let next_bytes = dirty_bytes.checked_add(slot_bytes).ok_or_else(|| {
+                    // Encoded bytes, not the v1 slot (#1593); see
+                    // `RelationalRowPagePublicationConfig::max_dirty_bytes`.
+                    let page_bytes = page.encoded_len(config.page_limits)?;
+                    let next_bytes = dirty_bytes.checked_add(page_bytes).ok_or_else(|| {
                         RelationalRowPageMutationError::Admission(
                             "row-page snapshot byte count overflow".to_string(),
                         )
@@ -5428,7 +5430,7 @@ impl RelationalState {
                         || next_bytes > config.max_dirty_bytes.get()
                     {
                         return Err(RelationalRowPageMutationError::Admission(format!(
-                            "row-page snapshot requires {next_pages} pages/{next_bytes} bytes, exceeding limits {}/{}",
+                            "row-page snapshot requires {next_pages} pages/{next_bytes} encoded bytes, exceeding limits {}/{}",
                             config.max_dirty_pages, config.max_dirty_bytes
                         )));
                     }

@@ -425,6 +425,33 @@ impl ImmutableRelationalRowPage {
         encoding::encode(self, limits, &encoding::NoWork)
     }
 
+    /// The exact length of [`Self::encode`] for a page the codec accepts,
+    /// computed without materializing the page: header, both key bounds,
+    /// the row directory and the key and row payloads.
+    ///
+    /// Dirty-page budgets charge this length rather than the fixed slot the
+    /// v1 page artifact pads each page to (#1593).
+    pub fn encoded_len(
+        &self,
+        limits: RelationalRowPageLimits,
+    ) -> Result<u64, RelationalRowPageError> {
+        let key_len = |key: &RelationalKey| {
+            encode_ordered_relational_key(key)
+                .map(|key| key.len())
+                .map_err(|error| RelationalRowPageError::Admission(error.to_string()))
+        };
+        let mut total = ROW_PAGE_HEADER_BYTES as u64;
+        if let (Some(first), Some(last)) = (self.rows.first(), self.rows.last()) {
+            total += key_len(&first.primary_key)? as u64 + key_len(&last.primary_key)? as u64;
+        }
+        for entry in &self.rows {
+            total += ROW_SLOT_BYTES as u64
+                + key_len(&entry.primary_key)? as u64
+                + encoding::encoded_row_len(&entry.row, self.column_count, limits)? as u64;
+        }
+        Ok(total)
+    }
+
     pub fn decode(
         encoded: &[u8],
         limits: RelationalRowPageLimits,

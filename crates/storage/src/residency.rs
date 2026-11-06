@@ -91,6 +91,11 @@ pub struct RelationalRowStorageResidencyReport {
     pub monotonic_append_hits: u64,
     pub monotonic_append_fallbacks: u64,
     pub monotonic_append_proven_absent_primary_keys: u64,
+    /// A required relational schema checkpoint has not been published yet;
+    /// the WAL remains authoritative for the schema change (#1593).
+    pub schema_checkpoint_pending: bool,
+    /// The last resource or budget refusal of that checkpoint, if any.
+    pub schema_checkpoint_pending_reason: Option<String>,
 }
 
 impl RelationalRowStorageResidencyReport {

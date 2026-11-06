@@ -7,7 +7,16 @@ use super::*;
 
 impl Database {
     pub fn automatic_checkpoint_report(&self) -> Result<Option<AutomaticCheckpointReport>> {
-        self.runtime.automatic_checkpoint_report()
+        let Some(mut report) = self.runtime.automatic_checkpoint_report()? else {
+            return Ok(None);
+        };
+        report.relational_schema_checkpoint_pending = self
+            .runtime
+            .get()?
+            .store
+            .relational_row_schema_checkpoint_deferred()
+            .map(str::to_string);
+        Ok(Some(report))
     }
 
     /// Completes a caller-triggered checkpoint of a writable persistent database.
@@ -275,15 +284,43 @@ impl Database {
         if self.runtime.get()?.store.wal_sync_group_active() {
             return Ok(());
         }
+        // A deferred checkpoint is retried by explicit, automatic and
+        // recovery checkpoints, not by every commit (#1593).
+        if self
+            .runtime
+            .get()?
+            .store
+            .relational_row_schema_checkpoint_deferred()
+            .is_some()
+        {
+            return Ok(());
+        }
         let checkpoint = self.checkpoint_internal(None);
         let result = match checkpoint {
             Ok(()) if !self.relational_row_schema_checkpoint_required()? => Ok(()),
             Ok(()) => Err(HawDBError::StorageIntegrity(format!(
                 "canonical relational row schema checkpoint remained required after {context}"
             ))),
-            Err(error) => Err(HawDBError::StorageIntegrity(format!(
+            Err(
+                error @ (HawDBError::StorageIntegrity(_)
+                | HawDBError::UnsupportedStorageFormat(_)
+                | HawDBError::WalRecoveryIo { .. }),
+            ) => Err(HawDBError::StorageIntegrity(format!(
                 "canonical relational row schema checkpoint failed after {context}; the durable WAL remains authoritative and writable reopen will retry: {error}"
             ))),
+            // A resource or budget refusal publishes nothing: the previous
+            // checkpoint stays selected and the WAL stays authoritative. The
+            // committed operation stands; the checkpoint stays pending
+            // without poisoning the handle (#1593).
+            Err(error) => {
+                self.runtime
+                    .get_mut()?
+                    .store
+                    .defer_relational_row_schema_checkpoint(format!(
+                        "schema checkpoint after {context} deferred: {error}"
+                    ));
+                Ok(())
+            }
         };
         self.runtime.get()?.store.poison_on_storage_error(&result);
         result
