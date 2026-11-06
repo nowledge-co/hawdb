@@ -2629,7 +2629,6 @@ mod tests {
             ..WalReplayConfig::default()
         };
         let path = unique_test_dir("metadata-only-monotonic-append-reads");
-        let _row_cap = LegacyRowCap::new(&path);
         let event_schema = RelationalTableSchema {
             materialized_view: None,
             name: "events".to_string(),
@@ -2783,8 +2782,12 @@ mod tests {
         assert_eq!(fallback.point_reads, 64, "fallback report: {fallback:?}");
         assert_eq!(fast.pages_read, 0, "fast report: {fast:?}");
         assert_eq!(fast.bytes_read, 0, "fast report: {fast:?}");
-        assert_eq!(fallback.pages_read, 0, "fallback report: {fallback:?}");
-        assert_eq!(fallback.bytes_read, 0, "fallback report: {fallback:?}");
+        // Format v2 packs rows by bytes, so the appended keys fall inside the
+        // page that also holds the next partition. Each fallback point read
+        // must read that page to prove absence (v1's 256-row pages happened
+        // to end at the partition gap, so descriptor bounds sufficed).
+        assert_eq!(fallback.pages_read, 64, "fallback report: {fallback:?}");
+        assert!(fallback.bytes_read > 0, "fallback report: {fallback:?}");
 
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
