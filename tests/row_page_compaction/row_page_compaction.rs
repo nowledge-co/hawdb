@@ -37,8 +37,9 @@ fn open_config(mode: StorageResidencyMode) -> DatabaseConfig {
 fn churn_database(path: &Path, mode: StorageResidencyMode, tables: u64) -> Database {
     let mut db =
         Database::open_with_config(path, open_config(StorageResidencyMode::Materialized)).unwrap();
-    // Publish one complete schema/data seed generation. Per-table DDL
-    // checkpoints would give this physical-layout oracle a different base arena.
+    // Publish one schema/data seed generation for the user tables. Per-table
+    // DDL checkpoints would give this physical-layout oracle a different base
+    // arena.
     let mut seed = db.begin_transaction().unwrap();
     for table in 0..tables {
         seed.query_sql(&format!(
@@ -124,7 +125,15 @@ fn assert_compaction_converges_and_preserves_pinned_readers(mode: StorageResiden
         TABLES * (TABLES + 1) / 2 + 1,
         "{before:?}"
     );
-    assert_eq!(before.physical_generation_count, TABLES as usize);
+    // The seed commit is a schema change, but since #1601 it rewrites only
+    // the tables it creates: the schema-migration registry page written at
+    // open stays in its own earlier generation. That generation is fully
+    // live, so compaction reuses that page as well as the newest page.
+    assert_eq!(
+        before.physical_generation_count,
+        TABLES as usize + 1,
+        "{before:?}"
+    );
     if mode == StorageResidencyMode::OutOfCore {
         assert!(before.checkpoint_state_metadata_only);
         assert_eq!(before.materialized_row_count, 0);
@@ -135,8 +144,8 @@ fn assert_compaction_converges_and_preserves_pinned_readers(mode: StorageResiden
         .unwrap();
     assert_eq!(report.root_pages, LIVE_PAGES);
     assert_eq!(report.dirty_pages_written, 0);
-    assert_eq!(report.relocated_pages_written, LIVE_PAGES - 1);
-    assert_eq!(report.reused_pages, 1);
+    assert_eq!(report.relocated_pages_written, LIVE_PAGES - 2, "{report:?}");
+    assert_eq!(report.reused_pages, 2, "{report:?}");
     assert_eq!(report.previous_allocated_pages, before.allocated_page_count);
     assert_eq!(report.allocated_pages, LIVE_PAGES);
     let compacted = db.storage_residency_report().unwrap().relational_rows;
