@@ -396,7 +396,7 @@ fn transaction_checkpoint_and_invalidation_fail_without_advancing() {
     );
     let identity = rows.read_view().identity();
     assert!(matches!(
-        rows.stage_advance(RelationalRowChangeCapture::RequiresCheckpoint { tables: vec!["nodes".into()] }),
+        rows.stage_advance(RelationalRowChangeCapture::RequiresCheckpoint { tables: vec!["nodes".into()], unaffected: None }),
         Err(RelationalError::Admission(message)) if message.contains("canonical checkpoint for tables nodes")
     ));
     assert!(matches!(

@@ -321,6 +321,7 @@ fn publish_base(directory: &Path, config: RelationalRowPagePublicationConfig) {
             1,
             None,
             vec![RelationalRowPageTableDelta {
+                replaces_base: false,
                 last_row_id: 0,
                 table: "documents".to_string(),
                 schema: Some(crate::relational::row_page::test_row_page_schema(
@@ -518,10 +519,17 @@ fn assert_same_packing(
     );
     assert_eq!(actual, expected, "{label}: page partition differs");
     for (actual, expected) in actual.iter().zip(&expected) {
+        let encoded = actual.encode(config.page_limits).unwrap();
         assert_eq!(
-            actual.encode(config.page_limits).unwrap(),
+            encoded,
             expected.encode(config.page_limits).unwrap(),
             "{label}: encoded page bytes differ"
+        );
+        // The dirty budget charges `encoded_len` (#1593).
+        assert_eq!(
+            actual.encoded_len(config.page_limits).unwrap(),
+            encoded.len() as u64,
+            "{label}: encoded_len differs from the encoded page"
         );
     }
 }

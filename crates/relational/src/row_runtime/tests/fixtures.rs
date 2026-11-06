@@ -162,6 +162,7 @@ impl Fixture {
                     })
                     .collect::<Vec<_>>();
                 RelationalRowPageTableDelta {
+                    replaces_base: false,
                     last_row_id: 0,
                     table: table.into(),
                     schema: Some(schema.clone()),

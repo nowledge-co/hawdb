@@ -103,6 +103,7 @@ pub use snapshot::{
 };
 pub use state::{
     RelationalRowLiveUnavailable, RelationalRowPageServingResources, RelationalRowPageState,
+    RelationalRowSchemaRewrite,
 };
 
 #[cfg(test)]

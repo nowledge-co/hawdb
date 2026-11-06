@@ -54,6 +54,7 @@ pub use hawdb_storage::relational::RelationalRowPageRecoveryStatus;
 
 pub(super) use hawdb_storage::relational::{
     RelationalRowLiveUnavailable, RelationalRowPageServingResources, RelationalRowPageState,
+    RelationalRowSchemaRewrite,
 };
 
 // Test hooks stay compiled in every build, like the other `*_for_test`
@@ -176,9 +177,35 @@ impl GraphStore {
         let Some(base) = base else {
             return self.plan_relational_row_page_rebuild(generation, source_commit_epoch, config);
         };
-        let Some(view) = self.relational_row_pages.read_view.as_ref() else {
-            return self.plan_relational_row_page_rebuild(generation, source_commit_epoch, config);
+        // A pending schema checkpoint keeps the other tables incremental when
+        // its rewrite view is current and every rewritten table still exists
+        // with resident rows. A dropped table, a later commit or an
+        // out-of-core state falls back to a full rebuild (#1593).
+        let (view, rewritten) = match self.relational_row_pages.read_view.as_ref() {
+            Some(view) => (view, None),
+            None => match self
+                .relational_row_pages
+                .schema_rewrite
+                .as_ref()
+                .filter(|rewrite| {
+                    rewrite.view.identity().visible_commit_epoch == source_commit_epoch
+                        && !self.relational_state.canonical_row_metadata_only()
+                        && rewrite
+                            .tables
+                            .iter()
+                            .all(|table| self.relational_state.table_schema(table).is_some())
+                }) {
+                Some(rewrite) => (&rewrite.view, Some(&rewrite.tables)),
+                None => {
+                    return self.plan_relational_row_page_rebuild(
+                        generation,
+                        source_commit_epoch,
+                        config,
+                    );
+                }
+            },
         };
+        let is_rewritten = |table: &str| rewritten.is_some_and(|tables| tables.contains(table));
         let base = Arc::new(base);
         let identity = view.identity();
         let base_manifest = base.manifest();
@@ -222,7 +249,11 @@ impl GraphStore {
             ));
         };
         let mut changes_by_table = BTreeMap::<String, Vec<_>>::new();
-        for change in changes {
+        // A rewritten table is replaced whole; its earlier changes are in it.
+        for change in changes
+            .into_iter()
+            .filter(|change| !is_rewritten(&change.table))
+        {
             changes_by_table
                 .entry(change.table.clone())
                 .or_default()
@@ -231,14 +262,16 @@ impl GraphStore {
         // An insert followed by deletion can leave no row changes while still
         // advancing the allocation fence. Publish that metadata at checkpoint.
         for table in &base_manifest.tables {
-            if self.relational_state.last_row_id(&table.table) != table.last_row_id {
+            if !is_rewritten(&table.table)
+                && self.relational_state.last_row_id(&table.table) != table.last_row_id
+            {
                 changes_by_table.entry(table.table.clone()).or_default();
             }
         }
-        if changes_by_table.len() > config.max_tables.get() {
+        let changed_tables = changes_by_table.len() + rewritten.map_or(0, BTreeSet::len);
+        if changed_tables > config.max_tables.get() {
             return Err(crate::error::HawDBError::Storage(format!(
-                "relational row checkpoint changes reference {} tables, exceeding limit {}",
-                changes_by_table.len(),
+                "relational row checkpoint changes reference {changed_tables} tables, exceeding limit {}",
                 config.max_tables
             )));
         }
@@ -327,6 +360,70 @@ impl GraphStore {
             plan.delta.last_row_id = self.relational_state.last_row_id(&table);
             deltas.push(plan.delta);
         }
+        for table in rewritten.into_iter().flatten() {
+            let remaining_pages = config
+                .max_dirty_pages
+                .get()
+                .checked_sub(planned_dirty_pages)
+                .and_then(NonZeroUsize::new)
+                .ok_or_else(|| {
+                    crate::error::HawDBError::Storage(format!(
+                        "relational row checkpoint exhausted its {} dirty-page limit before rewriting table {table}",
+                        config.max_dirty_pages
+                    ))
+                })?;
+            let remaining_bytes = config
+                .max_dirty_bytes
+                .get()
+                .checked_sub(planned_dirty_bytes)
+                .and_then(NonZeroU64::new)
+                .ok_or_else(|| {
+                    crate::error::HawDBError::Storage(format!(
+                        "relational row checkpoint exhausted its {} dirty-byte limit before rewriting table {table}",
+                        config.max_dirty_bytes
+                    ))
+                })?;
+            // Continue the base table's page-id allocator.
+            let next_page_id = base
+                .table_root(table)
+                .ok()
+                .map_or(NonZeroU64::MIN, |root| root.next_page_id);
+            // `table_root` reports a table absent from the base (CREATE
+            // TABLE) as an error; such a table starts its allocator at 1.
+            let delta = self
+                .relational_state
+                .row_page_table_replacement_delta(
+                    table,
+                    generation,
+                    source_commit_epoch,
+                    next_page_id,
+                    RelationalRowPagePublicationConfig {
+                        max_dirty_pages: remaining_pages,
+                        max_dirty_bytes: remaining_bytes,
+                        ..config
+                    },
+                )
+                .map_err(crate::error::HawDBError::from_storage_error)?;
+            planned_dirty_pages = planned_dirty_pages
+                .checked_add(delta.dirty_pages.len())
+                .ok_or_else(|| {
+                    crate::error::HawDBError::Storage(
+                        "relational row checkpoint dirty-page accounting overflow".to_string(),
+                    )
+                })?;
+            for page in &delta.dirty_pages {
+                planned_dirty_bytes = page
+                    .encoded_len(config.page_limits)
+                    .ok()
+                    .and_then(|bytes| planned_dirty_bytes.checked_add(bytes))
+                    .ok_or_else(|| {
+                        crate::error::HawDBError::Storage(
+                            "relational row checkpoint dirty-byte accounting overflow".to_string(),
+                        )
+                    })?;
+            }
+            deltas.push(delta);
+        }
         Ok(RelationalRowPageCheckpointPlan {
             base: Some(base),
             deltas,
@@ -407,6 +504,7 @@ impl GraphStore {
         self.relational_row_pages.recovery_report = None;
         self.relational_row_pages.schema_checkpoint_required = false;
         self.relational_row_pages.schema_checkpoint_deferred = None;
+        self.relational_row_pages.schema_rewrite = None;
         self.relational_row_pages.recovery_status =
             RelationalRowPageRecoveryStatus::CheckpointReady {
                 generation,
@@ -833,7 +931,7 @@ impl GraphStore {
         let Some(capture) = capture else {
             return Ok(());
         };
-        if let RelationalRowChangeCapture::RequiresCheckpoint { tables } = &capture {
+        if let RelationalRowChangeCapture::RequiresCheckpoint { tables, .. } = &capture {
             self.mark_relational_row_page_schema_checkpoint_required(epoch, tables.clone());
             return Ok(());
         }
@@ -1015,6 +1113,7 @@ impl GraphStore {
                 let identity = view.identity();
                 self.relational_row_pages.schema_checkpoint_required = false;
                 self.relational_row_pages.schema_checkpoint_deferred = None;
+                self.relational_row_pages.schema_rewrite = None;
                 self.relational_row_pages.recovery_status =
                     RelationalRowPageRecoveryStatus::LiveCurrent {
                         base_generation: identity.base_generation,
@@ -1035,6 +1134,16 @@ impl GraphStore {
                 self.relational_row_pages.read_view = None;
                 self.relational_row_pages.schema_checkpoint_required = checkpoint_required;
                 self.relational_row_pages.schema_checkpoint_deferred = None;
+                self.relational_row_pages.schema_rewrite = match &unavailable.error {
+                    RelationalRowPageLiveError::RequiresCheckpoint { tables } => unavailable
+                        .schema_rewrite_view
+                        .clone()
+                        .map(|view| RelationalRowSchemaRewrite {
+                            view,
+                            tables: tables.iter().cloned().collect(),
+                        }),
+                    _ => None,
+                };
                 self.relational_row_pages.recovery_status =
                     RelationalRowPageRecoveryStatus::LiveUnavailable {
                         base_generation: unavailable.identity.base_generation,
@@ -1377,6 +1486,7 @@ impl GraphStore {
         self.relational_row_pages.read_view = None;
         self.relational_row_pages.schema_checkpoint_required = checkpoint_required;
         self.relational_row_pages.schema_checkpoint_deferred = None;
+        self.relational_row_pages.schema_rewrite = None;
         self.relational_row_pages.recovery_status = RelationalRowPageRecoveryStatus::Unavailable {
             base_generation,
             base_commit_epoch,
@@ -3353,6 +3463,222 @@ mod tests {
         assert_eq!(rebuilt.manifest().root_page_count, 2);
         assert_eq!(physical_generations(&rebuilt), vec![2, 2]);
 
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    /// `(logical page id, physical generation)` of every page of `table`.
+    fn table_pages(reader: &RelationalRowPageRootReader, table: &str) -> Vec<(u64, u64)> {
+        let mut pages = Vec::new();
+        reader
+            .visit_table_pages(table, |descriptor| {
+                pages.push((
+                    descriptor.logical_page_id.get(),
+                    descriptor.physical_generation,
+                ));
+                Ok(())
+            })
+            .unwrap();
+        pages
+    }
+
+    fn bound_row_root(store: &GraphStore, path: &std::path::Path) -> RelationalRowPageRootReader {
+        let generation = store
+            .storage_residency_report()
+            .relational_rows
+            .base_generation
+            .unwrap();
+        RelationalRowPageRootReader::open_generation(
+            path,
+            generation,
+            RelationalRowPagePublicationConfig::default(),
+        )
+        .unwrap()
+    }
+
+    fn bodies(store: &GraphStore, table: &str) -> Vec<i64> {
+        store
+            .relational_state()
+            .rows(table)
+            .map(|(_, row)| match &row.values()[0] {
+                RelationalValue::BigInt(id) => *id,
+                value => panic!("unexpected id {value:?}"),
+            })
+            .collect()
+    }
+
+    /// A schema change rewrites only the tables whose schema or row encoding
+    /// changed (#1593). Other tables keep every page, including their
+    /// physical generation; a rewritten table continues its page allocator.
+    #[test]
+    fn schema_change_rewrites_only_the_changed_tables() {
+        let path = unique_test_dir("schema-per-table");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig::default(),
+        )
+        .unwrap();
+        let tables = ["documents", "messages", "notes"];
+        let mut writes = Vec::new();
+        for table in tables {
+            writes.push(RelationalWrite::CreateTable(named_schema(table)));
+            writes.push(RelationalWrite::Insert {
+                table: table.to_string(),
+                rows: (0..300)
+                    .map(|id| row(id, &format!("{table}-{id}")))
+                    .collect(),
+                mode: RelationalInsertMode::Error,
+            });
+        }
+        store
+            .commit_relational_transaction(&mut catalog, RelationalTransaction { writes })
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let first = bound_row_root(&store, &path);
+        let first_pages = tables.map(|table| table_pages(&first, table));
+        assert!(first_pages.iter().all(|pages| pages.len() == 2));
+
+        // CREATE TABLE plus a row change to another table in the same commit
+        // writes only that table's leaf and an empty new table.
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![
+                        RelationalWrite::CreateTable(named_schema("fresh")),
+                        RelationalWrite::Insert {
+                            table: "messages".to_string(),
+                            rows: vec![row(1_000, "late")],
+                            mode: RelationalInsertMode::Error,
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+        assert!(store.relational_row_schema_checkpoint_required());
+        store.checkpoint(&catalog).unwrap();
+        assert!(!store.relational_row_schema_checkpoint_required());
+        let second = bound_row_root(&store, &path);
+        assert_eq!(second.manifest().dirty_page_count, 1);
+        assert_eq!(table_pages(&second, "documents"), first_pages[0]);
+        assert_eq!(table_pages(&second, "notes"), first_pages[2]);
+        assert_ne!(table_pages(&second, "messages"), first_pages[1]);
+        assert!(table_pages(&second, "fresh").is_empty());
+        assert_eq!(second.table_root("fresh").unwrap().row_count, 0);
+        // Root artifacts of older generations are reclaimed by later
+        // checkpoints; keep what later steps compare against.
+        let second_messages = table_pages(&second, "messages");
+        let documents_allocator = second.table_root("documents").unwrap().next_page_id.get();
+        drop(second);
+
+        // An uncheckpointed insert, then ALTER TABLE: the altered table is
+        // rewritten whole, including the insert, with page ids above its
+        // previous allocator; the others are untouched.
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::Insert {
+                        table: "documents".to_string(),
+                        rows: vec![row(2_000, "before-alter")],
+                        mode: RelationalInsertMode::Error,
+                    }],
+                },
+            )
+            .unwrap();
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::AddColumn {
+                        table: "documents".to_string(),
+                        column: RelationalColumnSchema {
+                            name: "archived".to_string(),
+                            scalar_type: RelationalScalarType::Boolean,
+                            nullable: false,
+                            default: Some(RelationalColumnDefault::Literal(
+                                RelationalValue::Boolean(false),
+                            )),
+                        },
+                    }],
+                },
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let third = bound_row_root(&store, &path);
+        let generation = third.manifest().generation;
+        let documents = table_pages(&third, "documents");
+        assert_eq!(third.manifest().dirty_page_count, documents.len() as u64);
+        assert!(documents
+            .iter()
+            .all(|(id, physical)| *id >= documents_allocator && *physical == generation));
+        assert_eq!(third.table_root("documents").unwrap().row_count, 301);
+        assert_eq!(third.table_root("documents").unwrap().column_count.get(), 3);
+        assert_eq!(table_pages(&third, "messages"), second_messages);
+        assert_eq!(table_pages(&third, "notes"), first_pages[2]);
+        drop(third);
+
+        // CREATE INDEX changes the schema digest every page header carries,
+        // so it rewrites that table only.
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::CreateIndex {
+                        table: "notes".to_string(),
+                        index: hawdb_storage::relational::RelationalIndexSchema {
+                            name: "notes_body".to_string(),
+                            columns: vec!["body".to_string()],
+                            unique: false,
+                        },
+                    }],
+                },
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let fourth = bound_row_root(&store, &path);
+        let notes = table_pages(&fourth, "notes");
+        assert_eq!(fourth.manifest().dirty_page_count, notes.len() as u64);
+        assert!(notes.iter().all(|(id, _)| *id >= 3));
+        assert_eq!(table_pages(&fourth, "documents"), documents);
+        assert_eq!(table_pages(&fourth, "messages"), second_messages);
+        drop(store);
+
+        // Reopen recovers every table from the rewritten root.
+        let mut catalog = Catalog::default();
+        let store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(bodies(&store, "documents").len(), 301);
+        assert!(bodies(&store, "documents").contains(&2_000));
+        assert_eq!(bodies(&store, "messages").len(), 301);
+        assert_eq!(bodies(&store, "notes").len(), 300);
+        assert!(bodies(&store, "fresh").is_empty());
+        assert_eq!(
+            store
+                .relational_state()
+                .table_schema("documents")
+                .unwrap()
+                .columns
+                .len(),
+            3
+        );
+        assert_eq!(
+            store
+                .relational_state()
+                .table_schema("notes")
+                .unwrap()
+                .indexes
+                .len(),
+            1
+        );
+        drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
 
