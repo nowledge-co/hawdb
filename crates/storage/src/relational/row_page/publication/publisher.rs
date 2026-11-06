@@ -334,7 +334,14 @@ impl RelationalRowPagePublisher {
             generation: build.generation,
             source_commit_epoch: build.source_commit_epoch,
             previous_generation: build.expected_previous_generation,
-            page_bytes: self.config.page_limits.max_page_bytes.get() as u64,
+            // The page limit caps the target; a page never exceeds it.
+            target_page_bytes: self
+                .config
+                .target_page_bytes
+                .get()
+                .min(self.config.page_limits.max_page_bytes.get())
+                as u64,
+            max_page_bytes: self.config.page_limits.max_page_bytes.get() as u64,
             dirty_page_count,
             relocated_page_count: root.relocated_page_count,
             root_page_count: root.root_page_count,

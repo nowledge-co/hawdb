@@ -29,7 +29,6 @@ use crate::relational::{
     ordered_key::encode_ordered_relational_key, ImmutableRelationalRowPage, RelationalKey,
     RelationalOverflowRootBinding, RelationalOverflowRootReader, RelationalRowPageView,
 };
-use hawdb_integrity::integrity_digest;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -205,7 +204,7 @@ impl RelationalRowPageRootReader {
                 &self
                     .directory
                     .join(relational_row_page_artifact_file(entry.generation)),
-                entry.allocated_pages * self.manifest.page_bytes,
+                entry.allocated_bytes,
                 "row-page physical generation",
             )?;
         }
@@ -450,11 +449,11 @@ impl RelationalRowPageRootReader {
         let cache_key = SegmentCacheKey {
             store_id,
             manifest_generation: ManifestGeneration(descriptor.physical_generation),
-            segment_id: descriptor.physical_slot,
-            content_digest: ContentDigest(descriptor.slot_integrity.slot_crc32c as u64),
+            segment_id: descriptor.physical_offset,
+            content_digest: ContentDigest(descriptor.page_integrity.page_crc32c as u64),
             representation: RepresentationKind::RelationalRowPageSlot,
         };
-        let verification_tag = *descriptor.slot_integrity.slot_sha256.as_bytes();
+        let verification_tag = *descriptor.page_integrity.page_sha256.as_bytes();
         if let Some(lease) = cache.get_verified(&cache_key, verification_tag) {
             let bytes = lease.into_bytes();
             let metadata = self.validate_verified_page(descriptor, &bytes)?;
@@ -465,11 +464,9 @@ impl RelationalRowPageRootReader {
                 cache_admission_rejected: false,
             });
         }
-        let mut slot = self.read_page_slot_bytes(descriptor)?;
+        let slot = self.read_page_slot_bytes(descriptor)?;
         let view = self.validate_page_slot(descriptor, &slot)?;
         let metadata = VerifiedRowPageMetadata::from_view(&view);
-        let encoded_len = view.encoded_len();
-        slot.truncate(encoded_len);
         match cache.insert_verified(cache_key, verification_tag, slot) {
             Ok(lease) => Ok(RelationalRowPageSlotRead {
                 page: VerifiedRowPage::new(lease.into_bytes(), metadata),
@@ -500,15 +497,8 @@ impl RelationalRowPageRootReader {
         descriptor: &RelationalRowPageRootDescriptor,
         work: &crate::background::CheckpointWorkContext,
     ) -> Result<RelationalRowPageSlotRead, RelationalRowPagePublicationError> {
-        let page_bytes = self.config.page_limits.max_page_bytes.get();
-        let offset = descriptor
-            .physical_slot
-            .checked_mul(page_bytes as u64)
-            .ok_or_else(|| {
-                RelationalRowPagePublicationError::Corrupt(
-                    "row-page physical offset overflow".into(),
-                )
-            })?;
+        let page_bytes = descriptor.page_integrity.encoded_len as usize;
+        let offset = descriptor.physical_offset;
         let mut scratch =
             crate::background::CheckpointBytes::zeroed(page_bytes.min(64 * 1024), work)
                 .map_err(root::checkpoint::work_error)?;
@@ -525,7 +515,7 @@ impl RelationalRowPageRootReader {
                 .map_err(durability("open row-page generation artifact"))?;
                 artifact
                     .seek(SeekFrom::Start(offset))
-                    .map_err(durability("seek row-page generation slot"))?;
+                    .map_err(durability("seek row-page generation page"))?;
                 drop(wave);
                 unit.finish();
                 let mut remaining = page_bytes;
@@ -535,7 +525,7 @@ impl RelationalRowPageRootReader {
                     let wave = work.io_wave().map_err(root::checkpoint::work_error)?;
                     artifact
                         .read_exact(&mut scratch.as_mut_slice()[..count])
-                        .map_err(durability("read row-page generation slot"))?;
+                        .map_err(durability("read row-page generation page"))?;
                     drop(wave);
                     unit.finish();
                     bytes
@@ -557,31 +547,23 @@ impl RelationalRowPageRootReader {
         })
     }
 
+    /// Reads exactly the page's encoded bytes at its byte offset (format v2).
     fn read_page_slot_bytes(
         &self,
         descriptor: &RelationalRowPageRootDescriptor,
     ) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
-        let page_bytes = self.config.page_limits.max_page_bytes.get() as u64;
-        let offset = descriptor
-            .physical_slot
-            .checked_mul(page_bytes)
-            .ok_or_else(|| {
-                RelationalRowPagePublicationError::Corrupt(
-                    "row-page physical offset overflow".to_string(),
-                )
-            })?;
         let mut artifact = File::open(self.directory.join(relational_row_page_artifact_file(
             descriptor.physical_generation,
         )))
         .map_err(durability("open row-page generation artifact"))?;
         artifact
-            .seek(SeekFrom::Start(offset))
-            .map_err(durability("seek row-page generation slot"))?;
-        let mut slot = vec![0u8; self.config.page_limits.max_page_bytes.get()];
+            .seek(SeekFrom::Start(descriptor.physical_offset))
+            .map_err(durability("seek row-page generation page"))?;
+        let mut page = vec![0u8; descriptor.page_integrity.encoded_len as usize];
         artifact
-            .read_exact(&mut slot)
-            .map_err(durability("read row-page generation slot"))?;
-        Ok(slot)
+            .read_exact(&mut page)
+            .map_err(durability("read row-page generation page"))?;
+        Ok(page)
     }
 
     fn validate_page_slot<'a>(
@@ -592,25 +574,46 @@ impl RelationalRowPageRootReader {
         self.validate_page_slot_with_work_context(descriptor, slot, None)
     }
 
+    /// Verifies the page's own CRC32C/SHA-256 once, then binds that digest
+    /// and the page identity to the descriptor.
     fn validate_page_slot_with_work_context<'a>(
         &self,
         descriptor: &RelationalRowPageRootDescriptor,
-        slot: &'a [u8],
+        page: &'a [u8],
         work: Option<&crate::background::CheckpointWorkContext>,
     ) -> Result<RelationalRowPageView<'a>, RelationalRowPagePublicationError> {
-        let digest = match work {
-            Some(work) => work.integrity(slot).map_err(root::checkpoint::work_error)?,
-            None => integrity_digest(slot),
+        if page.len() != descriptor.page_integrity.encoded_len as usize {
+            return Err(RelationalRowPagePublicationError::Corrupt(format!(
+                "row-page {} contains {} bytes, its descriptor declares {}",
+                descriptor.logical_page_id.get(),
+                page.len(),
+                descriptor.page_integrity.encoded_len
+            )));
+        }
+        let view = match work {
+            Some(work) => {
+                // Cooperative form of the codec's own integrity check.
+                if !crate::relational::row_page::verify_page_integrity_with_work_context(
+                    page, work,
+                )? {
+                    return Err(RelationalRowPagePublicationError::Corrupt(format!(
+                        "row-page {} checksum mismatch",
+                        descriptor.logical_page_id.get()
+                    )));
+                }
+                RelationalRowPageView::open_digest_verified(page, self.config.page_limits)?
+            }
+            None => RelationalRowPageView::open(page, self.config.page_limits)?,
         };
-        if digest.crc32c.get() != descriptor.slot_integrity.slot_crc32c
-            || digest.sha256 != descriptor.slot_integrity.slot_sha256
+        let (page_crc32c, page_sha256) = crate::relational::row_page::encoded_page_digest(page);
+        if page_crc32c != descriptor.page_integrity.page_crc32c
+            || page_sha256 != descriptor.page_integrity.page_sha256
         {
             return Err(RelationalRowPagePublicationError::Corrupt(format!(
-                "row-page {} slot checksum mismatch",
+                "row-page {} digest does not match its descriptor",
                 descriptor.logical_page_id.get()
             )));
         }
-        let view = RelationalRowPageView::open_slot(slot, self.config.page_limits)?;
         self.validate_page_identity(descriptor, &view)?;
         Ok(view)
     }
@@ -634,7 +637,7 @@ impl RelationalRowPageRootReader {
             || view.generation() != descriptor.physical_generation
             || view.source_commit_epoch() != descriptor.source_commit_epoch
             || view.row_count() != descriptor.row_count as usize
-            || view.encoded_len() != descriptor.slot_integrity.encoded_len as usize
+            || view.encoded_len() != descriptor.page_integrity.encoded_len as usize
             || view.lower_bound_bytes() != descriptor.lower_bound
             || view.upper_bound_bytes() != descriptor.upper_bound
         {

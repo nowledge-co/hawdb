@@ -367,7 +367,40 @@ impl RelationalRowPageSnapshotReader {
         let Some(prefix_upper) = lexicographic_prefix_upper_bound(&encoded_prefix) else {
             return Ok(false);
         };
-        Ok(descriptor.lower_bound.as_slice() >= prefix_upper.as_slice())
+        if descriptor.lower_bound.as_slice() >= prefix_upper.as_slice() {
+            return Ok(true);
+        }
+        // The selected page straddles the partition's end, which descriptor
+        // bounds alone cannot decide. Format v2 packs pages by bytes, so
+        // partition gaps fall inside pages far more often than at the old
+        // 256-row boundaries (#1521). Read the first base row at or after
+        // `lower` from that one page: the partition is absent at or after
+        // `lower` exactly when that row lies outside the partition. The page
+        // holds a row at or after `lower` because its upper bound does.
+        let mut first = None;
+        let mut hydration = RelationalHydrationBudget::default();
+        self.demand
+            .visit_projected_range(
+                RelationalRowPageProjectedRange {
+                    table,
+                    lower: std::ops::Bound::Included(lower),
+                    upper: std::ops::Bound::Unbounded,
+                    requested_fields: &[],
+                },
+                RelationalRowPageDemandReadLimits {
+                    max_pages: NonZeroUsize::MIN,
+                    max_rows: NonZeroUsize::MIN,
+                    ..RelationalRowPageDemandReadLimits::default()
+                },
+                &mut hydration,
+                task,
+                |row| {
+                    first = Some(row.primary_key);
+                    false
+                },
+            )
+            .map_err(|error| self.map_demand_error(error))?;
+        Ok(first.is_none_or(|key| !key.0.starts_with(partition_prefix.0.as_slice())))
     }
 
     pub fn has_overlay_overflow_root(&self) -> bool {

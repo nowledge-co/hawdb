@@ -47,6 +47,7 @@ fn streamed_page_relocation_preserves_rows_epochs_and_overflow_references() {
     .unwrap()
     .reference();
     let mut expected = Vec::new();
+    let mut offset = 0u64;
     for index in 0..3u64 {
         let mut original = page(index + 1, 1, 10, index as i64, index as i64);
         original.rows[0].row = RelationalRow::new(vec![
@@ -61,7 +62,9 @@ fn streamed_page_relocation_preserves_rows_epochs_and_overflow_references() {
         writer.write(&mut prepared).unwrap();
         assert_eq!(prepared.descriptor.logical_page_id, original.page_id);
         assert_eq!(prepared.descriptor.physical_generation, 2);
-        assert_eq!(prepared.descriptor.physical_slot, index);
+        // Format v2 packs exact-length pages back to back.
+        assert_eq!(prepared.descriptor.physical_offset, offset);
+        offset += u64::from(prepared.descriptor.page_integrity.encoded_len);
         assert_eq!(prepared.descriptor.source_commit_epoch, 10);
         assert_eq!(prepared.page.rows, original.rows);
         expected.push(prepared);
@@ -75,21 +78,16 @@ fn streamed_page_relocation_preserves_rows_epochs_and_overflow_references() {
         integrity_digest(&bytes).crc32c.get()
     );
     assert_eq!(artifact.encoded_sha256, integrity_digest(&bytes).sha256);
-    for (slot, expected) in bytes
-        .chunks_exact(config.page_limits.max_page_bytes.get())
-        .zip(expected)
-    {
-        let digest = integrity_digest(slot);
+    assert_eq!(artifact.encoded_len, offset);
+    for expected in expected {
+        let start = expected.descriptor.physical_offset as usize;
+        let page = &bytes[start..start + expected.descriptor.page_integrity.encoded_len as usize];
+        // The descriptor carries the page's own header digest.
+        let (crc32c, sha256) = crate::relational::row_page::encoded_page_digest(page);
+        assert_eq!(expected.descriptor.page_integrity.page_crc32c, crc32c);
+        assert_eq!(expected.descriptor.page_integrity.page_sha256, sha256);
         assert_eq!(
-            expected.descriptor.slot_integrity.slot_crc32c,
-            digest.crc32c.get()
-        );
-        assert_eq!(
-            expected.descriptor.slot_integrity.slot_sha256,
-            digest.sha256
-        );
-        assert_eq!(
-            ImmutableRelationalRowPage::decode_slot(slot, config.page_limits).unwrap(),
+            ImmutableRelationalRowPage::decode(page, config.page_limits).unwrap(),
             expected.page
         );
     }
@@ -148,9 +146,15 @@ fn publish_last_root_round_trips_with_a_concrete_refinement_trace() {
     assert_eq!(report.root_pages, 2);
     assert_eq!(report.reused_pages, 0);
     assert_eq!(report.events, COMPLETE_PUBLICATION_TRACE);
+    // Format v2 writes exactly the two encoded pages, back to back.
     assert_eq!(
         report.page_artifact_bytes,
-        2 * config.page_limits.max_page_bytes.get() as u64
+        page(1, 1, 10, 1, 2)
+            .encoded_len(config.page_limits)
+            .unwrap()
+            + page(2, 1, 10, 3, 4)
+                .encoded_len(config.page_limits)
+                .unwrap()
     );
 
     let reader = RelationalRowPageRootReader::open_latest(&directory, config)
@@ -170,8 +174,12 @@ fn publish_last_root_round_trips_with_a_concrete_refinement_trace() {
     let descriptors = collect_descriptors(&reader, "documents");
     assert_eq!(page_id_values(&descriptors), vec![1, 2]);
     assert_eq!(physical_generations(&descriptors), vec![1, 1]);
-    assert_eq!(descriptors[0].physical_slot, 0);
-    assert_eq!(descriptors[1].physical_slot, 1);
+    // Pages are packed back to back by exact length.
+    assert_eq!(descriptors[0].physical_offset, 0);
+    assert_eq!(
+        descriptors[1].physical_offset,
+        u64::from(descriptors[0].page_integrity.encoded_len)
+    );
     assert_eq!(
         fs::read(directory.join(RELATIONAL_ROW_PAGE_MANIFEST_FILE)).unwrap(),
         fs::read(directory.join(relational_row_page_manifest_generation_file(1))).unwrap()
@@ -425,21 +433,26 @@ fn incremental_publication_reuses_clean_pages_and_keeps_pinned_roots() {
     let current_descriptors = collect_descriptors(&current, "documents");
     assert_eq!(page_id_values(&current_descriptors), vec![1, 2, 3]);
     assert_eq!(physical_generations(&current_descriptors), vec![2, 1, 2]);
+    let inventory = &current.manifest().physical_generations;
     assert_eq!(
-        current.manifest().physical_generations,
-        vec![
-            RelationalRowPagePhysicalGeneration {
-                generation: 1,
-                allocated_pages: 2,
-                live_pages: 1,
-            },
-            RelationalRowPagePhysicalGeneration {
-                generation: 2,
-                allocated_pages: 2,
-                live_pages: 2,
-            },
-        ]
+        inventory
+            .iter()
+            .map(|entry| (entry.generation, entry.allocated_pages, entry.live_pages))
+            .collect::<Vec<_>>(),
+        vec![(1, 2, 1), (2, 2, 2)]
     );
+    // Occupancy is also kept in exact bytes: generation 1 keeps one of its
+    // two pages, and generation 2 is exactly its page artifact.
+    assert_eq!(
+        inventory[0].allocated_bytes,
+        pinned.manifest().page_artifact.encoded_len
+    );
+    assert!(inventory[0].live_bytes < inventory[0].allocated_bytes);
+    assert_eq!(
+        inventory[1].allocated_bytes,
+        current.manifest().page_artifact.encoded_len
+    );
+    assert_eq!(inventory[1].live_bytes, inventory[1].allocated_bytes);
 
     assert_eq!(pinned.manifest().generation, 1);
     let pinned_descriptors = collect_descriptors(&pinned, "documents");
@@ -499,7 +512,7 @@ fn physical_scrub_rejects_authenticated_occupancy_drift_and_old_file_growth() {
             changed.physical_generations[0].live_pages = 2;
             changed.physical_generations[1].live_pages = 1;
         } else {
-            changed.physical_generations[0].allocated_pages += 1;
+            changed.physical_generations[0].allocated_bytes += 1;
         }
         fs::write(
             &manifest_path,
@@ -680,8 +693,8 @@ fn candidate_compaction_fails_closed_on_limits_cancellation_and_corruption() {
             ..rewrite
         },
         RelationalRowPageRewriteConfig {
-            max_rewrite_bytes: NonZeroU64::new(config.page_limits.max_page_bytes.get() as u64)
-                .unwrap(),
+            // Smaller than any one encoded page.
+            max_rewrite_bytes: NonZeroU64::MIN,
             ..rewrite
         },
     ] {
@@ -812,8 +825,8 @@ fn relocated_page_inventory_is_independent_of_dirty_vector_limit() {
 }
 
 #[test]
-fn unaccounted_development_manifest_requires_recreation() {
-    let directory = unique_test_dir("unaccounted-manifest");
+fn v1_row_page_manifest_requires_recreation() {
+    let directory = unique_test_dir("v1-manifest");
     let config = RelationalRowPagePublicationConfig::default();
     RelationalRowPagePublisher::new(config)
         .publish(
@@ -825,13 +838,41 @@ fn unaccounted_development_manifest_requires_recreation() {
         )
         .unwrap();
     let path = directory.join(RELATIONAL_ROW_PAGE_MANIFEST_FILE);
+    // A fixed-slot v1 database is refused explicitly, whatever follows its
+    // magic, rather than being read as a corrupt v2 manifest.
     let mut encoded = fs::read(&path).unwrap();
-    encoded[10..12].copy_from_slice(&0u16.to_le_bytes());
-    fs::write(path, encoded).unwrap();
+    encoded[..8].copy_from_slice(b"SKRPGM01");
+    fs::write(&path, &encoded).unwrap();
+    let error = RelationalRowPageRootReader::open_latest(&directory, config).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            RelationalRowPagePublicationError::UnsupportedFormat(
+                hawdb_core::error::StorageFormatError::UnsupportedVersion {
+                    found: 1,
+                    supported: 2,
+                    ..
+                }
+            )
+        ),
+        "{error:?}"
+    );
+    assert!(error
+        .to_string()
+        .contains("recreate the development database"));
+    // Hosts see the typed unsupported-format error, not an integrity alarm.
+    assert!(matches!(
+        hawdb_core::HawDBError::from_storage_error(error),
+        hawdb_core::HawDBError::UnsupportedStorageFormat(_)
+    ));
+    // Any other version of the v2 manifest is unsupported, not v1.
+    encoded[..8].copy_from_slice(b"SKRPGM02");
+    encoded[8..10].copy_from_slice(&2u16.to_le_bytes());
+    fs::write(&path, &encoded).unwrap();
     assert!(
         matches!(RelationalRowPageRootReader::open_latest(&directory, config),
         Err(RelationalRowPagePublicationError::Corrupt(message))
-            if message.contains("recreate the development database"))
+            if message.contains("unsupported row-page manifest version 2"))
     );
     fs::remove_dir_all(directory).unwrap();
 }
@@ -1767,3 +1808,6 @@ mod checkpoint_preflight;
 
 #[path = "tests/checkpoint_reader.rs"]
 mod checkpoint_reader;
+
+#[path = "tests/format_v2.rs"]
+mod format_v2;

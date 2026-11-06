@@ -313,7 +313,8 @@ fn checkpoint_units_row_root_descriptor_preserves_corruption_range_and_truncatio
                     .clear();
             }
             10 => {
-                Arc::make_mut(&mut damaged.manifest).physical_generations[0].allocated_pages = 0;
+                // The descriptor range no longer fits its generation allocation.
+                Arc::make_mut(&mut damaged.manifest).physical_generations[0].allocated_bytes = 0;
             }
             _ => {
                 Arc::make_mut(&mut damaged.manifest).source_commit_epoch = 0;

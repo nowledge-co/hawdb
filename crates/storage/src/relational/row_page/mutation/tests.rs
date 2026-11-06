@@ -421,7 +421,8 @@ fn unique_test_dir(label: &str) -> PathBuf {
 }
 
 /// The packer before linear sizing: it encoded the whole candidate page after
-/// every row and split at the first row the codec rejected.
+/// every row and split at the first row the codec rejected or, with format v2,
+/// at the first row past the target page size.
 fn reference_pack(
     column_count: usize,
     digest: Sha256Digest,
@@ -446,7 +447,11 @@ fn reference_pack(
     for row in rows {
         let page = pending.get_or_insert_with(|| new_page(next_id));
         page.rows.push(row.clone());
-        if page.encode(limits).is_ok() {
+        // A page closes at the first row that the codec rejects or that grows
+        // a page already holding a row past the target (format v2).
+        if page.encode(limits).is_ok_and(|encoded| {
+            page.rows.len() == 1 || encoded.len() <= config.target_page_bytes.get()
+        }) {
             continue;
         }
         let row = page.rows.pop().unwrap();

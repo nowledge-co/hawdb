@@ -7,14 +7,16 @@ new backend, runtime, `io_uring`, or independent commit selector is introduced.
 
 ## Selection and publication
 
-The active root carries a sorted physical-generation inventory: allocated slots
-and live descriptors for each referenced page file. A generation is selected
-when `live_pages * 100 <= allocated_pages * max_live_ratio_percent` (default 50).
+The active root carries a sorted physical-generation inventory: allocated and
+live pages and bytes for each referenced page file. Row-page format v2 packs
+exact-length pages, so a generation is selected by bytes, when
+`live_bytes * 100 <= allocated_bytes * max_live_ratio_percent` (default 50).
 Ratios use integer arithmetic. Dirty/deleted pages are handled by ordinary
 checkpoint planning; surviving selected pages are verified and moved one at a
 time during the streamed root merge. Relocation preserves logical page IDs,
 source commit epochs, schemas, keys, rows, and overflow references. It changes
-physical generation/slot identity and recomputes encoded integrity.
+physical generation/offset identity and recomputes encoded integrity. A
+relocated page is charged its encoded length against the rewrite byte cap.
 
 The row publisher only persists a candidate. The canonical checkpoint manifest
 selects the complete row/overflow/checkpoint/WAL generation last. Preparation
@@ -58,9 +60,11 @@ Pinned or cleanup-pending historical files are separate from active allocation.
 
 ## Development format
 
-This remains v1. The integrity-bound row manifest now requires the physical
-inventory flag and trailer. Older development-only manifests fail with an
-explicit database-recreation message; absent allocation never means zero.
+Row-page format v2 (`SKRPGM02`, #1521) stores exact-length pages back to back
+and records allocated and live bytes per physical generation. Fixed-slot v1
+(`SKRPGM01`) manifests fail with the typed unsupported-storage-format error
+and a database-recreation message;
+absent allocation never means zero.
 There is no compatibility migration for old greenfield databases. The logical
 root-set digest does not incorporate physical placement. Stable/GA inclusion
 policy is unchanged.
@@ -68,8 +72,8 @@ policy is unchanged.
 ## Verification
 
 The facade churn regression creates 16 user tables plus the schema registry,
-freezes a different page in each generation, and compares 137 allocated slots
-with 17 live slots. It verifies old pinned reads, exact 17-slot allocation after
+freezes a different page in each generation, and compares 137 allocated pages
+with 17 live pages. It verifies old pinned reads, exact 17-page allocation after
 compaction, actual file-byte reclamation after unpin/checkpoint, scrub, and reopen
 in both materialized and authoritative out-of-core modes. Other regressions
 exercise canonical publication failpoints, failed-candidate retries, governor

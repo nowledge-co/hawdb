@@ -15,10 +15,10 @@
 use super::compaction::RowPageRewriteControls;
 use super::publisher::{PreparedDirtyPage, PreparedTableDelta};
 use super::{
-    durability, RelationalRowPageArtifactMetadata, RelationalRowPagePhysicalGeneration,
-    RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
-    RelationalRowPageRootDescriptor, RelationalRowPageRootReader, RelationalRowPageSlotIntegrity,
-    RelationalRowPageTableRoot,
+    durability, RelationalRowPageArtifactMetadata, RelationalRowPageIntegrity,
+    RelationalRowPagePhysicalGeneration, RelationalRowPagePublicationConfig,
+    RelationalRowPagePublicationError, RelationalRowPageRootDescriptor,
+    RelationalRowPageRootReader, RelationalRowPageTableRoot,
 };
 use crate::file_io::File;
 use crate::relational::{
@@ -98,24 +98,28 @@ pub(super) fn prepare_dirty_page_with_work_context(
     let descriptor = RelationalRowPageRootDescriptor {
         logical_page_id: page.page_id,
         physical_generation: page.generation,
-        physical_slot: 0,
+        physical_offset: 0,
         source_commit_epoch: page.source_commit_epoch,
         row_count,
         lower_bound,
         upper_bound,
-        slot_integrity: RelationalRowPageSlotIntegrity {
+        page_integrity: RelationalRowPageIntegrity {
             encoded_len: 0,
-            slot_crc32c: 0,
-            slot_sha256: Sha256Digest::from_bytes([0; SHA256_BYTES]),
+            page_crc32c: 0,
+            page_sha256: Sha256Digest::from_bytes([0; SHA256_BYTES]),
         },
     };
     Ok(PreparedDirtyPage { page, descriptor })
 }
 
+/// Appends exact-length encoded pages back to back (format v2). Each page's
+/// descriptor records its byte offset, length and the page's own digest; the
+/// artifact as a whole keeps its CRC32C/SHA-256 metadata.
 pub(super) struct PageArtifactWriter {
     writer: BufWriter<File>,
     hasher: IntegrityHasher,
     page_count: u64,
+    byte_count: u64,
     limits: RelationalRowPageLimits,
     work: Option<crate::background::CheckpointWorkContext>,
 }
@@ -126,6 +130,7 @@ impl PageArtifactWriter {
             writer: BufWriter::new(file),
             hasher: IntegrityHasher::new(),
             page_count: 0,
+            byte_count: 0,
             limits,
             work: None,
         }
@@ -144,32 +149,30 @@ impl PageArtifactWriter {
         page: &mut PreparedDirtyPage,
     ) -> Result<(), RelationalRowPagePublicationError> {
         let next_page_count = self.page_count.checked_add(1).ok_or_else(|| {
-            RelationalRowPagePublicationError::Admission("row-page slot count overflow".to_string())
+            RelationalRowPagePublicationError::Admission("row-page count overflow".to_string())
         })?;
-        next_page_count
-            .checked_mul(self.limits.max_page_bytes.get() as u64)
-            .ok_or_else(|| {
-                RelationalRowPagePublicationError::Admission(
-                    "row-page artifact length overflow".to_string(),
-                )
-            })?;
-        let mut encoded_slot = match &self.work {
+        let encoded = match &self.work {
             Some(work) => {
                 crate::relational::row_page::checkpoint::encode(&page.page, self.limits, work)?
             }
             None => page.page.encode(self.limits)?,
         };
         // Dirty budgets charge `encoded_len`; it must equal the bytes written.
-        debug_assert_eq!(
-            page.page.encoded_len(self.limits)?,
-            encoded_slot.len() as u64
-        );
-        let encoded_page_len = u32::try_from(encoded_slot.len()).map_err(|_| {
+        debug_assert_eq!(page.page.encoded_len(self.limits)?, encoded.len() as u64);
+        let encoded_page_len = u32::try_from(encoded.len()).map_err(|_| {
             RelationalRowPagePublicationError::Admission(
                 "encoded row page length does not fit in u32".to_string(),
             )
         })?;
-        let view = RelationalRowPageView::open(&encoded_slot, self.limits)?;
+        let next_byte_count = self
+            .byte_count
+            .checked_add(encoded.len() as u64)
+            .ok_or_else(|| {
+                RelationalRowPagePublicationError::Admission(
+                    "row-page artifact length overflow".to_string(),
+                )
+            })?;
+        let view = RelationalRowPageView::open(&encoded, self.limits)?;
         if view.lower_bound_bytes() != page.descriptor.lower_bound
             || view.upper_bound_bytes() != page.descriptor.upper_bound
             || view.row_count() as u32 != page.descriptor.row_count
@@ -182,33 +185,23 @@ impl PageArtifactWriter {
                 page.descriptor.logical_page_id.get()
             )));
         }
-        let slot_digest = if let Some(work) = &self.work {
-            checkpoint::pad_slot(&mut encoded_slot, self.limits.max_page_bytes.get(), work)?;
-            let digest = work
-                .integrity(&encoded_slot)
-                .map_err(checkpoint::work_error)?;
-            checkpoint::write_slot(&mut self.writer, &mut self.hasher, &encoded_slot, work)?;
-            RelationalRowPageArtifactMetadata {
-                encoded_len: encoded_slot.len() as u64,
-                encoded_crc32c: digest.crc32c.get(),
-                encoded_sha256: digest.sha256,
-            }
+        let (page_crc32c, page_sha256) = crate::relational::row_page::encoded_page_digest(&encoded);
+        if let Some(work) = &self.work {
+            checkpoint::write_page(&mut self.writer, &mut self.hasher, &encoded, work)?;
         } else {
-            encoded_slot.resize(self.limits.max_page_bytes.get(), 0);
-            let digest = digest_bytes(&encoded_slot);
             self.writer
-                .write_all(&encoded_slot)
-                .map_err(durability("write row-page slot"))?;
-            self.hasher.update(&encoded_slot);
-            digest
-        };
-        page.descriptor.physical_slot = self.page_count;
-        page.descriptor.slot_integrity = RelationalRowPageSlotIntegrity {
+                .write_all(&encoded)
+                .map_err(durability("write row page"))?;
+            self.hasher.update(&encoded);
+        }
+        page.descriptor.physical_offset = self.byte_count;
+        page.descriptor.page_integrity = RelationalRowPageIntegrity {
             encoded_len: encoded_page_len,
-            slot_crc32c: slot_digest.encoded_crc32c,
-            slot_sha256: slot_digest.encoded_sha256,
+            page_crc32c,
+            page_sha256,
         };
         self.page_count = next_page_count;
+        self.byte_count = next_byte_count;
         Ok(())
     }
 
@@ -226,11 +219,10 @@ impl PageArtifactWriter {
                 .sync_all()
                 .map_err(durability("sync row-page artifact"))?;
         }
-        let encoded_len = self.page_count * self.limits.max_page_bytes.get() as u64;
         let digest = self.hasher.finish();
         Ok((
             RelationalRowPageArtifactMetadata {
-                encoded_len,
+                encoded_len: self.byte_count,
                 encoded_crc32c: digest.crc32c.get(),
                 encoded_sha256: digest.sha256,
             },
@@ -281,6 +273,7 @@ pub(super) fn write_root_artifacts(
         pages,
         rewrite,
         relocated_page_count: 0,
+        relocated_bytes: 0,
     };
     // Occupancy is bounded by the selected manifest, not by the number of pages.
     // Recount live descriptors while merging, retaining each file's allocation.
@@ -292,7 +285,9 @@ pub(super) fn write_root_artifacts(
                 .push(RelationalRowPagePhysicalGeneration {
                     generation: entry.generation,
                     allocated_pages: entry.allocated_pages,
+                    allocated_bytes: entry.allocated_bytes,
                     live_pages: 0,
+                    live_bytes: 0,
                 });
             if let Some(unit) = unit {
                 unit.finish();
@@ -305,7 +300,9 @@ pub(super) fn write_root_artifacts(
         .push(RelationalRowPagePhysicalGeneration {
             generation,
             allocated_pages: 0,
+            allocated_bytes: 0,
             live_pages: 0,
+            live_bytes: 0,
         });
     if let Some(unit) = unit {
         unit.finish();
@@ -635,6 +632,7 @@ struct RootWriter<'a> {
     work: Option<crate::background::CheckpointWorkContext>,
     rewrite: Option<RowPageRewriteControls<'a>>,
     relocated_page_count: u64,
+    relocated_bytes: u64,
 }
 
 impl RootWriter<'_> {
@@ -706,8 +704,9 @@ impl RootWriter<'_> {
                 "row-page relocation count overflow".to_string(),
             )
         })?;
-        let rewrite_bytes = next_count
-            .checked_mul(self.config.page_limits.max_page_bytes.get() as u64)
+        let rewrite_bytes = self
+            .relocated_bytes
+            .checked_add(u64::from(descriptor.page_integrity.encoded_len))
             .ok_or_else(|| {
                 RelationalRowPagePublicationError::Admission(
                     "row-page relocation byte count overflow".to_string(),
@@ -728,6 +727,7 @@ impl RootWriter<'_> {
         self.pages.write(&mut page)?;
         self.write_descriptor(&page.descriptor, bounds)?;
         self.relocated_page_count = next_count;
+        self.relocated_bytes = rewrite_bytes;
         Ok(false)
     }
 
@@ -762,15 +762,34 @@ impl RootWriter<'_> {
                 )
             })?;
         let occupancy = &mut self.physical_generations[index];
+        let page_bytes = u64::from(descriptor.page_integrity.encoded_len);
         occupancy.live_pages = occupancy.live_pages.checked_add(1).ok_or_else(|| {
             RelationalRowPagePublicationError::Admission(
                 "row-page live-page count overflow".to_string(),
             )
         })?;
+        occupancy.live_bytes = occupancy
+            .live_bytes
+            .checked_add(page_bytes)
+            .ok_or_else(|| {
+                RelationalRowPagePublicationError::Admission(
+                    "row-page live-byte count overflow".to_string(),
+                )
+            })?;
+        let page_end = descriptor
+            .physical_offset
+            .checked_add(page_bytes)
+            .ok_or_else(|| {
+                RelationalRowPagePublicationError::Corrupt(
+                    "row-page descriptor range overflows".to_string(),
+                )
+            })?;
         if occupancy.generation == self.generation {
             occupancy.allocated_pages = occupancy.live_pages;
+            occupancy.allocated_bytes = occupancy.live_bytes;
         } else if occupancy.live_pages > occupancy.allocated_pages
-            || descriptor.physical_slot >= occupancy.allocated_pages
+            || occupancy.live_bytes > occupancy.allocated_bytes
+            || page_end > occupancy.allocated_bytes
         {
             return Err(RelationalRowPagePublicationError::Corrupt(
                 "row-page root exceeds the accounted physical allocation".to_string(),
@@ -804,16 +823,16 @@ impl RootWriter<'_> {
         let wire = WireDescriptor {
             logical_page_id: descriptor.logical_page_id.get(),
             physical_generation: descriptor.physical_generation,
-            physical_slot: descriptor.physical_slot,
+            physical_offset: descriptor.physical_offset,
             source_commit_epoch: descriptor.source_commit_epoch,
             row_count: descriptor.row_count,
-            encoded_len: descriptor.slot_integrity.encoded_len,
+            encoded_len: descriptor.page_integrity.encoded_len,
             lower_offset,
             lower_len: descriptor.lower_bound.len() as u32,
             upper_offset,
             upper_len: descriptor.upper_bound.len() as u32,
-            slot_crc32c: descriptor.slot_integrity.slot_crc32c,
-            slot_sha256: descriptor.slot_integrity.slot_sha256,
+            page_crc32c: descriptor.page_integrity.page_crc32c,
+            page_sha256: descriptor.page_integrity.page_sha256,
             binding_crc32c: 0,
             binding_sha256: Sha256Digest::from_bytes([0; SHA256_BYTES]),
         };
@@ -981,15 +1000,4 @@ struct FinishedRootWriter {
     key_artifact: RelationalRowPageArtifactMetadata,
     physical_generations: Vec<RelationalRowPagePhysicalGeneration>,
     relocated_page_count: u64,
-}
-
-fn digest_bytes(bytes: &[u8]) -> RelationalRowPageArtifactMetadata {
-    let mut hasher = IntegrityHasher::new();
-    hasher.update(bytes);
-    let digest = hasher.finish();
-    RelationalRowPageArtifactMetadata {
-        encoded_len: bytes.len() as u64,
-        encoded_crc32c: digest.crc32c.get(),
-        encoded_sha256: digest.sha256,
-    }
 }
