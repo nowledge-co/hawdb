@@ -228,6 +228,67 @@ impl<'a> EmbeddedReadSnapshot<'a> {
         )
     }
 
+    /// Generates typed Search candidates from the projection generation pinned
+    /// by this snapshot and charges the returned hits to its cumulative budget.
+    ///
+    /// Projection metadata filters are applied before candidate generation by
+    /// the Search runtime. The returned hits retain their qualified `kind` and
+    /// `external_id`, so callers can hydrate canonical graph data without
+    /// parsing projection document IDs. Graph and relational reads performed
+    /// after this call keep using the same immutable publication.
+    pub fn search_candidates(
+        &mut self,
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchResultSet> {
+        Ok(self.search_candidates_with_report(request)?.result)
+    }
+
+    /// Equivalent to [`Self::search_candidates`] and preserves candidate,
+    /// truncation, backend, and projection-freshness evidence.
+    pub fn search_candidates_with_report(
+        &mut self,
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
+        self.task_context
+            .checkpoint()
+            .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
+        let _ = self.statement_row_budget(request.limit.max(1))?;
+        let _ = self.remaining_payload_bytes()?;
+        let max_working_bytes = self
+            .task_context
+            .memory_reservation()
+            .map(|reservation| usize::try_from(reservation.memory_bytes()).unwrap_or(usize::MAX))
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "bounded Search candidates require admitted working memory".into(),
+                )
+            })?;
+        let execution =
+            VectorSearchExecutionOptions::admitted(max_working_bytes, &self.task_context);
+        let output = match (
+            self.external.projection,
+            self.external.out_of_core_projection,
+        ) {
+            (Some(projection), None) => {
+                projection.try_search_candidates_with_report_context(request, execution)?
+            }
+            (None, Some(projection)) => projection
+                .search_candidates_with_report_context(request, execution)?
+                .into(),
+            (None, None) => return Err(missing_search_projection_error()),
+            (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
+        };
+        let rows = output.result.hits.len();
+        let payload_bytes = output
+            .result
+            .hits
+            .iter()
+            .map(crate::api::search_hit_payload_bytes)
+            .fold(0usize, usize::saturating_add);
+        self.consume(rows, payload_bytes)?;
+        Ok(output)
+    }
+
     /// Visits the complete current projection under this snapshot's retained pin.
     /// Both resident and out-of-core visitors own an immutable generation and
     /// may overlap writers without retaining the store read guard.

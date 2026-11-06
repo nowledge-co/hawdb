@@ -1151,7 +1151,7 @@ pub(super) fn matched_span_payload_bytes(span: &SearchMatchedSpan) -> usize {
         .saturating_add(span.term.len())
 }
 
-pub(super) fn search_hit_payload_bytes(hit: &crate::search::SearchHit) -> usize {
+pub(crate) fn search_hit_payload_bytes(hit: &crate::search::SearchHit) -> usize {
     hit.id
         .len()
         .saturating_add(option_string_bytes(&hit.kind))

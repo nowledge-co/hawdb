@@ -23,6 +23,21 @@ minimum-preservation cases use the existing component test owners.
 No new execution lane, profile, fixture amplification or timeout is introduced.
 See [the contract and explicit SQL scope](specs/MEM_QUERY_COMPATIBILITY_9338.md).
 
+Snapshot-bound typed Search candidates (`nowledge-co/hawdb#1567`) extend
+`embedded_store_app_read_snapshot_tests` in the existing
+`//:hawdb_unit_general_tests` owner. The fixture places a Memory behind more
+than `k` nearer Source vectors, including a Source with the same external ID,
+and proves that projection `kind` filtering happens before vector Top-K while
+returning qualified `kind`/`external_id` identities. Resident and out-of-core
+projections must return the same hit and freshness epoch before same-snapshot
+graph hydration. Separate guards cover cumulative candidate-plus-graph row and
+payload refusal, caller cancellation, and graph-only snapshots without a Search
+pin; the same task-context guard covers deadline refusal. Replay with
+`cargo test --locked -p hawdb --lib typed_snapshot_candidates -- --test-threads=1`
+or the owning Bazel target with
+`--test_arg=typed_snapshot_candidates`. No new lane, profile, fixture
+amplification or timeout is introduced.
+
 The same Mem query owner also covers PR 1504 review optimizations: invariant
 regexp_replace validation on empty scans, cache rebinding across pattern and
 replacement values (including an invalid-pattern failure), row-dependent patterns,
