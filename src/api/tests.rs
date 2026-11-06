@@ -145,6 +145,7 @@ mod order_by_expressions;
 mod ordered_composite;
 mod ordered_range;
 mod out_of_core_labeled_expand;
+mod out_of_core_relationship_set;
 mod pagerank;
 mod pattern_expressions;
 mod point_read_reuse;
