@@ -128,7 +128,114 @@ pub(super) struct PlanCacheKey {
     access_control: Option<AccessControlPlanCacheKey>,
     scoring: Option<ScoringPlanCacheKey>,
     point_statistics: Option<PointStatisticsKey>,
-    statistics_values: BTreeMap<Value, Value>,
+    statistics_values: BTreeMap<Value, StatisticsParameterValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum StatisticsParameterValue {
+    Exact(Value),
+    OneRow,
+    McvFrequency(u64),
+}
+
+impl hawdb_core::RetainedHeapBytes for StatisticsParameterValue {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Exact(value) => hawdb_core::RetainedHeapBytes::retained_heap_bytes(value),
+            Self::OneRow | Self::McvFrequency(_) => Some(0),
+        }
+    }
+}
+
+#[derive(Default)]
+struct StatisticsParameters {
+    values: BTreeMap<Value, Value>,
+    classes: BTreeMap<Value, StatisticsParameterValue>,
+}
+
+fn single_node_statistics_filter(mut logical: &LogicalPlan) -> Option<(&Predicate, &str, &str)> {
+    while let LogicalPlan::Project { input, .. }
+    | LogicalPlan::Sort { input, .. }
+    | LogicalPlan::Limit { input, .. }
+    | LogicalPlan::Distinct { input } = logical
+    {
+        logical = input;
+    }
+    let LogicalPlan::Filter { predicate, input } = logical else {
+        return None;
+    };
+    let LogicalPlan::NodeScan { variable, label } = input.as_ref() else {
+        return None;
+    };
+    Some((predicate, variable, label))
+}
+
+fn indexed_equality_statistics_parameters(
+    logical: &LogicalPlan,
+    catalog: &Catalog,
+    statistics: &hawdb_core::GraphStatistics,
+    values: &BTreeMap<Value, Value>,
+) -> StatisticsParameters {
+    let Some((predicate, variable, label)) = single_node_statistics_filter(logical) else {
+        return StatisticsParameters::default();
+    };
+    let Some(label) = catalog.label_id(label) else {
+        return StatisticsParameters::default();
+    };
+    let mut result = StatisticsParameters::default();
+    let mut pending = vec![predicate];
+    while let Some(predicate) = pending.pop() {
+        match predicate {
+            Predicate::And(parts) => pending.extend(parts),
+            Predicate::PropertyEq {
+                variable: candidate,
+                property,
+                value,
+            } if candidate == variable && catalog.has_scalar_property_index(label, property) => {
+                let Some(actual) = values.get(value) else {
+                    continue;
+                };
+                let key = (label, property.clone());
+                let Some(histogram) = statistics.property_distributions.get(&key) else {
+                    continue;
+                };
+                let class = if result.classes.contains_key(value) {
+                    // A shared marker may constrain multiple columns. Keep its
+                    // exact identity instead of collapsing different conditionals.
+                    StatisticsParameterValue::Exact(actual.clone())
+                } else if histogram
+                    .equality(
+                        actual,
+                        statistics
+                            .label_counts
+                            .get(&label)
+                            .copied()
+                            .unwrap_or(histogram.population_count),
+                        statistics.property_distinct_counts.get(&key).copied(),
+                    )
+                    .rows
+                    <= 1
+                {
+                    // Every smaller input also has the same planning floor;
+                    // this is not an existence or uniqueness proof.
+                    StatisticsParameterValue::OneRow
+                } else if let Ok(index) = histogram
+                    .most_common
+                    .binary_search_by(|entry| entry.value.cmp(actual))
+                {
+                    StatisticsParameterValue::McvFrequency(
+                        histogram.most_common[index].sample_count,
+                    )
+                } else {
+                    StatisticsParameterValue::Exact(actual.clone())
+                };
+                result.values.insert(value.clone(), actual.clone());
+                result.classes.insert(value.clone(), class);
+            }
+            _ => {}
+        }
+    }
+    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -839,23 +946,31 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
                 .is_some_and(|plan| tracks_property_proofs(plan.logical())),
         )
     });
-    let statistics_values = if point_statistics.is_none()
-        && context
-            .planning_cache
-            .borrow()
-            .statistics
-            .as_ref()
-            .is_some_and(|statistics| {
-                !statistics.property_distributions.is_empty()
-                    || !statistics.rel_property_distributions.is_empty()
-            }) {
-        parameterized
-            .as_ref()
-            .and_then(|plan| parameter_statistics_values(plan, parameters))
-            .unwrap_or_default()
-    } else {
-        BTreeMap::new()
+    let collect_statistics_parameters = || {
+        if point_statistics.is_none() && context.scoring.is_none() {
+            parameterized
+                .as_ref()
+                .and_then(|plan| {
+                    single_node_statistics_filter(plan.logical())?;
+                    let planning = context.planning_cache.borrow();
+                    let statistics = planning.statistics.as_ref()?;
+                    if statistics.property_distributions.is_empty() {
+                        return None;
+                    }
+                    let values = parameter_statistics_values(plan, parameters)?;
+                    Some(indexed_equality_statistics_parameters(
+                        plan.logical(),
+                        context.catalog,
+                        statistics,
+                        &values,
+                    ))
+                })
+                .unwrap_or_default()
+        } else {
+            StatisticsParameters::default()
+        }
     };
+    let mut statistics_parameters = collect_statistics_parameters();
     let mut key = parameterized
         .as_ref()
         .filter(|_| physical_cache_mode == PlanCacheMode::Use)
@@ -869,7 +984,7 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
             access_control: access_control_cache_key,
             scoring: context.scoring.map(BoundScoringRequest::cache_key),
             point_statistics: point_statistics.as_ref().map(PointStatisticsKey::from),
-            statistics_values: statistics_values.clone(),
+            statistics_values: statistics_parameters.classes.clone(),
         });
     if physical_cache_mode == PlanCacheMode::Use {
         let key = key.as_ref().expect("cache key exists in use mode");
@@ -942,6 +1057,12 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
         point_statistics.as_ref(),
         environment_hint.as_ref(),
     );
+    // A miss can publish fresher statistics. Bind both costing and the cache
+    // class to that same generation rather than the pre-lookup snapshot.
+    statistics_parameters = collect_statistics_parameters();
+    if let Some(key) = key.as_mut() {
+        key.statistics_values = statistics_parameters.classes.clone();
+    }
     // Shape proofs are needed only on an ordered-query miss. Point queries and
     // all cache hits retain the shared catalog without cloning it.
     let has_parameter_slots = parameterized
@@ -954,19 +1075,20 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
             .as_ref()
             .is_some_and(|proofs| !proofs.is_empty())
         && ordered_query_shape(&logical);
-    let query_catalog = (needs_type_proofs || !statistics_values.is_empty()).then(|| {
-        catalog_access
-            .catalog
-            .as_ref()
-            .clone()
-            .with_statistics_parameter_values(statistics_values.clone())
-            .with_parameter_scalar_types(parameter_scalar_types(
-                parameterized
-                    .as_ref()
-                    .expect("parameter proofs require a parameterized plan"),
-                parameters,
-            ))
-    });
+    let query_catalog =
+        (needs_type_proofs || !statistics_parameters.values.is_empty()).then(|| {
+            catalog_access
+                .catalog
+                .as_ref()
+                .clone()
+                .with_statistics_parameter_values(statistics_parameters.values.clone())
+                .with_parameter_scalar_types(parameter_scalar_types(
+                    parameterized
+                        .as_ref()
+                        .expect("parameter proofs require a parameterized plan"),
+                    parameters,
+                ))
+        });
     let planning_catalog = query_catalog.as_ref().unwrap_or(&catalog_access.catalog);
     let logical_root = LogicalPlanRoot::new(logical);
     let physical_root = query_optimizer
@@ -1411,6 +1533,49 @@ pub(super) fn statement_uses_plan_cache(statement: &cypher::Statement) -> bool {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn mcv_cache_classes_share_equal_frequency_points_and_preserve_generic_shapes() {
+        let mut catalog = Catalog::default();
+        let label = catalog.get_or_create_label("Memory");
+        catalog.get_or_create_property_index(label, "space_id");
+        let histogram = hawdb_core::CompressedHistogram::from_sample(
+            201,
+            201,
+            0,
+            0,
+            std::iter::repeat_n(Value::String("hot".into()), 190)
+                .chain(std::iter::repeat_n(Value::String("cold".into()), 5))
+                .chain(std::iter::repeat_n(Value::String("other".into()), 5))
+                .chain(std::iter::once(Value::String("tiny".into())))
+                .collect(),
+        )
+        .unwrap();
+        let statistics = hawdb_core::GraphStatistics {
+            property_distributions: BTreeMap::from([((label, "space_id".into()), histogram)]),
+            ..Default::default()
+        };
+        let classes = |query: &str, value: &str| {
+            let statement = cypher::parse(query).unwrap();
+            let parameters = BTreeMap::from([("space".into(), Value::String(value.into()))]);
+            let plan = parameterize_logical_plan(&statement, &parameters).unwrap();
+            let values = parameter_statistics_values(&plan, &parameters).unwrap();
+            indexed_equality_statistics_parameters(plan.logical(), &catalog, &statistics, &values)
+                .classes
+        };
+        let equality = "MATCH (m:Memory) WHERE m.space_id = $space RETURN m.id AS id";
+        assert_eq!(classes(equality, "cold"), classes(equality, "other"));
+        assert!(matches!(
+            classes(equality, "cold").values().next(),
+            Some(StatisticsParameterValue::McvFrequency(5))
+        ));
+        assert_ne!(classes(equality, "hot"), classes(equality, "cold"));
+        assert_ne!(classes(equality, "absent"), classes(equality, "cold"));
+        assert_eq!(classes(equality, "tiny"), classes(equality, "absent"));
+        let range = "MATCH (m:Memory) WHERE m.space_id >= $space RETURN m.id AS id";
+        assert!(classes(range, "cold").is_empty());
+        assert!(classes(range, "other").is_empty());
+    }
 
     fn binding_parameters(length: usize, nullable: bool) -> BTreeMap<String, Value> {
         BTreeMap::from([(

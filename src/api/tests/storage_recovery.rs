@@ -1014,13 +1014,41 @@ fn external_optimizer_statistics_refresh_spills_and_persists_exact_stats() {
             },
         )
         .unwrap();
-        assert_eq!(db.statistics().unwrap(), refreshed_statistics);
+        let statistics = db.statistics().unwrap();
+        // The 8-KiB external budget omits row reservoirs; materialized capture
+        // can rebuild that optional family while preserving every legacy field.
+        assert!(refreshed_statistics.property_distributions.is_empty());
+        assert!(refreshed_statistics.rel_property_distributions.is_empty());
+        let id_distribution = statistics
+            .property_distributions
+            .iter()
+            .find(|((_, property), histogram)| {
+                property == "id" && histogram.population_count == 130
+            })
+            .unwrap()
+            .1;
+        assert_eq!(
+            id_distribution
+                .equality(&Value::String("filler".into()), 130, Some(3))
+                .rows,
+            128
+        );
+        assert!(!statistics
+            .property_distributions
+            .keys()
+            .any(|(_, property)| property == "body" || property == "mixed_value"));
+        let mut legacy = statistics;
+        legacy.property_distributions.clear();
+        legacy.rel_property_distributions.clear();
+        assert_eq!(legacy, refreshed_statistics);
     }
 
     {
         let db = Database::open_with_config(&path, config).unwrap();
         let statistics = db.statistics().unwrap();
         assert!(statistics.advanced_statistics_complete);
+        assert!(statistics.property_distributions.is_empty());
+        assert!(statistics.rel_property_distributions.is_empty());
         assert_eq!(
             statistics
                 .rel_property_distinct_counts

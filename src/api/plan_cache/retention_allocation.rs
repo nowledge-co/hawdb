@@ -131,7 +131,7 @@ fn cached(
         normalized_query: query.to_owned(),
         statistics_values: BTreeMap::from([(
             Value::String("stat-marker".repeat(16)),
-            Value::String("hot-value".repeat(64)),
+            StatisticsParameterValue::Exact(Value::String("hot-value".repeat(64))),
         )]),
         parameters: parameterized.cache_key().clone(),
         environment: OptimizerEnvironmentKey {

@@ -98,6 +98,10 @@ Compressed histogram ownership stays in existing lanes:
 - `//crates/plan-cache:hawdb_plan_cache_tests`: statistics marker rebinding and
   scalar-count/payload refusal. Existing physical-key retention measurement
   includes statistical bindings under its unchanged isolated owner.
+- Existing root plan-cache tests check equal-frequency MCV point classes,
+  distinct hot/cold/unobserved classes, generic range templates and the unchanged
+  ACL scope-rebinding cache contract. The 8-KiB external recovery fixture compares every legacy field
+  and separately checks optional distribution omission versus materialized rebuild.
 - `//:hawdb_unit_general_tests`: `api::tests::compressed_histogram` owns hot/cold
   physical-cache variants and complete results, update/delete with old readers,
   external refresh, missing values and checkpoint reopen. Minimal/default

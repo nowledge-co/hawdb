@@ -88,9 +88,22 @@ Neither zero histogram mass nor sample absence proves semantic emptiness,
 uniqueness, authorization, or a safe execution-memory bound.
 
 Parameter templates retain executable rebinding. A bounded marker-to-value map
-feeds costing, and the physical cache key includes that map whenever distributions
-are available. Hot and cold values therefore cannot reuse each other's physical
-variant. Oversized maps use generic estimates; existing entry/byte cache limits
+feeds indexed equality planning for a single-node filter under projection,
+sorting, limiting or distinct, including equality conjuncts. Only those predicate
+slots participate; projection, ordering and unrelated parameters retain their
+existing cache contract. Scoring, complex pipelines, IN and range templates
+retain generic parameter planning in this first delivery. Literal predicates and
+bound qualification/diagnostics still use their available histogram estimates.
+
+The physical cache key includes the admitted bindings' statistical identity.
+A node equality groups observed MCV values
+by equal sample frequency: their costs are identical at every input cardinality,
+so they can share a template while executable values and ACL scopes are rebound.
+Estimates at the one-row planning floor also share one class, including across
+unobserved values; that does not prove existence or absence. Other unobserved
+values and shared multi-column markers retain exact statistical identity.
+Hot and cold frequencies use separate physical variants. Oversized
+maps use generic estimates; existing entry/byte cache limits
 still apply. Statistics publication invalidates plans through the existing epoch
 contract. Statistics usage decisions expose source, sample size and population.
 
