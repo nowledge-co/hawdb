@@ -1,6 +1,6 @@
 # Python test dependencies for the Bazel runner; no runtime Python dependencies.
-pytest==9.1.1
+pytest==9.2.0
 # pytest's Windows dependency, included so the same lock works on every host.
 colorama==0.4.6
 # The optional `hawdb[pydantic]` extra, for its own test target.
-pydantic==2.14.1
+pydantic==2.14.2
