@@ -495,7 +495,7 @@ fn collect_append_predicates(
         .find(|column| column.name == left.name)
         .expect("strict append keys reference schema columns");
     if matches!(value, RelationalValue::Null | RelationalValue::Overflow(_))
-        || value.scalar_type() != Some(column.scalar_type)
+        || !column.scalar_type.holds(value.as_ref())
     {
         return Err(HawDBError::Semantic(format!(
             "strict append {key_kind} key {} expects {:?}",
@@ -692,6 +692,8 @@ fn append_value_to_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
         RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
         RelationalValue::Vector(value) => Ok(Value::Vector(value.clone())),
+        RelationalValue::Timestamp(value) => hawdb_core::sql_timestamp::local_value(*value),
+        RelationalValue::TimestampTz(value) => hawdb_core::sql_timestamp::zoned_value(*value),
         RelationalValue::Overflow(_) => Err(HawDBError::StorageIntegrity(
             "strict append row contains an overflow reference".to_string(),
         )),

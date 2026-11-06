@@ -97,6 +97,8 @@ pub(crate) fn scalar_tag(kind: RelationalScalarType) -> u8 {
         RelationalScalarType::Uuid => 6,
         RelationalScalarType::Vector(_) => 7,
         RelationalScalarType::Decimal(_) => 8,
+        RelationalScalarType::Timestamp(_) => 9,
+        RelationalScalarType::TimestampTz(_) => 10,
     }
 }
 
@@ -110,6 +112,14 @@ pub(crate) fn value(sink: &mut impl Sink, item: &RelationalValue) -> Result<(), 
         }
         RelationalValue::Decimal(value) => {
             sink.raw(&[9])?;
+            sink.raw(&value.to_le_bytes())
+        }
+        RelationalValue::Timestamp(value) => {
+            sink.raw(&[10])?;
+            sink.raw(&value.to_le_bytes())
+        }
+        RelationalValue::TimestampTz(value) => {
+            sink.raw(&[11])?;
             sink.raw(&value.to_le_bytes())
         }
         RelationalValue::DoublePrecision(value) => {
@@ -166,6 +176,11 @@ pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), Rel
         sink.raw(&[scalar_tag(column.scalar_type)])?;
         if let RelationalScalarType::Vector(dimension) = column.scalar_type {
             sink.raw(&dimension.get().to_le_bytes())?;
+        }
+        if let RelationalScalarType::Timestamp(precision)
+        | RelationalScalarType::TimestampTz(precision) = column.scalar_type
+        {
+            sink.raw(&[precision.get()])?;
         }
         if let RelationalScalarType::Decimal(kind) = column.scalar_type {
             sink.raw(&[kind.precision(), kind.scale()])?;

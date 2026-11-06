@@ -123,6 +123,8 @@ impl RelationalRowLocator {
                         | RelationalValue::DoublePrecision(_)
                         | RelationalValue::Decimal(_)
                         | RelationalValue::Uuid(_)
+                        | RelationalValue::Timestamp(_)
+                        | RelationalValue::TimestampTz(_)
                         | RelationalValue::Overflow(_) => 0,
                     })
                     .sum::<usize>(),

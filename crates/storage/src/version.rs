@@ -254,7 +254,9 @@ pub fn relational_index_prefix_read_key_bytes<'a>(
             | RelationalValue::Decimal(_)
             | RelationalValue::Text(_)
             | RelationalValue::Bytea(_)
-            | RelationalValue::Uuid(_) => {}
+            | RelationalValue::Uuid(_)
+            | RelationalValue::Timestamp(_)
+            | RelationalValue::TimestampTz(_) => {}
             RelationalValue::Null
             | RelationalValue::DoublePrecision(_)
             | RelationalValue::Vector(_)

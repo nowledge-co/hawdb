@@ -629,6 +629,9 @@ fn collect_expression_hydration_columns(
                 | ExprKind::Cast {
                     expression: inner, ..
                 }
+                | ExprKind::TimestampCast {
+                    expression: inner, ..
+                }
                 | ExprKind::IsNull {
                     expression: inner, ..
                 },

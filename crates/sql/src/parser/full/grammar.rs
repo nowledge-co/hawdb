@@ -278,6 +278,7 @@ pub(super) fn build() -> Result<Grammar, String> {
                     r("HawDoubleType"),
                     r("HawFloatType"),
                     r("HawTextType"),
+                    r("HawTimestampType"),
                     r("HawSimpleType"),
                     r("HawCustomType"),
                 ]),
@@ -294,6 +295,14 @@ pub(super) fn build() -> Result<Grammar, String> {
             ]),
         ),
         ("HawDoubleType", s(vec![k("DOUBLE"), k("PRECISION")])),
+        (
+            "HawTimestampType",
+            s(vec![
+                kw(&["TIMESTAMP", "TIMESTAMPTZ"]),
+                o(group(r("Number"))),
+                o(s(vec![kw(&["WITH", "WITHOUT"]), k("TIME"), k("ZONE")])),
+            ]),
+        ),
         (
             "HawFloatType",
             s(vec![

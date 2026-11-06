@@ -31,6 +31,7 @@ pub mod regex;
 mod retained_heap;
 pub mod schema;
 mod shared_allocation;
+pub mod sql_timestamp;
 pub mod string_function;
 pub mod temporal;
 pub mod time;
@@ -81,6 +82,7 @@ pub use schema::{
     PropertyId, PropertyType, RelType, RelTypeId, SchemaObjectState, TableDescriptor, TableId,
     TableKind,
 };
+pub use sql_timestamp::TimestampPrecision;
 pub use string_function::StringFunction;
 pub use temporal::{Duration as TemporalDuration, TemporalFunction, TemporalKind};
 pub use uuid::Uuid;

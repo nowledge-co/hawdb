@@ -1242,6 +1242,12 @@ pub(super) fn relational_value_to_query_value(
         hawdb_storage::relational::RelationalValue::Vector(value) => {
             Ok(Value::Vector(value.clone()))
         }
+        hawdb_storage::relational::RelationalValue::Timestamp(value) => {
+            hawdb_core::sql_timestamp::local_value(*value)
+        }
+        hawdb_storage::relational::RelationalValue::TimestampTz(value) => {
+            hawdb_core::sql_timestamp::zoned_value(*value)
+        }
         hawdb_storage::relational::RelationalValue::Overflow(_) => {
             Err(HawDBError::StorageIntegrity(
                 "logical relational mutation outcome contains an overflow reference".to_string(),

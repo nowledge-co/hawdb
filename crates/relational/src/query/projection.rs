@@ -704,6 +704,8 @@ pub(super) fn relational_sort_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
         RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
         RelationalValue::Vector(value) => Ok(Value::Vector(value.clone())),
+        RelationalValue::Timestamp(value) => hawdb_core::sql_timestamp::local_value(*value),
+        RelationalValue::TimestampTz(value) => hawdb_core::sql_timestamp::zoned_value(*value),
         RelationalValue::Overflow(_) => Err(HawDBError::Execution(
             "ORDER BY requires overflow hydration before qualification".to_string(),
         )),

@@ -111,7 +111,7 @@ pub(super) fn promote_where_equalities(
             crate::bind_relational_value(value.clone(), parameters)?,
             scalar_type,
         )?;
-        if value.scalar_type() != Some(scalar_type)
+        if !scalar_type.value_type_matches(value.scalar_type())
             || matches!(value, hawdb_storage::relational::RelationalValue::DoublePrecision(value) if !value.is_finite())
         {
             continue;

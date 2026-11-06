@@ -514,6 +514,20 @@ fn synthetic_value(
         RelationalScalarType::Uuid => RelationalValue::Uuid(hawdb_core::Uuid::from_u128(
             ((salt as u128) << 64) | ordinal as u128,
         )),
+        RelationalScalarType::Timestamp(_) | RelationalScalarType::TimestampTz(_) => {
+            // Whole seconds from the earliest instant satisfy every precision.
+            let offset = i64::try_from(salt.saturating_add(ordinal))
+                .unwrap_or(i64::MAX)
+                .saturating_mul(1_000_000);
+            let micros = hawdb_core::sql_timestamp::checked(
+                hawdb_core::sql_timestamp::min_micros().saturating_add(offset),
+            )?;
+            if matches!(kind, RelationalScalarType::Timestamp(_)) {
+                RelationalValue::Timestamp(micros)
+            } else {
+                RelationalValue::TimestampTz(micros)
+            }
+        }
         RelationalScalarType::Vector(_) => {
             return Err(hawdb_core::HawDBError::Semantic(
                 "VECTOR columns cannot be constraint keys".into(),

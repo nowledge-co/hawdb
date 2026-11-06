@@ -340,6 +340,14 @@ impl<'a> RelationalLocatorBindingLayout<'a> {
                         RelationalScalarType::Decimal(_),
                         RelationalValue::Decimal(_)
                     )
+                    | (
+                        RelationalScalarType::Timestamp(_),
+                        RelationalValue::Timestamp(_)
+                    )
+                    | (
+                        RelationalScalarType::TimestampTz(_),
+                        RelationalValue::TimestampTz(_)
+                    )
             );
             if !matches {
                 return Err(HawDBError::Execution(format!(
@@ -463,7 +471,10 @@ fn relational_value_encoded_len(value: &RelationalValue) -> Result<usize> {
     match value {
         RelationalValue::Null => Ok(1),
         RelationalValue::Boolean(_) => Ok(2),
-        RelationalValue::BigInt(_) | RelationalValue::DoublePrecision(_) => Ok(9),
+        RelationalValue::BigInt(_)
+        | RelationalValue::DoublePrecision(_)
+        | RelationalValue::Timestamp(_)
+        | RelationalValue::TimestampTz(_) => Ok(9),
         RelationalValue::Text(value) => checked_add(5, value.len(), "text value"),
         RelationalValue::Bytea(value) => checked_add(5, value.len(), "bytea value"),
         RelationalValue::Vector(value) => checked_add(5, value.encoded().len(), "vector value"),
@@ -519,6 +530,14 @@ fn write_relational_value(
             output.push(6);
             output.extend_from_slice(value.as_bytes());
         }
+        RelationalValue::Timestamp(value) => {
+            output.push(9);
+            output.extend_from_slice(&value.to_le_bytes());
+        }
+        RelationalValue::TimestampTz(value) => {
+            output.push(10);
+            output.extend_from_slice(&value.to_le_bytes());
+        }
         RelationalValue::Overflow(_) => {
             return Err(HawDBError::Execution(
                 "typed relational locator cannot spill an overflow reference".to_string(),
@@ -559,6 +578,15 @@ fn read_relational_value(
             hawdb_core::Decimal::from_le_bytes(read_array(input)?)
                 .map_err(|_| invalid_typed_record("invalid Decimal value"))?,
         ),
+        tag @ (9 | 10) => {
+            let micros = hawdb_core::sql_timestamp::checked(i64::from_le_bytes(read_array(input)?))
+                .map_err(|_| invalid_typed_record("invalid TIMESTAMP value"))?;
+            if tag == 9 {
+                RelationalValue::Timestamp(micros)
+            } else {
+                RelationalValue::TimestampTz(micros)
+            }
+        }
         _ => return Err(invalid_typed_record("invalid relational value tag")),
     })
 }
@@ -891,7 +919,11 @@ mod tests {
             RelationalValue::Text(value) => ("text", Value::String(value.clone())),
             RelationalValue::Bytea(value) => ("bytea", Value::Binary(value.clone())),
             RelationalValue::Uuid(value) => ("uuid", Value::Uuid(*value)),
-            RelationalValue::Null | RelationalValue::Overflow(_) | RelationalValue::Vector(_) => {
+            RelationalValue::Null
+            | RelationalValue::Overflow(_)
+            | RelationalValue::Vector(_)
+            | RelationalValue::Timestamp(_)
+            | RelationalValue::TimestampTz(_) => {
                 panic!("test key must be inline and non-null")
             }
         };

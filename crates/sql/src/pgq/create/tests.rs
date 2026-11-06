@@ -722,6 +722,7 @@ fn typed_string_public_ast_and_resolved_literal_identity_use_the_six_type_profil
         };
         properties[0].expression.kind = ExpressionKindSyntax::TypedString {
             data_type: data_type.parts[0].clone(),
+            time_zone: None,
             value,
         };
         assert_eq!(

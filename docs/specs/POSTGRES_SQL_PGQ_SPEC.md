@@ -184,8 +184,80 @@ the same results. Decimal values do not yet populate property histograms, so
 cost-based planning may use fallback selectivity and choose a scan despite an
 available range index. Decimal and native temporal values have distinct wire tags.
 
-SQL DATE/TIMESTAMP support remains separate work under #1361; existing native
-Cypher temporal values retain their behavior and persisted representation.
+Cypher temporal values retain their behavior and persisted representation;
+relational SQL timestamps are specified below.
+
+## SQL timestamps
+
+Relational SQL supports `TIMESTAMP [ (p) ] [ WITHOUT TIME ZONE ]` and
+`TIMESTAMP [ (p) ] WITH TIME ZONE` / `TIMESTAMPTZ [ (p) ]` (#1453), following
+PostgreSQL 18 [date/time types](https://www.postgresql.org/docs/18/datatype-datetime.html).
+Both store a signed 64-bit count of microseconds since 1970-01-01 00:00:00.
+`TIMESTAMP` is a local date and time without a zone. `TIMESTAMPTZ` is a UTC
+instant: an input offset is applied and then discarded. HawDB has no session
+`TimeZone`, so it behaves like PostgreSQL with `TimeZone = 'UTC'`: zone-less
+`TIMESTAMPTZ` text is UTC, output is UTC, and conversions between the two types
+go through UTC. The precision `p` is 0 to 6 (default 6). Assignment rounds to
+it, with halfway values rounded away from 2000-01-01, as PostgreSQL's
+`AdjustTimestampForTypmod` does. Text with more than six fractional digits is
+rounded half up to the microsecond.
+
+Accepted text is `YYYY-MM-DD` (meaning midnight), optionally followed by a
+space or `T` and `HH:MM[:SS[.fraction]]`, with surrounding whitespace. For
+`TIMESTAMPTZ` an optional offset follows: `Z`, `±HH`, `±HHMM`, `±HH:MM` or
+`±HH:MM:SS` up to ±15:59:59, optionally after one space. The forms are
+`TIMESTAMP '…'`, `TIMESTAMPTZ '…'`, `TIMESTAMP WITH TIME ZONE '…'`, string
+literals and text parameters assigned to a timestamp column, and string
+literals or text parameters compared with a timestamp column. A comparison
+operand is parsed as the column's type but is not rounded to its precision.
+`CAST(x AS TIMESTAMP[(p)] [WITH[OUT] TIME ZONE])`, `CAST(x AS TIMESTAMPTZ[(p)])`,
+`CAST(x AS TEXT)` and the `::` forms convert between TEXT and both types, in
+projections and in constant expressions such as `VALUES`, defaults and comparison
+operands. TEXT output uses PostgreSQL's ISO style without trailing fractional
+zeros (`2026-11-05 12:00:00.5`); `TIMESTAMPTZ` text ends in `+00`.
+
+Equality, ordering, `ORDER BY`, `GROUP BY`, `DISTINCT`, `MIN`/`MAX`, joins,
+primary keys, unique constraints, secondary indexes, range seeks and range
+locks order values chronologically, and `NULL` keeps its usual SQL semantics.
+Comparing a `TIMESTAMP` with a `TIMESTAMPTZ` is an error; cast one side
+explicitly. Host parameters and results use the Cypher temporal values:
+`Value::LocalDateTime` for `TIMESTAMP` and a UTC `Value::DateTime` for
+`TIMESTAMPTZ`. A zoned parameter keeps its instant, and nanoseconds round half
+up to the microsecond. `Value::Date`, `Value::LocalTime` and `Value::Duration`
+are not SQL values. `information_schema.columns` reports `timestamp without
+time zone` / `timestamp with time zone`, the `timestamp` / `timestamptz` UDT
+names and `datetime_precision`.
+
+Deviations from PostgreSQL:
+
+- The range is chrono's: proleptic Gregorian dates from -262143-01-01 through
+  +262142-12-31 23:59:59.999999. PostgreSQL accepts 4713 BC through 294276 AD.
+  Years follow ISO 8601 astronomical numbering (year 0 is 1 BC, earlier years
+  are negative). Years outside 0000–9999 carry an explicit sign on input and
+  output; the `BC` suffix is not accepted.
+- An offset in `TIMESTAMP` text is rejected, where PostgreSQL silently ignores it.
+- `TIMESTAMP(7)` and higher are rejected, where PostgreSQL warns and uses 6.
+- Special values (`infinity`, `-infinity`, `epoch`, `now`, `today`, …), named
+  time zones, `AT TIME ZONE`, other PostgreSQL date styles and session
+  `TimeZone` are not supported.
+- Comparing `TIMESTAMP` with `TIMESTAMPTZ` needs an explicit `CAST`.
+- `CAST` to TEXT accepts only TEXT, `TIMESTAMP` and `TIMESTAMPTZ` operands.
+  Timestamp casts of columns inside `WHERE`, `HAVING` or `UPDATE` arithmetic are
+  not supported; cast the constant operand instead.
+- `DATE`, `TIME` and `INTERVAL` types and literals, interval arithmetic,
+  `EXTRACT`/`date_part`/`date_trunc`, `CURRENT_TIMESTAMP`, `LOCALTIMESTAMP` and
+  `now()` are not supported yet.
+- SQL/PGQ property graphs refuse timestamp columns as properties and refuse
+  timestamp literals and time-zone casts in property expressions.
+
+Persistence uses new additive tags with an 8-byte little-endian payload: value tag
+10 (`TIMESTAMP`) and 11 (`TIMESTAMPTZ`) in row pages, relational WAL and
+checkpoint values and schema defaults; scalar type tags 9 and 10 followed by the
+precision byte in schemas and index-shadow digests; and ordered-key tags 10 and
+11 with a sign-flipped big-endian payload. No format version changed. Existing
+tags keep their meaning, so new binaries read old databases, and older binaries
+reject databases containing timestamps on the first unknown tag. Decoders treat
+an out-of-range microsecond count or precision as corruption.
 
 ## Property Graph Catalog
 

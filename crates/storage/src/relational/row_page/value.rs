@@ -122,6 +122,14 @@ pub(super) fn encode_value_with_work<W: super::encoding::EncodeWork, O: ValueOut
             encoded.push(9)?;
             encoded.extend_from_slice(&value.to_le_bytes())?;
         }
+        RelationalValue::Timestamp(value) => {
+            encoded.push(10)?;
+            encoded.extend_from_slice(&value.to_le_bytes())?;
+        }
+        RelationalValue::TimestampTz(value) => {
+            encoded.push(11)?;
+            encoded.extend_from_slice(&value.to_le_bytes())?;
+        }
         RelationalValue::DoublePrecision(value) => {
             encoded.push(3)?;
             encoded.extend_from_slice(&value.to_bits().to_le_bytes())?;
@@ -410,10 +418,11 @@ fn validate_value(
         9 if encoded.len() == 1 + hawdb_core::Decimal::ENCODED_LEN => {
             decode_decimal(&encoded[1..]).map(|_| ())
         }
+        10 | 11 if encoded.len() == 9 => decode_timestamp(encoded).map(|_| ()),
         1 => Err(RelationalRowPageError::Corrupt(
             "invalid BOOLEAN value encoding".to_string(),
         )),
-        0 | 2 | 3 | 7 | 9 => Err(RelationalRowPageError::Corrupt(format!(
+        0 | 2 | 3 | 7 | 9 | 10 | 11 => Err(RelationalRowPageError::Corrupt(format!(
             "value tag {tag} has an invalid encoded length {}",
             encoded.len()
         ))),
@@ -427,6 +436,7 @@ fn decode_validated_value(encoded: &[u8]) -> Result<RelationalValue, RelationalR
     match encoded[0] {
         0 => Ok(RelationalValue::Null),
         9 => decode_decimal(&encoded[1..]).map(RelationalValue::Decimal),
+        10 | 11 => decode_timestamp(encoded).map(RelationalValueRef::to_owned_value),
         1 => Ok(RelationalValue::Boolean(encoded[1] == 1)),
         2 => Ok(RelationalValue::BigInt(i64::from_le_bytes(
             encoded[1..9]
@@ -507,6 +517,7 @@ fn decode_validated_value_ref(
     match encoded[0] {
         0 => Ok(RelationalValueRef::Null),
         9 => decode_decimal(&encoded[1..]).map(RelationalValueRef::Decimal),
+        10 | 11 => decode_timestamp(encoded),
         1 => Ok(RelationalValueRef::Boolean(encoded[1] == 1)),
         2 => Ok(RelationalValueRef::BigInt(i64::from_le_bytes(
             encoded[1..9]
@@ -651,6 +662,8 @@ fn scalar_type_tag(scalar_type: RelationalScalarType) -> u8 {
         RelationalScalarType::Uuid => 6,
         RelationalScalarType::Vector(_) => 7,
         RelationalScalarType::Decimal(_) => 8,
+        RelationalScalarType::Timestamp(_) => 9,
+        RelationalScalarType::TimestampTz(_) => 10,
     }
 }
 
@@ -668,6 +681,21 @@ fn classify(error_class: ErrorClass, message: String) -> RelationalRowPageError 
     match error_class {
         ErrorClass::Admission => RelationalRowPageError::Admission(message),
         ErrorClass::Corrupt => RelationalRowPageError::Corrupt(message),
+    }
+}
+
+/// Decodes a validated-width TIMESTAMP (tag 10) or TIMESTAMPTZ (11) value.
+fn decode_timestamp(encoded: &[u8]) -> Result<RelationalValueRef<'static>, RelationalRowPageError> {
+    let micros =
+        i64::from_le_bytes(encoded[1..9].try_into().map_err(|_| {
+            RelationalRowPageError::Corrupt("invalid TIMESTAMP value width".into())
+        })?);
+    match crate::relational::decode_timestamp_value(encoded[0], micros)
+        .map_err(|error| RelationalRowPageError::Corrupt(error.to_string()))?
+    {
+        RelationalValue::Timestamp(value) => Ok(RelationalValueRef::Timestamp(value)),
+        RelationalValue::TimestampTz(value) => Ok(RelationalValueRef::TimestampTz(value)),
+        _ => unreachable!("timestamp decoder returns timestamps"),
     }
 }
 

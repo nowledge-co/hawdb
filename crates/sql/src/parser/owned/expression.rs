@@ -122,6 +122,13 @@ impl Lowerer<'_> {
             }
             E::Literal(L::String(span)) => decode_string(&self.input[span.start..span.end])
                 .map(|v| SqlValue::Literal(Value::String(v))),
+            E::TypedString {
+                data_type,
+                time_zone,
+                value,
+            } => self
+                .typed_string(data_type, *time_zone, *value)
+                .map(SqlValue::Literal),
             E::Parenthesized(inner) => self.literal(inner),
             _ => {
                 let expr = self.lower(value, P::Scalar)?;
@@ -136,6 +143,7 @@ impl Lowerer<'_> {
                             | ExprKind::Arithmetic { .. }
                             | ExprKind::Negate(_)
                             | ExprKind::Cast { .. }
+                            | ExprKind::TimestampCast { .. }
                     )
                 });
                 if !constant_numeric {
@@ -144,6 +152,85 @@ impl Lowerer<'_> {
                 Ok(SqlValue::Expression(Box::new(expr)))
             }
         }
+    }
+    /// Lowers `TIMESTAMP 'text'`, `TIMESTAMPTZ 'text'` and
+    /// `TIMESTAMP WITH[OUT] TIME ZONE 'text'` to a host temporal value. Other
+    /// typed strings (DATE, TIME, INTERVAL) remain unsupported.
+    fn typed_string(
+        &self,
+        data_type: &syntax::Identifier,
+        time_zone: Option<syntax::TimeZoneSyntax>,
+        value: syntax::Span,
+    ) -> Result<Value> {
+        let name = if data_type.quoted {
+            String::new()
+        } else {
+            self.ident(data_type)
+        };
+        let zoned = match (name.as_str(), time_zone) {
+            ("timestamp", None | Some(syntax::TimeZoneSyntax::Without)) => false,
+            ("timestamp", Some(syntax::TimeZoneSyntax::With)) | ("timestamptz", None) => true,
+            _ => {
+                return Err(semantic(format!(
+                    "unsupported PostgreSQL typed literal {}",
+                    &self.input[data_type.span.start..data_type.span.end]
+                )))
+            }
+        };
+        let text = decode_string(&self.input[value.start..value.end])?;
+        hawdb_core::sql_timestamp::TimestampCast::Timestamp(
+            hawdb_core::sql_timestamp::TimestampType {
+                zoned,
+                precision: hawdb_core::TimestampPrecision::DEFAULT,
+            },
+        )
+        .apply(&Value::String(text))
+    }
+    /// Recognizes CAST targets TEXT, TIMESTAMP[(p)] [WITH[OUT] TIME ZONE] and
+    /// TIMESTAMPTZ[(p)]. Other targets are numeric casts.
+    pub(in crate::parser) fn timestamp_cast_type(
+        &self,
+        name: &syntax::QualifiedName,
+        parameters: &[syntax::Span],
+        time_zone: Option<syntax::TimeZoneSyntax>,
+    ) -> Result<Option<hawdb_core::sql_timestamp::TimestampCast>> {
+        use hawdb_core::sql_timestamp::{TimestampCast, TimestampType};
+        let [part] = name.parts.as_slice() else {
+            return Ok(None);
+        };
+        // DOUBLE PRECISION spans two words; it is never a timestamp target.
+        if part.quoted || self.input[part.span.start..part.span.end].contains(char::is_whitespace) {
+            return Ok(None);
+        }
+        let name = self.ident(part);
+        let zoned = match (name.as_str(), time_zone) {
+            ("text", None) if parameters.is_empty() => return Ok(Some(TimestampCast::Text)),
+            ("timestamp", None | Some(syntax::TimeZoneSyntax::Without)) => false,
+            ("timestamp", Some(syntax::TimeZoneSyntax::With)) | ("timestamptz", None) => true,
+            (_, Some(_)) => {
+                return Err(semantic(
+                    "WITH or WITHOUT TIME ZONE requires the TIMESTAMP type",
+                ))
+            }
+            ("text", None) => return Err(semantic("TEXT does not accept type modifiers")),
+            _ => return Ok(None),
+        };
+        let precision = match parameters {
+            [] => hawdb_core::TimestampPrecision::DEFAULT,
+            [span] => self.input[span.start..span.end]
+                .trim()
+                .parse::<u8>()
+                .ok()
+                .and_then(hawdb_core::TimestampPrecision::new)
+                .ok_or_else(|| {
+                    semantic("TIMESTAMP precision must be an integer between 0 and 6")
+                })?,
+            _ => return Err(semantic("TIMESTAMP accepts one precision modifier")),
+        };
+        Ok(Some(TimestampCast::Timestamp(TimestampType {
+            zoned,
+            precision,
+        })))
     }
     pub(in crate::parser) fn numeric_cast_type(
         &self,
@@ -336,7 +423,9 @@ impl Lowerer<'_> {
             Scalar | HavingScalar | PredicateScalar => match &value.kind {
                 E::Parenthesized(inner) => self.lower(inner, position),
                 E::Column(_) => self.lower(value, Column),
-                E::Parameter(_) | E::Literal(_) => self.lower(value, Literal),
+                E::Parameter(_) | E::Literal(_) | E::TypedString { .. } => {
+                    self.lower(value, Literal)
+                }
                 E::Unary {
                     operator: syntax::UnaryOperatorSyntax::Plus,
                     expression: inner,
@@ -388,7 +477,29 @@ impl Lowerer<'_> {
                     expression: inner,
                     data_type,
                     type_parameters,
+                    time_zone,
                 } => {
+                    if let Some(target) =
+                        self.timestamp_cast_type(data_type, type_parameters, *time_zone)?
+                    {
+                        let inner = self.lower(inner, position)?;
+                        let span = inner.span;
+                        // Fold literal operands so that constants reach index
+                        // bounds and assignments as native values.
+                        if let ExprKind::Value(SqlValue::Literal(value)) = &inner.kind {
+                            return Ok(expression(
+                                ExprKind::Value(SqlValue::Literal(target.apply(value)?)),
+                                span,
+                            ));
+                        }
+                        return Ok(expression(
+                            ExprKind::TimestampCast {
+                                expression: Box::new(inner),
+                                target,
+                            },
+                            span,
+                        ));
+                    }
                     let target = self.numeric_cast_type(data_type, type_parameters)?;
                     let inner = self.lower(inner, position)?;
                     let span = inner.span;

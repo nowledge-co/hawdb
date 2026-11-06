@@ -341,7 +341,10 @@ fn qualify_expression(expression: &Expr, nodes: &mut usize, depth: usize) -> Res
         ExprKind::Not(expression)
         | ExprKind::IsNull { expression, .. }
         | ExprKind::Negate(expression)
-        | ExprKind::Cast { expression, .. } => qualify_expression(expression, nodes, depth + 1),
+        | ExprKind::Cast { expression, .. }
+        | ExprKind::TimestampCast { expression, .. } => {
+            qualify_expression(expression, nodes, depth + 1)
+        }
         ExprKind::InList { left, values, .. } => {
             qualify_expression(left, nodes, depth + 1)?;
             for value in values {

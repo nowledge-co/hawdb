@@ -208,7 +208,8 @@ fn sql_session_unsupported_postgres_shapes_preserve_errors_and_rollback() {
         "SELECT to_tsvector(body) FROM pages",
         "SELECT body::jsonb ->> 'name' FROM pages",
         "SELECT now() FROM pages",
-        "SELECT body::timestamptz FROM pages",
+        "SELECT body::date FROM pages",
+        "SELECT body::timestamptz AT TIME ZONE 'UTC' FROM pages",
     ] {
         let expected = crate::sql::prepare_postgres_sql(sql).unwrap_err();
         assert!(matches!(

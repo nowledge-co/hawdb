@@ -3040,7 +3040,7 @@ fn relational_predicate_primary_key(
             } => {
                 if let Some(position) = schema.primary_key.iter().position(|key| key == column) {
                     let column = &schema.columns[schema.column_position(column)?];
-                    if value.scalar_type() != Some(column.scalar_type) {
+                    if !column.scalar_type.value_type_matches(value.scalar_type()) {
                         return None;
                     }
                     if values[position].is_some_and(|previous| previous != value) {

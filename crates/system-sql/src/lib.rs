@@ -1055,7 +1055,10 @@ fn information_schema_column_rows(state: &RelationalState) -> Vec<Row> {
                             "numeric_scale".to_string(),
                             option_i64_value(type_info.numeric_scale),
                         ),
-                        ("datetime_precision".to_string(), Value::Null),
+                        (
+                            "datetime_precision".to_string(),
+                            option_i64_value(type_info.datetime_precision),
+                        ),
                         ("interval_type".to_string(), Value::Null),
                         ("interval_precision".to_string(), Value::Null),
                         ("character_set_catalog".to_string(), Value::Null),
@@ -1126,6 +1129,7 @@ struct InformationSchemaType {
     numeric_precision: Option<i64>,
     numeric_precision_radix: Option<i64>,
     numeric_scale: Option<i64>,
+    datetime_precision: Option<i64>,
 }
 
 fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSchemaType {
@@ -1138,6 +1142,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: Some(i64::from(kind.precision())),
             numeric_precision_radix: Some(10),
             numeric_scale: Some(i64::from(kind.scale())),
+            datetime_precision: None,
         },
         RelationalScalarType::Boolean => InformationSchemaType {
             data_type: "boolean",
@@ -1147,6 +1152,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: None,
             numeric_precision_radix: None,
             numeric_scale: None,
+            datetime_precision: None,
         },
         RelationalScalarType::BigInt => InformationSchemaType {
             data_type: "bigint",
@@ -1156,6 +1162,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: Some(64),
             numeric_precision_radix: Some(2),
             numeric_scale: Some(0),
+            datetime_precision: None,
         },
         RelationalScalarType::DoublePrecision => InformationSchemaType {
             data_type: "double precision",
@@ -1165,6 +1172,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: Some(53),
             numeric_precision_radix: Some(2),
             numeric_scale: None,
+            datetime_precision: None,
         },
         RelationalScalarType::Text => InformationSchemaType {
             data_type: "text",
@@ -1174,6 +1182,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: None,
             numeric_precision_radix: None,
             numeric_scale: None,
+            datetime_precision: None,
         },
         RelationalScalarType::Bytea => InformationSchemaType {
             data_type: "bytea",
@@ -1183,6 +1192,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: None,
             numeric_precision_radix: None,
             numeric_scale: None,
+            datetime_precision: None,
         },
         RelationalScalarType::Uuid => InformationSchemaType {
             data_type: "uuid",
@@ -1192,7 +1202,26 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: None,
             numeric_precision_radix: None,
             numeric_scale: None,
+            datetime_precision: None,
         },
+        RelationalScalarType::Timestamp(precision)
+        | RelationalScalarType::TimestampTz(precision) => {
+            let zoned = matches!(scalar_type, RelationalScalarType::TimestampTz(_));
+            InformationSchemaType {
+                data_type: if zoned {
+                    "timestamp with time zone"
+                } else {
+                    "timestamp without time zone"
+                },
+                udt_name: if zoned { "timestamptz" } else { "timestamp" },
+                character_maximum_length: None,
+                character_octet_length: None,
+                numeric_precision: None,
+                numeric_precision_radix: None,
+                numeric_scale: None,
+                datetime_precision: Some(i64::from(precision.get())),
+            }
+        }
         RelationalScalarType::Vector(_) => InformationSchemaType {
             data_type: "USER-DEFINED",
             udt_name: "vector",
@@ -1201,6 +1230,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: None,
             numeric_precision_radix: None,
             numeric_scale: None,
+            datetime_precision: None,
         },
     }
 }
@@ -1234,6 +1264,16 @@ fn relational_default_value(default: Option<&RelationalColumnDefault>) -> Value 
         }
         Some(RelationalColumnDefault::Literal(RelationalValue::Vector(value))) => {
             Value::String(Value::Vector(value.clone()).to_string())
+        }
+        Some(RelationalColumnDefault::Literal(RelationalValue::Timestamp(value))) => {
+            hawdb_core::sql_timestamp::format_timestamp(*value).map_or(Value::Null, |text| {
+                Value::String(format!("'{text}'::timestamp without time zone"))
+            })
+        }
+        Some(RelationalColumnDefault::Literal(RelationalValue::TimestampTz(value))) => {
+            hawdb_core::sql_timestamp::format_timestamptz(*value).map_or(Value::Null, |text| {
+                Value::String(format!("'{text}'::timestamp with time zone"))
+            })
         }
         Some(RelationalColumnDefault::UuidV7) => Value::String("uuidv7()".to_string()),
     }

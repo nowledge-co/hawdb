@@ -206,6 +206,8 @@ fn output_payload_bytes(
         | ExprKind::Negate(_)
         | ExprKind::Cast { .. }
         | ExprKind::Value(SqlValue::Expression(_)) => Ok(17),
+        // The longest PostgreSQL ISO text is `+262142-12-31 23:59:59.999999+00`.
+        ExprKind::TimestampCast { .. } => Ok(32),
         ExprKind::Value(value) => {
             let value = match value {
                 SqlValue::Literal(value) => Some(value),
@@ -334,7 +336,10 @@ fn expression_bytes(
                     .ok_or_else(|| HawDBError::Semantic("missing SQL expression parameter".into()))
             }
             ExprKind::Function { name, .. } => Ok(name.len()),
-            ExprKind::Arithmetic { .. } | ExprKind::Negate(_) | ExprKind::Cast { .. } => Ok(1024),
+            ExprKind::Arithmetic { .. }
+            | ExprKind::Negate(_)
+            | ExprKind::Cast { .. }
+            | ExprKind::TimestampCast { .. } => Ok(1024),
             _ => Ok(0),
         };
         match payload {

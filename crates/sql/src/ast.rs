@@ -308,6 +308,8 @@ pub enum SqlDataType {
     Bytea,
     Uuid,
     Vector(hawdb_core::VectorDimension),
+    /// `TIMESTAMP [ (p) ] [ WITH[OUT] TIME ZONE ]` and `TIMESTAMPTZ [ (p) ]`.
+    Timestamp(hawdb_core::sql_timestamp::TimestampType),
 }
 
 impl SqlDataType {
@@ -321,6 +323,8 @@ impl SqlDataType {
             Self::Bytea => LogicalType::Binary,
             Self::Uuid => LogicalType::Uuid,
             Self::Vector(dimension) => LogicalType::Vector(dimension),
+            Self::Timestamp(kind) if kind.zoned => LogicalType::DateTime,
+            Self::Timestamp(_) => LogicalType::LocalDateTime,
         }
     }
 }
