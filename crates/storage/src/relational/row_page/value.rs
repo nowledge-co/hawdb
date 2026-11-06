@@ -427,7 +427,7 @@ fn validate_value(
             encoded.len()
         ))),
         tag => Err(RelationalRowPageError::Corrupt(format!(
-            "invalid relational row value tag {tag}"
+            "invalid relational row value tag {tag} (corrupt, or written by a newer HawDB)"
         ))),
     }
 }

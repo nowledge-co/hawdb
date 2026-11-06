@@ -241,6 +241,13 @@ Deviations from PostgreSQL:
   time zones, `AT TIME ZONE`, other PostgreSQL date styles and session
   `TimeZone` are not supported.
 - Comparing `TIMESTAMP` with `TIMESTAMPTZ` needs an explicit `CAST`.
+- Foreign keys, column-to-column `UPDATE … SET a = b` assignments and
+  dependency-read join keys require identical precision (`TIMESTAMP(0)` and
+  `TIMESTAMP(6)` do not match; a dependency-read join falls back to a
+  database-wide key). This is stricter than PostgreSQL and matches Decimal.
+- Strict append tables apply the same assignment conversion as ordinary tables,
+  and their partition and order-key lookups parse text without rounding, so a
+  finer-precision partition value matches no rows.
 - `CAST` to TEXT accepts only TEXT, `TIMESTAMP` and `TIMESTAMPTZ` operands.
   Timestamp casts of columns inside `WHERE`, `HAVING` or `UPDATE` arithmetic are
   not supported; cast the constant operand instead.
@@ -256,8 +263,14 @@ checkpoint values and schema defaults; scalar type tags 9 and 10 followed by the
 precision byte in schemas and index-shadow digests; and ordered-key tags 10 and
 11 with a sign-flipped big-endian payload. No format version changed. Existing
 tags keep their meaning, so new binaries read old databases, and older binaries
-reject databases containing timestamps on the first unknown tag. Decoders treat
-an out-of-range microsecond count or precision as corruption.
+reject databases containing timestamps on the first unknown tag. Binaries
+released before this change report that as an invalid tag (for example
+"invalid relational scalar type tag 9" or "invalid relational row value tag
+10") rather than as data written by a newer version; their messages cannot be
+changed. From this change on, the relational schema, value, row-page,
+column-default and ordered-key decoders say that an unknown tag is "corrupt, or
+written by a newer HawDB". Decoders treat an out-of-range microsecond count or
+precision as corruption.
 
 ## Property Graph Catalog
 

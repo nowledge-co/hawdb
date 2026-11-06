@@ -647,3 +647,74 @@ fn sql_timestamp_rejects_invalid_literals_types_and_mixed_comparisons() {
         .to_string();
     assert!(error.contains("out of range"), "{error}");
 }
+
+#[test]
+fn sql_timestamp_append_tables_convert_assignments_and_match_lookups() {
+    let mut database = Database::new();
+    database
+        .query_sql(
+            "CREATE TABLE ticks (day TIMESTAMP(0) NOT NULL, sequence BIGINT NOT NULL, \
+             seen TIMESTAMPTZ(3), note TEXT) \
+             WITH (storage_mode = 'strict_append', partition_key = 'day', order_key = 'sequence')",
+        )
+        .unwrap();
+    database
+        .query_sql(
+            "INSERT INTO ticks (day, sequence, seen, note) VALUES \
+             ('2024-01-01', 1, '2024-01-01 10:00:00.12345+02', 'text'), \
+             (TIMESTAMP '2024-01-01 00:00:00.4', 2, TIMESTAMP '2024-01-01 08:00:00', 'rounded')",
+        )
+        .unwrap();
+    database
+        .query_sql_with_params(
+            "INSERT INTO ticks (day, sequence, seen) VALUES ($1, 3, $2)",
+            &[ts("2024-01-02 00:00:00.6"), tz("2024-01-02 00:00:00Z")],
+        )
+        .unwrap();
+    let rows = database
+        .query_sql(
+            "SELECT sequence, seen FROM ticks WHERE day = '2024-01-01' ORDER BY sequence ASC LIMIT 10",
+        )
+        .unwrap()
+        .rows;
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row["sequence"].clone(), row["seen"].clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (Value::Int(1), tz("2024-01-01 08:00:00.123Z")),
+            (Value::Int(2), tz("2024-01-01 08:00:00Z")),
+        ]
+    );
+    assert_eq!(
+        column(
+            &mut database,
+            "SELECT sequence FROM ticks WHERE day = TIMESTAMP '2024-01-02 00:00:01' ORDER BY sequence ASC LIMIT 10",
+            "sequence"
+        ),
+        vec![Value::Int(3)]
+    );
+    // A bound finer than the column precision matches no rounded key.
+    for sql in [
+        "SELECT sequence FROM ticks WHERE day = '2024-01-01 00:00:00.4' ORDER BY sequence ASC LIMIT 10",
+        "SELECT sequence FROM ticks WHERE day = '2024-01-03' ORDER BY sequence ASC LIMIT 10",
+    ] {
+        assert!(column(&mut database, sql, "sequence").is_empty(), "{sql}");
+    }
+    let error = database
+        .query_sql_with_params(
+            "SELECT sequence FROM ticks WHERE day = $1 ORDER BY sequence ASC LIMIT 10",
+            &[tz("2024-01-01 00:00:00Z")],
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("expects"), "{error}");
+    let error = database
+        .query_sql("INSERT INTO ticks (day, sequence) VALUES ('2024-01-01+02', 4)")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("must not carry a time zone offset"),
+        "{error}"
+    );
+}

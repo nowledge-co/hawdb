@@ -264,7 +264,7 @@ impl<'a> OrderedKeyDecoder<'a> {
             ))),
             tag @ (10 | 11) => self.timestamp(tag),
             tag => Err(OrderedRelationalKeyError::Corrupt(format!(
-                "invalid value tag {tag}"
+                "invalid value tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -327,7 +327,7 @@ impl<'a> OrderedKeyDecoder<'a> {
             }
             tag => {
                 return Err(OrderedRelationalKeyError::Corrupt(format!(
-                    "invalid value tag {tag}"
+                    "invalid value tag {tag} (corrupt, or written by a newer HawDB)"
                 )))
             }
         }
@@ -361,7 +361,7 @@ impl<'a> OrderedKeyDecoder<'a> {
             9 => self.decimal().map(|_| false),
             tag @ (10 | 11) => self.timestamp(tag).map(|_| false),
             tag => Err(OrderedRelationalKeyError::Corrupt(format!(
-                "invalid value tag {tag}"
+                "invalid value tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }

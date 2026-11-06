@@ -206,7 +206,13 @@ fn output_payload_bytes(
         | ExprKind::Negate(_)
         | ExprKind::Cast { .. }
         | ExprKind::Value(SqlValue::Expression(_)) => Ok(17),
-        // The longest PostgreSQL ISO text is `+262142-12-31 23:59:59.999999+00`.
+        // The longest timestamp ISO text is `+262142-12-31 23:59:59.999999+00`.
+        // A TEXT operand passes through `CAST(x AS TEXT)` unchanged, so the
+        // charge covers the operand too.
+        ExprKind::TimestampCast {
+            expression,
+            target: hawdb_core::sql_timestamp::TimestampCast::Text,
+        } => Ok(output_payload_bytes(expression, row, parameters)?.max(32)),
         ExprKind::TimestampCast { .. } => Ok(32),
         ExprKind::Value(value) => {
             let value = match value {
@@ -420,5 +426,64 @@ fn text_operand<'a>(
             })
         }
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn select(sql: &str) -> SelectStatement {
+        match hawdb_sql::parse_postgres_sql(sql).unwrap() {
+            hawdb_sql::SqlStatement::Select(select) => select,
+            other => panic!("expected SELECT, got {other:?}"),
+        }
+    }
+
+    fn admit(sql: &str, parameters: &[Value], row_limit: usize) -> Result<()> {
+        let ledger = QueryMemoryLedger::new(std::num::NonZeroUsize::new(1 << 30).unwrap());
+        let account = copy_account(&ledger);
+        admit_ordinary(
+            &select(sql),
+            &BoundRow::default(),
+            parameters,
+            &account,
+            row_limit,
+            false,
+        )
+        .map(|_| ())
+    }
+
+    #[test]
+    fn text_cast_charges_its_text_operand_like_the_uncast_value() {
+        let large = [Value::String("x".repeat(64 * 1024))];
+        for sql in [
+            "SELECT $1 AS t",
+            "SELECT CAST($1 AS TEXT) AS t",
+            "SELECT $1::text AS t",
+        ] {
+            let error = admit(sql, &large, 4 * 1024).unwrap_err().to_string();
+            assert!(error.contains("batch_payload_bytes"), "{sql}: {error}");
+            admit(sql, &large, 1 << 20).unwrap();
+        }
+        let expression = |sql: &str| match &select(sql).projection[0] {
+            SelectProjection::Expression { expression, .. } => expression.clone(),
+            _ => panic!("expression"),
+        };
+        let row = BoundRow::default();
+        assert_eq!(
+            output_payload_bytes(&expression("SELECT CAST($1 AS TEXT)"), &row, &large).unwrap(),
+            output_payload_bytes(&expression("SELECT $1"), &row, &large).unwrap()
+        );
+        let short = [Value::String("x".into())];
+        assert_eq!(
+            output_payload_bytes(&expression("SELECT CAST($1 AS TEXT)"), &row, &short).unwrap(),
+            32
+        );
+        assert_eq!(
+            output_payload_bytes(&expression("SELECT CAST($1 AS TIMESTAMP)"), &row, &large)
+                .unwrap(),
+            32
+        );
     }
 }

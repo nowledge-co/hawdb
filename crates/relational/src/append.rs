@@ -261,13 +261,23 @@ fn compile_insert_values(
                 })
                 .collect::<Result<Vec<_>>>()?;
             for (position, value) in positions.iter().zip(values) {
-                let column_name = &columns[*position].name;
-                row[*position] =
-                    bind_relational_value(value.clone(), parameters).map_err(|error| {
-                        HawDBError::Semantic(format!(
-                            "failed to bind INSERT column {column_name}: {error}"
-                        ))
-                    })?;
+                let column = &columns[*position];
+                let column_name = &column.name;
+                let bound = bind_relational_value(value.clone(), parameters).and_then(|value| {
+                    // Timestamps get the ordinary-table assignment conversion:
+                    // text parsing, TIMESTAMP/TIMESTAMPTZ conversion through
+                    // UTC and rounding to the declared precision.
+                    if is_timestamp(column.scalar_type) {
+                        crate::coerce_relational_value(value, column.scalar_type)
+                    } else {
+                        Ok(value)
+                    }
+                });
+                row[*position] = bound.map_err(|error| {
+                    HawDBError::Semantic(format!(
+                        "failed to bind INSERT column {column_name}: {error}"
+                    ))
+                })?;
             }
             Ok(row)
         })
@@ -478,7 +488,6 @@ fn collect_append_predicates(
             left.qualifier.as_deref().unwrap_or_default()
         )));
     }
-    let value = bind_relational_value(right.clone(), parameters)?;
     let (target, key_kind) = if left.name == schema.partition_key[0] && *op == SqlComparisonOp::Eq {
         (partition, "partition")
     } else if left.name == schema.order_key[0] && *op == SqlComparisonOp::Gt {
@@ -494,8 +503,19 @@ fn collect_append_predicates(
         .iter()
         .find(|column| column.name == left.name)
         .expect("strict append keys reference schema columns");
+    // Timestamp comparison operands follow ordinary tables: text is parsed as
+    // the column's type and is not rounded, so a finer-precision bound simply
+    // matches no stored (rounded) partition key.
+    let value = if is_timestamp(column.scalar_type) {
+        crate::query_value::value_to_relational_as(
+            crate::query_value::bind_sql_value(right, parameters)?,
+            column.scalar_type,
+        )?
+    } else {
+        bind_relational_value(right.clone(), parameters)?
+    };
     if matches!(value, RelationalValue::Null | RelationalValue::Overflow(_))
-        || !column.scalar_type.holds(value.as_ref())
+        || !column.scalar_type.value_type_matches(value.scalar_type())
     {
         return Err(HawDBError::Semantic(format!(
             "strict append {key_kind} key {} expects {:?}",
@@ -509,6 +529,14 @@ fn collect_append_predicates(
         )));
     }
     Ok(())
+}
+
+const fn is_timestamp(scalar_type: hawdb_storage::relational::RelationalScalarType) -> bool {
+    matches!(
+        scalar_type,
+        hawdb_storage::relational::RelationalScalarType::Timestamp(_)
+            | hawdb_storage::relational::RelationalScalarType::TimestampTz(_)
+    )
 }
 
 fn qualifier_matches(qualifier: &Option<String>, alias: Option<&str>, table: &str) -> bool {

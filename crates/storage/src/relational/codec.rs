@@ -2074,7 +2074,7 @@ impl<I: DecodeInput> Decoder<I> {
                 .ok_or_else(|| RelationalError::Corruption("zero VECTOR dimension".into())),
             tag @ (9 | 10) => super::decode_timestamp_type(tag, self.u8()?),
             tag => Err(RelationalError::Corruption(format!(
-                "invalid relational scalar type tag {tag}"
+                "invalid relational scalar type tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -2161,7 +2161,7 @@ impl<I: DecodeInput> Decoder<I> {
                     .map(RelationalValue::Vector)
             }
             tag => Err(RelationalError::Corruption(format!(
-                "invalid relational value tag {tag}"
+                "invalid relational value tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -2316,7 +2316,7 @@ impl<I: DecodeInput> Decoder<I> {
             1 => Ok(Some(RelationalColumnDefault::Literal(self.value()?))),
             2 => Ok(Some(RelationalColumnDefault::UuidV7)),
             tag => Err(RelationalError::Corruption(format!(
-                "invalid column default tag {tag}"
+                "invalid column default tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -2331,7 +2331,7 @@ impl<I: DecodeInput> Decoder<I> {
             ))),
             2 => Ok(Some(RelationalColumnDefault::UuidV7)),
             tag => Err(RelationalError::Corruption(format!(
-                "invalid column default tag {tag}"
+                "invalid column default tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
