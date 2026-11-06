@@ -8,10 +8,10 @@ use crate::search::SearchIndexReadLease;
 
 pub(super) struct AdmittedSearchRead {
     view: Arc<crate::api::PublishedConcurrentRead>,
-    mode: NowledgeMemGraphMode,
+    mode: GraphMode,
     resident: Option<SearchIndexReadLease>,
-    out_of_core: Option<NowledgeMemOutOfCoreSearchProjection>,
-    advisor: NowledgeMemRetrievalProjectionAdvisor,
+    out_of_core: Option<OutOfCoreSearchProjection>,
+    advisor: RetrievalProjectionAdvisor,
     task: RuntimeTaskContext,
 }
 
@@ -45,7 +45,7 @@ impl PublishedCanonicalRead {
     }
 }
 
-impl NowledgeMemEmbeddedStoreHandle {
+impl EmbeddedStoreHandle {
     pub(super) fn with_admitted_search<T>(
         &self,
         operation: impl FnOnce(&AdmittedSearchRead) -> Result<T>,
@@ -105,7 +105,7 @@ impl NowledgeMemEmbeddedStoreHandle {
 impl AdmittedSearchRead {
     pub(super) fn shadow_evidence_json<I, S>(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
+        request: &SearchCandidateRequest,
         primary_candidate_ids: I,
     ) -> Result<serde_json::Value>
     where
@@ -117,7 +117,7 @@ impl AdmittedSearchRead {
             return Err(missing_search_projection_error());
         }
         let output = self.search_candidates(request)?;
-        let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+        let mut accumulator = SearchCandidateShadowAccumulator::new();
         accumulator.record_search_candidate_output(primary_candidate_ids, &output);
         Ok(accumulator.evidence().json())
     }
@@ -136,8 +136,8 @@ impl AdmittedSearchRead {
 
     pub(super) fn search_candidates(
         &self,
-        request: &NowledgeMemSearchCandidateRequest,
-    ) -> Result<NowledgeMemSearchCandidateOutput> {
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
         match (&self.resident, &self.out_of_core) {
             (Some(lease), None) => ResidentProjectionRef::Snapshot(lease.snapshot())
                 .try_search_candidates_with_report_context(request, self.execution()),
@@ -149,10 +149,7 @@ impl AdmittedSearchRead {
         }
     }
 
-    pub(super) fn hydrate(
-        &self,
-        document_ids: &[String],
-    ) -> Result<NowledgeMemSearchHydrationOutput> {
+    pub(super) fn hydrate(&self, document_ids: &[String]) -> Result<SearchHydrationOutput> {
         let max_payload_bytes = self
             .view
             .snapshot
@@ -175,7 +172,7 @@ impl AdmittedSearchRead {
                     )?;
                     documents.push(document.clone());
                 }
-                Ok(NowledgeMemSearchHydrationOutput {
+                Ok(SearchHydrationOutput {
                     documents,
                     out_of_core_metrics: None,
                 })
@@ -183,7 +180,7 @@ impl AdmittedSearchRead {
             (None, Some(projection)) => {
                 let output = projection.hydrate_documents(document_ids)?;
                 check_hydration_budget(output.metrics.hydrated_bytes, max_payload_bytes)?;
-                Ok(NowledgeMemSearchHydrationOutput {
+                Ok(SearchHydrationOutput {
                     documents: output.documents,
                     out_of_core_metrics: Some(output.metrics),
                 })
@@ -193,10 +190,7 @@ impl AdmittedSearchRead {
         }
     }
 
-    pub(super) fn retrieve(
-        &self,
-        request: &KnowledgeRetrievalRequest,
-    ) -> Result<NowledgeMemRetrievalOutput> {
+    pub(super) fn retrieve(&self, request: &KnowledgeRetrievalRequest) -> Result<RetrievalOutput> {
         let config = self.view.snapshot.config();
         let (search, freshness, out_of_core_search_metrics) =
             match (&self.resident, &self.out_of_core) {
@@ -235,9 +229,8 @@ impl AdmittedSearchRead {
             .view
             .begin_read_transaction_with_context(&self.task)?
             .try_retrieve_knowledge_from_search(search, freshness, request)?;
-        let report =
-            nowledge_mem_retrieval_report(self.mode, config.compressed_vector_search_mode, &output);
-        Ok(NowledgeMemRetrievalOutput {
+        let report = retrieval_report(self.mode, config.compressed_vector_search_mode, &output);
+        Ok(RetrievalOutput {
             output,
             report,
             out_of_core_search_metrics,
@@ -247,10 +240,10 @@ impl AdmittedSearchRead {
 
 pub(super) fn retrieval_request(
     config: &DatabaseConfig,
-    advisor: &NowledgeMemRetrievalProjectionAdvisor,
+    advisor: &RetrievalProjectionAdvisor,
     request: &KnowledgeRetrievalRequest,
-) -> NowledgeMemSearchCandidateRequest {
-    NowledgeMemSearchCandidateRequest {
+) -> SearchCandidateRequest {
+    SearchCandidateRequest {
         query_text: request.query_text.clone(),
         query_embedding: request.query_embedding.clone(),
         mode: request.mode,

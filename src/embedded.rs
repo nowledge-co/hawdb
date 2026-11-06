@@ -13,9 +13,7 @@
 // limitations under the License.
 
 use crate::blackbox::{write_blackbox_report, BlackboxReportOptions, BlackboxRunStatus};
-use crate::nowledge_mem::{
-    NowledgeMemEmbeddedStore, NowledgeMemOpenOptions, NowledgeMemOpenReport,
-};
+use crate::embedded_store::{EmbeddedStore, EmbeddedStoreOpenOptions, EmbeddedStoreOpenReport};
 use crate::store::DurabilityPolicy;
 use crate::{
     AdaptiveVectorBackendPolicy, Database, DatabaseConfig, DatabaseReadTransaction, HawDBError,
@@ -332,10 +330,10 @@ impl HawDBEmbedded {
         }
     }
 
-    pub fn open_nowledge_mem(
-        options: NowledgeMemOpenOptions,
-    ) -> Result<(NowledgeMemEmbeddedStore, NowledgeMemOpenReport)> {
-        NowledgeMemEmbeddedStore::open_with_options(options)
+    pub fn open_embedded_store(
+        options: EmbeddedStoreOpenOptions,
+    ) -> Result<(EmbeddedStore, EmbeddedStoreOpenReport)> {
+        EmbeddedStore::open_with_options(options)
     }
 
     /// Returns the durable project path, or an empty path for an in-memory
@@ -910,8 +908,8 @@ fn default_runtime_governor_config(profile: EmbeddedDeploymentProfile) -> Runtim
 mod tests {
     use super::*;
     use crate::{
-        HawDBError, NowledgeMemGraphMode, NowledgeMemReadinessOptions, RuntimeCapability, Value,
-        NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL,
+        GraphMode, HawDBError, ReadinessOptions, RuntimeCapability, Value,
+        LIBRARY_READINESS_PROTOCOL,
     };
     use std::collections::BTreeMap;
     use std::num::NonZeroUsize;
@@ -956,25 +954,25 @@ mod tests {
     }
 
     #[test]
-    fn embedded_handle_opens_nowledge_mem_store() {
+    fn embedded_handle_opens_store() {
         let root = unique_test_dir("embedded-nowledge-mem");
         let graph_path = root.join("graph");
-        let (store, open_report) = HawDBEmbedded::open_nowledge_mem(
-            NowledgeMemOpenOptions::graph_only(&graph_path, NowledgeMemGraphMode::WritableCutover),
+        let (store, open_report) = HawDBEmbedded::open_embedded_store(
+            EmbeddedStoreOpenOptions::graph_only(&graph_path, GraphMode::WritableCutover),
         )
         .unwrap();
 
         let readiness = store
-            .library_readiness(&NowledgeMemReadinessOptions::default())
+            .library_readiness(&ReadinessOptions::default())
             .unwrap();
 
-        assert_eq!(open_report.mode, NowledgeMemGraphMode::WritableCutover);
+        assert_eq!(open_report.mode, GraphMode::WritableCutover);
         assert!(open_report.graph_configured);
         assert!(open_report.graph_opened);
         assert!(!open_report.search_projection_configured);
         assert!(!open_report.search_projection_opened);
-        assert_eq!(readiness.protocol, NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL);
-        assert_eq!(readiness.mode, NowledgeMemGraphMode::WritableCutover);
+        assert_eq!(readiness.protocol, LIBRARY_READINESS_PROTOCOL);
+        assert_eq!(readiness.mode, GraphMode::WritableCutover);
         assert!(readiness.graph_open);
     }
 

@@ -14,16 +14,16 @@
 
 //! Host-neutral cutover controls and fail-closed reduction for Nowledge Mem.
 
-use crate::nowledge_mem_runtime_status::NowledgeMemProductionStatus;
-use crate::previous_wrapper_preflight::NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL;
+use crate::previous_wrapper_preflight::CUTOVER_CONTROLS_PROTOCOL;
+use crate::runtime_status::EmbeddedProductionStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemReadControl {
+pub enum ReadControl {
     Legacy,
     HawDB,
 }
 
-impl NowledgeMemReadControl {
+impl ReadControl {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Legacy => "legacy",
@@ -37,12 +37,12 @@ impl NowledgeMemReadControl {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemWorkControl {
+pub enum WorkControl {
     Disabled,
     Enabled,
 }
 
-impl NowledgeMemWorkControl {
+impl WorkControl {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
@@ -56,42 +56,42 @@ impl NowledgeMemWorkControl {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemCutoverControls {
-    pub graph_reads: NowledgeMemReadControl,
-    pub search_reads: NowledgeMemReadControl,
-    pub dual_writes: NowledgeMemWorkControl,
-    pub initial_import: NowledgeMemWorkControl,
-    pub projection_catch_up: NowledgeMemWorkControl,
+pub struct CutoverControls {
+    pub graph_reads: ReadControl,
+    pub search_reads: ReadControl,
+    pub dual_writes: WorkControl,
+    pub initial_import: WorkControl,
+    pub projection_catch_up: WorkControl,
 }
 
-impl NowledgeMemCutoverControls {
+impl CutoverControls {
     pub const fn legacy() -> Self {
         Self {
-            graph_reads: NowledgeMemReadControl::Legacy,
-            search_reads: NowledgeMemReadControl::Legacy,
-            dual_writes: NowledgeMemWorkControl::Disabled,
-            initial_import: NowledgeMemWorkControl::Disabled,
-            projection_catch_up: NowledgeMemWorkControl::Disabled,
+            graph_reads: ReadControl::Legacy,
+            search_reads: ReadControl::Legacy,
+            dual_writes: WorkControl::Disabled,
+            initial_import: WorkControl::Disabled,
+            projection_catch_up: WorkControl::Disabled,
         }
     }
 
     pub const fn hawdb_shadow() -> Self {
         Self {
-            graph_reads: NowledgeMemReadControl::Legacy,
-            search_reads: NowledgeMemReadControl::Legacy,
-            dual_writes: NowledgeMemWorkControl::Enabled,
-            initial_import: NowledgeMemWorkControl::Enabled,
-            projection_catch_up: NowledgeMemWorkControl::Enabled,
+            graph_reads: ReadControl::Legacy,
+            search_reads: ReadControl::Legacy,
+            dual_writes: WorkControl::Enabled,
+            initial_import: WorkControl::Enabled,
+            projection_catch_up: WorkControl::Enabled,
         }
     }
 
     pub const fn hawdb_reads() -> Self {
         Self {
-            graph_reads: NowledgeMemReadControl::HawDB,
-            search_reads: NowledgeMemReadControl::HawDB,
-            dual_writes: NowledgeMemWorkControl::Enabled,
-            initial_import: NowledgeMemWorkControl::Disabled,
-            projection_catch_up: NowledgeMemWorkControl::Enabled,
+            graph_reads: ReadControl::HawDB,
+            search_reads: ReadControl::HawDB,
+            dual_writes: WorkControl::Enabled,
+            initial_import: WorkControl::Disabled,
+            projection_catch_up: WorkControl::Enabled,
         }
     }
 
@@ -106,17 +106,17 @@ impl NowledgeMemCutoverControls {
     }
 }
 
-impl Default for NowledgeMemCutoverControls {
+impl Default for CutoverControls {
     fn default() -> Self {
         Self::legacy()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemCutoverControlsReport {
+pub struct CutoverControlsReport {
     pub protocol: String,
     pub ready: bool,
-    pub controls: NowledgeMemCutoverControls,
+    pub controls: CutoverControls,
     pub graph_read_selected_hawdb: bool,
     pub graph_read_effective: bool,
     pub search_read_selected_hawdb: bool,
@@ -128,14 +128,14 @@ pub struct NowledgeMemCutoverControlsReport {
     pub initial_import_safe_for_read_cutover: bool,
     pub projection_catch_up_enabled: bool,
     pub blocker_codes: Vec<String>,
-    pub production_status: NowledgeMemProductionStatus,
+    pub production_status: EmbeddedProductionStatus,
 }
 
-impl NowledgeMemCutoverControlsReport {
+impl CutoverControlsReport {
     #[doc(hidden)]
     pub fn from_production_status(
-        controls: NowledgeMemCutoverControls,
-        production_status: NowledgeMemProductionStatus,
+        controls: CutoverControls,
+        production_status: EmbeddedProductionStatus,
         initial_import_cutover_catch_up_ready: bool,
     ) -> Self {
         let graph_read_selected_hawdb = controls.graph_reads.selects_hawdb();
@@ -169,7 +169,7 @@ impl NowledgeMemCutoverControlsReport {
         }
 
         Self {
-            protocol: NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL.to_string(),
+            protocol: CUTOVER_CONTROLS_PROTOCOL.to_string(),
             ready: blocker_codes.is_empty(),
             controls,
             graph_read_selected_hawdb,
@@ -221,19 +221,19 @@ impl NowledgeMemCutoverControlsReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{NowledgeMemCutoverControls, NowledgeMemCutoverControlsReport};
+    use super::{CutoverControls, CutoverControlsReport};
     use crate::{
-        bounded_read_evidence::NowledgeMemGraphMode,
-        nowledge_mem_runtime_status::{NowledgeMemProductionStatus, NowledgeMemRuntimeStatus},
+        bounded_read_evidence::GraphMode,
+        runtime_status::{EmbeddedProductionStatus, EmbeddedRuntimeStatus},
     };
     use hawdb_storage::projection::SearchProjectionChangefeedStatus;
 
     #[test]
     fn active_import_fails_closed_without_catch_up_evidence() {
-        let status = NowledgeMemProductionStatus::from_runtime(
-            NowledgeMemGraphMode::WritableCutover,
+        let status = EmbeddedProductionStatus::from_runtime(
+            GraphMode::WritableCutover,
             false,
-            NowledgeMemRuntimeStatus {
+            EmbeddedRuntimeStatus {
                 protocol: "test".to_string(),
                 graph_commit_epoch: 0,
                 changefeed: SearchProjectionChangefeedStatus {
@@ -252,8 +252,8 @@ mod tests {
             },
             None,
         );
-        let report = NowledgeMemCutoverControlsReport::from_production_status(
-            NowledgeMemCutoverControls::hawdb_shadow(),
+        let report = CutoverControlsReport::from_production_status(
+            CutoverControls::hawdb_shadow(),
             status,
             false,
         );

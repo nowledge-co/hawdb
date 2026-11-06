@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{nowledge_mem_integration_bundle_json, IntegrationBundleInputs};
+use super::{integration_bundle_json, IntegrationBundleInputs};
 use crate::graph_summary::{
     nowledge_graph_route_readiness_summary, nowledge_graph_route_readiness_summary_from_bundle,
 };
@@ -98,7 +98,7 @@ fn check(selected: &[&Value], label: &str) {
         patch(&mut expected_summary, &case["summary"]);
     }
     let before = expected.clone();
-    let actual = nowledge_mem_integration_bundle_json(inputs(&expected)).unwrap();
+    let actual = integration_bundle_json(inputs(&expected)).unwrap();
     assert_eq!(actual, expected, "{label}: {selected:?}");
     let graph = &actual["graph_route_readiness"];
     let direct = nowledge_graph_route_readiness_summary(graph);
@@ -181,7 +181,7 @@ fn campaign(seeds: u64, cases_per_seed: usize, include_corpus: bool) {
 
 #[test]
 fn required_inputs_preserve_admission_errors_and_order() {
-    let err = nowledge_mem_integration_bundle_json(IntegrationBundleInputs::default()).unwrap_err();
+    let err = integration_bundle_json(IntegrationBundleInputs::default()).unwrap_err();
     assert!(
         matches!(err, hawdb_core::HawDBError::Semantic(ref message) if message == "--submodule-path is required")
     );
@@ -234,7 +234,7 @@ fn required_inputs_preserve_admission_errors_and_order() {
     for &(flag, remove) in missing {
         let mut input = complete.clone();
         remove(&mut input);
-        let err = nowledge_mem_integration_bundle_json(input).unwrap_err();
+        let err = integration_bundle_json(input).unwrap_err();
         assert!(
             matches!(err, hawdb_core::HawDBError::Semantic(ref message) if message == &format!("{flag} is required")),
             "{flag}: {err:?}"
@@ -244,14 +244,14 @@ fn required_inputs_preserve_admission_errors_and_order() {
         let mut input = complete.clone();
         input.submodule_path = path;
         assert!(
-            matches!(nowledge_mem_integration_bundle_json(input), Err(hawdb_core::HawDBError::Semantic(message)) if message == "--submodule-path is required")
+            matches!(integration_bundle_json(input), Err(hawdb_core::HawDBError::Semantic(message)) if message == "--submodule-path is required")
         );
     }
     let mut input = complete;
     input.coexistence_mode = Some("active".to_string());
     input.content_store_engine = None;
     assert!(
-        matches!(nowledge_mem_integration_bundle_json(input), Err(hawdb_core::HawDBError::Semantic(message)) if message == "--coexistence-mode must be shadow or side_by_side")
+        matches!(integration_bundle_json(input), Err(hawdb_core::HawDBError::Semantic(message)) if message == "--coexistence-mode must be shadow or side_by_side")
     );
 }
 
@@ -288,8 +288,8 @@ fn require_ready_remains_adapter_policy_and_blocker_order_is_stable() {
         .collect::<Vec<_>>();
         let mut other = input.clone();
         other.require_ready = !input.require_ready;
-        let bundle = nowledge_mem_integration_bundle_json(input).unwrap();
-        assert_eq!(bundle, nowledge_mem_integration_bundle_json(other).unwrap());
+        let bundle = integration_bundle_json(input).unwrap();
+        assert_eq!(bundle, integration_bundle_json(other).unwrap());
         assert_eq!(
             bundle["coexistence"]["blocker_codes"],
             json!(expected_coexistence)
@@ -313,7 +313,7 @@ fn path_redaction_and_nonempty_strings_are_not_normalized() {
         input.submodule_path = Some(path.to_string());
         input.submodule_commit = Some(" commit ".to_string());
         input.content_store_engine = Some(" sqlite ".to_string());
-        let result = nowledge_mem_integration_bundle_json(input).unwrap();
+        let result = integration_bundle_json(input).unwrap();
         assert_eq!(result["submodule"]["path"], label);
         assert_eq!(result["submodule"]["commit"], " commit ");
         assert_eq!(result["content_store"]["engine"], " sqlite ");

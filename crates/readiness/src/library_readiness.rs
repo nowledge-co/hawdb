@@ -17,29 +17,26 @@
 //! The embedded facade owns database opening and probe execution. This module
 //! evaluates the resulting redacted evidence without a dependency on that host.
 
-use crate::bounded_read_evidence::{
-    NowledgeMemGraphMode, NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL,
-};
-use crate::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
+use crate::bounded_read_evidence::{GraphMode, BOUNDED_READ_EVIDENCE_PROTOCOL};
+use crate::{ReadinessAreaMap, ReadinessAreaSummary};
 use hawdb_evidence::inventory::background_maintenance_evidence_health;
 use hawdb_evidence::json_access::{
     evidence_bool, evidence_string, evidence_u64, nested_bool, nested_u64, nested_value,
     string_array_at,
 };
 use hawdb_evidence::replacement_contract::{
-    NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE, NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+    NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL, SEARCH_CANDIDATE_EVIDENCE_ROUTE,
+    SEARCH_CANDIDATE_EVIDENCE_SOURCE, SEARCH_CANDIDATE_PRIMARY_ENGINE,
+    SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
 };
 use hawdb_evidence::resource_profile::{
     production_resource_profile_blocker_codes, production_resource_profile_ready,
 };
 use hawdb_route_ownership::graph::{
-    nowledge_mem_graph_read_route_catalog_digest, NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
+    graph_read_route_catalog_digest, GRAPH_READ_ROUTE_CATALOG_VERSION,
 };
 use hawdb_route_ownership::{
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
+    ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL, SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
 };
 use std::collections::BTreeSet;
 
@@ -57,7 +54,7 @@ const HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING: &str =
 
 fn search_route_ownership_ready(evidence: &serde_json::Value) -> bool {
     evidence.get("protocol").and_then(serde_json::Value::as_str)
-        == Some(NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL)
+        == Some(SEARCH_ROUTE_OWNERSHIP_PROTOCOL)
         && evidence.get("ready").and_then(serde_json::Value::as_bool) == Some(true)
         && evidence
             .get("production_cutover_ready")
@@ -75,7 +72,7 @@ fn search_route_ownership_ready(evidence: &serde_json::Value) -> bool {
 
 fn active_search_route_ownership_ready(evidence: &serde_json::Value) -> bool {
     evidence.get("protocol").and_then(serde_json::Value::as_str)
-        == Some(NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL)
+        == Some(SEARCH_ROUTE_OWNERSHIP_PROTOCOL)
         && evidence.get("ready").and_then(serde_json::Value::as_bool) == Some(true)
         && evidence
             .get("production_cutover_ready")
@@ -93,7 +90,7 @@ fn active_search_route_ownership_ready(evidence: &serde_json::Value) -> bool {
 
 fn active_search_route_readiness_ready(evidence: &serde_json::Value) -> bool {
     evidence.get("protocol").and_then(serde_json::Value::as_str)
-        == Some(NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL)
+        == Some(ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL)
         && evidence.get("ready").and_then(serde_json::Value::as_bool) == Some(true)
         && evidence
             .get("production_cutover_ready")
@@ -109,7 +106,7 @@ fn active_search_route_readiness_ready(evidence: &serde_json::Value) -> bool {
             .is_some_and(Vec::is_empty)
 }
 
-pub struct NowledgeMemLibraryReadinessEvidence<'a> {
+pub struct LibraryReadinessEvidence<'a> {
     pub bounded_read_evidence: &'a serde_json::Value,
     pub storage_recovery: &'a serde_json::Value,
     pub background_maintenance: &'a serde_json::Value,
@@ -125,9 +122,7 @@ pub struct NowledgeMemLibraryReadinessEvidence<'a> {
     pub production_resource_profile: &'a serde_json::Value,
 }
 
-fn library_readiness_blocker_codes(
-    evidence: &NowledgeMemLibraryReadinessEvidence<'_>,
-) -> Vec<&'static str> {
+fn library_readiness_blocker_codes(evidence: &LibraryReadinessEvidence<'_>) -> Vec<&'static str> {
     let mut blockers = Vec::new();
     if !bounded_read_evidence_ready(evidence.bounded_read_evidence) {
         blockers.push("bounded_read_evidence_not_ready");
@@ -186,11 +181,9 @@ fn library_readiness_blocker_codes(
     blockers
 }
 
-fn library_readiness_by_area(
-    evidence: &NowledgeMemLibraryReadinessEvidence<'_>,
-) -> NowledgeMemReadinessAreaMap {
-    NowledgeMemReadinessAreaMap {
-        graph: NowledgeMemReadinessAreaSummary::new("graph", true, Vec::new()),
+fn library_readiness_by_area(evidence: &LibraryReadinessEvidence<'_>) -> ReadinessAreaMap {
+    ReadinessAreaMap {
+        graph: ReadinessAreaSummary::new("graph", true, Vec::new()),
         query: bounded_read_readiness_area(evidence.bounded_read_evidence),
         query_family: readiness_area(
             "query_family",
@@ -226,7 +219,7 @@ fn library_readiness_by_area(
 fn storage_readiness_area(
     storage_recovery: &serde_json::Value,
     production_resource_profile: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
+) -> ReadinessAreaSummary {
     let mut blocker_codes = Vec::new();
     if storage_recovery
         .get("ready")
@@ -238,19 +231,19 @@ fn storage_readiness_area(
     blocker_codes.extend(production_resource_profile_blocker_codes(
         production_resource_profile,
     ));
-    NowledgeMemReadinessAreaSummary::new("storage", blocker_codes.is_empty(), blocker_codes)
+    ReadinessAreaSummary::new("storage", blocker_codes.is_empty(), blocker_codes)
 }
 
-fn bounded_read_readiness_area(evidence: &serde_json::Value) -> NowledgeMemReadinessAreaSummary {
+fn bounded_read_readiness_area(evidence: &serde_json::Value) -> ReadinessAreaSummary {
     let blocker_codes = bounded_read_readiness_blocker_codes(evidence);
-    NowledgeMemReadinessAreaSummary::new("query", blocker_codes.is_empty(), blocker_codes)
+    ReadinessAreaSummary::new("query", blocker_codes.is_empty(), blocker_codes)
 }
 
 fn search_route_ownership_readiness_area(
     evidence: &serde_json::Value,
     active_route_evidence: &serde_json::Value,
     active_read_evidence: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
+) -> ReadinessAreaSummary {
     let ready = search_route_ownership_ready(evidence)
         && active_search_route_ownership_ready(active_route_evidence)
         && active_search_route_readiness_ready(active_read_evidence);
@@ -292,7 +285,7 @@ fn search_route_ownership_readiness_area(
             codes
         }
     };
-    NowledgeMemReadinessAreaSummary::new("search_route_ownership", ready, blocker_codes)
+    ReadinessAreaSummary::new("search_route_ownership", ready, blocker_codes)
 }
 
 fn bounded_read_evidence_ready(evidence: &serde_json::Value) -> bool {
@@ -307,13 +300,13 @@ fn bounded_read_readiness_blocker_codes(evidence: &serde_json::Value) -> Vec<Str
         }
         return blockers.into_iter().collect();
     }
-    if evidence_string(evidence, "protocol") != Some(NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL) {
+    if evidence_string(evidence, "protocol") != Some(BOUNDED_READ_EVIDENCE_PROTOCOL) {
         blockers.insert("bounded_read_protocol_mismatch".to_string());
     }
     if evidence_bool(evidence, "ready") != Some(true) {
         blockers.insert("bounded_read_not_ready".to_string());
     }
-    if evidence_string(evidence, "mode") != Some(NowledgeMemGraphMode::ShadowReadOnly.as_str()) {
+    if evidence_string(evidence, "mode") != Some(GraphMode::ShadowReadOnly.as_str()) {
         blockers.insert("bounded_read_not_shadow_read_only".to_string());
     }
     let max_rows = evidence_u64(evidence, "max_rows");
@@ -361,10 +354,9 @@ fn bounded_read_readiness_blocker_codes(evidence: &serde_json::Value) -> Vec<Str
     {
         blockers.insert("bounded_read_missing_covered_routes".to_string());
     }
-    if evidence_string(evidence, "route_catalog_version")
-        != Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION)
+    if evidence_string(evidence, "route_catalog_version") != Some(GRAPH_READ_ROUTE_CATALOG_VERSION)
         || evidence_string(evidence, "route_catalog_digest")
-            != Some(nowledge_mem_graph_read_route_catalog_digest().as_str())
+            != Some(graph_read_route_catalog_digest().as_str())
     {
         blockers.insert("bounded_read_route_catalog_stale".to_string());
     }
@@ -390,22 +382,14 @@ fn bounded_read_readiness_blocker_codes(evidence: &serde_json::Value) -> Vec<Str
     blockers.into_iter().collect()
 }
 
-fn search_projection_readiness_area(
-    evidence: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
+fn search_projection_readiness_area(evidence: &serde_json::Value) -> ReadinessAreaSummary {
     let blocker_codes = search_projection_readiness_blocker_codes(evidence);
-    NowledgeMemReadinessAreaSummary::new(
-        "search_projection",
-        blocker_codes.is_empty(),
-        blocker_codes,
-    )
+    ReadinessAreaSummary::new("search_projection", blocker_codes.is_empty(), blocker_codes)
 }
 
-fn search_projection_shadow_readiness_area(
-    evidence: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
+fn search_projection_shadow_readiness_area(evidence: &serde_json::Value) -> ReadinessAreaSummary {
     let blocker_codes = search_projection_shadow_readiness_blocker_codes(evidence);
-    NowledgeMemReadinessAreaSummary::new(
+    ReadinessAreaSummary::new(
         "search_projection_shadow",
         blocker_codes.is_empty(),
         blocker_codes,
@@ -558,11 +542,9 @@ fn search_projection_shadow_readiness_blocker_codes(evidence: &serde_json::Value
     blockers.into_iter().collect()
 }
 
-fn search_candidate_shadow_readiness_area(
-    evidence: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
+fn search_candidate_shadow_readiness_area(evidence: &serde_json::Value) -> ReadinessAreaSummary {
     let blocker_codes = search_candidate_shadow_readiness_blocker_codes(evidence);
-    NowledgeMemReadinessAreaSummary::new(
+    ReadinessAreaSummary::new(
         "search_candidate_shadow",
         blocker_codes.is_empty(),
         blocker_codes,
@@ -573,15 +555,9 @@ fn search_candidate_shadow_evidence_ready(evidence: &serde_json::Value) -> bool 
     search_candidate_shadow_readiness_blocker_codes(evidence).is_empty()
 }
 
-fn workload_fixture_readiness_area(
-    evidence: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
+fn workload_fixture_readiness_area(evidence: &serde_json::Value) -> ReadinessAreaSummary {
     let blocker_codes = workload_fixture_readiness_blocker_codes(evidence);
-    NowledgeMemReadinessAreaSummary::new(
-        "workload_fixture",
-        blocker_codes.is_empty(),
-        blocker_codes,
-    )
+    ReadinessAreaSummary::new("workload_fixture", blocker_codes.is_empty(), blocker_codes)
 }
 
 fn workload_fixture_evidence_ready(evidence: &serde_json::Value) -> bool {
@@ -727,24 +703,20 @@ fn search_candidate_shadow_readiness_blocker_codes(evidence: &serde_json::Value)
         }
         return blockers.into_iter().collect();
     }
-    if evidence_string(evidence, "protocol")
-        != Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL)
-    {
+    if evidence_string(evidence, "protocol") != Some(SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL) {
         blockers.insert("search_candidate_shadow_protocol_mismatch".to_string());
     }
-    if evidence_string(evidence, "route") != Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE) {
+    if evidence_string(evidence, "route") != Some(SEARCH_CANDIDATE_EVIDENCE_ROUTE) {
         blockers.insert("search_candidate_shadow_route_mismatch".to_string());
     }
-    if evidence_string(evidence, "evidence_source")
-        != Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE)
-    {
+    if evidence_string(evidence, "evidence_source") != Some(SEARCH_CANDIDATE_EVIDENCE_SOURCE) {
         blockers.insert("search_candidate_shadow_evidence_source_mismatch".to_string());
     }
     if evidence_bool(evidence, "ready") != Some(true) {
         blockers.insert("search_candidate_shadow_not_ready".to_string());
     }
     if evidence_string(evidence, "candidate_primary_engine")
-        != Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE)
+        != Some(SEARCH_CANDIDATE_PRIMARY_ENGINE)
     {
         blockers.insert("search_candidate_primary_engine_not_hawdb".to_string());
     }
@@ -846,9 +818,9 @@ fn readiness_area(
     name: &'static str,
     evidence: &serde_json::Value,
     fallback_blocker_code: &'static str,
-) -> NowledgeMemReadinessAreaSummary {
+) -> ReadinessAreaSummary {
     let ready = evidence.get("ready").and_then(serde_json::Value::as_bool) == Some(true);
-    NowledgeMemReadinessAreaSummary::new(
+    ReadinessAreaSummary::new(
         name,
         ready,
         readiness_blocker_codes(evidence, fallback_blocker_code, ready),
@@ -857,9 +829,9 @@ fn readiness_area(
 
 fn background_maintenance_readiness_area(
     background_maintenance: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
+) -> ReadinessAreaSummary {
     let health = background_maintenance_evidence_health(Some(background_maintenance), true);
-    NowledgeMemReadinessAreaSummary::new("background", health.ready, health.blocker_codes)
+    ReadinessAreaSummary::new("background", health.ready, health.blocker_codes)
 }
 
 fn library_background_maintenance_ready(background_maintenance: &serde_json::Value) -> bool {
@@ -893,20 +865,20 @@ fn readiness_blocker_codes(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemLibraryReadinessAssessment {
+pub struct LibraryReadinessAssessment {
     pub blocker_codes: Vec<String>,
-    pub readiness_by_area: NowledgeMemReadinessAreaMap,
+    pub readiness_by_area: ReadinessAreaMap,
 }
 
-pub fn assess_nowledge_mem_library_readiness(
-    evidence: &NowledgeMemLibraryReadinessEvidence<'_>,
-) -> NowledgeMemLibraryReadinessAssessment {
+pub fn assess_library_readiness(
+    evidence: &LibraryReadinessEvidence<'_>,
+) -> LibraryReadinessAssessment {
     let blocker_codes = library_readiness_blocker_codes(evidence)
         .into_iter()
         .map(str::to_string)
         .collect();
     let readiness_by_area = library_readiness_by_area(evidence);
-    NowledgeMemLibraryReadinessAssessment {
+    LibraryReadinessAssessment {
         blocker_codes,
         readiness_by_area,
     }
@@ -919,22 +891,21 @@ mod tests {
     #[test]
     fn missing_evidence_fails_closed_in_every_area() {
         let missing = serde_json::json!({ "present": false });
-        let assessment =
-            assess_nowledge_mem_library_readiness(&NowledgeMemLibraryReadinessEvidence {
-                bounded_read_evidence: &missing,
-                storage_recovery: &missing,
-                background_maintenance: &missing,
-                query_family_evidence: &missing,
-                graph_route_readiness: &missing,
-                search_route_ownership: &missing,
-                active_search_route_ownership: &missing,
-                active_search_route_readiness: &missing,
-                search_projection_evidence: &missing,
-                search_projection_shadow_evidence: &missing,
-                search_candidate_shadow_evidence: &missing,
-                workload_fixture_evidence: &missing,
-                production_resource_profile: &missing,
-            });
+        let assessment = assess_library_readiness(&LibraryReadinessEvidence {
+            bounded_read_evidence: &missing,
+            storage_recovery: &missing,
+            background_maintenance: &missing,
+            query_family_evidence: &missing,
+            graph_route_readiness: &missing,
+            search_route_ownership: &missing,
+            active_search_route_ownership: &missing,
+            active_search_route_readiness: &missing,
+            search_projection_evidence: &missing,
+            search_projection_shadow_evidence: &missing,
+            search_candidate_shadow_evidence: &missing,
+            workload_fixture_evidence: &missing,
+            production_resource_profile: &missing,
+        });
 
         assert_eq!(assessment.blocker_codes.len(), 13);
         assert!(!assessment.readiness_by_area.query.ready);

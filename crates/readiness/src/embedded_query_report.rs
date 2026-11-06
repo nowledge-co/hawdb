@@ -17,7 +17,7 @@
 //! The facade owns statement execution and live instrumentation. This module owns
 //! the portable report shape and JSON encoding used by readiness tooling.
 
-use crate::bounded_read_evidence::NowledgeMemGraphMode;
+use crate::bounded_read_evidence::GraphMode;
 use hawdb_cypher::Statement;
 use hawdb_executor::{
     GraphExpansionExecutionReport, GroupedEvidenceExecutionReport, PipelineMemoryReport,
@@ -27,24 +27,22 @@ use hawdb_plan_cache::PlanCacheLookup;
 use hawdb_storage::scan::{ScanPruningReport, ScanPruningStrategy};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use hawdb_evidence::inventory::NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL;
-pub use hawdb_nowledge_contracts::NowledgeMemQueryExecutionPath;
+pub use hawdb_evidence::inventory::QUERY_REPORT_PROTOCOL;
+pub use hawdb_nowledge_contracts::EmbeddedQueryExecutionPath;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemFastPathClassification {
-    pub execution_path: NowledgeMemQueryExecutionPath,
+pub struct FastPathClassification {
+    pub execution_path: EmbeddedQueryExecutionPath,
     pub fast_path_reason: Option<&'static str>,
 }
 
-pub fn nowledge_mem_fast_path_classification(
-    statement: &Statement,
-) -> NowledgeMemFastPathClassification {
+pub fn fast_path_classification(statement: &Statement) -> FastPathClassification {
     let shape = hawdb_cypher::read_route::classify_read_route_shape(statement);
-    NowledgeMemFastPathClassification {
+    FastPathClassification {
         execution_path: if shape.is_fast_path() {
-            NowledgeMemQueryExecutionPath::FastPath
+            EmbeddedQueryExecutionPath::FastPath
         } else {
-            NowledgeMemQueryExecutionPath::OptimizedPath
+            EmbeddedQueryExecutionPath::OptimizedPath
         },
         fast_path_reason: shape.fast_path_reason,
     }
@@ -52,7 +50,7 @@ pub fn nowledge_mem_fast_path_classification(
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemPlanCacheReport {
+pub struct PlanCacheReport {
     pub cacheable: bool,
     pub hit: bool,
     pub miss: bool,
@@ -60,29 +58,27 @@ pub struct NowledgeMemPlanCacheReport {
 }
 
 #[doc(hidden)]
-pub const fn nowledge_mem_plan_cache_report(
-    lookup: Option<PlanCacheLookup>,
-) -> NowledgeMemPlanCacheReport {
+pub const fn plan_cache_report(lookup: Option<PlanCacheLookup>) -> PlanCacheReport {
     match lookup {
-        Some(PlanCacheLookup::Hit) => NowledgeMemPlanCacheReport {
+        Some(PlanCacheLookup::Hit) => PlanCacheReport {
             cacheable: true,
             hit: true,
             miss: false,
             bypassed: false,
         },
-        Some(PlanCacheLookup::Miss) => NowledgeMemPlanCacheReport {
+        Some(PlanCacheLookup::Miss) => PlanCacheReport {
             cacheable: true,
             hit: false,
             miss: true,
             bypassed: false,
         },
-        Some(PlanCacheLookup::Bypass(_)) => NowledgeMemPlanCacheReport {
+        Some(PlanCacheLookup::Bypass(_)) => PlanCacheReport {
             cacheable: false,
             hit: false,
             miss: false,
             bypassed: true,
         },
-        None => NowledgeMemPlanCacheReport {
+        None => PlanCacheReport {
             cacheable: false,
             hit: false,
             miss: false,
@@ -92,11 +88,11 @@ pub const fn nowledge_mem_plan_cache_report(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemQueryReport {
+pub struct EmbeddedQueryReport {
     pub protocol: String,
-    pub mode: NowledgeMemGraphMode,
+    pub mode: GraphMode,
     pub statement_kind: String,
-    pub execution_path: NowledgeMemQueryExecutionPath,
+    pub execution_path: EmbeddedQueryExecutionPath,
     pub fast_path_reason: Option<String>,
     pub elapsed_micros: u128,
     pub slow_log_threshold_micros: Option<u128>,
@@ -117,11 +113,11 @@ pub struct NowledgeMemQueryReport {
     pub text_seed_execution_reports: Vec<TextSeedExecutionReport>,
     pub grouped_evidence_reports: Vec<GroupedEvidenceExecutionReport>,
     pub pipeline_memory_report: Option<PipelineMemoryReport>,
-    pub output_row_shape: NowledgeMemQueryOutputRowShape,
-    pub api_behavior: NowledgeMemQueryApiBehavior,
+    pub output_row_shape: EmbeddedQueryOutputRowShape,
+    pub api_behavior: EmbeddedQueryApiBehavior,
 }
 
-impl NowledgeMemQueryReport {
+impl EmbeddedQueryReport {
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "protocol": self.protocol,
@@ -129,7 +125,7 @@ impl NowledgeMemQueryReport {
             "statement_kind": self.statement_kind,
             "execution_path": self.execution_path.as_str(),
             "fast_path_reason": self.fast_path_reason,
-            "fast_path_selected": self.execution_path == NowledgeMemQueryExecutionPath::FastPath,
+            "fast_path_selected": self.execution_path == EmbeddedQueryExecutionPath::FastPath,
             "elapsed_micros": self.elapsed_micros,
             "slow_log_threshold_micros": self.slow_log_threshold_micros,
             "slow_log_candidate": self.slow_log_candidate,
@@ -167,13 +163,13 @@ impl NowledgeMemQueryReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemQueryOutputRowShape {
+pub struct EmbeddedQueryOutputRowShape {
     pub row_count: usize,
     pub column_count: usize,
     pub columns: Vec<String>,
 }
 
-impl NowledgeMemQueryOutputRowShape {
+impl EmbeddedQueryOutputRowShape {
     fn from_output(output: &QueryOutput) -> Self {
         let columns: Vec<_> = output
             .schema()
@@ -200,7 +196,7 @@ impl NowledgeMemQueryOutputRowShape {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemQueryApiBehavior {
+pub struct EmbeddedQueryApiBehavior {
     pub include_metadata_false_strips_metadata: bool,
     pub ordering_contract_recorded: bool,
     pub pagination_contract_recorded: bool,
@@ -209,7 +205,7 @@ pub struct NowledgeMemQueryApiBehavior {
     pub statement_has_pagination: bool,
 }
 
-impl NowledgeMemQueryApiBehavior {
+impl EmbeddedQueryApiBehavior {
     fn from_statement(statement: &Statement) -> Self {
         let shape = hawdb_cypher::read_route::classify_read_route_shape(statement);
         Self {
@@ -235,23 +231,23 @@ impl NowledgeMemQueryApiBehavior {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemQueryOutput {
+pub struct EmbeddedQueryOutput {
     pub output: QueryOutput,
-    pub report: NowledgeMemQueryReport,
+    pub report: EmbeddedQueryReport,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct NowledgeMemQueryReportOptions {
+pub struct EmbeddedQueryReportOptions {
     pub capture_physical_plan: bool,
     pub slow_log_threshold_micros: Option<u128>,
 }
 
 #[doc(hidden)]
-pub struct NowledgeMemQueryReportInput<'a> {
-    pub mode: NowledgeMemGraphMode,
+pub struct EmbeddedQueryReportInput<'a> {
+    pub mode: GraphMode,
     pub statement_kind: &'a str,
     pub statement: &'a Statement,
-    pub execution_path: NowledgeMemQueryExecutionPath,
+    pub execution_path: EmbeddedQueryExecutionPath,
     pub fast_path_reason: Option<&'a str>,
     pub physical_plan_captured: bool,
     pub physical_operator_counts: BTreeMap<String, usize>,
@@ -260,19 +256,19 @@ pub struct NowledgeMemQueryReportInput<'a> {
     pub plan_cache_lookup: Option<PlanCacheLookup>,
     pub execution_profile: Option<&'a ReadExecutionProfile<ScanPruningReport>>,
     pub output: &'a QueryOutput,
-    pub options: NowledgeMemQueryReportOptions,
+    pub options: EmbeddedQueryReportOptions,
     pub elapsed_micros: u128,
 }
 
 #[doc(hidden)]
-pub fn nowledge_mem_query_report(input: NowledgeMemQueryReportInput<'_>) -> NowledgeMemQueryReport {
+pub fn embedded_query_report(input: EmbeddedQueryReportInput<'_>) -> EmbeddedQueryReport {
     let slow_log_candidate = input
         .options
         .slow_log_threshold_micros
         .is_some_and(|threshold| input.elapsed_micros >= threshold);
-    let plan_cache = nowledge_mem_plan_cache_report(input.plan_cache_lookup);
-    NowledgeMemQueryReport {
-        protocol: NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL.to_string(),
+    let plan_cache = plan_cache_report(input.plan_cache_lookup);
+    EmbeddedQueryReport {
+        protocol: QUERY_REPORT_PROTOCOL.to_string(),
         mode: input.mode,
         statement_kind: input.statement_kind.to_string(),
         execution_path: input.execution_path,
@@ -318,8 +314,8 @@ pub fn nowledge_mem_query_report(input: NowledgeMemQueryReportInput<'_>) -> Nowl
         pipeline_memory_report: input
             .execution_profile
             .map(|profile| profile.pipeline_memory_report.clone()),
-        output_row_shape: NowledgeMemQueryOutputRowShape::from_output(input.output),
-        api_behavior: NowledgeMemQueryApiBehavior::from_statement(input.statement),
+        output_row_shape: EmbeddedQueryOutputRowShape::from_output(input.output),
+        api_behavior: EmbeddedQueryApiBehavior::from_statement(input.statement),
     }
 }
 
@@ -509,18 +505,18 @@ mod tests {
     #[test]
     fn query_execution_path_reexports_the_shared_contract_type() {
         assert_eq!(
-            TypeId::of::<NowledgeMemQueryExecutionPath>(),
-            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemQueryExecutionPath>()
+            TypeId::of::<EmbeddedQueryExecutionPath>(),
+            TypeId::of::<hawdb_nowledge_contracts::EmbeddedQueryExecutionPath>()
         );
     }
 
     #[test]
     fn query_report_preserves_empty_profile_contract() {
-        let report = NowledgeMemQueryReport {
-            protocol: NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL.to_string(),
-            mode: NowledgeMemGraphMode::ShadowReadOnly,
+        let report = EmbeddedQueryReport {
+            protocol: QUERY_REPORT_PROTOCOL.to_string(),
+            mode: GraphMode::ShadowReadOnly,
             statement_kind: "match_return".to_string(),
-            execution_path: NowledgeMemQueryExecutionPath::FastPath,
+            execution_path: EmbeddedQueryExecutionPath::FastPath,
             fast_path_reason: Some("simple_read".to_string()),
             elapsed_micros: 7,
             slow_log_threshold_micros: Some(10),
@@ -541,12 +537,12 @@ mod tests {
             text_seed_execution_reports: Vec::new(),
             grouped_evidence_reports: Vec::new(),
             pipeline_memory_report: None,
-            output_row_shape: NowledgeMemQueryOutputRowShape {
+            output_row_shape: EmbeddedQueryOutputRowShape {
                 row_count: 1,
                 column_count: 1,
                 columns: vec!["memory".to_string()],
             },
-            api_behavior: NowledgeMemQueryApiBehavior {
+            api_behavior: EmbeddedQueryApiBehavior {
                 include_metadata_false_strips_metadata: true,
                 ordering_contract_recorded: true,
                 pagination_contract_recorded: true,
@@ -559,7 +555,7 @@ mod tests {
         assert_eq!(
             report.json(),
             serde_json::json!({
-                "protocol": NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL,
+                "protocol": QUERY_REPORT_PROTOCOL,
                 "mode": "shadow_read_only",
                 "statement_kind": "match_return",
                 "execution_path": "fast_path",
@@ -604,8 +600,8 @@ mod tests {
     #[test]
     fn plan_cache_report_preserves_lookup_semantics() {
         assert_eq!(
-            nowledge_mem_plan_cache_report(Some(PlanCacheLookup::Hit)),
-            NowledgeMemPlanCacheReport {
+            plan_cache_report(Some(PlanCacheLookup::Hit)),
+            PlanCacheReport {
                 cacheable: true,
                 hit: true,
                 miss: false,
@@ -613,8 +609,8 @@ mod tests {
             }
         );
         assert_eq!(
-            nowledge_mem_plan_cache_report(Some(PlanCacheLookup::Miss)),
-            NowledgeMemPlanCacheReport {
+            plan_cache_report(Some(PlanCacheLookup::Miss)),
+            PlanCacheReport {
                 cacheable: true,
                 hit: false,
                 miss: true,
@@ -622,10 +618,10 @@ mod tests {
             }
         );
         assert_eq!(
-            nowledge_mem_plan_cache_report(Some(PlanCacheLookup::Bypass(
+            plan_cache_report(Some(PlanCacheLookup::Bypass(
                 hawdb_plan_cache::PlanCacheBypassReason::MutationPlanning,
             ))),
-            NowledgeMemPlanCacheReport {
+            PlanCacheReport {
                 cacheable: false,
                 hit: false,
                 miss: false,
@@ -633,8 +629,8 @@ mod tests {
             }
         );
         assert_eq!(
-            nowledge_mem_plan_cache_report(None),
-            NowledgeMemPlanCacheReport {
+            plan_cache_report(None),
+            PlanCacheReport {
                 cacheable: false,
                 hit: false,
                 miss: false,

@@ -14,8 +14,8 @@
 
 use super::nowledge_graph_route_readiness_json;
 use hawdb_route_ownership::graph::{
-    nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_graph_read_route_specs_json,
-    NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+    graph_read_route_catalog_digest, graph_read_route_specs_json, GRAPH_READ_ROUTE_CATALOG_VERSION,
+    REQUIRED_BOUNDED_READ_ROUTES,
 };
 
 #[test]
@@ -30,29 +30,29 @@ fn route_readiness_reports_ready_for_all_required_routes() {
     assert_eq!(readiness["evidence_ready"], true);
     assert_eq!(
         readiness["route_count"],
-        serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len())
+        serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES.len())
     );
     assert_eq!(readiness["route_primary_ready"], true);
     assert_eq!(readiness["route_query_runtime_ready"], true);
     assert_eq!(
         readiness["query_runtime_route_count"],
-        serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len())
+        serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES.len())
     );
     assert_eq!(
         readiness["query_runtime_report_count"],
-        serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len())
+        serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES.len())
     );
     assert_eq!(
         readiness["query_runtime_plan_report_count"],
-        serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len())
+        serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES.len())
     );
     assert_eq!(
         readiness["query_runtime_profile_report_count"],
-        serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len())
+        serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES.len())
     );
     assert_eq!(
         readiness["query_runtime_api_behavior_report_count"],
-        serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len())
+        serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES.len())
     );
     assert_eq!(readiness["query_runtime_failed_query_count"], 0);
     assert_eq!(readiness["query_runtime_missing_plan_evidence_count"], 0);
@@ -72,16 +72,13 @@ fn route_readiness_reports_ready_for_all_required_routes() {
     );
     assert_eq!(
         readiness["covered_route_count"],
-        serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len())
+        serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES.len())
     );
     assert_eq!(
         readiness["covered_routes"],
-        serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES)
+        serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES)
     );
-    assert_eq!(
-        readiness["route_catalog"],
-        nowledge_mem_graph_read_route_specs_json()
-    );
+    assert_eq!(readiness["route_catalog"], graph_read_route_specs_json());
     let search_route = readiness["routes"]
         .as_array()
         .unwrap()
@@ -131,7 +128,7 @@ fn route_readiness_fails_closed_for_missing_required_route() {
     );
     assert_eq!(
         readiness["missing_required_routes"],
-        serde_json::json!([REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.last().unwrap()])
+        serde_json::json!([REQUIRED_BOUNDED_READ_ROUTES.last().unwrap()])
     );
 }
 
@@ -430,7 +427,7 @@ fn route_readiness_fails_closed_without_query_report_plan_evidence() {
     assert_eq!(readiness["route_query_plan_evidence_ready"], false);
     assert_eq!(
         readiness["query_runtime_plan_report_count"],
-        serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() - 1)
+        serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES.len() - 1)
     );
     assert_eq!(readiness["query_runtime_missing_plan_evidence_count"], 1);
     assert!(readiness["route_primary_blocker_codes"]
@@ -510,7 +507,7 @@ fn route_readiness_fails_closed_without_api_behavior_ordering_contract() {
     assert_eq!(readiness["route_query_runtime_ready"], false);
     assert_eq!(
         readiness["query_runtime_api_behavior_report_count"],
-        serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() - 1)
+        serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES.len() - 1)
     );
     assert_eq!(readiness["route_query_api_behavior_evidence_ready"], false);
     assert!(readiness["route_primary_blocker_codes"]
@@ -765,7 +762,7 @@ fn test_route_coverage(routes: &[serde_json::Value]) -> Vec<(String, serde_json:
     {
         *route_counts.entry(route.to_string()).or_default() += 1;
     }
-    let required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
@@ -773,12 +770,12 @@ fn test_route_coverage(routes: &[serde_json::Value]) -> Vec<(String, serde_json:
         .keys()
         .map(String::as_str)
         .collect::<std::collections::BTreeSet<_>>();
-    let covered_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let covered_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .filter(|route| route_names.contains(**route))
         .copied()
         .collect::<Vec<_>>();
-    let missing_required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let missing_required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .filter(|route| !route_names.contains(**route))
         .copied()
@@ -807,7 +804,7 @@ fn test_route_coverage(routes: &[serde_json::Value]) -> Vec<(String, serde_json:
     vec![
         (
             "required_route_count".to_string(),
-            serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()),
+            serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES.len()),
         ),
         (
             "covered_route_count".to_string(),
@@ -835,11 +832,11 @@ fn test_route_coverage(routes: &[serde_json::Value]) -> Vec<(String, serde_json:
         ),
         (
             "route_catalog_version".to_string(),
-            serde_json::json!(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION),
+            serde_json::json!(GRAPH_READ_ROUTE_CATALOG_VERSION),
         ),
         (
             "route_catalog_digest".to_string(),
-            serde_json::json!(nowledge_mem_graph_read_route_catalog_digest()),
+            serde_json::json!(graph_read_route_catalog_digest()),
         ),
         (
             "route_coverage_ready".to_string(),
@@ -853,7 +850,7 @@ fn test_route_coverage(routes: &[serde_json::Value]) -> Vec<(String, serde_json:
 }
 
 pub(super) fn ready_routes() -> Vec<serde_json::Value> {
-    REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .map(|route| ready_route(route))
         .collect()
@@ -861,7 +858,7 @@ pub(super) fn ready_routes() -> Vec<serde_json::Value> {
 
 pub(super) fn ready_route(route: &str) -> serde_json::Value {
     let required_query_families =
-        hawdb_route_ownership::graph::nowledge_mem_required_query_families_for_route(route);
+        hawdb_route_ownership::graph::required_query_families_for_route(route);
     let query_family = required_query_families
         .first()
         .copied()

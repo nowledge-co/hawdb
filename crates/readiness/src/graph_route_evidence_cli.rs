@@ -14,7 +14,7 @@
 
 //! Developer-facing input parsing for graph route execution evidence.
 
-use crate::bounded_read_evidence::NowledgeMemGraphMode;
+use crate::bounded_read_evidence::GraphMode;
 use crate::graph_route_catalog::{
     parse_route_parity_evidence, parse_route_query_inventory, RouteParityEvidence, RouteQuery,
 };
@@ -24,7 +24,7 @@ use std::path::Path;
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphRouteEvidenceCliInputs {
     pub require_ready: bool,
-    pub mode: NowledgeMemGraphMode,
+    pub mode: GraphMode,
     pub capture_physical_plan: bool,
     pub slow_log_threshold_micros: Option<u128>,
     pub route_parity: Option<RouteParityEvidence>,
@@ -40,7 +40,7 @@ pub fn parse_graph_route_evidence_cli_inputs(
     mut args: impl Iterator<Item = String>,
 ) -> Result<GraphRouteEvidenceCliInputs> {
     let mut require_ready = false;
-    let mut mode = NowledgeMemGraphMode::ShadowReadOnly;
+    let mut mode = GraphMode::ShadowReadOnly;
     let mut capture_physical_plan = false;
     let mut slow_log_threshold_micros = None;
     let mut route_parity = None;
@@ -88,10 +88,10 @@ pub fn parse_graph_route_evidence_cli_inputs(
     })
 }
 
-fn parse_mode(raw: &str) -> Result<NowledgeMemGraphMode> {
+fn parse_mode(raw: &str) -> Result<GraphMode> {
     match raw {
-        "shadow_read_only" => Ok(NowledgeMemGraphMode::ShadowReadOnly),
-        "writable_cutover" => Ok(NowledgeMemGraphMode::WritableCutover),
+        "shadow_read_only" => Ok(GraphMode::ShadowReadOnly),
+        "writable_cutover" => Ok(GraphMode::WritableCutover),
         _ => Err(HawDBError::Semantic(format!(
             "invalid nowledge graph route evidence mode: {raw}"
         ))),
@@ -153,7 +153,7 @@ mod tests {
         )
         .unwrap();
         assert!(inputs.require_ready);
-        assert_eq!(inputs.mode, NowledgeMemGraphMode::WritableCutover);
+        assert_eq!(inputs.mode, GraphMode::WritableCutover);
         assert!(inputs.capture_physical_plan);
         assert_eq!(inputs.slow_log_threshold_micros, Some(10));
         assert!(inputs.route_queries.is_empty());

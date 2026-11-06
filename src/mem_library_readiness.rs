@@ -13,24 +13,23 @@
 // limitations under the License.
 
 use crate::{
-    NowledgeGraphStatement, NowledgeMemEmbeddedStore, NowledgeMemLibraryReadinessReport,
-    NowledgeMemOpenOptions, NowledgeMemOpenReport, NowledgeMemReadinessOptions, Result,
-    SearchProjectionProbeOptions,
+    EmbeddedStore, EmbeddedStoreOpenOptions, EmbeddedStoreOpenReport, LibraryReadinessReport,
+    NowledgeGraphStatement, ReadinessOptions, Result, SearchProjectionProbeOptions,
 };
 pub use hawdb_readiness::library_readiness_cli::{
-    nowledge_mem_library_readiness_usage, parse_mem_library_covered_routes_json,
+    library_readiness_usage, parse_mem_library_covered_routes_json,
     parse_mem_library_graph_route_readiness_json, parse_mem_library_readiness_mode,
     parse_parameters_json, value_from_json,
 };
 use hawdb_readiness::library_readiness_cli::{
-    parse_bounded_probe_json as parse_owner_bounded_probe_json,
-    parse_nowledge_mem_library_readiness_inputs, NowledgeMemLibraryReadinessCliInputs,
+    parse_bounded_probe_json as parse_owner_bounded_probe_json, parse_library_readiness_inputs,
+    LibraryReadinessCliInputs,
 };
 
-pub fn run_nowledge_mem_library_readiness(
+pub fn run_library_readiness(
     mut args: impl Iterator<Item = String>,
 ) -> Result<(serde_json::Value, bool)> {
-    let report = run_nowledge_mem_library_readiness_report(&mut args)?;
+    let report = run_library_readiness_report(&mut args)?;
     let mut readiness = report.readiness.json();
     if let Some(object) = readiness.as_object_mut() {
         object.insert("open_report".to_string(), report.open_report.json());
@@ -39,13 +38,13 @@ pub fn run_nowledge_mem_library_readiness(
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeMemLibraryReadinessRunReport {
-    pub readiness: NowledgeMemLibraryReadinessReport,
-    pub open_report: NowledgeMemOpenReport,
+pub struct LibraryReadinessRunReport {
+    pub readiness: LibraryReadinessReport,
+    pub open_report: EmbeddedStoreOpenReport,
     pub require_ready: bool,
 }
 
-impl NowledgeMemLibraryReadinessRunReport {
+impl LibraryReadinessRunReport {
     pub fn json(&self) -> serde_json::Value {
         let mut readiness = self.readiness.json();
         if let Some(object) = readiness.as_object_mut() {
@@ -55,10 +54,10 @@ impl NowledgeMemLibraryReadinessRunReport {
     }
 }
 
-pub fn run_nowledge_mem_library_readiness_report(
+pub fn run_library_readiness_report(
     args: impl Iterator<Item = String>,
-) -> Result<NowledgeMemLibraryReadinessRunReport> {
-    let NowledgeMemLibraryReadinessCliInputs {
+) -> Result<LibraryReadinessRunReport> {
+    let LibraryReadinessCliInputs {
         require_ready,
         mode,
         graph_path,
@@ -74,13 +73,13 @@ pub fn run_nowledge_mem_library_readiness_report(
         search_candidate_shadow_evidence,
         active_embedding_model,
         active_embedding_dimension,
-    } = parse_nowledge_mem_library_readiness_inputs(args)?;
+    } = parse_library_readiness_inputs(args)?;
     let open_options = match search_projection_path {
-        Some(path) => NowledgeMemOpenOptions::with_search_projection(graph_path, path, mode),
-        None => NowledgeMemOpenOptions::graph_only(graph_path, mode),
+        Some(path) => EmbeddedStoreOpenOptions::with_search_projection(graph_path, path, mode),
+        None => EmbeddedStoreOpenOptions::graph_only(graph_path, mode),
     };
-    let (store, open_report) = NowledgeMemEmbeddedStore::open_with_options(open_options)?;
-    let options = NowledgeMemReadinessOptions {
+    let (store, open_report) = EmbeddedStore::open_with_options(open_options)?;
+    let options = ReadinessOptions {
         bounded_read_probe: bounded_read_probe.map(|probe| NowledgeGraphStatement {
             cypher: probe.cypher,
             parameters: probe.parameters,
@@ -97,10 +96,10 @@ pub fn run_nowledge_mem_library_readiness_report(
         primary_search_projection_probe,
         search_projection_shadow_evidence,
         search_candidate_shadow_evidence,
-        ..NowledgeMemReadinessOptions::default()
+        ..ReadinessOptions::default()
     };
     let readiness = store.library_readiness(&options)?;
-    Ok(NowledgeMemLibraryReadinessRunReport {
+    Ok(LibraryReadinessRunReport {
         readiness,
         open_report,
         require_ready,
@@ -117,8 +116,8 @@ pub fn parse_bounded_probe_json(value: &serde_json::Value) -> Result<NowledgeGra
 
 #[cfg(test)]
 mod tests {
-    use super::{run_nowledge_mem_library_readiness, run_nowledge_mem_library_readiness_report};
-    use crate::{Database, NowledgeMemGraphMode, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES};
+    use super::{run_library_readiness, run_library_readiness_report};
+    use crate::{Database, GraphMode, REQUIRED_BOUNDED_READ_ROUTES};
     use serde_json::Value;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -127,12 +126,12 @@ mod tests {
     fn parser_facade_reexports_owner_entrypoints() {
         use hawdb_readiness::library_readiness_cli as owner;
 
-        let usage: fn() -> String = super::nowledge_mem_library_readiness_usage;
+        let usage: fn() -> String = super::library_readiness_usage;
         assert!(std::ptr::fn_addr_eq(
             usage,
-            owner::nowledge_mem_library_readiness_usage as fn() -> _,
+            owner::library_readiness_usage as fn() -> _,
         ));
-        let parse_mode: fn(&str) -> crate::Result<crate::NowledgeMemGraphMode> =
+        let parse_mode: fn(&str) -> crate::Result<crate::GraphMode> =
             super::parse_mem_library_readiness_mode;
         assert!(std::ptr::fn_addr_eq(
             parse_mode,
@@ -172,7 +171,7 @@ mod tests {
         std::fs::write(
             &covered_routes_path,
             serde_json::json!({
-                "covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+                "covered_routes": REQUIRED_BOUNDED_READ_ROUTES
             })
             .to_string(),
         )
@@ -183,7 +182,7 @@ mod tests {
         )
         .unwrap();
 
-        let (readiness, require_ready) = run_nowledge_mem_library_readiness(
+        let (readiness, require_ready) = run_library_readiness(
             [
                 "--bounded-probe-json",
                 bounded_probe_path.to_str().unwrap(),
@@ -226,7 +225,7 @@ mod tests {
         assert!(readiness.get("graph_path").is_none());
         assert!(!readiness.to_string().contains(graph_path.to_str().unwrap()));
 
-        let typed = run_nowledge_mem_library_readiness_report(
+        let typed = run_library_readiness_report(
             [
                 "--bounded-probe-json",
                 bounded_probe_path.to_str().unwrap(),
@@ -241,7 +240,7 @@ mod tests {
         )
         .unwrap();
         assert!(!typed.require_ready);
-        assert_eq!(typed.readiness.mode, NowledgeMemGraphMode::ShadowReadOnly);
+        assert_eq!(typed.readiness.mode, GraphMode::ShadowReadOnly);
         assert!(typed.readiness.readiness_by_area.query.ready);
         assert!(typed.readiness.readiness_by_area.graph_route.ready);
         assert!(!typed.readiness.readiness_by_area.query_family.ready);
@@ -292,7 +291,7 @@ mod tests {
 
     #[test]
     fn library_readiness_command_requires_graph_path() {
-        let error = run_nowledge_mem_library_readiness([].into_iter().map(str::to_string))
+        let error = run_library_readiness([].into_iter().map(str::to_string))
             .expect_err("missing graph path should fail");
 
         assert!(error
@@ -311,7 +310,7 @@ mod tests {
         )
         .unwrap();
 
-        let error = run_nowledge_mem_library_readiness(
+        let error = run_library_readiness(
             [
                 "--bounded-read-evidence-json",
                 path.to_str().unwrap(),
@@ -414,7 +413,7 @@ mod tests {
         )
         .unwrap();
 
-        let (readiness, _) = run_nowledge_mem_library_readiness(
+        let (readiness, _) = run_library_readiness(
             [
                 "--bounded-read-evidence-json",
                 bounded_evidence_path.to_str().unwrap(),
@@ -484,7 +483,7 @@ mod tests {
     fn ready_graph_route_readiness() -> serde_json::Value {
         serde_json::json!({
             "route_primary_ready": true,
-            "primary_ready_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "primary_ready_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "route_query_plan_evidence_ready": true,
             "route_query_profile_evidence_ready": true,
             "route_query_api_behavior_evidence_ready": true,

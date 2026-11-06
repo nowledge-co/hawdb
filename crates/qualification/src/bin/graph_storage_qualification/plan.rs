@@ -19,7 +19,7 @@ use super::qualification_input::{
     read_bounded_json, EvidenceBindingInput, ProductionIdentityInput,
 };
 use super::qualification_value::value_from_json;
-use hawdb::{NowledgeGraphStatement, NowledgeMemGraphMode, NowledgeMemOpenOptions};
+use hawdb::{EmbeddedStoreOpenOptions, GraphMode, NowledgeGraphStatement};
 use hawdb_qualification::ProductionGraphStorageQualificationConfig;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -65,7 +65,7 @@ impl GraphStorageQualificationPlan {
         let process_limits = self.process_limits.resolve(runtime.max_resident_bytes)?;
         let statement = self.statement.resolve(process_limits)?;
         let open_options =
-            NowledgeMemOpenOptions::graph_only(database_path, NowledgeMemGraphMode::ShadowReadOnly)
+            EmbeddedStoreOpenOptions::graph_only(database_path, GraphMode::ShadowReadOnly)
                 .with_database_config(database_config);
         Ok(ProductionGraphStorageQualificationConfig {
             open_options,
@@ -133,10 +133,7 @@ mod tests {
         let config = plan.into_config(PathBuf::from("database")).unwrap();
         let database = config.open_options.database_config.unwrap();
 
-        assert_eq!(
-            config.open_options.mode,
-            NowledgeMemGraphMode::ShadowReadOnly
-        );
+        assert_eq!(config.open_options.mode, GraphMode::ShadowReadOnly);
         assert!(database.read_only);
         assert_eq!(
             database.storage_residency_mode,

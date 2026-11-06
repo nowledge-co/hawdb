@@ -19,18 +19,16 @@
 use hawdb_core::{HawDBError, Result};
 use std::path::Path;
 
-pub use crate::integration_bundle::{
-    nowledge_mem_integration_bundle_json, IntegrationBundleInputs,
-};
+pub use crate::integration_bundle::{integration_bundle_json, IntegrationBundleInputs};
 
 #[cfg(test)]
 const HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "hawdb-rust-library";
-pub fn nowledge_mem_integration_bundle_usage() -> String {
+pub fn integration_bundle_usage() -> String {
     "nowledge-mem-integration-bundle requires [--require-ready] --submodule-path <path> --submodule-commit <commit> --legacy-data-retained --coexistence-mode shadow|side_by_side --content-store-present --content-store-engine sqlite --content-store-messages-available --content-store-source-chunks-available --previous-wrapper-preflight-json <path> --replacement-summary-json <path> --bounded-read-evidence-json <path> --graph-route-readiness-json <path> --route-ownership-json <path> --search-route-ownership-json <path> --active-search-route-ownership-json <path> --active-search-route-readiness-json <path> --query-runtime-preflight-json <path> --search-candidate-shadow-evidence-json <path> --library-readiness-json <path> --cutover-controls-json <path> --operations-readiness-json <path> --blackbox-manifest-json <path>"
         .to_string()
 }
 
-pub fn run_nowledge_mem_integration_bundle(
+pub fn run_integration_bundle(
     mut args: impl Iterator<Item = String>,
 ) -> Result<(serde_json::Value, bool)> {
     let mut inputs = IntegrationBundleInputs::default();
@@ -109,13 +107,13 @@ pub fn run_nowledge_mem_integration_bundle(
                 inputs.blackbox_manifest = Some(read_json_arg(&mut args)?);
             }
             _ => {
-                return Err(HawDBError::Semantic(nowledge_mem_integration_bundle_usage()));
+                return Err(HawDBError::Semantic(integration_bundle_usage()));
             }
         }
     }
 
     let require_ready = inputs.require_ready;
-    Ok((nowledge_mem_integration_bundle_json(inputs)?, require_ready))
+    Ok((integration_bundle_json(inputs)?, require_ready))
 }
 
 fn read_json_arg(args: &mut impl Iterator<Item = String>) -> Result<serde_json::Value> {
@@ -138,23 +136,20 @@ fn read_json_file(path: &Path) -> Result<serde_json::Value> {
 
 fn next_arg(args: &mut impl Iterator<Item = String>) -> Result<String> {
     args.next()
-        .ok_or_else(|| HawDBError::Semantic(nowledge_mem_integration_bundle_usage()))
+        .ok_or_else(|| HawDBError::Semantic(integration_bundle_usage()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        nowledge_mem_integration_bundle_json, IntegrationBundleInputs,
+        integration_bundle_json, IntegrationBundleInputs,
         HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
     };
     use crate::{
-        integration_readiness::nowledge_mem_integration_readiness_json,
-        previous_wrapper_preflight::{
-            NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL, NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL,
-        },
+        integration_readiness::integration_readiness_json,
+        previous_wrapper_preflight::{CUTOVER_CONTROLS_PROTOCOL, OPERATIONS_READINESS_PROTOCOL},
         source_mutation::{
-            NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
-            REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
+            REQUIRED_SOURCE_MUTATION_FAMILIES, SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
         },
     };
     use hawdb_evidence::{
@@ -162,23 +157,19 @@ mod tests {
         PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
     use hawdb_route_ownership::graph::{
-        nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_graph_read_route_spec,
-        nowledge_mem_graph_read_route_specs_json, nowledge_mem_required_query_families_for_route,
-        nowledge_mem_route_ownership_all_hawdb, nowledge_mem_route_ownership_readiness,
-        NowledgeMemRouteOwnershipPolicy, NowledgeMemRouteReadinessSummary,
-        NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+        graph_read_route_catalog_digest, graph_read_route_spec, graph_read_route_specs_json,
+        required_query_families_for_route, route_ownership_all_hawdb, route_ownership_readiness,
+        RouteOwnershipPolicy, RouteReadinessSummary, GRAPH_READ_ROUTE_CATALOG_VERSION,
+        REQUIRED_BOUNDED_READ_ROUTES,
     };
     use hawdb_route_ownership::{
-        nowledge_mem_active_search_route_ownership_all_hawdb,
-        nowledge_mem_active_search_route_ownership_readiness,
-        nowledge_mem_active_search_route_read_evidence_all_hawdb_ready,
-        nowledge_mem_active_search_route_readiness, nowledge_mem_search_route_ownership_all_hawdb,
-        nowledge_mem_search_route_ownership_readiness, NowledgeMemSearchRouteOwnershipPolicy,
-        REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES, REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
+        active_search_route_ownership_all_hawdb, active_search_route_ownership_readiness,
+        active_search_route_read_evidence_all_hawdb_ready, active_search_route_readiness,
+        search_route_ownership_all_hawdb, search_route_ownership_readiness,
+        SearchRouteOwnershipPolicy, REQUIRED_ACTIVE_SEARCH_ROUTES, REQUIRED_SEARCH_ROUTES,
     };
     use hawdb_search::candidate_evidence::{
-        nowledge_mem_search_candidate_shadow_evidence_json,
-        NowledgeMemSearchCandidateShadowAccumulator,
+        search_candidate_shadow_evidence_json, SearchCandidateShadowAccumulator,
     };
     use hawdb_search::NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS;
     use std::path::PathBuf;
@@ -187,25 +178,21 @@ mod tests {
     #[test]
     fn command_rejects_unknown_or_incomplete_arguments() {
         for args in [vec!["--unknown"], vec!["--submodule-path"]] {
-            let error =
-                super::run_nowledge_mem_integration_bundle(args.into_iter().map(str::to_string))
-                    .unwrap_err()
-                    .to_string();
+            let error = super::run_integration_bundle(args.into_iter().map(str::to_string))
+                .unwrap_err()
+                .to_string();
 
             assert_eq!(
                 error,
-                format!(
-                    "semantic error: {}",
-                    super::nowledge_mem_integration_bundle_usage()
-                )
+                format!("semantic error: {}", super::integration_bundle_usage())
             );
         }
     }
 
     #[test]
     fn generated_bundle_feeds_integration_readiness_gate() {
-        let bundle = nowledge_mem_integration_bundle_json(ready_inputs()).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(ready_inputs()).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(bundle["protocol"], "nowledge-mem-hawdb-integration-bundle");
         assert_eq!(bundle["submodule"]["path"], "hawdb");
@@ -258,12 +245,12 @@ mod tests {
         );
         assert_eq!(
             bundle["cutover_controls"]["protocol"],
-            NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL
+            CUTOVER_CONTROLS_PROTOCOL
         );
         assert_eq!(bundle["cutover_controls"]["ready"], true);
         assert_eq!(
             bundle["operations_readiness"]["protocol"],
-            NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL
+            OPERATIONS_READINESS_PROTOCOL
         );
         assert_eq!(bundle["operations_readiness"]["ready"], true);
         assert_eq!(
@@ -332,8 +319,8 @@ mod tests {
         let mut inputs = ready_inputs();
         inputs.legacy_data_retained = false;
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["coexistence"]["blocker_codes"],
@@ -351,8 +338,8 @@ mod tests {
         let mut inputs = ready_inputs();
         inputs.bounded_read_evidence.as_mut().unwrap()["max_rows"] = serde_json::json!(128);
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["replacement_summary_bounded_read_alignment"]["blocker_codes"],
@@ -371,8 +358,8 @@ mod tests {
         inputs.bounded_read_evidence.as_mut().unwrap()["payload_budget_exceeded"] =
             serde_json::json!(true);
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["replacement_summary_bounded_read_alignment"]["payload_budget_exceeded_matches"],
@@ -395,8 +382,8 @@ mod tests {
         inputs.bounded_read_evidence.as_mut().unwrap()["route_catalog_digest"] =
             serde_json::json!("fnv1a64:stale");
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["replacement_summary_bounded_read_alignment"]["route_catalog_digest_matches"],
@@ -424,8 +411,8 @@ mod tests {
             .unwrap()
             .pop();
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["replacement_summary_query_runtime_alignment"]["blocker_codes"],
@@ -450,8 +437,8 @@ mod tests {
         inputs.query_runtime_preflight.as_mut().unwrap()["route_catalog_digest"] =
             serde_json::json!("fnv1a64:stale");
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["replacement_summary_query_runtime_alignment"]["blocker_codes"],
@@ -476,8 +463,8 @@ mod tests {
         let mut inputs = ready_inputs();
         inputs.graph_route_readiness.as_mut().unwrap()["evidence_ready"] = serde_json::json!(false);
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["replacement_summary_graph_route_alignment"]["blocker_codes"],
@@ -496,8 +483,8 @@ mod tests {
         inputs.graph_route_readiness.as_mut().unwrap()["route_catalog_digest"] =
             serde_json::json!("fnv1a64:stale");
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["replacement_summary_graph_route_alignment"]["blocker_codes"],
@@ -519,14 +506,14 @@ mod tests {
         inputs.replacement_summary.as_mut().unwrap()["search_route_ownership"]
             ["lancedb_route_count"] = serde_json::json!(1);
         inputs.replacement_summary.as_mut().unwrap()["search_route_ownership"]["lancedb_routes"] =
-            serde_json::json!([REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES[0]]);
+            serde_json::json!([REQUIRED_SEARCH_ROUTES[0]]);
         inputs.replacement_summary.as_mut().unwrap()["search_route_ownership"]["ready"] =
             serde_json::json!(false);
         inputs.replacement_summary.as_mut().unwrap()["search_route_ownership"]
             ["production_cutover_ready"] = serde_json::json!(false);
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["replacement_summary_search_route_ownership_alignment"]["ready"],
@@ -554,13 +541,13 @@ mod tests {
         inputs.active_search_route_ownership.as_mut().unwrap()["lancedb_route_count"] =
             serde_json::json!(1);
         inputs.active_search_route_ownership.as_mut().unwrap()["lancedb_routes"] =
-            serde_json::json!([REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES[0]]);
+            serde_json::json!([REQUIRED_ACTIVE_SEARCH_ROUTES[0]]);
         inputs.active_search_route_ownership.as_mut().unwrap()["ready"] = serde_json::json!(false);
         inputs.active_search_route_ownership.as_mut().unwrap()["production_cutover_ready"] =
             serde_json::json!(false);
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["replacement_summary_active_search_route_ownership_alignment"]["ready"],
@@ -588,13 +575,13 @@ mod tests {
         inputs.active_search_route_readiness.as_mut().unwrap()
             ["lancedb_handle_required_route_count"] = serde_json::json!(1);
         inputs.active_search_route_readiness.as_mut().unwrap()["lancedb_handle_required_routes"] =
-            serde_json::json!([REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES[0]]);
+            serde_json::json!([REQUIRED_ACTIVE_SEARCH_ROUTES[0]]);
         inputs.active_search_route_readiness.as_mut().unwrap()["ready"] = serde_json::json!(false);
         inputs.active_search_route_readiness.as_mut().unwrap()["production_cutover_ready"] =
             serde_json::json!(false);
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["replacement_summary_active_search_route_readiness_alignment"]["ready"],
@@ -624,8 +611,8 @@ mod tests {
         inputs.replacement_summary.as_mut().unwrap()["graph_route_readiness"]
             ["route_relationship_property_pruning_evidence_ready"] = serde_json::json!(false);
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["replacement_summary_graph_route_alignment"]["ready"],
@@ -654,8 +641,8 @@ mod tests {
         inputs.graph_route_readiness.as_mut().unwrap()["routes"][0]["shadow_compare"]
             ["primary_engine"] = serde_json::json!("hawdb");
 
-        let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
-        let readiness = nowledge_mem_integration_readiness_json(&bundle);
+        let bundle = integration_bundle_json(inputs).unwrap();
+        let readiness = integration_readiness_json(&bundle);
 
         assert_eq!(
             bundle["graph_route_parity_alignment"]["ready"],
@@ -663,7 +650,7 @@ mod tests {
         );
         assert_eq!(
             bundle["graph_route_parity_alignment"]["not_ready_routes"],
-            serde_json::json!([REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES[0]])
+            serde_json::json!([REQUIRED_BOUNDED_READ_ROUTES[0]])
         );
         assert_eq!(readiness["ready"], false);
         assert!(readiness["failed_checks"]
@@ -708,7 +695,7 @@ mod tests {
 
     fn ready_cutover_controls() -> serde_json::Value {
         serde_json::json!({
-            "protocol": NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL,
+            "protocol": CUTOVER_CONTROLS_PROTOCOL,
             "ready": true,
             "controls": {
                 "graph_reads": "hawdb",
@@ -752,7 +739,7 @@ mod tests {
 
     fn ready_operations_readiness() -> serde_json::Value {
         serde_json::json!({
-            "protocol": NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL,
+            "protocol": OPERATIONS_READINESS_PROTOCOL,
             "present": true,
             "ready": true,
             "graph": {
@@ -799,11 +786,11 @@ mod tests {
                 "consistent": true
             },
             "source_mutation_dual_write_readiness": {
-                "protocol": NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
+                "protocol": SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
                 "ready": true,
-                "required_family_count": REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES.len(),
-                "evidence_family_count": REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES.len(),
-                "ready_family_count": REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES.len(),
+                "required_family_count": REQUIRED_SOURCE_MUTATION_FAMILIES.len(),
+                "evidence_family_count": REQUIRED_SOURCE_MUTATION_FAMILIES.len(),
+                "ready_family_count": REQUIRED_SOURCE_MUTATION_FAMILIES.len(),
                 "missing_required_families": [],
                 "blocker_codes": []
             },
@@ -958,19 +945,19 @@ mod tests {
             "present": true,
             "ready": true,
             "database_opened": true,
-            "probe_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "passed_probe_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+            "probe_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "passed_probe_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
             "failed_probe_count": 0,
-            "required_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "covered_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
-            "required_covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "required_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "covered_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "covered_routes": REQUIRED_BOUNDED_READ_ROUTES,
+            "required_covered_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "missing_required_routes": [],
             "unknown_routes": [],
             "duplicate_routes": [],
             "required_routes_covered": true,
-            "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-            "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+            "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+            "route_catalog_digest": graph_read_route_catalog_digest(),
             "route_coverage_ready": true,
             "route_coverage_blocker_codes": [],
             "probe_details_ready": true,
@@ -984,7 +971,7 @@ mod tests {
             "present": true,
             "ready": true,
             "route_primary_ready": true,
-            "primary_ready_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "primary_ready_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "route_query_plan_evidence_ready": true,
             "route_query_profile_evidence_ready": true,
             "relationship_property_pruning_required_count": 0,
@@ -1003,51 +990,51 @@ mod tests {
             "blocking_operator_memory_within_budget": true,
             "spill_within_budget": true,
             "streaming": false,
-            "covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "covered_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "missing_covered_routes": [],
-            "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-            "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+            "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+            "route_catalog_digest": graph_read_route_catalog_digest(),
             "blocker_codes": []
         })
     }
 
     fn ready_route_ownership() -> serde_json::Value {
-        nowledge_mem_route_ownership_readiness(
-            &nowledge_mem_route_ownership_all_hawdb(),
+        route_ownership_readiness(
+            &route_ownership_all_hawdb(),
             Some(&ready_route_readiness_summary()),
-            NowledgeMemRouteOwnershipPolicy::production_cutover(),
+            RouteOwnershipPolicy::production_cutover(),
         )
         .json()
     }
 
     fn ready_search_route_ownership() -> serde_json::Value {
-        nowledge_mem_search_route_ownership_readiness(
-            &nowledge_mem_search_route_ownership_all_hawdb(),
-            NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+        search_route_ownership_readiness(
+            &search_route_ownership_all_hawdb(),
+            SearchRouteOwnershipPolicy::production_cutover(),
         )
         .json()
     }
 
     fn ready_active_search_route_ownership() -> serde_json::Value {
-        nowledge_mem_active_search_route_ownership_readiness(
-            &nowledge_mem_active_search_route_ownership_all_hawdb(),
-            NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+        active_search_route_ownership_readiness(
+            &active_search_route_ownership_all_hawdb(),
+            SearchRouteOwnershipPolicy::production_cutover(),
         )
         .json()
     }
 
     fn ready_active_search_route_readiness() -> serde_json::Value {
-        nowledge_mem_active_search_route_readiness(
-            &nowledge_mem_active_search_route_read_evidence_all_hawdb_ready(),
-            NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+        active_search_route_readiness(
+            &active_search_route_read_evidence_all_hawdb_ready(),
+            SearchRouteOwnershipPolicy::production_cutover(),
         )
         .json()
     }
 
-    fn ready_route_readiness_summary() -> NowledgeMemRouteReadinessSummary {
-        NowledgeMemRouteReadinessSummary {
+    fn ready_route_readiness_summary() -> RouteReadinessSummary {
+        RouteReadinessSummary {
             route_primary_ready: true,
-            primary_ready_routes: REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+            primary_ready_routes: REQUIRED_BOUNDED_READ_ROUTES
                 .iter()
                 .map(|route| (*route).to_string())
                 .collect(),
@@ -1061,17 +1048,17 @@ mod tests {
     }
 
     fn ready_graph_route_readiness() -> serde_json::Value {
-        let routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        let routes = REQUIRED_BOUNDED_READ_ROUTES
             .iter()
             .map(|route| {
-                let required_query_families = nowledge_mem_required_query_families_for_route(route);
+                let required_query_families = required_query_families_for_route(route);
                 let query_family = required_query_families
                     .first()
                     .copied()
                     .unwrap_or("memory_lookup");
                 let mut object = serde_json::Map::new();
                 object.insert("route".to_string(), serde_json::json!(route));
-                let spec = nowledge_mem_graph_read_route_spec(route).unwrap();
+                let spec = graph_read_route_spec(route).unwrap();
                 object.insert("owner".to_string(), serde_json::json!(spec.owner.as_str()));
                 object.insert(
                     "required_evidence_kind".to_string(),
@@ -1170,27 +1157,27 @@ mod tests {
             "protocol": "nmem-graph-route-readiness-v1",
             "evidence_protocol": "nmem-graph-route-evidence-v1",
             "evidence_ready": true,
-            "route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "required_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "covered_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "required_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "covered_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "covered_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "missing_required_routes": [],
             "required_routes_covered": true,
             "unknown_routes": [],
             "duplicate_routes": [],
-            "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-            "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+            "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+            "route_catalog_digest": graph_read_route_catalog_digest(),
             "route_coverage_ready": true,
             "route_coverage_blocker_codes": [],
             "evidence_route_coverage_present": true,
             "evidence_route_coverage_matches": true,
             "evidence_route_coverage_blocker_codes": [],
-            "primary_ready_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "query_runtime_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "query_runtime_report_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "query_runtime_plan_report_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "query_runtime_profile_report_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "query_runtime_api_behavior_report_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+            "primary_ready_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "query_runtime_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "query_runtime_report_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "query_runtime_plan_report_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "query_runtime_profile_report_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "query_runtime_api_behavior_report_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
             "query_runtime_failed_query_count": 0,
             "query_runtime_missing_plan_evidence_count": 0,
             "query_runtime_missing_profile_evidence_count": 0,
@@ -1204,7 +1191,7 @@ mod tests {
             "route_relationship_property_pruning_evidence_ready": true,
             "route_primary_ready": true,
             "route_primary_blocker_codes": [],
-            "route_catalog": nowledge_mem_graph_read_route_specs_json(),
+            "route_catalog": graph_read_route_specs_json(),
             "routes": routes
         })
     }
@@ -1258,7 +1245,7 @@ mod tests {
     }
 
     fn ready_search_candidate_shadow_evidence() -> serde_json::Value {
-        let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+        let mut accumulator = SearchCandidateShadowAccumulator::new();
         accumulator.record_compare_candidate_ids(
             &["mem_1", "mem_2", "mem_3"],
             &["mem_1", "mem_2", "mem_3"],
@@ -1269,8 +1256,7 @@ mod tests {
                 .iter()
                 .copied(),
         );
-        let mut evidence =
-            nowledge_mem_search_candidate_shadow_evidence_json(&accumulator.evidence());
+        let mut evidence = search_candidate_shadow_evidence_json(&accumulator.evidence());
         evidence["text_retriever_ready"] = serde_json::json!(true);
         evidence["vector_retriever_ready"] = serde_json::json!(true);
         evidence["retriever_leg_candidate_counts"] = serde_json::json!({
@@ -1294,7 +1280,7 @@ mod tests {
     }
 
     fn ready_query_runtime_preflight() -> serde_json::Value {
-        let probes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        let probes = REQUIRED_BOUNDED_READ_ROUTES
             .iter()
             .map(|route| ready_query_runtime_preflight_probe(route))
             .collect::<Vec<_>>();
@@ -1312,15 +1298,15 @@ mod tests {
             "probe_count": probes.len(),
             "passed_probe_count": probes.len(),
             "failed_probe_count": 0,
-            "required_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "covered_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-            "covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "required_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "covered_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
+            "covered_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "missing_required_routes": [],
             "unknown_routes": [],
             "duplicate_routes": [],
             "required_routes_covered": true,
-            "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-            "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+            "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+            "route_catalog_digest": graph_read_route_catalog_digest(),
             "route_coverage_ready": true,
             "route_coverage_blocker_codes": [],
             "blocker_codes": [],

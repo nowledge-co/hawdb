@@ -83,17 +83,16 @@ fn namespace_durability_anchor_round_trips_the_embedded_graph_sql_and_search_sto
     let anchor = std::env::temp_dir();
     let path = project.0.join("new/graph");
     let search = project.0.join("new/search");
-    let options = hawdb::NowledgeMemOpenOptions::with_search_projection(
+    let options = hawdb::EmbeddedStoreOpenOptions::with_search_projection(
         &path,
         &search,
-        hawdb::NowledgeMemGraphMode::WritableCutover,
+        hawdb::GraphMode::WritableCutover,
     )
     .with_database_config(DatabaseConfig {
         namespace_durability_anchor: Some(anchor),
         ..Default::default()
     });
-    let (handle, report) =
-        hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options(options.clone()).unwrap();
+    let (handle, report) = hawdb::EmbeddedStoreHandle::open_with_options(options.clone()).unwrap();
     assert!(report.graph_opened && report.search_projection_opened);
     let search_conflict =
         hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_with_namespace_anchor(
@@ -122,8 +121,7 @@ fn namespace_durability_anchor_round_trips_the_embedded_graph_sql_and_search_sto
         .to_string()
         .contains("namespace durability anchor conflicts"));
     drop(handle);
-    let (reopened, report) =
-        hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+    let (reopened, report) = hawdb::EmbeddedStoreHandle::open_with_options(options).unwrap();
     assert!(report.graph_opened && report.search_projection_opened);
     reopened
         .with_read_transaction(64 * 1024, |transaction| {
@@ -148,17 +146,17 @@ fn namespace_durability_anchor_round_trips_the_embedded_graph_sql_and_search_sto
 fn namespace_durability_anchor_does_not_create_an_absent_incremental_projection() {
     let project = Project::new();
     let search = project.0.join("missing-search");
-    let options = hawdb::NowledgeMemOpenOptions::with_search_projection(
+    let options = hawdb::EmbeddedStoreOpenOptions::with_search_projection(
         project.0.join("graph"),
         &search,
-        hawdb::NowledgeMemGraphMode::WritableCutover,
+        hawdb::GraphMode::WritableCutover,
     )
     .with_database_config(DatabaseConfig {
         namespace_durability_anchor: Some(std::env::temp_dir()),
         ..Default::default()
     })
     .with_incremental_search_maintenance(Default::default());
-    assert!(hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options(options).is_err());
+    assert!(hawdb::EmbeddedStoreHandle::open_with_options(options).is_err());
     assert!(!search.exists());
 }
 

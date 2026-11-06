@@ -31,8 +31,8 @@ it does not prove that the graph, predicates, target, or receipt used to compute
 projection are still valid. A successful check is also insufficient if relevant
 mutations can occur before the durable output and watermark become visible.
 
-At this baseline, `NowledgeMemEmbeddedStore::catch_up_incremental_search_with_batch_hydrator`
-in `src/nowledge_mem/incremental_search.rs` captures a batch, opens a read
+At this baseline, `EmbeddedStore::catch_up_incremental_search_with_batch_hydrator`
+in `src/embedded_store/incremental_search.rs` captures a batch, opens a read
 transaction, hydrates it, builds its delta, drops the snapshot and applies the
 incremental delta within the mutable store operation. The embedded handle's
 store-wide writer ownership serializes that work. PR #1032 remains a separate,
@@ -294,7 +294,7 @@ unpublished token makes its candidate eligible for bounded reclamation; dropping
 a committed token does not remove the durable head root.
 
 This first path publishes full catalog generations. It does not yet move actual
-incremental Search preparation out of `NowledgeMemEmbeddedStoreHandle`, collect
+incremental Search preparation out of `EmbeddedStoreHandle`, collect
 precise scalar index/relational/adjacency dependencies, validate host binding
 incarnations and batch receipts, integrate Search activation, or qualify power
 loss and 1/4/8-writer latency. Label domains deliberately conflict with changes

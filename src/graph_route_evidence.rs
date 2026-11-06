@@ -12,18 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{NowledgeMemGraph, NowledgeMemQueryReportOptions, Result};
+use crate::{EmbeddedGraph, EmbeddedQueryReportOptions, Result};
 pub use hawdb_readiness::graph_route_evidence_cli::nowledge_graph_route_evidence_usage;
 use hawdb_readiness::graph_route_evidence_cli::parse_graph_route_evidence_cli_inputs;
 
 mod queries;
 pub(crate) use queries::{
-    nowledge_mem_graph_augmentation_state_route_query,
-    nowledge_mem_graph_community_members_route_query,
-    nowledge_mem_graph_community_recent_memories_route_query,
-    nowledge_mem_graph_community_subgraph_route_query, nowledge_mem_graph_node_details_route_query,
-    nowledge_mem_graph_orphans_route_query, nowledge_mem_graph_overview_route_query,
-    nowledge_mem_graph_pagerank_plan_route_query, nowledge_mem_graph_sample_route_query,
+    graph_augmentation_state_route_query, graph_community_members_route_query,
+    graph_community_recent_memories_route_query, graph_community_subgraph_route_query,
+    graph_node_details_route_query, graph_orphans_route_query, graph_overview_route_query,
+    graph_pagerank_plan_route_query, graph_sample_route_query,
 };
 
 pub use hawdb_readiness::graph_route_catalog::{
@@ -36,12 +34,12 @@ pub fn run_nowledge_graph_route_evidence(
     args: impl Iterator<Item = String>,
 ) -> Result<(serde_json::Value, bool)> {
     let inputs = parse_graph_route_evidence_cli_inputs(args)?;
-    let mut graph = NowledgeMemGraph::open(inputs.graph_path, inputs.mode)?;
+    let mut graph = EmbeddedGraph::open(inputs.graph_path, inputs.mode)?;
     Ok((
         nowledge_graph_route_evidence_json(
             &mut graph,
             &inputs.route_queries,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: inputs.capture_physical_plan,
                 slow_log_threshold_micros: inputs.slow_log_threshold_micros,
             },
@@ -52,9 +50,9 @@ pub fn run_nowledge_graph_route_evidence(
 }
 
 pub fn nowledge_graph_route_evidence_json(
-    graph: &mut NowledgeMemGraph,
+    graph: &mut EmbeddedGraph,
     route_queries: &[RouteQuery],
-    options: NowledgeMemQueryReportOptions,
+    options: EmbeddedQueryReportOptions,
     route_parity: Option<&RouteParityEvidence>,
 ) -> serde_json::Value {
     hawdb_readiness::graph_route_catalog::graph_route_evidence_json(

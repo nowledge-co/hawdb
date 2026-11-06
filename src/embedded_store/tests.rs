@@ -1,42 +1,34 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-use super::legacy_nowledge_mem_read_error;
+use super::legacy_embedded_read_error;
 use super::{
-    nowledge_mem_bounded_read_evidence_json_with_route_readiness,
-    nowledge_mem_fast_path_classification, nowledge_mem_graph_config,
-    nowledge_mem_graph_config_with_search_mode,
-    nowledge_mem_source_mutation_dual_write_evidence_all_ready,
-    nowledge_mem_source_mutation_dual_write_readiness, NowledgeMemCutoverControls,
-    NowledgeMemEmbeddedStore, NowledgeMemEmbeddedStoreHandle, NowledgeMemGraph,
-    NowledgeMemGraphMode, NowledgeMemOpenDiagnosticOptions, NowledgeMemOpenOptions,
-    NowledgeMemOutOfCoreSearchProjection, NowledgeMemQualifiedOutOfCoreSearchOptions,
-    NowledgeMemQueryExecutionPath, NowledgeMemQueryReportOptions, NowledgeMemReadOptions,
-    NowledgeMemReadinessAreaSummary, NowledgeMemReadinessDashboard, NowledgeMemReadinessOptions,
-    NowledgeMemRetrievalProjectionAdvisor, NowledgeMemRouteReadinessSummary,
-    NowledgeMemSearchCandidateReadinessOptions, NowledgeMemSearchCandidateRequest,
-    NowledgeMemSearchCandidateShadowAccumulator, NowledgeMemSearchProjection,
-    NowledgeMemServingEntrypoint, NowledgeMemServingPathReadiness,
-    NowledgeMemSourceMutationDualWriteEvidence, NowledgeMemStorageLifecycleActionKind,
-    NowledgeMemStorageLifecycleDecision, NowledgeMemStorageRecoveryReport, NowledgeMemWorkControl,
-    NowledgeQueryRuntimePreflightProbe, NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL,
-    NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL, NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL, NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL, NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL,
-    NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
-    NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_REPORT_PROTOCOL, NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
-    NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INGEST_CREATE,
-    NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL, NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL,
-    NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
-    REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES, REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
+    bounded_read_evidence_json_with_route_readiness, fast_path_classification, graph_config,
+    graph_config_with_search_mode, source_mutation_dual_write_evidence_all_ready,
+    source_mutation_dual_write_readiness, CutoverControls, EmbeddedGraph,
+    EmbeddedQueryExecutionPath, EmbeddedQueryReportOptions, EmbeddedReadOptions,
+    EmbeddedServingEntrypoint, EmbeddedServingPathReadiness, EmbeddedStorageRecoveryReport,
+    EmbeddedStore, EmbeddedStoreHandle, EmbeddedStoreOpenDiagnosticOptions,
+    EmbeddedStoreOpenOptions, GraphMode, NowledgeQueryRuntimePreflightProbe,
+    OutOfCoreSearchProjection, QualifiedOutOfCoreSearchOptions, ReadinessAreaSummary,
+    ReadinessDashboard, ReadinessOptions, RetrievalProjectionAdvisor, RouteReadinessSummary,
+    SearchCandidateReadinessOptions, SearchCandidateRequest, SearchCandidateShadowAccumulator,
+    SearchProjection, SourceMutationDualWriteEvidence, StorageLifecycleActionKind,
+    StorageLifecycleDecision, WorkControl, BOUNDED_READ_EVIDENCE_PROTOCOL,
+    CUTOVER_CONTROLS_PROTOCOL, LIBRARY_READINESS_PROTOCOL,
+    NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
+    OPEN_REPORT_PROTOCOL, OPERATIONS_READINESS_PROTOCOL, PRODUCTION_STATUS_PROTOCOL,
+    QUERY_REPORT_PROTOCOL, READINESS_DASHBOARD_PROTOCOL, READ_REPORT_PROTOCOL,
+    REQUIRED_BOUNDED_READ_ROUTES, REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
+    REQUIRED_SOURCE_MUTATION_FAMILIES, RETRIEVAL_REPORT_PROTOCOL, SEARCH_CANDIDATE_EVIDENCE_SOURCE,
+    SEARCH_CANDIDATE_READINESS_PROTOCOL, SEARCH_CANDIDATE_REPORT_PROTOCOL,
+    SLOW_QUERY_REPORT_PROTOCOL, SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
+    SOURCE_MUTATION_FAMILY_INGEST_CREATE, STORAGE_LIFECYCLE_DECISION_PROTOCOL,
 };
-use crate::mem_integration_readiness::nowledge_mem_final_cutover_preflight;
+use crate::mem_integration_readiness::final_cutover_preflight;
 use crate::route_ownership::{
-    nowledge_mem_route_ownership_all_hawdb, nowledge_mem_route_ownership_all_legacy,
-    nowledge_mem_route_ownership_readiness, NowledgeMemRouteOwnershipPolicy,
+    route_ownership_all_hawdb, route_ownership_all_legacy, route_ownership_readiness,
+    RouteOwnershipPolicy,
 };
 use crate::search::{
     CompressedVectorSearchMode, SearchFusionWeights, SearchLexicalFeasibilityCoverage,
@@ -44,14 +36,11 @@ use crate::search::{
     SearchOutOfCoreConfig, SearchTopKScoreParity,
 };
 use crate::search_route_ownership::{
-    nowledge_mem_active_search_route_ownership_all_hawdb,
-    nowledge_mem_active_search_route_ownership_readiness,
-    nowledge_mem_active_search_route_read_evidence_all_hawdb_ready,
-    nowledge_mem_active_search_route_readiness, nowledge_mem_search_route_ownership_all_hawdb,
-    nowledge_mem_search_route_ownership_readiness,
-    NowledgeMemActiveSearchRouteOwnershipReadinessReport,
-    NowledgeMemActiveSearchRouteReadinessReport, NowledgeMemSearchRouteOwnershipPolicy,
-    NowledgeMemSearchRouteOwnershipReadinessReport,
+    active_search_route_ownership_all_hawdb, active_search_route_ownership_readiness,
+    active_search_route_read_evidence_all_hawdb_ready, active_search_route_readiness,
+    search_route_ownership_all_hawdb, search_route_ownership_readiness,
+    ActiveSearchRouteOwnershipReadinessReport, ActiveSearchRouteReadinessReport,
+    SearchRouteOwnershipPolicy, SearchRouteOwnershipReadinessReport,
 };
 use crate::workload_fixtures::{
     nowledge_graph_route_workload_fixture_report, NowledgeGraphRouteWorkloadFixtureOptions,
@@ -127,16 +116,15 @@ fn ready_vector_recall_report() -> VectorRecallValidationReport {
 
 #[test]
 fn graph_config_tracks_shadow_vs_cutover_mode() {
-    assert!(nowledge_mem_graph_config(NowledgeMemGraphMode::ShadowReadOnly).read_only);
-    assert!(!nowledge_mem_graph_config(NowledgeMemGraphMode::WritableCutover).read_only);
+    assert!(graph_config(GraphMode::ShadowReadOnly).read_only);
+    assert!(!graph_config(GraphMode::WritableCutover).read_only);
     assert_eq!(
-        nowledge_mem_graph_config(NowledgeMemGraphMode::ShadowReadOnly)
-            .compressed_vector_search_mode,
+        graph_config(GraphMode::ShadowReadOnly).compressed_vector_search_mode,
         CompressedVectorSearchMode::Disabled
     );
     assert_eq!(
-        nowledge_mem_graph_config_with_search_mode(
-            NowledgeMemGraphMode::ShadowReadOnly,
+        graph_config_with_search_mode(
+            GraphMode::ShadowReadOnly,
             CompressedVectorSearchMode::Required,
         )
         .compressed_vector_search_mode,
@@ -147,19 +135,19 @@ fn graph_config_tracks_shadow_vs_cutover_mode() {
 #[test]
 fn serving_path_readiness_reexports_the_readiness_owner_contract() {
     assert_eq!(
-        TypeId::of::<NowledgeMemServingPathReadiness>(),
-        TypeId::of::<hawdb_readiness::nowledge_mem_serving_path::NowledgeMemServingPathReadiness>()
+        TypeId::of::<EmbeddedServingPathReadiness>(),
+        TypeId::of::<hawdb_readiness::serving_path::EmbeddedServingPathReadiness>()
     );
     assert_eq!(
-        TypeId::of::<NowledgeMemServingEntrypoint>(),
-        TypeId::of::<hawdb_readiness::nowledge_mem_serving_path::NowledgeMemServingEntrypoint>()
+        TypeId::of::<EmbeddedServingEntrypoint>(),
+        TypeId::of::<hawdb_readiness::serving_path::EmbeddedServingEntrypoint>()
     );
 }
 
 #[test]
 fn graph_facade_executes_cypher_through_library_api() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
 
     graph
         .query("CREATE (:Memory {id: 'mem-1', title: 'Library seam'})")
@@ -169,21 +157,19 @@ fn graph_facade_executes_cypher_through_library_api() {
         .unwrap();
 
     assert_eq!(output.rows.len(), 1);
-    assert_eq!(graph.mode(), NowledgeMemGraphMode::WritableCutover);
+    assert_eq!(graph.mode(), GraphMode::WritableCutover);
 }
 
 #[test]
 fn embedded_handle_generates_and_executes_bounded_schema_guided_graph_rag() {
-    let mut graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
     graph
         .query(
             "CREATE (:Memory {id: 'memory-1'})\
                  -[:MENTIONS]->(:Entity {id: 'entity-1', name: 'HawDB'})",
         )
         .unwrap();
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None)).unwrap();
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, None)).unwrap();
     let context = handle
         .graph_rag_schema_context(GraphRagSchemaContextOptions::default())
         .unwrap();
@@ -216,7 +202,7 @@ fn embedded_handle_generates_and_executes_bounded_schema_guided_graph_rag() {
                 "memory_id".to_string(),
                 Value::String("memory-1".to_string()),
             )]),
-            &NowledgeMemReadOptions {
+            &EmbeddedReadOptions {
                 max_rows: Some(2),
                 max_estimated_payload_bytes: Some(256),
             },
@@ -240,7 +226,7 @@ fn embedded_handle_generates_and_executes_bounded_schema_guided_graph_rag() {
                 "memory_id".to_string(),
                 Value::String("memory-1".to_string()),
             )]),
-            &NowledgeMemReadOptions::default(),
+            &EmbeddedReadOptions::default(),
         )
         .unwrap_err();
     assert!(error
@@ -261,13 +247,13 @@ fn fast_path_classification_uses_ast_shape_not_query_text() {
     )
     .unwrap();
 
-    let compact_classification = nowledge_mem_fast_path_classification(&compact);
-    let spaced_classification = nowledge_mem_fast_path_classification(&spaced);
-    let ordered_classification = nowledge_mem_fast_path_classification(&ordered);
+    let compact_classification = fast_path_classification(&compact);
+    let spaced_classification = fast_path_classification(&spaced);
+    let ordered_classification = fast_path_classification(&ordered);
 
     assert_eq!(
         compact_classification.execution_path,
-        NowledgeMemQueryExecutionPath::FastPath
+        EmbeddedQueryExecutionPath::FastPath
     );
     assert_eq!(
         compact_classification.fast_path_reason,
@@ -276,7 +262,7 @@ fn fast_path_classification_uses_ast_shape_not_query_text() {
     assert_eq!(compact_classification, spaced_classification);
     assert_eq!(
         ordered_classification.execution_path,
-        NowledgeMemQueryExecutionPath::OptimizedPath
+        EmbeddedQueryExecutionPath::OptimizedPath
     );
     assert_eq!(ordered_classification.fast_path_reason, None);
 }
@@ -284,7 +270,7 @@ fn fast_path_classification_uses_ast_shape_not_query_text() {
 #[test]
 fn graph_query_with_report_marks_simple_lookup_fast_path() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'mem-fast', title: 'Fast path'})")
         .unwrap();
@@ -294,11 +280,11 @@ fn graph_query_with_report_marks_simple_lookup_fast_path() {
         .unwrap();
 
     assert_eq!(query.output.rows.len(), 1);
-    assert_eq!(query.report.protocol, NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL);
+    assert_eq!(query.report.protocol, QUERY_REPORT_PROTOCOL);
     assert_eq!(query.report.statement_kind, "match_return");
     assert_eq!(
         query.report.execution_path,
-        NowledgeMemQueryExecutionPath::FastPath
+        EmbeddedQueryExecutionPath::FastPath
     );
     assert_eq!(
         query.report.fast_path_reason.as_deref(),
@@ -343,7 +329,7 @@ fn graph_query_with_report_marks_simple_lookup_fast_path() {
 #[test]
 fn graph_query_with_report_keeps_ordered_scan_on_optimized_path() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'mem-slow-1', title: 'B'})")
         .unwrap();
@@ -358,7 +344,7 @@ fn graph_query_with_report_keeps_ordered_scan_on_optimized_path() {
     assert_eq!(query.output.rows.len(), 1);
     assert_eq!(
         query.report.execution_path,
-        NowledgeMemQueryExecutionPath::OptimizedPath
+        EmbeddedQueryExecutionPath::OptimizedPath
     );
     assert_eq!(query.report.statement_kind, "match_return");
     assert_eq!(query.report.fast_path_reason, None);
@@ -390,7 +376,7 @@ fn graph_query_with_report_keeps_ordered_scan_on_optimized_path() {
 #[test]
 fn graph_query_with_report_can_capture_physical_plan_on_demand() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'mem-plan-1', title: 'B'})")
         .unwrap();
@@ -402,7 +388,7 @@ fn graph_query_with_report_can_capture_physical_plan_on_demand() {
         .query_with_params_with_report_options(
             "MATCH (m:Memory) RETURN m.title AS title ORDER BY title LIMIT 1",
             &BTreeMap::new(),
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: Some(0),
             },
@@ -439,7 +425,7 @@ fn graph_query_with_report_captures_plan_without_extra_cache_lookup() {
         max_plan_cache_entries: Some(8),
         ..DatabaseConfig::default()
     });
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'mem-report-cache-1', title: 'B'})")
         .unwrap();
@@ -452,7 +438,7 @@ fn graph_query_with_report_captures_plan_without_extra_cache_lookup() {
         .query_with_params_with_report_options(
             "MATCH (m:Memory) RETURN m.title AS title ORDER BY title LIMIT 1",
             &BTreeMap::new(),
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: None,
             },
@@ -476,7 +462,7 @@ fn graph_query_with_report_captures_plan_without_extra_cache_lookup() {
 fn graph_query_with_report_exposes_storage_scan_pruning() {
     let mut db = Database::new();
     db.query("CREATE INDEX ON :Memory(kind)").unwrap();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'mem-prune-1', kind: 'note', title: 'Keep'})")
         .unwrap();
@@ -509,7 +495,7 @@ fn graph_query_with_report_exposes_storage_scan_pruning() {
 fn graph_query_report_exposes_normalized_default_scan_pruning() {
     let mut db = Database::new();
     db.query("CREATE INDEX ON :Thread(space_id)").unwrap();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Thread {thread_id: 'thread-missing', title: 'Missing space'})")
         .unwrap();
@@ -581,7 +567,7 @@ fn graph_query_report_exposes_normalized_default_scan_pruning() {
 #[test]
 fn graph_query_with_report_keeps_system_statement_out_of_plan_cache() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
 
     let query = graph
         .query_with_report("SET system.work_priority = 'background'")
@@ -591,7 +577,7 @@ fn graph_query_with_report_keeps_system_statement_out_of_plan_cache() {
     assert_eq!(query.report.statement_kind, "set_system_variable");
     assert_eq!(
         query.report.execution_path,
-        NowledgeMemQueryExecutionPath::OptimizedPath
+        EmbeddedQueryExecutionPath::OptimizedPath
     );
     assert_eq!(query.report.plan_cache_lookup, None);
     assert_eq!(query.report.plan_cache_bypass_reason, None);
@@ -613,8 +599,8 @@ fn embedded_store_exposes_redacted_typed_slow_query_report() {
         slow_query_log_capacity: 4,
         ..DatabaseConfig::default()
     });
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-    let mut store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
+    let mut store = EmbeddedStore::new(graph, None);
 
     store
         .query_with_report("CREATE (:Memory {id: 'slow-secret-id', title: 'Slow Secret'})")
@@ -627,8 +613,8 @@ fn embedded_store_exposes_redacted_typed_slow_query_report() {
     let json = report.json();
     let encoded = json.to_string();
 
-    assert_eq!(report.protocol, NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL);
-    assert_eq!(report.mode, NowledgeMemGraphMode::ShadowReadOnly);
+    assert_eq!(report.protocol, SLOW_QUERY_REPORT_PROTOCOL);
+    assert_eq!(report.mode, GraphMode::ShadowReadOnly);
     assert!(report.present);
     assert!(report.ready);
     assert_eq!(report.capacity, 4);
@@ -641,7 +627,7 @@ fn embedded_store_exposes_redacted_typed_slow_query_report() {
         .records
         .iter()
         .all(|record| record.slow_log_candidate));
-    assert_eq!(json["protocol"], NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL);
+    assert_eq!(json["protocol"], SLOW_QUERY_REPORT_PROTOCOL);
     assert_eq!(json["record_count"], 2);
     assert_eq!(json["redaction"]["query_text_copied"], false);
     assert_eq!(json["redaction"]["parameters_copied"], false);
@@ -659,12 +645,12 @@ fn embedded_store_handle_supports_shared_read_and_observability_access() {
         slow_query_log_capacity: 8,
         ..DatabaseConfig::default()
     });
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-    let mut store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+    let mut store = EmbeddedStore::new(graph, None);
     store
         .query_with_report("CREATE (:Memory {id: 'shared-1', title: 'Shared State'})")
         .unwrap();
-    let handle = NowledgeMemEmbeddedStoreHandle::new(store).unwrap();
+    let handle = EmbeddedStoreHandle::new(store).unwrap();
 
     let reader = {
         let handle = handle.clone();
@@ -673,7 +659,7 @@ fn embedded_store_handle_supports_shared_read_and_observability_access() {
                 let query = handle
                     .read_query(
                         "MATCH (m:Memory {id: 'shared-1'}) RETURN m.title AS title",
-                        &NowledgeMemReadOptions::default(),
+                        &EmbeddedReadOptions::default(),
                     )
                     .unwrap();
                 assert_eq!(query.output.rows.len(), 1);
@@ -690,7 +676,7 @@ fn embedded_store_handle_supports_shared_read_and_observability_access() {
                 assert!(slow_query.record_count <= slow_query.capacity);
 
                 let dashboard = handle
-                    .readiness_dashboard(&NowledgeMemReadinessOptions::default())
+                    .readiness_dashboard(&ReadinessOptions::default())
                     .unwrap();
                 assert!(readiness_dashboard_area(&dashboard, "slow_query").ready);
                 assert!(dashboard.slow_query_record_count <= slow_query.capacity);
@@ -710,12 +696,12 @@ fn embedded_store_handle_supports_shared_read_and_observability_access() {
 #[test]
 fn write_guard_panic_poisons_reads_without_discarding_last_good_snapshot() {
     let db = Database::new_with_config(DatabaseConfig::default());
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-    let mut store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+    let mut store = EmbeddedStore::new(graph, None);
     store
         .query_with_report("CREATE (:Memory {id: 'panic-guard', title: 'Before'})")
         .unwrap();
-    let handle = NowledgeMemEmbeddedStoreHandle::new(store).unwrap();
+    let handle = EmbeddedStoreHandle::new(store).unwrap();
 
     // Baseline: the canonical read path works before anything goes wrong.
     handle
@@ -744,19 +730,19 @@ fn embedded_store_exposes_typed_operations_readiness_report() {
         slow_query_log_capacity: 4,
         ..DatabaseConfig::default()
     });
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-    let mut store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+    let mut store = EmbeddedStore::new(graph, None);
     store
         .query_with_report("CREATE (:Memory {id: 'ops-1', title: 'Operations'})")
         .unwrap();
 
     let report = store
-        .operations_readiness(&NowledgeMemReadinessOptions::default())
+        .operations_readiness(&ReadinessOptions::default())
         .unwrap();
     let json = report.json();
     let encoded = json.to_string();
 
-    assert_eq!(report.protocol, NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL);
+    assert_eq!(report.protocol, OPERATIONS_READINESS_PROTOCOL);
     assert!(report.present);
     assert!(!report.ready);
     assert!(report.graph_open);
@@ -767,7 +753,7 @@ fn embedded_store_exposes_typed_operations_readiness_report() {
     assert!(!report.projection_stale);
     assert_eq!(
         report.storage_lifecycle_action,
-        NowledgeMemStorageLifecycleActionKind::OpenReadOnlyInspect
+        StorageLifecycleActionKind::OpenReadOnlyInspect
     );
     assert!(!report.storage_lifecycle_ready);
     assert!(!report.storage_recovery_ready);
@@ -779,7 +765,7 @@ fn embedded_store_exposes_typed_operations_readiness_report() {
     assert!(report
         .blocker_codes
         .contains(&"storage_lifecycle.storage_not_durable".to_string()));
-    assert_eq!(json["protocol"], NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL);
+    assert_eq!(json["protocol"], OPERATIONS_READINESS_PROTOCOL);
     assert_eq!(
         json["storage_lifecycle"]["action"],
         "open_read_only_inspect"
@@ -787,7 +773,7 @@ fn embedded_store_exposes_typed_operations_readiness_report() {
     assert_eq!(json["readiness"]["storage_lifecycle_ready"], false);
     assert_eq!(
         json["storage_lifecycle_decision"]["protocol"],
-        NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL
+        STORAGE_LIFECYCLE_DECISION_PROTOCOL
     );
     assert_eq!(json["redaction"]["query_text_copied"], false);
     assert!(!encoded.contains("Operations"));
@@ -796,19 +782,17 @@ fn embedded_store_exposes_typed_operations_readiness_report() {
 
 #[test]
 fn embedded_store_operations_readiness_reports_projection_staleness() {
-    let root = unique_nowledge_mem_test_dir("operations_readiness_projection_stale");
+    let root = unique_embedded_store_test_dir("operations_readiness_projection_stale");
     let search_path = root.join("search");
-    let mut graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'ops-stale', title: 'Projection stale'})")
         .unwrap();
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let mut store = EmbeddedStore::new(graph, Some(projection));
 
     let stale = store
-        .operations_readiness(&NowledgeMemReadinessOptions::default())
+        .operations_readiness(&ReadinessOptions::default())
         .unwrap();
     assert!(stale.search_projection_open);
     assert_eq!(stale.projection_commit_lag, 1);
@@ -819,7 +803,7 @@ fn embedded_store_operations_readiness_reports_projection_staleness() {
 
     store.catch_up_search_projection(16, 1).unwrap();
     let caught_up = store
-        .operations_readiness(&NowledgeMemReadinessOptions::default())
+        .operations_readiness(&ReadinessOptions::default())
         .unwrap();
     assert!(caught_up.search_projection_open);
     assert_eq!(caught_up.projection_commit_lag, 0);
@@ -837,12 +821,12 @@ fn embedded_store_handle_supports_operations_readiness_with_shared_reads() {
         slow_query_log_capacity: 8,
         ..DatabaseConfig::default()
     });
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-    let mut store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+    let mut store = EmbeddedStore::new(graph, None);
     store
         .query_with_report("CREATE (:Memory {id: 'ops-shared', title: 'Shared Operations'})")
         .unwrap();
-    let handle = NowledgeMemEmbeddedStoreHandle::new(store);
+    let handle = EmbeddedStoreHandle::new(store);
 
     let reader = {
         let handle = handle.clone().unwrap();
@@ -850,7 +834,7 @@ fn embedded_store_handle_supports_operations_readiness_with_shared_reads() {
             let read = handle
                 .read_query(
                     "MATCH (m:Memory {id: 'ops-shared'}) RETURN m.title AS title",
-                    &NowledgeMemReadOptions::default(),
+                    &EmbeddedReadOptions::default(),
                 )
                 .unwrap();
             assert_eq!(read.output.rows.len(), 1);
@@ -860,7 +844,7 @@ fn embedded_store_handle_supports_operations_readiness_with_shared_reads() {
         let handle = handle.clone().unwrap();
         thread::spawn(move || {
             let report = handle
-                .operations_readiness(&NowledgeMemReadinessOptions::default())
+                .operations_readiness(&ReadinessOptions::default())
                 .unwrap();
             assert!(report.slow_query_ready);
             assert!(report.background_maintenance_ready);
@@ -873,9 +857,8 @@ fn embedded_store_handle_supports_operations_readiness_with_shared_reads() {
 
 #[test]
 fn embedded_store_handle_allows_overlapping_read_guards() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let handle = NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None));
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, None));
     let (acquired_tx, acquired_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
 
@@ -910,8 +893,8 @@ fn embedded_store_exposes_typed_query_runtime_preflight() {
         max_plan_cache_entries: Some(8),
         ..DatabaseConfig::default()
     });
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-    let mut store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+    let mut store = EmbeddedStore::new(graph, None);
     store
         .query_with_report("CREATE INDEX ON :Memory(id)")
         .unwrap();
@@ -925,7 +908,7 @@ fn embedded_store_exposes_typed_query_runtime_preflight() {
             ))
             .unwrap();
     }
-    let probes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let probes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .map(|route| {
             NowledgeQueryRuntimePreflightProbe::new(
@@ -933,7 +916,7 @@ fn embedded_store_exposes_typed_query_runtime_preflight() {
                 "MATCH (m:Memory {id: 'preflight-1'}) RETURN m.title AS title",
             )
             .with_route(*route)
-            .with_query_family(super::nowledge_mem_required_query_families_for_route(route)[0])
+            .with_query_family(super::required_query_families_for_route(route)[0])
             .require_scan_pruning(1)
             .require_pruned()
             .with_max_output_rows(1)
@@ -951,10 +934,7 @@ fn embedded_store_exposes_typed_query_runtime_preflight() {
     assert!(!report.redaction.parameters_copied);
     assert!(!report.redaction.local_paths_copied);
     assert!(!report.redaction.raw_errors_copied);
-    assert_eq!(
-        report.probe_count,
-        REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
-    );
+    assert_eq!(report.probe_count, REQUIRED_BOUNDED_READ_ROUTES.len());
     assert_eq!(report.passed_probe_count, report.probe_count);
     assert_eq!(report.failed_probe_count, 0);
     assert!(report.required_routes_covered);
@@ -990,8 +970,8 @@ fn embedded_store_exposes_typed_query_runtime_preflight() {
 #[test]
 fn embedded_store_query_runtime_preflight_redacts_failed_probe_values() {
     let db = Database::new();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-    let mut store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+    let mut store = EmbeddedStore::new(graph, None);
     let probe = NowledgeQueryRuntimePreflightProbe::new(
         "probe:/graph/node-details/{node_id}",
         "MATCH (m:Memory {id: 'secret-preflight-id'}) RETURN missing(",
@@ -1022,7 +1002,7 @@ fn embedded_store_query_runtime_preflight_redacts_failed_probe_values() {
 #[test]
 fn graph_read_query_reports_bounded_payload() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
     graph
         .database_mut()
         .query("CREATE (:Memory {id: 'mem-read', title: 'Bounded read'})")
@@ -1031,7 +1011,7 @@ fn graph_read_query_reports_bounded_payload() {
     let read = graph
         .read_query_with_options(
             "MATCH (m:Memory {id: 'mem-read'}) RETURN m.title AS title",
-            &NowledgeMemReadOptions {
+            &EmbeddedReadOptions {
                 max_rows: Some(4),
                 max_estimated_payload_bytes: Some(512),
             },
@@ -1039,8 +1019,8 @@ fn graph_read_query_reports_bounded_payload() {
         .unwrap();
 
     assert_eq!(read.output.rows.len(), 1);
-    assert_eq!(read.report.protocol, NOWLEDGE_MEM_READ_REPORT_PROTOCOL);
-    assert_eq!(read.report.mode, NowledgeMemGraphMode::ShadowReadOnly);
+    assert_eq!(read.report.protocol, READ_REPORT_PROTOCOL);
+    assert_eq!(read.report.mode, GraphMode::ShadowReadOnly);
     assert_eq!(read.report.row_count, 1);
     assert_eq!(read.report.max_rows, Some(4));
     assert_eq!(read.report.execution_row_cap, Some(5));
@@ -1076,7 +1056,7 @@ fn graph_read_query_reports_bounded_payload() {
     assert_eq!(read.report.json()["streaming"], false);
     assert_eq!(
         read.report.bounded_read_evidence_json()["protocol"],
-        NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL
+        BOUNDED_READ_EVIDENCE_PROTOCOL
     );
     assert_eq!(
         read.report.bounded_read_evidence_json()["mode"],
@@ -1089,7 +1069,7 @@ fn graph_read_query_reports_bounded_payload() {
     );
     let covered_routes = full_bounded_read_routes();
     let route_readiness = ready_route_readiness_summary();
-    let evidence = nowledge_mem_bounded_read_evidence_json_with_route_readiness(
+    let evidence = bounded_read_evidence_json_with_route_readiness(
         &read.report,
         &covered_routes,
         Some(&route_readiness),
@@ -1105,7 +1085,7 @@ fn graph_read_query_reports_bounded_payload() {
 #[test]
 fn graph_queries_hold_and_release_runtime_governor_permits() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
 
     graph
         .query("CREATE (:Memory {id: 'admitted-mem'})")
@@ -1113,7 +1093,7 @@ fn graph_queries_hold_and_release_runtime_governor_permits() {
     let read = graph
         .read_query_with_options(
             "MATCH (m:Memory {id: 'admitted-mem'}) RETURN m.id AS id",
-            &NowledgeMemReadOptions {
+            &EmbeddedReadOptions {
                 max_rows: Some(1),
                 max_estimated_payload_bytes: Some(1024),
             },
@@ -1139,9 +1119,9 @@ fn graph_query_rejects_before_mutation_when_runtime_memory_is_unavailable() {
         },
         hawdb_qos::IoConcurrencyBudget::new(1, 1),
     );
-    let mut graph = NowledgeMemGraph::from_database_with_runtime_governor(
+    let mut graph = EmbeddedGraph::from_database_with_runtime_governor(
         Database::new(),
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
         governor,
     );
 
@@ -1173,13 +1153,12 @@ fn embedded_handle_transaction_rejects_before_mutation_without_runtime_memory() 
         },
         hawdb_qos::IoConcurrencyBudget::new(2, 1),
     );
-    let graph = NowledgeMemGraph::from_database_with_runtime_governor(
+    let graph = EmbeddedGraph::from_database_with_runtime_governor(
         Database::new(),
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
         governor,
     );
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None)).unwrap();
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, None)).unwrap();
 
     let error = handle
         .transaction(&[NowledgeGraphStatement {
@@ -1201,10 +1180,8 @@ fn embedded_handle_transaction_rejects_before_mutation_without_runtime_memory() 
 
 #[test]
 fn embedded_handle_query_transaction_commits_graph_and_relational_state_once() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None)).unwrap();
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, None)).unwrap();
 
     handle
         .with_transaction(|transaction| {
@@ -1256,10 +1233,8 @@ fn embedded_handle_query_transaction_commits_graph_and_relational_state_once() {
 
 #[test]
 fn embedded_handle_query_transaction_rolls_back_callback_errors() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None)).unwrap();
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, None)).unwrap();
 
     let error = handle
         .with_transaction(|transaction| {
@@ -1284,11 +1259,10 @@ fn embedded_handle_query_transaction_rolls_back_callback_errors() {
 
 #[test]
 fn embedded_handle_checkpoints_through_admitted_maintenance() {
-    let root = unique_nowledge_mem_test_dir("embedded_handle_checkpoint");
+    let root = unique_embedded_store_test_dir("embedded_handle_checkpoint");
     let graph_path = root.join("graph");
-    let options =
-        NowledgeMemOpenOptions::graph_only(&graph_path, NowledgeMemGraphMode::WritableCutover);
-    let (handle, _) = NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+    let options = EmbeddedStoreOpenOptions::graph_only(&graph_path, GraphMode::WritableCutover);
+    let (handle, _) = EmbeddedStoreHandle::open_with_options(options).unwrap();
 
     handle
         .query_with_report("CREATE (:Memory {id: 'checkpointed'})")
@@ -1306,9 +1280,8 @@ fn embedded_handle_checkpoints_through_admitted_maintenance() {
     assert_eq!(after.admitted_memory_bytes, 0);
     drop(handle);
 
-    let options =
-        NowledgeMemOpenOptions::graph_only(&graph_path, NowledgeMemGraphMode::ShadowReadOnly);
-    let (handle, _) = NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+    let options = EmbeddedStoreOpenOptions::graph_only(&graph_path, GraphMode::ShadowReadOnly);
+    let (handle, _) = EmbeddedStoreHandle::open_with_options(options).unwrap();
     let output = handle
         .query_with_report("MATCH (m:Memory {id: 'checkpointed'}) RETURN m.id AS id")
         .unwrap();
@@ -1327,22 +1300,20 @@ fn embedded_handle_search_holds_governed_io_and_result_budget() {
         },
         hawdb_qos::IoConcurrencyBudget::new(1, 1),
     );
-    let graph = NowledgeMemGraph::from_database_with_runtime_governor(
+    let graph = EmbeddedGraph::from_database_with_runtime_governor(
         Database::new(),
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
         governor,
     );
-    let mut projection = NowledgeMemSearchProjection::from_index(SearchIndex::default());
+    let mut projection = SearchProjection::from_index(SearchIndex::default());
     projection.set_range_read_config(crate::SearchRangeReadConfig::new(
         std::num::NonZeroUsize::MIN,
         std::num::NonZeroU64::new(1024).unwrap(),
     ));
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
-            .unwrap();
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
 
     let output = handle
-        .search_candidates_with_report(&NowledgeMemSearchCandidateRequest::text("empty", 4))
+        .search_candidates_with_report(&SearchCandidateRequest::text("empty", 4))
         .unwrap();
 
     assert!(output.result.hits.is_empty());
@@ -1355,7 +1326,7 @@ fn embedded_handle_search_holds_governed_io_and_result_budget() {
 
 #[test]
 fn embedded_handle_charges_out_of_core_buffers_to_runtime_admission() {
-    let root = unique_nowledge_mem_test_dir("out_of_core_runtime_admission");
+    let root = unique_embedded_store_test_dir("out_of_core_runtime_admission");
     let search_path = root.join("search");
     {
         let mut index = SearchIndex::open(&search_path).unwrap();
@@ -1380,22 +1351,21 @@ fn embedded_handle_charges_out_of_core_buffers_to_runtime_admission() {
         },
         hawdb_qos::IoConcurrencyBudget::new(1, 1),
     );
-    let graph = NowledgeMemGraph::from_database_with_runtime_governor(
+    let graph = EmbeddedGraph::from_database_with_runtime_governor(
         Database::new(),
-        NowledgeMemGraphMode::ShadowReadOnly,
+        GraphMode::ShadowReadOnly,
         governor,
     );
-    let projection = NowledgeMemOutOfCoreSearchProjection::open(&search_path).unwrap();
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new_with_out_of_core_search(
-            graph,
-            projection,
-            NowledgeMemRetrievalProjectionAdvisor::default(),
-        ))
-        .unwrap();
+    let projection = OutOfCoreSearchProjection::open(&search_path).unwrap();
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new_with_out_of_core_search(
+        graph,
+        projection,
+        RetrievalProjectionAdvisor::default(),
+    ))
+    .unwrap();
 
     let error = handle
-        .search_candidates(&NowledgeMemSearchCandidateRequest::text("admission", 1))
+        .search_candidates(&SearchCandidateRequest::text("admission", 1))
         .unwrap_err();
 
     assert!(error
@@ -1418,18 +1388,18 @@ fn embedded_store_clamps_search_io_depth_to_runtime_governor() {
         },
         hawdb_qos::IoConcurrencyBudget::new(2, 1),
     );
-    let graph = NowledgeMemGraph::from_database_with_runtime_governor(
+    let graph = EmbeddedGraph::from_database_with_runtime_governor(
         Database::new(),
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
         governor,
     );
-    let mut projection = NowledgeMemSearchProjection::from_index(SearchIndex::default());
+    let mut projection = SearchProjection::from_index(SearchIndex::default());
     projection.set_range_read_config(crate::SearchRangeReadConfig::new(
         std::num::NonZeroUsize::new(4).unwrap(),
         std::num::NonZeroU64::new(1024).unwrap(),
     ));
 
-    let store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let store = EmbeddedStore::new(graph, Some(projection));
 
     assert_eq!(
         store
@@ -1445,10 +1415,8 @@ fn embedded_store_clamps_search_io_depth_to_runtime_governor() {
 
 #[test]
 fn embedded_handle_read_transaction_runs_against_one_admitted_snapshot() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None)).unwrap();
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, None)).unwrap();
     handle
         .query_with_report("CREATE (:Memory {id: 'memory-1'})")
         .unwrap();
@@ -1485,7 +1453,7 @@ fn embedded_handle_read_transaction_runs_against_one_admitted_snapshot() {
 fn graph_streaming_query_reports_pre_execution_cancellation() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'cancelled-mem'})").unwrap();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
     let cancellation = hawdb_core::RuntimeCancellationToken::new();
     cancellation.cancel();
     let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation);
@@ -1494,7 +1462,7 @@ fn graph_streaming_query_reports_pre_execution_cancellation() {
         .read_query_with_params_streaming_context(
             "MATCH (m:Memory) RETURN m.id AS id",
             &BTreeMap::new(),
-            &NowledgeMemReadOptions::default(),
+            &EmbeddedReadOptions::default(),
             &context,
             |_| Ok(()),
         )
@@ -1509,7 +1477,7 @@ fn graph_streaming_query_reports_pre_execution_cancellation() {
 #[test]
 fn graph_read_query_streaming_collect_enforces_payload_before_host_ownership() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
     graph
         .database_mut()
         .query("CREATE (:Memory {id: 'mem-stream', title: 'streamed payload'})")
@@ -1520,7 +1488,7 @@ fn graph_read_query_streaming_collect_enforces_payload_before_host_ownership() {
         .read_query_with_params_streaming_collect(
             query,
             &BTreeMap::new(),
-            &NowledgeMemReadOptions {
+            &EmbeddedReadOptions {
                 max_rows: Some(1),
                 max_estimated_payload_bytes: Some(1024),
             },
@@ -1537,7 +1505,7 @@ fn graph_read_query_streaming_collect_enforces_payload_before_host_ownership() {
         .read_query_with_params_streaming_collect(
             query,
             &BTreeMap::new(),
-            &NowledgeMemReadOptions {
+            &EmbeddedReadOptions {
                 max_rows: Some(1),
                 max_estimated_payload_bytes: Some(1),
             },
@@ -1549,7 +1517,7 @@ fn graph_read_query_streaming_collect_enforces_payload_before_host_ownership() {
 #[test]
 fn graph_read_query_rejects_payload_budget_excess() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
     graph
         .database_mut()
         .query("CREATE (:Memory {id: 'mem-large', title: 'Large read payload'})")
@@ -1558,7 +1526,7 @@ fn graph_read_query_rejects_payload_budget_excess() {
     let error = graph
         .read_query_with_options(
             "MATCH (m:Memory {id: 'mem-large'}) RETURN m.title AS title",
-            &NowledgeMemReadOptions {
+            &EmbeddedReadOptions {
                 max_rows: Some(4),
                 max_estimated_payload_bytes: Some(4),
             },
@@ -1574,11 +1542,11 @@ fn graph_read_query_rejects_payload_budget_excess() {
 
 #[test]
 fn legacy_read_error_context_preserves_typed_budget_and_unknown_errors() {
-    let options = NowledgeMemReadOptions {
+    let options = EmbeddedReadOptions {
         max_rows: Some(1),
         max_estimated_payload_bytes: Some(4),
     };
-    let typed = legacy_nowledge_mem_read_error(
+    let typed = legacy_embedded_read_error(
         HawDBError::read_budget_exceeded(
             ReadBudgetResource::PayloadBytes,
             4,
@@ -1591,11 +1559,11 @@ fn legacy_read_error_context_preserves_typed_budget_and_unknown_errors() {
     assert!(typed.to_string().contains("max_estimated_payload_bytes 4"));
     let unknown = HawDBError::Execution("unrelated max_payload_bytes 4 diagnostic".into());
     assert_eq!(
-        legacy_nowledge_mem_read_error(unknown.clone(), &options),
+        legacy_embedded_read_error(unknown.clone(), &options),
         unknown
     );
     let rows = HawDBError::read_budget_exceeded(ReadBudgetResource::Rows, 1, "rows");
-    assert_eq!(legacy_nowledge_mem_read_error(rows.clone(), &options), rows);
+    assert_eq!(legacy_embedded_read_error(rows.clone(), &options), rows);
 }
 
 #[test]
@@ -1621,7 +1589,7 @@ fn read_transaction_rejects_rows_above_configured_limit() {
 #[test]
 fn graph_read_query_rejects_rows_before_returning_oversized_output() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
     graph
         .database_mut()
         .query("CREATE (:Memory {id: 'mem-read-limit-1', title: 'Limit one'})")
@@ -1634,7 +1602,7 @@ fn graph_read_query_rejects_rows_before_returning_oversized_output() {
     let error = graph
         .read_query_with_options(
             "MATCH (m:Memory) RETURN m.id AS id",
-            &NowledgeMemReadOptions {
+            &EmbeddedReadOptions {
                 max_rows: Some(1),
                 max_estimated_payload_bytes: Some(4096),
             },
@@ -1647,7 +1615,7 @@ fn graph_read_query_rejects_rows_before_returning_oversized_output() {
 #[test]
 fn graph_read_query_allows_cypher_limit_within_row_budget() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
     graph
         .database_mut()
         .query("CREATE (:Memory {id: 'mem-read-limit-pass-1', title: 'Limit one'})")
@@ -1660,7 +1628,7 @@ fn graph_read_query_allows_cypher_limit_within_row_budget() {
     let read = graph
         .read_query_with_options(
             "MATCH (m:Memory) RETURN m.id AS id LIMIT 1",
-            &NowledgeMemReadOptions {
+            &EmbeddedReadOptions {
                 max_rows: Some(1),
                 max_estimated_payload_bytes: Some(4096),
             },
@@ -1675,7 +1643,7 @@ fn graph_read_query_allows_cypher_limit_within_row_budget() {
 #[test]
 fn graph_read_query_reports_blocking_operators() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
     graph
         .database_mut()
         .query("CREATE (:Memory {id: 'mem-sort-profile-1', title: 'B'})")
@@ -1688,7 +1656,7 @@ fn graph_read_query_reports_blocking_operators() {
     let read = graph
         .read_query_with_options(
             "MATCH (m:Memory) RETURN m.title AS title ORDER BY title LIMIT 1",
-            &NowledgeMemReadOptions {
+            &EmbeddedReadOptions {
                 max_rows: Some(4),
                 max_estimated_payload_bytes: Some(4096),
             },
@@ -1704,16 +1672,16 @@ fn graph_read_query_reports_blocking_operators() {
 #[test]
 fn embedded_store_read_query_does_not_require_search_projection() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'mem-store-read', title: 'Store read'})")
         .unwrap();
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let store = EmbeddedStore::new(graph, None);
 
     let read = store
         .read_query_with_options(
             "MATCH (m:Memory {id: 'mem-store-read'}) RETURN m.title AS title",
-            &NowledgeMemReadOptions::default(),
+            &EmbeddedReadOptions::default(),
         )
         .unwrap();
 
@@ -1726,17 +1694,14 @@ fn embedded_store_read_query_does_not_require_search_projection() {
 #[test]
 fn embedded_store_library_readiness_fails_closed_without_required_evidence() {
     let db = Database::new();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let readiness = store
-        .library_readiness_json(&NowledgeMemReadinessOptions::default())
+        .library_readiness_json(&ReadinessOptions::default())
         .unwrap();
 
-    assert_eq!(
-        readiness["protocol"],
-        NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL
-    );
+    assert_eq!(readiness["protocol"], LIBRARY_READINESS_PROTOCOL);
     assert_eq!(readiness["present"], true);
     assert_eq!(readiness["ready"], false);
     assert_eq!(readiness["mode"], "shadow_read_only");
@@ -1870,7 +1835,7 @@ fn embedded_store_library_readiness_fails_closed_without_required_evidence() {
 
 #[test]
 fn embedded_store_library_readiness_consumes_typed_production_resource_profile() {
-    let path = unique_nowledge_mem_test_dir("production_resource_profile");
+    let path = unique_embedded_store_test_dir("production_resource_profile");
     let cache_capacity = 1024;
     let config = DatabaseConfig {
         storage_residency_mode: StorageResidencyMode::OutOfCore,
@@ -1894,8 +1859,8 @@ fn embedded_store_library_readiness_consumes_typed_production_resource_profile()
     db.checkpoint().unwrap();
     drop(db);
     let db = Database::open_with_config(&path, config).unwrap();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+    let store = EmbeddedStore::new(graph, None);
     let statement = NowledgeGraphStatement {
         cypher: "MATCH (m:Memory) RETURN m.id AS memory_id".to_string(),
         parameters: BTreeMap::new(),
@@ -1946,9 +1911,9 @@ fn embedded_store_library_readiness_consumes_typed_production_resource_profile()
     assert!(profile.production_ready());
     assert!(profile.after.canonical_artifact_bytes > cache_capacity);
     let readiness = store
-        .library_readiness(&NowledgeMemReadinessOptions {
+        .library_readiness(&ReadinessOptions {
             production_resource_profile: Some(profile),
-            ..NowledgeMemReadinessOptions::default()
+            ..ReadinessOptions::default()
         })
         .unwrap();
 
@@ -1970,18 +1935,18 @@ fn embedded_store_library_readiness_consumes_typed_production_resource_profile()
 #[test]
 fn embedded_store_exposes_typed_library_readiness_report() {
     let db = Database::new();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let report = store
-        .library_readiness(&NowledgeMemReadinessOptions::default())
+        .library_readiness(&ReadinessOptions::default())
         .unwrap();
     let json = report.json();
 
-    assert_eq!(report.protocol, NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL);
+    assert_eq!(report.protocol, LIBRARY_READINESS_PROTOCOL);
     assert!(report.present);
     assert!(!report.ready);
-    assert_eq!(report.mode, NowledgeMemGraphMode::ShadowReadOnly);
+    assert_eq!(report.mode, GraphMode::ShadowReadOnly);
     assert!(report.redaction.ready());
     assert!(!report.redaction.query_text_copied);
     assert!(!report.redaction.parameters_copied);
@@ -2094,14 +2059,14 @@ fn embedded_store_exposes_typed_library_readiness_report() {
 #[test]
 fn embedded_store_library_readiness_requires_active_search_route_read_evidence() {
     let db = Database::new();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let readiness = store
-        .library_readiness_json(&NowledgeMemReadinessOptions {
+        .library_readiness_json(&ReadinessOptions {
             search_route_ownership: Some(ready_search_route_ownership()),
             active_search_route_ownership: Some(ready_active_search_route_ownership()),
-            ..NowledgeMemReadinessOptions::default()
+            ..ReadinessOptions::default()
         })
         .unwrap();
 
@@ -2135,8 +2100,8 @@ fn embedded_store_library_readiness_requires_active_search_route_read_evidence()
 #[test]
 fn embedded_store_library_readiness_accepts_typed_workload_fixture_evidence() {
     let db = Database::new();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
     let workload_fixture =
         nowledge_graph_route_workload_fixture_report(NowledgeGraphRouteWorkloadFixtureOptions {
             capture_physical_plan: true,
@@ -2146,9 +2111,9 @@ fn embedded_store_library_readiness_accepts_typed_workload_fixture_evidence() {
         .unwrap();
 
     let report = store
-        .library_readiness(&NowledgeMemReadinessOptions {
+        .library_readiness(&ReadinessOptions {
             workload_fixture_evidence: Some(workload_fixture.clone()),
-            ..NowledgeMemReadinessOptions::default()
+            ..ReadinessOptions::default()
         })
         .unwrap();
     let json = report.json();
@@ -2266,16 +2231,16 @@ fn library_readiness_rejects_workload_fixture_without_source_projection_probe() 
 #[test]
 fn embedded_store_library_readiness_recomputes_search_candidate_shadow_evidence() {
     let db = Database::new();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let readiness = store
-        .library_readiness_json(&NowledgeMemReadinessOptions {
+        .library_readiness_json(&ReadinessOptions {
             search_candidate_shadow_evidence: Some(serde_json::json!({
                 "ready": true,
                 "blocker_codes": []
             })),
-            ..NowledgeMemReadinessOptions::default()
+            ..ReadinessOptions::default()
         })
         .unwrap();
 
@@ -2302,16 +2267,16 @@ fn embedded_store_library_readiness_recomputes_search_candidate_shadow_evidence(
 #[test]
 fn embedded_store_library_readiness_recomputes_search_projection_evidence() {
     let db = Database::new();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let readiness = store
-        .library_readiness_json(&NowledgeMemReadinessOptions {
+        .library_readiness_json(&ReadinessOptions {
             search_projection_evidence: Some(serde_json::json!({
                 "ready": true,
                 "blocker_codes": []
             })),
-            ..NowledgeMemReadinessOptions::default()
+            ..ReadinessOptions::default()
         })
         .unwrap();
 
@@ -2341,16 +2306,16 @@ fn embedded_store_library_readiness_recomputes_search_projection_evidence() {
 #[test]
 fn embedded_store_library_readiness_recomputes_search_projection_shadow_evidence() {
     let db = Database::new();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let readiness = store
-        .library_readiness_json(&NowledgeMemReadinessOptions {
+        .library_readiness_json(&ReadinessOptions {
             search_projection_shadow_evidence: Some(serde_json::json!({
                 "ready": true,
                 "blocker_codes": []
             })),
-            ..NowledgeMemReadinessOptions::default()
+            ..ReadinessOptions::default()
         })
         .unwrap();
 
@@ -2384,30 +2349,27 @@ fn embedded_store_exposes_compact_readiness_dashboard() {
         slow_query_log_capacity: 4,
         ..DatabaseConfig::default()
     });
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-    let mut store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
+    let mut store = EmbeddedStore::new(graph, None);
     store
         .query_with_report("CREATE (:Memory {id: 'dashboard-secret', title: 'Dashboard Secret'})")
         .unwrap();
 
     let dashboard = store
-        .readiness_dashboard(&NowledgeMemReadinessOptions::default())
+        .readiness_dashboard(&ReadinessOptions::default())
         .unwrap();
     let json = dashboard.json();
     let encoded = json.to_string();
 
-    assert_eq!(
-        dashboard.protocol,
-        NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL
-    );
-    assert_eq!(dashboard.mode, NowledgeMemGraphMode::ShadowReadOnly);
+    assert_eq!(dashboard.protocol, READINESS_DASHBOARD_PROTOCOL);
+    assert_eq!(dashboard.mode, GraphMode::ShadowReadOnly);
     assert!(!dashboard.ready);
     assert_eq!(dashboard.area_count, 12);
     assert_eq!(dashboard.ready_area_count, 3);
     assert_eq!(dashboard.blocked_area_count, 9);
     assert_eq!(
         dashboard.storage_lifecycle_action,
-        NowledgeMemStorageLifecycleActionKind::OpenReadOnlyInspect
+        StorageLifecycleActionKind::OpenReadOnlyInspect
     );
     assert!(!dashboard.storage_lifecycle_ready);
     assert!(dashboard.slow_query_ready);
@@ -2465,7 +2427,7 @@ fn embedded_store_exposes_compact_readiness_dashboard() {
         vec!["workload_fixture_evidence_missing".to_string()]
     );
     assert!(readiness_dashboard_area(&dashboard, "slow_query").ready);
-    assert_eq!(json["protocol"], NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL);
+    assert_eq!(json["protocol"], READINESS_DASHBOARD_PROTOCOL);
     assert_eq!(
         json["storage_lifecycle"]["action"],
         "open_read_only_inspect"
@@ -2480,7 +2442,7 @@ fn embedded_store_exposes_compact_readiness_dashboard() {
 
 #[test]
 fn storage_recovery_report_exposes_typed_readiness_summary() {
-    let report = NowledgeMemStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
+    let report = EmbeddedStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
         open_timings: Default::default(),
         durable: true,
         recovery_mode: RecoveryMode::Strict,
@@ -2517,7 +2479,7 @@ fn storage_recovery_report_exposes_typed_readiness_summary() {
 
 #[test]
 fn storage_recovery_report_rejects_inconsistent_open_timings() {
-    let report = NowledgeMemStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
+    let report = EmbeddedStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
         open_timings: StorageOpenTimings {
             durable_manifest_open_micros: 2,
             total_open_micros: 1,
@@ -2551,7 +2513,7 @@ fn storage_recovery_report_rejects_inconsistent_open_timings() {
 
 #[test]
 fn storage_lifecycle_decision_reports_ready_for_clean_recovery() {
-    let recovery = NowledgeMemStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
+    let recovery = EmbeddedStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
         open_timings: Default::default(),
         durable: true,
         recovery_mode: RecoveryMode::Strict,
@@ -2570,17 +2532,11 @@ fn storage_lifecycle_decision_reports_ready_for_clean_recovery() {
         ..StorageRecoveryReport::default()
     });
 
-    let decision = NowledgeMemStorageLifecycleDecision::from_storage_recovery(recovery);
+    let decision = StorageLifecycleDecision::from_storage_recovery(recovery);
     let json = decision.json();
 
-    assert_eq!(
-        decision.protocol,
-        NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL
-    );
-    assert_eq!(
-        decision.action,
-        NowledgeMemStorageLifecycleActionKind::Ready
-    );
+    assert_eq!(decision.protocol, STORAGE_LIFECYCLE_DECISION_PROTOCOL);
+    assert_eq!(decision.action, StorageLifecycleActionKind::Ready);
     assert!(decision.ready_for_mem_lifecycle);
     assert!(decision.storage_recovery_ready);
     assert!(!decision.checkpoint_required);
@@ -2594,7 +2550,7 @@ fn storage_lifecycle_decision_reports_ready_for_clean_recovery() {
 
 #[test]
 fn storage_lifecycle_decision_recommends_wal_tail_repair() {
-    let recovery = NowledgeMemStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
+    let recovery = EmbeddedStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
         open_timings: Default::default(),
         durable: true,
         recovery_mode: RecoveryMode::DoctorRepairTornTail,
@@ -2613,12 +2569,9 @@ fn storage_lifecycle_decision_recommends_wal_tail_repair() {
         ..StorageRecoveryReport::default()
     });
 
-    let decision = NowledgeMemStorageLifecycleDecision::from_storage_recovery(recovery);
+    let decision = StorageLifecycleDecision::from_storage_recovery(recovery);
 
-    assert_eq!(
-        decision.action,
-        NowledgeMemStorageLifecycleActionKind::RepairWalTail
-    );
+    assert_eq!(decision.action, StorageLifecycleActionKind::RepairWalTail);
     assert!(!decision.ready_for_mem_lifecycle);
     assert!(decision.repair_required);
     assert_eq!(
@@ -2634,15 +2587,15 @@ fn storage_lifecycle_decision_recommends_wal_tail_repair() {
 #[test]
 fn storage_lifecycle_decision_fails_closed_for_in_memory_storage() {
     let db = Database::new();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let decision = store.storage_lifecycle_decision().unwrap();
     let json = store.storage_lifecycle_decision_json().unwrap();
 
     assert_eq!(
         decision.action,
-        NowledgeMemStorageLifecycleActionKind::OpenReadOnlyInspect
+        StorageLifecycleActionKind::OpenReadOnlyInspect
     );
     assert!(!decision.ready_for_mem_lifecycle);
     assert!(decision.read_only_inspection_required);
@@ -2657,7 +2610,7 @@ fn storage_lifecycle_decision_fails_closed_for_in_memory_storage() {
 
 #[test]
 fn storage_lifecycle_decision_recommends_checkpoint_for_missing_boundary() {
-    let recovery = NowledgeMemStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
+    let recovery = EmbeddedStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
         open_timings: Default::default(),
         durable: true,
         recovery_mode: RecoveryMode::Strict,
@@ -2676,12 +2629,9 @@ fn storage_lifecycle_decision_recommends_checkpoint_for_missing_boundary() {
         ..StorageRecoveryReport::default()
     });
 
-    let decision = NowledgeMemStorageLifecycleDecision::from_storage_recovery(recovery);
+    let decision = StorageLifecycleDecision::from_storage_recovery(recovery);
 
-    assert_eq!(
-        decision.action,
-        NowledgeMemStorageLifecycleActionKind::RunCheckpoint
-    );
+    assert_eq!(decision.action, StorageLifecycleActionKind::RunCheckpoint);
     assert!(!decision.ready_for_mem_lifecycle);
     assert!(decision.checkpoint_required);
     assert_eq!(
@@ -2696,7 +2646,7 @@ fn storage_lifecycle_decision_recommends_checkpoint_for_missing_boundary() {
 
 #[test]
 fn storage_recovery_report_recomputes_typed_readiness_from_raw_fields() {
-    let report = NowledgeMemStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
+    let report = EmbeddedStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
         open_timings: Default::default(),
         durable: true,
         recovery_mode: RecoveryMode::Strict,
@@ -2739,7 +2689,7 @@ fn storage_recovery_report_recomputes_typed_readiness_from_raw_fields() {
 
 #[test]
 fn storage_recovery_report_rejects_inconsistent_replay_boundary() {
-    let report = NowledgeMemStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
+    let report = EmbeddedStorageRecoveryReport::from_storage_report(&StorageRecoveryReport {
         open_timings: Default::default(),
         durable: true,
         recovery_mode: RecoveryMode::Strict,
@@ -2775,8 +2725,8 @@ fn storage_recovery_report_rejects_inconsistent_replay_boundary() {
 #[test]
 fn embedded_store_exposes_storage_recovery_report_through_library_api() {
     let db = Database::new();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let report = store.storage_recovery_report().unwrap();
     let json = store.storage_recovery_report_json().unwrap();
@@ -2803,15 +2753,15 @@ fn embedded_store_exposes_storage_recovery_report_through_library_api() {
 #[test]
 fn embedded_store_library_readiness_runs_bounded_probe() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
     graph
         .database_mut()
         .query("CREATE (:Memory {id: 'mem-readiness', title: 'Readiness'})")
         .unwrap();
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let store = EmbeddedStore::new(graph, None);
 
     let readiness = store
-        .library_readiness_json(&NowledgeMemReadinessOptions {
+        .library_readiness_json(&ReadinessOptions {
             bounded_read_probe: Some(NowledgeGraphStatement {
                 cypher: "MATCH (m:Memory {id: 'mem-readiness'}) RETURN m.title AS title"
                     .to_string(),
@@ -2823,7 +2773,7 @@ fn embedded_store_library_readiness_runs_bounded_probe() {
             active_search_route_ownership: Some(ready_active_search_route_ownership()),
             active_search_route_readiness: Some(ready_active_search_route_readiness()),
             replacement_readiness_by_query_family: Some(ready_query_family_replacement()),
-            ..NowledgeMemReadinessOptions::default()
+            ..ReadinessOptions::default()
         })
         .unwrap();
 
@@ -2889,7 +2839,7 @@ fn embedded_store_library_readiness_runs_bounded_probe() {
     );
     assert_eq!(
         readiness["graph_route_readiness"]["primary_ready_route_count"],
-        REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+        REQUIRED_BOUNDED_READ_ROUTES.len()
     );
     assert_eq!(
         readiness["query_family_evidence"]["missing_required_query_families"],
@@ -2904,15 +2854,15 @@ fn embedded_store_library_readiness_runs_bounded_probe() {
 #[test]
 fn embedded_store_library_readiness_feeds_final_preflight_without_cli() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
     graph
         .database_mut()
         .query("CREATE (:Memory {id: 'mem-preflight', title: 'Preflight'})")
         .unwrap();
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let store = EmbeddedStore::new(graph, None);
 
     let library = store
-        .library_readiness(&NowledgeMemReadinessOptions {
+        .library_readiness(&ReadinessOptions {
             bounded_read_probe: Some(NowledgeGraphStatement {
                 cypher: "MATCH (m:Memory {id: 'mem-preflight'}) RETURN m.title AS title"
                     .to_string(),
@@ -2924,12 +2874,12 @@ fn embedded_store_library_readiness_feeds_final_preflight_without_cli() {
             active_search_route_ownership: Some(ready_active_search_route_ownership()),
             active_search_route_readiness: Some(ready_active_search_route_readiness()),
             replacement_readiness_by_query_family: Some(ready_query_family_replacement()),
-            ..NowledgeMemReadinessOptions::default()
+            ..ReadinessOptions::default()
         })
         .unwrap();
     let mut library_json = library.json();
     library_json["open_report"] = serde_json::json!({
-        "protocol": NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL,
+        "protocol": OPEN_REPORT_PROTOCOL,
         "mode": "shadow_read_only",
         "graph_configured": true,
         "search_projection_configured": false,
@@ -2941,7 +2891,7 @@ fn embedded_store_library_readiness_feeds_final_preflight_without_cli() {
     let bundle = serde_json::json!({
         "library_readiness": library_json,
     });
-    let preflight = nowledge_mem_final_cutover_preflight(&bundle);
+    let preflight = final_cutover_preflight(&bundle);
 
     assert!(library.readiness_by_area.query.ready);
     assert!(library.readiness_by_area.graph_route.ready);
@@ -2969,13 +2919,13 @@ fn embedded_store_library_readiness_feeds_final_preflight_without_cli() {
 #[test]
 fn embedded_store_library_readiness_recomputes_bounded_read_payload_budget() {
     let db = Database::new();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let readiness = store
-        .library_readiness_json(&NowledgeMemReadinessOptions {
+        .library_readiness_json(&ReadinessOptions {
             bounded_read_evidence: Some(serde_json::json!({
-                "protocol": NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL,
+                "protocol": BOUNDED_READ_EVIDENCE_PROTOCOL,
                 "present": true,
                 "ready": true,
                 "mode": "shadow_read_only",
@@ -2997,7 +2947,7 @@ fn embedded_store_library_readiness_recomputes_bounded_read_payload_budget() {
                 "route_relationship_property_pruning_evidence_ready": true,
                 "blocker_codes": [],
             })),
-            ..NowledgeMemReadinessOptions::default()
+            ..ReadinessOptions::default()
         })
         .unwrap();
 
@@ -3022,10 +2972,9 @@ fn embedded_store_library_readiness_recomputes_bounded_read_payload_budget() {
 #[test]
 fn embedded_store_exposes_search_projection_probe() {
     let index = SearchIndex::default();
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(index);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, Some(projection));
 
     let probe = store
         .search_projection()
@@ -3038,12 +2987,9 @@ fn embedded_store_exposes_search_projection_probe() {
 #[test]
 fn embedded_store_handle_exposes_sampled_vector_recall_validation() {
     let index = persisted_nowledge_projection_evidence_index("handle_recall_validation", false);
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
-            .unwrap();
+    let projection = SearchProjection::from_index(index);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
 
     let report = handle
         .validate_sampled_vector_recall(VectorRecallValidationOptions {
@@ -3067,9 +3013,8 @@ fn embedded_store_handle_exposes_sampled_vector_recall_validation() {
 
 #[test]
 fn embedded_store_recall_validation_requires_search_projection() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let error = store
         .validate_sampled_vector_recall(VectorRecallValidationOptions::default())
@@ -3084,10 +3029,9 @@ fn embedded_store_recall_validation_requires_search_projection() {
 #[test]
 fn embedded_store_exposes_search_projection_replacement_evidence() {
     let index = persisted_nowledge_projection_evidence_index("replacement_evidence", true);
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(index);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, Some(projection));
 
     let evidence = store
         .search_projection_evidence_json(SearchProjectionProbeOptions {
@@ -3111,10 +3055,9 @@ fn embedded_store_exposes_search_projection_replacement_evidence() {
 #[test]
 fn embedded_store_exposes_typed_search_projection_replacement_evidence() {
     let index = persisted_nowledge_projection_evidence_index("typed_replacement_evidence", true);
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(index);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, Some(projection));
 
     let report = store
         .search_projection_evidence_report(SearchProjectionProbeOptions {
@@ -3138,10 +3081,9 @@ fn embedded_store_exposes_typed_search_projection_replacement_evidence() {
 #[test]
 fn embedded_store_exposes_search_projection_shadow_evidence() {
     let index = persisted_nowledge_projection_evidence_index("shadow_evidence", true);
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(index);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, Some(projection));
     let probe_options = SearchProjectionProbeOptions {
         active_embedding_model: Some("bge-m3".to_string()),
         active_embedding_dimension: Some(8),
@@ -3186,9 +3128,8 @@ fn embedded_store_exposes_search_projection_shadow_evidence() {
 
 #[test]
 fn embedded_store_search_projection_evidence_requires_projection() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let error = store
         .search_projection_evidence_json(SearchProjectionProbeOptions::default())
@@ -3202,9 +3143,8 @@ fn embedded_store_search_projection_evidence_requires_projection() {
 
 #[test]
 fn embedded_store_search_projection_shadow_evidence_requires_projection() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let error = store
         .search_projection_shadow_evidence_json(
@@ -3221,15 +3161,15 @@ fn embedded_store_search_projection_shadow_evidence_requires_projection() {
 
 #[test]
 fn open_options_report_is_sanitized() {
-    let options = NowledgeMemOpenOptions::with_search_projection(
+    let options = EmbeddedStoreOpenOptions::with_search_projection(
         "redacted_graph_path",
         "redacted_search_path",
-        NowledgeMemGraphMode::ShadowReadOnly,
+        GraphMode::ShadowReadOnly,
     );
 
     let report = options.sanitized_report().json();
 
-    assert_eq!(report["protocol"], NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL);
+    assert_eq!(report["protocol"], OPEN_REPORT_PROTOCOL);
     assert_eq!(report["mode"], "shadow_read_only");
     assert_eq!(report["graph_configured"], true);
     assert_eq!(report["search_projection_configured"], true);
@@ -3242,13 +3182,13 @@ fn open_options_report_is_sanitized() {
 
 #[test]
 fn open_options_diagnostics_include_local_paths_only_with_debug_flag() {
-    let options = NowledgeMemOpenOptions::with_search_projection(
+    let options = EmbeddedStoreOpenOptions::with_search_projection(
         "debug_graph_path",
         "debug_search_path",
-        NowledgeMemGraphMode::ShadowReadOnly,
+        GraphMode::ShadowReadOnly,
     );
 
-    let redacted = options.diagnostic_report_json(NowledgeMemOpenDiagnosticOptions::default());
+    let redacted = options.diagnostic_report_json(EmbeddedStoreOpenDiagnosticOptions::default());
     assert_eq!(redacted["debug_local_paths_included"], false);
     assert_eq!(redacted["local_paths_redacted"], true);
     assert!(redacted.get("graph_path").is_none());
@@ -3256,7 +3196,7 @@ fn open_options_diagnostics_include_local_paths_only_with_debug_flag() {
     assert!(!redacted.to_string().contains("debug_graph_path"));
     assert!(!redacted.to_string().contains("debug_search_path"));
 
-    let debug = options.diagnostic_report_json(NowledgeMemOpenDiagnosticOptions {
+    let debug = options.diagnostic_report_json(EmbeddedStoreOpenDiagnosticOptions {
         include_local_paths: true,
     });
     assert_eq!(debug["debug_local_paths_included"], true);
@@ -3267,10 +3207,10 @@ fn open_options_diagnostics_include_local_paths_only_with_debug_flag() {
 
 #[test]
 fn open_options_report_gates_advanced_compressed_vector_search_mode() {
-    let options = NowledgeMemOpenOptions::with_search_projection(
+    let options = EmbeddedStoreOpenOptions::with_search_projection(
         "redacted_graph_path",
         "redacted_search_path",
-        NowledgeMemGraphMode::ShadowReadOnly,
+        GraphMode::ShadowReadOnly,
     )
     .with_compressed_vector_search_mode(CompressedVectorSearchMode::Preferred);
 
@@ -3297,14 +3237,14 @@ fn open_options_report_gates_advanced_compressed_vector_search_mode() {
 #[test]
 fn open_options_report_allows_compressed_vector_search_with_advisor_evidence() {
     let recall_report = ready_vector_recall_report();
-    let options = NowledgeMemOpenOptions::with_search_projection(
+    let options = EmbeddedStoreOpenOptions::with_search_projection(
         "redacted_graph_path",
         "redacted_search_path",
-        NowledgeMemGraphMode::ShadowReadOnly,
+        GraphMode::ShadowReadOnly,
     )
     .with_compressed_vector_search_mode(CompressedVectorSearchMode::Preferred)
     .with_retrieval_projection_advisor(
-        NowledgeMemRetrievalProjectionAdvisor::cold_local_with_recall_parity(&recall_report),
+        RetrievalProjectionAdvisor::cold_local_with_recall_parity(&recall_report),
     );
 
     let report = options.sanitized_report().json();
@@ -3329,14 +3269,14 @@ fn open_options_report_allows_compressed_vector_search_with_advisor_evidence() {
 fn open_options_report_rejects_inconsistent_recall_evidence() {
     let mut recall_report = ready_vector_recall_report();
     recall_report.recall_at_k_per_million = 0;
-    let options = NowledgeMemOpenOptions::with_search_projection(
+    let options = EmbeddedStoreOpenOptions::with_search_projection(
         "redacted_graph_path",
         "redacted_search_path",
-        NowledgeMemGraphMode::ShadowReadOnly,
+        GraphMode::ShadowReadOnly,
     )
     .with_compressed_vector_search_mode(CompressedVectorSearchMode::Required)
     .with_retrieval_projection_advisor(
-        NowledgeMemRetrievalProjectionAdvisor::cold_local_with_recall_parity(&recall_report),
+        RetrievalProjectionAdvisor::cold_local_with_recall_parity(&recall_report),
     );
 
     let report = options.sanitized_report().json();
@@ -3350,7 +3290,7 @@ fn open_options_report_rejects_inconsistent_recall_evidence() {
 
 #[test]
 fn qualified_out_of_core_open_recomputes_production_evidence() {
-    let root = unique_nowledge_mem_test_dir("qualified_out_of_core_open");
+    let root = unique_embedded_store_test_dir("qualified_out_of_core_open");
     let graph_path = root.join("graph");
     let search_path = root.join("search");
     let graph_commit_epoch = {
@@ -3385,7 +3325,7 @@ fn qualified_out_of_core_open_recomputes_production_evidence() {
             .unwrap();
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemOutOfCoreSearchProjection::open(&search_path).unwrap();
+    let projection = OutOfCoreSearchProjection::open(&search_path).unwrap();
     let projection_identity = projection.reader().production_qualification_identity();
     drop(projection);
     let expected_identity = production_identity(graph_commit_epoch);
@@ -3408,11 +3348,11 @@ fn qualified_out_of_core_open_recomputes_production_evidence() {
         spill_directory: root.join("spill"),
         ..SearchOutOfCoreConfig::default()
     };
-    let options = NowledgeMemOpenOptions::with_qualified_out_of_core_search_projection(
+    let options = EmbeddedStoreOpenOptions::with_qualified_out_of_core_search_projection(
         &graph_path,
         &search_path,
-        NowledgeMemGraphMode::ShadowReadOnly,
-        NowledgeMemQualifiedOutOfCoreSearchOptions {
+        GraphMode::ShadowReadOnly,
+        QualifiedOutOfCoreSearchOptions {
             config: out_of_core_config,
             qualification,
             expected_identity,
@@ -3422,7 +3362,7 @@ fn qualified_out_of_core_open_recomputes_production_evidence() {
     assert_eq!(report["search_projection_role"], "qualified_out_of_core");
     assert_eq!(report["search_production_qualification_bound"], false);
 
-    let error = NowledgeMemEmbeddedStore::open_with_options(options).unwrap_err();
+    let error = EmbeddedStore::open_with_options(options).unwrap_err();
     assert!(error.to_string().contains("dataset_too_small"));
     assert!(error.to_string().contains("workload_coverage_incomplete"));
 
@@ -3431,23 +3371,23 @@ fn qualified_out_of_core_open_recomputes_production_evidence() {
 
 #[test]
 fn embedded_store_opens_from_options_with_sanitized_report() {
-    let root = unique_nowledge_mem_test_dir("open_options");
+    let root = unique_embedded_store_test_dir("open_options");
     let graph_path = root.join("graph");
     let search_path = root.join("search");
-    let options = NowledgeMemOpenOptions::with_search_projection(
+    let options = EmbeddedStoreOpenOptions::with_search_projection(
         graph_path,
         search_path,
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
     );
 
-    let (mut store, report) = NowledgeMemEmbeddedStore::open_with_options(options).unwrap();
+    let (mut store, report) = EmbeddedStore::open_with_options(options).unwrap();
     store
         .graph_mut()
         .query("CREATE (:Memory {id: 'mem-open', title: 'Open options'})")
         .unwrap();
 
-    assert_eq!(report.protocol, NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL);
-    assert_eq!(report.mode, NowledgeMemGraphMode::WritableCutover);
+    assert_eq!(report.protocol, OPEN_REPORT_PROTOCOL);
+    assert_eq!(report.mode, GraphMode::WritableCutover);
     assert_eq!(
         report.compressed_vector_search_mode,
         CompressedVectorSearchMode::Disabled
@@ -3469,12 +3409,12 @@ fn embedded_store_opens_from_options_with_sanitized_report() {
 #[test]
 fn embedded_store_applies_incremental_graph_search_projection_delta() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
             .query("CREATE (:Memory {id: 'new', title: 'Incremental facade', content: 'Graph changes feed search projection'})")
             .unwrap();
-    let projection = NowledgeMemSearchProjection::from_index(SearchIndex::in_memory());
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(SearchIndex::in_memory());
+    let mut store = EmbeddedStore::new(graph, Some(projection));
 
     let request = store
         .build_search_projection_graph_delta_request_from_freshness(Some(4))
@@ -3503,15 +3443,15 @@ fn embedded_store_applies_incremental_graph_search_projection_delta() {
 
 #[test]
 fn initial_import_projection_uses_local_cursor_and_preserves_legacy_provenance() {
-    let root = unique_nowledge_mem_test_dir("initial_import_projection_local_cursor");
+    let root = unique_embedded_store_test_dir("initial_import_projection_local_cursor");
     let graph_path = root.join("graph");
     let search_path = root.join("search");
-    let options = NowledgeMemOpenOptions::with_search_projection(
+    let options = EmbeddedStoreOpenOptions::with_search_projection(
         graph_path,
         search_path,
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
     );
-    let (mut store, _) = NowledgeMemEmbeddedStore::open_with_options(options).unwrap();
+    let (mut store, _) = EmbeddedStore::open_with_options(options).unwrap();
     store
         .graph_mut()
         .query("CREATE (:Memory {id: 'm1', title: 'Imported'})")
@@ -3561,21 +3501,18 @@ fn initial_import_projection_uses_local_cursor_and_preserves_legacy_provenance()
 
 #[test]
 fn embedded_store_handle_1043_refuses_a_prefix_and_retries_complete_projection() {
-    let root = unique_nowledge_mem_test_dir("embedded_projection_catch_up");
+    let root = unique_embedded_store_test_dir("embedded_projection_catch_up");
     let search_path = root.join("search");
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'm1', title: 'First'})")
         .unwrap();
     graph
         .query("CREATE (:Memory {id: 'm2', title: 'Second'})")
         .unwrap();
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
-            .unwrap();
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
 
     let error = handle.catch_up_search_projection(1, 4).unwrap_err();
     assert!(matches!(
@@ -3607,7 +3544,7 @@ fn embedded_store_handle_1043_refuses_a_prefix_and_retries_complete_projection()
 
 #[test]
 fn embedded_store_handle_runs_unified_relational_projection_catch_up() {
-    let root = unique_nowledge_mem_test_dir("embedded_relational_projection_catch_up");
+    let root = unique_embedded_store_test_dir("embedded_relational_projection_catch_up");
     let search_path = root.join("search");
     let mut db = Database::new();
     db.query_sql("CREATE TABLE thread_messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
@@ -3616,12 +3553,9 @@ fn embedded_store_handle_runs_unified_relational_projection_catch_up() {
         "INSERT INTO thread_messages (id, body) VALUES (1, 'Embedded relational document')",
     )
     .unwrap();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
-            .unwrap();
+    let graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
 
     let report = handle
         .catch_up_search_projection_with_relational(1, 1, |snapshot, batch| {
@@ -3680,17 +3614,14 @@ fn embedded_store_handle_runs_unified_relational_projection_catch_up() {
 
 #[test]
 fn embedded_store_handle_runs_unified_graph_batch_hydrator() {
-    let root = unique_nowledge_mem_test_dir("embedded_graph_batch_projection_catch_up");
+    let root = unique_embedded_store_test_dir("embedded_graph_batch_projection_catch_up");
     let search_path = root.join("search");
     let mut db = Database::new();
     db.query("CREATE (:Thread {id: 'thread-a', title: 'Updated title'})")
         .unwrap();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
-            .unwrap();
+    let graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
     handle.catch_up_search_projection(1, 1).unwrap();
     handle
         .with_transaction(|transaction| {
@@ -3733,18 +3664,14 @@ fn embedded_store_handle_runs_unified_graph_batch_hydrator() {
 
 #[test]
 fn embedded_store_handle_exposes_live_graph_and_projection_watermarks() {
-    let root = unique_nowledge_mem_test_dir("embedded_runtime_watermarks");
+    let root = unique_embedded_store_test_dir("embedded_runtime_watermarks");
     let search_path = root.join("search");
-    let mut graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'm1', title: 'Runtime status'})")
         .unwrap();
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
-            .unwrap();
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
 
     let status_before = handle.runtime_status().unwrap();
     assert_eq!(status_before.graph_commit_epoch, 1);
@@ -3778,14 +3705,13 @@ fn embedded_store_handle_exposes_live_graph_and_projection_watermarks() {
 
 #[test]
 fn production_status_does_not_claim_graph_cutover_without_route_ownership() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let store = EmbeddedStore::new(graph, None);
 
     let status = store.production_status(None).unwrap();
     let json = status.json();
 
-    assert_eq!(status.protocol, NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL);
+    assert_eq!(status.protocol, PRODUCTION_STATUS_PROTOCOL);
     assert!(status.graph_open);
     assert!(!status.graph_read_only);
     assert!(!status.graph_route_ownership_present);
@@ -3805,13 +3731,12 @@ fn production_status_does_not_claim_graph_cutover_without_route_ownership() {
 
 #[test]
 fn production_status_reports_partial_graph_ownership_without_cutover_claim() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
-    let route_ownership = nowledge_mem_route_ownership_readiness(
-        &nowledge_mem_route_ownership_all_legacy(),
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let store = EmbeddedStore::new(graph, None);
+    let route_ownership = route_ownership_readiness(
+        &route_ownership_all_legacy(),
         Some(&ready_route_readiness_summary()),
-        NowledgeMemRouteOwnershipPolicy::migration(),
+        RouteOwnershipPolicy::migration(),
     );
 
     let status = store.production_status(Some(&route_ownership)).unwrap();
@@ -3821,7 +3746,7 @@ fn production_status_reports_partial_graph_ownership_without_cutover_claim() {
     assert_eq!(status.graph_hawdb_route_count, 0);
     assert_eq!(
         status.graph_legacy_route_count,
-        REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+        REQUIRED_BOUNDED_READ_ROUTES.len()
     );
     assert!(!status.graph_hawdb_cutover_effective);
     assert!(status
@@ -3831,21 +3756,19 @@ fn production_status_reports_partial_graph_ownership_without_cutover_claim() {
 
 #[test]
 fn production_status_separates_graph_cutover_from_search_freshness() {
-    let root = unique_nowledge_mem_test_dir("production_status_split_cutover");
+    let root = unique_embedded_store_test_dir("production_status_split_cutover");
     let graph_path = root.join("graph");
     let search_path = root.join("search");
-    let mut graph =
-        NowledgeMemGraph::open(&graph_path, NowledgeMemGraphMode::WritableCutover).unwrap();
+    let mut graph = EmbeddedGraph::open(&graph_path, GraphMode::WritableCutover).unwrap();
     graph
         .query("CREATE (:Memory {id: 'status-m1', title: 'Production status'})")
         .unwrap();
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
-    let route_ownership = nowledge_mem_route_ownership_readiness(
-        &nowledge_mem_route_ownership_all_hawdb(),
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let mut store = EmbeddedStore::new(graph, Some(projection));
+    let route_ownership = route_ownership_readiness(
+        &route_ownership_all_hawdb(),
         Some(&ready_route_readiness_summary()),
-        NowledgeMemRouteOwnershipPolicy::production_cutover(),
+        RouteOwnershipPolicy::production_cutover(),
     );
 
     let stale = store.production_status(Some(&route_ownership)).unwrap();
@@ -3877,16 +3800,15 @@ fn production_status_separates_graph_cutover_from_search_freshness() {
 
 #[test]
 fn cutover_controls_keep_legacy_reads_ready_without_hawdb_ownership() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let store = EmbeddedStore::new(graph, None);
 
     let report = store
-        .cutover_controls_report(NowledgeMemCutoverControls::legacy(), None)
+        .cutover_controls_report(CutoverControls::legacy(), None)
         .unwrap();
     let json = report.json();
 
-    assert_eq!(report.protocol, NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL);
+    assert_eq!(report.protocol, CUTOVER_CONTROLS_PROTOCOL);
     assert!(report.ready);
     assert!(!report.graph_read_selected_hawdb);
     assert!(report.graph_read_effective);
@@ -3902,53 +3824,47 @@ fn cutover_controls_keep_legacy_reads_ready_without_hawdb_ownership() {
 fn source_mutation_owner_preserves_public_type_identity_and_json() {
     use hawdb_readiness::source_mutation as owner;
 
-    let evidence: Vec<NowledgeMemSourceMutationDualWriteEvidence> =
-        owner::nowledge_mem_source_mutation_dual_write_evidence_all_ready();
-    let same_evidence: &[owner::NowledgeMemSourceMutationDualWriteEvidence] = &evidence;
-    let report: crate::NowledgeMemSourceMutationDualWriteReadinessReport =
-        owner::nowledge_mem_source_mutation_dual_write_readiness(same_evidence);
-    let requirements: Vec<crate::NowledgeMemSourceMutationFamilyRequirement> =
-        owner::nowledge_mem_source_mutation_family_requirements();
+    let evidence: Vec<SourceMutationDualWriteEvidence> =
+        owner::source_mutation_dual_write_evidence_all_ready();
+    let same_evidence: &[owner::SourceMutationDualWriteEvidence] = &evidence;
+    let report: crate::SourceMutationDualWriteReadinessReport =
+        owner::source_mutation_dual_write_readiness(same_evidence);
+    let requirements: Vec<crate::SourceMutationFamilyRequirement> =
+        owner::source_mutation_family_requirements();
     assert_eq!(requirements, report.requirements);
-    assert_eq!(
-        evidence,
-        nowledge_mem_source_mutation_dual_write_evidence_all_ready()
-    );
+    assert_eq!(evidence, source_mutation_dual_write_evidence_all_ready());
+    assert_eq!(report, source_mutation_dual_write_readiness(&evidence));
     assert_eq!(
         report,
-        nowledge_mem_source_mutation_dual_write_readiness(&evidence)
-    );
-    assert_eq!(
-        report,
-        crate::nowledge_mem_source_mutation_dual_write_readiness(&evidence)
+        crate::source_mutation_dual_write_readiness(&evidence)
     );
     assert_eq!(report.json()["ready"], true);
     assert_eq!(
-        REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
-        owner::REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES
+        REQUIRED_SOURCE_MUTATION_FAMILIES,
+        owner::REQUIRED_SOURCE_MUTATION_FAMILIES
     );
     assert_eq!(
-        NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
+        SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
         "hawdb-nowledge-mem-source-mutation-dual-write-readiness-v1"
     );
     assert_eq!(
-        crate::NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
-        owner::NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL
+        crate::SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
+        owner::SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL
     );
 }
 
 #[test]
 fn source_mutation_owner_report_reaches_replacement_summary() {
-    let mut evidence = nowledge_mem_source_mutation_dual_write_evidence_all_ready();
+    let mut evidence = source_mutation_dual_write_evidence_all_ready();
     for expected_ready in [true, false] {
         if !expected_ready {
             evidence
                 .iter_mut()
-                .find(|item| item.family == NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INGEST_CREATE)
+                .find(|item| item.family == SOURCE_MUTATION_FAMILY_INGEST_CREATE)
                 .unwrap()
                 .independent_watermarks_recorded = false;
         }
-        let report = nowledge_mem_source_mutation_dual_write_readiness(&evidence);
+        let report = source_mutation_dual_write_readiness(&evidence);
         for bundle in [
             serde_json::json!({"source_mutation_dual_write_readiness": report.json()}),
             serde_json::json!({"cutover_evidence": {"source_mutation_dual_write_readiness": report.json()}}),
@@ -3963,7 +3879,7 @@ fn source_mutation_owner_report_reaches_replacement_summary() {
             );
             assert_eq!(
                 summary["required_family_count"],
-                serde_json::json!(REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES.len())
+                serde_json::json!(REQUIRED_SOURCE_MUTATION_FAMILIES.len())
             );
         }
     }
@@ -3971,12 +3887,11 @@ fn source_mutation_owner_report_reaches_replacement_summary() {
 
 #[test]
 fn cutover_controls_fail_closed_when_hawdb_reads_are_not_effective() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let store = EmbeddedStore::new(graph, None);
 
     let report = store
-        .cutover_controls_report(NowledgeMemCutoverControls::hawdb_reads(), None)
+        .cutover_controls_report(CutoverControls::hawdb_reads(), None)
         .unwrap();
 
     assert!(!report.ready);
@@ -3999,12 +3914,11 @@ fn cutover_controls_fail_closed_when_hawdb_reads_are_not_effective() {
 
 #[test]
 fn cutover_controls_require_dual_writes_for_initial_import() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
-    let controls = NowledgeMemCutoverControls {
-        initial_import: NowledgeMemWorkControl::Enabled,
-        ..NowledgeMemCutoverControls::legacy()
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let store = EmbeddedStore::new(graph, None);
+    let controls = CutoverControls {
+        initial_import: WorkControl::Enabled,
+        ..CutoverControls::legacy()
     };
 
     let report = store.cutover_controls_report(controls, None).unwrap();
@@ -4145,29 +4059,27 @@ fn ready_initial_import_recovery_report(
 
 #[test]
 fn cutover_controls_accept_active_initial_import_with_cutover_catch_up_proof() {
-    let root = unique_nowledge_mem_test_dir("cutover_controls_initial_import_catch_up");
+    let root = unique_embedded_store_test_dir("cutover_controls_initial_import_catch_up");
     let graph_path = root.join("graph");
     let search_path = root.join("search");
-    let mut graph =
-        NowledgeMemGraph::open(&graph_path, NowledgeMemGraphMode::WritableCutover).unwrap();
+    let mut graph = EmbeddedGraph::open(&graph_path, GraphMode::WritableCutover).unwrap();
     graph
         .query("CREATE (:Memory {id: 'controls-import-m1', title: 'Import cutover'})")
         .unwrap();
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let mut store = EmbeddedStore::new(graph, Some(projection));
     store.catch_up_search_projection(16, 1).unwrap();
-    let route_ownership = nowledge_mem_route_ownership_readiness(
-        &nowledge_mem_route_ownership_all_hawdb(),
+    let route_ownership = route_ownership_readiness(
+        &route_ownership_all_hawdb(),
         Some(&ready_route_readiness_summary()),
-        NowledgeMemRouteOwnershipPolicy::production_cutover(),
+        RouteOwnershipPolicy::production_cutover(),
     );
-    let controls = NowledgeMemCutoverControls {
-        dual_writes: NowledgeMemWorkControl::Enabled,
-        initial_import: NowledgeMemWorkControl::Enabled,
-        projection_catch_up: NowledgeMemWorkControl::Enabled,
-        graph_reads: super::NowledgeMemReadControl::HawDB,
-        search_reads: super::NowledgeMemReadControl::HawDB,
+    let controls = CutoverControls {
+        dual_writes: WorkControl::Enabled,
+        initial_import: WorkControl::Enabled,
+        projection_catch_up: WorkControl::Enabled,
+        graph_reads: super::ReadControl::HawDB,
+        search_reads: super::ReadControl::HawDB,
     };
     let catch_up = ready_initial_import_cutover_catch_up_report();
 
@@ -4193,13 +4105,12 @@ fn cutover_controls_accept_active_initial_import_with_cutover_catch_up_proof() {
 
 #[test]
 fn cutover_controls_require_recovery_proof_for_active_initial_import() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
-    let controls = NowledgeMemCutoverControls {
-        dual_writes: NowledgeMemWorkControl::Enabled,
-        initial_import: NowledgeMemWorkControl::Enabled,
-        ..NowledgeMemCutoverControls::legacy()
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let store = EmbeddedStore::new(graph, None);
+    let controls = CutoverControls {
+        dual_writes: WorkControl::Enabled,
+        initial_import: WorkControl::Enabled,
+        ..CutoverControls::legacy()
     };
 
     let report = store
@@ -4217,29 +4128,27 @@ fn cutover_controls_require_recovery_proof_for_active_initial_import() {
 
 #[test]
 fn cutover_controls_accept_active_initial_import_with_recovery_proof() {
-    let root = unique_nowledge_mem_test_dir("cutover_controls_initial_import_recovery");
+    let root = unique_embedded_store_test_dir("cutover_controls_initial_import_recovery");
     let graph_path = root.join("graph");
     let search_path = root.join("search");
-    let mut graph =
-        NowledgeMemGraph::open(&graph_path, NowledgeMemGraphMode::WritableCutover).unwrap();
+    let mut graph = EmbeddedGraph::open(&graph_path, GraphMode::WritableCutover).unwrap();
     graph
         .query("CREATE (:Memory {id: 'controls-recovery-m1', title: 'Import recovery'})")
         .unwrap();
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let mut store = EmbeddedStore::new(graph, Some(projection));
     store.catch_up_search_projection(16, 1).unwrap();
-    let route_ownership = nowledge_mem_route_ownership_readiness(
-        &nowledge_mem_route_ownership_all_hawdb(),
+    let route_ownership = route_ownership_readiness(
+        &route_ownership_all_hawdb(),
         Some(&ready_route_readiness_summary()),
-        NowledgeMemRouteOwnershipPolicy::production_cutover(),
+        RouteOwnershipPolicy::production_cutover(),
     );
-    let controls = NowledgeMemCutoverControls {
-        dual_writes: NowledgeMemWorkControl::Enabled,
-        initial_import: NowledgeMemWorkControl::Enabled,
-        projection_catch_up: NowledgeMemWorkControl::Enabled,
-        graph_reads: super::NowledgeMemReadControl::HawDB,
-        search_reads: super::NowledgeMemReadControl::HawDB,
+    let controls = CutoverControls {
+        dual_writes: WorkControl::Enabled,
+        initial_import: WorkControl::Enabled,
+        projection_catch_up: WorkControl::Enabled,
+        graph_reads: super::ReadControl::HawDB,
+        search_reads: super::ReadControl::HawDB,
     };
     let recovery = ready_initial_import_recovery_report();
 
@@ -4259,13 +4168,12 @@ fn cutover_controls_accept_active_initial_import_with_recovery_proof() {
 
 #[test]
 fn cutover_controls_block_read_cutover_while_initial_import_is_active() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
-    let controls = NowledgeMemCutoverControls {
-        dual_writes: NowledgeMemWorkControl::Enabled,
-        initial_import: NowledgeMemWorkControl::Enabled,
-        ..NowledgeMemCutoverControls::legacy()
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let store = EmbeddedStore::new(graph, None);
+    let controls = CutoverControls {
+        dual_writes: WorkControl::Enabled,
+        initial_import: WorkControl::Enabled,
+        ..CutoverControls::legacy()
     };
 
     let report = store.cutover_controls_report(controls, None).unwrap();
@@ -4286,29 +4194,24 @@ fn cutover_controls_block_read_cutover_while_initial_import_is_active() {
 
 #[test]
 fn cutover_controls_accept_independent_hawdb_reads_after_status_is_ready() {
-    let root = unique_nowledge_mem_test_dir("cutover_controls_ready_reads");
+    let root = unique_embedded_store_test_dir("cutover_controls_ready_reads");
     let graph_path = root.join("graph");
     let search_path = root.join("search");
-    let mut graph =
-        NowledgeMemGraph::open(&graph_path, NowledgeMemGraphMode::WritableCutover).unwrap();
+    let mut graph = EmbeddedGraph::open(&graph_path, GraphMode::WritableCutover).unwrap();
     graph
         .query("CREATE (:Memory {id: 'controls-m1', title: 'Cutover controls'})")
         .unwrap();
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let mut store = EmbeddedStore::new(graph, Some(projection));
     store.catch_up_search_projection(16, 1).unwrap();
-    let route_ownership = nowledge_mem_route_ownership_readiness(
-        &nowledge_mem_route_ownership_all_hawdb(),
+    let route_ownership = route_ownership_readiness(
+        &route_ownership_all_hawdb(),
         Some(&ready_route_readiness_summary()),
-        NowledgeMemRouteOwnershipPolicy::production_cutover(),
+        RouteOwnershipPolicy::production_cutover(),
     );
 
     let report = store
-        .cutover_controls_report(
-            NowledgeMemCutoverControls::hawdb_reads(),
-            Some(&route_ownership),
-        )
+        .cutover_controls_report(CutoverControls::hawdb_reads(), Some(&route_ownership))
         .unwrap();
 
     assert!(report.ready);
@@ -4328,15 +4231,13 @@ fn cutover_controls_accept_independent_hawdb_reads_after_status_is_ready() {
 
 #[test]
 fn embedded_store_catches_up_delete_after_graph_checkpoint_and_restart() {
-    let root = unique_nowledge_mem_test_dir("embedded_projection_checkpoint_restart");
+    let root = unique_embedded_store_test_dir("embedded_projection_checkpoint_restart");
     let graph_path = root.join("graph");
     let search_path = root.join("search");
     {
-        let graph =
-            NowledgeMemGraph::open(&graph_path, NowledgeMemGraphMode::WritableCutover).unwrap();
-        let projection =
-            NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-        let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+        let graph = EmbeddedGraph::open(&graph_path, GraphMode::WritableCutover).unwrap();
+        let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+        let mut store = EmbeddedStore::new(graph, Some(projection));
         store
             .graph_mut()
             .query("CREATE (:Memory {id: 'm1', title: 'Removed after checkpoint'})")
@@ -4358,11 +4259,9 @@ fn embedded_store_catches_up_delete_after_graph_checkpoint_and_restart() {
     }
 
     {
-        let graph =
-            NowledgeMemGraph::open(&graph_path, NowledgeMemGraphMode::WritableCutover).unwrap();
-        let projection =
-            NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-        let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+        let graph = EmbeddedGraph::open(&graph_path, GraphMode::WritableCutover).unwrap();
+        let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+        let mut store = EmbeddedStore::new(graph, Some(projection));
         let report = store.catch_up_search_projection(16, 1).unwrap();
 
         assert!(report.complete);
@@ -4380,7 +4279,7 @@ fn embedded_store_catches_up_delete_after_graph_checkpoint_and_restart() {
 
 #[test]
 fn embedded_store_does_not_split_graph_commit_across_projection_batches() {
-    let root = unique_nowledge_mem_test_dir("embedded_projection_commit_boundary");
+    let root = unique_embedded_store_test_dir("embedded_projection_commit_boundary");
     let search_path = root.join("search");
     let mut db = Database::new();
     {
@@ -4393,10 +4292,9 @@ fn embedded_store_does_not_split_graph_commit_across_projection_batches() {
             .unwrap();
         transaction.commit().unwrap();
     }
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let mut store = EmbeddedStore::new(graph, Some(projection));
 
     let error = store.catch_up_search_projection(1, 1).unwrap_err();
     assert!(error.to_string().contains(
@@ -4433,20 +4331,17 @@ fn embedded_store_does_not_split_graph_commit_across_projection_batches() {
 
 #[test]
 fn embedded_store_handle_reuses_open_store_for_knowledge_retrieval() {
-    let root = unique_nowledge_mem_test_dir("embedded_handle_retrieval");
+    let root = unique_embedded_store_test_dir("embedded_handle_retrieval");
     let search_path = root.join("search");
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
         .query(
             "CREATE (:Memory {id: 'm1', title: 'Reusable handle', content: 'embedded retrieval'})",
         )
         .unwrap();
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
-            .unwrap();
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
     handle.catch_up_search_projection(16, 1).unwrap();
 
     let output = handle
@@ -4482,12 +4377,12 @@ fn embedded_store_background_delta_uses_scheduler_qos() {
         },
         ..DatabaseConfig::default()
     });
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'new', title: 'Scheduled facade'})")
         .unwrap();
-    let projection = NowledgeMemSearchProjection::from_index(SearchIndex::in_memory());
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(SearchIndex::in_memory());
+    let mut store = EmbeddedStore::new(graph, Some(projection));
     let request = store
         .build_search_projection_graph_delta_request_from_freshness(Some(4))
         .unwrap()
@@ -4509,7 +4404,7 @@ fn embedded_store_background_delta_uses_scheduler_qos() {
 
 #[test]
 fn embedded_store_scheduled_catch_up_reports_qos_deferral_without_applying() {
-    let root = unique_nowledge_mem_test_dir("embedded_scheduled_catch_up_deferred");
+    let root = unique_embedded_store_test_dir("embedded_scheduled_catch_up_deferred");
     let search_path = root.join("search");
     let database = Database::new_with_config(DatabaseConfig {
         local_qos_policy: LocalQosPolicy {
@@ -4518,14 +4413,12 @@ fn embedded_store_scheduled_catch_up_reports_qos_deferral_without_applying() {
         },
         ..DatabaseConfig::default()
     });
-    let mut graph =
-        NowledgeMemGraph::from_database(database, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(database, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'new', title: 'Scheduled facade'})")
         .unwrap();
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let mut store = EmbeddedStore::new(graph, Some(projection));
     let report = store.catch_up_search_projection_scheduled(4, 1).unwrap();
 
     assert_eq!(
@@ -4550,20 +4443,16 @@ fn embedded_store_scheduled_catch_up_reports_qos_deferral_without_applying() {
 
 #[test]
 fn embedded_store_handle_scheduled_catch_up_checkpoints_before_returning() {
-    let root = unique_nowledge_mem_test_dir("embedded_handle_scheduled_catch_up");
+    let root = unique_embedded_store_test_dir("embedded_handle_scheduled_catch_up");
     let search_path = root.join("search");
     let database = Database::new();
     let scheduler = database.local_qos_scheduler();
-    let mut graph =
-        NowledgeMemGraph::from_database(database, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(database, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'new', title: 'Scheduled facade'})")
         .unwrap();
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
-            .unwrap();
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
     let report = handle.catch_up_search_projection_scheduled(4, 1).unwrap();
 
     assert_eq!(
@@ -4593,21 +4482,19 @@ fn embedded_store_handle_scheduled_catch_up_checkpoints_before_returning() {
 
 #[test]
 fn embedded_store_scheduled_catch_up_rejects_partial_source_interval_and_retries() {
-    let root = unique_nowledge_mem_test_dir("embedded_scheduled_catch_up_budget");
+    let root = unique_embedded_store_test_dir("embedded_scheduled_catch_up_budget");
     let search_path = root.join("search");
     let database = Database::new();
     let scheduler = database.local_qos_scheduler();
-    let mut graph =
-        NowledgeMemGraph::from_database(database, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(database, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'first', title: 'First'})")
         .unwrap();
     graph
         .query("CREATE (:Memory {id: 'second', title: 'Second'})")
         .unwrap();
-    let projection =
-        NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+    let mut store = EmbeddedStore::new(graph, Some(projection));
     let error = store
         .catch_up_search_projection_scheduled(1, 1)
         .unwrap_err();
@@ -4654,7 +4541,7 @@ fn embedded_store_scheduled_catch_up_rejects_partial_source_interval_and_retries
 #[test]
 fn embedded_store_retrieves_knowledge_through_search_projection() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
             .query("CREATE (:Memory {id: 'mem-search', title: 'Facade retrieval', content: 'HawDB replaces LanceDB retrieval'})")
             .unwrap();
@@ -4664,8 +4551,8 @@ fn embedded_store_retrieves_knowledge_through_search_projection() {
     graph
             .query("MATCH (m:Memory {id: 'mem-search'}), (e:Entity {id: 'entity-hawdb'}) CREATE (m)-[:MENTIONS]->(e)")
             .unwrap();
-    let projection = NowledgeMemSearchProjection::from_index(SearchIndex::in_memory());
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(SearchIndex::in_memory());
+    let mut store = EmbeddedStore::new(graph, Some(projection));
     let delta = store
         .build_search_projection_graph_delta_request_from_freshness(Some(8))
         .unwrap()
@@ -4696,8 +4583,8 @@ fn embedded_store_retrieves_knowledge_through_search_projection() {
     assert_eq!(output.search.hits[0].id, "memory:mem-search");
     assert_eq!(output.diagnostics.projection_commit_lag, 0);
     assert!(!output.evidence.is_empty());
-    assert_eq!(report.protocol, NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL);
-    assert_eq!(report.mode, NowledgeMemGraphMode::WritableCutover);
+    assert_eq!(report.protocol, RETRIEVAL_REPORT_PROTOCOL);
+    assert_eq!(report.mode, GraphMode::WritableCutover);
     assert_eq!(
         report.compressed_vector_search_mode,
         CompressedVectorSearchMode::Disabled
@@ -4706,10 +4593,7 @@ fn embedded_store_retrieves_knowledge_through_search_projection() {
     assert!(report.candidate_count >= 1);
     assert!(report.evidence_count >= 1);
     assert_eq!(report.text_backend, Some("bm25_text".to_string()));
-    assert_eq!(
-        report.json()["protocol"],
-        NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL
-    );
+    assert_eq!(report.json()["protocol"], RETRIEVAL_REPORT_PROTOCOL);
 }
 
 #[test]
@@ -4720,10 +4604,9 @@ fn embedded_handle_serves_search_and_graph_context_without_document_residency() 
 }
 
 fn assert_out_of_core_serving_backend(compressed: bool) {
-    let root = unique_nowledge_mem_test_dir("embedded_out_of_core_serving");
+    let root = unique_embedded_store_test_dir("embedded_out_of_core_serving");
     let search_path = root.join("search");
-    let mut graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
     graph
             .query("CREATE (:Memory {id: 'mem-ooc', title: 'Bounded serving', content: 'HawDB out of core retrieval'})")
             .unwrap();
@@ -4768,21 +4651,17 @@ fn assert_out_of_core_serving_backend(compressed: bool) {
             .unwrap();
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemOutOfCoreSearchProjection::open(&search_path).unwrap();
+    let projection = OutOfCoreSearchProjection::open(&search_path).unwrap();
     assert_eq!(projection.reader().resident_document_count(), 0);
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new_with_out_of_core_search(
-            graph,
-            projection,
-            NowledgeMemRetrievalProjectionAdvisor::default(),
-        ))
-        .unwrap();
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new_with_out_of_core_search(
+        graph,
+        projection,
+        RetrievalProjectionAdvisor::default(),
+    ))
+    .unwrap();
 
     let candidates = handle
-        .search_candidates_with_report(&NowledgeMemSearchCandidateRequest::text(
-            "bounded serving",
-            1,
-        ))
+        .search_candidates_with_report(&SearchCandidateRequest::text("bounded serving", 1))
         .unwrap();
     assert_eq!(candidates.result.hits[0].id, "memory:mem-ooc");
     assert!(candidates.out_of_core_metrics.is_some());
@@ -4872,7 +4751,7 @@ fn assert_out_of_core_serving_backend(compressed: bool) {
 
 #[test]
 fn search_projection_candidate_api_reports_metadata_pushdown() {
-    let root = unique_nowledge_mem_test_dir("search_candidate_api_pushdown");
+    let root = unique_embedded_store_test_dir("search_candidate_api_pushdown");
     {
         let mut index = SearchIndex::open(&root).unwrap();
         for (external_id, lifecycle_state) in [
@@ -4898,24 +4777,22 @@ fn search_projection_candidate_api_reports_metadata_pushdown() {
         upsert_excluded_search_projection_rows(&mut index, "excluded", 126, None);
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemSearchProjection::open(&root).unwrap();
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
-    let request = NowledgeMemSearchCandidateRequest::text("candidate read", 10)
-        .with_metadata_filters(BTreeMap::from([(
-            "lifecycle_state__not_in".to_string(),
-            r#"["deleted","forgotten"]"#.to_string(),
-        )]));
+    let projection = SearchProjection::open(&root).unwrap();
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, Some(projection));
+    let request =
+        SearchCandidateRequest::text("candidate read", 10).with_metadata_filters(BTreeMap::from([
+            (
+                "lifecycle_state__not_in".to_string(),
+                r#"["deleted","forgotten"]"#.to_string(),
+            ),
+        ]));
 
     let output = store.search_candidates(&request).unwrap();
 
     assert_eq!(output.result.total_hits, 1);
     assert_eq!(output.result.hits[0].id, "memory:active");
-    assert_eq!(
-        output.report.protocol,
-        NOWLEDGE_MEM_SEARCH_CANDIDATE_REPORT_PROTOCOL
-    );
+    assert_eq!(output.report.protocol, SEARCH_CANDIDATE_REPORT_PROTOCOL);
     assert_eq!(output.report.metadata_filter_count, 1);
     assert_eq!(output.report.pushed_predicate_count, 1);
     assert_eq!(output.report.residual_predicate_count, 0);
@@ -4932,14 +4809,14 @@ fn search_projection_candidate_api_reports_metadata_pushdown() {
         "lifecycle_state"
     );
 
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
     accumulator.record_search_candidate_output(["memory:active"], &output);
     let evidence = accumulator.json();
 
     assert_eq!(evidence["ready"], true);
     assert_eq!(
         evidence["evidence_source"],
-        NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE
+        SEARCH_CANDIDATE_EVIDENCE_SOURCE
     );
     assert_eq!(evidence["request_count"], 1);
     assert_eq!(evidence["candidate_primary_engine"], "hawdb");
@@ -4976,7 +4853,7 @@ fn search_projection_candidate_api_reports_metadata_pushdown() {
     assert_eq!(direct_evidence["ready"], true);
     assert_eq!(
         direct_evidence["evidence_source"],
-        NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE
+        SEARCH_CANDIDATE_EVIDENCE_SOURCE
     );
     assert_eq!(direct_evidence["candidate_identity"]["ready"], true);
     assert_eq!(direct_evidence["filter_pushdown"]["ready"], true);
@@ -4989,7 +4866,7 @@ fn search_projection_candidate_api_reports_metadata_pushdown() {
 
 #[test]
 fn embedded_handle_hydrates_only_explicitly_bounded_search_documents() {
-    let root = unique_nowledge_mem_test_dir("bounded_search_document_hydration");
+    let root = unique_embedded_store_test_dir("bounded_search_document_hydration");
     let mut index = SearchIndex::open(&root).unwrap();
     index
         .upsert_projection_row(SearchProjectionRow {
@@ -5002,11 +4879,10 @@ fn embedded_handle_hydrates_only_explicitly_bounded_search_documents() {
             metadata: BTreeMap::from([("chunk_index".to_string(), "0".to_string())]),
         })
         .unwrap();
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let handle = NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(
         graph,
-        Some(NowledgeMemSearchProjection::from_index(index)),
+        Some(SearchProjection::from_index(index)),
     ))
     .unwrap();
 
@@ -5034,13 +4910,13 @@ fn embedded_handle_hydrates_only_explicitly_bounded_search_documents() {
 #[test]
 fn embedded_handle_search_hydration_rejects_payload_over_budget() {
     for out_of_core in [false, true] {
-        let root = unique_nowledge_mem_test_dir("search_hydration_budget");
-        let graph = NowledgeMemGraph::from_database(
+        let root = unique_embedded_store_test_dir("search_hydration_budget");
+        let graph = EmbeddedGraph::from_database(
             Database::new_with_config(DatabaseConfig {
                 max_read_result_payload_bytes: Some(64),
                 ..DatabaseConfig::default()
             }),
-            NowledgeMemGraphMode::ShadowReadOnly,
+            GraphMode::ShadowReadOnly,
         );
         let mut index = if out_of_core {
             SearchIndex::open(&root).unwrap()
@@ -5059,18 +4935,15 @@ fn embedded_handle_search_hydration_rejects_payload_over_budget() {
         let store = if out_of_core {
             index.checkpoint().unwrap();
             drop(index);
-            NowledgeMemEmbeddedStore::new_with_out_of_core_search(
+            EmbeddedStore::new_with_out_of_core_search(
                 graph,
-                NowledgeMemOutOfCoreSearchProjection::open(&root).unwrap(),
-                NowledgeMemRetrievalProjectionAdvisor::default(),
+                OutOfCoreSearchProjection::open(&root).unwrap(),
+                RetrievalProjectionAdvisor::default(),
             )
         } else {
-            NowledgeMemEmbeddedStore::new(
-                graph,
-                Some(NowledgeMemSearchProjection::from_index(index)),
-            )
+            EmbeddedStore::new(graph, Some(SearchProjection::from_index(index)))
         };
-        let handle = NowledgeMemEmbeddedStoreHandle::new(store).unwrap();
+        let handle = EmbeddedStoreHandle::new(store).unwrap();
         let ids = ["source_chunk:large".to_string()];
         let error = handle.search_projection_documents(&ids, 1).unwrap_err();
 
@@ -5094,13 +4967,10 @@ fn embedded_handle_search_hydration_rejects_payload_over_budget() {
 
 #[test]
 fn embedded_store_handle_checkpoints_external_projection_delta_before_returning() {
-    let root = unique_nowledge_mem_test_dir("external_projection_delta_checkpoint");
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let projection = NowledgeMemSearchProjection::open(&root).unwrap();
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
-            .unwrap();
+    let root = unique_embedded_store_test_dir("external_projection_delta_checkpoint");
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let projection = SearchProjection::open(&root).unwrap();
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
 
     let report = handle
         .apply_search_projection_delta_and_checkpoint(SearchProjectionDelta {
@@ -5144,15 +5014,15 @@ fn embedded_query_runtime_executes_vector_seed_with_observability() {
             })
             .unwrap();
     }
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    let graph = NowledgeMemGraph::from_database(
+    let projection = SearchProjection::from_index(index);
+    let graph = EmbeddedGraph::from_database(
         Database::new_with_config(DatabaseConfig {
             slow_query_log_threshold_micros: 0,
             ..DatabaseConfig::default()
         }),
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
     );
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let mut store = EmbeddedStore::new(graph, Some(projection));
     let parameters = BTreeMap::from([(
         "embedding".to_string(),
         Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
@@ -5162,7 +5032,7 @@ fn embedded_query_runtime_executes_vector_seed_with_observability() {
         .query_with_params_with_report_options(
             "CALL vector_search($embedding, topK := 1) RETURN id, score",
             &parameters,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: Some(0),
             },
@@ -5303,16 +5173,15 @@ fn embedded_query_runtime_feeds_vector_candidates_into_graph_match() {
             })
             .unwrap();
     }
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    let mut graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+    let projection = SearchProjection::from_index(index);
+    let mut graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'nearest', space_id: 'selected'})")
         .unwrap();
     graph
         .query("CREATE (:Memory {id: 'farther', space_id: 'other'})")
         .unwrap();
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let mut store = EmbeddedStore::new(graph, Some(projection));
     let parameters = BTreeMap::from([
         (
             "embedding".to_string(),
@@ -5343,7 +5212,7 @@ fn embedded_query_runtime_feeds_vector_candidates_into_graph_match() {
         .query_with_params_with_report_options(
             query,
             &parameters,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: None,
             },
@@ -5394,9 +5263,8 @@ fn embedded_query_runtime_expands_from_vector_seed_candidates() {
             metadata: BTreeMap::new(),
         })
         .unwrap();
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    let mut graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+    let projection = SearchProjection::from_index(index);
+    let mut graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
     graph.query("CREATE (:Memory {id: 'nearest'})").unwrap();
     graph.query("CREATE (:Entity {id: 'entity-rust'})").unwrap();
     graph
@@ -5405,7 +5273,7 @@ fn embedded_query_runtime_expands_from_vector_seed_candidates() {
                  CREATE (m)-[:MENTIONS]->(e)",
         )
         .unwrap();
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let mut store = EmbeddedStore::new(graph, Some(projection));
     let parameters = BTreeMap::from([(
         "embedding".to_string(),
         Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
@@ -5417,7 +5285,7 @@ fn embedded_query_runtime_expands_from_vector_seed_candidates() {
                  MATCH (m:Memory)-[:MENTIONS]->(e:Entity) \
                  RETURN m.id AS memory_id, e.id AS entity_id, score",
             &parameters,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: None,
             },
@@ -5488,9 +5356,8 @@ fn embedded_query_runtime_admits_vector_seed_graph_fanout() {
             metadata: BTreeMap::new(),
         })
         .unwrap();
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    let mut graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+    let projection = SearchProjection::from_index(index);
+    let mut graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
     graph.query("CREATE (:Memory {id: 'fanout-seed'})").unwrap();
     for index in 0..65 {
         graph
@@ -5504,7 +5371,7 @@ fn embedded_query_runtime_admits_vector_seed_graph_fanout() {
             ))
             .unwrap();
     }
-    let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let mut store = EmbeddedStore::new(graph, Some(projection));
     let parameters = BTreeMap::from([(
         "embedding".to_string(),
         Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
@@ -5543,13 +5410,10 @@ fn embedded_query_runtime_admits_vector_seed_graph_fanout() {
 
 #[test]
 fn embedded_query_runtime_rejects_vector_seed_expansion_over_two_hops() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let mut store = NowledgeMemEmbeddedStore::new(
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let mut store = EmbeddedStore::new(
         graph,
-        Some(NowledgeMemSearchProjection::from_index(
-            SearchIndex::in_memory(),
-        )),
+        Some(SearchProjection::from_index(SearchIndex::in_memory())),
     );
     let parameters = BTreeMap::from([(
         "embedding".to_string(),
@@ -5572,9 +5436,8 @@ fn embedded_query_runtime_rejects_vector_seed_expansion_over_two_hops() {
 
 #[test]
 fn graph_only_query_runtime_rejects_vector_seed_capability() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let mut store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let mut store = EmbeddedStore::new(graph, None);
     let parameters = BTreeMap::from([(
         "embedding".to_string(),
         Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
@@ -5592,7 +5455,7 @@ fn graph_only_query_runtime_rejects_vector_seed_capability() {
 
 #[test]
 fn embedded_store_reopens_search_projection_with_descriptor_pruning() {
-    let root = unique_nowledge_mem_test_dir("search_candidate_library_reopen_pruning");
+    let root = unique_embedded_store_test_dir("search_candidate_library_reopen_pruning");
     let graph_path = root.join("graph");
     let search_path = root.join("search");
     {
@@ -5629,14 +5492,14 @@ fn embedded_store_reopens_search_projection_with_descriptor_pruning() {
         index.checkpoint().unwrap();
     }
 
-    let options = NowledgeMemOpenOptions::with_search_projection(
+    let options = EmbeddedStoreOpenOptions::with_search_projection(
         graph_path,
         search_path,
-        NowledgeMemGraphMode::ShadowReadOnly,
+        GraphMode::ShadowReadOnly,
     );
-    let (store, open_report) = NowledgeMemEmbeddedStore::open_with_options(options).unwrap();
-    let request = NowledgeMemSearchCandidateRequest::text("candidate read", 10)
-        .with_metadata_filters(BTreeMap::from([
+    let (store, open_report) = EmbeddedStore::open_with_options(options).unwrap();
+    let request =
+        SearchCandidateRequest::text("candidate read", 10).with_metadata_filters(BTreeMap::from([
             (
                 "lifecycle_state__not_in".to_string(),
                 r#"["deleted","forgotten"]"#.to_string(),
@@ -5693,7 +5556,7 @@ fn embedded_store_reopens_search_projection_with_descriptor_pruning() {
 
 #[test]
 fn search_projection_candidate_api_reports_vector_generation_inputs() {
-    let root = unique_nowledge_mem_test_dir("search_candidate_api_vector");
+    let root = unique_embedded_store_test_dir("search_candidate_api_vector");
     {
         let mut index = SearchIndex::open(&root).unwrap();
         index
@@ -5732,11 +5595,10 @@ fn search_projection_candidate_api_reports_vector_generation_inputs() {
         );
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemSearchProjection::open(&root).unwrap();
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
-    let request = NowledgeMemSearchCandidateRequest::vector(vec![1.0, 0.0], 10)
+    let projection = SearchProjection::open(&root).unwrap();
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, Some(projection));
+    let request = SearchCandidateRequest::vector(vec![1.0, 0.0], 10)
         .with_offset(1)
         .with_rank_window(Some(2))
         .with_metadata_filters(BTreeMap::from([(
@@ -5797,7 +5659,7 @@ fn search_projection_candidate_api_reports_vector_generation_inputs() {
 
 #[test]
 fn search_candidate_shadow_bridge_aggregates_text_and_vector_leg_evidence() {
-    let root = unique_nowledge_mem_test_dir("search_candidate_bridge_retrievers");
+    let root = unique_embedded_store_test_dir("search_candidate_bridge_retrievers");
     {
         let mut index = SearchIndex::open(&root).unwrap();
         index
@@ -5828,24 +5690,28 @@ fn search_candidate_shadow_bridge_aggregates_text_and_vector_leg_evidence() {
             .unwrap();
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemSearchProjection::open(&root).unwrap();
-    let text_request = NowledgeMemSearchCandidateRequest::text("retriever leg", 10)
-        .with_metadata_filters(BTreeMap::from([(
-            "lifecycle_state__not_in".to_string(),
-            r#"["deleted","forgotten"]"#.to_string(),
-        )]));
-    let vector_request = NowledgeMemSearchCandidateRequest::vector(vec![1.0, 0.0], 10)
-        .with_metadata_filters(BTreeMap::from([(
-            "lifecycle_state__not_in".to_string(),
-            r#"["deleted","forgotten"]"#.to_string(),
-        )]));
+    let projection = SearchProjection::open(&root).unwrap();
+    let text_request =
+        SearchCandidateRequest::text("retriever leg", 10).with_metadata_filters(BTreeMap::from([
+            (
+                "lifecycle_state__not_in".to_string(),
+                r#"["deleted","forgotten"]"#.to_string(),
+            ),
+        ]));
+    let vector_request =
+        SearchCandidateRequest::vector(vec![1.0, 0.0], 10).with_metadata_filters(BTreeMap::from([
+            (
+                "lifecycle_state__not_in".to_string(),
+                r#"["deleted","forgotten"]"#.to_string(),
+            ),
+        ]));
     let text_output = projection
         .search_candidates_with_report(&text_request)
         .unwrap();
     let vector_output = projection
         .search_candidates_with_report(&vector_request)
         .unwrap();
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
 
     accumulator.record_search_candidate_output(["memory:mem-leg"], &text_output);
     accumulator.record_search_candidate_output(["memory:mem-leg"], &vector_output);
@@ -5889,7 +5755,7 @@ fn search_candidate_shadow_bridge_aggregates_text_and_vector_leg_evidence() {
 
 #[test]
 fn search_projection_candidate_api_preserves_source_chunk_identity() {
-    let root = unique_nowledge_mem_test_dir("search_candidate_api_source_chunk");
+    let root = unique_embedded_store_test_dir("search_candidate_api_source_chunk");
     {
         let mut index = SearchIndex::open(&root).unwrap();
         index
@@ -5922,14 +5788,12 @@ fn search_projection_candidate_api_preserves_source_chunk_identity() {
             .unwrap();
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemSearchProjection::open(&root).unwrap();
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
-    let request =
-        NowledgeMemSearchCandidateRequest::text("source chunk identity", 10).with_metadata_filters(
-            BTreeMap::from([("kind__in".to_string(), r#"["source_chunk"]"#.to_string())]),
-        );
+    let projection = SearchProjection::open(&root).unwrap();
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, Some(projection));
+    let request = SearchCandidateRequest::text("source chunk identity", 10).with_metadata_filters(
+        BTreeMap::from([("kind__in".to_string(), r#"["source_chunk"]"#.to_string())]),
+    );
 
     let output = store.search_candidates(&request).unwrap();
 
@@ -5962,7 +5826,7 @@ fn search_projection_candidate_api_preserves_source_chunk_identity() {
 
 #[test]
 fn search_candidate_readiness_reports_lancedb_replacement_ready_shape() {
-    let root = unique_nowledge_mem_test_dir("search_candidate_readiness_ready");
+    let root = unique_embedded_store_test_dir("search_candidate_readiness_ready");
     {
         let mut index = SearchIndex::open(&root).unwrap();
         index
@@ -5993,17 +5857,13 @@ fn search_candidate_readiness_reports_lancedb_replacement_ready_shape() {
             .unwrap();
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemSearchProjection::open(&root).unwrap();
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let handle =
-        NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
-            .unwrap();
-    let request =
-        NowledgeMemSearchCandidateRequest::text("ready source chunk", 10).with_metadata_filters(
-            BTreeMap::from([("kind__in".to_string(), r#"["source_chunk"]"#.to_string())]),
-        );
-    let options = NowledgeMemSearchCandidateReadinessOptions::lancedb_replacement_candidate_read()
+    let projection = SearchProjection::open(&root).unwrap();
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
+    let request = SearchCandidateRequest::text("ready source chunk", 10).with_metadata_filters(
+        BTreeMap::from([("kind__in".to_string(), r#"["source_chunk"]"#.to_string())]),
+    );
+    let options = SearchCandidateReadinessOptions::lancedb_replacement_candidate_read()
         .with_text_retriever(true)
         .with_source_chunk_identity(true)
         .with_embedding_identity("bge-m3", 2);
@@ -6014,10 +5874,7 @@ fn search_candidate_readiness_reports_lancedb_replacement_ready_shape() {
 
     assert!(readiness.ready);
     assert!(readiness.present);
-    assert_eq!(
-        readiness.protocol,
-        NOWLEDGE_MEM_SEARCH_CANDIDATE_READINESS_PROTOCOL
-    );
+    assert_eq!(readiness.protocol, SEARCH_CANDIDATE_READINESS_PROTOCOL);
     assert!(readiness.metadata_pushdown_ready);
     assert!(readiness.segment_descriptor_ready);
     assert!(readiness.text_retriever_ready);
@@ -6062,7 +5919,7 @@ fn search_candidate_readiness_reports_lancedb_replacement_ready_shape() {
 
 #[test]
 fn search_candidate_readiness_blocks_missing_source_chunk_identity() {
-    let root = unique_nowledge_mem_test_dir("search_candidate_readiness_blocked");
+    let root = unique_embedded_store_test_dir("search_candidate_readiness_blocked");
     {
         let mut index = SearchIndex::open(&root).unwrap();
         index
@@ -6081,10 +5938,9 @@ fn search_candidate_readiness_blocks_missing_source_chunk_identity() {
             .unwrap();
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemSearchProjection::open(&root).unwrap();
-    let request = NowledgeMemSearchCandidateRequest::text("memory only candidate", 10);
-    let options =
-        NowledgeMemSearchCandidateReadinessOptions::default().with_source_chunk_identity(true);
+    let projection = SearchProjection::open(&root).unwrap();
+    let request = SearchCandidateRequest::text("memory only candidate", 10);
+    let options = SearchCandidateReadinessOptions::default().with_source_chunk_identity(true);
 
     let readiness = projection
         .search_candidate_readiness(&request, &options)
@@ -6107,7 +5963,7 @@ fn search_candidate_readiness_blocks_missing_source_chunk_identity() {
 
 #[test]
 fn search_candidate_readiness_blocks_missing_projection_watermark() {
-    let root = unique_nowledge_mem_test_dir("search_candidate_readiness_watermark");
+    let root = unique_embedded_store_test_dir("search_candidate_readiness_watermark");
     {
         let mut index = SearchIndex::open(&root).unwrap();
         index
@@ -6133,13 +5989,12 @@ fn search_candidate_readiness_blocks_missing_projection_watermark() {
             .unwrap();
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemSearchProjection::open(&root).unwrap();
-    let request = NowledgeMemSearchCandidateRequest::text("no watermark source chunk", 10)
-        .with_metadata_filters(BTreeMap::from([(
-            "kind__in".to_string(),
-            r#"["source_chunk"]"#.to_string(),
-        )]));
-    let options = NowledgeMemSearchCandidateReadinessOptions::lancedb_replacement_candidate_read()
+    let projection = SearchProjection::open(&root).unwrap();
+    let request =
+        SearchCandidateRequest::text("no watermark source chunk", 10).with_metadata_filters(
+            BTreeMap::from([("kind__in".to_string(), r#"["source_chunk"]"#.to_string())]),
+        );
+    let options = SearchCandidateReadinessOptions::lancedb_replacement_candidate_read()
         .with_text_retriever(true)
         .with_source_chunk_identity(true)
         .with_embedding_identity("bge-m3", 2);
@@ -6167,7 +6022,7 @@ fn search_candidate_readiness_blocks_missing_projection_watermark() {
 
 #[test]
 fn search_candidate_readiness_lancedb_default_requires_embedding_identity() {
-    let root = unique_nowledge_mem_test_dir("search_candidate_readiness_manifest_required");
+    let root = unique_embedded_store_test_dir("search_candidate_readiness_manifest_required");
     {
         let mut index = SearchIndex::open(&root).unwrap();
         index
@@ -6191,13 +6046,12 @@ fn search_candidate_readiness_lancedb_default_requires_embedding_identity() {
             .unwrap();
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemSearchProjection::open(&root).unwrap();
-    let request = NowledgeMemSearchCandidateRequest::text("no manifest source chunk", 10)
-        .with_metadata_filters(BTreeMap::from([(
-            "kind__in".to_string(),
-            r#"["source_chunk"]"#.to_string(),
-        )]));
-    let options = NowledgeMemSearchCandidateReadinessOptions::lancedb_replacement_candidate_read()
+    let projection = SearchProjection::open(&root).unwrap();
+    let request =
+        SearchCandidateRequest::text("no manifest source chunk", 10).with_metadata_filters(
+            BTreeMap::from([("kind__in".to_string(), r#"["source_chunk"]"#.to_string())]),
+        );
+    let options = SearchCandidateReadinessOptions::lancedb_replacement_candidate_read()
         .with_text_retriever(true)
         .with_source_chunk_identity(true);
 
@@ -6227,7 +6081,7 @@ fn search_candidate_readiness_lancedb_default_requires_embedding_identity() {
 
 #[test]
 fn search_candidate_readiness_blocks_embedding_identity_mismatch() {
-    let root = unique_nowledge_mem_test_dir("search_candidate_readiness_embedding");
+    let root = unique_embedded_store_test_dir("search_candidate_readiness_embedding");
     {
         let mut index = SearchIndex::open(&root).unwrap();
         index
@@ -6258,13 +6112,12 @@ fn search_candidate_readiness_blocks_embedding_identity_mismatch() {
             .unwrap();
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemSearchProjection::open(&root).unwrap();
-    let request = NowledgeMemSearchCandidateRequest::text("embedding identity source chunk", 10)
-        .with_metadata_filters(BTreeMap::from([(
-            "kind__in".to_string(),
-            r#"["source_chunk"]"#.to_string(),
-        )]));
-    let options = NowledgeMemSearchCandidateReadinessOptions::lancedb_replacement_candidate_read()
+    let projection = SearchProjection::open(&root).unwrap();
+    let request =
+        SearchCandidateRequest::text("embedding identity source chunk", 10).with_metadata_filters(
+            BTreeMap::from([("kind__in".to_string(), r#"["source_chunk"]"#.to_string())]),
+        );
+    let options = SearchCandidateReadinessOptions::lancedb_replacement_candidate_read()
         .with_text_retriever(true)
         .with_source_chunk_identity(true)
         .with_embedding_identity("bge-m3", 3);
@@ -6294,7 +6147,7 @@ fn search_candidate_readiness_blocks_embedding_identity_mismatch() {
 
 #[test]
 fn search_projection_candidate_api_reports_fail_soft_vector_fallback() {
-    let root = unique_nowledge_mem_test_dir("search_candidate_api_fail_soft");
+    let root = unique_embedded_store_test_dir("search_candidate_api_fail_soft");
     {
         let mut index = SearchIndex::open(&root).unwrap();
         index
@@ -6320,12 +6173,10 @@ fn search_projection_candidate_api_reports_fail_soft_vector_fallback() {
             .unwrap();
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemSearchProjection::open(&root).unwrap();
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
-    let request =
-        NowledgeMemSearchCandidateRequest::hybrid("hybrid fallback", vec![1.0, 0.0, 0.0], 10);
+    let projection = SearchProjection::open(&root).unwrap();
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, Some(projection));
+    let request = SearchCandidateRequest::hybrid("hybrid fallback", vec![1.0, 0.0, 0.0], 10);
 
     let output = store.search_candidates(&request).unwrap();
 
@@ -6382,8 +6233,8 @@ fn search_projection_candidate_api_gates_compressed_vector_preference() {
             metadata: BTreeMap::new(),
         })
         .unwrap();
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    let request = NowledgeMemSearchCandidateRequest::vector(vec![1.0, 0.0], 10)
+    let projection = SearchProjection::from_index(index);
+    let request = SearchCandidateRequest::vector(vec![1.0, 0.0], 10)
         .with_compressed_vector_search_mode(CompressedVectorSearchMode::Preferred);
 
     let output = projection.search_candidates_with_report(&request).unwrap();
@@ -6429,7 +6280,7 @@ fn search_projection_candidate_api_gates_compressed_vector_preference() {
 
 #[test]
 fn search_projection_candidate_api_reports_repair_markers_without_hits() {
-    let root = unique_nowledge_mem_test_dir("search_candidate_api_repair_markers");
+    let root = unique_embedded_store_test_dir("search_candidate_api_repair_markers");
     {
         let mut index = SearchIndex::open(&root).unwrap();
         index
@@ -6452,11 +6303,10 @@ fn search_projection_candidate_api_reports_repair_markers_without_hits() {
             .unwrap();
         index.checkpoint().unwrap();
     }
-    let projection = NowledgeMemSearchProjection::open(&root).unwrap();
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
-    let request = NowledgeMemSearchCandidateRequest::text("not present", 10);
+    let projection = SearchProjection::open(&root).unwrap();
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, Some(projection));
+    let request = SearchCandidateRequest::text("not present", 10);
 
     let output = store.search_candidates(&request).unwrap();
 
@@ -6494,7 +6344,7 @@ fn search_projection_candidate_api_reports_repair_markers_without_hits() {
 
 #[test]
 fn embedded_store_open_options_can_prefer_compressed_vector_search() {
-    let root = unique_nowledge_mem_test_dir("compressed_vector_open_options");
+    let root = unique_embedded_store_test_dir("compressed_vector_open_options");
     let graph_path = root.join("graph");
     let search_path = root.join("search");
     {
@@ -6555,10 +6405,10 @@ fn embedded_store_open_options_can_prefer_compressed_vector_search() {
             metadata_filters: BTreeMap::new(),
         });
     assert!(recall_report.ready, "{:?}", recall_report.blocker_codes);
-    let options = NowledgeMemOpenOptions::with_search_projection(
+    let options = EmbeddedStoreOpenOptions::with_search_projection(
         graph_path,
         search_path,
-        NowledgeMemGraphMode::ShadowReadOnly,
+        GraphMode::ShadowReadOnly,
     )
     .with_compressed_vector_search_mode(CompressedVectorSearchMode::Preferred)
     .with_adaptive_vector_backend_policy(AdaptiveVectorBackendPolicy {
@@ -6567,10 +6417,10 @@ fn embedded_store_open_options_can_prefer_compressed_vector_search() {
         flat_scan_memory_budget_bytes: 0,
     })
     .with_retrieval_projection_advisor(
-        NowledgeMemRetrievalProjectionAdvisor::cold_local_with_recall_parity(&recall_report),
+        RetrievalProjectionAdvisor::cold_local_with_recall_parity(&recall_report),
     );
 
-    let (store, report) = NowledgeMemEmbeddedStore::open_with_options(options).unwrap();
+    let (store, report) = EmbeddedStore::open_with_options(options).unwrap();
     let retrieval = store
         .retrieve_knowledge_with_report(&KnowledgeRetrievalRequest {
             query_text: String::new(),
@@ -6622,9 +6472,8 @@ fn embedded_store_open_options_can_prefer_compressed_vector_search() {
 
 #[test]
 fn embedded_store_retrieval_requires_search_projection() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::ShadowReadOnly);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+    let store = EmbeddedStore::new(graph, None);
 
     let error = store
         .retrieve_knowledge(&KnowledgeRetrievalRequest {
@@ -6653,12 +6502,12 @@ fn embedded_store_retrieval_requires_search_projection() {
 #[test]
 fn embedded_store_reports_background_maintenance_summary() {
     let db = Database::new();
-    let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
     graph
         .query("CREATE (:Memory {id: 'mem-maintenance', title: 'Maintenance summary'})")
         .unwrap();
-    let projection = NowledgeMemSearchProjection::from_index(SearchIndex::in_memory());
-    let store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+    let projection = SearchProjection::from_index(SearchIndex::in_memory());
+    let store = EmbeddedStore::new(graph, Some(projection));
 
     let summary = store
         .background_maintenance_summary(
@@ -6752,8 +6601,8 @@ fn embedded_store_reports_background_maintenance_summary() {
 #[test]
 fn embedded_store_background_maintenance_report_fails_closed_without_work() {
     let db = Database::new();
-    let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-    let store = NowledgeMemEmbeddedStore::new(graph, None);
+    let graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+    let store = EmbeddedStore::new(graph, None);
 
     let report = store
         .background_maintenance_report(
@@ -6829,13 +6678,13 @@ fn upsert_excluded_search_projection_rows(
 
 fn incremental_maintenance_fixture(
     name: &str,
-    maintenance: super::NowledgeMemIncrementalSearchMaintenanceOptions,
+    maintenance: super::IncrementalSearchMaintenanceOptions,
 ) -> (
     std::path::PathBuf,
-    NowledgeMemEmbeddedStoreHandle,
-    super::NowledgeMemOpenOptions,
+    EmbeddedStoreHandle,
+    super::EmbeddedStoreOpenOptions,
 ) {
-    let root = unique_nowledge_mem_test_dir(name);
+    let root = unique_embedded_store_test_dir(name);
     let search_path = root.join("search");
     let mut index = SearchIndex::open(&search_path).unwrap();
     for id in ["a", "z"] {
@@ -6853,17 +6702,16 @@ fn incremental_maintenance_fixture(
     }
     index.checkpoint().unwrap();
     drop(index);
-    let options = super::NowledgeMemOpenOptions::with_search_projection(
+    let options = super::EmbeddedStoreOpenOptions::with_search_projection(
         root.join("graph"),
         search_path,
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
     )
     .with_incremental_search_maintenance(maintenance);
-    let (handle, report) =
-        NowledgeMemEmbeddedStoreHandle::open_with_options(options.clone()).unwrap();
+    let (handle, report) = EmbeddedStoreHandle::open_with_options(options.clone()).unwrap();
     assert_eq!(
         report.search_projection_role,
-        Some(super::NowledgeMemSearchProjectionRole::IncrementalMaintenance)
+        Some(super::SearchProjectionRole::IncrementalMaintenance)
     );
     assert!(!report.search_production_qualification_bound);
     (root, handle, options)
@@ -6956,7 +6804,7 @@ fn guarded_incremental_catch_up_rejects_stale_binding_and_reopens_after_retry() 
     assert_eq!(report.end_applied_epoch, report.end_durable_epoch);
     drop(handle);
 
-    let (reopened, _) = NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+    let (reopened, _) = EmbeddedStoreHandle::open_with_options(options).unwrap();
     assert_eq!(
         reopened
             .search_projection_documents(&["memory:m".into()], 1)
@@ -7074,7 +6922,7 @@ fn incremental_maintenance_preserves_bootstrap_artifacts_and_reopens_deltas() {
     let snapshot = handle.runtime_governor_snapshot().unwrap();
     assert_eq!(snapshot.admissions, snapshot.completions);
     drop(handle);
-    let (reopened, _) = NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+    let (reopened, _) = EmbeddedStoreHandle::open_with_options(options).unwrap();
     let rows = reopened
         .search_projection_documents(&["memory:m".into()], 1)
         .unwrap();
@@ -7178,7 +7026,7 @@ fn incremental_maintenance_compaction_honors_qos_and_cancellation_before_retry()
     let governor = handle.runtime_governor_snapshot().unwrap();
     assert_eq!(governor.admissions, governor.completions);
     drop(handle);
-    let (reopened, _) = NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+    let (reopened, _) = EmbeddedStoreHandle::open_with_options(options).unwrap();
     assert_eq!(
         reopened
             .search_projection_documents(
@@ -7195,7 +7043,7 @@ fn incremental_maintenance_compaction_honors_qos_and_cancellation_before_retry()
 
 #[test]
 fn incremental_refresh_retries_after_descriptor_pressure_without_reopen() {
-    let root = unique_nowledge_mem_test_dir("incremental_refresh_fd_retry");
+    let root = unique_embedded_store_test_dir("incremental_refresh_fd_retry");
     let search_path = root.join("search");
     let files =
         hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_with_capacity_limit(
@@ -7218,13 +7066,13 @@ fn incremental_refresh_retries_after_descriptor_pressure_without_reopen() {
         .unwrap();
     index.checkpoint().unwrap();
     drop(index);
-    let options = super::NowledgeMemOpenOptions::with_search_projection(
+    let options = super::EmbeddedStoreOpenOptions::with_search_projection(
         root.join("graph"),
         search_path,
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
     )
     .with_incremental_search_maintenance(Default::default());
-    let (handle, _) = NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+    let (handle, _) = EmbeddedStoreHandle::open_with_options(options).unwrap();
     let pinned = handle
         .lock_published_read()
         .unwrap()
@@ -7289,7 +7137,7 @@ fn incremental_refresh_retries_after_descriptor_pressure_without_reopen() {
 
 #[test]
 fn incremental_maintenance_budget_failure_does_not_advance_the_watermark() {
-    let maintenance = super::NowledgeMemIncrementalSearchMaintenanceOptions {
+    let maintenance = super::IncrementalSearchMaintenanceOptions {
         working_memory_bytes: std::num::NonZeroU64::new(1).unwrap(),
         ..Default::default()
     };
@@ -7315,7 +7163,7 @@ fn incremental_maintenance_budget_failure_does_not_advance_the_watermark() {
     assert_eq!(freshness.source_graph_commit_epoch, None);
     assert_eq!(freshness.durable_source_graph_commit_epoch, None);
     drop(handle);
-    let (reopened, _) = NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+    let (reopened, _) = EmbeddedStoreHandle::open_with_options(options).unwrap();
     assert!(reopened
         .search_projection_documents(&["memory:m".into()], 1)
         .is_err());
@@ -7325,14 +7173,14 @@ fn incremental_maintenance_budget_failure_does_not_advance_the_watermark() {
 
 #[test]
 fn incremental_maintenance_rejects_missing_bootstrap_without_recreating_it() {
-    let root = unique_nowledge_mem_test_dir("incremental_missing_bootstrap");
-    let options = super::NowledgeMemOpenOptions::with_search_projection(
+    let root = unique_embedded_store_test_dir("incremental_missing_bootstrap");
+    let options = super::EmbeddedStoreOpenOptions::with_search_projection(
         root.join("graph"),
         root.join("search"),
-        NowledgeMemGraphMode::WritableCutover,
+        GraphMode::WritableCutover,
     )
     .with_incremental_search_maintenance(Default::default());
-    assert!(NowledgeMemEmbeddedStoreHandle::open_with_options(options).is_err());
+    assert!(EmbeddedStoreHandle::open_with_options(options).is_err());
     assert!(!root
         .join("search/search_projection.out_of_core.manifest.hawdb")
         .exists());
@@ -7340,7 +7188,7 @@ fn incremental_maintenance_rejects_missing_bootstrap_without_recreating_it() {
 }
 
 fn persisted_nowledge_projection_evidence_index(name: &str, _compressed: bool) -> SearchIndex {
-    let path = unique_nowledge_mem_test_dir(name);
+    let path = unique_embedded_store_test_dir(name);
     let mut index = SearchIndex::open(&path).unwrap();
     #[cfg(feature = "vector-search")]
     if _compressed {
@@ -7393,14 +7241,14 @@ fn nowledge_projection_evidence_row(
 }
 
 fn full_bounded_read_routes() -> Vec<String> {
-    REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .map(|route| (*route).to_string())
         .collect()
 }
 
-fn ready_route_readiness_summary() -> NowledgeMemRouteReadinessSummary {
-    NowledgeMemRouteReadinessSummary {
+fn ready_route_readiness_summary() -> RouteReadinessSummary {
+    RouteReadinessSummary {
         route_primary_ready: true,
         primary_ready_routes: full_bounded_read_routes(),
         route_query_plan_evidence_ready: true,
@@ -7412,24 +7260,24 @@ fn ready_route_readiness_summary() -> NowledgeMemRouteReadinessSummary {
     }
 }
 
-fn ready_search_route_ownership() -> NowledgeMemSearchRouteOwnershipReadinessReport {
-    nowledge_mem_search_route_ownership_readiness(
-        &nowledge_mem_search_route_ownership_all_hawdb(),
-        NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+fn ready_search_route_ownership() -> SearchRouteOwnershipReadinessReport {
+    search_route_ownership_readiness(
+        &search_route_ownership_all_hawdb(),
+        SearchRouteOwnershipPolicy::production_cutover(),
     )
 }
 
-fn ready_active_search_route_ownership() -> NowledgeMemActiveSearchRouteOwnershipReadinessReport {
-    nowledge_mem_active_search_route_ownership_readiness(
-        &nowledge_mem_active_search_route_ownership_all_hawdb(),
-        NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+fn ready_active_search_route_ownership() -> ActiveSearchRouteOwnershipReadinessReport {
+    active_search_route_ownership_readiness(
+        &active_search_route_ownership_all_hawdb(),
+        SearchRouteOwnershipPolicy::production_cutover(),
     )
 }
 
-fn ready_active_search_route_readiness() -> NowledgeMemActiveSearchRouteReadinessReport {
-    nowledge_mem_active_search_route_readiness(
-        &nowledge_mem_active_search_route_read_evidence_all_hawdb_ready(),
-        NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
+fn ready_active_search_route_readiness() -> ActiveSearchRouteReadinessReport {
+    active_search_route_readiness(
+        &active_search_route_read_evidence_all_hawdb_ready(),
+        SearchRouteOwnershipPolicy::production_cutover(),
     )
 }
 
@@ -7447,9 +7295,9 @@ fn ready_query_family_replacement() -> serde_json::Value {
 }
 
 fn readiness_dashboard_area<'a>(
-    dashboard: &'a NowledgeMemReadinessDashboard,
+    dashboard: &'a ReadinessDashboard,
     name: &str,
-) -> &'a NowledgeMemReadinessAreaSummary {
+) -> &'a ReadinessAreaSummary {
     dashboard
         .areas
         .iter()
@@ -7457,13 +7305,13 @@ fn readiness_dashboard_area<'a>(
         .expect("readiness dashboard area")
 }
 
-fn unique_nowledge_mem_test_dir(name: &str) -> std::path::PathBuf {
+fn unique_embedded_store_test_dir(name: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "hawdb_nowledge_mem_{name}_{}_{}",
+        "hawdb_embedded_store_{name}_{}_{}",
         std::process::id(),
         nanos
     ))
@@ -7486,16 +7334,16 @@ fn complete_text_native_projection_queries_preserve_scores_and_candidate_coverag
                 .unwrap();
         }
     }
-    let path = unique_nowledge_mem_test_dir("complete-text-native");
+    let path = unique_embedded_store_test_dir("complete-text-native");
     let mut raw = SearchIndex::in_memory();
     populate(&mut raw);
     let mut persisted = SearchIndex::open(&path).unwrap();
     populate(&mut persisted);
     persisted.checkpoint().unwrap();
     drop(persisted);
-    let raw = NowledgeMemSearchProjection::from_index(raw);
-    let resident = NowledgeMemSearchProjection::open(&path).unwrap();
-    let disk = NowledgeMemOutOfCoreSearchProjection::open(&path).unwrap();
+    let raw = SearchProjection::from_index(raw);
+    let resident = SearchProjection::open(&path).unwrap();
+    let disk = OutOfCoreSearchProjection::open(&path).unwrap();
     let mut database = Database::new();
     database
         .query("CREATE (:Memory {id: 'a', space_id: 'team'})")
@@ -7584,7 +7432,7 @@ fn complete_text_native_projection_queries_preserve_scores_and_candidate_coverag
 fn grouped_evidence_complete_text_preserves_graph_eligibility_and_retained_reads() {
     let mut reference_rows: Option<Vec<crate::Row>> = None;
     for backend in ["raw", "resident", "disk"] {
-        let path = unique_nowledge_mem_test_dir(&format!("grouped-complete-{backend}"));
+        let path = unique_embedded_store_test_dir(&format!("grouped-complete-{backend}"));
         let mut database = Database::new();
         database
             .query("CREATE (:Scope {id: 'allowed', visible: true})")
@@ -7632,14 +7480,11 @@ fn grouped_evidence_complete_text_preserves_graph_eligibility_and_retained_reads
                 .unwrap();
         }
         let (projection, out_of_core_projection) = match backend {
-            "raw" => (Some(NowledgeMemSearchProjection::from_index(index)), None),
+            "raw" => (Some(SearchProjection::from_index(index)), None),
             "resident" => {
                 index.checkpoint().unwrap();
                 drop(index);
-                (
-                    Some(NowledgeMemSearchProjection::open(&path).unwrap()),
-                    None,
-                )
+                (Some(SearchProjection::open(&path).unwrap()), None)
             }
             "disk" => {
                 let mut writer =
@@ -7699,10 +7544,7 @@ fn grouped_evidence_complete_text_preserves_graph_eligibility_and_retained_reads
                 assert_eq!(refresh.reused_content_segments, 1);
                 assert!(refresh.validated_retractions >= 2);
                 drop(pinned);
-                (
-                    None,
-                    Some(NowledgeMemOutOfCoreSearchProjection::open(&path).unwrap()),
-                )
+                (None, Some(OutOfCoreSearchProjection::open(&path).unwrap()))
             }
             _ => unreachable!(),
         };
@@ -7875,9 +7717,8 @@ mod catch_up_admission_tests;
 #[test]
 fn embedded_vector_seed_preserves_ordinary_squared_l2_score() {
     for out_of_core in [false, true] {
-        let root = unique_nowledge_mem_test_dir("linear_squared_l2_seed");
-        let mut graph =
-            NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+        let root = unique_embedded_store_test_dir("linear_squared_l2_seed");
+        let mut graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
         graph.query("CREATE (:Memory {id: 'scaled'})").unwrap();
         graph.query("CREATE (:Memory {id: 'near'})").unwrap();
         let mut index = SearchIndex::open(&root).unwrap();
@@ -7906,18 +7747,15 @@ fn embedded_vector_seed_preserves_ordinary_squared_l2_score() {
         let store = if out_of_core {
             index.checkpoint().unwrap();
             drop(index);
-            NowledgeMemEmbeddedStore::new_with_out_of_core_search(
+            EmbeddedStore::new_with_out_of_core_search(
                 graph,
-                NowledgeMemOutOfCoreSearchProjection::open(&root).unwrap(),
-                NowledgeMemRetrievalProjectionAdvisor::default(),
+                OutOfCoreSearchProjection::open(&root).unwrap(),
+                RetrievalProjectionAdvisor::default(),
             )
         } else {
-            NowledgeMemEmbeddedStore::new(
-                graph,
-                Some(NowledgeMemSearchProjection::from_index(index)),
-            )
+            EmbeddedStore::new(graph, Some(SearchProjection::from_index(index)))
         };
-        let handle = NowledgeMemEmbeddedStoreHandle::new(store).unwrap();
+        let handle = EmbeddedStoreHandle::new(store).unwrap();
         let result = handle
             .query_with_params_with_report(
                 "CALL vector_search($embedding, topK := 2) RETURN id, score",

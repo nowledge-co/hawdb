@@ -12,16 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub const NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL: &str =
-    "hawdb-nowledge-mem-serving-path-readiness-v1";
+pub const SERVING_PATH_READINESS_PROTOCOL: &str = "hawdb-nowledge-mem-serving-path-readiness-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemServingEntrypoint {
+pub enum EmbeddedServingEntrypoint {
     EmbeddedStoreHandle,
     RawDatabase,
 }
 
-impl NowledgeMemServingEntrypoint {
+impl EmbeddedServingEntrypoint {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::EmbeddedStoreHandle => "nowledge_mem_embedded_store_handle",
@@ -31,9 +30,9 @@ impl NowledgeMemServingEntrypoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemServingPathReadiness {
+pub struct EmbeddedServingPathReadiness {
     pub protocol: String,
-    pub entrypoint: NowledgeMemServingEntrypoint,
+    pub entrypoint: EmbeddedServingEntrypoint,
     pub host_runtime_binding: Option<String>,
     pub shared_runtime_governor: bool,
     pub foreground_parameterized_cypher_admitted: bool,
@@ -44,12 +43,12 @@ pub struct NowledgeMemServingPathReadiness {
     pub direct_database_access: bool,
 }
 
-impl NowledgeMemServingPathReadiness {
+impl EmbeddedServingPathReadiness {
     #[doc(hidden)]
     pub fn embedded_store_handle() -> Self {
         Self {
-            protocol: NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL.to_string(),
-            entrypoint: NowledgeMemServingEntrypoint::EmbeddedStoreHandle,
+            protocol: SERVING_PATH_READINESS_PROTOCOL.to_string(),
+            entrypoint: EmbeddedServingEntrypoint::EmbeddedStoreHandle,
             host_runtime_binding: None,
             shared_runtime_governor: true,
             foreground_parameterized_cypher_admitted: true,
@@ -63,8 +62,8 @@ impl NowledgeMemServingPathReadiness {
 
     pub fn raw_database() -> Self {
         Self {
-            protocol: NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL.to_string(),
-            entrypoint: NowledgeMemServingEntrypoint::RawDatabase,
+            protocol: SERVING_PATH_READINESS_PROTOCOL.to_string(),
+            entrypoint: EmbeddedServingEntrypoint::RawDatabase,
             host_runtime_binding: None,
             shared_runtime_governor: false,
             foreground_parameterized_cypher_admitted: false,
@@ -86,7 +85,7 @@ impl NowledgeMemServingPathReadiness {
     }
 
     pub fn admission_safe(&self) -> bool {
-        self.entrypoint == NowledgeMemServingEntrypoint::EmbeddedStoreHandle
+        self.entrypoint == EmbeddedServingEntrypoint::EmbeddedStoreHandle
             && self.shared_runtime_governor
             && self.foreground_parameterized_cypher_admitted
             && self.bounded_streaming_read_admitted
@@ -97,17 +96,17 @@ impl NowledgeMemServingPathReadiness {
     }
 
     pub fn ready(&self) -> bool {
-        self.protocol == NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL
+        self.protocol == SERVING_PATH_READINESS_PROTOCOL
             && self.admission_safe()
             && self.host_runtime_binding.is_some()
     }
 
     pub fn blocker_codes(&self) -> Vec<&'static str> {
         let mut blockers = Vec::new();
-        if self.protocol != NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL {
+        if self.protocol != SERVING_PATH_READINESS_PROTOCOL {
             blockers.push("serving_path_protocol_mismatch");
         }
-        if self.entrypoint != NowledgeMemServingEntrypoint::EmbeddedStoreHandle {
+        if self.entrypoint != EmbeddedServingEntrypoint::EmbeddedStoreHandle {
             blockers.push("admitted_store_handle_not_used");
         }
         if self.host_runtime_binding.is_none() {
@@ -162,7 +161,7 @@ mod tests {
 
     #[test]
     fn admitted_handle_requires_an_explicit_host_runtime_binding() {
-        let unbound = NowledgeMemServingPathReadiness::embedded_store_handle();
+        let unbound = EmbeddedServingPathReadiness::embedded_store_handle();
 
         assert!(unbound.admission_safe());
         assert!(!unbound.ready());
@@ -177,7 +176,7 @@ mod tests {
         assert_eq!(
             bound.json(),
             serde_json::json!({
-                "protocol": NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL,
+                "protocol": SERVING_PATH_READINESS_PROTOCOL,
                 "entrypoint": "nowledge_mem_embedded_store_handle",
                 "host_runtime_binding": "nmem_graph_hawdb_embedded_runtime",
                 "shared_runtime_governor": true,
@@ -196,8 +195,7 @@ mod tests {
 
     #[test]
     fn raw_database_cannot_satisfy_serving_path_readiness() {
-        let raw =
-            NowledgeMemServingPathReadiness::raw_database().bind_host_runtime("controlled_host");
+        let raw = EmbeddedServingPathReadiness::raw_database().bind_host_runtime("controlled_host");
 
         assert!(!raw.admission_safe());
         assert!(!raw.ready());

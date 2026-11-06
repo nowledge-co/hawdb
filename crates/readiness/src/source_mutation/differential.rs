@@ -13,9 +13,8 @@
 // limitations under the License.
 
 use super::{
-    nowledge_mem_source_mutation_dual_write_evidence_all_ready,
-    nowledge_mem_source_mutation_dual_write_readiness,
-    nowledge_mem_source_mutation_family_requirements, NowledgeMemSourceMutationDualWriteEvidence,
+    source_mutation_dual_write_evidence_all_ready, source_mutation_dual_write_readiness,
+    source_mutation_family_requirements, SourceMutationDualWriteEvidence,
 };
 use serde_json::{json, Value};
 
@@ -53,8 +52,8 @@ struct Row {
 }
 
 impl Row {
-    fn evidence(&self) -> NowledgeMemSourceMutationDualWriteEvidence {
-        NowledgeMemSourceMutationDualWriteEvidence {
+    fn evidence(&self) -> SourceMutationDualWriteEvidence {
+        SourceMutationDualWriteEvidence {
             family: self.family.clone(),
             payload_frozen: self.bits & PAYLOAD != 0,
             legacy_ack_recorded: self.bits & LEGACY_ACK != 0,
@@ -82,16 +81,16 @@ impl Row {
 fn constructors_preserve_family_and_projection_contract() {
     let expected = complete_rows();
     assert_eq!(
-        nowledge_mem_source_mutation_dual_write_evidence_all_ready(),
+        source_mutation_dual_write_evidence_all_ready(),
         expected.iter().map(Row::evidence).collect::<Vec<_>>()
     );
     for row in expected {
         assert_eq!(
-            NowledgeMemSourceMutationDualWriteEvidence::ready(&row.family),
+            SourceMutationDualWriteEvidence::ready(&row.family),
             row.evidence()
         );
     }
-    let requirements = nowledge_mem_source_mutation_family_requirements();
+    let requirements = source_mutation_family_requirements();
     assert_eq!(requirements.len(), FAMILIES.len());
     for (requirement, (family, projection)) in requirements.iter().zip(FAMILIES) {
         assert_eq!(requirement.family, *family);
@@ -103,7 +102,7 @@ fn constructors_preserve_family_and_projection_contract() {
             bits: 31,
         };
         assert_eq!(
-            NowledgeMemSourceMutationDualWriteEvidence::ready(*family),
+            SourceMutationDualWriteEvidence::ready(*family),
             row.evidence()
         );
     }
@@ -188,7 +187,7 @@ fn complete_rows() -> Vec<Row> {
 fn check(rows: &[Row], case: &str) {
     let evidence = rows.iter().map(Row::evidence).collect::<Vec<_>>();
     let before = evidence.clone();
-    let report = nowledge_mem_source_mutation_dual_write_readiness(&evidence);
+    let report = source_mutation_dual_write_readiness(&evidence);
     assert_eq!(report.json(), reference(rows), "{case}: {rows:?}");
     assert_eq!(evidence, before, "input mutated: {case}");
     assert_eq!(report.ready, report.blocker_codes.is_empty(), "{case}");

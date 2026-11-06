@@ -15,12 +15,12 @@
 use super::{latency_percentiles, runtime_report, LatencyPercentiles, MixedSoakRuntimeReport};
 use crate::evidence_digest::{hash_bytes, hash_value};
 use hawdb::{
-    IoConcurrencyBudget, NowledgeGraphStatement, NowledgeMemEmbeddedStoreHandle,
-    NowledgeMemGraphMode, NowledgeMemOpenOptions, NowledgeMemReadOptions,
-    PersistentGraphIndexClass, ProcessMemoryProfile, ProcessMemorySnapshot,
-    ProductionEvidenceBinding, ProductionQualificationIdentity, RuntimeCancellationToken,
-    RuntimeGovernor, RuntimeGovernorConfig, RuntimeTaskContext, StorageDeviceProfile,
-    StorageResidencyReport, StorageResourceProfileLimits, StorageResourceProfileReport, Value,
+    EmbeddedReadOptions, EmbeddedStoreHandle, EmbeddedStoreOpenOptions, GraphMode,
+    IoConcurrencyBudget, NowledgeGraphStatement, PersistentGraphIndexClass, ProcessMemoryProfile,
+    ProcessMemorySnapshot, ProductionEvidenceBinding, ProductionQualificationIdentity,
+    RuntimeCancellationToken, RuntimeGovernor, RuntimeGovernorConfig, RuntimeTaskContext,
+    StorageDeviceProfile, StorageResidencyReport, StorageResourceProfileLimits,
+    StorageResourceProfileReport, Value,
 };
 use hawdb_query::QueryIdentity;
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,7 @@ pub const PRODUCTION_GRAPH_STORAGE_QUALIFICATION_PROTOCOL: &str =
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionGraphStorageQualificationConfig {
-    pub open_options: NowledgeMemOpenOptions,
+    pub open_options: EmbeddedStoreOpenOptions,
     pub runtime_governor_config: RuntimeGovernorConfig,
     pub statement: NowledgeGraphStatement,
     pub limits: StorageResourceProfileLimits,
@@ -46,7 +46,7 @@ pub struct ProductionGraphStorageQualificationConfig {
 
 impl ProductionGraphStorageQualificationConfig {
     pub(crate) fn validate(&self) -> Result<(), ProductionGraphQualificationError> {
-        if self.open_options.mode != NowledgeMemGraphMode::ShadowReadOnly {
+        if self.open_options.mode != GraphMode::ShadowReadOnly {
             return Err(ProductionGraphQualificationError::new(
                 "production graph qualification requires shadow read-only mode",
             ));
@@ -347,11 +347,8 @@ pub fn run_production_graph_storage_qualification(
     ));
     let governor = RuntimeGovernor::detect(config.runtime_governor_config, storage_io);
     let (store, open_report) =
-        NowledgeMemEmbeddedStoreHandle::open_with_options_and_runtime_governor(
-            config.open_options,
-            governor,
-        )
-        .map_err(ProductionGraphQualificationError::from_error)?;
+        EmbeddedStoreHandle::open_with_options_and_runtime_governor(config.open_options, governor)
+            .map_err(ProductionGraphQualificationError::from_error)?;
     let runtime_before = store
         .runtime_governor_snapshot()
         .map_err(ProductionGraphQualificationError::from_error)?;
@@ -626,7 +623,7 @@ fn persistent_index_artifact_bytes(
 }
 
 fn run_persistent_index_cancellation_probe(
-    store: &NowledgeMemEmbeddedStoreHandle,
+    store: &EmbeddedStoreHandle,
     statement: &NowledgeGraphStatement,
     limits: &StorageResourceProfileLimits,
     max_latency_micros: u64,
@@ -641,7 +638,7 @@ fn run_persistent_index_cancellation_probe(
     let result = store.read_query_with_params_streaming_context(
         &statement.cypher,
         &statement.parameters,
-        &NowledgeMemReadOptions {
+        &EmbeddedReadOptions {
             max_rows: Some(limits.max_output_rows),
             max_estimated_payload_bytes: Some(limits.max_output_payload_bytes),
         },
@@ -670,7 +667,7 @@ fn run_persistent_index_cancellation_probe(
 }
 
 fn stream_graph_result_digest(
-    store: &NowledgeMemEmbeddedStoreHandle,
+    store: &EmbeddedStoreHandle,
     statement: &NowledgeGraphStatement,
     limits: &StorageResourceProfileLimits,
 ) -> Result<(String, usize), ProductionGraphQualificationError> {
@@ -681,7 +678,7 @@ fn stream_graph_result_digest(
         .read_query_with_params_streaming(
             &statement.cypher,
             &statement.parameters,
-            &NowledgeMemReadOptions {
+            &EmbeddedReadOptions {
                 max_rows: Some(limits.max_output_rows),
                 max_estimated_payload_bytes: Some(limits.max_output_payload_bytes),
             },
@@ -1054,9 +1051,9 @@ mod tests {
         };
         let report =
             run_production_graph_storage_qualification(ProductionGraphStorageQualificationConfig {
-                open_options: NowledgeMemOpenOptions::graph_only(
+                open_options: EmbeddedStoreOpenOptions::graph_only(
                     &graph_path,
-                    NowledgeMemGraphMode::ShadowReadOnly,
+                    GraphMode::ShadowReadOnly,
                 )
                 .with_database_config(database_config),
                 runtime_governor_config: RuntimeGovernorConfig {

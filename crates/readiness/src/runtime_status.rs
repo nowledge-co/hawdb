@@ -17,16 +17,16 @@
 //! The root HawDB facade samples graph, storage, and search state. This module
 //! owns the typed reduction into observable readiness contracts.
 
-use crate::bounded_read_evidence::NowledgeMemGraphMode;
-use hawdb_route_ownership::graph::NowledgeMemRouteOwnershipReadinessReport;
+use crate::bounded_read_evidence::GraphMode;
+use hawdb_route_ownership::graph::RouteOwnershipReadinessReport;
 use hawdb_search::SearchProjectionFreshness;
 use hawdb_storage::projection::{SearchProjectionChangefeedStatus, SearchProjectionMutationId};
 
-pub const NOWLEDGE_MEM_RUNTIME_STATUS_PROTOCOL: &str = "hawdb-nowledge-mem-runtime-status-v1";
-pub const NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL: &str = "hawdb-nowledge-mem-production-status-v1";
+pub const RUNTIME_STATUS_PROTOCOL: &str = "hawdb-nowledge-mem-runtime-status-v1";
+pub const PRODUCTION_STATUS_PROTOCOL: &str = "hawdb-nowledge-mem-production-status-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemRuntimeStatus {
+pub struct EmbeddedRuntimeStatus {
     pub protocol: String,
     pub graph_commit_epoch: u64,
     pub changefeed: SearchProjectionChangefeedStatus,
@@ -34,7 +34,7 @@ pub struct NowledgeMemRuntimeStatus {
     pub file_descriptors: Option<hawdb_storage::file_descriptors::FileDescriptorMetrics>,
 }
 
-impl NowledgeMemRuntimeStatus {
+impl EmbeddedRuntimeStatus {
     pub fn projection_commit_lag(&self) -> u64 {
         self.changefeed.projection_commit_lag_after(
             self.projection_freshness
@@ -93,9 +93,9 @@ impl NowledgeMemRuntimeStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemProductionStatus {
+pub struct EmbeddedProductionStatus {
     pub protocol: String,
-    pub mode: NowledgeMemGraphMode,
+    pub mode: GraphMode,
     pub graph_open: bool,
     pub graph_read_only: bool,
     pub graph_hawdb_cutover_effective: bool,
@@ -114,17 +114,17 @@ pub struct NowledgeMemProductionStatus {
     pub search_projection_metadata_repair_needed: bool,
     pub search_projection_changefeed_restart_recoverable: bool,
     pub blocker_codes: Vec<String>,
-    pub runtime_status: NowledgeMemRuntimeStatus,
-    pub route_ownership: Option<NowledgeMemRouteOwnershipReadinessReport>,
+    pub runtime_status: EmbeddedRuntimeStatus,
+    pub route_ownership: Option<RouteOwnershipReadinessReport>,
 }
 
-impl NowledgeMemProductionStatus {
+impl EmbeddedProductionStatus {
     #[doc(hidden)]
     pub fn from_runtime(
-        mode: NowledgeMemGraphMode,
+        mode: GraphMode,
         graph_read_only: bool,
-        runtime_status: NowledgeMemRuntimeStatus,
-        route_ownership: Option<NowledgeMemRouteOwnershipReadinessReport>,
+        runtime_status: EmbeddedRuntimeStatus,
+        route_ownership: Option<RouteOwnershipReadinessReport>,
     ) -> Self {
         let freshness = runtime_status.projection_freshness.as_ref();
         let search_projection_open = freshness.is_some();
@@ -184,7 +184,7 @@ impl NowledgeMemProductionStatus {
             && runtime_status.changefeed.restart_recoverable;
 
         Self {
-            protocol: NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL.to_string(),
+            protocol: PRODUCTION_STATUS_PROTOCOL.to_string(),
             mode,
             graph_open: true,
             graph_read_only,
@@ -240,7 +240,7 @@ impl NowledgeMemProductionStatus {
             },
             "blocker_codes": self.blocker_codes,
             "runtime_status": self.runtime_status.json(),
-            "route_ownership": self.route_ownership.as_ref().map(NowledgeMemRouteOwnershipReadinessReport::json),
+            "route_ownership": self.route_ownership.as_ref().map(RouteOwnershipReadinessReport::json),
             "redaction": {
                 "query_text_copied": false,
                 "parameters_copied": false,
@@ -252,8 +252,8 @@ impl NowledgeMemProductionStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{NowledgeMemProductionStatus, NowledgeMemRuntimeStatus};
-    use crate::bounded_read_evidence::NowledgeMemGraphMode;
+    use super::{EmbeddedProductionStatus, EmbeddedRuntimeStatus};
+    use crate::bounded_read_evidence::GraphMode;
     use hawdb_storage::projection::{SearchProjectionChangefeedStatus, SearchProjectionMutationId};
 
     fn changefeed() -> SearchProjectionChangefeedStatus {
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn runtime_status_reports_changefeed_lag_without_host_state() {
-        let status = NowledgeMemRuntimeStatus {
+        let status = EmbeddedRuntimeStatus {
             protocol: "test".to_string(),
             graph_commit_epoch: 8,
             changefeed: changefeed(),
@@ -304,10 +304,10 @@ mod tests {
 
     #[test]
     fn production_status_fails_closed_without_route_or_projection_evidence() {
-        let status = NowledgeMemProductionStatus::from_runtime(
-            NowledgeMemGraphMode::WritableCutover,
+        let status = EmbeddedProductionStatus::from_runtime(
+            GraphMode::WritableCutover,
             false,
-            NowledgeMemRuntimeStatus {
+            EmbeddedRuntimeStatus {
                 protocol: "test".to_string(),
                 graph_commit_epoch: 8,
                 changefeed: changefeed(),

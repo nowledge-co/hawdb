@@ -62,7 +62,7 @@ exclusive database open, so a second bootstrap election would add no safety.
 Application schema definitions remain in the owning adapter. HawDB provides
 `SystemSchemaRegistry`, `SystemSchemaMigration`, and
 `Database::apply_system_schema_registry`; it does not compile Nowledge table
-definitions into the default database facade. `NowledgeMemOpenOptions` accepts
+definitions into the default database facade. `EmbeddedStoreOpenOptions` accepts
 one registry per owner so an embedded runtime applies them before becoming
 available to the host.
 

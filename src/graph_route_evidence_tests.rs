@@ -15,18 +15,18 @@
 #[cfg(test)]
 mod tests {
     use super::{
-        nowledge_graph_route_evidence_json, nowledge_mem_graph_augmentation_state_route_query,
-        nowledge_mem_graph_community_members_route_query,
-        nowledge_mem_graph_community_recent_memories_route_query,
-        nowledge_mem_graph_community_subgraph_route_query,
-        nowledge_mem_graph_node_details_route_query, nowledge_mem_graph_orphans_route_query,
-        nowledge_mem_graph_overview_route_query, nowledge_mem_graph_pagerank_plan_route_query,
-        nowledge_mem_graph_sample_route_query, parse_route_parity_evidence,
+        nowledge_graph_route_evidence_json, graph_augmentation_state_route_query,
+        graph_community_members_route_query,
+        graph_community_recent_memories_route_query,
+        graph_community_subgraph_route_query,
+        graph_node_details_route_query, graph_orphans_route_query,
+        graph_overview_route_query, graph_pagerank_plan_route_query,
+        graph_sample_route_query, parse_route_parity_evidence,
         parse_route_query_inventory, query_requirement_blockers, RouteCypherQuery,
     };
     use crate::{
-        nowledge_graph_route_readiness_json, Database, NowledgeMemGraph, NowledgeMemGraphMode,
-        NowledgeMemQueryReportOptions, Value, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+        nowledge_graph_route_readiness_json, Database, EmbeddedGraph, GraphMode,
+        EmbeddedQueryReportOptions, Value, REQUIRED_BOUNDED_READ_ROUTES,
     };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -41,9 +41,9 @@ mod tests {
                 limits.max_payload_bytes.unwrap() + 1,
             ))]),
         ] {
-            let mut graph = NowledgeMemGraph::from_database(
+            let mut graph = EmbeddedGraph::from_database(
                 Database::new(),
-                NowledgeMemGraphMode::WritableCutover,
+                GraphMode::WritableCutover,
             );
             let routes = vec![super::RouteQuery {
                 route: "/graph/overview".into(),
@@ -84,7 +84,7 @@ mod tests {
             .unwrap();
         db.query("CREATE (:Memory {id: 'mem-other', title: 'Other Evidence'})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
         let route_queries = parse_route_query_inventory(&serde_json::json!({
             "routes": [
                 {
@@ -211,14 +211,14 @@ mod tests {
             "CREATE (:Memory {id: 'overview-memory-2', content: 'Fallback body', importance: 2.0})",
         )
         .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-        let route_queries = vec![nowledge_mem_graph_overview_route_query(2).unwrap()];
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+        let route_queries = vec![graph_overview_route_query(2).unwrap()];
         let route_parity = ready_route_parity_for(&["/graph/overview"]);
 
         let evidence = nowledge_graph_route_evidence_json(
             &mut graph,
             &route_queries,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: None,
             },
@@ -271,14 +271,14 @@ mod tests {
             "CREATE (:Memory {id: 'sample-route-b', title: 'Sample Route B', importance: 2.0})",
         )
         .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-        let route_queries = vec![nowledge_mem_graph_sample_route_query(2).unwrap()];
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+        let route_queries = vec![graph_sample_route_query(2).unwrap()];
         let route_parity = ready_route_parity_for(&["/graph/sample"]);
 
         let evidence = nowledge_graph_route_evidence_json(
             &mut graph,
             &route_queries,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: None,
             },
@@ -314,15 +314,15 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'detail-memory-route', title: 'Detail Route', content: 'detail body'})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
         let node_id = memory_node_id(&mut graph, "detail-memory-route");
-        let route_queries = vec![nowledge_mem_graph_node_details_route_query(node_id).unwrap()];
+        let route_queries = vec![graph_node_details_route_query(node_id).unwrap()];
         let route_parity = ready_route_parity_for(&["/graph/node-details/{node_id}"]);
 
         let evidence = nowledge_graph_route_evidence_json(
             &mut graph,
             &route_queries,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: None,
             },
@@ -373,14 +373,14 @@ mod tests {
             .unwrap();
         db.query("CREATE (:Memory {id: 'community-route-other', title: 'Community Route Other', pagerank_score: 9.0, community_id: 7})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-        let route_queries = vec![nowledge_mem_graph_community_members_route_query(42, 5).unwrap()];
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+        let route_queries = vec![graph_community_members_route_query(42, 5).unwrap()];
         let route_parity = ready_route_parity_for(&["/graph/community-members/{community_id}"]);
 
         let evidence = nowledge_graph_route_evidence_json(
             &mut graph,
             &route_queries,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: None,
             },
@@ -429,16 +429,16 @@ mod tests {
             .unwrap();
         db.query("MATCH (m:Memory {id: 'community-recent-route-memory'}), (e:Entity {id: 'community-recent-route-entity'}) CREATE (m)-[:MENTIONS]->(e)")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
         let route_queries =
-            vec![nowledge_mem_graph_community_recent_memories_route_query(3676, 5).unwrap()];
+            vec![graph_community_recent_memories_route_query(3676, 5).unwrap()];
         let route_parity =
             ready_route_parity_for(&["/library/community/{community_id}/recent-memories"]);
 
         let evidence = nowledge_graph_route_evidence_json(
             &mut graph,
             &route_queries,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: None,
             },
@@ -491,8 +491,8 @@ mod tests {
             .unwrap();
         db.query("MATCH (a:Entity {id: 'community-subgraph-route-alpha'}), (b:Entity {id: 'community-subgraph-route-beta'}) CREATE (a)-[:RELATES_TO {confidence: 0.77, relation_type: 'related'}]->(b)")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-        let route_queries = vec![nowledge_mem_graph_community_subgraph_route_query(
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+        let route_queries = vec![graph_community_subgraph_route_query(
             3505,
             5,
             [
@@ -507,7 +507,7 @@ mod tests {
         let evidence = nowledge_graph_route_evidence_json(
             &mut graph,
             &route_queries,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: None,
             },
@@ -560,14 +560,14 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:GraphMeta {meta_id: 'main', community_detection_applied: true, pagerank_applied: true, community_algorithm: 'louvain', community_resolution: 1.0, community_count: 12, pagerank_algorithm: 'pagerank', pagerank_damping: 0.85, pagerank_iterations: 20, last_augmentation_at: 1000, schema_version: 2, community_detection_computed_at: 900, pagerank_computed_at: 950})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-        let route_queries = vec![nowledge_mem_graph_augmentation_state_route_query()];
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+        let route_queries = vec![graph_augmentation_state_route_query()];
         let route_parity = ready_route_parity_for(&["/graph/augmentation/state"]);
 
         let evidence = nowledge_graph_route_evidence_json(
             &mut graph,
             &route_queries,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: None,
             },
@@ -623,14 +623,14 @@ mod tests {
             .unwrap();
         db.query("MATCH (a:Memory {id: 'pagerank-route-m1'}), (b:Memory {id: 'pagerank-route-m2'}) CREATE (a)-[:MEMORY_RELATES_TO {status: 'active', created_at: 180}]->(b)")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-        let route_queries = vec![nowledge_mem_graph_pagerank_plan_route_query(Some(100))];
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+        let route_queries = vec![graph_pagerank_plan_route_query(Some(100))];
         let route_parity = ready_route_parity_for(&["/graph/augmentation/pagerank/plan"]);
 
         let evidence = nowledge_graph_route_evidence_json(
             &mut graph,
             &route_queries,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: None,
             },
@@ -688,14 +688,14 @@ mod tests {
             .unwrap();
         db.query("MATCH (m:Memory {id: 'orphan-route-memory'}), (e:Entity {id: 'mentioned-route-entity'}) CREATE (m)-[:MENTIONS]->(e)")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-        let route_queries = vec![nowledge_mem_graph_orphans_route_query(10).unwrap()];
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+        let route_queries = vec![graph_orphans_route_query(10).unwrap()];
         let route_parity = ready_route_parity_for(&["/graph/orphans"]);
 
         let evidence = nowledge_graph_route_evidence_json(
             &mut graph,
             &route_queries,
-            NowledgeMemQueryReportOptions {
+            EmbeddedQueryReportOptions {
                 capture_physical_plan: true,
                 slow_log_threshold_micros: None,
             },
@@ -734,16 +734,16 @@ mod tests {
             .unwrap();
         db.query("CREATE (:Memory {id: 'mem-other', title: 'Other Evidence'})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
         let route_queries = parse_route_query_inventory(&serde_json::json!({
-            "routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+            "routes": REQUIRED_BOUNDED_READ_ROUTES
                 .iter()
                 .map(|route| ready_route_query(route))
                 .collect::<Vec<_>>()
         }))
         .unwrap();
 
-        let route_parity = ready_route_parity_for(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES);
+        let route_parity = ready_route_parity_for(REQUIRED_BOUNDED_READ_ROUTES);
         let evidence = nowledge_graph_route_evidence_json(
             &mut graph,
             &route_queries,
@@ -754,15 +754,15 @@ mod tests {
         assert_eq!(evidence["ready"], true);
         assert_eq!(
             evidence["required_route_count"],
-            serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len())
+            serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES.len())
         );
         assert_eq!(
             evidence["covered_route_count"],
-            serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len())
+            serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES.len())
         );
         assert_eq!(
             evidence["covered_routes"],
-            serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES)
+            serde_json::json!(REQUIRED_BOUNDED_READ_ROUTES)
         );
         assert_eq!(evidence["missing_required_routes"], serde_json::json!([]));
         assert_eq!(evidence["required_routes_covered"], true);
@@ -782,15 +782,15 @@ mod tests {
             .unwrap();
         db.query("CREATE (:Memory {id: 'mem-other', title: 'Other Evidence'})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-        let mut routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+        let mut routes = REQUIRED_BOUNDED_READ_ROUTES
             .iter()
             .map(|route| ready_route_query(route))
             .collect::<Vec<_>>();
         routes.push(ready_route_query("/graph/manual-extra-route"));
         let route_queries =
             parse_route_query_inventory(&serde_json::json!({ "routes": routes })).unwrap();
-        let mut parity_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.to_vec();
+        let mut parity_routes = REQUIRED_BOUNDED_READ_ROUTES.to_vec();
         parity_routes.push("/graph/manual-extra-route");
         let route_parity = ready_route_parity_for(&parity_routes);
 
@@ -821,15 +821,15 @@ mod tests {
             .unwrap();
         db.query("CREATE (:Memory {id: 'mem-other', title: 'Other Evidence'})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
-        let mut routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+        let mut routes = REQUIRED_BOUNDED_READ_ROUTES
             .iter()
             .map(|route| ready_route_query(route))
             .collect::<Vec<_>>();
         routes.push(ready_route_query("/graph/overview"));
         let route_queries =
             parse_route_query_inventory(&serde_json::json!({ "routes": routes })).unwrap();
-        let route_parity = ready_route_parity_for(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES);
+        let route_parity = ready_route_parity_for(REQUIRED_BOUNDED_READ_ROUTES);
 
         let evidence = nowledge_graph_route_evidence_json(
             &mut graph,
@@ -856,7 +856,7 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'mem-route', title: 'Route Evidence'})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
         let route_queries = parse_route_query_inventory(&serde_json::json!({
             "routes": [
                 {
@@ -901,7 +901,7 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'mem-route', title: 'Route Evidence'})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
         let route_queries = parse_route_query_inventory(&serde_json::json!({
             "routes": [
                 {
@@ -953,7 +953,7 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'mem-route', title: 'Route Evidence'})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
         let route_queries = parse_route_query_inventory(&serde_json::json!({
             "routes": [
                 {
@@ -999,7 +999,7 @@ mod tests {
     #[test]
     fn route_evidence_fails_closed_on_query_execution_error() {
         let db = Database::new();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
         let route_queries = parse_route_query_inventory(&serde_json::json!({
             "routes": [
                 {
@@ -1056,7 +1056,7 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'mem-route', title: 'Route Evidence'})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
         let route_queries = parse_route_query_inventory(&serde_json::json!({
             "routes": [
                 {
@@ -1159,7 +1159,7 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'mem-route', title: 'Route Evidence'})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
         let route_queries = parse_route_query_inventory(&serde_json::json!({
             "routes": [
                 {
@@ -1206,7 +1206,7 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'mem-route', title: 'Route Evidence'})")
             .unwrap();
-        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
         let route_queries = parse_route_query_inventory(&serde_json::json!({
             "routes": [ready_route_query("/graph/overview")]
         }))
@@ -1255,7 +1255,7 @@ mod tests {
     }
 
     fn ready_route_query(route: &str) -> serde_json::Value {
-        let query_family = crate::nowledge_mem_required_query_families_for_route(route)
+        let query_family = crate::required_query_families_for_route(route)
             .first()
             .copied()
             .unwrap_or("memory_lookup");
@@ -1279,7 +1279,7 @@ mod tests {
         })
     }
 
-    fn memory_node_id(graph: &mut NowledgeMemGraph, memory_id: &str) -> u64 {
+    fn memory_node_id(graph: &mut EmbeddedGraph, memory_id: &str) -> u64 {
         let mut parameters = BTreeMap::new();
         parameters.insert("id".to_string(), Value::String(memory_id.to_string()));
         let output = graph

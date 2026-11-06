@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{
-    Database, NowledgeMemGraph, NowledgeMemGraphMode, NowledgeMemQueryReportOptions, Result,
-};
+use crate::{Database, EmbeddedGraph, EmbeddedQueryReportOptions, GraphMode, Result};
 use hawdb_fuzz_contracts::{
     nowledge_query_fuzz_cases, nowledge_query_fuzz_error_class, nowledge_query_fuzz_harness_report,
     NowledgeQueryFuzzCase, NOWLEDGE_QUERY_FUZZ_FIXTURE_MEMORY_COUNT,
@@ -27,8 +25,7 @@ pub use hawdb_fuzz_contracts::{
 pub fn nowledge_query_fuzz_harness(
     options: NowledgeQueryFuzzHarnessOptions,
 ) -> Result<NowledgeQueryFuzzHarnessReport> {
-    let mut graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+    let mut graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
     seed_fixture_graph(&mut graph)?;
 
     let fuzz_cases = nowledge_query_fuzz_cases(options);
@@ -40,7 +37,7 @@ pub fn nowledge_query_fuzz_harness(
     Ok(nowledge_query_fuzz_harness_report(options, case_reports))
 }
 
-fn seed_fixture_graph(graph: &mut NowledgeMemGraph) -> Result<()> {
+fn seed_fixture_graph(graph: &mut EmbeddedGraph) -> Result<()> {
     for index in 0..NOWLEDGE_QUERY_FUZZ_FIXTURE_MEMORY_COUNT {
         let kind = if index % 2 == 0 { "note" } else { "thread" };
         graph.query(&format!(
@@ -51,12 +48,12 @@ fn seed_fixture_graph(graph: &mut NowledgeMemGraph) -> Result<()> {
 }
 
 fn run_case(
-    graph: &mut NowledgeMemGraph,
+    graph: &mut EmbeddedGraph,
     index: usize,
     case: NowledgeQueryFuzzCase,
     options: NowledgeQueryFuzzHarnessOptions,
 ) -> Result<NowledgeQueryFuzzCaseReport> {
-    let query_options = NowledgeMemQueryReportOptions {
+    let query_options = EmbeddedQueryReportOptions {
         capture_physical_plan: options.capture_physical_plan,
         slow_log_threshold_micros: None,
     };

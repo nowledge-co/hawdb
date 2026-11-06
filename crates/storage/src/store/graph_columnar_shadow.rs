@@ -185,7 +185,7 @@ fn decode_label_set(bytes: &[u8]) -> Result<BTreeSet<LabelId>> {
 ///
 /// - **pre-admitted** — the caller extended its own single admission's
 ///   memory request by [`GraphStore::columnar_shadow_admission_bytes`]
-///   (the nowledge_mem typed checkpoint, which holds a background
+///   (the embedded_store typed checkpoint, which holds a background
 ///   maintenance permit for the duration);
 /// - **owned** — the checkpoint entry acquired exactly one non-nested
 ///   `try_admit` for the whole build, with no waiting loop (plain
@@ -974,7 +974,7 @@ impl GraphStore {
     /// retries and converges.
     ///
     /// `admission` is the caller's explicit pre-admitted context (the
-    /// nowledge_mem typed checkpoint, which extended its own held permit);
+    /// embedded_store typed checkpoint, which extended its own held permit);
     /// `None` acquires exactly one non-nested `try_admit` here at the
     /// checkpoint entry, before the builder exists.
     pub(super) fn record_columnar_shadow_checkpoint(
@@ -2309,7 +2309,7 @@ mod tests {
         let mut catalog = Catalog::default();
         let mut store = open_shadow_store(&root, &mut catalog);
         // A mobile-style constraint: one background task, total. The outer
-        // permit (the nowledge_mem typed checkpoint's background
+        // permit (the embedded_store typed checkpoint's background
         // maintenance admission) is held for the whole duration, so any
         // nested admission inside the shadow build could never succeed.
         let governor = hawdb_qos::RuntimeGovernor::detect(

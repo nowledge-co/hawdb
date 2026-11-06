@@ -40,7 +40,7 @@ use crate::search::{
     SearchRebuildOptions, SearchTruncationReasonCode,
 };
 use crate::store::{DatabaseDoctor, NodeId, WalDoctorOptions, DENSE_ADJACENCY_DEGREE_THRESHOLD};
-use crate::NowledgeMemStorageRecoveryReport;
+use crate::EmbeddedStorageRecoveryReport;
 use crate::{HawDBError, Result, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Write};

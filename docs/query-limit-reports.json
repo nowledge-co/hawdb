@@ -220,7 +220,7 @@
     },
     {
       "kind": "field",
-      "path": "src/nowledge_mem.rs",
+      "path": "src/embedded_store.rs",
       "name": "truncation_reason_codes",
       "count": 1,
       "classification": "diagnostic",

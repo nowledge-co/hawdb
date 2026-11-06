@@ -14,28 +14,26 @@
 
 //! Bounded-read evidence contract and fail-closed readiness reduction.
 //!
-//! The embedded facade produces [`NowledgeMemReadReport`] from live query execution.
+//! The embedded facade produces [`EmbeddedReadReport`] from live query execution.
 //! This module owns the portable evidence representation and its reduction so developer
 //! adapters can evaluate serialized reports without depending on the facade crate.
 
 use hawdb_executor::BlockingOperatorMemoryReport;
 use hawdb_route_ownership::graph::{
-    nowledge_mem_graph_read_route_catalog_digest, NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-    REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+    graph_read_route_catalog_digest, GRAPH_READ_ROUTE_CATALOG_VERSION, REQUIRED_BOUNDED_READ_ROUTES,
 };
 use std::collections::BTreeSet;
 
-pub const NOWLEDGE_MEM_READ_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-read-report";
-pub const NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
-    "hawdb-nowledge-mem-bounded-read-evidence-v2";
+pub const READ_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-read-report";
+pub const BOUNDED_READ_EVIDENCE_PROTOCOL: &str = "hawdb-nowledge-mem-bounded-read-evidence-v2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemGraphMode {
+pub enum GraphMode {
     ShadowReadOnly,
     WritableCutover,
 }
 
-impl NowledgeMemGraphMode {
+impl GraphMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ShadowReadOnly => "shadow_read_only",
@@ -45,9 +43,9 @@ impl NowledgeMemGraphMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemReadReport {
+pub struct EmbeddedReadReport {
     pub protocol: String,
-    pub mode: NowledgeMemGraphMode,
+    pub mode: GraphMode,
     pub row_count: usize,
     pub max_rows: Option<usize>,
     pub execution_row_cap: Option<usize>,
@@ -71,7 +69,7 @@ pub struct NowledgeMemReadReport {
     pub streaming: bool,
 }
 
-impl NowledgeMemReadReport {
+impl EmbeddedReadReport {
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "protocol": self.protocol,
@@ -101,32 +99,30 @@ impl NowledgeMemReadReport {
     }
 
     pub fn bounded_read_evidence_json(&self) -> serde_json::Value {
-        nowledge_mem_bounded_read_evidence_json(self)
+        bounded_read_evidence_json(self)
     }
 }
 
-pub fn nowledge_mem_bounded_read_evidence_json(
-    report: &NowledgeMemReadReport,
-) -> serde_json::Value {
-    nowledge_mem_bounded_read_evidence_json_with_routes(report, &[])
+pub fn bounded_read_evidence_json(report: &EmbeddedReadReport) -> serde_json::Value {
+    bounded_read_evidence_json_with_routes(report, &[])
 }
 
-pub fn nowledge_mem_bounded_read_evidence_json_with_routes(
-    report: &NowledgeMemReadReport,
+pub fn bounded_read_evidence_json_with_routes(
+    report: &EmbeddedReadReport,
     covered_routes: &[String],
 ) -> serde_json::Value {
-    nowledge_mem_bounded_read_evidence_json_with_route_readiness(report, covered_routes, None)
+    bounded_read_evidence_json_with_route_readiness(report, covered_routes, None)
 }
 
-pub use hawdb_route_ownership::graph::NowledgeMemRouteReadinessSummary;
+pub use hawdb_route_ownership::graph::RouteReadinessSummary;
 
-pub fn nowledge_mem_bounded_read_evidence_json_with_route_readiness(
-    report: &NowledgeMemReadReport,
+pub fn bounded_read_evidence_json_with_route_readiness(
+    report: &EmbeddedReadReport,
     covered_routes: &[String],
-    route_readiness: Option<&NowledgeMemRouteReadinessSummary>,
+    route_readiness: Option<&RouteReadinessSummary>,
 ) -> serde_json::Value {
-    let blocker_codes = nowledge_mem_bounded_read_blocker_codes(report);
-    let missing_covered_routes = missing_nowledge_mem_bounded_read_routes(covered_routes);
+    let blocker_codes = bounded_read_blocker_codes(report);
+    let missing_covered_routes = missing_bounded_read_routes(covered_routes);
     let route_readiness_blocker = route_readiness.and_then(|summary| {
         (!summary.route_primary_ready
             || !summary.route_query_plan_evidence_ready
@@ -166,7 +162,7 @@ pub fn nowledge_mem_bounded_read_evidence_json_with_route_readiness(
     let spill_within_budget = blocking_operator_spill_within_budget(report);
 
     serde_json::json!({
-        "protocol": NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL,
+        "protocol": BOUNDED_READ_EVIDENCE_PROTOCOL,
         "present": true,
         "ready": ready,
         "mode": report.mode.as_str(),
@@ -186,10 +182,10 @@ pub fn nowledge_mem_bounded_read_evidence_json_with_route_readiness(
         "row_budget_exceeded": report.row_budget_exceeded,
         "payload_budget_exceeded": report.payload_budget_exceeded,
         "covered_routes": covered_routes,
-        "required_covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+        "required_covered_routes": REQUIRED_BOUNDED_READ_ROUTES,
         "missing_covered_routes": missing_covered_routes,
-        "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-        "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+        "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+        "route_catalog_digest": graph_read_route_catalog_digest(),
         "route_primary_ready": route_primary_ready,
         "primary_ready_routes": primary_ready_routes,
         "route_query_plan_evidence_ready": route_query_plan_evidence_ready,
@@ -202,7 +198,7 @@ pub fn nowledge_mem_bounded_read_evidence_json_with_route_readiness(
     })
 }
 
-fn nowledge_mem_bounded_read_blocker_codes(report: &NowledgeMemReadReport) -> Vec<&'static str> {
+fn bounded_read_blocker_codes(report: &EmbeddedReadReport) -> Vec<&'static str> {
     let mut blockers = Vec::new();
     let expected_row_cap = match report.max_rows {
         Some(0) => {
@@ -215,7 +211,7 @@ fn nowledge_mem_bounded_read_blocker_codes(report: &NowledgeMemReadReport) -> Ve
             None
         }
     };
-    if report.mode != NowledgeMemGraphMode::ShadowReadOnly {
+    if report.mode != GraphMode::ShadowReadOnly {
         blockers.push("not_shadow_read_only");
     }
 
@@ -249,7 +245,7 @@ fn nowledge_mem_bounded_read_blocker_codes(report: &NowledgeMemReadReport) -> Ve
     blockers
 }
 
-fn blocking_operator_memory_reports_complete(report: &NowledgeMemReadReport) -> bool {
+fn blocking_operator_memory_reports_complete(report: &EmbeddedReadReport) -> bool {
     let expected = report
         .blocking_operator_kinds
         .iter()
@@ -263,14 +259,14 @@ fn blocking_operator_memory_reports_complete(report: &NowledgeMemReadReport) -> 
     report.blocking_operator_count == expected.len() && actual == expected
 }
 
-fn blocking_operator_memory_within_budget(report: &NowledgeMemReadReport) -> bool {
+fn blocking_operator_memory_within_budget(report: &EmbeddedReadReport) -> bool {
     report
         .blocking_operator_memory_reports
         .iter()
         .all(|report| report.budget_bytes > 0 && report.peak_tracked_bytes <= report.budget_bytes)
 }
 
-fn blocking_operator_spill_within_budget(report: &NowledgeMemReadReport) -> bool {
+fn blocking_operator_spill_within_budget(report: &EmbeddedReadReport) -> bool {
     report
         .blocking_operator_memory_reports
         .iter()
@@ -304,12 +300,12 @@ fn blocking_operator_memory_report_json(
 }
 
 #[doc(hidden)]
-pub fn missing_nowledge_mem_bounded_read_routes(covered_routes: &[String]) -> Vec<&'static str> {
+pub fn missing_bounded_read_routes(covered_routes: &[String]) -> Vec<&'static str> {
     let covered_routes = covered_routes
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .filter(|route| !covered_routes.contains(route))
@@ -319,32 +315,22 @@ pub fn missing_nowledge_mem_bounded_read_routes(covered_routes: &[String]) -> Ve
 #[cfg(test)]
 mod tests {
     use super::{
-        nowledge_mem_bounded_read_evidence_json,
-        nowledge_mem_bounded_read_evidence_json_with_route_readiness, NowledgeMemGraphMode,
-        NowledgeMemReadReport, NowledgeMemRouteReadinessSummary,
-        NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
+        bounded_read_evidence_json, bounded_read_evidence_json_with_route_readiness,
+        EmbeddedReadReport, GraphMode, RouteReadinessSummary, BOUNDED_READ_EVIDENCE_PROTOCOL,
+        READ_REPORT_PROTOCOL,
     };
     use hawdb_executor::BlockingOperatorMemoryReport;
-    use hawdb_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
+    use hawdb_route_ownership::graph::REQUIRED_BOUNDED_READ_ROUTES;
 
     #[test]
     fn bounded_read_evidence_fails_closed_for_missing_row_cap() {
-        let mut report = report(
-            NowledgeMemGraphMode::ShadowReadOnly,
-            None,
-            false,
-            false,
-            Vec::new(),
-        );
+        let mut report = report(GraphMode::ShadowReadOnly, None, false, false, Vec::new());
         report.blocking_operator_count = 1;
         report.blocking_operator_kinds = vec!["Sort".to_string()];
 
-        let evidence = nowledge_mem_bounded_read_evidence_json(&report);
+        let evidence = bounded_read_evidence_json(&report);
 
-        assert_eq!(
-            evidence["protocol"],
-            NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL
-        );
+        assert_eq!(evidence["protocol"], BOUNDED_READ_EVIDENCE_PROTOCOL);
         assert_eq!(evidence["present"], true);
         assert_eq!(evidence["ready"], false);
         assert_eq!(evidence["max_rows"], 512);
@@ -364,8 +350,8 @@ mod tests {
 
     #[test]
     fn bounded_read_evidence_requires_shadow_read_only_mode() {
-        let evidence = nowledge_mem_bounded_read_evidence_json(&report(
-            NowledgeMemGraphMode::WritableCutover,
+        let evidence = bounded_read_evidence_json(&report(
+            GraphMode::WritableCutover,
             Some(513),
             true,
             true,
@@ -386,7 +372,7 @@ mod tests {
     #[test]
     fn bounded_read_evidence_accepts_streaming_with_budgeted_blocking_operator() {
         let report = report(
-            NowledgeMemGraphMode::ShadowReadOnly,
+            GraphMode::ShadowReadOnly,
             Some(513),
             true,
             true,
@@ -405,11 +391,11 @@ mod tests {
                 spilled_rows: 64,
             }],
         );
-        let covered_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        let covered_routes = REQUIRED_BOUNDED_READ_ROUTES
             .iter()
             .map(|route| (*route).to_string())
             .collect::<Vec<_>>();
-        let route_readiness = NowledgeMemRouteReadinessSummary {
+        let route_readiness = RouteReadinessSummary {
             route_primary_ready: true,
             primary_ready_routes: covered_routes.clone(),
             route_query_plan_evidence_ready: true,
@@ -420,7 +406,7 @@ mod tests {
             route_relationship_property_pruning_evidence_ready: true,
         };
 
-        let evidence = nowledge_mem_bounded_read_evidence_json_with_route_readiness(
+        let evidence = bounded_read_evidence_json_with_route_readiness(
             &report,
             &covered_routes,
             Some(&route_readiness),
@@ -435,14 +421,14 @@ mod tests {
     }
 
     fn report(
-        mode: NowledgeMemGraphMode,
+        mode: GraphMode,
         execution_row_cap: Option<usize>,
         row_limit_enforced_before_output: bool,
         operator_row_cap_enabled: bool,
         blocking_operator_memory_reports: Vec<BlockingOperatorMemoryReport>,
-    ) -> NowledgeMemReadReport {
-        NowledgeMemReadReport {
-            protocol: NOWLEDGE_MEM_READ_REPORT_PROTOCOL.to_string(),
+    ) -> EmbeddedReadReport {
+        EmbeddedReadReport {
+            protocol: READ_REPORT_PROTOCOL.to_string(),
             mode,
             row_count: 2,
             max_rows: Some(512),

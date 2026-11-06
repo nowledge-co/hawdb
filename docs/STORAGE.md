@@ -1334,7 +1334,7 @@ matched terms.
 The read report separates metadata-sidecar, vector-sidecar, and hydration
 payload bytes, and also exposes range reads, peak decoded sidecar and full
 segment bytes, candidate spill and reread bytes, vector bytes, and final
-hydration rows and bytes. `NowledgeMemOutOfCoreSearchProjection` is the typed Mem
+hydration rows and bytes. `OutOfCoreSearchProjection` is the typed Mem
 read facade over this path. It uses exact scalar vector segment scans; callers
 that require a compressed vector projection receive an error rather than a
 silent fallback.
@@ -1342,7 +1342,7 @@ silent fallback.
 The mutable compatibility `SearchIndex::open()` still materializes the complete
 snapshot because its rebuild, incremental mutation, and borrowed-document APIs
 require stable references. It is a maintenance owner, not the larger-than-memory
-production read owner. `NowledgeMemOpenOptions::with_qualified_out_of_core_search_projection`
+production read owner. `EmbeddedStoreOpenOptions::with_qualified_out_of_core_search_projection`
 is the production read-owner boundary: it accepts explicit reader budgets and
 opens through the production qualification constructor only after the release
 identity, projection generation, source graph epoch, and opened graph commit
@@ -1389,5 +1389,5 @@ not implicit storage-completion tasks.
 
 Production Search activation is governed by
 `specs/PRODUCTION_READINESS_SPEC.md`. Routes may move to
-`NowledgeMemOutOfCoreSearchProjection` only after generation-bound differential
+`OutOfCoreSearchProjection` only after generation-bound differential
 parity and representative resource qualification pass.

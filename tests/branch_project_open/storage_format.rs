@@ -225,11 +225,11 @@ fn unsupported_active_wal_preserves_open_readiness_and_doctor_evidence() {
             drop(database);
             assert_eq!(files(&project.0), before);
         }
-        let options = hawdb::NowledgeMemOpenOptions::graph_only(
+        let options = hawdb::EmbeddedStoreOpenOptions::graph_only(
             &project.0,
-            hawdb::NowledgeMemGraphMode::WritableCutover,
+            hawdb::GraphMode::WritableCutover,
         );
-        let Err(error) = hawdb::NowledgeMemEmbeddedStore::open_with_options(options) else {
+        let Err(error) = hawdb::EmbeddedStore::open_with_options(options) else {
             panic!("readiness accepted incompatible storage");
         };
         assert_refusal(error, &expected);

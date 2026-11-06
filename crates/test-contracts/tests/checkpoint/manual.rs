@@ -207,20 +207,13 @@ fn embedded_governor() -> hawdb::RuntimeGovernor {
     )
 }
 
-fn embedded_handle(
-    root: &Fixture,
-    governor: hawdb::RuntimeGovernor,
-) -> hawdb::NowledgeMemEmbeddedStoreHandle {
-    let options = hawdb::NowledgeMemOpenOptions::graph_only(
-        root.path(),
-        hawdb::NowledgeMemGraphMode::WritableCutover,
-    )
-    .with_database_config(config());
+fn embedded_handle(root: &Fixture, governor: hawdb::RuntimeGovernor) -> hawdb::EmbeddedStoreHandle {
+    let options =
+        hawdb::EmbeddedStoreOpenOptions::graph_only(root.path(), hawdb::GraphMode::WritableCutover)
+            .with_database_config(config());
     let (handle, _) =
-        hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options_and_runtime_governor(
-            options, governor,
-        )
-        .unwrap();
+        hawdb::EmbeddedStoreHandle::open_with_options_and_runtime_governor(options, governor)
+            .unwrap();
     handle
         .query_with_report("CREATE (:Memory {id: 1, body: 'checkpoint body'})")
         .unwrap();

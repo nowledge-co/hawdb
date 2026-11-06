@@ -75,7 +75,7 @@ pub struct ReplacementReadinessFamilyEvidenceHealth {
     pub blockers: Vec<String>,
 }
 
-pub const NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-query-report-v1";
+pub const QUERY_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-query-report-v1";
 
 pub const REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES: &[&str] = &[
     "memory_lookup",

@@ -22,13 +22,13 @@ use std::num::NonZeroU64;
 /// Explicit development maintenance for an already bootstrapped projection.
 /// This mode does not certify production serving or authorize storage cutover.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemIncrementalSearchMaintenanceOptions {
+pub struct IncrementalSearchMaintenanceOptions {
     pub reader_config: SearchOutOfCoreConfig,
     pub build_options: SearchOutOfCoreGenerationBuildOptions,
     pub working_memory_bytes: NonZeroU64,
 }
 
-impl Default for NowledgeMemIncrementalSearchMaintenanceOptions {
+impl Default for IncrementalSearchMaintenanceOptions {
     fn default() -> Self {
         Self {
             reader_config: SearchOutOfCoreConfig::default(),
@@ -38,7 +38,7 @@ impl Default for NowledgeMemIncrementalSearchMaintenanceOptions {
     }
 }
 
-impl NowledgeMemIncrementalSearchMaintenanceOptions {
+impl IncrementalSearchMaintenanceOptions {
     pub(super) fn validate(&self) -> Result<()> {
         if self.build_options.source_graph_commit_epoch.is_some()
             || self
@@ -54,24 +54,24 @@ impl NowledgeMemIncrementalSearchMaintenanceOptions {
     }
 }
 
-impl NowledgeMemOpenOptions {
+impl EmbeddedStoreOpenOptions {
     /// Selects explicit development maintenance, retaining the configured paths.
     /// Opening requires a complete existing generation; it never recreates an
     /// absent or damaged search projection as an empty index.
     pub fn with_incremental_search_maintenance(
         mut self,
-        options: NowledgeMemIncrementalSearchMaintenanceOptions,
+        options: IncrementalSearchMaintenanceOptions,
     ) -> Self {
         self.search_projection_open_mode =
-            NowledgeMemSearchProjectionOpenMode::IncrementalMaintenance(Box::new(options));
+            SearchProjectionOpenMode::IncrementalMaintenance(Box::new(options));
         self
     }
 }
 
-impl NowledgeMemOutOfCoreSearchProjection {
+impl OutOfCoreSearchProjection {
     pub(super) fn open_incremental(
         path: &Path,
-        options: NowledgeMemIncrementalSearchMaintenanceOptions,
+        options: IncrementalSearchMaintenanceOptions,
     ) -> Result<Self> {
         options.validate()?;
         let reader = SearchOutOfCoreReader::open_with_source_policy(
@@ -97,7 +97,7 @@ impl NowledgeMemOutOfCoreSearchProjection {
     }
 }
 
-impl NowledgeMemEmbeddedStoreHandle {
+impl EmbeddedStoreHandle {
     /// Attempts one bounded compaction on the host's background worker.
     /// Large artifact reads run without holding the store's write lock. Queries
     /// keep their pinned generation, and a concurrent publisher makes the
@@ -127,8 +127,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                 store.graph.database().local_qos_scheduler(),
             )
         };
-        let projection =
-            NowledgeMemOutOfCoreSearchProjection::open_incremental(&path, options.clone())?;
+        let projection = OutOfCoreSearchProjection::open_incremental(&path, options.clone())?;
         let task = permit.bind_task_context(task).with_memory_reservation(
             hawdb_core::RuntimeMemoryReservation::new(options.working_memory_bytes.get(), 0),
         );
@@ -188,7 +187,7 @@ impl NowledgeMemEmbeddedStoreHandle {
     }
 }
 
-impl NowledgeMemEmbeddedStore {
+impl EmbeddedStore {
     fn refresh_incremental_search_reader(&mut self) -> Result<()> {
         let projection = self.out_of_core_search_projection.as_mut().ok_or_else(|| {
             HawDBError::Semantic("incremental search maintenance is not configured".into())
