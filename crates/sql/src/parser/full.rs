@@ -697,7 +697,29 @@ impl Fold<'_> {
                     let expr = self.expr(self.child(option, "Or"));
                     column.default = Some(
                         match self.lowerer.lower(&expr, ExpressionPosition::Scalar)?.kind {
-                            ExprKind::Value(value) => SqlColumnDefault::Literal(value),
+                            ExprKind::Value(SqlValue::Expression(expression))
+                                if matches!(expression.kind, ExprKind::CurrentTimestamp(_)) =>
+                            {
+                                let ExprKind::CurrentTimestamp(kind) = expression.kind else {
+                                    unreachable!("matched CURRENT_TIMESTAMP default")
+                                };
+                                SqlColumnDefault::CurrentTimestamp(kind)
+                            }
+                            ExprKind::Value(value) => {
+                                let mut clock = false;
+                                if let SqlValue::Expression(expression) = &value {
+                                    expression.visit(&mut |child| {
+                                        clock |=
+                                            matches!(child.kind, ExprKind::CurrentTimestamp(_));
+                                    });
+                                }
+                                if clock {
+                                    return Err(semantic(
+                                        "CURRENT_TIMESTAMP, LOCALTIMESTAMP and now() column defaults must be the whole default expression",
+                                    ));
+                                }
+                                SqlColumnDefault::Literal(value)
+                            }
                             ExprKind::Function {
                                 name,
                                 arguments,

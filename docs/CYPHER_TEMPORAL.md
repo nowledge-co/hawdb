@@ -99,7 +99,10 @@ All clock reads in one statement (`date()`, `datetime()`,
 instant again (also on parallel workers), so clock reads evaluated per row,
 such as `datetime({timezone: n.tz})`, agree with clock reads bound during
 planning. Hosts and tests may pin it explicitly with
-`hawdb::temporal::with_statement_clock`. Statements that read the clock while
+`hawdb::temporal::with_statement_clock`. Relational SQL statements inside a
+transaction pin this clock to the transaction start instead (PostgreSQL
+`CURRENT_TIMESTAMP`); Cypher statements in the same transaction keep their own
+statement clock, as in Neo4j. Statements that read the clock while
 planning are non-deterministic and bypass the plan cache: zero-argument calls,
 constructors whose map argument has only `timezone`, and statements whose
 parameters include such a map (`datetime($tz)` with `$tz = {timezone: …}`).

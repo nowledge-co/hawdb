@@ -189,6 +189,10 @@ pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), Rel
         match &column.default {
             None => sink.raw(&[0])?,
             Some(RelationalColumnDefault::UuidV7) => sink.raw(&[2])?,
+            Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+                sink.raw(&[3])?;
+                sink.raw(&crate::relational::clock_default_bytes(*kind))?;
+            }
             Some(RelationalColumnDefault::Literal(value)) => {
                 sink.raw(&[1])?;
                 sink.value(value)?;

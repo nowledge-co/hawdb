@@ -2513,6 +2513,10 @@ pub(super) fn relational_schema_digest(
                 }
             }
             Some(RelationalColumnDefault::UuidV7) => encoded.push(2),
+            Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+                encoded.push(3);
+                encoded.extend_from_slice(&crate::relational::clock_default_bytes(*kind));
+            }
         }
     }
     encode_string_list(&mut encoded, &schema.primary_key)?;

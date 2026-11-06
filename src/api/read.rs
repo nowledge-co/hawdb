@@ -958,7 +958,23 @@ where
         )
     }
 
+    /// Executes one SQL statement with the statement clock pinned to the read
+    /// transaction's start (PostgreSQL `transaction_timestamp()`).
     pub(super) fn query_sql_with_prepared_params_context_and_join_planning(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        prepared: crate::relational_sql::PreparedRelationalSql,
+        options: DatabaseReadSqlOptions<'_>,
+    ) -> Result<QueryOutput> {
+        hawdb_core::temporal::with_statement_clock(self.sql_clock, || {
+            self.query_sql_with_prepared_params_context_and_join_planning_at_clock(
+                sql_text, parameters, prepared, options,
+            )
+        })
+    }
+
+    fn query_sql_with_prepared_params_context_and_join_planning_at_clock(
         &self,
         sql_text: &str,
         parameters: &[Value],
@@ -1072,6 +1088,27 @@ where
     }
 
     pub(super) fn execute_profiled_relational_sql(
+        &self,
+        prepared: crate::relational_sql::PreparedRelationalSql,
+        parameters: &[Value],
+        max_rows: Option<usize>,
+        max_payload_bytes: Option<usize>,
+        task_context: &hawdb_core::RuntimeTaskContext,
+        join_planning: RelationalJoinPlanningDirective,
+    ) -> Result<ProfiledRelationalSqlQueryOutput> {
+        hawdb_core::temporal::with_statement_clock(self.sql_clock, || {
+            self.execute_profiled_relational_sql_at_clock(
+                prepared,
+                parameters,
+                max_rows,
+                max_payload_bytes,
+                task_context,
+                join_planning,
+            )
+        })
+    }
+
+    fn execute_profiled_relational_sql_at_clock(
         &self,
         prepared: crate::relational_sql::PreparedRelationalSql,
         parameters: &[Value],

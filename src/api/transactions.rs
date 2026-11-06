@@ -110,6 +110,7 @@ impl DatabaseTransactionState {
                 .store
                 .begin_authoritative_relational_transaction_rows()
                 .map_err(|error| error.to_string()),
+            sql_clock: hawdb_core::temporal::statement_now(),
         })
     }
 
@@ -147,6 +148,7 @@ impl DatabaseTransactionState {
             relational_returning: std::mem::take(&mut self.relational_returning),
             relational_index: std::mem::replace(&mut self.relational_index, Ok(None)),
             relational_rows: std::mem::replace(&mut self.relational_rows, Ok(None)),
+            sql_clock: self.sql_clock,
         }
     }
 
@@ -744,7 +746,24 @@ pub(super) struct DatabaseTransactionSqlOptions<'a> {
     pub(super) join_planning: RelationalJoinPlanningDirective,
 }
 
+/// Executes one SQL statement of a transaction with the statement clock
+/// pinned to the transaction start (PostgreSQL `transaction_timestamp()`).
 pub(super) fn execute_database_transaction_prepared_sql(
+    runtime: &DatabaseTransactionRuntime,
+    state: &mut DatabaseTransactionState,
+    sql_text: &str,
+    prepared: crate::relational_sql::PreparedRelationalSql,
+    parameters: &[Value],
+    options: DatabaseTransactionSqlOptions<'_>,
+) -> Result<SqlStatementResult> {
+    hawdb_core::temporal::with_statement_clock(state.sql_clock, || {
+        execute_database_transaction_prepared_sql_at_clock(
+            runtime, state, sql_text, prepared, parameters, options,
+        )
+    })
+}
+
+fn execute_database_transaction_prepared_sql_at_clock(
     runtime: &DatabaseTransactionRuntime,
     state: &mut DatabaseTransactionState,
     sql_text: &str,

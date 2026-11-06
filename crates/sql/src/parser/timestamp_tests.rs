@@ -100,3 +100,74 @@ fn timestamp_literals_and_casts_lower_to_host_values() {
         assert!(parse_postgres_sql(sql).is_err(), "{sql}");
     }
 }
+
+#[test]
+fn clock_functions_lower_to_per_execution_constants_and_defaults() {
+    let SqlStatement::Select(select) = parse_postgres_sql(
+        "SELECT CURRENT_TIMESTAMP, current_timestamp(3), now(), LOCALTIMESTAMP(0), \"now\"",
+    )
+    .unwrap() else {
+        panic!("SELECT")
+    };
+    let kinds = select
+        .projection
+        .iter()
+        .map(|projection| {
+            let SelectProjection::Expression { expression, .. } = projection else {
+                panic!("expression")
+            };
+            match &expression.kind {
+                ExprKind::Value(SqlValue::Expression(inner)) => match inner.kind {
+                    ExprKind::CurrentTimestamp(kind) => Some(kind),
+                    _ => panic!("clock expression"),
+                },
+                ExprKind::Column(_) => None,
+                other => panic!("unexpected {other:?}"),
+            }
+        })
+        .collect::<Vec<_>>();
+    let clock = |zoned, precision| {
+        Some(TimestampType {
+            zoned,
+            precision: TimestampPrecision::new(precision).unwrap(),
+        })
+    };
+    assert_eq!(
+        kinds,
+        vec![
+            clock(true, 6),
+            clock(true, 3),
+            clock(true, 6),
+            clock(false, 0),
+            None
+        ]
+    );
+    let SqlStatement::CreateTable(create) = parse_postgres_sql(
+        "CREATE TABLE t (a TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP(2), b TIMESTAMP DEFAULT LOCALTIMESTAMP, \
+         c TIMESTAMPTZ DEFAULT now())",
+    )
+    .unwrap() else {
+        panic!("CREATE TABLE")
+    };
+    let defaults = create
+        .columns
+        .iter()
+        .map(|column| column.default.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        defaults,
+        vec![
+            Some(SqlColumnDefault::CurrentTimestamp(clock(true, 2).unwrap())),
+            Some(SqlColumnDefault::CurrentTimestamp(clock(false, 6).unwrap())),
+            Some(SqlColumnDefault::CurrentTimestamp(clock(true, 6).unwrap())),
+        ]
+    );
+    for sql in [
+        "SELECT CURRENT_TIMESTAMP(7)",
+        "SELECT CURRENT_TIMESTAMP()",
+        "SELECT now(1)",
+        "CREATE TABLE t (a TEXT DEFAULT CAST(now() AS TEXT))",
+    ] {
+        assert!(parse_postgres_sql(sql).is_err(), "{sql}");
+    }
+}

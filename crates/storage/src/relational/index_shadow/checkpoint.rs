@@ -58,6 +58,10 @@ pub(in crate::relational) fn relational_schema_digest_with_work_context(
                 output.value(value)?;
             }
             Some(RelationalColumnDefault::UuidV7) => output.update(&[2])?,
+            Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+                output.update(&[3])?;
+                output.update(&crate::relational::clock_default_bytes(*kind))?;
+            }
         }
     }
     output.strings(&schema.primary_key)?;

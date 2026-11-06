@@ -201,6 +201,9 @@ pub fn compile_column(column: SqlColumnDefinition) -> Result<RelationalColumnSch
                     compile_schema_value(value, scalar_type).map(RelationalColumnDefault::Literal)
                 }
                 SqlColumnDefault::UuidV7 => Ok(RelationalColumnDefault::UuidV7),
+                SqlColumnDefault::CurrentTimestamp(kind) => {
+                    Ok(RelationalColumnDefault::CurrentTimestamp(kind))
+                }
             })
             .transpose()?,
     })

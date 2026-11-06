@@ -608,7 +608,7 @@ fn collect_expression_hydration_columns(
             }
         }
         Expr {
-            kind: ExprKind::Value(_),
+            kind: ExprKind::Value(_) | ExprKind::CurrentTimestamp(_),
             ..
         } => {}
         Expr {

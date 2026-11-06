@@ -999,6 +999,12 @@ fn validate_table_schema_visiting(
                         column.name
                     )));
                 }
+                RelationalColumnDefault::CurrentTimestamp(_) => {
+                    return Err(AppendTableError::Schema(format!(
+                        "append table column {} does not support clock defaults",
+                        column.name
+                    )));
+                }
             }
         }
     }

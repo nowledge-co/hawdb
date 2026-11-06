@@ -252,10 +252,50 @@ Deviations from PostgreSQL:
   Timestamp casts of columns inside `WHERE`, `HAVING` or `UPDATE` arithmetic are
   not supported; cast the constant operand instead.
 - `DATE`, `TIME` and `INTERVAL` types and literals, interval arithmetic,
-  `EXTRACT`/`date_part`/`date_trunc`, `CURRENT_TIMESTAMP`, `LOCALTIMESTAMP` and
-  `now()` are not supported yet.
+  `EXTRACT`/`date_part`/`date_trunc`, `CURRENT_DATE`, `CURRENT_TIME`,
+  `statement_timestamp()` and `clock_timestamp()` are not supported yet.
+- `LOCALTIMESTAMP` is the UTC wall-clock time, and comparing a `TIMESTAMP`
+  column with `CURRENT_TIMESTAMP` needs a cast (use `LOCALTIMESTAMP`).
+- `ALTER TABLE … ADD COLUMN` with a clock default is refused on a non-empty
+  table (PostgreSQL fills existing rows with the transaction time).
 - SQL/PGQ property graphs refuse timestamp columns as properties and refuse
   timestamp literals and time-zone casts in property expressions.
+
+### Current date and time
+
+`CURRENT_TIMESTAMP[(p)]` and `now()` return `TIMESTAMPTZ`; `LOCALTIMESTAMP[(p)]`
+returns `TIMESTAMP` (the UTC wall-clock time, since there is no session time
+zone). As in PostgreSQL's
+[current date/time functions](https://www.postgresql.org/docs/18/functions-datetime.html#FUNCTIONS-DATETIME-CURRENT),
+the value is the start time of the current transaction and does not change
+within it: an explicit read or write transaction captures one instant when it
+begins and pins it as the statement clock for each SQL statement, and an
+auto-commit statement uses its own start time. The optional precision rounds
+like a `TIMESTAMP(p)` assignment. A quoted `"current_timestamp"` stays a column
+name.
+
+The functions lower to a constant expression bound from the pinned clock on
+every execution. Cached statement templates never contain the instant, so a
+reused template returns a fresh value, and the bound value reaches `VALUES`,
+projections, `WHERE`, `UPDATE … SET` and index bounds: `WHERE due >
+CURRENT_TIMESTAMP` range-seeks an index on a `TIMESTAMPTZ` column.
+
+`DEFAULT CURRENT_TIMESTAMP[(p)]`, `DEFAULT now()` and `DEFAULT
+LOCALTIMESTAMP[(p)]` are clock column defaults on `TIMESTAMP` or
+`TIMESTAMPTZ` columns. They are materialized for each inserted row before the
+row is written, then converted and rounded to the column's type, so WAL replay
+and checkpoints keep the recorded instant. A clock function nested inside a
+larger default expression is rejected, as are clock defaults on append tables.
+
+SQL and Cypher keep separate clocks inside one HawDB transaction. SQL follows
+PostgreSQL's transaction clock. Cypher `datetime()`, `localdatetime()` and the
+other zero-argument constructors keep the per-statement clock from
+[Cypher temporal types](../CYPHER_TEMPORAL.md), which matches Neo4j, whose
+[temporal instant functions](https://neo4j.com/docs/cypher-manual/current/functions/temporal/)
+default to the statement clock and expose the transaction clock only through the
+explicit `datetime.transaction()` family. Driving Cypher from the SQL transaction
+clock would silently change existing Cypher results and diverge from Neo4j. A
+later `datetime.transaction()` can read the same transaction instant.
 
 Persistence uses new additive tags with an 8-byte little-endian payload: value tag
 10 (`TIMESTAMP`) and 11 (`TIMESTAMPTZ`) in row pages, relational WAL and
@@ -270,7 +310,10 @@ released before this change report that as an invalid tag (for example
 changed. From this change on, the relational schema, value, row-page,
 column-default and ordered-key decoders say that an unknown tag is "corrupt, or
 written by a newer HawDB". Decoders treat an out-of-range microsecond count or
-precision as corruption.
+precision as corruption. Clock defaults
+add column default tag 3, followed by a zoned flag byte (0 or 1) and the
+precision byte, in relational WAL/checkpoint schemas and index-shadow digests;
+older binaries reject it as an unknown default tag.
 
 ## Property Graph Catalog
 

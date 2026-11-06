@@ -259,6 +259,20 @@ impl TimestampType {
     }
 }
 
+/// `CURRENT_TIMESTAMP[(p)]` / `now()` (zoned) and `LOCALTIMESTAMP[(p)]`
+/// (local): the pinned statement clock (see
+/// [`crate::temporal::statement_now`]) rounded to `kind`'s precision. HawDB
+/// pins the clock to the transaction start for every SQL statement of a
+/// transaction, so all reads in one transaction agree, as in PostgreSQL.
+/// `LOCALTIMESTAMP` is the UTC wall-clock time because HawDB has no session
+/// time zone.
+pub fn current_timestamp(kind: TimestampType) -> Result<Value> {
+    let micros = kind.precision.round(from_datetime(
+        crate::temporal::statement_now().fixed_offset(),
+    )?)?;
+    kind.value(micros)
+}
+
 /// An explicit `CAST` between TEXT and the SQL timestamp types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimestampCast {
