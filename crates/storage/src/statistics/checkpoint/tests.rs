@@ -90,6 +90,10 @@ fn checkpoint_units_statistics_preserve_complete_counts_paths_and_late_exclusion
     assert_eq!(actual.node_count, 4);
     assert_eq!(actual.relationship_count, 3);
     assert_eq!(actual.computed_at_commit_epoch, 73);
+    assert!(actual.property_distributions[&(LabelId(0), "rank".into())].is_valid());
+    assert!(!actual
+        .property_distributions
+        .contains_key(&(LabelId(0), "late".into())));
     assert_eq!(
         actual.property_histograms[&(LabelId(0), "rank".into())],
         (0..4).map(Value::Int).collect::<Vec<_>>()
@@ -177,6 +181,7 @@ fn checkpoint_units_statistics_cancel_records_exclusion_and_path_visits_then_ret
         7,
         &Value::List(vec![]),
         false,
+        &mut distribution::PropertyValueBudget::default(),
         &probe.context(scheduler.clone()),
     ));
     assert!(excluded.contains(&7));

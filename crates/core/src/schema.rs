@@ -318,6 +318,8 @@ pub struct GraphStatistics {
     pub rel_property_histograms: BTreeMap<(RelTypeId, String), Vec<Value>>,
     pub sampled_property_histograms: BTreeMap<(LabelId, String), bool>,
     pub sampled_rel_property_histograms: BTreeMap<(RelTypeId, String), bool>,
+    pub property_distributions: BTreeMap<(LabelId, String), crate::CompressedHistogram>,
+    pub rel_property_distributions: BTreeMap<(RelTypeId, String), crate::CompressedHistogram>,
 }
 
 impl GraphStatistics {

@@ -62,10 +62,75 @@ pub(super) fn estimate_filter_rows(
         *statistics = estimate.statistics;
         return estimate.rows.max(1);
     }
-    estimate_relationship_filter_rows(predicate, input, input_rows, catalog, bindings)
+    if let Some(estimate) = distribution_filter_estimate(predicate, bindings, input_rows, catalog) {
+        *statistics = Some(StatisticsUsage::distribution(estimate));
+        return estimate.rows.max(1);
+    }
+    let rows = estimate_relationship_filter_rows(predicate, input, input_rows, catalog, bindings)
         .or_else(|| estimate_node_property_filter_rows(predicate, bindings, input_rows, catalog))
         .unwrap_or_else(|| input_rows.div_ceil(FILTER_SELECTIVITY_DIVISOR).max(1))
-        .max(1)
+        .max(1);
+    if let Predicate::And(parts) = predicate {
+        *statistics = parts
+            .iter()
+            .find_map(|part| distribution_filter_estimate(part, bindings, input_rows, catalog))
+            .map(StatisticsUsage::distribution);
+    }
+    rows
+}
+
+fn distribution_filter_estimate(
+    predicate: &Predicate,
+    bindings: &PlanBindings<'_>,
+    input_rows: u64,
+    catalog: &OptimizerCatalog,
+) -> Option<hawdb_core::PropertyCardinalityEstimate> {
+    let (variable, property) = match predicate {
+        Predicate::PropertyEq {
+            variable, property, ..
+        }
+        | Predicate::PropertyCompare {
+            variable, property, ..
+        }
+        | Predicate::PropertyIsNull { variable, property }
+        | Predicate::PropertyIsNotNull { variable, property } => (variable, property),
+        _ => return None,
+    };
+    if bindings.covers_property(variable, property) {
+        return None;
+    }
+    let label = bindings.node_label(variable)?;
+    let histogram = catalog.property_distribution(label, property)?;
+    match predicate {
+        Predicate::PropertyEq { value, .. } => {
+            catalog.property_equality_estimate(label, property, value, input_rows)
+        }
+        Predicate::PropertyIsNull { .. } => Some(histogram.nulls(input_rows)),
+        Predicate::PropertyIsNotNull { .. } => {
+            let mut estimate = histogram.nulls(input_rows);
+            estimate.rows = input_rows.saturating_sub(estimate.rows);
+            Some(estimate)
+        }
+        Predicate::PropertyCompare { op, value, .. } => {
+            let (lower, upper) =
+                super::value_range::range_bounds_for_comparison(*op, value.clone());
+            let rows = catalog.distribution_range_rows(
+                label,
+                property,
+                lower.as_ref(),
+                upper.as_ref(),
+                input_rows,
+                false,
+            )?;
+            Some(hawdb_core::PropertyCardinalityEstimate {
+                rows,
+                source: hawdb_core::PropertyEstimateSource::CompressedHistogram,
+                sample_size: histogram.sample_size,
+                population_count: histogram.population_count,
+            })
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn estimate_hash_join_rows(
@@ -304,16 +369,18 @@ fn estimate_node_property_filter_rows(
             } else if input.covers_property(variable, property) {
                 None
             } else {
-                input
-                    .node_label(variable)
-                    .map(|label| catalog.estimate_property_eq_rows(label, property, input_rows))
+                input.node_label(variable).map(|label| {
+                    catalog.estimate_property_value_rows(label, property, value, input_rows)
+                })
             }
         }
         Predicate::PropertyNotEq {
-            variable, property, ..
-        } => input
-            .node_label(variable)
-            .map(|label| catalog.estimate_property_not_eq_rows(label, property, input_rows)),
+            variable,
+            property,
+            value,
+        } => input.node_label(variable).map(|label| {
+            catalog.estimate_property_not_value_rows(label, property, value, input_rows)
+        }),
         Predicate::PropertyCompare {
             variable,
             property,
@@ -457,7 +524,9 @@ fn estimate_relationship_filter_rows(
             .relationship_type(variable)
             .map(|_| estimate_id_in_rows(values, input_rows)),
         Predicate::PropertyEq {
-            variable, property, ..
+            variable,
+            property,
+            value,
         } => estimate_relationship_property_filter_rows(
             input,
             variable,
@@ -465,11 +534,13 @@ fn estimate_relationship_filter_rows(
             input_rows,
             catalog,
             |catalog, rel_type, property, rows| {
-                catalog.estimate_rel_property_eq_rows(rel_type, property, rows)
+                catalog.estimate_rel_property_value_rows(rel_type, property, value, rows)
             },
         ),
         Predicate::PropertyNotEq {
-            variable, property, ..
+            variable,
+            property,
+            value,
         } => estimate_relationship_property_filter_rows(
             input,
             variable,
@@ -477,7 +548,7 @@ fn estimate_relationship_filter_rows(
             input_rows,
             catalog,
             |catalog, rel_type, property, rows| {
-                catalog.estimate_rel_property_not_eq_rows(rel_type, property, rows)
+                catalog.estimate_rel_property_not_value_rows(rel_type, property, value, rows)
             },
         ),
         Predicate::PropertyCompare {

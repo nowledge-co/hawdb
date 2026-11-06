@@ -334,6 +334,22 @@ pub(crate) fn encode_checkpoint_body_with_work_context<'a>(
             encode_bool(*sampled)
         ))?;
     }
+    for ((label, property), distribution) in &statistics.property_distributions {
+        body.write(format_args!(
+            "stat_property_distribution\t{}\t{}\t{}\n",
+            label.0,
+            encode_string(property)?,
+            crate::statistics::distribution::encode(distribution)?
+        ))?;
+    }
+    for ((rel_type, property), distribution) in &statistics.rel_property_distributions {
+        body.write(format_args!(
+            "stat_rel_property_distribution\t{}\t{}\t{}\n",
+            rel_type.0,
+            encode_string(property)?,
+            crate::statistics::distribution::encode(distribution)?
+        ))?;
+    }
     for (name, definition) in image.projected_graphs {
         body.write(format_args!(
             "project_graph\t{}\t{}\t{}\t",

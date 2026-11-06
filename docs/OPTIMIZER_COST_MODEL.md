@@ -95,9 +95,17 @@ contracts for consumers without descriptors; runtime planning uses descriptors.
 Graph access ranking and final costing share raw access helpers. A node index
 seek charges candidate CPU visits plus random candidate/startup work. Scans
 retain sequential work. This changes some scan/index thresholds and reported
-costs; cardinality estimators, residual predicates, order requirements and
-limit placement are unchanged. The indexed-memory golden keeps the same plan
+costs; order requirements and limit placement retain their own contracts.
+The indexed-memory golden keeps the same plan
 and changes only its cost line (total 4 to 6, CPU 1 to 2, random work 3 to 2).
+
+[Compressed property histograms](COMPRESSED_HISTOGRAMS.md) provide a shared
+value-aware cardinality input for graph start selection, access ranking,
+residual predicates and final costing. They preserve duplicate frequencies,
+separate MCV and residual mass, and retain exact point-count precedence. Bound
+parameter values also participate in physical-cache identity within explicit
+byte/entry limits. This changes skew-sensitive graph plan choices without
+changing the logical cost weights or claiming hardware calibration.
 
 ## Verification surfaces
 

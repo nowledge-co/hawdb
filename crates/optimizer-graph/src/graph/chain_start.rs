@@ -306,6 +306,17 @@ impl<'a> Chain<'a> {
                         _ => None,
                     })
                     .collect(),
+                values: conjuncts
+                    .iter()
+                    .filter_map(|conjunct| match conjunct {
+                        Predicate::PropertyEq {
+                            variable,
+                            property,
+                            value,
+                        } if variable == node.variable => Some((property.as_str(), value)),
+                        _ => None,
+                    })
+                    .collect(),
                 bound: false,
             })
             .collect::<Vec<_>>();
@@ -315,6 +326,11 @@ impl<'a> Chain<'a> {
             .map(|expand| PathEdge {
                 rel_type: (!expand.rel_type.is_empty()).then_some(expand.rel_type),
                 equalities: expand.rel_properties.keys().map(String::as_str).collect(),
+                values: expand
+                    .rel_properties
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value))
+                    .collect(),
                 direction: expand.direction,
                 min_hops: expand.min_hops,
                 max_hops: expand.max_hops,

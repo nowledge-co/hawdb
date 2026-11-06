@@ -723,6 +723,71 @@ pub fn parameter_scalar_types(
     output
 }
 
+/// Bounded marker bindings used only for value-sensitive cost estimates.
+/// The ordinary proven template still owns executable parameter rebinding.
+#[doc(hidden)]
+pub fn parameter_statistics_values(
+    plan: &ParameterizedLogicalPlan,
+    parameters: &BTreeMap<String, Value>,
+) -> Option<BTreeMap<Value, Value>> {
+    use hawdb_core::RetainedHeapBytes;
+    const MAX_BYTES: usize = 64 * 1024;
+    const MAX_VALUES: usize = 256;
+    fn visit(
+        name: &str,
+        value: &Value,
+        path: &mut Vec<usize>,
+        output: &mut BTreeMap<Value, Value>,
+        bytes: &mut usize,
+    ) -> Option<()> {
+        if let Value::List(values) = value {
+            for (index, value) in values.iter().enumerate() {
+                path.push(index);
+                visit(name, value, path, output, bytes)?;
+                path.pop();
+            }
+        } else if matches!(
+            value,
+            Value::Null
+                | Value::Bool(_)
+                | Value::Int(_)
+                | Value::Float(_)
+                | Value::String(_)
+                | Value::Uuid(_)
+                | Value::Date(_)
+                | Value::LocalTime(_)
+                | Value::LocalDateTime(_)
+                | Value::DateTime(_)
+        ) {
+            if output.len() >= MAX_VALUES {
+                return None;
+            }
+            let marker = parameter_marker(name, value, path);
+            let charge = value
+                .retained_heap_bytes()?
+                .checked_add(marker.retained_heap_bytes()?)?
+                .checked_add(192)?;
+            *bytes = bytes.checked_add(charge)?;
+            if *bytes > MAX_BYTES {
+                return None;
+            }
+            output.insert(marker, value.clone());
+        }
+        Some(())
+    }
+    if plan.slot_count() == 0 {
+        return Some(BTreeMap::new());
+    }
+    let mut output = BTreeMap::new();
+    let mut bytes = 0;
+    for name in plan.cache_key.values.keys() {
+        if let Some(value) = parameters.get(name) {
+            visit(name, value, &mut Vec::new(), &mut output, &mut bytes)?;
+        }
+    }
+    Some(output)
+}
+
 fn parameter_value_shape(value: &Value) -> ParameterValueShape {
     match value {
         Value::Null => ParameterValueShape::Null,
@@ -1970,9 +2035,9 @@ fn bind_value(value: &mut Value, parameters: BindingAction<'_>) -> Result<()> {
 mod tests {
     use super::{
         bind_physical_plan_parameters, marker_use_in_logical_plan, parameter_marker,
-        parameter_scalar_types, parameter_value_shape, parameterize_logical_plan,
-        resolve_plan_template_value, MarkerUse, ParameterCacheValue, PARAMETER_SLOT_NAME_KEY,
-        PARAMETER_SLOT_PATH_KEY,
+        parameter_scalar_types, parameter_statistics_values, parameter_value_shape,
+        parameterize_logical_plan, resolve_plan_template_value, MarkerUse, ParameterCacheValue,
+        PARAMETER_SLOT_NAME_KEY, PARAMETER_SLOT_PATH_KEY,
     };
     use hawdb_core::Value;
     use hawdb_cypher as cypher;
@@ -2359,6 +2424,30 @@ mod tests {
             parameter_value_shape(&parameters["rank"]),
             parameter_value_shape(&changed["rank"])
         );
+    }
+
+    #[test]
+    fn statistics_bindings_use_proven_markers_and_decline_large_payloads() {
+        let statement =
+            cypher::parse("MATCH (m:Memory) WHERE m.space = $space RETURN m.id").unwrap();
+        let parameters = BTreeMap::from([("space".into(), Value::String("hot".into()))]);
+        let plan = parameterize_logical_plan(&statement, &parameters).unwrap();
+        let bindings = parameter_statistics_values(&plan, &parameters).unwrap();
+        assert_eq!(bindings.len(), 1);
+        for (marker, value) in bindings {
+            assert_eq!(
+                resolve_plan_template_value(&marker, &parameters, true).unwrap(),
+                &value
+            );
+        }
+        let large = BTreeMap::from([("space".into(), Value::String("x".repeat(65_536)))]);
+        let plan = parameterize_logical_plan(&statement, &large).unwrap();
+        assert!(parameter_statistics_values(&plan, &large).is_none());
+        let list_statement =
+            cypher::parse("MATCH (m:Memory) WHERE m.space IN $spaces RETURN m.id").unwrap();
+        let parameters = BTreeMap::from([("spaces".into(), Value::List(vec![Value::Int(1); 257]))]);
+        let plan = parameterize_logical_plan(&list_statement, &parameters).unwrap();
+        assert!(parameter_statistics_values(&plan, &parameters).is_none());
     }
 
     #[test]

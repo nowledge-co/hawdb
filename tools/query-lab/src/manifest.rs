@@ -11,6 +11,19 @@ use std::path::Path;
 
 pub const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Frontend {
+    #[default]
+    Sql,
+    Cypher,
+}
+impl Frontend {
+    fn is_sql(&self) -> bool {
+        *self == Self::Sql
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cell {
@@ -25,6 +38,8 @@ pub struct Cell {
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub protocol: String,
+    #[serde(default, skip_serializing_if = "Frontend::is_sql")]
+    pub frontend: Frontend,
     pub seed: u64,
     pub limits: Limits,
     pub fixture: Fixture,
@@ -90,6 +105,7 @@ impl Frozen {
         }
         Self::seal(Manifest {
             protocol: smith::PROTOCOL.into(),
+            frontend: Frontend::Sql,
             seed,
             limits,
             fixture,
@@ -108,6 +124,7 @@ impl Frozen {
         let workload = cardinality::generate(seed, rows)?;
         Self::seal(Manifest {
             protocol: cardinality::PROTOCOL.into(),
+            frontend: Frontend::Sql,
             seed,
             limits: Limits {
                 max_output_rows: 1024,
@@ -136,6 +153,25 @@ impl Frozen {
             schedule_seed: seed ^ 0x5eed,
         })
     }
+    pub fn graph_statistics(seed: u64, rows: usize) -> Result<Self, String> {
+        let mut frozen = Self::cardinality(seed, 128)?;
+        let workload = query_workloads::compressed_statistics::generate(seed, rows)?;
+        frozen.manifest.protocol = query_workloads::compressed_statistics::PROTOCOL.into();
+        frozen.manifest.frontend = Frontend::Cypher;
+        frozen.manifest.fixture = workload.fixture;
+        frozen.manifest.cells = workload
+            .cases
+            .into_iter()
+            .map(|(case, metadata)| Cell {
+                index: case.index,
+                mode: case.mode,
+                case: Some(case),
+                refusal: None,
+                cardinality: Some(metadata),
+            })
+            .collect();
+        Self::seal(frozen.manifest)
+    }
     pub fn seal(manifest: Manifest) -> Result<Self, String> {
         let sha256 = digest(&serde_json::to_vec(&manifest).map_err(|e| e.to_string())?);
         let frozen = Self { sha256, manifest };
@@ -145,7 +181,10 @@ impl Frozen {
     pub fn validate(&self) -> Result<(), String> {
         let m = &self.manifest;
         m.limits.validate()?;
-        if (m.protocol != smith::PROTOCOL && m.protocol != cardinality::PROTOCOL)
+        let graph = m.protocol == query_workloads::compressed_statistics::PROTOCOL;
+        if (m.protocol != smith::PROTOCOL && m.protocol != cardinality::PROTOCOL && !graph)
+            || (graph != (m.frontend == Frontend::Cypher))
+            || (graph && !(64..=1024).contains(&m.fixture.rows))
             || m.cells.is_empty()
             || m.cells.len() > 1024
             || !(8..=100_000).contains(&m.fixture.rows)
@@ -165,8 +204,9 @@ impl Frozen {
         let mut ce_ids = std::collections::BTreeSet::new();
         for cell in &m.cells {
             match (&cell.cardinality, m.protocol.as_str()) {
-                (Some(meta), cardinality::PROTOCOL)
-                    if cell.mode == Mode::Template
+                (Some(meta), _)
+                    if (m.protocol == cardinality::PROTOCOL || graph)
+                        && cell.mode == Mode::Template
                         && cell.case.is_some()
                         && !meta.id.is_empty()
                         && meta.id.len() <= 256
@@ -185,6 +225,15 @@ impl Frozen {
             }
             if !ids.insert((cell.index, format!("{:?}", cell.mode))) {
                 return Err("duplicate manifest cell".into());
+            }
+            if graph
+                && cell.case.as_ref().is_none_or(|case| {
+                    !query_workloads::compressed_statistics::complete_query(&case.statement.sql)
+                })
+            {
+                return Err(
+                    "graph statistics manifest requires a complete-read query skeleton".into(),
+                );
             }
             match (&cell.case, &cell.refusal) {
                 (Some(c), None)

@@ -81,6 +81,7 @@ impl_retained_heap_for_copy!(
 
 impl_retained_heap_for_copy!(
     crate::LabelId,
+    crate::RelTypeId,
     crate::TableId,
     crate::PropertyId,
     crate::PropertyType,

@@ -604,7 +604,36 @@ fn check_seed(seed: u64) {
         for record in &records {
             writer.push(record.clone()).unwrap();
         }
-        let (actual, report) = writer.finish(base_statistics()).unwrap();
+        let (mut actual, report) = writer.finish(base_statistics()).unwrap();
+        let frequencies = records
+            .iter()
+            .filter_map(|record| match record {
+                StatsRecord::NodeProperty { value, .. } => Some(value),
+                _ => None,
+            })
+            .fold(BTreeMap::<&Value, u64>::new(), |mut counts, value| {
+                *counts.entry(value).or_default() += 1;
+                counts
+            });
+        let observed = frequencies.values().sum::<u64>();
+        let distribution = actual
+            .property_distributions
+            .get(&(LabelId(0), "score".into()));
+        if memory == 256 * 1024 {
+            let distribution = distribution.expect("the larger budget admits the node row sample");
+            assert!(distribution.is_valid() && distribution.is_sampled());
+            assert_eq!(distribution.non_null_count, observed);
+            assert_eq!(distribution.missing_count, 512 - observed);
+            assert_eq!(distribution.null_count, 0);
+            for value in distribution.most_common.iter() {
+                assert!(value.sample_count <= frequencies[&value.value]);
+            }
+        }
+        // This legacy fact fixture deliberately duplicates relationship facts
+        // beyond its basic population; no derived row distribution is valid.
+        assert!(actual.rel_property_distributions.is_empty());
+        actual.property_distributions.clear();
+        actual.rel_property_distributions.clear();
         assert_eq!(actual, expected, "seed={seed}, memory={memory}");
         assert_eq!(report.generated_facts, records.len() as u64);
         assert_eq!(report.spill_run_count > 1, memory == 16 * 1024);

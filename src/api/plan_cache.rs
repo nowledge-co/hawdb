@@ -40,8 +40,8 @@ use hawdb_optimizer::graph::{
 #[cfg(test)]
 use hawdb_plan_cache::ParameterBindingTemplate;
 use hawdb_plan_cache::{
-    bind_physical_plan_parameters, parameter_scalar_types, parameterize_logical_plan,
-    parameterize_value_list, prepare_physical_plan_for_cache,
+    bind_physical_plan_parameters, parameter_scalar_types, parameter_statistics_values,
+    parameterize_logical_plan, parameterize_value_list, prepare_physical_plan_for_cache,
     prepare_physical_regexes_for_execution, resolve_plan_template_value, LfuCache,
     OptimizerSchemaKey, ParameterBindingCache, ParameterBindingCacheConfig,
     ParameterizedLogicalPlan, PlanParameterCacheKey,
@@ -128,6 +128,7 @@ pub(super) struct PlanCacheKey {
     access_control: Option<AccessControlPlanCacheKey>,
     scoring: Option<ScoringPlanCacheKey>,
     point_statistics: Option<PointStatisticsKey>,
+    statistics_values: BTreeMap<Value, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -838,6 +839,23 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
                 .is_some_and(|plan| tracks_property_proofs(plan.logical())),
         )
     });
+    let statistics_values = if point_statistics.is_none()
+        && context
+            .planning_cache
+            .borrow()
+            .statistics
+            .as_ref()
+            .is_some_and(|statistics| {
+                !statistics.property_distributions.is_empty()
+                    || !statistics.rel_property_distributions.is_empty()
+            }) {
+        parameterized
+            .as_ref()
+            .and_then(|plan| parameter_statistics_values(plan, parameters))
+            .unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
     let mut key = parameterized
         .as_ref()
         .filter(|_| physical_cache_mode == PlanCacheMode::Use)
@@ -851,6 +869,7 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
             access_control: access_control_cache_key,
             scoring: context.scoring.map(BoundScoringRequest::cache_key),
             point_statistics: point_statistics.as_ref().map(PointStatisticsKey::from),
+            statistics_values: statistics_values.clone(),
         });
     if physical_cache_mode == PlanCacheMode::Use {
         let key = key.as_ref().expect("cache key exists in use mode");
@@ -928,18 +947,19 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
     let has_parameter_slots = parameterized
         .as_ref()
         .is_some_and(|plan| plan.slot_count() > 0);
-    let query_catalog = (has_parameter_slots
+    let needs_type_proofs = has_parameter_slots
         && catalog_access
             .environment
             .ordered_composite_indexes
             .as_ref()
             .is_some_and(|proofs| !proofs.is_empty())
-        && ordered_query_shape(&logical))
-    .then(|| {
+        && ordered_query_shape(&logical);
+    let query_catalog = (needs_type_proofs || !statistics_values.is_empty()).then(|| {
         catalog_access
             .catalog
             .as_ref()
             .clone()
+            .with_statistics_parameter_values(statistics_values.clone())
             .with_parameter_scalar_types(parameter_scalar_types(
                 parameterized
                     .as_ref()
@@ -2869,7 +2889,8 @@ hawdb_core::impl_retained_heap_for_struct!(PlanCacheKey {
     max_optimizer_groups,
     access_control,
     scoring,
-    point_statistics
+    point_statistics,
+    statistics_values
 });
 
 // Retained query ownership: PointStatisticsKey.
