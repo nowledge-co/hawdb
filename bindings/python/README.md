@@ -451,6 +451,16 @@ with at most 38 coefficient digits and scale 0 through 38; invalid or
 out-of-range decimals raise `ValueError`. Results return `decimal.Decimal`
 without conversion through a Python float, retaining stored scale. Decimal
 does not have an experimental retained numeric buffer representation.
+`datetime.date`, naive `datetime.time`, `datetime.timedelta` and naive or aware
+`datetime.datetime` values are temporal parameters. In SQL a naive `datetime`
+binds as `TIMESTAMP` and an aware one as `TIMESTAMPTZ`, stored as its UTC
+instant whatever its zone; comparing a `TIMESTAMP` column with an aware value
+(or the reverse) needs a SQL `CAST`, and dates, times and durations are not SQL
+values. `execute`, `execute_sql` and transactions return temporal results as
+single-key tagged dicts with ISO 8601 text, such as
+`{"$localdatetime": "2026-11-05T12:00:00.123456"}` for `TIMESTAMP` and
+`{"$datetime": "2026-11-05T12:00:00Z"}` for `TIMESTAMPTZ`; DB-API cursors
+convert SQL timestamps to `datetime` (see below).
 Any other type, including `Fraction` or NumPy
 `longdouble`, raises `TypeError`; convert such values explicitly, for example
 with `float(x)`. Deeper nesting, including a list or dict that contains
@@ -518,7 +528,11 @@ when nothing matches, including queries on `information_schema`, `pg_catalog`
 and `system`. Catalog wildcards expand in the catalog's declared column order.
 SQL `EXPLAIN` reports `id, estRows, task, access object, operator info`;
 `EXPLAIN ANALYZE` reports `id, estRows, actRows, task, access object, execution info,
-operator info, memory, disk`. `pandas.read_sql` works, with a
+operator info, memory, disk`. `TIMESTAMP` columns fetch as naive
+`datetime.datetime` values and `TIMESTAMPTZ` columns as aware UTC ones, losslessly
+at HawDB's microsecond precision, and their `description` type code equals
+`hawdb.dbapi.DATETIME`; a value outside Python's year range stays a tagged dict.
+`pandas.read_sql` works, with a
 warning that pandas only tests SQLAlchemy and sqlite3 connections.
 `help(hawdb.dbapi)` gives the full contract.
 

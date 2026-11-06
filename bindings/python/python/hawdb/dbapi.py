@@ -60,10 +60,18 @@ list. ``description`` holds one seven-item tuple per column, also when no
 row matches: the name, a type code and five ``None``. The type code is the
 Python type of the column's first non-null value, or ``None`` when there is
 none. ``STRING`` equals ``str``, ``BINARY`` equals ``bytes`` and ``NUMBER``
-equals ``int`` and ``float``; booleans and vectors match none of them. DDL
+equals ``int`` and ``float`` and ``DATETIME`` equals ``datetime.datetime``
+(and ``date``/``time``); booleans and vectors match none of them. DDL
 and every INSERT, UPDATE and DELETE leave ``description`` as ``None`` and
 ``rowcount`` as -1, since the binding does not report affected rows, and
 fetching from them returns no rows.
+
+``TIMESTAMP`` values arrive as naive ``datetime.datetime`` objects and
+``TIMESTAMPTZ`` values as aware ones in UTC. Both are microsecond-exact, so the
+conversion is lossless. Only cursors convert: ``Database.execute_sql`` and
+Cypher keep the binding's tagged dicts (``{"$localdatetime": ...}``,
+``{"$datetime": ...}``). A value Python cannot represent, such as a year
+outside 1..9999, stays a tagged dict.
 
 Catalog queries (``information_schema``, ``pg_catalog`` and ``system``)
 also preserve SELECT-list order and empty-result descriptions; wildcards
@@ -401,9 +409,9 @@ class _TypeObject:
 STRING = _TypeObject("STRING", str)
 BINARY = _TypeObject("BINARY", bytes)
 NUMBER = _TypeObject("NUMBER", int, float)
-# The binding returns no temporal values and HawDB exposes no row ids, so
-# these two never match; they exist for code that maps description types.
+# Cursors return TIMESTAMP/TIMESTAMPTZ columns as datetime.datetime.
 DATETIME = _TypeObject("DATETIME", datetime.date, datetime.datetime, datetime.time)
+# HawDB exposes no row ids; ROWID never matches.
 ROWID = _TypeObject("ROWID")
 
 Binary = bytes
@@ -614,7 +622,7 @@ class Cursor:
         result = self.connection._execute(operation, bound)
         columns = result.columns
         # The binding fills each row dict in column order.
-        rows = [tuple(row.values()) for row in result.fetchall()]
+        rows = [tuple(map(_sql_value, row.values())) for row in result.fetchall()]
         if columns:
             self._description = tuple(
                 (name, _type_code(rows, position), None, None, None, None, None)
@@ -713,6 +721,31 @@ def _sequence(value: Any, name: str) -> Sequence[Any]:
             f"{type(value).__name__}; statements bind $1, $2, ... by position"
         )
     return value
+
+
+def _sql_value(value: Any) -> Any:
+    """Converts a SQL timestamp's tagged dict into ``datetime.datetime``.
+
+    ``$localdatetime`` (TIMESTAMP) becomes a naive datetime and ``$datetime``
+    (TIMESTAMPTZ, always UTC) an aware UTC datetime. Text that Python cannot
+    represent exactly (more than six fractional digits or an out-of-range
+    year) keeps the tagged dict.
+    """
+    if type(value) is not dict or len(value) != 1:
+        return value
+    ((key, text),) = value.items()
+    if key not in ("$localdatetime", "$datetime") or type(text) is not str:
+        return value
+    _, dot, fraction = text.partition(".")
+    if dot and sum(map(str.isdigit, fraction)) > 6:
+        return value
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return value
+    if (key == "$datetime") != (parsed.tzinfo is not None):
+        return value
+    return parsed if parsed.tzinfo is None else parsed.astimezone(datetime.timezone.utc)
 
 
 def _type_code(rows: list[tuple[Any, ...]], position: int) -> type | None:

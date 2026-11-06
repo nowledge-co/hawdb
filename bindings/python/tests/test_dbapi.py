@@ -19,6 +19,7 @@ transaction semantics also run on a file database, and durability, read-only
 and branch cases use one directly.
 """
 
+import datetime
 import gc
 import inspect
 import pickle
@@ -851,3 +852,59 @@ def test_pandas_read_sql(connection):
         "SELECT id, name FROM items WHERE id >= $1", connection, params=[2]
     )
     assert frame.to_dict("records") == [{"id": 2, "name": "b"}]
+
+
+def test_cursors_return_sql_timestamps_as_datetimes(connection):
+    utc = datetime.timezone.utc
+    plus_two = datetime.timezone(datetime.timedelta(hours=2))
+    cursor = connection.cursor()
+    cursor.execute(
+        "CREATE TABLE stamps (id BIGINT PRIMARY KEY, at TIMESTAMP, seen TIMESTAMPTZ,"
+        " label TEXT)"
+    )
+    cursor.executemany(
+        "INSERT INTO stamps (id, at, seen, label) VALUES ($1, $2, $3, $4)",
+        [
+            (
+                1,
+                datetime.datetime(2026, 11, 5, 12, 0, 0, 654321),
+                datetime.datetime(2026, 11, 5, 14, 0, 0, 1, tzinfo=plus_two),
+                "a",
+            ),
+            (2, None, None, "b"),
+        ],
+    )
+    cursor.execute("SELECT at, seen, label FROM stamps ORDER BY id")
+    first, second = cursor.fetchall()
+    assert first[0] == datetime.datetime(2026, 11, 5, 12, 0, 0, 654321)
+    assert first[0].tzinfo is None
+    assert first[1] == datetime.datetime(2026, 11, 5, 12, 0, 0, 1, tzinfo=utc)
+    assert first[1].tzinfo is utc
+    assert second == (None, None, "b")
+    at_code, seen_code, label_code = (column[1] for column in cursor.description)
+    assert at_code == dbapi.DATETIME and seen_code == dbapi.DATETIME
+    assert label_code != dbapi.DATETIME
+    # Round trip: a returned value binds back to the same row.
+    cursor.execute("SELECT id FROM stamps WHERE seen = $1", [first[1]])
+    assert cursor.fetchall() == [(1,)]
+    # Strings that look like tagged dicts are left alone; only values convert.
+    cursor.execute("SELECT label FROM stamps WHERE id = $1", [1])
+    assert cursor.fetchone() == ("a",)
+    connection.commit()
+
+
+def test_cursor_timestamp_conversion_keeps_unrepresentable_values():
+    assert dbapi._sql_value({"$localdatetime": "+12345-01-01T00:00:00"}) == {
+        "$localdatetime": "+12345-01-01T00:00:00"
+    }
+    assert dbapi._sql_value({"$datetime": "2026-01-01T00:00:00.1234567Z"}) == {
+        "$datetime": "2026-01-01T00:00:00.1234567Z"
+    }
+    assert dbapi._sql_value({"$date": "2026-01-01"}) == {"$date": "2026-01-01"}
+    assert dbapi._sql_value({"$localdatetime": "2026-01-01T00:00:00Z"}) == {
+        "$localdatetime": "2026-01-01T00:00:00Z"
+    }
+    assert dbapi._sql_value({"a": 1, "b": 2}) == {"a": 1, "b": 2}
+    assert dbapi._sql_value(
+        {"$datetime": "2026-01-01T00:00:00+02:00"}
+    ) == datetime.datetime(2025, 12, 31, 22, tzinfo=datetime.timezone.utc)
