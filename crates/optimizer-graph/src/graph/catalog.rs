@@ -87,6 +87,8 @@ pub struct OptimizerCatalog {
     pub(super) rel_property_histograms: BTreeMap<(String, String), Vec<Value>>,
     pub(super) sampled_property_histograms: BTreeMap<(String, String), bool>,
     pub(super) sampled_rel_property_histograms: BTreeMap<(String, String), bool>,
+    /// Every node, labeled or not; `None` falls back to the label counts.
+    pub(super) node_count: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -118,6 +120,8 @@ pub struct OptimizerCatalogStatistics {
     pub(super) rel_property_histograms: BTreeMap<(String, String), Vec<Value>>,
     pub(super) sampled_property_histograms: BTreeMap<(String, String), bool>,
     pub(super) sampled_rel_property_histograms: BTreeMap<(String, String), bool>,
+    /// Every node, labeled or not; `None` falls back to the label counts.
+    pub(super) node_count: Option<u64>,
 }
 
 /// Converts storage-neutral schema and statistics into optimizer cost inputs.
@@ -384,7 +388,8 @@ pub fn optimizer_catalog_from_graph_statistics(
         .with_relationship_property_distinct_counts(rel_property_distinct_counts)
         .with_relationship_property_histograms(rel_property_histograms)
         .with_sampled_property_histograms(sampled_property_histograms)
-        .with_sampled_relationship_property_histograms(sampled_rel_property_histograms),
+        .with_sampled_relationship_property_histograms(sampled_rel_property_histograms)
+        .with_node_count(statistics.node_count),
     )
     .with_source_schema(catalog)
 }
@@ -430,6 +435,7 @@ impl OptimizerCatalog {
             rel_property_histograms: statistics.rel_property_histograms,
             sampled_property_histograms: statistics.sampled_property_histograms,
             sampled_rel_property_histograms: statistics.sampled_rel_property_histograms,
+            node_count: statistics.node_count,
         }
     }
 
@@ -577,6 +583,59 @@ impl OptimizerCatalog {
 
     pub(super) fn label_count(&self, label: &str) -> u64 {
         self.label_counts.get(label).copied().unwrap_or(1).max(1)
+    }
+
+    /// Nodes a scan of `label` visits: the label's nodes, or every node for
+    /// an empty label.
+    pub(super) fn scan_population(&self, label: &str) -> u64 {
+        if !label.is_empty() {
+            return self.label_count(label);
+        }
+        self.node_count
+            .unwrap_or_else(|| {
+                self.label_counts
+                    .values()
+                    .fold(0u64, |total, count| total.saturating_add(*count))
+            })
+            .max(1)
+    }
+
+    /// Relationships of `rel_type` whose properties equal `rel_properties`
+    /// and, with `rel_property_in`, whose property is one of the distinct
+    /// non-NULL listed values (#1548). The relationship property index
+    /// answers for the type whatever the endpoint labels, so these bound the
+    /// seeds of any source.
+    pub(super) fn estimate_seeded_relationships(
+        &self,
+        rel_type: &str,
+        rel_properties: &BTreeMap<String, Value>,
+        rel_property_in: Option<(&str, &[Value])>,
+    ) -> u64 {
+        let mut properties = rel_properties.clone();
+        let mut listed = 1u64;
+        if let Some((property, values)) = rel_property_in {
+            let mut distinct = Vec::with_capacity(values.len());
+            for value in values {
+                if !matches!(value, Value::Null) && !distinct.contains(&value) {
+                    distinct.push(value);
+                }
+            }
+            if distinct.is_empty() {
+                return 0;
+            }
+            if !properties.contains_key(property) {
+                listed = distinct.len() as u64;
+                properties.insert(property.to_string(), distinct[0].clone());
+            }
+        }
+        let product = properties
+            .keys()
+            .map(|property| self.rel_property_distinct_count(rel_type, property).max(1))
+            .fold(1u64, |total, count| total.saturating_mul(count));
+        self.traversable_relationship_count(rel_type)
+            .div_ceil(product.max(1))
+            .max(1)
+            .saturating_mul(listed)
     }
 
     pub(super) fn relationship_count(&self, rel_type: &str) -> u64 {
@@ -1272,7 +1331,13 @@ impl OptimizerCatalogStatistics {
             rel_property_histograms: BTreeMap::new(),
             sampled_property_histograms: BTreeMap::new(),
             sampled_rel_property_histograms: BTreeMap::new(),
+            node_count: None,
         }
+    }
+
+    pub fn with_node_count(mut self, node_count: u64) -> Self {
+        self.node_count = Some(node_count);
+        self
     }
 
     pub fn with_property_index_statistics(

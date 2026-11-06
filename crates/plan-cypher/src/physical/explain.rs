@@ -395,10 +395,17 @@ impl PhysicalPlan {
                 label,
                 rel_type,
                 rel_properties,
+                rel_property_in,
                 direction,
-            } => format!(
-                "{pad}RelationshipSeededNodeScan variable={variable} label={label} rel={rel_type} direction={direction:?} properties={rel_properties:?}"
-            ),
+            } => {
+                let property_in = rel_property_in
+                    .as_ref()
+                    .map(|(property, values)| format!(" in={property}:{values:?}"))
+                    .unwrap_or_default();
+                format!(
+                    "{pad}RelationshipSeededNodeScan variable={variable} label={label} rel={rel_type} direction={direction:?} properties={rel_properties:?}{property_in}"
+                )
+            }
             PhysicalPlan::NodeProjectionScanExec {
                 variable,
                 label,

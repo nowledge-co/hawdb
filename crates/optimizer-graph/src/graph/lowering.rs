@@ -1211,6 +1211,7 @@ fn lower_logical(
                     decisions,
                     stage_events,
                 );
+                input = relationship_seeded_in(input, predicate, catalog, decisions);
                 push_seed_metadata_filter(&mut input, predicate, decisions);
                 input = join::lower_property_join(input, predicate, decisions);
                 PhysicalPlan::FilterExec {
@@ -2268,11 +2269,11 @@ struct RelationshipSeedCandidate<'a> {
     optional: bool,
 }
 
-/// Replace a plain source label scan under a mandatory single-hop expand with
-/// relationship constraints by the relationship-seeded scan when fewer
-/// relationships are estimated to match than the label has nodes (#1548).
-/// The expand drops every source without a matching relationship, so only
-/// the seeded sources can produce rows.
+/// Replace a plain source label scan (an unlabeled scan included) under a
+/// mandatory single-hop expand with relationship constraints by the
+/// relationship-seeded scan when fewer relationships are estimated to match
+/// than the scan visits nodes (#1548). The expand drops every source without a
+/// matching relationship, so only the seeded sources can produce rows.
 fn relationship_seeded_source(
     input: PhysicalPlan,
     candidate: RelationshipSeedCandidate<'_>,
@@ -2290,22 +2291,17 @@ fn relationship_seeded_source(
     {
         return input;
     }
-    let matching = catalog
-        .estimate_expand_rows(
-            label,
-            candidate.rel_type,
-            candidate.rel_properties,
-            "",
-            1,
-            1,
-        )
-        .estimated_rows;
-    let nodes = catalog.label_count(label);
-    if matching >= nodes {
+    let Some(matching) = seeding_estimate(
+        catalog,
+        label,
+        candidate.rel_type,
+        candidate.rel_properties,
+        None,
+    ) else {
         return input;
-    }
+    };
     decisions.push(format!(
-        "seed {variable}:{label} from {} relationship properties ({matching} estimated of {nodes} nodes)",
+        "seed {variable}:{label} from {} relationship properties ({matching})",
         candidate.rel_type
     ));
     PhysicalPlan::RelationshipSeededNodeScan {
@@ -2313,6 +2309,97 @@ fn relationship_seeded_source(
         label: label.clone(),
         rel_type: candidate.rel_type.to_owned(),
         rel_properties: candidate.rel_properties.clone(),
+        rel_property_in: None,
         direction: candidate.direction,
     }
+}
+
+/// The estimate text when seeding beats scanning the source, else `None`.
+fn seeding_estimate(
+    catalog: &OptimizerCatalog,
+    label: &str,
+    rel_type: &str,
+    rel_properties: &BTreeMap<String, Value>,
+    rel_property_in: Option<(&str, &[Value])>,
+) -> Option<String> {
+    let matching = catalog.estimate_seeded_relationships(rel_type, rel_properties, rel_property_in);
+    let nodes = catalog.scan_population(label);
+    (matching < nodes).then(|| format!("{matching} estimated of {nodes} nodes"))
+}
+
+/// A relationship-property `IN` in the filter directly above a mandatory
+/// single-hop expand also seeds the expand's source (#1548). The filter stays
+/// above the expand and keeps its semantics; seeding only drops sources that
+/// have no relationship with a listed value.
+fn relationship_seeded_in(
+    mut input: PhysicalPlan,
+    predicate: &Predicate,
+    catalog: &OptimizerCatalog,
+    decisions: &mut Vec<String>,
+) -> PhysicalPlan {
+    let PhysicalPlan::AdjacencyExpandExec {
+        source_variable,
+        rel_variable: Some(rel_variable),
+        rel_type,
+        rel_properties,
+        direction,
+        min_hops: 1,
+        max_hops: 1,
+        optional: false,
+        input: source,
+        ..
+    } = &mut input
+    else {
+        return input;
+    };
+    if rel_type.is_empty() {
+        return input;
+    }
+    let conjuncts = match predicate {
+        Predicate::And(predicates) => predicates.iter().collect::<Vec<_>>(),
+        predicate => vec![predicate],
+    };
+    let Some((property, values)) = conjuncts.into_iter().find_map(|predicate| match predicate {
+        Predicate::PropertyIn {
+            variable,
+            property,
+            values,
+        } if variable == rel_variable => Some((property, values)),
+        _ => None,
+    }) else {
+        return input;
+    };
+    let (variable, label) = match source.as_ref() {
+        PhysicalPlan::SeqNodeScan { variable, label } if variable == source_variable => {
+            (variable.clone(), label.clone())
+        }
+        PhysicalPlan::RelationshipSeededNodeScan {
+            variable,
+            label,
+            rel_property_in: None,
+            ..
+        } if variable == source_variable => (variable.clone(), label.clone()),
+        _ => return input,
+    };
+    let Some(matching) = seeding_estimate(
+        catalog,
+        &label,
+        rel_type,
+        rel_properties,
+        Some((property, values)),
+    ) else {
+        return input;
+    };
+    decisions.push(format!(
+        "seed {variable}:{label} from {rel_type} relationship property {property} IN ({matching})"
+    ));
+    **source = PhysicalPlan::RelationshipSeededNodeScan {
+        variable,
+        label,
+        rel_type: rel_type.clone(),
+        rel_properties: rel_properties.clone(),
+        rel_property_in: Some((property.clone(), values.clone())),
+        direction: *direction,
+    };
+    input
 }

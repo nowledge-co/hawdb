@@ -474,14 +474,19 @@ fn estimate_local_operator_cost(
             label,
             rel_type,
             rel_properties,
+            rel_property_in,
             ..
         } => {
             // Seeds are distinct endpoints of the matching relationships, at
-            // most the label's nodes; each one is an index-located point read.
-            let matching = catalog
-                .estimate_expand_rows(label, rel_type, rel_properties, "", 1, 1)
-                .estimated_rows;
-            let rows = matching.min(catalog.label_count(label));
+            // most the scanned nodes; each one is an index-located point read.
+            let matching = catalog.estimate_seeded_relationships(
+                rel_type,
+                rel_properties,
+                rel_property_in
+                    .as_ref()
+                    .map(|(property, values)| (property.as_str(), values.as_slice())),
+            );
+            let rows = matching.min(catalog.scan_population(label));
             node_index_seek_work(rows, NODE_INDEX_EQ_STARTUP_COST)
         }
         PhysicalPlan::NodeProjectionScanExec {

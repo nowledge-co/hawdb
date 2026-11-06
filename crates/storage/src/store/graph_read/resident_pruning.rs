@@ -273,84 +273,154 @@ impl GraphStore {
     }
 }
 
+/// The relationship constraints a seed must satisfy: every entry of
+/// `properties` is equal and, with `property_in`, the property is one of
+/// the listed values (NULL elements never match).
+#[derive(Debug, Clone, Copy)]
+pub struct RelationshipSeedConstraints<'a> {
+    pub properties: &'a BTreeMap<String, Value>,
+    pub property_in: Option<(&'a str, &'a [Value])>,
+}
+
+impl RelationshipSeedConstraints<'_> {
+    fn matches(&self, record: &RelRecord, rel_type: RelTypeId) -> bool {
+        record.rel_type == rel_type
+            && self
+                .properties
+                .iter()
+                .all(|(property, value)| record.properties.get(property) == Some(value))
+            && self.property_in.is_none_or(|(property, values)| {
+                record
+                    .properties
+                    .get(property)
+                    .is_some_and(|actual| !matches!(actual, Value::Null) && values.contains(actual))
+            })
+    }
+
+    /// One probe per equality and one for the `IN` list, whose values are
+    /// distinct and non-NULL.
+    fn probes(&self) -> Vec<(&str, Vec<&Value>)> {
+        let mut probes = self
+            .properties
+            .iter()
+            .map(|(property, value)| (property.as_str(), vec![value]))
+            .collect::<Vec<_>>();
+        if let Some((property, values)) = self.property_in {
+            let mut distinct = Vec::with_capacity(values.len());
+            for value in values {
+                if !matches!(value, Value::Null) && !distinct.contains(&value) {
+                    distinct.push(value);
+                }
+            }
+            probes.push((property, distinct));
+        }
+        probes
+    }
+}
+
 impl GraphStore {
-    /// Endpoint node ids of `rel_type` relationships whose properties equal
-    /// every entry of `properties`: the sources, the targets, or both. The
-    /// ids are sorted and distinct. A resident store reads the resident
-    /// relationship property index; an out-of-core store reads the persisted
-    /// relationship equality projection of its canonical base and merges the
-    /// resident delta. `None` means neither can answer within
-    /// `max_relationships` candidate relationships (no property is given, an
-    /// out-of-core store has no complete projection for any of them, the
-    /// smallest posting is larger, or admission refused), so the caller keeps
-    /// its node-first path (#1548).
+    /// Endpoint node ids of `rel_type` relationships that satisfy
+    /// `constraints`: the sources, the targets, or both. The ids are sorted
+    /// and distinct. A resident store reads the resident relationship
+    /// property index; an out-of-core store reads the persisted relationship
+    /// equality projection of its canonical base and merges the resident
+    /// delta. The `IN` list's postings are unioned. `None` means neither can
+    /// answer within `max_relationships` candidate relationships (no
+    /// constraint is given, an out-of-core store has no complete projection
+    /// for any of them, the smallest posting is larger, or admission
+    /// refused), so the caller keeps its node-first path (#1548).
     pub fn relationship_property_endpoint_candidates(
         &self,
         rel_type: RelTypeId,
-        properties: &BTreeMap<String, Value>,
+        constraints: RelationshipSeedConstraints<'_>,
         endpoints: RelationshipEndpoints,
         max_relationships: usize,
         admit: &mut dyn FnMut(usize) -> Result<Option<Box<dyn GraphReadAllocation>>>,
     ) -> Result<Option<EndpointCandidates>> {
-        if properties.is_empty() {
+        let probes = constraints.probes();
+        if probes.is_empty() {
             return Ok(None);
+        }
+        // An `IN` list without a non-NULL value matches no relationship.
+        if let Some((property, _)) = probes.iter().find(|(_, values)| values.is_empty()) {
+            let Some(allocation) = admit(0)? else {
+                return Ok(None);
+            };
+            return Ok(Some(EndpointCandidates {
+                ids: Vec::new(),
+                probed_property: (*property).to_string(),
+                allocation,
+            }));
         }
         if self.canonical_base.is_some() {
             return self.canonical_relationship_property_endpoint_candidates(
                 rel_type,
-                properties,
+                constraints,
+                probes,
                 endpoints,
-                max_relationships,
-                admit,
+                (max_relationships, admit),
             );
         }
-        let mut smallest: Option<(&String, &RelIdPropertyPostingList)> = None;
-        for (property, value) in properties {
-            let Some(_key) = admit_key_copy(admit, property, value)? else {
-                return Ok(None);
-            };
-            record_index_entry_visit();
-            let Some(posting) =
-                self.relationship_property_index
-                    .get(&(rel_type, property.clone(), value.clone()))
-            else {
-                // No relationship carries this value: no endpoint can match.
+        let mut smallest: Option<(&str, Vec<&RelIdPropertyPostingList>, usize)> = None;
+        for (property, values) in probes {
+            let mut postings = Vec::with_capacity(values.len());
+            let mut len = 0usize;
+            for value in values {
+                let Some(_key) = admit_key_copy(admit, property, value)? else {
+                    return Ok(None);
+                };
+                record_index_entry_visit();
+                if let Some(posting) = self.relationship_property_index.get(&(
+                    rel_type,
+                    property.to_string(),
+                    value.clone(),
+                )) {
+                    len = len.saturating_add(posting.len());
+                    postings.push(posting);
+                }
+            }
+            if len == 0 {
+                // No relationship carries any of the values: no endpoint can match.
                 let Some(allocation) = admit(0)? else {
                     return Ok(None);
                 };
                 return Ok(Some(EndpointCandidates {
                     ids: Vec::new(),
-                    probed_property: property.clone(),
+                    probed_property: property.to_string(),
                     allocation,
                 }));
-            };
-            if smallest.is_none_or(|(_, smallest)| posting.len() < smallest.len()) {
-                smallest = Some((property, posting));
+            }
+            if smallest
+                .as_ref()
+                .is_none_or(|(_, _, smallest)| len < *smallest)
+            {
+                smallest = Some((property, postings, len));
             }
         }
-        let (probed_property, smallest) = smallest.expect("at least one property was probed");
-        if smallest.len() > max_relationships {
+        let (probed_property, postings, len) = smallest.expect("at least one property was probed");
+        if len > max_relationships {
             return Ok(None);
         }
-        let Some(allocation) = admit(endpoint_bytes(smallest.len(), endpoints))? else {
+        let Some(allocation) = admit(endpoint_bytes(len, endpoints))? else {
             return Ok(None);
         };
-        let mut ids =
-            Vec::with_capacity(smallest.len().saturating_mul(endpoints.per_relationship()));
-        for id in smallest.iter() {
-            let Some(record) = self.relationships.get(id) else {
-                return Err(HawDBError::StorageIntegrity(format!(
-                    "relationship property index references missing relationship {}",
-                    id.0
-                )));
-            };
-            push_matching_endpoints(&mut ids, record, rel_type, properties, endpoints);
+        let mut ids = Vec::with_capacity(len.saturating_mul(endpoints.per_relationship()));
+        for posting in postings {
+            for id in posting.iter() {
+                let Some(record) = self.relationships.get(id) else {
+                    return Err(HawDBError::StorageIntegrity(format!(
+                        "relationship property index references missing relationship {}",
+                        id.0
+                    )));
+                };
+                push_matching_endpoints(&mut ids, record, rel_type, constraints, endpoints);
+            }
         }
         ids.sort_unstable();
         ids.dedup();
         Ok(Some(EndpointCandidates {
             ids,
-            probed_property: probed_property.clone(),
+            probed_property: probed_property.to_string(),
             allocation,
         }))
     }
@@ -361,10 +431,10 @@ impl GraphStore {
     fn canonical_relationship_property_endpoint_candidates(
         &self,
         rel_type: RelTypeId,
-        properties: &BTreeMap<String, Value>,
+        constraints: RelationshipSeedConstraints<'_>,
+        probes: Vec<(&str, Vec<&Value>)>,
         endpoints: RelationshipEndpoints,
-        max_relationships: usize,
-        admit: &mut dyn FnMut(usize) -> Result<Option<Box<dyn GraphReadAllocation>>>,
+        (max_relationships, admit): (usize, &mut SeedAdmission<'_>),
     ) -> Result<Option<EndpointCandidates>> {
         let Some(projection) = self.persistent_property_projection.as_ref() else {
             return Ok(None);
@@ -372,11 +442,12 @@ impl GraphStore {
         if projection.is_poisoned() {
             return Ok(None);
         }
-        // Rank the complete projections by their block-granular estimate.
-        // Equal estimates (one block) are tried in turn: the first posting
-        // within the cap answers.
-        let mut probes = Vec::new();
-        for (property, value) in properties {
+        // Rank the complete projections by their block-granular estimate,
+        // which overcounts small postings sharing a block. Each later probe is
+        // collected only below the smallest posting found so far, so the
+        // smallest posting answers and larger ones stop at that cap.
+        let mut ranked = Vec::new();
+        for (property, values) in probes {
             if !projection.manifest().supports_relationship(
                 rel_type,
                 property,
@@ -384,33 +455,58 @@ impl GraphStore {
             ) {
                 continue;
             }
-            let (estimate, report) = projection
-                .estimate_relationship_equality_entries(rel_type, property, value)
-                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
-            self.graph_index_read_metrics
-                .record_property(PersistentGraphIndexClass::RelationshipEquality, report);
-            probes.push((estimate, property, value));
+            let mut estimate = 0u64;
+            for value in &values {
+                let (entries, report) = projection
+                    .estimate_relationship_equality_entries(rel_type, property, value)
+                    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+                self.graph_index_read_metrics
+                    .record_property(PersistentGraphIndexClass::RelationshipEquality, report);
+                estimate = estimate.saturating_add(entries);
+            }
+            ranked.push((estimate, property, values));
         }
-        probes.sort_by_key(|(estimate, _, _)| *estimate);
-        for (estimate, property, value) in probes {
-            let delta =
-                self.relationship_property_index
-                    .get(&(rel_type, property.clone(), value.clone()));
-            let delta_len = delta.as_ref().map_or(0, |posting| posting.len());
-            if delta_len > max_relationships {
+        ranked.sort_by_key(|(estimate, _, _)| *estimate);
+        let mut best = None;
+        let mut best_len = None;
+        for (estimate, property, values) in ranked {
+            let delta = values
+                .iter()
+                .filter_map(|value| {
+                    self.relationship_property_index.get(&(
+                        rel_type,
+                        property.to_string(),
+                        (*value).clone(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let delta_len = delta
+                .iter()
+                .fold(0usize, |total, posting| total.saturating_add(posting.len()));
+            // Only a strictly smaller posting replaces the best one.
+            let cap = best_len.map_or(max_relationships, |len: usize| len.saturating_sub(1));
+            if delta_len > cap {
                 continue;
             }
-            let base_cap = max_relationships - delta_len;
-            let (base, _base_allocation) = match self.canonical_relationship_posting(
-                (rel_type, property, value),
+            match self.canonical_relationship_posting(
+                (rel_type, property, &values),
                 estimate,
-                base_cap,
+                cap - delta_len,
                 admit,
             )? {
-                BaseRelationshipPosting::Within(base, allocation) => (base, allocation),
-                BaseRelationshipPosting::Overflow => continue,
+                BaseRelationshipPosting::Within(base, allocation) => {
+                    let len = base.len().saturating_add(delta_len);
+                    best = Some((property, values, base, (allocation, delta), delta_len));
+                    best_len = Some(len);
+                    if len == 0 {
+                        break;
+                    }
+                }
+                BaseRelationshipPosting::Overflow => {}
                 BaseRelationshipPosting::Refused => return Ok(None),
-            };
+            }
+        }
+        if let Some((property, values, base, (_base_allocation, delta), delta_len)) = best {
             let relationships = base.len().saturating_add(delta_len);
             let Some(allocation) = admit(endpoint_bytes(relationships, endpoints))? else {
                 return Ok(None);
@@ -430,41 +526,47 @@ impl GraphStore {
                     }
                 };
                 let (record, _permit) = row.into_parts();
-                if record.rel_type != rel_type || record.properties.get(property) != Some(value) {
+                if record.rel_type != rel_type
+                    || !record
+                        .properties
+                        .get(property)
+                        .is_some_and(|actual| values.contains(&actual))
+                {
                     return Err(HawDBError::StorageIntegrity(format!(
                         "relationship property projection candidate {} fails its canonical seek predicate",
                         id.0
                     )));
                 }
-                push_matching_endpoints(&mut ids, &record, rel_type, properties, endpoints);
+                push_matching_endpoints(&mut ids, &record, rel_type, constraints, endpoints);
             }
-            if let Some(delta) = delta {
-                for id in delta.iter() {
+            for posting in delta {
+                for id in posting.iter() {
                     let Some(record) = self.relationships.get(id) else {
                         return Err(HawDBError::StorageIntegrity(format!(
                             "relationship property index references missing relationship {}",
                             id.0
                         )));
                     };
-                    push_matching_endpoints(&mut ids, record, rel_type, properties, endpoints);
+                    push_matching_endpoints(&mut ids, record, rel_type, constraints, endpoints);
                 }
             }
             ids.sort_unstable();
             ids.dedup();
             return Ok(Some(EndpointCandidates {
                 ids,
-                probed_property: property.clone(),
+                probed_property: property.to_string(),
                 allocation,
             }));
         }
         Ok(None)
     }
 
-    /// Canonical relationship ids carrying `property = value`, excluding
-    /// tombstoned relationships and those the delta rewrites.
+    /// Canonical relationship ids carrying `property` equal to one of
+    /// `values`, excluding tombstoned relationships and those the delta
+    /// rewrites.
     fn canonical_relationship_posting(
         &self,
-        (rel_type, property, value): (RelTypeId, &str, &Value),
+        (rel_type, property, values): (RelTypeId, &str, &[&Value]),
         estimate: u64,
         cap: usize,
         admit: &mut dyn FnMut(usize) -> Result<Option<Box<dyn GraphReadAllocation>>>,
@@ -483,24 +585,29 @@ impl GraphStore {
         };
         let mut ids = Vec::with_capacity(slots);
         let mut overflow = false;
-        let (report, _control) = projection
-            .scan_relationship_equality_candidates(rel_type, property, value, |id| {
-                if self.relationship_tombstones.contains(&id)
-                    || self.relationships.contains_key(&id)
-                {
-                    return Ok(CanonicalScanControl::Continue);
-                }
-                if ids.len() == slots {
-                    overflow = true;
-                    return Ok(CanonicalScanControl::Stop);
-                }
-                ids.push(id);
-                Ok(CanonicalScanControl::Continue)
-            })
-            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
-        self.graph_index_read_metrics
-            .record_property(PersistentGraphIndexClass::RelationshipEquality, report);
-        if overflow || ids.len() > cap {
+        for value in values {
+            let (report, _control) = projection
+                .scan_relationship_equality_candidates(rel_type, property, value, |id| {
+                    if self.relationship_tombstones.contains(&id)
+                        || self.relationships.contains_key(&id)
+                    {
+                        return Ok(CanonicalScanControl::Continue);
+                    }
+                    if ids.len() == slots {
+                        overflow = true;
+                        return Ok(CanonicalScanControl::Stop);
+                    }
+                    ids.push(id);
+                    Ok(CanonicalScanControl::Continue)
+                })
+                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+            self.graph_index_read_metrics
+                .record_property(PersistentGraphIndexClass::RelationshipEquality, report);
+            if overflow {
+                return Ok(BaseRelationshipPosting::Overflow);
+            }
+        }
+        if ids.len() > cap {
             return Ok(BaseRelationshipPosting::Overflow);
         }
         ids.sort_unstable();
@@ -508,6 +615,9 @@ impl GraphStore {
         Ok(BaseRelationshipPosting::Within(ids, allocation))
     }
 }
+
+/// Seed admission: `None` refuses, and the caller keeps its node-first path.
+type SeedAdmission<'a> = dyn FnMut(usize) -> Result<Option<Box<dyn GraphReadAllocation>>> + 'a;
 
 /// One canonical posting: within the cap with its admitted ids, larger than
 /// the cap, or refused by admission.
@@ -525,19 +635,15 @@ fn endpoint_bytes(relationships: usize, endpoints: RelationshipEndpoints) -> usi
 }
 
 /// Pushes the requested endpoints of `record` when it is a `rel_type`
-/// relationship carrying every entry of `properties`.
+/// relationship satisfying `constraints`.
 fn push_matching_endpoints(
     ids: &mut Vec<NodeId>,
     record: &RelRecord,
     rel_type: RelTypeId,
-    properties: &BTreeMap<String, Value>,
+    constraints: RelationshipSeedConstraints<'_>,
     endpoints: RelationshipEndpoints,
 ) {
-    if record.rel_type != rel_type
-        || properties
-            .iter()
-            .any(|(property, value)| record.properties.get(property) != Some(value))
-    {
+    if !constraints.matches(record, rel_type) {
         return;
     }
     if matches!(

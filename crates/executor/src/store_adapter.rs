@@ -107,7 +107,7 @@ impl GraphExecutionRead for GraphStore {
     fn relationship_property_endpoint_candidates(
         &self,
         rel_type: RelTypeId,
-        properties: &std::collections::BTreeMap<String, hawdb_core::Value>,
+        constraints: hawdb_storage::store::RelationshipSeedConstraints<'_>,
         endpoints: hawdb_storage::store::RelationshipEndpoints,
         max_relationships: usize,
         admit: &mut dyn FnMut(
@@ -119,7 +119,7 @@ impl GraphExecutionRead for GraphStore {
         GraphStore::relationship_property_endpoint_candidates(
             self,
             rel_type,
-            properties,
+            constraints,
             endpoints,
             max_relationships,
             admit,
