@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - "bindings/python/**"
+      - "integrations/llama-index-graph-stores-hawdb/**"
       - "crates/core/src/error.rs"
       - "MODULE.bazel"
       - "BUILD.bazel"
@@ -16,6 +17,7 @@ on:
     branches: [main]
     paths:
       - "bindings/python/**"
+      - "integrations/llama-index-graph-stores-hawdb/**"
       - "crates/core/src/error.rs"
       - "MODULE.bazel"
       - "BUILD.bazel"
@@ -135,6 +137,18 @@ jobs:
         run: |
           python -c 'import pandas; print(pandas.__version__)'
           pytest tests/test_dbapi.py -k pandas
+
+      - name: Provision the optional LlamaIndex consumer
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          pip install "llama-index-core==0.14.25"
+          # Keep the wheel built above instead of a hawdb release from PyPI.
+          pip install --no-deps ../../integrations/llama-index-graph-stores-hawdb
+          pip check
+
+      - name: Test the LlamaIndex property graph store against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
+        run: pytest ../../integrations/llama-index-graph-stores-hawdb/tests
 
       - name: Retain the tested native wheel for host verification
         uses: actions/upload-artifact@v7
