@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    cardinality,
+    cardinality, cost_qualification,
     manifest::{write_new, Frozen},
     runner,
 };
 use query_workloads::smith::Limits;
 use std::{fs, io::Write, path::Path};
 
-pub const USAGE: &str = "query-lab freeze PATH [SEED CASES ROWS]\nquery-lab freeze-cost PATH [SEED CASES ROWS]\nquery-lab freeze-ce PATH [SEED ROWS]\nquery-lab freeze-graph-stats PATH [SEED ROWS]\nquery-lab compare MANIFEST REPORT\nquery-lab ce-run MANIFEST REPORT\nquery-lab ce-report MANIFEST RUN_REPORT OUTPUT\nquery-lab ce-diff MANIFEST BASELINE_RUN CANDIDATE_RUN OUTPUT\nquery-lab cost MANIFEST REPORT\nquery-lab cost-check MANIFEST REPORT\nquery-lab replay MANIFEST CELL\nAll commands are manual. Cost requires a release build and collects a frozen ordinary-plan baseline, not qualified alternative-plan regret. Cost-check exercises sampling under the checked profile. CE reports analyze validation observations only; CE diffs are diagnostics, not automatic performance gates.";
+pub const USAGE: &str = "query-lab freeze PATH [SEED CASES ROWS]\nquery-lab freeze-cost PATH [SEED CASES ROWS]\nquery-lab freeze-ce PATH [SEED ROWS]\nquery-lab freeze-graph-stats PATH [SEED ROWS]\nquery-lab compare MANIFEST REPORT\nquery-lab ce-run MANIFEST REPORT\nquery-lab ce-report MANIFEST RUN_REPORT OUTPUT\nquery-lab ce-diff MANIFEST BASELINE_RUN CANDIDATE_RUN OUTPUT\nquery-lab cost MANIFEST REPORT\nquery-lab cost-check MANIFEST REPORT\nquery-lab cost-proof REPORT\nquery-lab cost-proof-replay REPORT\nquery-lab replay MANIFEST CELL\nAll commands are manual. Cost requires a release build and collects a frozen ordinary-plan baseline, not qualified alternative-plan regret. Cost-proof is a fixed-fixture Sort/TopN correctness proof with no timing or regret claim. Cost-check exercises sampling under the checked profile. CE reports analyze validation observations only; CE diffs are diagnostics, not automatic performance gates.";
 
 fn load_run(path: &str) -> Result<runner::Report, String> {
     use std::io::Read;
@@ -80,6 +80,31 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<bool, String> {
             println!(
                 "{}",
                 serde_json::json!({"cases":report.case_counts,"operators":report.operator_counts})
+            );
+            Ok(true)
+        }
+        Some("cost-proof") if args.len() == 2 => {
+            let report = cost_qualification::run()?;
+            write_new(
+                Path::new(&args[1]),
+                &serde_json::to_vec(&report).map_err(|error| error.to_string())?,
+            )?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status":report.qualification_status,
+                    "generated":report.campaign.generated_candidates,
+                    "distinct":report.campaign.distinct_candidates
+                })
+            );
+            Ok(report.qualification_status == "completed")
+        }
+        Some("cost-proof-replay") if args.len() == 2 => {
+            let report = cost_qualification::load(Path::new(&args[1]))?;
+            cost_qualification::replay(&report)?;
+            println!(
+                "qualification replay matched {} candidates",
+                report.candidates.len()
             );
             Ok(true)
         }

@@ -3,8 +3,9 @@
 
 use super::*;
 use crate::optimizer::{
-    OptimizerCostPerturbation, OptimizerQualificationOptions, OptimizerRuleAssertion,
-    OptimizerSearchDirective, OptionalOptimizerRule,
+    OptimizerBoundedOrderAlternative, OptimizerCostPerturbation, OptimizerQualificationOptions,
+    OptimizerRuleAssertion, OptimizerSearchDirective, OptionalOptimizerRule,
+    DEFAULT_PLAN_COST_POLICY_ID, DEFAULT_PLAN_COST_WEIGHTS,
 };
 
 fn fixture(rows: i64) -> Database {
@@ -239,6 +240,191 @@ fn seeded_ranking_changes_legal_bounded_plans_without_changing_reported_costs() 
         fingerprints.len() >= 2,
         "perturbation must exercise distinct executable alternatives"
     );
+}
+
+#[test]
+fn bounded_order_candidate_inventory_executes_distinct_legal_plans_on_one_snapshot() {
+    let mut db = Database::new();
+    db.query("CREATE NODE TABLE Item").unwrap();
+    db.query("CREATE PROPERTY ON NODE TABLE Item(id) TYPE INT NOT NULL")
+        .unwrap();
+    db.query("CREATE PROPERTY ON NODE TABLE Item(sort_key) TYPE INT NOT NULL")
+        .unwrap();
+    let rows = (0..64)
+        .map(|id| {
+            Value::Map(BTreeMap::from([
+                ("id".into(), Value::Int(id)),
+                ("sort_key".into(), Value::Int(id % 7)),
+            ]))
+        })
+        .collect();
+    db.query_with_params(
+        "UNWIND $rows AS r CREATE (:Item {id:r.id, sort_key:r.sort_key})",
+        &BTreeMap::from([("rows".into(), Value::List(rows))]),
+    )
+    .unwrap();
+    let mut read = db.begin_read_transaction().unwrap();
+    let candidates = read
+        .qualify_optimizer_bounded_order_candidates(
+            crate::QueryRequest::new(
+                "MATCH (n:Item) RETURN n.sort_key AS sort_key, n.id AS id ORDER BY sort_key, id LIMIT 30",
+            ),
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap();
+
+    assert_eq!(candidates.snapshot_epoch, read.commit_epoch());
+    assert_eq!(candidates.candidate_limit, 8);
+    assert!(!candidates.inventory_truncated);
+    assert_eq!(candidates.candidates.len(), 3);
+    assert_eq!(candidates.distinct_candidate_count, 2);
+    assert_eq!(candidates.candidates[0].same_plan_as, None);
+    assert!(candidates.candidates[1..]
+        .iter()
+        .any(|candidate| candidate.same_plan_as == Some(0)));
+    assert_eq!(
+        candidates.candidates[1].kind,
+        crate::OptimizerQualificationCandidateKind::BoundedOrder(
+            OptimizerBoundedOrderAlternative::TopN
+        )
+    );
+    assert_eq!(
+        candidates.candidates[2].kind,
+        crate::OptimizerQualificationCandidateKind::BoundedOrder(
+            OptimizerBoundedOrderAlternative::SortThenLimit
+        )
+    );
+    assert!(candidates.candidates[1]
+        .output
+        .selected_plan_instance_fingerprint
+        .contains("TopNExec"));
+    assert!(candidates.candidates[2]
+        .output
+        .selected_plan_instance_fingerprint
+        .contains("SortExec"));
+    for candidate in &candidates.candidates {
+        assert_eq!(candidate.output.snapshot_epoch, candidates.snapshot_epoch);
+        assert_eq!(candidate.output.cost_policy_id, DEFAULT_PLAN_COST_POLICY_ID);
+        assert_eq!(candidate.output.cost_weights, DEFAULT_PLAN_COST_WEIGHTS);
+        assert_eq!(
+            candidate
+                .output
+                .optimizer_trace
+                .selected_plan_cost_breakdown
+                .score_with_weights(candidate.output.cost_weights),
+            candidate.output.optimizer_trace.selected_plan_cost
+        );
+    }
+    candidates.verify_complete_results().unwrap();
+    let expected = (0..7)
+        .flat_map(|sort_key| {
+            (0..64).filter(move |id| id % 7 == sort_key).map(move |id| {
+                BTreeMap::from([
+                    ("sort_key".into(), Value::Int(sort_key)),
+                    ("id".into(), Value::Int(id)),
+                ])
+            })
+        })
+        .take(30)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        candidates.candidates[0]
+            .output
+            .result
+            .as_ref()
+            .unwrap()
+            .output
+            .rows,
+        expected
+    );
+}
+
+#[test]
+fn explicit_bounded_order_candidate_refuses_missing_and_ambiguous_controls() {
+    let db = fixture(12);
+    let mut read = db.begin_read_transaction().unwrap();
+    let request = crate::QueryRequest::new("MATCH (n:Item) RETURN n.external AS id");
+    let missing = read
+        .qualify_optimizer_query(
+            request,
+            OptimizerQualificationOptions::default()
+                .with_bounded_order_alternative(OptimizerBoundedOrderAlternative::TopN),
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap_err();
+    assert!(missing
+        .to_string()
+        .contains("found 0 legal selection sites"));
+
+    let conflicting = read
+        .qualify_optimizer_query(
+            request,
+            OptimizerQualificationOptions::default()
+                .with_cost_perturbation(OptimizerCostPerturbation::new(7, 25).unwrap())
+                .with_bounded_order_alternative(OptimizerBoundedOrderAlternative::TopN),
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap_err();
+    assert!(conflicting
+        .to_string()
+        .contains("cannot combine cost perturbation"));
+
+    let ordinary = crate::OptimizerQualificationCandidateRequest::new(
+        crate::OptimizerQualificationCandidateKind::Ordinary,
+    );
+    let top_n = crate::OptimizerQualificationCandidateRequest::new(
+        crate::OptimizerQualificationCandidateKind::BoundedOrder(
+            OptimizerBoundedOrderAlternative::TopN,
+        ),
+    );
+    let sort_then_limit = crate::OptimizerQualificationCandidateRequest::new(
+        crate::OptimizerQualificationCandidateKind::BoundedOrder(
+            OptimizerBoundedOrderAlternative::SortThenLimit,
+        ),
+    );
+    let duplicate = read
+        .qualify_optimizer_bounded_order_candidate_requests(
+            request,
+            &[ordinary, ordinary, top_n],
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap_err();
+    assert!(duplicate.to_string().contains("duplicate kind ordinary"));
+    let missing_ordinary = read
+        .qualify_optimizer_bounded_order_candidate_requests(
+            request,
+            &[top_n, sort_then_limit],
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap_err();
+    assert!(missing_ordinary
+        .to_string()
+        .contains("missing the ordinary plan"));
+    let over_limit = read
+        .qualify_optimizer_bounded_order_candidate_requests(
+            request,
+            &[ordinary; crate::OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT + 1],
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap_err();
+    assert!(over_limit.to_string().contains("limit is 8"));
+
+    let db = fixture(12);
+    let mut read = db.begin_read_transaction().unwrap();
+    let bounded_request =
+        crate::QueryRequest::new("MATCH (n:Item) RETURN n.external AS id ORDER BY id LIMIT 5");
+    let stale = read
+        .qualify_optimizer_bounded_order_candidate_requests(
+            bounded_request,
+            &[
+                ordinary.with_expected_plan_instance_fingerprint("stale-plan"),
+                top_n,
+                sort_then_limit,
+            ],
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap_err();
+    assert!(stale.to_string().contains("candidate ordinary is stale"));
 }
 
 #[test]

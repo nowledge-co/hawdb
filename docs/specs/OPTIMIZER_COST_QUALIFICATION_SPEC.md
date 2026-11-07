@@ -1,11 +1,11 @@
 # Optimizer cost qualification and calibration
 
-Status: proposed, 2026-11-04. This document defines prospective acceptance
-criteria. The candidate runner, cardinality replay and coefficient fitter are
-not implemented by this documentation change. Existing optimizer and admission
-contracts remain authoritative.
+Status: phase 1 candidate proof implemented, 2026-11-07; phases 2 through 5
+remain prospective acceptance criteria. The four-family timing runner,
+observed-cardinality diagnosis and coefficient fitter are not implemented.
+Existing optimizer and admission contracts remain authoritative.
 
-Tracking: [#216](https://github.com/nowledge-co/hawdb/issues/216).
+Tracking: [#1596](https://github.com/nowledge-co/hawdb/issues/1596).
 Delivery sequence: [development plan](../OPTIMIZER_COST_QUALIFICATION_PLAN.md).
 Incomplete work is tracked only in [TODO](../../TODO.md).
 

@@ -498,16 +498,16 @@ qualification justifies moving them.
 The [proposed specification](docs/specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md)
 defines the evidence and acceptance contract; the
 [development plan](docs/OPTIMIZER_COST_QUALIFICATION_PLAN.md) defines phase
-dependencies and owners. This work supports [#216](https://github.com/nowledge-co/hawdb/issues/216).
+dependencies and owners. This work supports [#1596](https://github.com/nowledge-co/hawdb/issues/1596).
 
 - [x] Extract Shiro's deterministic generators into unpublished tool support,
   add bounded opt-in SQLsmith generation and fixed-fixture comparison, and reuse
   frozen queries/parameters/setup for ordinary-plan cost baselines. See
-  [query-lab](tools/query-lab/README.md); candidate qualification below remains open.
+  [query-lab](tools/query-lab/README.md); multi-family candidate measurement below remains open.
 - [x] Add directed cardinality workloads with independent result counts,
   zero-aware selected-operator diagnostics and frozen-input version comparison.
   Predicate-level CE traces and observed-cardinality re-costing remain open.
-- [ ] Prove bounded legal-candidate selection and typed evidence on one pinned
+- [x] Prove bounded legal-candidate selection and typed evidence on one pinned
   Cypher read, including two distinct executed Sort/TopN alternatives and
   complete result, fingerprint, cost and refusal evidence (phase 1).
 - [ ] Deliver the explicit offline four-family runner and supported SQL/Cypher

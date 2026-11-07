@@ -141,6 +141,29 @@ RSS fields are optional process observations, not per-query allocation peaks.
 observations, not candidate regret or an automatically fitted cost policy.
 See [the distribution contract](../../docs/COMPRESSED_HISTOGRAMS.md).
 
+## Bounded Sort/TopN candidate proof
+
+Phase 1 of the optimizer cost qualification protocol has one fixed Cypher
+correctness proof. It creates a 64-row duplicate-key fixture, executes the
+ordinary, TopN and Sort-plus-Limit candidates on one pinned snapshot, compares
+complete ordered typed results and writes a new report:
+
+```console
+cargo run --locked --manifest-path tools/query-lab/Cargo.toml -- cost-proof /tmp/cost-proof.json
+cargo run --locked --manifest-path tools/query-lab/Cargo.toml -- cost-proof-replay /tmp/cost-proof.json
+```
+
+The report uses `hawdb-optimizer-cost-qualification-v1` and retains the typed
+parameter, fixture digest, candidate inventory, complete physical fingerprints,
+physical properties, raw cost components, immutable coefficient-policy identity,
+operator cardinality estimates, statistics decisions, failures and full results.
+Replay binds every candidate to its retained fingerprint and refuses stale,
+duplicate, missing or over-limit inventories. Reports are never overwritten.
+
+This proof intentionally records no timing sample and makes no fastest-plan,
+regret or coefficient-promotion claim. It proves the legal candidate and evidence
+path needed by the later four-family runner.
+
 ## Frozen cost baseline
 
 `freeze-cost` invokes the same generator with 32 nodes, depth four, at most two
@@ -166,14 +189,15 @@ operator rows, storage counters and tracked blocking memory. Timing includes
 query preparation and owned output, but excludes host report serialization.
 Results describe warmed materialized data; no cold/device-cache claim is made.
 
-This implements workload reuse and ordinary-plan baseline collection, **not**
-the complete [optimizer cost qualification protocol](../../docs/specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md).
-The SQL adapter has no candidate selector or complete physical fingerprint;
-neither adapter provides alternative-plan
-coverage, regret or fitted coefficient change. SQL from different generator
-modes is never treated as alternative plans of the same query. Missing cost,
-allocator/RSS and complete-plan evidence remains null. Full scan/index,
-covering, order and Sort/TopN qualification remains in the development plan.
+This implements workload reuse, ordinary-plan baseline collection and the fixed
+Cypher Sort/TopN phase-1 proof, **not** the complete
+[optimizer cost qualification protocol](../../docs/specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md).
+The SQL adapter still has no candidate selector or complete physical fingerprint;
+no adapter provides four-family paired timing, regret or a fitted coefficient
+change. SQL from different generator modes is never treated as alternative plans
+of the same query. Missing cost, allocator/RSS and complete-plan evidence remains
+null. Full scan/index, covering and ordered-index qualification remains in the
+development plan.
 
 ## Bounds and evidence
 
@@ -213,8 +237,9 @@ bazel test //tools/shiro:shiro_tests //tools/shiro:shiro_cli_tests //:hawdb_linu
 ```
 
 `//tools/query-lab:query_lab_tests` owns fixed-fixture validity, exact replay,
-NULL/multiplicity, negative parse/output-refusal controls, setup censoring and
-frozen cost sampling. It is selected only by the manual Shiro test suite.
+NULL/multiplicity, negative parse/output-refusal controls, setup censoring,
+frozen cost sampling and the bounded candidate proof/refusal cases. It is
+selected only by the manual Shiro test suite.
 
 ## Initial local evidence (2026-11-04 UTC)
 

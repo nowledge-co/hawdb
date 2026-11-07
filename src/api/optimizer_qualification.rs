@@ -6,15 +6,66 @@
 
 use super::*;
 use crate::optimizer::{
-    verify_optimizer_rule_assertions, OptimizerQualificationOptions, OptimizerRuleAssertion,
-    OptimizerRuleAssertionError,
+    verify_optimizer_rule_assertions, OptimizerBoundedOrderAlternative,
+    OptimizerQualificationOptions, OptimizerRuleAssertion, OptimizerRuleAssertionError,
+    RuleOutcome, BOUNDED_ORDER_QUALIFICATION_RULE, DEFAULT_PLAN_COST_POLICY_ID,
+    DEFAULT_PLAN_COST_WEIGHTS,
 };
+
+/// Protocol-wide upper bound for one frozen query's candidate inventory.
+pub const OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT: usize = 8;
+
+/// How one candidate was selected for an offline qualification attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimizerQualificationCandidateKind {
+    Ordinary,
+    BoundedOrder(OptimizerBoundedOrderAlternative),
+}
+
+impl OptimizerQualificationCandidateKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ordinary => "ordinary",
+            Self::BoundedOrder(alternative) => alternative.as_str(),
+        }
+    }
+}
+
+/// One named candidate requested by an offline qualification campaign.
+///
+/// A replay can bind the request to the complete physical identity observed by
+/// an earlier campaign. A changed identity is refused instead of silently
+/// measuring a different plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OptimizerQualificationCandidateRequest<'a> {
+    pub kind: OptimizerQualificationCandidateKind,
+    pub expected_plan_instance_fingerprint: Option<&'a str>,
+}
+
+impl<'a> OptimizerQualificationCandidateRequest<'a> {
+    pub const fn new(kind: OptimizerQualificationCandidateKind) -> Self {
+        Self {
+            kind,
+            expected_plan_instance_fingerprint: None,
+        }
+    }
+
+    pub const fn with_expected_plan_instance_fingerprint(mut self, fingerprint: &'a str) -> Self {
+        self.expected_plan_instance_fingerprint = Some(fingerprint);
+        self
+    }
+}
 
 /// Evidence from an offline optimizer qualification read.
 #[derive(Debug)]
 pub struct OptimizerQualificationOutput {
     pub snapshot_epoch: u64,
     pub optimizer_trace: OptimizerTrace,
+    /// Complete physical identity, including bound access/index details omitted
+    /// from the ordinary shape fingerprint.
+    pub selected_plan_instance_fingerprint: String,
+    pub cost_policy_id: &'static str,
+    pub cost_weights: crate::optimizer::PlanCostWeights,
     pub result: Result<BoundedReadQueryOutput>,
 }
 impl OptimizerQualificationOutput {
@@ -23,6 +74,102 @@ impl OptimizerQualificationOutput {
         assertions: &[OptimizerRuleAssertion],
     ) -> std::result::Result<(), OptimizerRuleAssertionError> {
         verify_optimizer_rule_assertions(&self.optimizer_trace.rule_events, assertions)
+    }
+}
+
+/// One executed member of a bounded candidate inventory.
+#[derive(Debug)]
+pub struct OptimizerQualificationCandidateOutput {
+    pub kind: OptimizerQualificationCandidateKind,
+    /// Earlier candidate with the same complete physical identity, when any.
+    pub same_plan_as: Option<usize>,
+    pub output: OptimizerQualificationOutput,
+}
+
+/// Phase-one candidate evidence for one bounded-order query on one snapshot.
+#[derive(Debug)]
+pub struct OptimizerQualificationCandidateSetOutput {
+    pub snapshot_epoch: u64,
+    pub candidate_limit: usize,
+    pub inventory_truncated: bool,
+    pub distinct_candidate_count: usize,
+    pub candidates: Vec<OptimizerQualificationCandidateOutput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OptimizerQualificationResultError {
+    CandidateFailed {
+        index: usize,
+        kind: OptimizerQualificationCandidateKind,
+        error: String,
+    },
+    ResultMismatch {
+        ordinary_index: usize,
+        candidate_index: usize,
+        kind: OptimizerQualificationCandidateKind,
+    },
+}
+
+impl std::fmt::Display for OptimizerQualificationResultError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CandidateFailed { index, kind, error } => write!(
+                f,
+                "optimizer qualification candidate {index} ({}) failed: {error}",
+                kind.as_str()
+            ),
+            Self::ResultMismatch {
+                ordinary_index,
+                candidate_index,
+                kind,
+            } => write!(
+                f,
+                "optimizer qualification candidate {candidate_index} ({}) differs from ordinary candidate {ordinary_index}",
+                kind.as_str()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OptimizerQualificationResultError {}
+
+impl OptimizerQualificationCandidateSetOutput {
+    /// Compares complete owned outputs, including schema, order, duplicates and
+    /// NULLs. Execution failures remain evidence and are never treated as equal.
+    pub fn verify_complete_results(
+        &self,
+    ) -> std::result::Result<(), OptimizerQualificationResultError> {
+        let ordinary_index = self
+            .candidates
+            .iter()
+            .position(|candidate| candidate.kind == OptimizerQualificationCandidateKind::Ordinary)
+            .expect("bounded candidate set always retains its ordinary control");
+        let ordinary = self.candidates[ordinary_index]
+            .output
+            .result
+            .as_ref()
+            .map_err(|error| OptimizerQualificationResultError::CandidateFailed {
+                index: ordinary_index,
+                kind: OptimizerQualificationCandidateKind::Ordinary,
+                error: error.to_string(),
+            })?;
+        for (index, candidate) in self.candidates.iter().enumerate() {
+            let output = candidate.output.result.as_ref().map_err(|error| {
+                OptimizerQualificationResultError::CandidateFailed {
+                    index,
+                    kind: candidate.kind,
+                    error: error.to_string(),
+                }
+            })?;
+            if output.output != ordinary.output {
+                return Err(OptimizerQualificationResultError::ResultMismatch {
+                    ordinary_index,
+                    candidate_index: index,
+                    kind: candidate.kind,
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -41,6 +188,14 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
         qualification: OptimizerQualificationOptions,
         search: OptimizerSearchDirective,
     ) -> Result<OptimizerQualificationOutput> {
+        if qualification.cost_perturbation().is_some()
+            && qualification.bounded_order_alternative().is_some()
+        {
+            return Err(HawDBError::Execution(
+                "optimizer qualification cannot combine cost perturbation with an explicit bounded-order alternative"
+                    .into(),
+            ));
+        }
         self.store.ensure_usable()?;
         let task =
             query_request::bind_request_context(self.task_context.as_ref(), request.task_context)?;
@@ -100,6 +255,23 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
                 scoring: options.scoring,
             },
         )?;
+        if let Some(alternative) = qualification.bounded_order_alternative() {
+            let applications = optimized
+                .trace
+                .rule_events
+                .iter()
+                .filter(|event| {
+                    event.rule() == BOUNDED_ORDER_QUALIFICATION_RULE
+                        && event.outcome() == RuleOutcome::Applied
+                })
+                .count();
+            if applications != 1 {
+                return Err(HawDBError::Execution(format!(
+                    "optimizer qualification requested bounded-order alternative {} but found {applications} legal selection sites; exactly one is required",
+                    alternative.as_str()
+                )));
+            }
+        }
         if executor::is_mutation_plan(&optimized.physical_plan)?
             || executor::requires_write_access(&optimized.physical_plan)
         {
@@ -108,6 +280,7 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
             ));
         }
         let optimizer_trace = optimized.trace.clone();
+        let selected_plan_instance_fingerprint = optimized.physical_plan.instance_fingerprint();
         let snapshot_epoch = self.commit_epoch();
         let row_limit = self.read_result_row_limit();
         let mut external = executor::NoExternalReadOperator;
@@ -138,7 +311,137 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
         Ok(OptimizerQualificationOutput {
             snapshot_epoch,
             optimizer_trace,
+            selected_plan_instance_fingerprint,
+            cost_policy_id: DEFAULT_PLAN_COST_POLICY_ID,
+            cost_weights: DEFAULT_PLAN_COST_WEIGHTS,
             result,
+        })
+    }
+
+    /// Executes the ordinary, `TopN`, and `Sort + Limit` candidates for one
+    /// bounded-order query on this pinned snapshot. All candidates are produced
+    /// by the ordinary parser, lowerer, legality checks and admitted executor.
+    pub fn qualify_optimizer_bounded_order_candidates(
+        &mut self,
+        request: QueryRequest<'_>,
+        search: OptimizerSearchDirective,
+    ) -> Result<OptimizerQualificationCandidateSetOutput> {
+        let candidates = [
+            OptimizerQualificationCandidateRequest::new(
+                OptimizerQualificationCandidateKind::Ordinary,
+            ),
+            OptimizerQualificationCandidateRequest::new(
+                OptimizerQualificationCandidateKind::BoundedOrder(
+                    OptimizerBoundedOrderAlternative::TopN,
+                ),
+            ),
+            OptimizerQualificationCandidateRequest::new(
+                OptimizerQualificationCandidateKind::BoundedOrder(
+                    OptimizerBoundedOrderAlternative::SortThenLimit,
+                ),
+            ),
+        ];
+        self.qualify_optimizer_bounded_order_candidate_requests(request, &candidates, search)
+    }
+
+    /// Executes a bounded, caller-ordered inventory of named legal candidates.
+    /// Requests are validated before planning; replay identities are checked
+    /// before any candidate can be accepted as matching prior evidence.
+    pub fn qualify_optimizer_bounded_order_candidate_requests(
+        &mut self,
+        request: QueryRequest<'_>,
+        requests: &[OptimizerQualificationCandidateRequest<'_>],
+        search: OptimizerSearchDirective,
+    ) -> Result<OptimizerQualificationCandidateSetOutput> {
+        if requests.len() > OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT {
+            return Err(HawDBError::Execution(format!(
+                "optimizer qualification requested {} candidates; limit is {}",
+                requests.len(),
+                OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT
+            )));
+        }
+        if !requests
+            .iter()
+            .any(|request| request.kind == OptimizerQualificationCandidateKind::Ordinary)
+        {
+            return Err(HawDBError::Execution(
+                "optimizer qualification candidate inventory is missing the ordinary plan".into(),
+            ));
+        }
+        for (index, request) in requests.iter().enumerate() {
+            if requests[..index]
+                .iter()
+                .any(|earlier| earlier.kind == request.kind)
+            {
+                return Err(HawDBError::Execution(format!(
+                    "optimizer qualification candidate inventory contains duplicate kind {}",
+                    request.kind.as_str()
+                )));
+            }
+        }
+
+        let mut candidates = Vec::with_capacity(requests.len());
+        for candidate_request in requests {
+            let kind = candidate_request.kind;
+            let qualification = match kind {
+                OptimizerQualificationCandidateKind::Ordinary => {
+                    OptimizerQualificationOptions::default()
+                }
+                OptimizerQualificationCandidateKind::BoundedOrder(alternative) => {
+                    OptimizerQualificationOptions::default()
+                        .with_bounded_order_alternative(alternative)
+                }
+            };
+            let output = self.qualify_optimizer_query(request, qualification, search)?;
+            if let Some(expected) = candidate_request.expected_plan_instance_fingerprint
+                && output.selected_plan_instance_fingerprint != expected
+            {
+                return Err(HawDBError::Execution(format!(
+                    "optimizer qualification candidate {} is stale: expected physical fingerprint {expected:?}, observed {:?}",
+                    kind.as_str(),
+                    output.selected_plan_instance_fingerprint
+                )));
+            }
+            let same_plan_as =
+                candidates
+                    .iter()
+                    .position(|candidate: &OptimizerQualificationCandidateOutput| {
+                        candidate.output.selected_plan_instance_fingerprint
+                            == output.selected_plan_instance_fingerprint
+                    });
+            candidates.push(OptimizerQualificationCandidateOutput {
+                kind,
+                same_plan_as,
+                output,
+            });
+        }
+
+        let snapshot_epoch = candidates[0].output.snapshot_epoch;
+        if candidates
+            .iter()
+            .any(|candidate| candidate.output.snapshot_epoch != snapshot_epoch)
+        {
+            return Err(HawDBError::Execution(
+                "optimizer qualification candidates did not retain one snapshot epoch".into(),
+            ));
+        }
+        let distinct_candidate_count = candidates
+            .iter()
+            .map(|candidate| &candidate.output.selected_plan_instance_fingerprint)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        if distinct_candidate_count < 2 {
+            return Err(HawDBError::Execution(
+                "optimizer qualification candidate inventory contains fewer than two distinct physical plans"
+                    .into(),
+            ));
+        }
+        Ok(OptimizerQualificationCandidateSetOutput {
+            snapshot_epoch,
+            candidate_limit: OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT,
+            inventory_truncated: false,
+            distinct_candidate_count,
+            candidates,
         })
     }
 }

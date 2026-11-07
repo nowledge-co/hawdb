@@ -4,6 +4,11 @@
 and one saturated scalar total. Cardinality remains independent of weights.
 The initial policy uses CPU = 1, random access = 2, sequential access = 1, and
 output = 1. The constants live in `crates/cascades/src/cost.rs`.
+The immutable policy is identified as `hawdb-logical-cost-v1`; qualification
+records expose that identity, the four weights and every raw component.
+`PlanCostBreakdown::score_with_weights` can re-score frozen evidence offline
+without mutating the stored engine-default total or adding a runtime control
+plane.
 
 These are planning units, not nanoseconds, bytes, physical pages or a portable
 hardware calibration. Random access has a modest locality penalty; this does
@@ -109,11 +114,12 @@ changing the logical cost weights or claiming hardware calibration.
 
 ## Verification surfaces
 
-The proposed [cost qualification specification](specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md)
-and [development plan](OPTIMIZER_COST_QUALIFICATION_PLAN.md) define future
-same-query candidate measurements, cardinality-error isolation and offline
-coefficient experiments. Their runner and calibration gates are not implemented
-by those documents. Existing tests below establish their stated arithmetic and
+The [cost qualification specification](specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md)
+and [development plan](OPTIMIZER_COST_QUALIFICATION_PLAN.md) define same-query
+candidate evidence, cardinality-error isolation and offline coefficient
+experiments. Phase 1 now proves legal Sort/TopN alternatives and exact replay;
+the multi-family timing runner, diagnosis and calibration gates remain
+unimplemented. Existing tests below establish their stated arithmetic and
 execution contracts, not general agreement between cost ranking and latency.
 
 Ordinary tests compare component arithmetic, candidate permutations, covering

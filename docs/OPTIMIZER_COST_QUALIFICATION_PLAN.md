@@ -1,11 +1,11 @@
 # Optimizer cost qualification development plan
 
-Status: candidate qualification proposed, 2026-11-04. The shared workload
-generator and frozen ordinary-plan baseline are implemented as manual tools;
-the candidate-selection and qualification phases below remain pending. The
+Status: phase 1 candidate proof implemented, 2026-11-07. The shared workload
+generator, frozen ordinary-plan baseline and fixed Sort/TopN proof are manual
+tools; the four-family runner, diagnosis and fitting phases remain pending. The
 [specification](specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md) defines acceptance;
 [TODO](../TODO.md) is the single actionable checklist. Related work:
-[#216](https://github.com/nowledge-co/hawdb/issues/216).
+[#1596](https://github.com/nowledge-co/hawdb/issues/1596).
 
 ## Approach and delivery boundaries
 
@@ -41,15 +41,24 @@ The [compressed graph histogram](COMPRESSED_HISTOGRAMS.md) adapter adds 20 froze
 graph cases. It uses the existing qualification API for a selected tree
 fingerprint, cost and operator actuals from the same execution. It bypasses
 the physical cache and reports whole-call timing. It does not select legal
-alternatives or complete phase 1; these graph observations also do not qualify
-SQL candidate identity, hardware weights or regret.
+alternatives; these graph observations also do not qualify SQL candidate
+identity, hardware weights or regret.
 
 These tools are independent, unpublished workspaces, excluded from library
-archives and ordinary CI. They do not complete phase 1 or phase 2: full physical
-identity, legal alternative selection, four-family coverage and source-qualified
-regret remain missing. No cost coefficients or production APIs change.
+archives and ordinary CI. The fixed Cypher proof completes phase 1, not phase 2:
+four-family SQL/Cypher coverage, paired timings and source-qualified regret remain
+missing. No default cost coefficient changes in phase 1.
 
 ## Phase 1: Evidence and a minimal candidate-selection proof
+
+Status: complete, 2026-11-07. The typed embedded API executes ordinary, TopN
+and Sort-plus-Limit choices from the normal lowerer on one pinned snapshot. It
+retains complete physical identity, raw costs, policy identity, properties,
+cardinality estimates, execution failures and complete typed results. Candidate
+requests are bounded to eight and reject stale fingerprints, missing ordinary
+plans and duplicate inventories. `query-lab cost-proof` serializes the fixed
+correctness record; `cost-proof-replay` requires an exact replay. Both explicitly
+omit timing and regret claims.
 
 Dependencies: the specification, current cost/trace ownership and a frozen
 synthetic read fixture.

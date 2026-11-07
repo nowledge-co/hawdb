@@ -165,7 +165,12 @@ mod query_preparation_metrics;
 mod query_request;
 mod query_runtime;
 mod read_execution;
-pub use optimizer_qualification::OptimizerQualificationOutput;
+pub use optimizer_qualification::{
+    OptimizerQualificationCandidateKind, OptimizerQualificationCandidateOutput,
+    OptimizerQualificationCandidateRequest, OptimizerQualificationCandidateSetOutput,
+    OptimizerQualificationOutput, OptimizerQualificationResultError,
+    OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT,
+};
 #[cfg(feature = "qualification")]
 pub use query_preparation_metrics::{query_preparation_metrics, QueryPreparationMetricsSnapshot};
 mod sql_runtime;

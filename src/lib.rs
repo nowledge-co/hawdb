@@ -224,6 +224,11 @@ pub use api::{
     RetainedQueryProfile, RetainedQueryStatus,
 };
 pub use api::{
+    OptimizerQualificationCandidateKind, OptimizerQualificationCandidateOutput,
+    OptimizerQualificationCandidateRequest, OptimizerQualificationCandidateSetOutput,
+    OptimizerQualificationResultError, OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT,
+};
+pub use api::{
     VectorIndexBuildError, VectorIndexBuildOptions, VectorIndexField, VectorIndexLanguageBudget,
     VectorIndexLanguageReport, VectorIndexReadError, VectorIndexReadTransaction,
     VectorIndexSqlReport, VectorIndexSqlRequest, VectorIndexUpdateReport,
