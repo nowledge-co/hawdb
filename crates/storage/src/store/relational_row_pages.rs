@@ -2780,14 +2780,50 @@ mod tests {
         assert_eq!(fast.range_reads, 0, "fast report: {fast:?}");
         assert_eq!(fallback.monotonic_append_attempts, 0);
         assert_eq!(fallback.point_reads, 64, "fallback report: {fallback:?}");
-        assert_eq!(fast.pages_read, 0, "fast report: {fast:?}");
-        assert_eq!(fast.bytes_read, 0, "fast report: {fast:?}");
+        // The b-gap falls inside a v2 page that also holds partition c, so the
+        // proof reads that one page and the hydration report charges it.
+        assert_eq!(fast.pages_read, 1, "fast report: {fast:?}");
+        assert_eq!(fast.rows_decoded, 1, "fast report: {fast:?}");
+        assert!(fast.bytes_read > 0, "fast report: {fast:?}");
+        let probe_bytes = fast.bytes_read;
         // Format v2 packs rows by bytes, so the appended keys fall inside the
         // page that also holds the next partition. Each fallback point read
         // must read that page to prove absence (v1's 256-row pages happened
         // to end at the partition gap, so descriptor bounds sufficed).
         assert_eq!(fallback.pages_read, 64, "fallback report: {fallback:?}");
         assert!(fallback.bytes_read > 0, "fallback report: {fallback:?}");
+
+        // The proof reads under the hydration's remaining budget, and a
+        // serving-cache hit is charged like a file read.
+        let hydrate_append = |row_limits| {
+            store.hydrate_sparse_relational_workspace_with_report(
+                &store.relational_state,
+                store
+                    .open_relational_row_snapshot_reader()
+                    .unwrap()
+                    .unwrap(),
+                &transaction(
+                    (0..64)
+                        .map(|sequence| event("b", sequence))
+                        .collect::<Vec<_>>(),
+                ),
+                index_limits,
+                row_limits,
+                &constraint_index,
+            )
+        };
+        let (_, cached, _) = hydrate_append(row_limits).expect("hydrate cached append batch");
+        assert_eq!(cached.monotonic_append_hits, 1, "cached report: {cached:?}");
+        assert_eq!(cached.pages_read, 1, "cached report: {cached:?}");
+        assert_eq!(cached.bytes_read, probe_bytes, "cached report: {cached:?}");
+        let short = RelationalRowChangeCaptureLimits {
+            max_bytes: NonZeroUsize::new(probe_bytes - 1).unwrap(),
+            ..row_limits
+        };
+        let Err(error) = hydrate_append(short) else {
+            panic!("a byte budget below the straddling page rejects the proof");
+        };
+        assert!(error.to_string().contains("byte limit"), "{error}");
 
         drop(store);
         std::fs::remove_dir_all(path).unwrap();

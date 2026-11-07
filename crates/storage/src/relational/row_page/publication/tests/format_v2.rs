@@ -430,3 +430,41 @@ fn consistently_signed_unordered_directory_is_rejected_on_every_read_path() {
     );
     fs::remove_dir_all(directory).unwrap();
 }
+
+/// The v2 manifest stores page sizes as `u32`; a configuration outside that
+/// range is refused at preflight, before any artifact is written, instead of
+/// panicking while the manifest is encoded.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn page_sizes_beyond_the_manifest_field_are_rejected_at_preflight() {
+    let beyond = NonZeroUsize::new(u32::MAX as usize + 1).unwrap();
+    let mut maximum_only = RelationalRowPagePublicationConfig::default();
+    maximum_only.page_limits.max_page_bytes = beyond;
+    let mut both = maximum_only;
+    both.target_page_bytes = beyond;
+    for (label, config) in [("max-beyond-u32", maximum_only), ("both-beyond-u32", both)] {
+        let directory = unique_test_dir(label);
+        let error = RelationalRowPagePublisher::new(config)
+            .publish(&directory, 1, 0, None, Vec::new())
+            .unwrap_err();
+        assert!(
+            matches!(&error, RelationalRowPagePublicationError::Admission(message)
+                if message.contains("u32 limit")),
+            "{label}: {error:?}"
+        );
+        assert!(
+            RelationalRowPageRootReader::open_latest(
+                &directory,
+                RelationalRowPagePublicationConfig::default()
+            )
+            .unwrap()
+            .is_none(),
+            "{label}: nothing may be published"
+        );
+        assert!(
+            fs::read_dir(&directory).map_or(true, |mut entries| entries.next().is_none()),
+            "{label}: preflight refuses before writing any artifact"
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+}

@@ -95,11 +95,11 @@ pub use publication::{
 pub use recovery::RelationalRowPageRecoveryStatus;
 pub(crate) use snapshot::ProjectedPointReadRequest as CheckpointSnapshotPointRequest;
 pub use snapshot::{
-    RelationalRowPageSnapshotPointReport, RelationalRowPageSnapshotPointsReport,
-    RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
-    RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
-    RelationalRowPageSnapshotRowSource, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES,
-    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
+    RelationalRowPagePartitionAbsenceProof, RelationalRowPageSnapshotPointReport,
+    RelationalRowPageSnapshotPointsReport, RelationalRowPageSnapshotRangeReport,
+    RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
+    RelationalRowPageSnapshotReader, RelationalRowPageSnapshotRowSource,
+    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
 };
 pub use state::{
     RelationalRowLiveUnavailable, RelationalRowPageServingResources, RelationalRowPageState,

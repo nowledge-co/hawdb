@@ -121,16 +121,10 @@ fn encode_manifest_inner(
     encoded.extend_from_slice(&manifest.generation.to_le_bytes());
     encoded.extend_from_slice(&manifest.source_commit_epoch.to_le_bytes());
     encoded.extend_from_slice(&manifest.previous_generation.unwrap_or(0).to_le_bytes());
-    encoded.extend_from_slice(
-        &u32::try_from(manifest.target_page_bytes)
-            .expect("validated target page size fits in u32")
-            .to_le_bytes(),
-    );
-    encoded.extend_from_slice(
-        &u32::try_from(manifest.max_page_bytes)
-            .expect("validated maximum page size fits in u32")
-            .to_le_bytes(),
-    );
+    let (target_page_bytes, max_page_bytes) =
+        encodable_page_sizes(manifest.target_page_bytes, manifest.max_page_bytes)?;
+    encoded.extend_from_slice(&target_page_bytes.to_le_bytes());
+    encoded.extend_from_slice(&max_page_bytes.to_le_bytes());
     encoded.extend_from_slice(&manifest.dirty_page_count.to_le_bytes());
     encoded.extend_from_slice(&manifest.root_page_count.to_le_bytes());
     encoded.extend_from_slice(
@@ -480,6 +474,26 @@ fn decode_manifest_inner(
             .map_err(super::root::checkpoint::work_error)?;
     }
     Ok(manifest)
+}
+
+/// The v2 manifest stores the writer's target and maximum page sizes as
+/// `u32`. A host configuration outside that range is an admission error at
+/// publication preflight, never a panic while the manifest is encoded.
+pub(super) fn encodable_page_sizes(
+    target_page_bytes: u64,
+    max_page_bytes: u64,
+) -> Result<(u32, u32), RelationalRowPagePublicationError> {
+    match (
+        u32::try_from(target_page_bytes),
+        u32::try_from(max_page_bytes),
+    ) {
+        (Ok(target), Ok(max)) => Ok((target, max)),
+        _ => Err(RelationalRowPagePublicationError::Admission(format!(
+            "row-page target/maximum page sizes {target_page_bytes}/{max_page_bytes} exceed \
+             the format's u32 limit {}",
+            u32::MAX
+        ))),
+    }
 }
 
 fn validate_manifest_inner(

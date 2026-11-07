@@ -98,6 +98,19 @@ pub struct RelationalRowPageSnapshotRangeReport {
     pub overlay_peak_buffered_entries: usize,
 }
 
+/// Result of [`RelationalRowPageSnapshotReader::prove_partition_absent_at_or_after`].
+///
+/// `demand` reports the one base page the proof reads when a page straddles
+/// the partition's end, including a cache hit; it is zero when descriptor
+/// bounds alone decide. Callers charge it to their enclosing budget whether or
+/// not absence is proven.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelationalRowPagePartitionAbsenceProof {
+    pub absent: bool,
+    pub identity: RelationalRowPageReadViewIdentity,
+    pub demand: RelationalRowPageDemandReadReport,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalRowPageSnapshotPointsReport {
     pub identity: RelationalRowPageReadViewIdentity,
@@ -313,17 +326,28 @@ impl RelationalRowPageSnapshotReader {
     }
 
     /// Proves that the pinned snapshot has no primary key in `partition_prefix`
-    /// at or after `lower` without reading a row page.
+    /// at or after `lower`.
     ///
-    /// Recovery deltas and ambiguous page boundaries return `false`, which is
-    /// a conservative "not proven" result rather than an absence claim.
+    /// Descriptor bounds decide most cases without reading a row page. When
+    /// the selected page straddles the partition's end, the proof reads that
+    /// one page under `limits` and `hydration`, the caller's remaining
+    /// budget, and reports the read in the returned proof. Recovery deltas and
+    /// undecidable boundaries return `absent: false`, a conservative "not
+    /// proven" result rather than a presence claim.
     pub fn prove_partition_absent_at_or_after(
         &self,
         table: &str,
         partition_prefix: &RelationalKey,
         lower: &RelationalKey,
+        limits: RelationalRowPageDemandReadLimits,
+        hydration: &mut RelationalHydrationBudget,
         task: &RuntimeTaskContext,
-    ) -> Result<bool, RelationalRowPageSnapshotReadError> {
+    ) -> Result<RelationalRowPagePartitionAbsenceProof, RelationalRowPageSnapshotReadError> {
+        let decided = |absent| RelationalRowPagePartitionAbsenceProof {
+            absent,
+            identity: self.identity(),
+            demand: RelationalRowPageDemandReadReport::default(),
+        };
         self.checkpoint(task)?;
         if lower.0.len() != partition_prefix.0.len().saturating_add(1)
             || !lower.0.starts_with(partition_prefix.0.as_slice())
@@ -338,7 +362,7 @@ impl RelationalRowPageSnapshotReader {
                 .view
                 .live_may_contain_prefix_at_or_after(table, partition_prefix, lower)
         {
-            return Ok(false);
+            return Ok(decided(false));
         }
         let encoded_lower = encode_ordered_relational_key(lower).map_err(|error| {
             RelationalRowPageSnapshotReadError::Admission(format!(
@@ -351,13 +375,13 @@ impl RelationalRowPageSnapshotReader {
             .find_table_page_descriptor(table, lower)
             .map_err(|error| self.map_row_publication_error(error))?;
         let Some(descriptor) = descriptor else {
-            return Ok(true);
+            return Ok(decided(true));
         };
         if descriptor.upper_bound.as_slice() < encoded_lower.as_slice() {
-            return Ok(true);
+            return Ok(decided(true));
         }
         if partition_prefix.0.is_empty() {
-            return Ok(false);
+            return Ok(decided(false));
         }
         let encoded_prefix = encode_ordered_relational_key(partition_prefix).map_err(|error| {
             RelationalRowPageSnapshotReadError::Admission(format!(
@@ -365,10 +389,10 @@ impl RelationalRowPageSnapshotReader {
             ))
         })?;
         let Some(prefix_upper) = lexicographic_prefix_upper_bound(&encoded_prefix) else {
-            return Ok(false);
+            return Ok(decided(false));
         };
         if descriptor.lower_bound.as_slice() >= prefix_upper.as_slice() {
-            return Ok(true);
+            return Ok(decided(true));
         }
         // The selected page straddles the partition's end, which descriptor
         // bounds alone cannot decide. Format v2 packs pages by bytes, so
@@ -377,9 +401,11 @@ impl RelationalRowPageSnapshotReader {
         // `lower` from that one page: the partition is absent at or after
         // `lower` exactly when that row lies outside the partition. The page
         // holds a row at or after `lower` because its upper bound does.
+        // The read is charged to the caller's remaining budget, at most one
+        // page and one row of it.
         let mut first = None;
-        let mut hydration = RelationalHydrationBudget::default();
-        self.demand
+        let demand = self
+            .demand
             .visit_projected_range(
                 RelationalRowPageProjectedRange {
                     table,
@@ -390,9 +416,9 @@ impl RelationalRowPageSnapshotReader {
                 RelationalRowPageDemandReadLimits {
                     max_pages: NonZeroUsize::MIN,
                     max_rows: NonZeroUsize::MIN,
-                    ..RelationalRowPageDemandReadLimits::default()
+                    ..limits
                 },
-                &mut hydration,
+                hydration,
                 task,
                 |row| {
                     first = Some(row.primary_key);
@@ -400,7 +426,11 @@ impl RelationalRowPageSnapshotReader {
                 },
             )
             .map_err(|error| self.map_demand_error(error))?;
-        Ok(first.is_none_or(|key| !key.0.starts_with(partition_prefix.0.as_slice())))
+        Ok(RelationalRowPagePartitionAbsenceProof {
+            absent: first.is_none_or(|key| !key.0.starts_with(partition_prefix.0.as_slice())),
+            identity: self.identity(),
+            demand,
+        })
     }
 
     pub fn has_overlay_overflow_root(&self) -> bool {

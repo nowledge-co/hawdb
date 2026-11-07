@@ -569,6 +569,11 @@ fn preflight_deltas(
     config: RelationalRowPagePublicationConfig,
     work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<BTreeMap<String, PreparedTableDelta>, RelationalRowPagePublicationError> {
+    // Reject unencodable page-size configuration before any artifact write.
+    super::manifest::encodable_page_sizes(
+        config.target_page_bytes.get() as u64,
+        config.page_limits.max_page_bytes.get() as u64,
+    )?;
     let dirty_page_count = deltas.iter().try_fold(0usize, |count, delta| {
         checkpoint::cpu(work, || {
             count.checked_add(delta.dirty_pages.len()).ok_or_else(|| {
