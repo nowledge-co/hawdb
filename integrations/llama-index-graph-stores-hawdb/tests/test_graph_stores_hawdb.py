@@ -47,7 +47,11 @@ from llama_index.graph_stores.hawdb import (
     WrongThreadError,
     base,
 )
-from llama_index.graph_stores.hawdb.base import MAX_PROPERTIES_BYTES, MAX_TEXT_BYTES
+from llama_index.graph_stores.hawdb.base import (
+    MAX_FIELD_BYTES,
+    MAX_PROPERTIES_BYTES,
+    MAX_TEXT_BYTES,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -823,27 +827,73 @@ def test_large_results_come_back_in_pages(store):
     assert store.get() == []
 
 
-def test_chunk_text_holds_at_most_what_get_can_size(store):
-    # get sizes each node with size(text) + size(properties), and HawDB refuses
-    # an expression whose string functions read more than 10,000,000 bytes.
+@pytest.mark.parametrize("backend", ["memory", "file"])
+def test_get_pages_count_ids_labels_and_names(tmp_path, monkeypatch, backend):
+    # A 1 MiB result limit stands in for the default 64 MiB, with pages of
+    # 768 Ki characters, so close to it that sizing a page without any one of
+    # these columns overflows it. These nodes have almost no text or
+    # properties, while their labels, or their ids and names, fill 1.3 MB.
+    limit = 1 << 20
+    monkeypatch.setattr(base, "_PAGE_CHARACTERS", 3 * limit // 4)
+    chunks = [ChunkNode(text="t", id_=f"c{i}", label="L" * 40_000) for i in range(32)]
+    entities = [EntityNode(name=f"e{i}" + "n" * 8_000) for i in range(80)]
+
+    def content(nodes):
+        return sorted(
+            (
+                node.id,
+                node.label,
+                getattr(node, "name", None),
+                getattr(node, "text", None),
+            )
+            for node in nodes
+        )
+
+    path = None if backend == "memory" else tmp_path / "graph"
+    with hawdb.open(path, max_read_result_payload_bytes=limit) as db:
+        store = HawDBPropertyGraphStore(db)
+        store.upsert_nodes(chunks + entities)
+        for nodes in (chunks, entities, chunks + entities):
+            got = store.get(ids=[node.id for node in nodes])
+            assert content(got) == content(nodes)
+        assert content(store.get()) == content(chunks + entities)
+
+
+def test_nodes_hold_at_most_what_get_can_size(store):
+    # get sizes each node with one expression over its id, kind, label, name,
+    # text and properties, and HawDB refuses an expression whose string
+    # functions read more than 10,000,000 bytes.
     blob = "x" * (MAX_PROPERTIES_BYTES - len('{"blob":""}'))
+    widest = "i" * MAX_FIELD_BYTES
     store.upsert_nodes(
         [
             ChunkNode(
-                text="a" * MAX_TEXT_BYTES, id_="ascii", properties={"blob": blob}
+                text="a" * MAX_TEXT_BYTES,
+                id_=widest,
+                label="L" * MAX_FIELD_BYTES,
+                properties={"blob": blob},
             ),
             ChunkNode(text="漢" * (MAX_TEXT_BYTES // 3), id_="cjk"),
+            EntityNode(
+                name="n" * MAX_FIELD_BYTES,
+                label="E" * MAX_FIELD_BYTES,
+                properties={"blob": blob},
+            ),
         ]
     )
-    assert {node.id: len(node.text) for node in store.get()} == {
-        "ascii": MAX_TEXT_BYTES,
-        "cjk": MAX_TEXT_BYTES // 3,
-    }
+    assert sorted(
+        (len(node.id), len(node.label), len(getattr(node, "text", "")))
+        for node in store.get()
+    ) == [
+        (3, len("text_chunk"), MAX_TEXT_BYTES // 3),
+        (MAX_FIELD_BYTES, MAX_FIELD_BYTES, 0),
+        (MAX_FIELD_BYTES, MAX_FIELD_BYTES, MAX_TEXT_BYTES),
+    ]
     # The limit counts UTF-8 bytes, and a refused chunk fails the whole call.
     for text in ("a" * (MAX_TEXT_BYTES + 1), "漢" * (MAX_TEXT_BYTES // 3 + 1)):
         with pytest.raises(ValueError, match="text of chunk 'big'"):
             store.upsert_nodes([EntityNode(name="ok"), ChunkNode(text=text, id_="big")])
-    assert ids(store.get()) == ["ascii", "cjk"]
+    assert ids(store.get()) == sorted(["cjk", widest, "n" * MAX_FIELD_BYTES])
 
 
 def test_rejected_nodes_write_nothing(store, monkeypatch):
@@ -869,6 +919,26 @@ def test_rejected_nodes_write_nothing(store, monkeypatch):
                 Relation(label="R\udc00", source_id="c", target_id="d"),
             ]
         )
+    # Ids and labels count UTF-8 bytes: the CJK value has fewer characters than
+    # the limit, but more bytes.
+    over, cjk = "x" * (MAX_FIELD_BYTES + 1), "漢" * (MAX_FIELD_BYTES // 3 + 1)
+    for node in (
+        ChunkNode(text="t", id_=over),
+        ChunkNode(text="t", id_=cjk),
+        ChunkNode(text="t", id_="v", label=over),
+        EntityNode(name=over),
+        EntityNode(name="bad", label=cjk),
+    ):
+        with pytest.raises(ValueError, match=f"exceeds the {MAX_FIELD_BYTES} bytes"):
+            store.upsert_nodes([EntityNode(name="ok"), node])
+    for source, target in ((over, "b"), ("a", cjk)):
+        with pytest.raises(ValueError, match=f"exceeds the {MAX_FIELD_BYTES} bytes"):
+            store.upsert_relations(
+                [
+                    Relation(label="R", source_id="a", target_id="b"),
+                    Relation(label="R", source_id=source, target_id=target),
+                ]
+            )
     with pytest.raises(ValueError, match="NaN"):
         store.upsert_nodes(
             [

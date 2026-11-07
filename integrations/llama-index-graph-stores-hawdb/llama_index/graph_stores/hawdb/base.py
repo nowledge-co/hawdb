@@ -72,18 +72,23 @@ CHUNK_KIND = "chunk"
 # ``json_value`` reads at most 1 MiB of JSON per document.
 MAX_PROPERTIES_BYTES = 1 << 20
 
-# ``get`` sizes each node with ``size(n.text) + size(n.properties)``, and HawDB
-# refuses an expression whose string functions read more than 10,000,000 bytes,
-# so a chunk's text holds at most this many bytes of UTF-8.
+# ``get`` sizes each node with one expression over its id, kind, label, name,
+# text and properties, and HawDB refuses an expression whose string functions
+# read more than 10,000,000 bytes. So a chunk's text holds at most 8 MiB of
+# UTF-8, and a node's id and label, or a relation's endpoint ids, at most
+# 64 KiB each; an entity's name is its id, and an endpoint becomes an entity
+# named by its id. With 1 MiB of properties, a chunk then sizes at most
+# 9,568,261 bytes.
 MAX_TEXT_BYTES = 8 << 20
+MAX_FIELD_BYTES = 64 << 10
 
 # A read by id takes at most this many ids per statement.
 _PAGE_SIZE = 500
 
-# A page of nodes read back holds at most this many characters of text and
-# properties, at most 8 MiB of UTF-8, inside the 64 MiB a statement in a read
-# snapshot may return. Ids, labels and names are not counted; they would need
-# to average more than 100 KB per node to fill the rest.
+# A page of nodes read back holds at most this many characters of ids, kinds,
+# labels, names, text and properties, at most 8 MiB of UTF-8, inside the 64 MiB
+# a statement in a read snapshot may return. A larger node takes a page of its
+# own.
 _PAGE_CHARACTERS = 1 << 21
 
 # HawDB logs a transaction as one WAL record of at most 16 MiB. A write that
@@ -145,7 +150,12 @@ _NODE_COLUMNS = (
     "n.id AS id, n.kind AS kind, n.label AS label, n.name AS name, "
     "n.text AS text, n.properties AS properties"
 )
-_NODE_SIZE = "coalesce(size(n.text), 0) + coalesce(size(n.properties), 0)"
+# The characters of every column a node read returns, by which ``get`` pages.
+_NODE_SIZE = (
+    "coalesce(size(n.id), 0) + coalesce(size(n.kind), 0) + "
+    "coalesce(size(n.label), 0) + coalesce(size(n.name), 0) + "
+    "coalesce(size(n.text), 0) + coalesce(size(n.properties), 0)"
+)
 _NODES_BY_ID = f"MATCH (n:__Node__) WHERE n.id IN $ids RETURN {_NODE_COLUMNS}"
 _STORED_DIGESTS = (
     "MATCH (n:__Node__) WHERE n.id IN $ids RETURN n.id AS id, n.digest AS digest"
@@ -262,12 +272,14 @@ class HawDBPropertyGraphStore(PropertyGraphStore):
     database is used on another thread, which is what creating the store, or
     using ``client``, on another thread raises.
 
-    ``upsert_nodes`` replaces a stored node with the same id, and refuses a
-    chunk whose text exceeds ``MAX_TEXT_BYTES`` of UTF-8 or a node whose
-    properties exceed ``MAX_PROPERTIES_BYTES`` of JSON.
-    ``upsert_relations`` creates missing endpoints as entities named by their id
-    and keeps a relation that already exists with the same source, label and
-    target, as ``SimplePropertyGraphStore`` does. A write call is one
+    ``upsert_nodes`` replaces a stored node with the same id. It refuses a node
+    whose id or label exceeds ``MAX_FIELD_BYTES`` of UTF-8, a chunk whose text
+    exceeds ``MAX_TEXT_BYTES`` or a node whose properties exceed
+    ``MAX_PROPERTIES_BYTES`` of JSON, so that ``get`` can read every node back.
+    ``upsert_relations`` creates missing endpoints as entities named by their id,
+    and refuses an endpoint id over ``MAX_FIELD_BYTES``. It keeps a relation
+    that already exists with the same source, label and target, as
+    ``SimplePropertyGraphStore`` does. A write call is one
     transaction unless it would exceed about 8 MiB of HawDB's 16 MiB WAL record
     or 10,000 nodes or relations; then it commits in several transactions, each
     holding whole nodes or relations, and a failure can leave the earlier ones
@@ -471,6 +483,11 @@ class HawDBPropertyGraphStore(PropertyGraphStore):
         for relation in relations:
             key = (relation.source_id, relation.label, relation.target_id)
             if key not in rows:
+                for end, endpoint in (
+                    ("source", relation.source_id),
+                    ("target", relation.target_id),
+                ):
+                    _check_field(endpoint, f"{end} id of relation {_brief(key)}")
                 rows[key] = {
                     "source": relation.source_id,
                     "label": relation.label,
@@ -801,6 +818,19 @@ def _dump(properties: dict, what: str, key: object) -> str:
         ) from error
 
 
+def _check_field(value: str | None, what: str) -> None:
+    if value is not None and len(value.encode()) > MAX_FIELD_BYTES:
+        raise ValueError(
+            f"{what} exceeds the {MAX_FIELD_BYTES} bytes of UTF-8 the store reads back"
+        )
+
+
+def _brief(value: object) -> str:
+    """Return the repr of an id or key for a message, cut to 80 characters."""
+    text = repr(value)
+    return text if len(text) <= 80 else f"{text[:77]}..."
+
+
 def _embedding(node: LabelledNode) -> tuple[dict[str, list[float]] | None, bytes]:
     """Return the node's embedding as a HawDB vector and its 32-bit bytes."""
     if not node.embedding:
@@ -833,6 +863,9 @@ def _node_row(node: LabelledNode) -> dict[str, Any]:
             "HawDBPropertyGraphStore stores EntityNode and ChunkNode, "
             f"not {type(node).__name__}"
         )
+    # An entity's id is its name, so this also bounds the name.
+    _check_field(node.id, f"id of node {_brief(node.id)}")
+    _check_field(node.label, f"label of node {_brief(node.id)}")
     properties = _dump(node.properties, "node", node.id)
     if len(properties.encode()) > MAX_PROPERTIES_BYTES:
         raise ValueError(

@@ -208,18 +208,23 @@ leaks this way keeps no files open.
   property filter, select the matching ids with one statement, about 50 bytes
   per node with the 36-character ids LlamaIndex gives chunks, so such a call
   fails once it matches about 1.3 million nodes. Given ids or names, they
-  select 500 at a time, and `get` reads the nodes in pages. `get_triplets`
-  returns its result from one statement: an unfiltered `get_triplets()`
-  returns about 440,000 relations with short names and empty properties
-  within that limit. `get_rel_map` runs one statement per hop, each returning
-  at most twice `limit` rows.
+  select 500 at a time. `get` reads the nodes in pages of at most 500 nodes
+  and 2 million characters of their ids, labels, names, text and properties.
+  A page holds at most 8 MiB of UTF-8, or one node of at most about 9.6 MB,
+  so a limit of 10 MiB or more holds every page. `get_triplets` returns its
+  result from one statement: within 64 MiB, an unfiltered `get_triplets()`
+  returns about 440,000 relations with short names and empty properties.
+  `get_rel_map` runs one statement per hop, each returning at most twice
+  `limit` rows.
 - `structured_query` runs in autocommit, where HawDB refuses a result that
   needs more than its query memory, 16 MiB by default, with
   `ResourceBudgetError`; the Python binding does not expose that setting. For
   a large read, run the query in `graph_store.client.read_transaction()`.
-- The store refuses a chunk whose text exceeds 8 MiB of UTF-8, because `get`
-  sizes each node with `size()` and HawDB refuses an expression whose string
-  functions read more than 10,000,000 bytes.
+- `get` sizes each node with one `size()` expression over its id, label,
+  name, text and properties, and HawDB refuses an expression whose string
+  functions read more than 10,000,000 bytes. So the store refuses a chunk
+  whose text exceeds 8 MiB of UTF-8, and a node whose id or label, or a
+  relation whose endpoint id, exceeds 64 KiB; an entity's id is its name.
 - Filters on `triplet_source_id` and `ref_doc_id` use their indexes. Filters on
   other keys read the JSON with `json_value`, so the store refuses node
   properties above 1 MiB of JSON, the most `json_value` reads. Such a filter
