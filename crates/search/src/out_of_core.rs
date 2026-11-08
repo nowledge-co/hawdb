@@ -333,6 +333,10 @@ pub struct SearchOutOfCoreConfig {
     /// Values below `max_lexical_query_terms` are raised to it.
     pub max_lexical_query_analyzed_terms: NonZeroUsize,
     pub max_vector_candidates: NonZeroUsize,
+    /// DiskANN navigation beam for queries that do not set one with
+    /// [`VectorSearchExecutionOptions::with_navigation_beam`]. A narrower beam
+    /// scores fewer vectors per segment graph at some recall cost (#1614).
+    pub default_navigation_beam: NonZeroUsize,
     pub max_vector_search_working_bytes: NonZeroUsize,
     pub max_vector_search_parallelism: NonZeroUsize,
     pub max_hydrated_documents: NonZeroUsize,
@@ -367,6 +371,7 @@ impl Default for SearchOutOfCoreConfig {
             )
             .unwrap(),
             max_vector_candidates: NonZeroUsize::new(1_024).unwrap(),
+            default_navigation_beam: NonZeroUsize::new(crate::DEFAULT_NAVIGATION_BEAM).unwrap(),
             max_vector_search_working_bytes: NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
             max_vector_search_parallelism: NonZeroUsize::MIN,
             max_hydrated_documents: NonZeroUsize::new(1024).unwrap(),
@@ -2750,8 +2755,12 @@ impl SearchOutOfCoreReader {
         let SearchOutOfCoreExecutionContext {
             access_control,
             compressed_vector_search_mode,
-            vector_execution_options,
+            mut vector_execution_options,
         } = execution;
+        // A per-query beam wins; otherwise the reader's configured default.
+        vector_execution_options
+            .navigation_beam
+            .get_or_insert(self.config.default_navigation_beam);
         let task_context = vector_execution_options.task_context;
         if let Some(task_context) = task_context {
             task_context.checkpoint().map_err(|reason| {
