@@ -32,7 +32,7 @@ use std::collections::BTreeSet;
 // A single large graph needs more navigation state than its reranked output.
 // Keep the ordinary 128-candidate window independent of this search workspace.
 #[cfg(feature = "vector-search")]
-pub(crate) const DISKANN_NAVIGATION_BEAM: usize = 1024;
+pub(crate) const DISKANN_NAVIGATION_BEAM: usize = crate::DEFAULT_NAVIGATION_BEAM;
 
 pub(super) fn query_can_generate_candidates(
     embedding: Option<&[f32]>,

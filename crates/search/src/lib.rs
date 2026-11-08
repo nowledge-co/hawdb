@@ -930,6 +930,10 @@ impl VectorSearchKernelPreference {
     }
 }
 
+/// Default DiskANN navigation beam: the beam of a query that sets none, and
+/// the default of `SearchOutOfCoreConfig::default_navigation_beam`.
+pub const DEFAULT_NAVIGATION_BEAM: usize = 1024;
+
 #[derive(Debug, Clone, Copy)]
 pub struct VectorSearchExecutionOptions<'a> {
     pub max_parallelism: NonZeroUsize,
