@@ -17,18 +17,18 @@ use super::lexical_projection::{
     LexicalProjectionConfig, LexicalProjectionReader, DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE,
 };
 use super::{
-    checksum_bytes, decode_metadata, decode_search_snapshot_text_bounded, decode_string,
-    encode_metadata, encode_search_snapshot_text, encode_string, lexical_analyzer_digest,
-    lexical_documents_digest, matched_query_spans_bounded, matched_query_terms, rrf_child_score,
-    search_empty_reasons, top_ranked_candidates, top_ranked_ids, weighted_rrf_score,
-    CompressedVectorSearchMode, SearchAccessControlContext, SearchAnalyzerLexicon,
-    SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest, SearchFallbackReasonCode,
-    SearchFieldPruningAccumulator, SearchHit, SearchHitHydration, SearchIndex, SearchMode,
-    SearchPageWindow, SearchPredicatePushdownReport, SearchProjectionFreshness, SearchQueryOptions,
-    SearchResultSet, SearchRetrieverReport, SearchScoredCandidate, SearchSegmentDescriptor,
-    SearchSegmentDescriptorEntry, SearchTruncationReasonCode, VectorRelevanceQuery,
-    VectorSearchExecutionOptions, FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER,
-    SEARCH_SEGMENT_DESCRIPTOR_FILE, SEARCH_SEGMENT_PAYLOAD_FILE,
+    checksum_bytes, decode_search_snapshot_text_bounded, decode_string, encode_metadata,
+    encode_search_snapshot_text, encode_string, lexical_analyzer_digest, lexical_documents_digest,
+    matched_query_spans_bounded, matched_query_terms, rrf_child_score, search_empty_reasons,
+    top_ranked_candidates, top_ranked_ids, weighted_rrf_score, CompressedVectorSearchMode,
+    SearchAccessControlContext, SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument,
+    SearchEmbeddingManifest, SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit,
+    SearchHitHydration, SearchIndex, SearchMode, SearchPageWindow, SearchPredicatePushdownReport,
+    SearchProjectionFreshness, SearchQueryOptions, SearchResultSet, SearchRetrieverReport,
+    SearchScoredCandidate, SearchSegmentDescriptor, SearchSegmentDescriptorEntry,
+    SearchTruncationReasonCode, VectorRelevanceQuery, VectorSearchExecutionOptions,
+    FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE,
+    SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use crate::bounded_file::{read_bound_file, read_bounded_file};
 use crate::error::{HawDBError, Result};
@@ -3656,11 +3656,24 @@ impl SearchOutOfCoreReader {
         segment: &SearchSegmentDescriptorEntry,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Vec<SearchMetadataDocument>> {
+        self.read_metadata_segment_keys(artifact, segment, metrics, None)
+    }
+
+    /// [`Self::read_metadata_segment`] decoding only the metadata `keys`, or
+    /// every key when `None`.
+    fn read_metadata_segment_keys(
+        &self,
+        artifact: &SearchOutOfCoreSegmentReader,
+        segment: &SearchSegmentDescriptorEntry,
+        metrics: &mut SearchOutOfCoreMetrics,
+        keys: Option<&crate::MetadataKeys>,
+    ) -> Result<Vec<SearchMetadataDocument>> {
         self.read_metadata_segment_with(
             artifact,
             segment,
             metrics,
             decode_search_snapshot_text_bounded,
+            keys,
         )
     }
 
@@ -3672,9 +3685,15 @@ impl SearchOutOfCoreReader {
         memory: &hawdb_executor::QueryMemoryAccount,
         task: &crate::RuntimeTaskContext,
     ) -> Result<Vec<SearchMetadataDocument>> {
-        self.read_metadata_segment_with(artifact, segment, metrics, |payload, limit| {
-            crate::decode_search_snapshot_text_admitted(payload, limit, memory, task)
-        })
+        self.read_metadata_segment_with(
+            artifact,
+            segment,
+            metrics,
+            |payload, limit| {
+                crate::decode_search_snapshot_text_admitted(payload, limit, memory, task)
+            },
+            None,
+        )
     }
 
     fn read_metadata_segment_with(
@@ -3683,6 +3702,7 @@ impl SearchOutOfCoreReader {
         segment: &SearchSegmentDescriptorEntry,
         metrics: &mut SearchOutOfCoreMetrics,
         decode: impl FnOnce(&[u8], u64) -> Result<String>,
+        keys: Option<&crate::MetadataKeys>,
     ) -> Result<Vec<SearchMetadataDocument>> {
         let range = Self::artifact_layout_range(artifact, segment.segment_id)?.metadata;
         let payload = read_out_of_core_payload_range(
@@ -3698,7 +3718,7 @@ impl SearchOutOfCoreReader {
         let text = decode(&payload, self.config.max_uncompressed_segment_bytes.get())?;
         metrics.peak_metadata_segment_bytes =
             metrics.peak_metadata_segment_bytes.max(text.len() as u64);
-        let documents = decode_metadata_segment(&text, segment, range.entry_count)?;
+        let documents = decode_metadata_segment(&text, segment, range.entry_count, keys)?;
         let layout = Self::artifact_layout_range(artifact, segment.segment_id)?;
         let ordinals = documents
             .iter()
@@ -5173,6 +5193,7 @@ fn decode_metadata_segment(
     text: &str,
     segment: &SearchSegmentDescriptorEntry,
     expected_count: usize,
+    keys: Option<&crate::MetadataKeys>,
 ) -> Result<Vec<SearchMetadataDocument>> {
     let mut lines = text.lines();
     if lines.next() != Some("HAWDB_SEARCH_METADATA_SEGMENT_V1") {
@@ -5189,7 +5210,7 @@ fn decode_metadata_segment(
                 documents.push(SearchMetadataDocument {
                     id: decode_string(raw_id)?,
                     vector_ordinal: decode_optional_vector_ordinal(raw_vector_ordinal)?,
-                    metadata: decode_metadata(raw_metadata)?,
+                    metadata: crate::decode_metadata_keys(raw_metadata, keys)?,
                 })
             }
             _ => {

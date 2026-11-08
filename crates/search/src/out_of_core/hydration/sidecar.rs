@@ -91,9 +91,8 @@ pub(in crate::out_of_core) fn load(
             Ok(())
         };
         match query {
-            Some(query) => {
-                reader.visit_query_metadata_segment(artifact, segment, metrics, query, admit)?
-            }
+            Some(query) => reader
+                .visit_query_metadata_segment(artifact, segment, metrics, query, None, admit)?,
             None => {
                 for document in reader.read_metadata_segment(artifact, segment, metrics)? {
                     admit(&document)?;

@@ -85,6 +85,7 @@ impl SearchOutOfCoreReader {
         }
         let mut file = SpillFile::create(&self.config, context, scratch)?;
         file.write_all(CANDIDATE_FILE_HEADER)?;
+        let keys = crate::MetadataKeys::for_predicates(predicates);
         let mut offset = CANDIDATE_FILE_HEADER.len() as u64;
         let mut cardinality = 0usize;
 
@@ -161,10 +162,20 @@ impl SearchOutOfCoreReader {
                     block_cardinality = block_cardinality.saturating_add(1);
                     Ok(())
                 };
+                // Only the predicates' fields are decoded (#1613).
                 if let Some(context) = context {
-                    self.visit_query_metadata_segment(artifact, segment, metrics, context, append)?;
+                    self.visit_query_metadata_segment(
+                        artifact,
+                        segment,
+                        metrics,
+                        context,
+                        Some(&keys),
+                        append,
+                    )?;
                 } else {
-                    for document in self.read_metadata_segment(artifact, segment, metrics)? {
+                    for document in
+                        self.read_metadata_segment_keys(artifact, segment, metrics, Some(&keys))?
+                    {
                         append(&document)?;
                     }
                 }
