@@ -514,3 +514,56 @@ fn visibility_validation_refuses_any_unrestricted_pattern_or_endpoint_read() {
     validate_node_visibility_predicates(&plan("MATCH (a)-[:R]->(b) RETURN b"), &visibility)
         .unwrap();
 }
+
+/// A node the pattern introduces gets seeds when every disjunct of the WHERE
+/// equates it with an enclosing-row expression (#1607, LDBC IC14); the seeded
+/// program imports it from the seed column and starts there.
+#[test]
+fn where_equalities_seed_an_introduced_node() {
+    let seeds = |query: &str| {
+        let items = returns(query, &["r"], &[]).unwrap();
+        pattern(&items[0].expression).seeds
+    };
+    let single = seeds(
+        "MATCH ()-[r:KNOWS]->() RETURN [(a:Person)<-[:HAS_CREATOR]-(m)-[:HAS_CREATOR]->(b:Person) \
+         WHERE a = startNode(r) | m] AS c",
+    )
+    .expect("a = startNode(r) seeds a");
+    assert_eq!(single.variable, "a");
+    assert_eq!(single.expressions.len(), 1);
+    assert_eq!(
+        single.program.imports,
+        [GraphBindingImport {
+            variable: "a".into(),
+            column: single.column.clone(),
+            kind: GraphEntityKind::Node,
+        }]
+    );
+    assert!(!single.program.introduced.contains(&"a".to_string()));
+    assert!(matches!(
+        &single.program.steps[0],
+        GraphMatchStep::Node(node) if node.variable == "a"
+    ));
+
+    let both = seeds(
+        "MATCH ()-[r:KNOWS]->() RETURN [(a:Person)<-[:HAS_CREATOR]-(m)-[:HAS_CREATOR]->(b:Person) \
+         WHERE (a = startNode(r) AND b = endNode(r)) OR (endNode(r) = a AND b = startNode(r)) | m] AS c",
+    )
+    .expect("both orientations seed a");
+    assert_eq!(both.variable, "a");
+    assert_eq!(both.expressions.len(), 2);
+
+    for unseeded in [
+        // One disjunct does not pin a.
+        "MATCH ()-[r:KNOWS]->() RETURN [(a:Person)<-[:HAS_CREATOR]-(m) \
+         WHERE a = startNode(r) OR m.length > 3 | m] AS c",
+        // The other side reads a variable the pattern introduces.
+        "MATCH ()-[r:KNOWS]->() RETURN [(a:Person)<-[:HAS_CREATOR]-(m)-[:HAS_CREATOR]->(b:Person) \
+         WHERE a = b | m] AS c",
+        // Not an equality.
+        "MATCH ()-[r:KNOWS]->() RETURN [(a:Person)<-[:HAS_CREATOR]-(m) \
+         WHERE a <> startNode(r) | m] AS c",
+    ] {
+        assert!(seeds(unseeded).is_none(), "{unseeded}");
+    }
+}

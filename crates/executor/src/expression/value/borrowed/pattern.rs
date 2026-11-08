@@ -24,6 +24,7 @@ use hawdb_plan_cypher::{GraphEntityKind, GraphMatchProgram, GraphMatchStep, Patt
 use hawdb_storage::adjacency::AdjacencyDirection;
 use hawdb_storage::read_view::AdmittedNodeRead;
 use hawdb_storage::{NodeId, RelId, RelRecord};
+use std::collections::BTreeSet;
 
 /// Read access to the graph snapshot for one evaluation site.
 #[derive(Clone, Copy)]
@@ -166,6 +167,46 @@ pub(super) fn evaluate<'a>(
         .into_owned_accounted(&mut _arguments)?;
         row.values.insert(column.clone(), value);
     }
+    // A seeded pattern matches once from each distinct node among the seed
+    // values, with its seeded program; the WHERE still decides every match
+    // (#1607). Seed values that are NULL or not nodes cannot equal the node.
+    let mut _seeds = account.reserve(0)?;
+    let runs = match &pattern.seeds {
+        None => vec![(&pattern.program, row)],
+        Some(seeds) => {
+            let mut runs = Vec::new();
+            let mut seen = BTreeSet::new();
+            for expression in &seeds.expressions {
+                // A computed seed (such as `startNode(r)`) is charged to this
+                // account while it is built; its owned copy is charged to the
+                // seeds lease on the same account, so the charge moves rather
+                // than transfers between accounts.
+                let computed = evaluate_scoped(
+                    expression,
+                    scope.catalog,
+                    scope.binding,
+                    scope.locals,
+                    Some(account),
+                    scope.work,
+                    Some(graph),
+                )?;
+                let payload = crate::binding::value_memory_bytes(computed.as_ref())
+                    .saturating_sub(std::mem::size_of::<Value>());
+                let value = computed.into_owned();
+                _seeds.grow(payload)?;
+                let Some(id) = seed_node_id(graph.store, &value)? else {
+                    continue;
+                };
+                if !seen.insert(id) {
+                    continue;
+                }
+                let mut seeded = row.clone();
+                seeded.values.insert(seeds.column.clone(), value);
+                runs.push((&seeds.program, seeded));
+            }
+            runs
+        }
+    };
     with_column_frames(
         &pattern.columns,
         scope.binding,
@@ -177,58 +218,83 @@ pub(super) fn evaluate<'a>(
                 .as_ref()
                 .map(|_| list::ListBuilder::new(Some(account), scope.work, 0))
                 .transpose()?;
-            visit_correlated_matches(
-                &pattern.program,
-                graph.store,
-                graph.context,
-                account,
-                &row,
-                // Every candidate the match visits is list-expression work,
-                // so a pattern that scans is bounded like one that matches.
-                &|| scope.work.charge(1),
-                &mut |matched| {
-                    let evaluate = |expression| {
-                        evaluate_scoped(
-                            expression,
-                            scope.catalog,
-                            matched,
-                            locals,
-                            Some(account),
-                            scope.work,
-                            Some(graph),
-                        )
-                    };
-                    if let Some(predicate) = &pattern.predicate {
-                        match evaluate(predicate)?.as_ref() {
-                            Value::Bool(true) => {}
-                            Value::Bool(false) | Value::Null => return Ok(ScanControl::Continue),
-                            value => {
-                                return Err(HawDBError::Execution(format!(
-                                    "pattern WHERE requires a boolean value, got {:?}",
-                                    description(value, Some(account))
-                                )))
+            for (program, row) in &runs {
+                if found {
+                    break;
+                }
+                visit_correlated_matches(
+                    program,
+                    graph.store,
+                    graph.context,
+                    account,
+                    row,
+                    // Every candidate the match visits is list-expression work,
+                    // so a pattern that scans is bounded like one that matches.
+                    &|| scope.work.charge(1),
+                    &mut |matched| {
+                        let evaluate = |expression| {
+                            evaluate_scoped(
+                                expression,
+                                scope.catalog,
+                                matched,
+                                locals,
+                                Some(account),
+                                scope.work,
+                                Some(graph),
+                            )
+                        };
+                        if let Some(predicate) = &pattern.predicate {
+                            match evaluate(predicate)?.as_ref() {
+                                Value::Bool(true) => {}
+                                Value::Bool(false) | Value::Null => {
+                                    return Ok(ScanControl::Continue)
+                                }
+                                value => {
+                                    return Err(HawDBError::Execution(format!(
+                                        "pattern WHERE requires a boolean value, got {:?}",
+                                        description(value, Some(account))
+                                    )))
+                                }
                             }
                         }
-                    }
-                    match (&pattern.projection, output.as_mut()) {
-                        (Some(projection), Some(output)) => {
-                            output.push_projected(evaluate(projection)?)?;
-                            Ok(ScanControl::Continue)
+                        match (&pattern.projection, output.as_mut()) {
+                            (Some(projection), Some(output)) => {
+                                output.push_projected(evaluate(projection)?)?;
+                                Ok(ScanControl::Continue)
+                            }
+                            // One match decides a pattern predicate.
+                            _ => {
+                                found = true;
+                                Ok(ScanControl::Stop)
+                            }
                         }
-                        // One match decides a pattern predicate.
-                        _ => {
-                            found = true;
-                            Ok(ScanControl::Stop)
-                        }
-                    }
-                },
-            )?;
+                    },
+                )?;
+            }
             Ok(match output {
                 Some(output) => output.finish(),
                 None => ProjectedValue::scalar(Value::Bool(found)),
             })
         },
     )
+}
+
+/// The id of the node a seed value can equal, or `None` when it can equal no
+/// node of the graph. A node value is a map holding `_id` and `labels`, the
+/// shape a MATCH import accepts; NULL, scalars, lists and other maps never
+/// equal one, and neither does a node-shaped map whose id names no node.
+fn seed_node_id(store: &dyn GraphExecutionRead, value: &Value) -> Result<Option<NodeId>> {
+    let Value::Map(entries) = value else {
+        return Ok(None);
+    };
+    let (Some(Value::Int(id)), true) = (entries.get("_id"), entries.contains_key("labels")) else {
+        return Ok(None);
+    };
+    let Ok(id) = u64::try_from(*id) else {
+        return Ok(None);
+    };
+    let id = NodeId(id);
+    Ok(store.node_owned(id)?.map(|_| id))
 }
 
 /// Whether the pattern matches `name` as a node or a relationship, if at all.
