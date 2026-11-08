@@ -493,6 +493,18 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
                 write_projection_expression(output, argument);
                 output.push(';');
             }
+            if let Some(seeds) = &pattern.seeds {
+                output.push_str(",seeds=");
+                write_identifier(output, &seeds.variable);
+                output.push(':');
+                write_identifier(output, &seeds.column);
+                output.push(':');
+                for expression in &seeds.expressions {
+                    write_projection_expression(output, expression);
+                    output.push(';');
+                }
+                super::graph_match::write_program(output, &seeds.program);
+            }
             output.push_str(",columns=");
             super::common::write_identifier_list(output, &pattern.columns);
             output.push_str(",where=");

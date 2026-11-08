@@ -29,9 +29,9 @@ pub use hawdb_expression::{
     expand_rel_types, CaseColumnSearchRankProjection, CaseEntitySearchRankProjection,
     CoalesceDifferenceProjectionTerm, ComparisonOp, DatePart, GraphBindingImport, GraphEntityKind,
     GraphMatchHashJoin, GraphMatchNode, GraphMatchProgram, GraphMatchShortestPath, GraphMatchStep,
-    ListComprehensionProjection, PathFunction, PatternProjection, Predicate, ProjectionExpression,
-    ReduceProjection, ScalarBinaryOp, ShortestPathSelection, SortDirection, SortItem, SortKey,
-    ENDPOINT_VISIBILITY_VARIABLE, MAX_SHORTEST_PATH_HOPS,
+    ListComprehensionProjection, PathFunction, PatternProjection, PatternSeeds, Predicate,
+    ProjectionExpression, ReduceProjection, ScalarBinaryOp, ShortestPathSelection, SortDirection,
+    SortItem, SortKey, ENDPOINT_VISIBILITY_VARIABLE, MAX_SHORTEST_PATH_HOPS,
 };
 pub use hawdb_expression::{membership_conjunct, predicate_cannot_fail, predicate_variables};
 use std::collections::{BTreeMap, BTreeSet};
