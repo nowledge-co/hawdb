@@ -250,11 +250,14 @@ fn select_records(
         if record.is_empty() || record == "HAWDB_SEARCH_SEGMENT_V1" {
             continue;
         }
-        let document = decode_record(record, query)?;
-        if count == 0 && document.id != segment.first_document_id {
+        // Only the selected records are decoded (#1611). Every record still
+        // proves the segment's order, bounds and count from its id; the
+        // checksummed range already fences the bytes of the others.
+        let summary = summarize_record(record, query)?;
+        if count == 0 && summary.id != segment.first_document_id {
             return Err(invalid("document bounds do not match its descriptor"));
         }
-        if count != 0 && previous.as_slice() >= document.id.as_bytes() {
+        if count != 0 && previous.as_slice() >= summary.id.as_bytes() {
             return Err(invalid("documents are not strictly ordered"));
         }
         count = add(count, 1)?;
@@ -262,13 +265,15 @@ fn select_records(
             return Err(invalid("document count exceeds its descriptor"));
         }
         previous.clear();
-        reserve_capacity(&mut previous, document.id.len(), &mut previous_memory)?;
-        previous.extend_from_slice(document.id.as_bytes());
-        let bytes = search_document_bytes(&document);
+        reserve_capacity(&mut previous, summary.id.len(), &mut previous_memory)?;
+        previous.extend_from_slice(summary.id.as_bytes());
+        let bytes = summary.bytes;
         selected.peak_document_bytes = selected
             .peak_document_bytes
             .max(selected.bytes.saturating_add(bytes));
-        if ids.contains(&document.id) {
+        if ids.contains(&summary.id) {
+            let document = decode_record(record, query)?;
+            debug_assert_eq!(search_document_bytes(&document), bytes);
             let previous_bytes = selected.bytes;
             selected.bytes = selected
                 .bytes
@@ -310,6 +315,55 @@ fn hex_size(raw: &str) -> Result<usize> {
     }
     Ok(raw.len() / 2)
 }
+/// A record's document id and the [`search_document_bytes`] its decoded
+/// document would have, read without decoding its title, content, vector or
+/// metadata.
+struct RecordSummary {
+    id: String,
+    bytes: u64,
+}
+
+fn summarize_record(record: &str, query: QueryContext<'_>) -> Result<RecordSummary> {
+    query.checkpoint()?;
+    let mut fields = record.split('\t');
+    let (Some("doc"), Some(id), Some(title), Some(content), Some(embedding), Some(metadata), None) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
+        return Err(invalid("invalid document record"));
+    };
+    // Counting separators bytewise keeps a text-encoded vector cheap to skip.
+    let dimension = if embedding.is_empty() {
+        0
+    } else {
+        embedding.bytes().filter(|byte| *byte == b',').count() + 1
+    };
+    let mut bytes = add(
+        add(hex_size(id)?, hex_size(title)?)?,
+        add(hex_size(content)?, mul(dimension, size_of::<f32>())?)?,
+    )?;
+    if !metadata.is_empty() {
+        for (index, pair) in metadata.split(';').enumerate() {
+            if index.is_multiple_of(1024) {
+                query.checkpoint()?;
+            }
+            let (key, value) = pair
+                .split_once('=')
+                .ok_or_else(|| invalid("invalid metadata pair"))?;
+            bytes = add(bytes, add(hex_size(key)?, hex_size(value)?)?)?;
+        }
+    }
+    Ok(RecordSummary {
+        id: decode_hex(id, query)?,
+        bytes: bytes as u64,
+    })
+}
+
 fn decode_record(record: &str, query: QueryContext<'_>) -> Result<Document> {
     query.checkpoint()?;
     let mut fields = record.split('\t');

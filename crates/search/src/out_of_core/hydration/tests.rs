@@ -762,3 +762,61 @@ fn candidates_succeed_when_owned_output_is_not_admitted() {
     drop(reader);
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Hydration decodes only selected lines (#1611); the summary of every other
+/// line must give its id and exactly the bytes its decoded document would
+/// count, so the reported peak stays the same.
+#[test]
+fn document_line_summary_matches_the_decoded_document() {
+    type Case<'a> = (
+        &'a str,
+        &'a str,
+        &'a str,
+        &'a [f32],
+        &'a [(&'a str, &'a str)],
+    );
+    let cases: [Case<'_>; 4] = [
+        ("a", "", "", &[], &[]),
+        (
+            "doc-1",
+            "Title",
+            "Body text",
+            &[0.5, -1.25, 3.0],
+            &[("kind", "memory")],
+        ),
+        (
+            "文档",
+            "标题",
+            "多字节内容",
+            &[1.0],
+            &[("k", "v"), ("other", "值")],
+        ),
+        ("z", "t", "c", &[0.1; 1024], &[]),
+    ];
+    for (id, title, content, embedding, metadata) in cases {
+        let metadata = metadata
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect::<BTreeMap<_, _>>();
+        let line = format!(
+            "doc\t{}\t{}\t{}\t{}\t{}",
+            crate::encode_string(id),
+            crate::encode_string(title),
+            crate::encode_string(content),
+            embedding
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            crate::encode_metadata(&metadata),
+        );
+        let document = crate::decode_search_document_line(&line).unwrap();
+        assert_eq!(
+            summarize_document_line(&line).unwrap(),
+            (id.to_string(), search_document_bytes(&document)),
+            "{id}"
+        );
+    }
+    assert!(summarize_document_line("doc\tzz").is_err());
+    assert!(summarize_document_line("doc\t6\t\t\t\t").is_err());
+}
