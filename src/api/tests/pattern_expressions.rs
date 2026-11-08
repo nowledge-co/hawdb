@@ -999,6 +999,9 @@ fn seeded_pattern_comprehensions_equal_the_unseeded_pattern() {
         .unwrap();
     db.query("MATCH (p:Person {id: 4}), (q:Person {id: 4}) CREATE (p)-[:KNOWS]->(q)")
         .unwrap();
+    // A node property named `type` must not hide the node from its seeds.
+    db.query("MATCH (p:Person) WHERE p.id IN [1, 2] SET p.type = 'member'")
+        .unwrap();
     let chain =
         "(a:Person)<-[:HAS_CREATOR]-(m:Post)<-[:REPLY_OF]-(c:Comment)-[:HAS_CREATOR]->(b:Person)";
     for condition in [
@@ -1007,6 +1010,10 @@ fn seeded_pattern_comprehensions_equal_the_unseeded_pattern() {
         "(a = startNode(r) AND b = endNode(r)) OR (a = endNode(r) AND b = startNode(r))",
         "a = null",
         "a = 5",
+        // Maps that are not nodes, or name no node, equal no node.
+        "a = {_id: 0}",
+        "a = {_id: 999999, labels: ['Person']}",
+        "a = [startNode(r)]",
     ] {
         let query = |condition: &str| {
             format!(

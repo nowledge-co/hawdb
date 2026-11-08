@@ -194,7 +194,7 @@ pub(super) fn evaluate<'a>(
                     .saturating_sub(std::mem::size_of::<Value>());
                 let value = computed.into_owned();
                 _seeds.grow(payload)?;
-                let Some(id) = seed_node_id(&value) else {
+                let Some(id) = seed_node_id(graph.store, &value)? else {
                     continue;
                 };
                 if !seen.insert(id) {
@@ -279,19 +279,22 @@ pub(super) fn evaluate<'a>(
     )
 }
 
-/// The node id of a seed value, or `None` for NULL and values that are not
-/// nodes, which no node variable can equal.
-fn seed_node_id(value: &Value) -> Option<i64> {
+/// The id of the node a seed value can equal, or `None` when it can equal no
+/// node of the graph. A node value is a map holding `_id` and `labels`, the
+/// shape a MATCH import accepts; NULL, scalars, lists and other maps never
+/// equal one, and neither does a node-shaped map whose id names no node.
+fn seed_node_id(store: &dyn GraphExecutionRead, value: &Value) -> Result<Option<NodeId>> {
     let Value::Map(entries) = value else {
-        return None;
+        return Ok(None);
     };
-    if entries.contains_key("type") || entries.contains_key("source_id") {
-        return None;
-    }
-    match entries.get("_id") {
-        Some(Value::Int(id)) => Some(*id),
-        _ => None,
-    }
+    let (Some(Value::Int(id)), true) = (entries.get("_id"), entries.contains_key("labels")) else {
+        return Ok(None);
+    };
+    let Ok(id) = u64::try_from(*id) else {
+        return Ok(None);
+    };
+    let id = NodeId(id);
+    Ok(store.node_owned(id)?.map(|_| id))
 }
 
 /// Whether the pattern matches `name` as a node or a relationship, if at all.
