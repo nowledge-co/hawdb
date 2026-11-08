@@ -993,9 +993,20 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
         PhysicalPlan::UnwindRowsExec {
             expression,
             variable,
+            consumes_source,
             input,
         } => dispatch.supported(|context, execution_limit, emit| {
-            stream_unwind_rows_batches(expression, variable, input, context, execution_limit, emit)
+            stream_unwind_rows_batches(
+                crate::transform::UnwindRows {
+                    expression,
+                    variable,
+                    consumes_source: *consumes_source,
+                },
+                input,
+                context,
+                execution_limit,
+                emit,
+            )
         }),
         PhysicalPlan::GraphMatchExec { program, input } => {
             dispatch.supported(|context, execution_limit, emit| {

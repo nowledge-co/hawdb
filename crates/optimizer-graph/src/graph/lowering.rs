@@ -1227,6 +1227,8 @@ fn lower_logical(
         } => PhysicalPlan::UnwindRowsExec {
             expression: expression.clone(),
             variable: variable.clone(),
+            // Set by the column-read pass on the finished plan.
+            consumes_source: false,
             input: Box::new(children.lower(
                 input,
                 0,

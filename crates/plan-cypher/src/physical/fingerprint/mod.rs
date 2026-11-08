@@ -370,12 +370,16 @@ impl PhysicalPlan {
             PhysicalPlan::UnwindRowsExec {
                 expression,
                 variable,
+                consumes_source,
                 input,
             } => {
                 output.push_str("UnwindRows(");
                 write_identifier(output, variable);
                 output.push(',');
                 write_projection_expression(output, expression);
+                if *consumes_source {
+                    output.push_str(",consumes_source");
+                }
                 input.write_instance_fingerprint(output);
                 output.push(')');
             }

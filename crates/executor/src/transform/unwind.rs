@@ -8,9 +8,17 @@ use crate::expression::evaluate_projection_in_graph;
 use crate::pipeline::AccountedBindingBatch;
 use hawdb_core::{HawDBError, Value};
 
+/// One `UnwindRowsExec` operator.
+pub struct UnwindRows<'a> {
+    pub expression: &'a ProjectionExpression,
+    pub variable: &'a str,
+    /// The expression is a column that no later operator reads: take it out
+    /// of the input row instead of copying it into every output row.
+    pub consumes_source: bool,
+}
+
 pub fn stream_unwind_rows_batches(
-    expression: &ProjectionExpression,
-    variable: &str,
+    unwind: UnwindRows<'_>,
     input: &PhysicalPlan,
     source: &mut dyn BindingBatchSource,
     context: BatchExecutionContext<'_>,
@@ -30,8 +38,20 @@ pub fn stream_unwind_rows_batches(
         context.memory_ledger,
     );
     let mut produced = 0usize;
+    let UnwindRows {
+        expression,
+        variable,
+        consumes_source,
+    } = unwind;
+    // A consumed source column leaves the row before it is copied per element:
+    // carrying an n-element list into each of its n output rows would cost
+    // O(n^2) copies and memory accounting (#1606).
+    let consumed = match expression {
+        ProjectionExpression::Column(column) if consumes_source => Some(column.as_str()),
+        _ => None,
+    };
     let control = source.execute(input, ExecutionLimit::unlimited(), &mut |batch| {
-        for binding in batch {
+        for mut binding in batch {
             runtime_checkpoint(context.task_context)?;
             if execution_limit.is_reached(produced) {
                 return Ok(BatchControl::Stop);
@@ -43,14 +63,25 @@ pub fn stream_unwind_rows_batches(
                     "UNWIND variable '{variable}' is already bound"
                 )));
             }
-            let value = evaluate_projection_in_graph(
-                expression,
-                context.catalog,
-                &binding,
-                Some(&working),
-                graph.as_ref(),
-            )?;
-            let values = match value.as_ref() {
+            let taken;
+            let evaluated;
+            let value = match consumed.and_then(|column| binding.values.remove(column)) {
+                Some(list) => {
+                    taken = list;
+                    &taken
+                }
+                None => {
+                    evaluated = evaluate_projection_in_graph(
+                        expression,
+                        context.catalog,
+                        &binding,
+                        Some(&working),
+                        graph.as_ref(),
+                    )?;
+                    evaluated.as_ref()
+                }
+            };
+            let values = match value {
                 Value::List(values) => values,
                 Value::Null => continue,
                 _ => {

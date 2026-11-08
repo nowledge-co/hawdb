@@ -770,8 +770,11 @@ fn row_unwind_stops_and_releases_memory_on_cancellation_errors_and_refusal() {
         let mut emitted = 0;
         let result = with_context(1, 8192, |context| {
             stream_unwind_rows_batches(
-                &expression,
-                "item",
+                UnwindRows {
+                    expression: &expression,
+                    variable: "item",
+                    consumes_source: false,
+                },
                 &PhysicalPlan::EmptyExec,
                 &mut source,
                 BatchExecutionContext {
@@ -815,8 +818,11 @@ fn row_unwind_stops_and_releases_memory_on_cancellation_errors_and_refusal() {
         let mut source = Source::new(vec![Binding::values(BTreeMap::new())], 1);
         let error = with_context(2, budget, |context| {
             stream_unwind_rows_batches(
-                &expression,
-                "item",
+                UnwindRows {
+                    expression: &expression,
+                    variable: "item",
+                    consumes_source: false,
+                },
                 &PhysicalPlan::EmptyExec,
                 &mut source,
                 context,
@@ -826,5 +832,53 @@ fn row_unwind_stops_and_releases_memory_on_cancellation_errors_and_refusal() {
         })
         .unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
+    }
+}
+
+/// A consuming unwind takes its source column out of each input row: the
+/// output rows carry the element and every other column, but not the list
+/// (#1606). A non-consuming unwind keeps the list in every row.
+#[test]
+fn consuming_row_unwind_moves_the_source_column_out_of_the_rows() {
+    let list = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    let input = Binding::values(BTreeMap::from([
+        ("xs".to_string(), list.clone()),
+        ("k".to_string(), Value::Int(7)),
+    ]));
+    let expression = ProjectionExpression::Column("xs".to_string());
+    for consumes_source in [true, false] {
+        let mut source = Source::new(vec![input.clone()], 8);
+        let mut rows = Vec::new();
+        with_context(8, 8192, |context| {
+            stream_unwind_rows_batches(
+                UnwindRows {
+                    expression: &expression,
+                    variable: "x",
+                    consumes_source,
+                },
+                &PhysicalPlan::EmptyExec,
+                &mut source,
+                context,
+                ExecutionLimit::unlimited(),
+                &mut |batch| {
+                    rows.extend(batch.into_iter().map(|row| row.values));
+                    Ok(BatchControl::Continue)
+                },
+            )
+        })
+        .unwrap();
+        let expected = (1..=3)
+            .map(|item| {
+                let mut values = BTreeMap::from([
+                    ("x".to_string(), Value::Int(item)),
+                    ("k".to_string(), Value::Int(7)),
+                ]);
+                if !consumes_source {
+                    values.insert("xs".to_string(), list.clone());
+                }
+                values
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rows, expected, "consumes_source={consumes_source}");
     }
 }

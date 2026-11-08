@@ -23,6 +23,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             PhysicalPlan::UnwindRowsExec {
                 expression: ProjectionExpression::Literal(Value::List(vec![Value::Int(1)])),
                 variable: "item".into(),
+                consumes_source: false,
                 input: Box::new(PhysicalPlan::EmptyExec),
             },
             true,

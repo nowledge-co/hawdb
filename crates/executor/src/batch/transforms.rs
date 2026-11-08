@@ -23,8 +23,7 @@ struct PreparedTransformSource<'a> {
 }
 
 pub(super) fn stream_unwind_rows_batches(
-    expression: &hawdb_plan_cypher::ProjectionExpression,
-    variable: &str,
+    unwind: executor_transform::UnwindRows<'_>,
     input: &PhysicalPlan,
     context: BatchReadContext<'_>,
     execution_limit: ExecutionLimit,
@@ -32,8 +31,7 @@ pub(super) fn stream_unwind_rows_batches(
 ) -> Result<BatchControl> {
     let mut source = PreparedTransformSource { context };
     executor_transform::stream_unwind_rows_batches(
-        expression,
-        variable,
+        unwind,
         input,
         &mut source,
         context.kernel_context(),
