@@ -545,6 +545,7 @@ impl RetainedHeapBytes for PhysicalPlan {
                 expression,
                 variable,
                 input,
+                ..
             } => checked_retained_heap_sum([
                 expression.retained_heap_bytes(),
                 variable.retained_heap_bytes(),

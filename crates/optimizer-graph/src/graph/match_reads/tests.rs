@@ -584,3 +584,116 @@ fn imported_and_variable_length_relationships_are_not_projected() {
     );
     assert_eq!(relationship_projection(plan), BTreeMap::new());
 }
+
+/// `… UNWIND xs AS x` over a plan that produces the list column `xs`.
+fn unwind(input: PhysicalPlan) -> PhysicalPlan {
+    PhysicalPlan::UnwindRowsExec {
+        expression: ProjectionExpression::Column("xs".to_string()),
+        variable: "x".to_string(),
+        consumes_source: false,
+        input: Box::new(input),
+    }
+}
+
+fn consumes(plan: &PhysicalPlan) -> bool {
+    let mut current = Some(plan);
+    while let Some(plan) = current {
+        current = match plan {
+            PhysicalPlan::UnwindRowsExec {
+                consumes_source, ..
+            } => return *consumes_source,
+            PhysicalPlan::GraphMatchExec { input, .. } => input.as_deref(),
+            PhysicalPlan::ProjectExec { input, .. } | PhysicalPlan::DistinctExec { input } => {
+                Some(input)
+            }
+            _ => None,
+        };
+    }
+    panic!("no UnwindRowsExec in {plan:?}")
+}
+
+/// An unwound list column that nothing above reads is consumed; any read of
+/// it, or a DISTINCT over the unprojected rows, keeps it (#1606).
+#[test]
+fn unwind_consumes_only_an_unread_source_column() {
+    let column = |name: &str| ProjectionExpression::Column(name.to_string());
+    let cases = [
+        (
+            "only x is read",
+            project(vec![column("x")], unwind(chain(None))),
+            true,
+        ),
+        (
+            "xs is read after the unwind",
+            project(vec![column("x"), column("xs")], unwind(chain(None))),
+            false,
+        ),
+        (
+            "a property of xs is read",
+            project(
+                vec![ProjectionExpression::ColumnProperty {
+                    column: "xs".to_string(),
+                    property: "p".to_string(),
+                }],
+                unwind(chain(None)),
+            ),
+            false,
+        ),
+        (
+            "DISTINCT compares the rows that still carry xs",
+            project(
+                vec![column("x")],
+                PhysicalPlan::DistinctExec {
+                    input: Box::new(unwind(chain(None))),
+                },
+            ),
+            false,
+        ),
+        (
+            "a projection rebuilds the columns before DISTINCT",
+            PhysicalPlan::DistinctExec {
+                input: Box::new(project(vec![column("x")], unwind(chain(None)))),
+            },
+            true,
+        ),
+        (
+            "a later MATCH imports xs",
+            project(
+                vec![column("x")],
+                PhysicalPlan::GraphMatchExec {
+                    program: GraphMatchProgram {
+                        imports: vec![GraphBindingImport {
+                            variable: "n".to_string(),
+                            column: "xs".to_string(),
+                            kind: GraphEntityKind::Node,
+                        }],
+                        introduced: Vec::new(),
+                        projected_nodes: BTreeMap::new(),
+                        projected_relationships: BTreeMap::new(),
+                        predicate_steps: Vec::new(),
+                        edge_predicates: Vec::new(),
+                        steps: vec![GraphMatchStep::Node(node("n", &[]))],
+                        predicate: None,
+                        optional: false,
+                        hash_join: None,
+                        id_set_conjuncts: Vec::new(),
+                    },
+                    input: Some(Box::new(unwind(chain(None)))),
+                },
+            ),
+            false,
+        ),
+    ];
+    for (case, plan, expected) in cases {
+        let mut decisions = Vec::new();
+        let plan = project_graph_match_reads(plan, &mut decisions);
+        assert_eq!(consumes(&plan), expected, "{case}: {decisions:?}");
+        assert_eq!(
+            decisions
+                .iter()
+                .any(|decision| decision.starts_with("UnwindRowsExec takes its source column")),
+            expected,
+            "{case}: {decisions:?}"
+        );
+    }
+}

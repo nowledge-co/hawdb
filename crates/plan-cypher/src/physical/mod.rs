@@ -193,6 +193,10 @@ pub enum PhysicalPlan {
     UnwindRowsExec {
         expression: crate::ProjectionExpression,
         variable: String,
+        /// The expression is a column that no operator above reads. Each
+        /// input row gives up that column to the unwind instead of copying
+        /// the whole list into every output row (#1606).
+        consumes_source: bool,
         input: Box<PhysicalPlan>,
     },
     UnwindMutation {
