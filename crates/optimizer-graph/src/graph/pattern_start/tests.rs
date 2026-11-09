@@ -157,6 +157,56 @@ fn undirected_mixed_walks_do_not_use_directed_hop_counts() {
 }
 
 #[test]
+fn complete_horizon_distinguishes_absent_paths_from_unknown_and_deeper_hops() {
+    let mut catalog = catalog();
+    // A non-empty bounded map does not itself establish complete coverage.
+    catalog.bounded_path_counts.insert(
+        ("Person".into(), "KNOWS".into(), "Person".into(), 1),
+        24_000,
+    );
+    let nodes = [node("a", "Person", &[]), node("b", "Person", &[])];
+    let mut edges = [PathEdge {
+        min_hops: 2,
+        max_hops: 2,
+        ..edge("KNOWS", Outgoing)
+    }];
+    let unknown = walk(&catalog, &nodes, &edges, 0).unwrap();
+    assert!(unknown.rows > 0.0);
+    catalog.bounded_path_complete_through_hop = Some(1);
+    assert_eq!(walk(&catalog, &nodes, &edges, 0).unwrap(), unknown);
+    catalog.bounded_path_complete_through_hop = Some(3);
+    let complete = walk(&catalog, &nodes, &edges, 0).unwrap();
+    assert_eq!((complete.rows, complete.work), (0.0, 3_000.0));
+    edges[0].direction = Incoming;
+    assert_eq!(walk(&catalog, &nodes, &edges, 0).unwrap(), complete);
+    edges[0].direction = Undirected;
+    assert!(walk(&catalog, &nodes, &edges, 0).unwrap().rows > 0.0);
+    edges[0].direction = Outgoing;
+    edges[0].min_hops = 4;
+    edges[0].max_hops = 4;
+    catalog
+        .bounded_path_counts
+        .insert(("Person".into(), "KNOWS".into(), "Person".into(), 4), 0);
+    assert!(walk(&catalog, &nodes, &edges, 0).unwrap().rows > 0.0);
+    catalog.bounded_path_complete_through_hop = None;
+    edges[0].min_hops = 2;
+    edges[0].max_hops = 2;
+    assert_eq!(walk(&catalog, &nodes, &edges, 0).unwrap(), unknown);
+}
+
+#[test]
+fn completed_empty_statistics_still_estimate_zero_paths() {
+    let mut catalog = catalog();
+    catalog.path_counts.clear();
+    catalog.bounded_path_counts.clear();
+    let nodes = [node("a", "Person", &[]), node("b", "Person", &[])];
+    let edges = [edge("KNOWS", Outgoing)];
+    assert!(walk(&catalog, &nodes, &edges, 0).is_none());
+    catalog.bounded_path_complete_through_hop = Some(3);
+    assert_eq!(walk(&catalog, &nodes, &edges, 0).unwrap().rows, 0.0);
+}
+
+#[test]
 fn a_selective_current_start_is_kept_within_the_margin() {
     let catalog = catalog();
     // (person:Person {id})-[:KNOWS*1..2]-(friend:Person)-[:WORK_AT]->(c)-[:IS_LOCATED_IN]->(:Place {name})

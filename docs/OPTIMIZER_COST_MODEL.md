@@ -30,6 +30,25 @@ uniqueness or result emptiness. Undirected walks retain the fanout fallback
 because they may mix incoming and outgoing edges; adding two directed counts
 does not describe them.
 
+`bounded_path_complete_through_hop` records a publisher's completed directed
+enumeration horizon. A missing tuple within that horizon is a zero in the
+statistics snapshot; it is not an invitation to square a positive one-hop
+fanout. Missing coverage (including truncated or legacy statistics) and hops
+outside the declared horizon keep the heuristic fallback. Explicit legacy
+counts remain usable estimates without establishing completeness for absent
+tuples. Intermediate counts/work may be zero; only the final planning
+cardinality keeps the minimum-one floor. This never substitutes an empty plan
+for runtime MATCH execution.
+
+Materialized collection, cooperative checkpoint collection and external
+refresh publish the horizon only after completing their bounded pass. Copies
+retain it, and ordinary/cooperative checkpoint metadata encoders round-trip it
+as the optional `stat_bounded_path_complete_through_hop` record. Older
+checkpoints without the record retain unknown coverage. Older binaries may
+reject the new derived-metadata record; canonical graph/relational records and
+WAL transactions are unchanged. The provenance adds one scalar field to each
+statistics DTO/catalog, with no data-sized map or collector budget increase.
+
 Final MATCH cost follows the executed steps, counts candidate visits before
 bound-endpoint/property filtering, and scales the local walk by input rows.
 Seeded unions sum their actual branch walks and charge the shared input once.

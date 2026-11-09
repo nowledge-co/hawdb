@@ -309,6 +309,10 @@ pub struct GraphStatistics {
     pub path_source_distinct_counts: BTreeMap<(LabelId, RelTypeId, LabelId), u64>,
     pub path_target_distinct_counts: BTreeMap<(LabelId, RelTypeId, LabelId), u64>,
     pub bounded_path_counts: BTreeMap<(LabelId, RelTypeId, LabelId, usize), u64>,
+    /// Complete enumeration of homogeneous directed walks through this hop.
+    /// Missing tuples within 1..=hop are zero in this statistics snapshot. None means unavailable,
+    /// truncated, or legacy statistics whose coverage is unknown.
+    pub bounded_path_complete_through_hop: Option<usize>,
     pub bounded_path_source_distinct_counts: BTreeMap<(LabelId, RelTypeId, LabelId, usize), u64>,
     pub bounded_path_target_distinct_counts: BTreeMap<(LabelId, RelTypeId, LabelId, usize), u64>,
     pub index_samples: BTreeMap<IndexId, IndexStatisticsSample>,

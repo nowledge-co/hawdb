@@ -60,15 +60,15 @@ sample, selected cost, decisions, execution profile and snapshot epoch.
 
 | Ordinary optimizer | Baseline | Candidate |
 | --- | ---: | ---: |
-| Median of 30 warm measurements | 2.1272295 ms | 0.20425 ms |
+| Median of 30 warm measurements | 1.9479165 ms | 0.145875 ms |
 | Output rows / estimated rows | 100 / 800,000 | 100 / 100 |
 | Positive cardinality Q-error | 8,000 | 1 |
 | Selected scalar logical cost | 826,936,852 | 1,854 |
 | Profiled query-ledger peak | 16,871,328 B | 16,871,328 B |
 | Start | A label scan | B equality seek |
 
-The source comparison is **10.41x** faster on this fixture. Candidate process
-medians are 2.202125 -> 0.2185 ms and 2.126292 -> 0.162125 ms when switching
+The source comparison is **13.35x** faster on this fixture. Candidate process
+medians are 2.165625 -> 0.151416 ms and 1.98125 -> 0.132625 ms when switching
 from its own rule-disabled plan to the ordinary plan. These within-process
 controls support the plan-change explanation despite host timing variation.
 The baseline keeps A because it estimates reverse work at 10,003 versus 4,100;
@@ -83,8 +83,9 @@ explicit fallbacks. Property correlations, degree skew within a label pair,
 mixed-direction undirected walks and uniqueness are still approximate.
 
 After merging main, the refreshed baseline source build took 3m32s with
-ordinary dependency cache reuse. The candidate build in an empty, independent
-target directory took 4m45s. These are local build observations, not CI or
+ordinary dependency cache reuse. The initial candidate build in an empty, independent
+target directory took 4m45s; the bounded-coverage review fix rebuilt with
+ordinary candidate-only cache reuse in 3m14s. These are local build observations, not CI or
 query execution speedups. An attempted cross-source target-directory reuse
 returned the baseline plan and was rejected by the start assertion; that failed
 run is excluded from all measurements. Keep source variants in distinct Cargo
@@ -107,8 +108,12 @@ CARGO_TARGET_DIR=/tmp/hawdb-cost-baseline-target cargo run --locked -j 2 --relea
 
 Preserve each binary before building the other source, then repeat the recorded
 ABBA process order. The flag asserts that the old ordinary optimizer keeps its
-start; it does not modify planning controls. No coefficient/default, production
-API, collector, cache key, admission policy or persistence behavior changes.
+start; it does not modify planning controls. No coefficient/default, collector, cache key, admission policy or canonical
+data/WAL transaction changes. The review fix adds a public optional coverage
+field/builder and an optional derived-checkpoint metadata record; legacy
+records without coverage remain unknown. The positive-count fixture keeps
+the same plan. This refreshed timing is not evidence of an additional speedup
+caused by the coverage fix.
 Full current-head LDBC timings, deployed Mem behavior, total RSS, cold persistent
 reads and cross-hardware calibration remain unverified. The candidate-proof
 work in PR #1604 is separate; this change uses the existing typed selected-plan

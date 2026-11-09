@@ -189,7 +189,7 @@ pub(super) fn walk(
     start: usize,
 ) -> Option<WalkEstimate> {
     // Without published path statistics every fanout would be a guess.
-    if catalog.path_counts.is_empty() {
+    if catalog.path_counts.is_empty() && catalog.bounded_path_complete_through_hop.is_none() {
         return None;
     }
     // A repeated variable carries its label on one occurrence only.
@@ -374,7 +374,14 @@ fn fanout(
     direction: RelationshipDirection,
 ) -> Option<f64> {
     let rel_type = edge.rel_type?;
-    if catalog.path_counts.is_empty() || !single_label(from.label) || !single_label(to.label) {
+    let complete = catalog
+        .bounded_path_complete_through_hop
+        .is_some_and(|hop| edge.max_hops <= hop);
+    if !single_label(from.label)
+        || !single_label(to.label)
+        || (catalog.path_counts.is_empty()
+            && (!complete || direction == RelationshipDirection::Undirected))
+    {
         return None;
     }
     let paths = |source: &str, target: &str| {
@@ -415,7 +422,8 @@ fn fanout(
     }
     // Checkpoint counts describe homogeneous directed walks. An undirected
     // walk can mix directions, so summing the two directed counts would miss
-    // those paths. Keep the fanout fallback for it and for missing hop counts.
+    // those paths. Missing directed counts are zero only within a publisher's
+    // complete horizon; absent coverage and out-of-horizon hops keep the fallback.
     Some(
         (edge.min_hops..=edge.max_hops)
             .map(|hop| {
@@ -430,17 +438,11 @@ fn fanout(
                     return 1.0;
                 }
                 catalog
-                    .bounded_path_counts
-                    .get(&(
-                        source.to_string(),
-                        rel_type.to_string(),
-                        target.to_string(),
-                        hop,
-                    ))
+                    .bounded_path_count(source, rel_type, target, hop)
                     .map_or_else(
                         || one_hop.powi(hop as i32),
                         |count| {
-                            *count as f64 / catalog.label_count(from.label) as f64
+                            count as f64 / catalog.label_count(from.label) as f64
                                 * selectivity.powi(hop as i32)
                         },
                     )

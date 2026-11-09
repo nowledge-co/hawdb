@@ -232,3 +232,30 @@ fn large_intermediates_saturate_without_turning_into_empty_estimates() {
     assert_eq!(estimate.random_io, u64::MAX);
     assert_eq!(estimate.cost, u64::MAX);
 }
+
+#[test]
+fn complete_absent_hop_keeps_the_planning_floor_without_invented_expansion_work() {
+    let mut program = program();
+    let GraphMatchStep::Expand {
+        min_hops, max_hops, ..
+    } = &mut program.steps[1]
+    else {
+        unreachable!()
+    };
+    *min_hops = 2;
+    *max_hops = 2;
+    let mut catalog = catalog();
+    catalog
+        .bounded_path_counts
+        .insert(("A".into(), "R".into(), "B".into(), 1), 500);
+    assert_eq!(cost(&program, &catalog).estimated_rows, 2_500);
+    catalog.bounded_path_complete_through_hop = Some(3);
+    let complete = cost(&program, &catalog);
+    assert_eq!((complete.estimated_rows, complete.random_io), (1, 101));
+    let expand = catalog.estimate_expand_rows("A", "R", &BTreeMap::new(), "B", 2, 2);
+    assert_eq!(expand.estimated_rows, 1);
+    assert_eq!(expand.hop_estimates[1].rows, 0);
+    assert!(expand.hop_estimates[1].exact);
+    catalog.bounded_path_complete_through_hop = None;
+    assert!(cost(&program, &catalog).estimated_rows > 1);
+}
