@@ -706,9 +706,7 @@ impl DurableStore {
             .iter()
             .filter(|entry| entry.generation != row_binding.generation);
         let older_row_page_files = older_generations.clone().count();
-        let older_row_page_bytes = older_generations
-            .map(|entry| entry.live_pages * row_root.manifest().page_bytes)
-            .sum::<u64>();
+        let older_row_page_bytes = older_generations.map(|entry| entry.live_bytes).sum::<u64>();
         scrub.checked_file_count = scrub
             .checked_file_count
             .saturating_add(older_row_page_files);

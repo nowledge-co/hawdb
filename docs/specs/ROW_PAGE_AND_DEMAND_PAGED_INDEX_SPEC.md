@@ -772,10 +772,36 @@ zero flags, descriptor binding, physical length, output length, CRC32C, and
 hydration budget before publishing either the value or charged counters.
 Overflow descriptors are valid only for `TEXT` and `BYTEA`. Unknown tags,
 invalid UTF-8, invalid ordered keys, impossible lengths, descriptor or checksum
-mismatches, non-zero fixed-slot tails, and trailing bytes fail closed.
+mismatches, and trailing bytes fail closed.
 
-The default codec envelope is one MiB and 256 rows, matching the current COW
-row-page split target. It separately limits columns, key bytes, row bytes,
+The default codec envelope is one MiB and 8,192 rows. Row-page format v2
+(#1521) closes pages at a byte target (`target_page_bytes`, default 32 KiB)
+rather than at a row count: a page holds at least one row, a single row larger
+than the target makes a page of its own up to the one-MiB hard maximum, and
+the row cap only bounds the row directory of very narrow rows.
+
+The default target was chosen with a local release harness (four tables of
+40,000 rows of about 200 bytes, 100 rows changed per checkpoint, one shared
+8-core host) against v1 fixed slots:
+
+| Layout | Full checkpoint | 100-row checkpoint | Reopen, first statement | Database on disk |
+|---|---:|---:|---:|---:|
+| v1, 1 MiB slots | 4.86 s | 3.12-3.34 s | 1.44 s | 1,127 MB |
+| v2, 16 KiB target | 1.53 s | 1.03-1.04 s | 0.38 s | 240 MB |
+| v2, 32 KiB target | 1.52 s | 1.06-1.08 s | 0.38 s | 243 MB |
+| v2, 64 KiB target | 1.51 s | 1.11-1.16 s | 0.39 s | 252 MB |
+| v2, 128 KiB target | 1.48 s | 1.10-1.12 s | 0.38 s | 270 MB |
+
+Every target removes the slot amplification; their differences are within
+noise for this size because the remaining checkpoint cost is outside the row
+pages. A smaller target writes fewer bytes per changed row (the dirty leaf),
+and a larger one keeps fewer descriptors in each rewritten root. 32 KiB halves
+the per-change write of 64 KiB while keeping half the root descriptors of
+16 KiB, which matters for large tables (a 1 GB table holds about 32,000
+descriptors, roughly 5 MB of root per checkpoint). Pages are packed back to
+back without alignment: every read is an exact byte-range read through the
+operating system page cache, and alignment was not found to matter here (it
+was not separately measured). It separately limits columns, key bytes, row bytes,
 inline-value bytes, logical overflow bytes, and projected-field count. The
 encoder applies the same limits as the decoder and rejects a page before
 accumulating payload beyond the page budget. Checkpoint-bound roots now use the
@@ -951,9 +977,10 @@ relational-row-pages-{generation}.manifest.hawdb
 relational-row-pages.manifest.hawdb
 ```
 
-The page artifact contains only dirty page images from the new generation in
-fixed one-MiB slots. Clean logical pages retain their prior physical generation
-and slot. A generation root is a complete, streaming-written directory over
+The page artifact contains only dirty page images from the new generation,
+each written at its exact encoded length and packed back to back without
+padding or alignment (format v2, #1521). Clean logical pages retain their prior
+physical generation, byte offset and length. A generation root is a complete, streaming-written directory over
 the selected base root plus inserted, replaced, and deleted logical page ids;
 the publisher does not materialize the complete page map in memory. Root
 metadata may be rewritten sequentially while row payload write amplification
@@ -964,7 +991,7 @@ Each root descriptor is exactly 136 little-endian bytes:
 ```text
 u64 logical_page_id
 u64 physical_generation
-u64 physical_slot
+u64 physical_offset
 u64 page_source_commit_epoch
 u32 row_count
 u32 exact_encoded_page_length
@@ -972,34 +999,46 @@ u64 lower_key_offset
 u32 lower_key_length
 u64 upper_key_offset
 u32 upper_key_length
-u32 page_slot_crc32c
-u8[32] page_slot_sha256
+u32 page_crc32c
+u8[32] page_sha256
 u32 descriptor_binding_crc32c
 u8[32] descriptor_binding_sha256
 ```
 
 The descriptor binding digest covers the owning root generation, global
 descriptor ordinal, first 100 descriptor bytes, and referenced lower and upper
-key bytes. This rejects corrupted physical identity, slot, bounds, lengths, or
-offsets and prevents complete valid descriptors from being moved between root
-generations or ordinals without detection when that descriptor is selected.
-The slot digest covers the complete fixed page slot, including the required
-zero tail. Table descriptors are contiguous and ordered by disjoint primary-key
+key bytes. This rejects corrupted physical identity, offset, bounds, lengths,
+or key offsets and prevents complete valid descriptors from being moved between
+root generations or ordinals without detection when that descriptor is
+selected. The page digest is the page header's own CRC32C/SHA-256 over its
+exact encoded bytes; v2 has no separate slot digest and no zero tail. A
+descriptor's byte range MUST lie within the allocated bytes its physical
+generation declares in the manifest inventory. Table descriptors are contiguous and ordered by disjoint primary-key
 bounds. A table root in the compact manifest stores its complete digest-bound
 schema, exact descriptor-derived row count, the next never-issued table-scoped
 `PageId`, descriptor range, and outer bounds. The allocator value is non-zero,
 never decreases, and is strictly greater than every active, dirty, or deleted
 page id admitted by that publication.
 
-The `SKRPGM01` version-1 manifest has a fixed 316-byte header followed by a
-bounded table-root payload. Its header binds generation, source commit epoch,
-optional previous generation, slot size, dirty and root page counts, exact
+The `SKRPGM02` manifest (format v2, version 1) has a fixed 316-byte header
+followed by a bounded table-root payload. Its header binds generation, source
+commit epoch, optional previous generation, the writer's target and maximum
+page sizes, dirty and root page counts, exact
 length plus CRC32C/SHA-256 metadata for the page, descriptor, and key artifacts,
 the table-root-set SHA-256, and an optional exact overflow-root generation,
 source epoch, and root-set digest. The manifest has its own CRC32C and SHA-256.
 Table names and key bounds are length-prefixed and bounded before allocation.
 Table descriptor ranges MUST be contiguous and cover the declared root page
-count exactly. Source commit epoch zero is valid only when both the table set
+count exactly. The physical-generation inventory records, per referenced page
+file, allocated and live page counts and bytes; the current generation's
+allocated bytes equal its page artifact length, and every live byte count is
+the sum of its descriptors' exact lengths. The target page size is writer
+policy: readers accept any page within the codec limits and the manifest's
+declared maximum. A v1 (`SKRPGM01`, fixed one-MiB slots) manifest fails with
+the typed `UnsupportedStorageFormat` error (found version 1, supported
+version 2) naming the recreate-the-development-database remedy, so hosts
+report it as an unsupported format rather than corruption; there is no
+migration (HawDB has no persisted production format yet). Source commit epoch zero is valid only when both the table set
 and root page count are empty.
 
 Standalone publication holds one directory-scoped exclusive lock and follows
@@ -1007,7 +1046,7 @@ this order:
 
 1. pre-admit table count, dirty page count, encoded dirty-page bytes, root
    pages, root-key bytes, and manifest bytes before creating a candidate;
-2. write and synchronize dirty page slots;
+2. write and synchronize the packed dirty pages;
 3. stream and synchronize the complete root descriptor and key artifacts;
 4. publish the immutable page artifact, then both root artifacts;
 5. publish the immutable generation manifest;
@@ -1031,20 +1070,17 @@ generation. Publication does not reclaim old artifacts, so a generation-pinned
 `RelationalRowPageRootReader` continues to resolve its complete
 cross-generation descriptor closure while a newer root is published.
 
-The dirty-byte budget charges each dirty page's encoded length, not its v1
-slot (#1593). This is a deliberate interim choice: the budget bounds encoded
-page payload written by one publication before its fsync, and it never bounded
-memory, because planned rows share their values with the relational state.
-Until v2 packs pages by length, the v1 page artifact pads every page to one
-slot, so physical page-artifact writes before the fsync can exceed the charge
-by the slot-to-encoded ratio, about 20x for narrow rows. A reader validates a
+The dirty-byte budget charges each dirty page's encoded length (#1593), which
+in format v2 is exactly what the page artifact writes before its fsync. It
+never bounded memory, because planned rows share their values with the
+relational state. A reader validates a
 manifest's dirty page count against the root-page limit rather than the
 writer's per-publication dirty-page limit: every dirty page is a root page.
 
 Normal root open reads and validates only the bounded manifest and exact
 artifact file lengths. It MUST NOT hash or enumerate every descriptor or row
 page. Descriptor/key binding checks occur when a descriptor is selected; page
-slot integrity remains a demand-read obligation. Full artifact digest checking
+integrity remains a demand-read obligation. Full artifact digest checking
 belongs to scrub. A row generation containing overflow descriptors MUST be
 published with the overflow root having the same generation and source commit
 epoch. Every referenced digest is resolved before row candidate creation, and
@@ -1070,7 +1106,10 @@ These events map in order to `BeginCheckpoint`, `PersistCandidatePages`,
 not make the candidate visible at its final publisher event; the outer
 checkpoint manifest selects both roots atomically. Physical page demand reads
 and SQL serving are specified by the later demand/snapshot sections rather
-than by this publisher-local trace.
+than by this publisher-local trace. Format v2 changes only the physical
+encoding of a page (exact length at a byte offset instead of a fixed slot):
+the model's abstract pages, immutable candidate files, manifest-last selection
+and pinned closure are unchanged, so the refinement mapping above is too.
 
 ### Relational row-page mutation planning
 
@@ -1155,8 +1194,8 @@ and by the relational row residency report (`schema_checkpoint_pending`,
 `schema_checkpoint_pending_reason`). Integrity failures still poison the handle. Ordinary DML
 rewrites only affected leaves. A graph-only checkpoint produces no relational
 table deltas and copies the complete base root by descriptor, so it writes zero
-new row-page slots. Clean descriptors retain their immutable physical
-generation and slot even while the new logical root is bound to the new outer
+new row pages. Clean descriptors retain their immutable physical
+generation, offset and length even while the new logical root is bound to the new outer
 checkpoint and overflow root.
 `HawDBRowPageMutation.tla` covers persistent allocator
 monotonicity, split identity, deletion without reuse, one-leaf point mutation,
@@ -1943,7 +1982,7 @@ a codec-test oracle; it is not a durable compatibility path.
 
 `RelationalRowPageDemandReader` pins one exact row-root and overflow-root pair;
 it never follows an independent latest selector. Point lookup binary-searches
-the bounded root descriptors, reads one selected physical slot, binary-searches
+the bounded root descriptors, reads one selected page by its exact byte range, binary-searches
 its row directory, and decodes only the requested field ordinals. Ordered range
 lookup starts at the first matching descriptor and streams rows through a
 callback. It applies the lower bound only to the first page, stops before a page
@@ -1951,7 +1990,7 @@ whose lower bound is beyond the upper bound, and does not collect rows or drain
 later pages after callback stop.
 
 Each operation independently admits descriptor-search height, row-page count,
-fixed slot bytes, decoded rows, one-page pin residency, cancellation, and the
+exact page bytes, decoded rows, one-page pin residency, cancellation, and the
 existing compressed/decompressed overflow hydration ledger. A callback result
 is provisional until the range method returns `Ok`. Page, byte, tree-height,
 row, overflow-hydration, and cache-residency admission failures do not poison
@@ -1961,17 +2000,17 @@ observe that poison at their next cancellation checkpoint and emit no later
 row.
 
 The shared cache key uses store id, the descriptor's physical generation and
-slot, CRC32C content identity, and `RelationalRowPageSlot` representation. The
+byte offset, CRC32C content identity, and `RelationalRowPageSlot`
+representation. The
 physical rather than logical root generation is required because a clean COW
 descriptor may retain a page from an older immutable artifact. A cold read
-validates the complete fixed slot CRC32C and SHA-256, zero padding, the encoded
-page integrity, directory, page id, physical generation, source epoch, row
-count, encoded length, and key bounds exactly once. Cache admission retains only
-the compact `encoded_len` bytes and binds them to the complete physical-slot
-CRC32C and SHA-256. A verified hit checks that strong source tag and the cheap
-page identity fields; it MUST NOT hash or validate the complete slot again.
-Cache resident and pinned bytes are the compact allocation, not the padded
-physical slot length. An entry-too-large or temporarily all-pinned cache falls
+verifies the page's own CRC32C and SHA-256 once, compares them with the
+descriptor's page digest, and validates the row directory (offset continuity,
+valid keys, strictly ascending order), page id, physical
+generation, source epoch, row count, encoded length, and key bounds. Cache
+admission binds the exact page bytes to that page SHA-256. A verified hit checks
+that strong source tag and the cheap page identity fields; it MUST NOT hash the
+page again. Cache resident and pinned bytes are the exact page length. An entry-too-large or temporarily all-pinned cache falls
 back to the same one-operation compact page buffer; it never expands cache
 capacity. At most one compact page `Arc` is retained by a cursor wave, and
 cancellation, error, callback stop, or unwind drops it.

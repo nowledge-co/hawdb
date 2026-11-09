@@ -15,8 +15,9 @@
 use super::ROOT_DESCRIPTOR_BINDING_OFFSET;
 use crate::file_io::File;
 use crate::relational::row_page::publication::{
-    durability, RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
-    RelationalRowPageRootDescriptor, RelationalRowPageRootManifest, RelationalRowPageSlotIntegrity,
+    durability, RelationalRowPageIntegrity, RelationalRowPagePublicationConfig,
+    RelationalRowPagePublicationError, RelationalRowPageRootDescriptor,
+    RelationalRowPageRootManifest,
 };
 use crate::relational::RelationalRowPageId;
 use hawdb_integrity::{IntegrityHasher, Sha256Digest};
@@ -90,15 +91,15 @@ pub(in crate::relational::row_page::publication) fn read_descriptor(
             })?,
         ),
         physical_generation: wire.physical_generation,
-        physical_slot: wire.physical_slot,
+        physical_offset: wire.physical_offset,
         source_commit_epoch: wire.source_commit_epoch,
         row_count: wire.row_count,
         lower_bound,
         upper_bound,
-        slot_integrity: RelationalRowPageSlotIntegrity {
+        page_integrity: RelationalRowPageIntegrity {
             encoded_len: wire.encoded_len,
-            slot_crc32c: wire.slot_crc32c,
-            slot_sha256: wire.slot_sha256,
+            page_crc32c: wire.page_crc32c,
+            page_sha256: wire.page_sha256,
         },
     };
     validate_descriptor(
@@ -115,11 +116,17 @@ pub(in crate::relational::row_page::publication) fn read_descriptor(
                 "row-page descriptor references an unaccounted physical generation".to_string(),
             )
         })?;
-    let allocated_pages = manifest.physical_generations[index].allocated_pages;
-    if descriptor.physical_slot >= allocated_pages {
+    let allocated_bytes = manifest.physical_generations[index].allocated_bytes;
+    if descriptor
+        .physical_offset
+        .checked_add(u64::from(descriptor.page_integrity.encoded_len))
+        .is_none_or(|end| end > allocated_bytes)
+    {
         return Err(RelationalRowPagePublicationError::Corrupt(format!(
-            "row-page descriptor references slot {} outside generation {} allocation {}",
-            descriptor.physical_slot, descriptor.physical_generation, allocated_pages
+            "row-page descriptor range {}+{} lies outside generation {} allocation {allocated_bytes}",
+            descriptor.physical_offset,
+            descriptor.page_integrity.encoded_len,
+            descriptor.physical_generation
         )));
     }
     Ok(descriptor)
@@ -181,12 +188,12 @@ pub(super) fn validate_descriptor(
             descriptor.row_count
         )));
     }
-    if descriptor.slot_integrity.encoded_len == 0
-        || descriptor.slot_integrity.encoded_len as usize > config.page_limits.max_page_bytes.get()
+    if descriptor.page_integrity.encoded_len == 0
+        || descriptor.page_integrity.encoded_len as usize > config.page_limits.max_page_bytes.get()
     {
         return Err(RelationalRowPagePublicationError::Corrupt(format!(
             "row-page descriptor encoded length {} is outside the admitted range",
-            descriptor.slot_integrity.encoded_len
+            descriptor.page_integrity.encoded_len
         )));
     }
     if descriptor.lower_bound.is_empty()
@@ -206,7 +213,7 @@ pub(super) fn validate_descriptor(
 pub(super) struct WireDescriptor {
     pub logical_page_id: u64,
     pub physical_generation: u64,
-    pub physical_slot: u64,
+    pub physical_offset: u64,
     pub source_commit_epoch: u64,
     pub row_count: u32,
     pub encoded_len: u32,
@@ -214,8 +221,8 @@ pub(super) struct WireDescriptor {
     pub lower_len: u32,
     pub upper_offset: u64,
     pub upper_len: u32,
-    pub slot_crc32c: u32,
-    pub slot_sha256: Sha256Digest,
+    pub page_crc32c: u32,
+    pub page_sha256: Sha256Digest,
     pub binding_crc32c: u32,
     pub binding_sha256: Sha256Digest,
 }
@@ -225,7 +232,7 @@ impl WireDescriptor {
         let mut encoded = [0u8; ROOT_DESCRIPTOR_BYTES];
         encoded[0..8].copy_from_slice(&self.logical_page_id.to_le_bytes());
         encoded[8..16].copy_from_slice(&self.physical_generation.to_le_bytes());
-        encoded[16..24].copy_from_slice(&self.physical_slot.to_le_bytes());
+        encoded[16..24].copy_from_slice(&self.physical_offset.to_le_bytes());
         encoded[24..32].copy_from_slice(&self.source_commit_epoch.to_le_bytes());
         encoded[32..36].copy_from_slice(&self.row_count.to_le_bytes());
         encoded[36..40].copy_from_slice(&self.encoded_len.to_le_bytes());
@@ -233,8 +240,8 @@ impl WireDescriptor {
         encoded[48..52].copy_from_slice(&self.lower_len.to_le_bytes());
         encoded[52..60].copy_from_slice(&self.upper_offset.to_le_bytes());
         encoded[60..64].copy_from_slice(&self.upper_len.to_le_bytes());
-        encoded[64..68].copy_from_slice(&self.slot_crc32c.to_le_bytes());
-        encoded[68..100].copy_from_slice(self.slot_sha256.as_bytes());
+        encoded[64..68].copy_from_slice(&self.page_crc32c.to_le_bytes());
+        encoded[68..100].copy_from_slice(self.page_sha256.as_bytes());
         encoded[100..104].copy_from_slice(&self.binding_crc32c.to_le_bytes());
         encoded[104..136].copy_from_slice(self.binding_sha256.as_bytes());
         encoded
@@ -244,7 +251,7 @@ impl WireDescriptor {
         Self {
             logical_page_id: read_u64(&encoded[0..8]),
             physical_generation: read_u64(&encoded[8..16]),
-            physical_slot: read_u64(&encoded[16..24]),
+            physical_offset: read_u64(&encoded[16..24]),
             source_commit_epoch: read_u64(&encoded[24..32]),
             row_count: read_u32(&encoded[32..36]),
             encoded_len: read_u32(&encoded[36..40]),
@@ -252,11 +259,11 @@ impl WireDescriptor {
             lower_len: read_u32(&encoded[48..52]),
             upper_offset: read_u64(&encoded[52..60]),
             upper_len: read_u32(&encoded[60..64]),
-            slot_crc32c: read_u32(&encoded[64..68]),
-            slot_sha256: Sha256Digest::from_bytes(
+            page_crc32c: read_u32(&encoded[64..68]),
+            page_sha256: Sha256Digest::from_bytes(
                 encoded[68..100]
                     .try_into()
-                    .expect("slot digest length was checked"),
+                    .expect("page digest length was checked"),
             ),
             binding_crc32c: read_u32(&encoded[100..104]),
             binding_sha256: Sha256Digest::from_bytes(

@@ -300,9 +300,15 @@ pub(super) fn relational_query_limits_with_payload(
     // output projection. Budget both phases explicitly so a scan that exactly
     // reaches its intermediate-row limit can still produce an admitted result.
     let max_row_read_rows = max_intermediate_rows.saturating_add(max_output_rows).max(1);
-    let max_scan_pages = max_intermediate_rows
-        .div_ceil(hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_ROWS)
-        .max(1);
+    // Row-page format v2 closes pages at a byte target, so rows per page
+    // depend on row width and the row cap is not a density (#1521). A scan
+    // decodes at least one row from every page it reads after its first, so
+    // its pages are bounded by its intermediate rows plus one; each point
+    // read touches one page. The target size is only writer packing policy:
+    // every single-row page may be wider, up to the hard maximum. Budget the
+    // maximum for every admitted page so consecutive wide pages are not
+    // falsely refused by a limit derived from the row contract.
+    let max_scan_pages = max_intermediate_rows.saturating_add(1);
     let max_row_read_pages = max_scan_pages.saturating_add(max_output_rows).max(1);
     let max_row_read_bytes = max_row_read_pages
         .saturating_mul(hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_BYTES)

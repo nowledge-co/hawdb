@@ -113,8 +113,16 @@ impl RelationalRowPageState {
             .iter()
             .map(|entry| entry.allocated_pages)
             .sum();
-        report.live_page_bytes = base.root_page_count * base.page_bytes;
-        report.allocated_page_bytes = report.allocated_page_count * base.page_bytes;
+        report.live_page_bytes = base
+            .physical_generations
+            .iter()
+            .map(|entry| entry.live_bytes)
+            .sum();
+        report.allocated_page_bytes = base
+            .physical_generations
+            .iter()
+            .map(|entry| entry.allocated_bytes)
+            .sum();
         report.page_artifact_bytes = base.page_artifact.encoded_len;
         report.root_descriptor_artifact_bytes = base.root_descriptor_artifact.encoded_len;
         report.root_key_artifact_bytes = base.root_key_artifact.encoded_len;

@@ -204,6 +204,19 @@ impl Fixture {
         }
     }
 
+    /// The encoded length of the largest page of `table`: the bytes a demand
+    /// read charges for it (row-page format v2 pages have exact lengths).
+    pub fn page_bytes(&self, table: &str) -> usize {
+        let mut largest = 0;
+        self.root
+            .visit_table_pages(table, |descriptor| {
+                largest = largest.max(descriptor.page_integrity.encoded_len as usize);
+                Ok(())
+            })
+            .unwrap();
+        largest
+    }
+
     pub fn snapshot(&self) -> RelationalRowPageSnapshotReader {
         self.snapshot_from(RelationalRowPageReadView::from_base(Arc::clone(&self.root)))
     }
