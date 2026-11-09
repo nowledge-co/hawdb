@@ -78,10 +78,11 @@ fn publication_takes_one_unit_and_wave_per_block_and_reports_progress() {
             .unwrap(),
         PublishOutcome::Published
     );
-    // Staging copy, then the staged read-back.
-    assert_eq!(probe.completed.load(Ordering::SeqCst), 2 * BLOCKS_PER_PASS);
-    assert_eq!(probe.io_waves.load(Ordering::SeqCst), 2 * BLOCKS_PER_PASS);
-    assert_eq!(progress.load(Ordering::SeqCst), 2 * BLOCKS_PER_PASS as u64);
+    // Only the hashed staging copy: the synced staging inode it wrote is
+    // installed without a read-back (see `published`).
+    assert_eq!(probe.completed.load(Ordering::SeqCst), BLOCKS_PER_PASS);
+    assert_eq!(probe.io_waves.load(Ordering::SeqCst), BLOCKS_PER_PASS);
+    assert_eq!(progress.load(Ordering::SeqCst), BLOCKS_PER_PASS as u64);
     assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
     probe.assert_released(&local);
     assert_eq!(fs::read(store.object_path(reference)).unwrap(), payload);
@@ -93,7 +94,7 @@ fn publication_takes_one_unit_and_wave_per_block_and_reports_progress() {
             .unwrap(),
         PublishOutcome::Reused
     );
-    assert_eq!(progress.load(Ordering::SeqCst), 3 * BLOCKS_PER_PASS as u64);
+    assert_eq!(progress.load(Ordering::SeqCst), 2 * BLOCKS_PER_PASS as u64);
     probe.assert_released(&local);
     assert_eq!(staging_entries(&root), 0);
     fs::remove_dir_all(root).unwrap();
@@ -105,7 +106,7 @@ fn publication_cancelled_at_every_unit_and_wave_leaves_no_object_and_retries() {
     let (path, payload, reference) = source(&root);
     let local = scheduler();
     for io in [false, true] {
-        for limit in 1..=2 * BLOCKS_PER_PASS {
+        for limit in 1..=BLOCKS_PER_PASS {
             let probe = Arc::new(CheckpointWorkProbe::default());
             if io {
                 probe.cancel_on_io_wave.store(limit, Ordering::SeqCst);
@@ -116,7 +117,7 @@ fn publication_cancelled_at_every_unit_and_wave_leaves_no_object_and_retries() {
             let mut store = ImmutableObjectStore::open(&root).unwrap();
             let result = store.publish_file_with_work(reference, &path, BlockWork(Some(&work)));
             // Cancellation after the last unit lets the publication finish.
-            if !io && limit == 2 * BLOCKS_PER_PASS {
+            if !io && limit == BLOCKS_PER_PASS {
                 assert_eq!(result.unwrap(), PublishOutcome::Published);
                 fs::remove_file(store.object_path(reference)).unwrap();
             } else {
