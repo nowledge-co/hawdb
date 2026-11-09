@@ -671,6 +671,9 @@ pub struct SearchPredicatePushdownReport {
     pub persisted_segment_descriptor_used: bool,
     pub physical_range_read_count: usize,
     pub physical_bytes_read: u64,
+    /// Scanned segments whose candidates came from metadata value postings
+    /// instead of decoding their metadata records.
+    pub postings_segment_count: usize,
     pub field_summaries: Vec<SearchPredicateFieldPruningReport>,
 }
 
@@ -6217,6 +6220,7 @@ fn metadata_predicate_pushdown(
         persisted_segment_descriptor_used: false,
         physical_range_read_count: 0,
         physical_bytes_read: 0,
+        postings_segment_count: 0,
         field_summaries: Vec::new(),
     };
     SearchMetadataPredicatePushdown { predicates, report }
