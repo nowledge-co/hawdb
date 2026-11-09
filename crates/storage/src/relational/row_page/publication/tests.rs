@@ -524,6 +524,19 @@ fn physical_scrub_rejects_authenticated_occupancy_drift_and_old_file_growth() {
             Err(RelationalRowPagePublicationError::Corrupt(message)) if message.contains(expected)
         ));
     }
+    let mut changed = original.clone();
+    // Stay within the cheap manifest bounds while lying about the exact bytes
+    // reachable through this old generation's descriptors.
+    changed.physical_generations[0].live_bytes += 1;
+    fs::write(
+        &manifest_path,
+        manifest::encode_manifest(&changed, config).unwrap(),
+    )
+    .unwrap();
+    let changed = RelationalRowPageRootReader::open_generation(&directory, 3, config).unwrap();
+    assert!(matches!(changed.scrub_physical_pages(),
+        Err(RelationalRowPagePublicationError::Corrupt(message)) if message.contains("live bytes")
+    ));
     fs::write(
         manifest_path,
         manifest::encode_manifest(&original, config).unwrap(),

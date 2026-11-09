@@ -304,18 +304,14 @@ pub(super) fn relational_query_limits_with_payload(
     // depend on row width and the row cap is not a density (#1521). A scan
     // decodes at least one row from every page it reads after its first, so
     // its pages are bounded by its intermediate rows plus one; each point
-    // read touches one page. Bytes allow one target-sized page per scanned
-    // row and a maximum-sized page per point read, so a single wide row
-    // (one page up to the hard maximum) is never refused by this budget.
+    // read touches one page. The target size is only writer packing policy:
+    // every single-row page may be wider, up to the hard maximum. Budget the
+    // maximum for every admitted page so consecutive wide pages are not
+    // falsely refused by a limit derived from the row contract.
     let max_scan_pages = max_intermediate_rows.saturating_add(1);
     let max_row_read_pages = max_scan_pages.saturating_add(max_output_rows).max(1);
-    let max_row_read_bytes = max_scan_pages
-        .saturating_mul(hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_TARGET_BYTES)
-        .saturating_add(
-            max_output_rows
-                .saturating_add(1)
-                .saturating_mul(hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_BYTES),
-        )
+    let max_row_read_bytes = max_row_read_pages
+        .saturating_mul(hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_BYTES)
         .max(1);
     // Logical index traversal includes cache hits and must scale with the
     // statement's admitted intermediate rows. Physical index reads retain a

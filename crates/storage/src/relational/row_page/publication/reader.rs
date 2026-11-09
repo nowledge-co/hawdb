@@ -199,6 +199,7 @@ impl RelationalRowPageRootReader {
     pub fn scrub_physical_pages(&self) -> Result<(), RelationalRowPagePublicationError> {
         let inventory = &self.manifest.physical_generations;
         let mut live_counts = vec![0u64; inventory.len()];
+        let mut live_bytes = vec![0u64; inventory.len()];
         for entry in inventory {
             validate_artifact_length(
                 &self
@@ -217,16 +218,35 @@ impl RelationalRowPageRootReader {
                             "row-page descriptor references an unaccounted generation".to_string(),
                         )
                     })?;
-                live_counts[index] += 1;
+                live_counts[index] = live_counts[index].checked_add(1).ok_or_else(|| {
+                    RelationalRowPagePublicationError::Corrupt(
+                        "row-page physical-generation live-page count overflows".to_string(),
+                    )
+                })?;
+                live_bytes[index] = live_bytes[index]
+                    .checked_add(u64::from(descriptor.page_integrity.encoded_len))
+                    .ok_or_else(|| {
+                        RelationalRowPagePublicationError::Corrupt(
+                            "row-page physical-generation live-byte count overflows".to_string(),
+                        )
+                    })?;
                 self.read_page(descriptor)?;
                 Ok(())
             })?;
         }
-        for (entry, actual) in inventory.iter().zip(live_counts) {
-            if entry.live_pages != actual {
+        for ((entry, actual_pages), actual_bytes) in
+            inventory.iter().zip(live_counts).zip(live_bytes)
+        {
+            if entry.live_pages != actual_pages {
                 return Err(RelationalRowPagePublicationError::Corrupt(format!(
-                    "row-page physical generation {} has {actual} live pages, expected {}",
+                    "row-page physical generation {} has {actual_pages} live pages, expected {}",
                     entry.generation, entry.live_pages,
+                )));
+            }
+            if entry.live_bytes != actual_bytes {
+                return Err(RelationalRowPagePublicationError::Corrupt(format!(
+                    "row-page physical generation {} has {actual_bytes} live bytes, expected {}",
+                    entry.generation, entry.live_bytes,
                 )));
             }
         }
