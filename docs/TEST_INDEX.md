@@ -500,6 +500,19 @@ change misses the cached plan and re-plans the start. Replay with
 `cargo test --locked -p hawdb-optimizer-graph pattern_start chain_start match_order`.
 No lane, fixture, feature matrix or deadline changes.
 
+Directed bounded-path estimates additionally cover heterogeneous intermediate
+labels, incoming reversal and the undirected mixed-direction fallback in
+`graph::pattern_start::tests`. `graph::costing::graph_match::tests` owns
+frequency-aware seed/expansion costs, actual seeded-union branches with shared
+input cost, imported input labels, bound endpoints, OPTIONAL cardinality floors
+and bounded fallback for unbounded/type-disjunctive paths. These use the existing
+optimizer unit lane and profiles. The manual embedded example
+`cargo run --locked --release --example optimizer_path_statistics` compares
+fully consumed, identical ordered results for ordinary and rule-disabled plans
+on one pinned synthetic snapshot, with alternating order, two warmups, fifteen
+measurements and raw cost/execution profiles. It is a developer experiment,
+not a new CI performance gate or a general LDBC acceptance claim.
+
 Early `GraphMatchExec` WHERE placement (#1424) is owned by optimizer
 `graph::lowering::match_predicates::tests` and root `api::tests::early_match_predicates`.
 The optimizer cases include dependencies nested in scalar conversions, temporal functions,

@@ -1,0 +1,93 @@
+{
+  "expect_kept_start": false,
+  "measurement_rounds": 15,
+  "medians_ms": [
+    3.5640419999999997,
+    0.401542
+  ],
+  "profiles": [
+    {
+      "cost": 9848,
+      "decisions": [
+        "selected optimizer qualification: disabled=[\"transformation:cost_based_pattern_start\"] perturbation=None; legality/resource checks remain mandatory; reported costs are unperturbed",
+        "skip transformation:cost_based_pattern_start: disabled by statement qualification: start GraphMatchExec path at b with an index seek on B.key: estimated work 103.0 per input row instead of 4100.0 from a",
+        "GraphMatchExec reads only the node and relationship properties later operators use: a[id], b[key], c[]",
+        "selected physical plan cost: estimated_rows=100 cost=9848",
+        "optimizer statistics cache hit: statistics_epoch=12 statistics_generation=9 graph_commit_epoch=12",
+        "optimizer advanced statistics freshness: status=fresh statistics_epoch=12 graph_commit_epoch=12 commit_lag=0 usable=true",
+        "optimizer catalog cache hit: statistics_epoch=12 statistics_generation=9 graph_commit_epoch=12",
+        "physical width cost: operator=ProjectExec ordinal=1 row_bytes=4450 retained_bytes=0 comparison_work=0 spill_work=0 memory_hint=Some(67108864) proxy_fields=1 sampled_values=32 units=logical_estimates",
+        "physical width cost: operator=SortExec ordinal=0 row_bytes=4450 retained_bytes=452200 comparison_work=1146 spill_work=0 memory_hint=Some(67108864) proxy_fields=1 sampled_values=32 units=logical_estimates",
+        "plan cache bypass: optimizer_directive"
+      ],
+      "estimated_rows": 100,
+      "profile": "ReadExecutionProfile { max_rows: None, detection_row_cap: None, row_limit_enforced_before_output: false, operator_row_cap_enabled: false, operator_cardinality_profiles: [OperatorCardinalityProfile { operator_id: PhysicalOperatorId(0), operator: SortExec, actual_rows: Some(100) }, OperatorCardinalityProfile { operator_id: PhysicalOperatorId(1), operator: ProjectExec, actual_rows: Some(100) }, OperatorCardinalityProfile { operator_id: PhysicalOperatorId(2), operator: GraphMatchExec, actual_rows: Some(100) }], blocking_operator_kinds: [\"SortExec\"], scan_pruning_reports: [], vector_execution_reports: [], graph_expansion_reports: [], text_seed_execution_reports: [], grouped_evidence_reports: [], blocking_operator_memory_reports: [BlockingOperatorMemoryReport { operator: \"SortExec\", budget_bytes: 67108864, peak_tracked_bytes: 105400, input_rows: 100, candidate_rows: 0, replay_rows: 0, repartitions: 0, max_spill_bytes: 4294967296, max_spill_runs: 128, spilled_bytes: 0, spill_run_count: 0, spilled_rows: 0 }], pipeline_memory_report: PipelineMemoryReport { query_memory_budget_bytes: 268435456, query_memory_peak_bytes: 16871328, query_memory_completion_bytes: 4210, query_memory_account_count: 17, intermediate_rows: 300, intermediate_payload_bytes: 20000, peak_batch_rows: 100, peak_batch_payload_bytes: 7000, borrowed_node_projection_rows: 0, simple_case_dispatch_tables: 0, simple_case_dispatch_lookups: 0, native_projection_rows: 0, columnar_batches: 0, columnar_input_rows: 0, columnar_selected_rows: 0, morsel_count: 0, morsel_max_admitted_workers: 0, morsel_peak_active_workers: 0, morsel_peak_buffered_outputs: 0, morsel_peak_buffered_output_bytes: 0, morsel_peak_reorder_entries: 0, output_rows: 100, output_payload_bytes: 1000, start_resident_bytes: Some(42156032), start_peak_resident_bytes: Some(42156032), steady_resident_bytes: Some(42156032), peak_resident_bytes: Some(42156032), steady_resident_growth_bytes: Some(0), lifetime_peak_resident_growth_bytes: Some(0), total_page_faults: Some(0), minor_page_faults: Some(0), major_page_faults: Some(0) } }",
+      "query_memory_peak_bytes": 16871328,
+      "snapshot_epoch": 12,
+      "strategy": 0
+    },
+    {
+      "cost": 1854,
+      "decisions": [
+        "apply transformation:cost_based_pattern_start: start GraphMatchExec path at b with an index seek on B.key: estimated work 103.0 per input row instead of 4100.0 from a",
+        "GraphMatchExec reads only the node and relationship properties later operators use: a[id], b[key], c[]",
+        "selected physical plan cost: estimated_rows=100 cost=1854",
+        "optimizer statistics cache hit: statistics_epoch=12 statistics_generation=9 graph_commit_epoch=12",
+        "optimizer advanced statistics freshness: status=fresh statistics_epoch=12 graph_commit_epoch=12 commit_lag=0 usable=true",
+        "optimizer catalog cache hit: statistics_epoch=12 statistics_generation=9 graph_commit_epoch=12",
+        "physical width cost: operator=ProjectExec ordinal=1 row_bytes=4450 retained_bytes=0 comparison_work=0 spill_work=0 memory_hint=Some(67108864) proxy_fields=1 sampled_values=32 units=logical_estimates",
+        "physical width cost: operator=SortExec ordinal=0 row_bytes=4450 retained_bytes=452200 comparison_work=1146 spill_work=0 memory_hint=Some(67108864) proxy_fields=1 sampled_values=32 units=logical_estimates",
+        "plan cache bypass: optimizer_directive"
+      ],
+      "estimated_rows": 100,
+      "profile": "ReadExecutionProfile { max_rows: None, detection_row_cap: None, row_limit_enforced_before_output: false, operator_row_cap_enabled: false, operator_cardinality_profiles: [OperatorCardinalityProfile { operator_id: PhysicalOperatorId(0), operator: SortExec, actual_rows: Some(100) }, OperatorCardinalityProfile { operator_id: PhysicalOperatorId(1), operator: ProjectExec, actual_rows: Some(100) }, OperatorCardinalityProfile { operator_id: PhysicalOperatorId(2), operator: GraphMatchExec, actual_rows: Some(100) }], blocking_operator_kinds: [\"SortExec\"], scan_pruning_reports: [], vector_execution_reports: [], graph_expansion_reports: [], text_seed_execution_reports: [], grouped_evidence_reports: [], blocking_operator_memory_reports: [BlockingOperatorMemoryReport { operator: \"SortExec\", budget_bytes: 67108864, peak_tracked_bytes: 105400, input_rows: 100, candidate_rows: 0, replay_rows: 0, repartitions: 0, max_spill_bytes: 4294967296, max_spill_runs: 128, spilled_bytes: 0, spill_run_count: 0, spilled_rows: 0 }], pipeline_memory_report: PipelineMemoryReport { query_memory_budget_bytes: 268435456, query_memory_peak_bytes: 16871328, query_memory_completion_bytes: 4210, query_memory_account_count: 17, intermediate_rows: 300, intermediate_payload_bytes: 20000, peak_batch_rows: 100, peak_batch_payload_bytes: 7000, borrowed_node_projection_rows: 0, simple_case_dispatch_tables: 0, simple_case_dispatch_lookups: 0, native_projection_rows: 0, columnar_batches: 0, columnar_input_rows: 0, columnar_selected_rows: 0, morsel_count: 0, morsel_max_admitted_workers: 0, morsel_peak_active_workers: 0, morsel_peak_buffered_outputs: 0, morsel_peak_buffered_output_bytes: 0, morsel_peak_reorder_entries: 0, output_rows: 100, output_payload_bytes: 1000, start_resident_bytes: Some(42188800), start_peak_resident_bytes: Some(42188800), steady_resident_bytes: Some(42205184), peak_resident_bytes: Some(42205184), steady_resident_growth_bytes: Some(16384), lifetime_peak_resident_growth_bytes: Some(16384), total_page_faults: Some(1), minor_page_faults: Some(1), major_page_faults: Some(0) } }",
+      "query_memory_peak_bytes": 16871328,
+      "snapshot_epoch": 12,
+      "strategy": 1
+    }
+  ],
+  "query": "MATCH (a:A)-[:R*2..2]->(b:B {key: 0})-[:R]->(c:C) RETURN a.id AS id ORDER BY id",
+  "roots": 2000,
+  "rows": 100,
+  "samples_ms": [
+    [
+      3.788542,
+      3.9575419999999997,
+      3.6826250000000003,
+      3.5640419999999997,
+      3.959375,
+      4.141541999999999,
+      3.513083,
+      3.314417,
+      3.396916,
+      3.5049170000000003,
+      3.370583,
+      3.574625,
+      3.635834,
+      3.562792,
+      3.509542
+    ],
+    [
+      0.452291,
+      0.353042,
+      0.33795899999999995,
+      0.205625,
+      0.521667,
+      0.429542,
+      0.419416,
+      0.38120899999999996,
+      0.411708,
+      0.412958,
+      0.43104200000000004,
+      0.27537500000000004,
+      0.401542,
+      0.25470899999999996,
+      0.382792
+    ]
+  ],
+  "speedup": 8.875888450025153,
+  "strategy_0": "text-order start; cost-based start disabled",
+  "strategy_1": "ordinary optimizer",
+  "targets": 20,
+  "warmup_rounds": 2
+}

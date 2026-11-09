@@ -97,6 +97,66 @@ fn a_seekable_end_replaces_a_label_scan_start() {
 }
 
 #[test]
+fn directed_bounded_paths_replace_the_power_of_one_hop_fallback() {
+    let mut catalog = OptimizerCatalog::new(
+        OptimizerCatalogIndexes::new([("B".into(), "key".into())], [], [], []),
+        OptimizerCatalogStatistics {
+            label_counts: [("A".into(), 2_000), ("B".into(), 20)].into(),
+            path_counts: [(("A".into(), "R".into(), "B".into()), 2_000)].into(),
+            property_distinct_counts: [(("B".into(), "key".into()), 20)].into(),
+            ..OptimizerCatalogStatistics::default()
+        },
+    );
+    let nodes = [node("a", "A", &[]), node("b", "B", &["key"])];
+    let edges = [PathEdge {
+        min_hops: 2,
+        max_hops: 2,
+        ..edge("R", Outgoing)
+    }];
+    // Squaring the reverse one-hop fanout invents 10,000 paths per B,
+    // even though the intermediate nodes have different degrees and labels.
+    assert!(matches!(
+        choose_start(&catalog, &nodes, &edges, 0),
+        Some(StartDecision::Kept { .. })
+    ));
+    catalog
+        .bounded_path_counts
+        .insert(("A".into(), "R".into(), "B".into(), 2), 2_000);
+    let Some(StartDecision::Chosen(choice)) = choose_start(&catalog, &nodes, &edges, 0) else {
+        panic!("the measured reverse fanout should select the B seek");
+    };
+    assert_eq!(choice.start, 1);
+    assert_eq!((choice.current_work, choice.work), (4_000.0, 102.0));
+    assert_eq!(walk(&catalog, &nodes, &edges, 1).unwrap().rows, 100.0);
+
+    let reverse_nodes = [nodes[1].clone(), nodes[0].clone()];
+    let reverse_edges = [PathEdge {
+        direction: Incoming,
+        ..edges[0].clone()
+    }];
+    assert_eq!(
+        walk(&catalog, &reverse_nodes, &reverse_edges, 0),
+        walk(&catalog, &nodes, &edges, 1)
+    );
+}
+
+#[test]
+fn undirected_mixed_walks_do_not_use_directed_hop_counts() {
+    let mut catalog = catalog();
+    let nodes = [node("a", "Person", &[]), node("b", "Person", &[])];
+    let edges = [PathEdge {
+        min_hops: 0,
+        max_hops: 2,
+        ..edge("KNOWS", Undirected)
+    }];
+    let fallback = walk(&catalog, &nodes, &edges, 0);
+    catalog
+        .bounded_path_counts
+        .insert(("Person".into(), "KNOWS".into(), "Person".into(), 2), 1);
+    assert_eq!(walk(&catalog, &nodes, &edges, 0), fallback);
+}
+
+#[test]
 fn a_selective_current_start_is_kept_within_the_margin() {
     let catalog = catalog();
     // (person:Person {id})-[:KNOWS*1..2]-(friend:Person)-[:WORK_AT]->(c)-[:IS_LOCATED_IN]->(:Place {name})

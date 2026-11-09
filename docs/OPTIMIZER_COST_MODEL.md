@@ -20,6 +20,35 @@ qualify later context or metadata-count changes.
 
 ## Composition
 
+Graph MATCH path selection and final `GraphMatchExec` costing share seed
+equality estimates (including MCV frequencies), direction-aware label-pair
+fanout and endpoint selectivity. A directed bounded walk prefers the existing
+checkpoint count for its hop length over a power of the one-hop fanout; the
+intermediate nodes need not share either endpoint's label or degree. Incoming
+walks reverse the count key. These counts estimate walks, not a proof of trail
+uniqueness or result emptiness. Undirected walks retain the fanout fallback
+because they may mix incoming and outgoing edges; adding two directed counts
+does not describe them.
+
+Final MATCH cost follows the executed steps, counts candidate visits before
+bound-endpoint/property filtering, and scales the local walk by input rows.
+Seeded unions sum their actual branch walks and charge the shared input once.
+Imported labels are read from the input binding scope. OPTIONAL estimates
+retain the input cardinality floor; predicate placement changes intermediate
+work without changing the full predicate's output selectivity. Unsupported
+steps, missing advanced statistics, unlabelled/union labels, type disjunctions
+and unbounded walks retain bounded structural fallbacks. Hash builds and
+shortest-path programs retain their previous structural model.
+
+This consumes immutable published statistics; it does not add a collector,
+sample, persistent map, runtime scan, cost coefficient or plan-cache key.
+Temporary estimation state scales with statement steps/properties, not graph
+size. Maintained statistics remain estimates and never authorize a semantic
+rewrite or replace runtime memory admission. The manual
+[`optimizer_path_statistics`](../examples/optimizer_path_statistics.rs) example
+checks a concrete directed multi-hop plan change; full LDBC timing and physical
+cost calibration remain separate qualification work.
+
 The constructor weights the raw components exactly once. Unary/binary and
 probe composition add or scale raw components before constructing a new total;
 they never add a weighted total into an I/O component. The CPU normalization

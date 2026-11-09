@@ -15,8 +15,9 @@
 //! relationships of that type between the two labels, in the direction the
 //! step walks, divided by the size of `u`'s label. Equality filters on `v`
 //! then keep `1 / distinct_count` of those rows, and reaching a bound or
-//! already visited node keeps `1 / label_count`. Variable-length steps repeat
-//! the one-hop fanout once per hop. Every input is an average, so the result
+//! already visited node keeps `1 / label_count`. Directed variable-length
+//! steps prefer published bounded-path counts and otherwise repeat the
+//! one-hop fanout per hop. Every input is an average, so the result
 //! is unknown (and the current start is kept) when a label or relationship
 //! type it needs is missing, unlabelled, a union (`:A:B`, #1400) or a type
 //! disjunction, or when advanced path statistics are not published.
@@ -209,8 +210,41 @@ pub(super) fn walk(
     if edges[..start].iter().any(|edge| !edge.reversible) {
         return None;
     }
-    let node = &nodes[start];
-    let (mut rows, mut work) = if node.bound {
+    let initial = node_work(catalog, &nodes[start])?;
+    let (mut rows, mut work) = (initial.rows, initial.work);
+    let mut visited = vec![false; nodes.len()];
+    visited[start] = true;
+    let steps = (start..edges.len())
+        .map(|index| (index, index + 1, edges[index].direction))
+        .chain(
+            (0..start)
+                .rev()
+                .map(|index| (index + 1, index, reverse(edges[index].direction))),
+        );
+    for (from, to, direction) in steps {
+        let edge = &edges[from.min(to)];
+        let expansion = expand_work(catalog, &nodes[from], &nodes[to], edge, direction)?;
+        work += rows * expansion.work;
+        let candidates = rows * expansion.rows;
+        let target = &nodes[to];
+        // A repeated variable closes a cycle: the step only checks identity.
+        let repeated = nodes
+            .iter()
+            .enumerate()
+            .any(|(position, node)| visited[position] && node.variable == target.variable);
+        rows = if target.bound || repeated {
+            candidates / catalog.label_count(target.label) as f64
+        } else {
+            candidates * node_selectivity(catalog, target)
+        };
+        visited[to] = true;
+    }
+    Some(WalkEstimate { work, rows })
+}
+
+/// Candidate reads and surviving rows of a path's initial node.
+pub(super) fn node_work(catalog: &OptimizerCatalog, node: &PathNode<'_>) -> Option<WalkEstimate> {
+    let (rows, work) = if node.bound {
         (1.0, 1.0)
     } else if !single_label(node.label) {
         return None;
@@ -236,33 +270,6 @@ pub(super) fn walk(
         let scanned = catalog.label_count(node.label) as f64;
         (scanned * node_selectivity(catalog, node), scanned)
     };
-    let mut visited = vec![false; nodes.len()];
-    visited[start] = true;
-    let steps = (start..edges.len())
-        .map(|index| (index, index + 1, edges[index].direction))
-        .chain(
-            (0..start)
-                .rev()
-                .map(|index| (index + 1, index, reverse(edges[index].direction))),
-        );
-    for (from, to, direction) in steps {
-        let edge = &edges[from.min(to)];
-        let fanout = fanout(catalog, &nodes[from], &nodes[to], edge, direction)?;
-        let candidates = rows * fanout;
-        work += candidates;
-        let target = &nodes[to];
-        // A repeated variable closes a cycle: the step only checks identity.
-        let repeated = nodes
-            .iter()
-            .enumerate()
-            .any(|(position, node)| visited[position] && node.variable == target.variable);
-        rows = if target.bound || repeated {
-            candidates / catalog.label_count(target.label) as f64
-        } else {
-            candidates * node_selectivity(catalog, target)
-        };
-        visited[to] = true;
-    }
     Some(WalkEstimate { work, rows })
 }
 
@@ -335,7 +342,30 @@ pub(super) fn meeting(
     })
 }
 
-/// Relationships read per source row by one step walking `direction`.
+/// Candidate visits and matching paths per source row. Relationship property
+/// tests reduce matches, but do not remove the reads needed to test them.
+pub(super) fn expand_work(
+    catalog: &OptimizerCatalog,
+    from: &PathNode<'_>,
+    to: &PathNode<'_>,
+    edge: &PathEdge<'_>,
+    direction: RelationshipDirection,
+) -> Option<WalkEstimate> {
+    let rows = fanout(catalog, from, to, edge, direction)?;
+    let work = if edge.equalities.is_empty() {
+        rows
+    } else {
+        let unfiltered = PathEdge {
+            equalities: Vec::new(),
+            values: Default::default(),
+            ..edge.clone()
+        };
+        fanout(catalog, from, to, &unfiltered, direction)?
+    };
+    Some(WalkEstimate { work, rows })
+}
+
+/// Matching paths per source row by one step walking `direction`.
 fn fanout(
     catalog: &OptimizerCatalog,
     from: &PathNode<'_>,
@@ -344,7 +374,7 @@ fn fanout(
     direction: RelationshipDirection,
 ) -> Option<f64> {
     let rel_type = edge.rel_type?;
-    if !single_label(from.label) || !single_label(to.label) {
+    if catalog.path_counts.is_empty() || !single_label(from.label) || !single_label(to.label) {
         return None;
     }
     let paths = |source: &str, target: &str| {
@@ -383,15 +413,43 @@ fn fanout(
     if edge.max_hops > MAX_ESTIMATED_HOPS {
         return None;
     }
-    // A zero-hop trail binds the source itself; deeper hops repeat the fanout.
+    // Checkpoint counts describe homogeneous directed walks. An undirected
+    // walk can mix directions, so summing the two directed counts would miss
+    // those paths. Keep the fanout fallback for it and for missing hop counts.
     Some(
         (edge.min_hops..=edge.max_hops)
-            .map(|hop| one_hop.powi(hop as i32))
+            .map(|hop| {
+                let (source, target) = match direction {
+                    RelationshipDirection::Outgoing => (from.label, to.label),
+                    RelationshipDirection::Incoming => (to.label, from.label),
+                    RelationshipDirection::Undirected => {
+                        return one_hop.powi(hop as i32);
+                    }
+                };
+                if hop == 0 {
+                    return 1.0;
+                }
+                catalog
+                    .bounded_path_counts
+                    .get(&(
+                        source.to_string(),
+                        rel_type.to_string(),
+                        target.to_string(),
+                        hop,
+                    ))
+                    .map_or_else(
+                        || one_hop.powi(hop as i32),
+                        |count| {
+                            *count as f64 / catalog.label_count(from.label) as f64
+                                * selectivity.powi(hop as i32)
+                        },
+                    )
+            })
             .sum(),
     )
 }
 
-fn node_selectivity(catalog: &OptimizerCatalog, node: &PathNode<'_>) -> f64 {
+pub(super) fn node_selectivity(catalog: &OptimizerCatalog, node: &PathNode<'_>) -> f64 {
     if !single_label(node.label) {
         return 1.0;
     }

@@ -25,6 +25,7 @@ use hawdb_plan_cypher::{
 };
 use std::collections::BTreeMap;
 
+mod graph_match;
 mod row_goal;
 mod shape;
 mod width;
@@ -355,7 +356,10 @@ fn estimate_operator_cost_internal<'a>(
     });
     let costs = row_goal::input_costs(plan, consumption_inputs);
     let mut statistics = None;
-    let aggregate_cost = if matches!(plan, PhysicalPlan::AggregateExec { .. }) {
+    // MATCH imports and aggregate keys refer to the input binding scope.
+    let input_binding_cost = if matches!(plan, PhysicalPlan::AggregateExec { .. })
+        || matches!(plan, PhysicalPlan::GraphMatchExec { .. }) && inputs[0].is_some()
+    {
         Some(estimate_local_operator_cost(
             plan,
             catalog,
@@ -383,7 +387,7 @@ fn estimate_operator_cost_internal<'a>(
     let bindings = bindings_override.unwrap_or_else(|| {
         PlanBindings::for_operator(plan, inputs.map(|input| input.map(|input| input.bindings)))
     });
-    let cost = aggregate_cost.unwrap_or_else(|| {
+    let cost = input_binding_cost.unwrap_or_else(|| {
         estimate_local_operator_cost(plan, catalog, costs, &bindings, &mut statistics)
     });
     let (cost, width_report) = work::apply(
@@ -409,20 +413,6 @@ fn estimate_operator_cost_internal<'a>(
         statistics,
         bindings,
     }
-}
-
-/// The step indexes before which `GraphMatchExec` evaluates WHERE conjuncts;
-/// `steps.len()` stands for the end of the match.
-fn graph_match_filter_points(
-    program: &hawdb_plan_cypher::GraphMatchProgram,
-) -> std::collections::BTreeSet<usize> {
-    if program.predicate.is_none() {
-        return std::collections::BTreeSet::new();
-    }
-    if program.predicate_steps.is_empty() {
-        return std::collections::BTreeSet::from([program.steps.len()]);
-    }
-    program.predicate_steps.iter().copied().collect()
 }
 
 fn estimate_local_operator_cost(
@@ -590,65 +580,12 @@ fn estimate_local_operator_cost(
             let right_cost = inputs[1].expect("right input cost");
             combine_node_cartesian_product_cost(left_cost, right_cost)
         }
-        PhysicalPlan::GraphMatchExec { program, .. } => {
-            let base = inputs[0].unwrap_or_else(|| PlanCostBreakdown::new(1, 0, 0, 0, 0));
-            // A hash join walks the steps once and probes once per input row.
-            let mut rows = if program.hash_join.is_some() {
-                1
-            } else {
-                base.estimated_rows
-            };
-            let mut output_rows = base.estimated_rows;
-            let mut work = base.estimated_rows;
-            // Steps run as a per-row nested loop in plan order. A step that
-            // binds a fresh node multiplies the rows by its label; a step that
-            // reaches an imported or already-bound node only filters them. The
-            // output estimate is therefore order-independent, while the work
-            // (the sum of intermediate rows) reflects the anchored order.
-            let mut bound = std::collections::BTreeSet::new();
-            // Each group of WHERE conjuncts keeps a default fraction of the
-            // rows at the point it runs, so later steps expand fewer rows.
-            let filter_points = graph_match_filter_points(program);
-            let filter = |index: usize, rows: u64| {
-                if filter_points.contains(&index) {
-                    rows.div_ceil(crate::cardinality_defaults::FILTER_SELECTIVITY_DIVISOR)
-                        .max(1)
-                } else {
-                    rows
-                }
-            };
-            for (index, step) in program.steps.iter().enumerate() {
-                rows = filter(index, rows);
-                let node = match step {
-                    hawdb_plan_cypher::GraphMatchStep::Node(node) => node,
-                    hawdb_plan_cypher::GraphMatchStep::Expand { target, .. } => target,
-                    // A search may visit every relationship of its type for
-                    // each endpoint pair; it keeps the row count of its input.
-                    hawdb_plan_cypher::GraphMatchStep::ShortestPath(step) => {
-                        work = work.saturating_add(rows.saturating_mul(
-                            catalog.traversable_relationship_count(&step.rel_type),
-                        ));
-                        continue;
-                    }
-                };
-                let newly_bound =
-                    bound.insert(&node.variable) && program.introduced.contains(&node.variable);
-                if newly_bound {
-                    let multiplier = catalog.label_count(&node.label).max(1);
-                    rows = rows.saturating_mul(multiplier);
-                    output_rows = output_rows.saturating_mul(multiplier);
-                }
-                work = work.saturating_add(rows);
-            }
-            // Placement changes intermediate work, not the selectivity of
-            // the complete WHERE. Apply that output estimate only once.
-            if program.predicate.is_some() {
-                output_rows = output_rows
-                    .div_ceil(crate::cardinality_defaults::FILTER_SELECTIVITY_DIVISOR)
-                    .max(1);
-            }
-            base.with_random_io(output_rows, work, 0)
-        }
+        PhysicalPlan::GraphMatchExec { program, .. } => graph_match::estimate(
+            program,
+            catalog,
+            bindings,
+            inputs[0].unwrap_or_else(|| PlanCostBreakdown::new(1, 0, 0, 0, 0)),
+        ),
         PhysicalPlan::NodeColumnLookupExec { label, .. } => {
             let input_cost = inputs[0].expect("unary input cost");
             let label_rows = catalog.label_count(label).max(1);
