@@ -213,6 +213,7 @@ mod tests {
                 entry_count: 0,
                 ..range
             },
+            postings: None,
         };
         let budget = NonZeroUsize::new(1 << 20).unwrap();
         let ledger = QueryMemoryLedger::new(budget);
@@ -287,6 +288,7 @@ mod tests {
                 entry_count: 0,
                 ..range
             },
+            postings: None,
         };
         // The zstd frame advertises its own window: admit it even when the
         // selected records are tiny. The successful budget is below plaintext.

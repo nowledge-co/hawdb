@@ -105,6 +105,7 @@ impl Memory<'_> {
             persisted_segment_descriptor_used: value.persisted_segment_descriptor_used,
             physical_range_read_count: value.physical_range_read_count,
             physical_bytes_read: value.physical_bytes_read,
+            postings_segment_count: value.postings_segment_count,
         })
     }
     pub(in crate::out_of_core) fn retriever_set(

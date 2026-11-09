@@ -149,13 +149,13 @@ fn hits(output: &SearchOutOfCoreOutput) -> Vec<(String, u64)> {
 }
 
 #[test]
-fn stored_vectors_keep_input_bits_and_layout_v2() {
+fn stored_vectors_keep_input_bits_and_current_layout() {
     let documents = corpus(300);
     let path = build("binary-vector-bits", &documents, None);
     let reader = SearchOutOfCoreReader::open(&path).unwrap();
     let mut stored = Vec::new();
     for artifact in &reader.segments {
-        assert_eq!(artifact.layout.format, "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2");
+        assert_eq!(artifact.layout.format, "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V3");
         for segment in &artifact.descriptor.segments {
             let mut metrics = SearchOutOfCoreMetrics::default();
             for document in reader

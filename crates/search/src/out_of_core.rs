@@ -252,6 +252,7 @@ pub(crate) mod artifact_key;
 mod generation_writer;
 mod hydration;
 mod metadata_query;
+mod postings;
 mod projection_scan;
 mod verified_body;
 pub use verified_body::{SearchBodyReadOptions, SearchVerifiedBody};
@@ -290,8 +291,12 @@ use vector_serving::VectorScoreScan;
 
 pub(crate) const OUT_OF_CORE_MANIFEST_FILE: &str = "search_projection.out_of_core.manifest.hawdb";
 const OUT_OF_CORE_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_V4";
-/// V2 stores raw vectors as binary rows (`out_of_core::vector_segment`).
-const OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2";
+/// V3 adds per-segment metadata value postings (`out_of_core::postings`).
+/// Readers of V2 refuse it rather than ignore the postings ranges.
+const OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V3";
+/// V2 stores raw vectors as binary rows (`out_of_core::vector_segment`) and
+/// has no postings. It remains readable; its filters scan the metadata.
+const POSTINGLESS_OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2";
 /// V1 stored zstd-compressed decimal-text vector sidecars. Readers refuse it.
 const SUPERSEDED_OUT_OF_CORE_LAYOUT_FORMATS: &[&str] = &["HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V1"];
 pub(crate) const MAX_OUT_OF_CORE_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -654,6 +659,10 @@ struct SearchOutOfCoreSegmentLayout {
     vector_ordinal_base: u64,
     metadata: SearchOutOfCoreRange,
     vectors: SearchOutOfCoreRange,
+    /// Follows `metadata` in the metadata artifact. Absent in V2 layouts and
+    /// for segments whose postings exceed the segment byte limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    postings: Option<SearchOutOfCoreRange>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -1182,7 +1191,9 @@ impl SearchOutOfCoreLayoutBody {
                 self.format
             )));
         }
-        if self.format != OUT_OF_CORE_LAYOUT_FORMAT
+        let postingless = self.format == POSTINGLESS_OUT_OF_CORE_LAYOUT_FORMAT;
+        if (self.format != OUT_OF_CORE_LAYOUT_FORMAT && !postingless)
+            || (postingless && self.segments.iter().any(|layout| layout.postings.is_some()))
             || self.generation != manifest.generation
             || self.document_count != manifest.document_count
             || self.segments.len() != descriptor.segments.len()
@@ -1223,6 +1234,26 @@ impl SearchOutOfCoreLayoutBody {
                 "vector",
             )?;
             metadata_end = layout.metadata.offset + layout.metadata.length;
+            if let Some(postings) = layout.postings {
+                if postings.entry_count != segment.document_count {
+                    return Err(HawDBError::Storage(format!(
+                        "search out-of-core layout postings do not match segment {}",
+                        segment.segment_id
+                    )));
+                }
+                // Postings are optional: a range over this reader's segment
+                // budget is not an error; the reader scans that segment's
+                // metadata instead (`visit_postings_segment`).
+                validate_out_of_core_range(
+                    postings,
+                    metadata_end,
+                    manifest.metadata_payload_len,
+                    u64::MAX,
+                    segment.segment_id,
+                    "postings",
+                )?;
+                metadata_end = postings.offset + postings.length;
+            }
             vector_end = layout.vectors.offset + layout.vectors.length;
             vector_ordinal_base = vector_ordinal_base
                 .checked_add(layout.vectors.entry_count as u64)
@@ -4944,7 +4975,7 @@ fn write_out_of_core_sidecars(
 
             let mut metadata_body = String::from("HAWDB_SEARCH_METADATA_SEGMENT_V1\n");
             let mut vectors = Vec::new();
-            for document in documents {
+            for &document in &documents {
                 let document_vector_ordinal = document.embedding.as_ref().map(|_| vector_ordinal);
                 metadata_body.push_str(&format!(
                     "meta\t{}\t{}\t{}\n",
@@ -4978,6 +5009,25 @@ fn write_out_of_core_sidecars(
                 &metadata_payload,
                 segment.document_count,
             )?;
+            let postings = if postings::write_enabled() {
+                let defaults = SearchOutOfCoreConfig::default();
+                let limit = defaults
+                    .max_uncompressed_segment_bytes
+                    .get()
+                    .min(defaults.max_compressed_segment_bytes.get());
+                postings::encode(&documents, None, limit, || Ok(()))?
+                    .map(|encoded| {
+                        append_sidecar_payload(
+                            &mut metadata_file,
+                            &mut metadata_offset,
+                            &encoded.payload,
+                            segment.document_count,
+                        )
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
             let vectors = append_sidecar_payload(
                 &mut vector_file,
                 &mut vector_offset,
@@ -4989,6 +5039,7 @@ fn write_out_of_core_sidecars(
                 vector_ordinal_base: vector_ordinal.saturating_sub(vector_count as u64),
                 metadata,
                 vectors,
+                postings,
             });
         }
 
@@ -5004,7 +5055,7 @@ fn write_out_of_core_sidecars(
     vector_guard.disarm();
     Ok((
         SearchOutOfCoreLayoutBody {
-            format: OUT_OF_CORE_LAYOUT_FORMAT.to_string(),
+            format: postings::layout_format().to_string(),
             generation,
             document_count: descriptor.document_count,
             segments: layouts,
