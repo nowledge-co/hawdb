@@ -422,6 +422,9 @@ pub fn execute_prepared_binding_batches(
     // Consecutive canonical point reads of this execution reuse their selected
     // segments; the retained cache pins are released when it returns (#1482).
     let _point_reads = hawdb_storage::canonical::CanonicalPointReadScope::enter();
+    // Consecutive adjacency endpoint seeks reuse their verified descriptor
+    // leaves; the retained cache pins are released when it returns (#1615).
+    let _descriptor_leaves = hawdb_storage::graph_descriptor_tree::DescriptorLeafScope::enter();
     let memory_ledger = context
         .memory_ledger
         .clone()
