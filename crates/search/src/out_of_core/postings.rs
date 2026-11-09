@@ -651,6 +651,11 @@ impl SearchOutOfCoreReader {
         let Some(range) = layout.postings else {
             return Ok(false);
         };
+        // A writer with a larger segment budget may have written postings
+        // this reader will not load; its metadata scan still applies.
+        if range.length > self.postings_byte_limit() {
+            return Ok(false);
+        }
         let bytes = self.read_postings_range(artifact, segment, range, metrics, context)?;
         let postings = Segment::parse(&bytes, segment, layout)?;
         let mut checkpoint = || context.map_or(Ok(()), |context| context.checkpoint());
@@ -699,6 +704,16 @@ impl SearchOutOfCoreReader {
         Ok(true)
     }
 
+    /// Largest postings range this reader loads. Postings are stored
+    /// uncompressed, so both segment budgets apply, as they do when the
+    /// writers decide whether to emit postings.
+    pub(super) fn postings_byte_limit(&self) -> u64 {
+        self.config
+            .max_uncompressed_segment_bytes
+            .get()
+            .min(self.config.max_compressed_segment_bytes.get())
+    }
+
     fn read_postings_range(
         &self,
         artifact: &SearchOutOfCoreSegmentReader,
@@ -707,10 +722,10 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
         context: Option<QueryContext<'_>>,
     ) -> Result<PostingsBytes> {
-        if range.length > self.config.max_uncompressed_segment_bytes.get() {
+        if range.length > self.postings_byte_limit() {
             return Err(invalid(
                 segment.segment_id,
-                "exceed the uncompressed segment budget",
+                "exceed the segment byte budget",
             ));
         }
         let Some(context) = context else {

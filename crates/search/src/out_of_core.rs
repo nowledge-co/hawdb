@@ -1241,11 +1241,14 @@ impl SearchOutOfCoreLayoutBody {
                         segment.segment_id
                     )));
                 }
+                // Postings are optional: a range over this reader's segment
+                // budget is not an error; the reader scans that segment's
+                // metadata instead (`visit_postings_segment`).
                 validate_out_of_core_range(
                     postings,
                     metadata_end,
                     manifest.metadata_payload_len,
-                    max_compressed_segment_bytes,
+                    u64::MAX,
                     segment.segment_id,
                     "postings",
                 )?;

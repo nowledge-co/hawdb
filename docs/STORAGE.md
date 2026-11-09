@@ -1328,8 +1328,11 @@ When every predicate of a candidate filter is `Eq` or `In` on a plain field,
 the candidate build reads each unpruned segment's postings range instead of
 its metadata sidecar. It intersects the predicates' value lists and passes the
 selected documents, in segment order, through the same visibility, eligibility
-and candidate encoding as the scan. A segment without postings, or whose
-postings do not index a predicate's field, uses the metadata scan. The read is
+and candidate encoding as the scan. A segment without postings, whose
+postings do not index a predicate's field, or whose postings range exceeds
+the reader's segment byte budget, uses the metadata scan. Opening does not
+apply that budget to postings ranges, so a reader configured tighter than the
+writer still opens the projection. The read is
 checksummed and, on the query path, charged to the query memory account. The
 document table, field and value order, and every document index are validated,
 so corrupt postings fail with a storage error. Other filter shapes keep the

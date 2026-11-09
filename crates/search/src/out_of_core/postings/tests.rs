@@ -620,3 +620,168 @@ fn payload_validation_refuses_inconsistent_postings() {
         );
     }
 }
+
+#[test]
+fn postings_over_the_reader_segment_budget_fall_back_to_the_metadata_scan() {
+    let _switches = Switches::new(MAX_DISTINCT_VALUES, false);
+    // Repetitive values just under MAX_VALUE_BYTES compress well in the
+    // metadata sidecar but are stored verbatim in the postings, so a reader
+    // budget between the two admits every other range and refuses every
+    // postings range.
+    let mut documents = corpus();
+    for (number, document) in documents.iter_mut().enumerate() {
+        for field in 0..32 {
+            document.metadata.insert(
+                format!("note{field:02}"),
+                format!("{}{number:02}", "x".repeat(MAX_VALUE_BYTES - 8)),
+            );
+        }
+    }
+    let path = build("postings-reader-budget", &documents);
+    let reader = SearchOutOfCoreReader::open(&path).unwrap();
+    let mut largest_other = 0u64;
+    let mut smallest_postings = u64::MAX;
+    for artifact in &reader.segments {
+        for (layout, segment) in artifact
+            .layout
+            .segments
+            .iter()
+            .zip(&artifact.descriptor.segments)
+        {
+            largest_other = largest_other
+                .max(layout.metadata.length)
+                .max(layout.vectors.length)
+                .max(segment.payload_range.unwrap().length);
+            smallest_postings = smallest_postings.min(layout.postings.unwrap().length);
+        }
+    }
+    assert!(
+        largest_other < smallest_postings,
+        "{largest_other} {smallest_postings}"
+    );
+    let mut config = reader.config.clone();
+    config.max_compressed_segment_bytes = NonZeroU64::new(largest_other).unwrap();
+    let tight = SearchOutOfCoreReader::open_with_config(&path, config).unwrap();
+    assert!(tight.postings_byte_limit() < smallest_postings);
+    for (filter, indexed) in filters() {
+        let (expected, report) = candidates(&reader, &filter, None).unwrap();
+        assert_eq!(
+            report.postings_segment_count > 0,
+            indexed && report.scanned_segment_count > 0,
+            "{filter:?}"
+        );
+        let (entries, report) = candidates(&tight, &filter, None).unwrap();
+        assert_eq!(entries, expected, "{filter:?}");
+        assert_eq!(report.postings_segment_count, 0, "{filter:?}");
+        let (queried, report) = query_candidates(&tight, &filter, None).unwrap();
+        assert_eq!(queried, expected, "{filter:?}");
+        assert_eq!(report.postings_segment_count, 0, "{filter:?}");
+    }
+    drop(tight);
+    drop(reader);
+    fs::remove_dir_all(path).unwrap();
+}
+
+fn projection_row(document: &SearchDocument) -> crate::SearchProjectionRow {
+    let mut metadata = document.metadata.clone();
+    metadata.remove("kind");
+    crate::SearchProjectionRow {
+        kind: crate::SearchProjectionKind::Memory,
+        external_id: document.id.trim_start_matches("memory:").to_string(),
+        title: document.title.clone(),
+        body: document.content.clone(),
+        embedding: None,
+        source_id: None,
+        metadata,
+    }
+}
+
+#[test]
+fn postings_respect_documents_overwritten_or_deleted_in_newer_layers() {
+    let _switches = Switches::new(MAX_DISTINCT_VALUES, false);
+    let base = corpus()
+        .iter()
+        .map(|document| projection_row(document).into_document())
+        .collect::<Vec<_>>();
+    let path = test_dir("postings-shadowed");
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&path, Default::default()).unwrap();
+    for document in &base {
+        writer.push(document.clone()).unwrap();
+    }
+    writer.finish().unwrap();
+
+    // A delta layer moves some documents to another team, deletes others and
+    // adds new ones; the base layer's postings still list the old values of
+    // every overwritten or deleted document.
+    let mut upserts = Vec::new();
+    let mut deletes = Vec::new();
+    for (number, document) in corpus().iter().enumerate() {
+        match number % 5 {
+            0 => {
+                let mut document = document.clone();
+                document.metadata.insert("team".into(), "beta".into());
+                document.metadata.remove("tier");
+                upserts.push(projection_row(&document));
+            }
+            1 => deletes.push(document.id.clone()),
+            _ => {}
+        }
+    }
+    for number in 40..44 {
+        let mut document = corpus()[number - 40].clone();
+        document.id = format!("memory:{number:04}");
+        document.metadata.insert("team".into(), "Alpha".into());
+        upserts.push(projection_row(&document));
+    }
+    let mut documents = base
+        .into_iter()
+        .filter(|document| {
+            !deletes.contains(&document.id)
+                && !upserts
+                    .iter()
+                    .any(|row| format!("memory:{}", row.external_id) == document.id)
+        })
+        .chain(upserts.iter().map(|row| row.clone().into_document()))
+        .collect::<Vec<_>>();
+    documents.sort_by(|left, right| left.id.cmp(&right.id));
+    let reader = SearchOutOfCoreReader::open(&path).unwrap();
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        crate::SearchProjectionDelta {
+            upserts,
+            deletes,
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+    drop(reader);
+
+    let reader = SearchOutOfCoreReader::open(&path).unwrap();
+    assert_eq!(reader.manifest.segments.len(), 2);
+    for (filter, indexed) in filters() {
+        disable_read(false);
+        let (entries, report) = candidates(&reader, &filter, None).unwrap();
+        let (queried, _) = query_candidates(&reader, &filter, None).unwrap();
+        disable_read(true);
+        let (scanned, _) = candidates(&reader, &filter, None).unwrap();
+        disable_read(false);
+        assert_eq!(entries, scanned, "{filter:?}");
+        assert_eq!(queried, scanned, "{filter:?}");
+        let mut ids = entries
+            .iter()
+            .map(|entry| entry.2.clone())
+            .collect::<Vec<_>>();
+        ids.sort();
+        assert_eq!(ids, expected_entries(&documents, &filter), "{filter:?}");
+        assert_eq!(
+            report.postings_segment_count > 0,
+            indexed && report.scanned_segment_count > 0,
+            "{filter:?}: {report:?}"
+        );
+    }
+    drop(reader);
+    fs::remove_dir_all(path).unwrap();
+}
